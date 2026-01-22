@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from typing import List, Dict, Any, Optional
 from pydantic import BaseModel, Field
 from datetime import datetime
+import os
 import uuid
 
 from .connection_manager import (
@@ -22,10 +23,40 @@ app = FastAPI(
     version="1.0.0"
 )
 
+
+@app.get("/")
+async def root() -> Dict[str, Any]:
+    """Default route for quick service discovery."""
+    return {
+        "service": "database",
+        "status": "available",
+        "endpoints": {
+            "health": "/health",
+            "connections": "/connections",
+            "supported_databases": "/supported-databases"
+        }
+    }
+
+CONNECTION_NOT_FOUND_MSG = "Connection not found"
+
 # CORS middleware for frontend integration
+_default_origins = [
+    "http://localhost:3000",
+    "http://localhost:5173",
+    "http://localhost:5174",
+    "http://127.0.0.1:3000",
+    "http://127.0.0.1:5173",
+    "http://127.0.0.1:5174",
+]
+_allowed_origins = [
+    origin.strip()
+    for origin in os.getenv("DATABASE_ALLOWED_ORIGINS", ",".join(_default_origins)).split(",")
+    if origin.strip()
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://localhost:5173", "http://localhost:5174"],
+    allow_origins=_allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -35,11 +66,11 @@ app.add_middleware(
 class DatabaseConnectionRequest(BaseModel):
     name: str = Field(..., description="Connection name")
     type: DatabaseType = Field(..., description="Database type")
-    host: str = Field(..., description="Database host")
-    port: int = Field(..., description="Database port")
-    database: str = Field(..., description="Database name")
-    username: str = Field(..., description="Username")
-    password: str = Field(..., description="Password")
+    host: Optional[str] = Field(None, description="Database host")
+    port: Optional[int] = Field(None, description="Database port")
+    database: Optional[str] = Field(None, description="Database name or file path")
+    username: Optional[str] = Field(None, description="Username (optional for SQLite)")
+    password: Optional[str] = Field(None, description="Password (optional for SQLite)")
     ssl_enabled: bool = Field(default=False, description="Enable SSL")
     connection_string: Optional[str] = Field(None, description="Custom connection string")
     metadata: Optional[Dict[str, Any]] = Field(default_factory=dict, description="Additional metadata")
@@ -129,6 +160,8 @@ async def create_connection(request: DatabaseConnectionRequest):
     
     except ConnectionError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except NotImplementedError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
@@ -163,7 +196,7 @@ async def get_connection(connection_id: str):
     try:
         connection = await db_manager.get_connection(connection_id)
         if not connection:
-            raise HTTPException(status_code=404, detail="Connection not found")
+            raise HTTPException(status_code=404, detail=CONNECTION_NOT_FOUND_MSG)
         
         return DatabaseConnectionResponse(
             id=connection.id,
@@ -190,7 +223,7 @@ async def delete_connection(connection_id: str):
     try:
         success = await db_manager.remove_connection(connection_id)
         if not success:
-            raise HTTPException(status_code=404, detail="Connection not found")
+            raise HTTPException(status_code=404, detail=CONNECTION_NOT_FOUND_MSG)
         
         return {"message": "Connection deleted successfully"}
     except HTTPException:
@@ -204,7 +237,7 @@ async def test_connection(connection_id: str) -> Dict[str, Any]:
     try:
         connection = await db_manager.get_connection(connection_id)
         if not connection:
-            raise HTTPException(status_code=404, detail="Connection not found")
+            raise HTTPException(status_code=404, detail=CONNECTION_NOT_FOUND_MSG)
         
         is_valid = await db_manager.test_connection(connection)
         return {
@@ -212,6 +245,8 @@ async def test_connection(connection_id: str) -> Dict[str, Any]:
             "is_valid": is_valid,
             "message": "Connection successful" if is_valid else "Connection failed"
         }
+    except NotImplementedError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except HTTPException:
         raise
     except Exception as e:

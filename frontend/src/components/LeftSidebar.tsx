@@ -7,7 +7,7 @@ import './LeftSidebar.css';
 interface Connection {
   id: string;
   name: string;
-  type: 'postgresql' | 'mysql' | 'mongodb' | 'sqlite' | 'api';
+  type: string;
   status: 'connected' | 'disconnected' | 'connecting';
   host?: string;
   database?: string;

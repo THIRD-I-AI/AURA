@@ -1,7 +1,7 @@
 import React from 'react';
 import { useTheme } from '../contexts/ThemeContext';
 import SqlDisplay from './SqlDisplay';
-import DataDisplay from './DataDisplay';
+import DataTable from './DataTable';
 import type { DataResult } from '../types';
 
 interface ResultsAreaProps {
@@ -37,7 +37,7 @@ const ResultsArea: React.FC<ResultsAreaProps> = ({
         </div>
       )}
       {dataResult && !pendingApproval && (
-        <DataDisplay dataResult={dataResult} />
+        <DataTable data={dataResult} />
       )}
     </div>
   );

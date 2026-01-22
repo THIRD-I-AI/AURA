@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import './App.css';
 import { ThemeProvider } from './contexts/ThemeContext';
 import NavigationBar from './components/NavigationBar';
@@ -9,12 +9,36 @@ import ResizableLayout from './components/Layout/ResizableLayout';
 import LeftSidebar from './components/LeftSidebar';
 import GlassBox from './components/GlassBox';
 import BackgroundParticles from './components/BackgroundParticles';
+import DatabaseConnector from './components/DatabaseConnector';
+import PipelinesPanel from './components/Pipelines/PipelinesPanel';
+import ErrorBoundary from './components/ErrorBoundary';
 import type { DataResult } from './types';
 
 import type { Message } from './components/MessageList';
 
+type SidebarConnection = {
+  id: string;
+  name: string;
+  type: string;
+  status: 'connected' | 'disconnected' | 'connecting';
+  host?: string;
+  database?: string;
+  lastConnected?: Date;
+};
+
+type BackendConnection = {
+  id: string;
+  name: string;
+  type: string;
+  host: string;
+  port: number | null;
+  database: string;
+  is_active: boolean;
+  updated_at?: string | null;
+};
+
 function AppContent() {
-  const [currentMode, setCurrentMode] = useState<'chat' | 'database' | 'visualization' | 'strategic'>('chat');
+  const [currentMode, setCurrentMode] = useState<'chat' | 'database' | 'visualization' | 'strategic' | 'pipelines'>('chat');
   const [sqlQuery, setSqlQuery] = useState('-- Generated SQL will appear here');
   const [dataResult, setDataResult] = useState<DataResult | null>(null);
   const [isLoading, setIsLoading] = useState(false);
@@ -28,10 +52,10 @@ function AppContent() {
   const [isTyping, setIsTyping] = useState(false);
   const [uploadedData, setUploadedData] = useState<any[] | null>(null);
   const [uploadedFileName, setUploadedFileName] = useState<string>('');
+  const [uploadedColumns, setUploadedColumns] = useState<string[]>([]);
   const [showTrendAnalysis, setShowTrendAnalysis] = useState(false);
 
-  // Real connections data - starts empty
-  const [connections] = useState([]);
+  const [connections, setConnections] = useState<SidebarConnection[]>([]);
 
   // Dynamic chat system
   const addMessage = (type: 'user' | 'assistant' | 'system', content: string, data?: any) => {
@@ -74,15 +98,17 @@ function AppContent() {
   };
 
   const handleFileUpload = (file: File, data: any[]) => {
+    const columns = data.length > 0 ? Object.keys(data[0]) : [];
     setUploadedData(data);
     setUploadedFileName(file.name);
+    setUploadedColumns(columns);
     setShowTrendAnalysis(true);
     
     // Add system message about file upload
     addMessage('system', `Successfully uploaded ${file.name} with ${data.length} records`, {
       fileName: file.name,
       recordCount: data.length,
-      columns: data.length > 0 ? Object.keys(data[0]) : []
+      columns: columns
     });
   };
 
@@ -91,9 +117,53 @@ function AppContent() {
     console.log('Selected connection:', connection);
   };
 
+  const mapConnection = useCallback((connection: BackendConnection): SidebarConnection => {
+    const hostDisplay = connection.host
+      ? [connection.host, connection.port ?? undefined].filter(Boolean).join(':')
+      : undefined;
+
+    const updatedAt = connection.updated_at ? new Date(connection.updated_at) : undefined;
+    const lastConnected = updatedAt && !Number.isNaN(updatedAt.getTime()) ? updatedAt : undefined;
+
+    return {
+      id: connection.id,
+      name: connection.name,
+      type: connection.type,
+      status: connection.is_active ? 'connected' : 'disconnected',
+      host: hostDisplay,
+      database: connection.database,
+      lastConnected
+    };
+  }, []);
+
+  const refreshConnections = useCallback(async () => {
+    try {
+      const response = await fetch('http://localhost:8002/connections');
+      if (!response.ok) {
+        throw new Error(`Failed to load connections (${response.status})`);
+      }
+      const data: BackendConnection[] = await response.json();
+      setConnections(data.map(mapConnection));
+    } catch (error) {
+      console.error('Error refreshing database connections', error);
+    }
+  }, [mapConnection]);
+
+  useEffect(() => {
+    refreshConnections();
+  }, [refreshConnections]);
+
+  const handleConnectionsUpdated = useCallback(
+    (updatedConnections: BackendConnection[]) => {
+      setConnections(updatedConnections.map(mapConnection));
+    },
+    [mapConnection]
+  );
+
   const handleNewConnection = () => {
     addMessage('system', '➕ Opening new connection dialog...');
-    console.log('Create new connection');
+    setCurrentMode('database');
+    refreshConnections();
   };
 
   const handleQuerySubmit = async (prompt: string) => {
@@ -107,6 +177,14 @@ function AppContent() {
     setCurrentPrompt(prompt);
     
     try {
+      // Build context from uploaded data if available
+      let context = 'Schema: sales_table(product_name, total_revenue, sale_date)';
+      if (uploadedFileName && uploadedColumns.length > 0) {
+        const tableName = uploadedFileName.replace(/\.[^/.]+$/, '').replace(/[^a-zA-Z0-9_]/g, '_');
+        const columnsSchema = uploadedColumns.join(', ');
+        context = `File: ${uploadedFileName}\nSchema: ${tableName}(${columnsSchema})\nRows: ${uploadedData?.length || 0}`;
+      }
+      
       const response = await fetch('http://localhost:8000/generate_query', {
         method: 'POST',
         headers: {
@@ -115,26 +193,34 @@ function AppContent() {
         body: JSON.stringify({
           session_id: 'frontend-session',
           prompt: prompt,
-          context: 'Schema: sales_table(product_name, total_revenue, sale_date)'
+          context: context,
+          uploaded_file: uploadedFileName || null,
+          columns: uploadedColumns.length > 0 ? uploadedColumns : null
         })
       });
       
       const result = await response.json();
       
-      if (result.status === 'Success') {
-        setSqlQuery(result.final_query || '-- No SQL generated');
+      const isSuccess = result.status === 'Success' || result.status === 'Fallback';
+      if (isSuccess) {
+        const finalQuery = result.final_query || '-- No SQL generated';
+        setSqlQuery(finalQuery);
         setCurrentJobId(result.job_id || 'job_' + Date.now());
         
-        // Add assistant response
-        addMessage('assistant', 'I\'ve analyzed your request and generated a query. Please review it below for approval.', {
-          query: result.final_query,
+        // Add assistant response (note fallback is still a usable query)
+        const responderText = result.status === 'Fallback'
+          ? 'Generated a fallback query from your file schema. Please review it below for approval.'
+          : 'I\'ve analyzed your request and generated a query. Please review it below for approval.';
+        addMessage('assistant', responderText, {
+          query: finalQuery,
           jobId: result.job_id
         });
         
         setPendingApproval(true);
       } else {
-        setSqlQuery('-- Error: ' + (result.error_message || 'Unknown error'));
-        addMessage('assistant', 'I encountered an error while processing your request: ' + (result.error_message || 'Unknown error'));
+        const errMsg = result.error_message || 'Unknown error';
+        setSqlQuery('-- Error: ' + errMsg);
+        addMessage('assistant', 'I encountered an error while processing your request: ' + errMsg);
         setPendingApproval(false);
       }
     } catch (error) {
@@ -182,76 +268,92 @@ function AppContent() {
 
 
 
-  const handleModeChange = (mode: 'chat' | 'database' | 'visualization' | 'strategic') => {
+  const handleModeChange = (mode: 'chat' | 'database' | 'visualization' | 'strategic' | 'pipelines') => {
     setCurrentMode(mode);
+    if (mode === 'database') {
+      refreshConnections();
+    }
   };
 
+  const appClassName = currentMode === 'database' ? 'app database-mode' : 'app';
+
   return (
-    <div className="app">
+    <div className={appClassName}>
       <BackgroundParticles />
       <NavigationBar currentMode={currentMode} onModeChange={handleModeChange} />
-      
-      <ResizableLayout
-        leftPanel={{
-          id: 'sidebar',
-          title: 'Data Sources',
-          content: (
-            <LeftSidebar
-              connections={connections}
-              onConnectionSelect={handleConnectionSelect}
-              onNewConnection={handleNewConnection}
-              onFileUpload={handleFileUpload}
-              isLoading={isLoading}
-            />
-          ),
-          minWidth: 250,
-          defaultWidth: 300
-        }}
-        middleTopPanel={{
-          id: 'results',
-          title: 'Query Results',
-          content: (
-            <ResultsArea 
-              sqlQuery={sqlQuery} 
-              dataResult={dataResult} 
-              pendingApproval={pendingApproval}
-              onApproval={handleSqlApproval}
-              isLoading={isLoading}
-            />
-          ),
-          minHeight: 200,
-          defaultHeight: 400
-        }}
-        middleBottomPanel={{
-          id: 'glassbox',
-          title: 'Analytics Dashboard',
-          content: (
-            <GlassBox title="Dynamic Glass Panel">
-              {showTrendAnalysis && uploadedData && (
-                <TrendAnalysis 
-                  data={uploadedData}
-                  fileName={uploadedFileName}
-                />
-              )}
-            </GlassBox>
-          )
-        }}
-        rightPanel={{
-          id: 'chat',
-          title: 'AI Assistant',
-          content: (
-            <ChatArea 
-              onQuerySubmit={handleQuerySubmit} 
-              isLoading={isLoading}
-              messages={messages}
-              isTyping={isTyping}
-              onQuickAction={handleQuickAction}
-            />
-          ),
-          minWidth: 300,
-          defaultWidth: 400
-        }}
-      />
+      {currentMode === 'database' ? (
+        <div className="database-mode-wrapper">
+          <DatabaseConnector onConnectionsUpdated={handleConnectionsUpdated} />
+        </div>
+      ) : currentMode === 'pipelines' ? (
+        <div className="pipelines-mode-wrapper">
+          <ErrorBoundary>
+            <PipelinesPanel />
+          </ErrorBoundary>
+        </div>
+      ) : (
+        <ResizableLayout
+          leftPanel={{
+            id: 'sidebar',
+            title: 'Data Sources',
+            content: (
+              <LeftSidebar
+                connections={connections}
+                onConnectionSelect={handleConnectionSelect}
+                onNewConnection={handleNewConnection}
+                onFileUpload={handleFileUpload}
+                isLoading={isLoading}
+              />
+            ),
+            minWidth: 250,
+            defaultWidth: 300
+          }}
+          middleTopPanel={{
+            id: 'results',
+            title: 'Query Results',
+            content: (
+              <ResultsArea 
+                sqlQuery={sqlQuery} 
+                dataResult={dataResult} 
+                pendingApproval={pendingApproval}
+                onApproval={handleSqlApproval}
+                isLoading={isLoading}
+              />
+            ),
+            minHeight: 200,
+            defaultHeight: 400
+          }}
+          middleBottomPanel={{
+            id: 'glassbox',
+            title: 'Analytics Dashboard',
+            content: (
+              <GlassBox title="Dynamic Glass Panel">
+                {showTrendAnalysis && uploadedData && (
+                  <TrendAnalysis 
+                    data={uploadedData}
+                    fileName={uploadedFileName}
+                  />
+                )}
+              </GlassBox>
+            )
+          }}
+          rightPanel={{
+            id: 'chat',
+            title: 'AI Assistant',
+            content: (
+              <ChatArea 
+                onQuerySubmit={handleQuerySubmit} 
+                isLoading={isLoading}
+                messages={messages}
+                isTyping={isTyping}
+                onQuickAction={handleQuickAction}
+              />
+            ),
+            minWidth: 300,
+            defaultWidth: 400
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -300,16 +402,16 @@ function generateSampleData(prompt: string): DataResult {
     return {
       columns: ['value_range', 'frequency', 'percentage'],
       rows: [
-        ['0-10K', 45, 15.0],
+  ['0-10K', 45, 15],
         ['10K-20K', 67, 22.3],
         ['20K-30K', 89, 29.7],
         ['30K-40K', 56, 18.7],
         ['40K-50K', 34, 11.3],
         ['50K-60K', 23, 7.7],
-        ['60K-70K', 12, 4.0],
+  ['60K-70K', 12, 4],
         ['70K-80K', 8, 2.7],
         ['80K-90K', 5, 1.7],
-        ['90K-100K', 3, 1.0]
+  ['90K-100K', 3, 1]
       ]
     };
   } else if (promptLower.includes('region') || promptLower.includes('location')) {
@@ -331,7 +433,7 @@ function generateSampleData(prompt: string): DataResult {
         ['Electronics', 1250000, 35.8, 12.5],
         ['Software', 980000, 28.1, 18.3],
         ['Hardware', 650000, 18.6, 8.7],
-        ['Services', 420000, 12.0, 22.1],
+  ['Services', 420000, 12, 22.1],
         ['Accessories', 190000, 5.5, 15.2]
       ]
     };

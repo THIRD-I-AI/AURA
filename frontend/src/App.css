@@ -372,6 +372,41 @@ html, body {
   animation: fadeIn 0.8s var(--transition-smooth);
 }
 
+.app.database-mode {
+  overflow-y: auto;
+}
+
+.database-mode-wrapper {
+  flex: 1;
+  width: 100%;
+  box-sizing: border-box;
+  padding: var(--spacing-xl);
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+}
+
+.database-mode-wrapper .database-connector {
+  width: 100%;
+}
+
+.pipelines-mode-wrapper {
+  flex: 1;
+  width: 100%;
+  height: calc(100vh - 60px);
+  box-sizing: border-box;
+  padding: var(--spacing-xl);
+  display: flex;
+  justify-content: center;
+  align-items: stretch;
+  overflow: hidden;
+}
+
+.pipelines-mode-wrapper > * {
+  width: 100%;
+  max-width: 1800px;
+}
+
 .app-content {
   flex: 1;
   width: 100%;
@@ -708,8 +743,8 @@ html, body {
   padding: var(--spacing-md);
   box-shadow: var(--shadow-sm);
   border: 1px solid rgba(255, 255, 255, 0.3);
-  backdrop-filter: blur(10px);
   -webkit-backdrop-filter: blur(10px);
+  backdrop-filter: blur(10px);
   flex: 1;
 }
 
@@ -934,12 +969,8 @@ html, body {
 }
 
 .chat-input button:active {
-  transform: translateY(-1px) scale(0.95);
+  transform: translateY(0) scale(0.97);
   transition: all var(--transition-fast);
-}
-
-.chat-input button:active {
-  transform: translateY(0);
 }
 
 /* Enhanced Chat Input Styles */
@@ -1398,6 +1429,7 @@ html, body {
   position: sticky;
   top: 0;
   cursor: pointer;
+  -webkit-user-select: none;
   user-select: none;
 }
 

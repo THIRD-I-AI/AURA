@@ -1,0 +1,11 @@
+date,product,region,quantity,revenue,cost,customer_type
+2024-01-01,Product A,North,100,5000,2000,Enterprise
+2024-01-01,Product B,South,150,4500,1800,SMB
+2024-01-02,Product A,East,200,10000,4000,Enterprise
+2024-01-02,Product B,West,120,3600,1500,Consumer
+2024-01-03,Product A,North,250,12500,5000,Enterprise
+2024-01-03,Product B,South,100,3000,1200,SMB
+2024-01-04,Product C,East,180,7200,2880,Enterprise
+2024-01-04,Product A,West,90,4500,1800,Consumer
+2024-01-05,Product B,North,220,6600,2640,SMB
+2024-01-05,Product C,South,140,5600,2240,Consumer

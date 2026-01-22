@@ -77,8 +77,6 @@ const TrendAnalysis: React.FC<TrendAnalysisProps> = ({ data, fileName }) => {
         if (values.length > 0) {
           const sum = values.reduce((a, b) => a + b, 0);
           const avg = sum / values.length;
-          const max = Math.max(...values);
-          const min = Math.min(...values);
           
           // Growth trend detection
           if (values.length > 1) {

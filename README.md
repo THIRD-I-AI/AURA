@@ -56,6 +56,7 @@ docker ps
 | **Frontend** | http://localhost:5173 | http://localhost:5173 | React UI Interface |
 | **API Gateway** | http://localhost:8000 | http://localhost:8000 | Backend coordination |
 | **Database API** | http://localhost:8002 | http://localhost:8002 | Universal DB connectivity |
+| **Scheduler Service** | http://localhost:8004 | http://localhost:8004 | Automated job scheduling |
 | **Health Checks** | `/health` endpoints | Container health monitoring | Service status |
 
 ### 🔄 Deployment Status: **✅ FULLY OPERATIONAL**
@@ -63,6 +64,7 @@ docker ps
 - ✅ Docker Environment: Ready  
 - ✅ Health Checks: Working
 - ✅ Team Collaboration: Ready
+- ✅ Automated Scheduling: Ready
 
 ## 🗄️ Supported Databases
 
@@ -76,6 +78,7 @@ docker ps
 - **🤖 AI Chat** - Natural language data analysis with Google Gemini
 - **📊 Visualizations** - Interactive charts (Bar, Line, Pie, Radar) with Chart.js
 - **🔌 Universal Connectivity** - 12+ database types (SQL/NoSQL/Cloud)
+- **⏰ Automated Scheduling** - Run queries on cron schedules with retry logic
 - **🐳 Docker Support** - Production-ready containerized deployment
 - **👥 Team Ready** - Automated setup scripts with health monitoring
 - **⚡ Microservices** - FastAPI backend with React TypeScript frontend

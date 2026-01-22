@@ -1,0 +1,89 @@
+syntax = "proto3";
+
+package aura.agent;
+
+option go_package = "github.com/mounith007/aura/agent";
+
+message AgentEnvelope {
+  string session_id = 1;
+  string agent_id = 2;
+  string message_type = 3;
+  bytes payload = 4;
+  map<string, string> headers = 5;
+  int64 timestamp_unix_ms = 6;
+}
+
+message TaskContext {
+  string tenant_id = 1;
+  string user_id = 2;
+  string locale = 3;
+  map<string, string> tags = 4;
+}
+
+message ToolDescriptor {
+  string tool_id = 1;
+  string name = 2;
+  string description = 3;
+  repeated string capabilities = 4;
+  map<string, string> metadata = 5;
+}
+
+message AgentRegistration {
+  string agent_id = 1;
+  string agent_type = 2;
+  repeated ToolDescriptor tools = 3;
+  map<string, string> traits = 4;
+}
+
+message TaskRequest {
+  string request_id = 1;
+  string session_id = 2;
+  string tenant_id = 3;
+  string task_type = 4;
+  string prompt = 5;
+  TaskContext context = 6;
+  map<string, string> routing_hints = 7;
+}
+
+message TaskOutcome {
+  string request_id = 1;
+  string session_id = 2;
+  string agent_id = 3;
+  bool success = 4;
+  string result = 5;
+  map<string, string> details = 6;
+}
+
+message MCPHandshakeRequest {
+  string session_id = 1;
+  string protocol_version = 2;
+  repeated ToolDescriptor requested_tools = 3;
+}
+
+message MCPHandshakeResponse {
+  string session_id = 1;
+  string protocol_version = 2;
+  bool accepted = 3;
+  string reason = 4;
+  repeated ToolDescriptor granted_tools = 5;
+}
+
+message ToolInvocation {
+  string invocation_id = 1;
+  string tool_id = 2;
+  string session_id = 3;
+  string payload_json = 4;
+}
+
+message ToolInvocationResult {
+  string invocation_id = 1;
+  bool success = 2;
+  string result_json = 3;
+  string error_message = 4;
+}
+
+service AgentMesh {
+  rpc RegisterAgent(AgentRegistration) returns (MCPHandshakeResponse);
+  rpc SubmitTask(TaskRequest) returns (TaskOutcome);
+  rpc InvokeTool(ToolInvocation) returns (ToolInvocationResult);
+}

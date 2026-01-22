@@ -4,11 +4,10 @@ pydantic
 google-generativeai
 python-dotenv
 httpx
-pandas
-openpyxl
 aiofiles
 python-multipart
 pyarrow
+aiosqlite
 
 # Database drivers
 psycopg2-binary
@@ -22,8 +21,14 @@ redshift-connector
 databricks-sql-connector
 clickhouse-driver
 cassandra-driver
+asyncpg
+aiomysql
 
 # Additional dependencies
 sqlalchemy
 pandas
 numpy
+azure-identity
+azure-keyvault-secrets
+pytest
+pytest-asyncio

@@ -1,5 +1,8 @@
+from __future__ import annotations
+
+from typing import Any, Optional
+
 from pydantic import BaseModel, Field
-from typing import Optional, Any
 
 class ChatRequest(BaseModel):
     session_id: str
@@ -17,6 +20,16 @@ class PlanStep(BaseModel):
 class ExecutionJob(BaseModel):
     job_id: str
     sql: str
+    connection_id: Optional[str] = Field(
+        default=None,
+        description="Identifier of the database connection to execute against."
+    )
+    limit: int = Field(
+        default=1000,
+        ge=1,
+        le=10_000,
+        description="Maximum number of rows to return from the query."
+    )
     approved: bool = False
     status: str = "pending"
     result: Optional[dict[str, Any]] = None
@@ -40,5 +53,5 @@ class AgentResponse(BaseModel):
     final_query: Optional[str] = None
     error_message: Optional[str] = None
     details: Optional[str] = None
-    job_id: Optional[str] = None
+    confidence: Optional[float] = Field(default=None, description="Confidence score assigned by critic agent.")
     job_id: Optional[str] = None

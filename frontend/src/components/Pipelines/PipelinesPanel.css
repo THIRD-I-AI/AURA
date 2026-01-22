@@ -1,0 +1,165 @@
+.pipelines-panel {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  background: rgba(10, 10, 20, 0.5);
+  backdrop-filter: blur(10px);
+  border-radius: 12px;
+  padding: 1.5rem;
+  gap: 1.5rem;
+}
+
+.pipelines-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding-bottom: 1rem;
+  border-bottom: 1px solid rgba(100, 200, 255, 0.2);
+}
+
+.header-content h2 {
+  margin: 0;
+  font-size: 1.8rem;
+  color: #64c8ff;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.header-content .subtitle {
+  margin: 0.5rem 0 0 0;
+  color: rgba(255, 255, 255, 0.6);
+  font-size: 0.9rem;
+}
+
+.create-job-btn {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: white;
+  border: none;
+  padding: 0.75rem 1.5rem;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 1rem;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  transition: all 0.3s ease;
+}
+
+.create-job-btn:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 20px rgba(102, 126, 234, 0.4);
+}
+
+.error-banner {
+  background: rgba(255, 59, 48, 0.1);
+  border: 1px solid rgba(255, 59, 48, 0.3);
+  color: #ff3b30;
+  padding: 1rem;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  animation: slideDown 0.3s ease;
+}
+
+.error-banner .close-btn {
+  background: none;
+  border: none;
+  color: #ff3b30;
+  cursor: pointer;
+  font-size: 1.2rem;
+  padding: 0;
+  opacity: 0.7;
+  transition: opacity 0.2s;
+}
+
+.error-banner .close-btn:hover {
+  opacity: 1;
+}
+
+.success-banner {
+  background: rgba(52, 211, 153, 0.1);
+  border: 1px solid rgba(52, 211, 153, 0.3);
+  color: #34d399;
+  padding: 1rem;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  animation: slideDown 0.3s ease;
+}
+
+.pipelines-content {
+  display: grid;
+  grid-template-columns: 400px 1fr;
+  gap: 1.5rem;
+  flex: 1;
+  overflow: hidden;
+}
+
+.jobs-section {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.details-section {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: rgba(15, 15, 25, 0.6);
+  border-radius: 12px;
+  border: 1px solid rgba(100, 200, 255, 0.15);
+}
+
+.no-selection {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: rgba(255, 255, 255, 0.4);
+  text-align: center;
+  padding: 2rem;
+}
+
+@keyframes slideDown {
+  from {
+    opacity: 0;
+    transform: translateY(-10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.placeholder-icon {
+  font-size: 4rem;
+  margin-bottom: 1rem;
+  opacity: 0.3;
+}
+
+.no-selection h3 {
+  margin: 0 0 0.5rem 0;
+  color: rgba(255, 255, 255, 0.6);
+}
+
+.no-selection p {
+  margin: 0;
+  font-size: 0.9rem;
+}
+
+.icon {
+  display: inline-flex;
+  align-items: center;
+}
+
+@media (max-width: 1200px) {
+  .pipelines-content {
+    grid-template-columns: 1fr;
+    grid-template-rows: 300px 1fr;
+  }
+}

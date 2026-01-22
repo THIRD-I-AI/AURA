@@ -72,14 +72,34 @@ services:
   # Execution Sandbox
   execution_sandbox:
     build: ./aurabackend
-    command: uvicorn execution_sandbox.main:execution_app --host 0.0.0.0 --port 8004
+    command: uvicorn execution_sandbox.main:execution_app --host 0.0.0.0 --port 8007
     ports:
-      - "8004:8004"
+      - "8007:8007"
     environment:
       - GEMINI_API_KEY=${GEMINI_API_KEY}
       - PYTHONPATH=/app
     volumes:
       - ./aurabackend:/app
+    restart: unless-stopped
+
+  # Scheduler Service - Automated job scheduling and execution
+  scheduler_service:
+    build: ./aurabackend
+    command: uvicorn scheduler_service.main:app --host 0.0.0.0 --port 8004
+    ports:
+      - "8004:8004"
+    environment:
+      - SCHEDULER_DATABASE_URL=sqlite+aiosqlite:///data/scheduler.db
+      - DATABASE_SERVICE_URL=http://database_service:8002
+      - SCHEDULER_PORT=8004
+      - SCHEDULER_CHECK_INTERVAL=60
+      - PYTHONPATH=/app
+    volumes:
+      - ./aurabackend:/app
+      - scheduler_data:/app/data
+    depends_on:
+      database_service:
+        condition: service_healthy
     restart: unless-stopped
 
   # Knowledge Base Service
@@ -110,6 +130,8 @@ services:
 
 volumes:
   database_data:
+    driver: local
+  scheduler_data:
     driver: local
 
 networks:

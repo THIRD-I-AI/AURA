@@ -44,9 +44,37 @@ interface SchemaInfo {
   last_updated: string;
 }
 
-const DatabaseConnector: React.FC = () => {
+interface DatabaseConnectorProps {
+  onConnectionsUpdated?: (connections: DatabaseConnection[]) => void;
+}
+
+const DEFAULT_SUPPORTED_DATABASES: DatabaseType[] = [
+  {
+    type: 'postgresql',
+    name: 'PostgreSQL',
+    default_port: 5432,
+    supports_ssl: true,
+    description: 'Advanced open-source relational database'
+  },
+  {
+    type: 'mysql',
+    name: 'MySQL',
+    default_port: 3306,
+    supports_ssl: true,
+    description: 'Popular open-source relational database'
+  },
+  {
+    type: 'sqlite',
+    name: 'SQLite',
+    default_port: 0,
+    supports_ssl: false,
+    description: 'Lightweight file-based database'
+  }
+];
+
+const DatabaseConnector: React.FC<DatabaseConnectorProps> = ({ onConnectionsUpdated }) => {
   const [connections, setConnections] = useState<DatabaseConnection[]>([]);
-  const [supportedDbs, setSupportedDbs] = useState<DatabaseType[]>([]);
+  const [supportedDbs, setSupportedDbs] = useState<DatabaseType[]>(DEFAULT_SUPPORTED_DATABASES);
   const [selectedConnection, setSelectedConnection] = useState<string | null>(null);
   const [schemaInfo, setSchemaInfo] = useState<SchemaInfo | null>(null);
   const [showAddForm, setShowAddForm] = useState(false);
@@ -70,12 +98,37 @@ const DatabaseConnector: React.FC = () => {
     loadSupportedDatabases();
   }, []);
 
+  useEffect(() => {
+    if (!supportedDbs.length) {
+      return;
+    }
+
+    setFormData((prev) => {
+      const hasSelectedType = supportedDbs.some((db) => db.type === prev.type);
+      if (hasSelectedType) {
+        return prev;
+      }
+
+      const fallback = supportedDbs[0];
+      if (!fallback) {
+        return prev;
+      }
+
+      return {
+        ...prev,
+        type: fallback.type,
+        port: fallback.default_port ?? prev.port ?? 5432
+      };
+    });
+  }, [supportedDbs]);
+
   const loadConnections = async () => {
     try {
       const response = await fetch('http://localhost:8002/connections');
       if (response.ok) {
         const data = await response.json();
         setConnections(data);
+        onConnectionsUpdated?.(data);
       }
     } catch (error) {
       console.error('Error loading connections:', error);
@@ -87,10 +140,18 @@ const DatabaseConnector: React.FC = () => {
       const response = await fetch('http://localhost:8002/supported-databases');
       if (response.ok) {
         const data = await response.json();
-        setSupportedDbs(data.databases);
+        const databases = Array.isArray(data) ? data : data?.databases;
+        if (Array.isArray(databases) && databases.length > 0) {
+          setSupportedDbs(databases);
+        } else {
+          setSupportedDbs(DEFAULT_SUPPORTED_DATABASES);
+        }
+      } else {
+        setSupportedDbs(DEFAULT_SUPPORTED_DATABASES);
       }
     } catch (error) {
       console.error('Error loading supported databases:', error);
+      setSupportedDbs(DEFAULT_SUPPORTED_DATABASES);
     }
   };
 
@@ -126,6 +187,7 @@ const DatabaseConnector: React.FC = () => {
         setError(errorData.detail || 'Failed to create connection');
       }
     } catch (error) {
+      console.error('Error creating database connection', error);
       setError('Network error: Unable to create connection');
     } finally {
       setIsLoading(false);
@@ -144,6 +206,7 @@ const DatabaseConnector: React.FC = () => {
         alert(result.message);
       }
     } catch (error) {
+      console.error('Error testing database connection', error);
       alert('Failed to test connection');
     } finally {
       setIsLoading(false);
@@ -166,6 +229,7 @@ const DatabaseConnector: React.FC = () => {
         }
       }
     } catch (error) {
+      console.error('Error deleting database connection', error);
       alert('Failed to delete connection');
     }
   };
@@ -183,6 +247,7 @@ const DatabaseConnector: React.FC = () => {
         setError('Failed to load schema');
       }
     } catch (error) {
+      console.error('Error loading database schema', error);
       setError('Network error: Unable to load schema');
     } finally {
       setIsLoading(false);
@@ -190,12 +255,12 @@ const DatabaseConnector: React.FC = () => {
   };
 
   const handleTypeChange = (type: string) => {
-    const dbType = supportedDbs.find(db => db.type === type);
-    setFormData({
-      ...formData,
+    const dbType = supportedDbs.find((db) => db.type === type);
+    setFormData((prev) => ({
+      ...prev,
       type,
-      port: dbType?.default_port || 5432
-    });
+      port: dbType?.default_port ?? prev.port ?? 5432
+    }));
   };
 
   return (
@@ -230,8 +295,8 @@ const DatabaseConnector: React.FC = () => {
           ) : (
             <div className="connections-list">
               {connections.map((conn) => (
-                <div 
-                  key={conn.id} 
+                <div
+                  key={conn.id}
                   className={`connection-card ${selectedConnection === conn.id ? 'selected' : ''}`}
                 >
                   <div className="connection-header">
@@ -292,31 +357,36 @@ const DatabaseConnector: React.FC = () => {
               <div className="tables-section">
                 <h4>📋 Tables ({schemaInfo.tables.length})</h4>
                 <div className="tables-list">
-                  {schemaInfo.tables.map((table, index) => (
-                    <div key={index} className="table-card">
-                      <div className="table-header">
-                        <h5>{table.name}</h5>
-                        <span className="table-schema">{table.schema}</span>
-                        {table.row_count && (
-                          <span className="row-count">{table.row_count.toLocaleString()} rows</span>
-                        )}
-                      </div>
-                      
-                      <div className="columns-list">
-                        <h6>Columns ({table.columns.length})</h6>
-                        <div className="columns-grid">
-                          {table.columns.map((column, colIndex) => (
-                            <div key={colIndex} className="column-item">
-                              <span className="column-name">{column.name}</span>
-                              <span className="column-type">{column.type}</span>
-                              {column.primary_key && <span className="pk-badge">PK</span>}
-                              {!column.nullable && <span className="not-null-badge">NOT NULL</span>}
-                            </div>
-                          ))}
+                  {schemaInfo.tables.map((table) => {
+                    const tableKey = `${table.schema}.${table.name}`;
+                    return (
+                      <div key={tableKey} className="table-card">
+                        <div className="table-header">
+                          <h5>{table.name}</h5>
+                          <span className="table-schema">{table.schema}</span>
+                          {table.row_count && (
+                            <span className="row-count">{table.row_count.toLocaleString()} rows</span>
+                          )}
+                        </div>
+                        <div className="columns-list">
+                          <h6>Columns ({table.columns.length})</h6>
+                          <div className="columns-grid">
+                            {table.columns.map((column) => {
+                              const columnKey = `${table.schema}.${table.name}.${column.name}`;
+                              return (
+                                <div key={columnKey} className="column-item">
+                                  <span className="column-name">{column.name}</span>
+                                  <span className="column-type">{column.type}</span>
+                                  {column.primary_key && <span className="pk-badge">PK</span>}
+                                  {!column.nullable && <span className="not-null-badge">NOT NULL</span>}
+                                </div>
+                              );
+                            })}
+                          </div>
                         </div>
                       </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               </div>
 
@@ -324,13 +394,16 @@ const DatabaseConnector: React.FC = () => {
                 <div className="views-section">
                   <h4>👁️ Views ({schemaInfo.views.length})</h4>
                   <div className="views-list">
-                    {schemaInfo.views.map((view, index) => (
-                      <div key={index} className="view-card">
-                        <h5>{view.name}</h5>
-                        <span className="view-schema">{view.schema}</span>
-                        <p>{view.columns.length} columns</p>
-                      </div>
-                    ))}
+                    {schemaInfo.views.map((view) => {
+                      const viewKey = `${view.schema}.${view.name}`;
+                      return (
+                        <div key={viewKey} className="view-card">
+                          <h5>{view.name}</h5>
+                          <span className="view-schema">{view.schema}</span>
+                          <p>{view.columns.length} columns</p>
+                        </div>
+                      );
+                    })}
                   </div>
                 </div>
               )}
@@ -355,8 +428,9 @@ const DatabaseConnector: React.FC = () => {
             <form onSubmit={handleAddConnection}>
               <div className="form-grid">
                 <div className="form-group">
-                  <label>Connection Name *</label>
+                  <label htmlFor="connection-name">Connection Name *</label>
                   <input
+                    id="connection-name"
                     type="text"
                     value={formData.name}
                     onChange={(e) => setFormData({...formData, name: e.target.value})}
@@ -366,8 +440,9 @@ const DatabaseConnector: React.FC = () => {
                 </div>
 
                 <div className="form-group">
-                  <label>Database Type *</label>
+                  <label htmlFor="database-type">Database Type *</label>
                   <select
+                    id="database-type"
                     value={formData.type}
                     onChange={(e) => handleTypeChange(e.target.value)}
                     required
@@ -381,55 +456,56 @@ const DatabaseConnector: React.FC = () => {
                 </div>
 
                 <div className="form-group">
-                  <label>Host *</label>
+                  <label htmlFor="database-host">Host</label>
                   <input
+                    id="database-host"
                     type="text"
                     value={formData.host}
                     onChange={(e) => setFormData({...formData, host: e.target.value})}
-                    required
                     placeholder="localhost"
                   />
                 </div>
 
                 <div className="form-group">
-                  <label>Port *</label>
+                  <label htmlFor="database-port">Port</label>
                   <input
+                    id="database-port"
                     type="number"
                     value={formData.port}
-                    onChange={(e) => setFormData({...formData, port: parseInt(e.target.value)})}
-                    required
+                    onChange={(e) => setFormData({...formData, port: Number.parseInt(e.target.value, 10)})}
+                    placeholder="5432"
                   />
                 </div>
 
                 <div className="form-group">
-                  <label>Database Name *</label>
+                  <label htmlFor="database-name">Database Name</label>
                   <input
+                    id="database-name"
                     type="text"
                     value={formData.database}
                     onChange={(e) => setFormData({...formData, database: e.target.value})}
-                    required
                     placeholder="mydb"
                   />
                 </div>
 
                 <div className="form-group">
-                  <label>Username *</label>
+                  <label htmlFor="database-username">Username</label>
                   <input
+                    id="database-username"
                     type="text"
                     value={formData.username}
                     onChange={(e) => setFormData({...formData, username: e.target.value})}
-                    required
                     placeholder="user"
                   />
                 </div>
 
                 <div className="form-group">
-                  <label>Password *</label>
+                  <label htmlFor="database-password">Password</label>
                   <input
+                    id="database-password"
                     type="password"
                     value={formData.password}
                     onChange={(e) => setFormData({...formData, password: e.target.value})}
-                    required
                     placeholder="password"
                   />
                 </div>
@@ -441,7 +517,7 @@ const DatabaseConnector: React.FC = () => {
                       checked={formData.ssl_enabled}
                       onChange={(e) => setFormData({...formData, ssl_enabled: e.target.checked})}
                     />
-                    Enable SSL
+                    <span>Enable SSL</span>
                   </label>
                 </div>
               </div>

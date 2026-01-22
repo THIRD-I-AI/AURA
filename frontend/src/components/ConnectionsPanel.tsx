@@ -4,7 +4,7 @@ import './ConnectionsPanel.css';
 interface Connection {
   id: string;
   name: string;
-  type: 'postgresql' | 'mysql' | 'mongodb' | 'sqlite' | 'api';
+  type: string;
   status: 'connected' | 'disconnected' | 'connecting';
   host?: string;
   database?: string;
@@ -25,7 +25,7 @@ const ConnectionsPanel: React.FC<ConnectionsPanelProps> = ({
   const [selectedConnection, setSelectedConnection] = useState<string | null>(null);
 
   const getConnectionIcon = (type: Connection['type']) => {
-    switch (type) {
+    switch (type.toLowerCase()) {
       case 'postgresql': return '🐘';
       case 'mysql': return '🐬';
       case 'mongodb': return '🍃';
@@ -72,10 +72,17 @@ const ConnectionsPanel: React.FC<ConnectionsPanelProps> = ({
           </div>
         ) : (
           connections.map((connection) => (
-            <div
+            <button
               key={connection.id}
+              type="button"
               className={`connection-item ${selectedConnection === connection.id ? 'selected' : ''}`}
               onClick={() => handleConnectionClick(connection)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter' || event.key === ' ') {
+                  event.preventDefault();
+                  handleConnectionClick(connection);
+                }
+              }}
             >
               <div className="connection-info">
                 <div className="connection-header">
@@ -103,7 +110,7 @@ const ConnectionsPanel: React.FC<ConnectionsPanelProps> = ({
                   </div>
                 )}
               </div>
-            </div>
+            </button>
           ))
         )}
       </div>

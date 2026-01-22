@@ -11,6 +11,7 @@
   },
   "dependencies": {
     "@types/plotly.js": "^3.0.6",
+    "baseline-browser-mapping": "^2.9.17",
     "chart.js": "^4.5.0",
     "plotly.js-dist-min": "^3.1.1",
     "react": "^19.1.1",
