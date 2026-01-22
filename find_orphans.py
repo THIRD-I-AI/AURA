@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """
-Orphan File Finder for AURA Backend
-Scans the aurabackend folder and identifies Python files that are not imported anywhere.
-Excludes main.py, enhanced_main.py, orchestrator.py, and __init__.py from being marked as orphans.
+Orphan File Finder for AURA Backend - FULL PROJECT SCAN
+Scans ALL backend folders (aurabackend/, services/, connectors/, utils/, etc.)
+Identifies Python files that are not imported anywhere.
+Excludes entry points, requirements.txt, and config files from orphan detection.
 """
 
 import os
