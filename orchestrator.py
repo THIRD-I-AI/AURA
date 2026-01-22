@@ -17,7 +17,7 @@ SERVICES = [
     {
         "name": "API Gateway",
         "port": 8000,
-        "module": "aurabackend.api_gateway.enhanced_main:app",
+        "module": "aurabackend.api_gateway.main:app",
         "timeout": 5,
     },
     {

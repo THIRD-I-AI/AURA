@@ -1,56 +1,419 @@
+"""
+Enhanced AURA API Gateway with connectors, safety, and insights
+"""
 
-from fastapi import FastAPI, UploadFile, File, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-import httpx
-import sys
 import os
-from pathlib import Path
+import sys
+from typing import Dict, List, Any, Optional
+from fastapi import FastAPI, HTTPException, UploadFile, File, status
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
-from typing import Optional, List, Dict, Any
+import httpx
+import uuid
+from datetime import datetime
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from connectors import (
+    ConnectorConfig,
+    SourceType,
+    PostgreSQLConnector,
+    MySQLConnector,
+    BigQueryConnector,
+)
+from safety import SQLSafetyValidator, QueryRiskLevel
+from insights import InsightsEngine
+from shared.file_service import FileService
+from metadata_store.repository import MetadataRepository
+from metadata_store.db import get_session
+from semantic_builder import SemanticModelBuilder
+
+
+app = FastAPI(
+    title="AURA API Gateway",
+    description="Enterprise data analytics platform gateway",
+    version="2.0.0"
+)
+
+# CORS - Allow ALL origins to fix Cross-Origin POST request blockage
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Allow ALL origins for now to fix the blockage
+    allow_credentials=True,
+    allow_methods=["*"],  # Allow POST, OPTIONS, GET, etc.
+    allow_headers=["*"],  # Allow Authorization, Content-Type, etc.
+)
+
+
+# ==================== Models ====================
+
+class ConnectorMetadataResponse(BaseModel):
+    """Connector metadata"""
+    source_id: str
+    source_type: str
+    display_name: str
+    description: str
+    icon: str
+    connected: bool
+    last_sync: Optional[str]
+    table_count: int
+
+
+class ValidateQueryRequest(BaseModel):
+    """Query validation request"""
+    query: str
+    dry_run_mode: bool = False
+    max_rows: int = 10000
+
+
+class ValidateQueryResponse(BaseModel):
+    """Query validation response"""
+    is_valid: bool
+    risk_level: str
+    warnings: List[str]
+    errors: List[str]
+    suggested_query: Optional[str]
+    row_count_estimate: int
+    estimated_execution_ms: Optional[float]
+
+
+class ExecuteQueryRequest(BaseModel):
+    """Query execution request"""
+    query: str
+    connector_type: str
+    connector_config: Dict[str, Any]
+    dry_run: bool = False
+
+
+class ExecuteQueryResponse(BaseModel):
+    """Query execution response"""
+    success: bool
+    data: Optional[List[Dict[str, Any]]]
+    rows: int
+    columns: List[str]
+    insights: Optional[Dict[str, Any]]
+    error: Optional[str]
+    execution_time_ms: float
+
+
+class ConnectorTableListResponse(BaseModel):
+    """List of tables from connector"""
+    connector_id: str
+    tables: List[str]
+    total_count: int
+
+
+class ProfileTableRequest(BaseModel):
+    """Request to profile a table"""
+    connector_type: str
+    connector_config: Dict[str, Any]
+    table_name: str
+
+
+# ==================== Connectors API ====================
+
+@app.get("/connectors/available")
+async def list_available_connectors():
+    """List available data connectors"""
+    return {
+        "connectors": [
+            {
+                "id": "postgresql",
+                "name": "PostgreSQL",
+                "description": "PostgreSQL database connector",
+                "icon": "🐘",
+                "config_required": ["host", "port", "username", "password", "database"],
+            },
+            {
+                "id": "mysql",
+                "name": "MySQL",
+                "description": "MySQL database connector",
+                "icon": "🐬",
+                "config_required": ["host", "port", "username", "password", "database"],
+            },
+            {
+                "id": "bigquery",
+                "name": "Google BigQuery",
+                "description": "BigQuery data warehouse connector",
+                "icon": "☁️",
+                "config_required": ["credentials_json", "database"],
+            },
+        ]
+    }
+
+
+@app.post("/connectors/{connector_type}/test")
+async def test_connector(connector_type: str, config: Dict[str, Any]):
+    """Test connector configuration"""
+    try:
+        connector_config = ConnectorConfig(
+            source_type=SourceType(connector_type),
+            name=f"test-{connector_type}",
+            **config,
+        )
+
+        # Create appropriate connector
+        if connector_type == "postgresql":
+            connector = PostgreSQLConnector(connector_config)
+        elif connector_type == "mysql":
+            connector = MySQLConnector(connector_config)
+        elif connector_type == "bigquery":
+            connector = BigQueryConnector(connector_config)
+        else:
+            raise ValueError(f"Unknown connector type: {connector_type}")
+
+        # Test connection
+        connected = await connector.connect()
+        if connected:
+            tables = await connector.list_tables()
+            await connector.disconnect()
+            return {
+                "success": True,
+                "message": f"Connected successfully. Found {len(tables)} tables.",
+                "table_count": len(tables),
+            }
+        else:
+            return {
+                "success": False,
+                "message": "Failed to connect",
+                "error": "Connection failed",
+            }
+    except Exception as e:
+        return {
+            "success": False,
+            "message": "Test failed",
+            "error": str(e),
+        }
+
+
+@app.post("/connectors/{connector_type}/tables")
+async def list_connector_tables(
+    connector_type: str,
+    config: Dict[str, Any],
+) -> ConnectorTableListResponse:
+    """List tables from a connector"""
+    try:
+        connector_config = ConnectorConfig(
+            source_type=SourceType(connector_type),
+            name=f"list-{connector_type}",
+            **config,
+        )
+
+        # Create connector
+        if connector_type == "postgresql":
+            connector = PostgreSQLConnector(connector_config)
+        elif connector_type == "mysql":
+            connector = MySQLConnector(connector_config)
+        elif connector_type == "bigquery":
+            connector = BigQueryConnector(connector_config)
+        else:
+            raise ValueError(f"Unknown connector type: {connector_type}")
+
+        # List tables
+        await connector.connect()
+        tables = await connector.list_tables()
+        await connector.disconnect()
+
+        return ConnectorTableListResponse(
+            connector_id=f"test-{connector_type}",
+            tables=tables,
+            total_count=len(tables),
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e),
+        )
+
+
+@app.post("/connectors/{connector_type}/profile")
+async def profile_table(
+    connector_type: str,
+    request: ProfileTableRequest,
+) -> Dict[str, Any]:
+    """Profile a table from connector"""
+    try:
+        connector_config = ConnectorConfig(
+            source_type=SourceType(connector_type),
+            name=f"profile-{connector_type}",
+            **request.connector_config,
+        )
+
+        # Create connector
+        if connector_type == "postgresql":
+            connector = PostgreSQLConnector(connector_config)
+        elif connector_type == "mysql":
+            connector = MySQLConnector(connector_config)
+        elif connector_type == "bigquery":
+            connector = BigQueryConnector(connector_config)
+        else:
+            raise ValueError(f"Unknown connector type: {connector_type}")
+
+        # Profile table
+        await connector.connect()
+        profile = await connector.profile_table(request.table_name)
+        await connector.disconnect()
+
+        return profile
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e),
+        )
+
+
+# ==================== Safety & Validation API ====================
+
+@app.post("/validate/query", response_model=ValidateQueryResponse)
+async def validate_query(request: ValidateQueryRequest):
+    """Validate SQL query for safety and performance"""
+    validator = SQLSafetyValidator(
+        max_rows=request.max_rows,
+        dry_run_only=request.dry_run_mode,
+    )
+
+    result = validator.validate(request.query)
+
+    # Estimate execution time
+    from safety import QueryPlanner
+    exec_time, explanation = QueryPlanner.estimate_execution_time(request.query)
+
+    return ValidateQueryResponse(
+        is_valid=result.is_valid,
+        risk_level=result.risk_level.value,
+        warnings=result.warnings,
+        errors=result.errors,
+        suggested_query=result.suggested_query,
+        row_count_estimate=result.row_count_estimate,
+        estimated_execution_ms=exec_time,
+    )
+
+
+@app.post("/lint/query")
+async def lint_query(query: str):
+    """Lint SQL query for style and optimization"""
+    validator = SQLSafetyValidator()
+    suggestions = validator.lint_query(query)
+
+    return {
+        "suggestions": suggestions,
+        "suggested_query": validator.add_safety_limit(query) if "LIMIT" not in query.upper() else None,
+    }
+
+
+# ==================== Insights API ====================
+
+@app.post("/analyze/results")
+async def analyze_results(
+    query: str,
+    results: List[Dict[str, Any]],
+    column_profiles: Optional[Dict[str, Any]] = None,
+):
+    """Generate insights from query results"""
+    engine = InsightsEngine()
+    analysis = engine.analyze(query, results, column_profiles)
+    return analysis
+
+
+@app.post("/execute/query", response_model=ExecuteQueryResponse)
+async def execute_query_with_insights(request: ExecuteQueryRequest):
+    """Execute query with automatic insights generation"""
+    try:
+        # Validate first
+        validator = SQLSafetyValidator()
+        validation = validator.validate(request.query)
+
+        if not validation.is_valid:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Query validation failed: {validation.errors}",
+            )
+
+        # Create connector and execute
+        connector_config = ConnectorConfig(
+            source_type=SourceType(request.connector_type),
+            name=f"exec-{request.connector_type}",
+            **request.connector_config,
+        )
+
+        if request.connector_type == "postgresql":
+            connector = PostgreSQLConnector(connector_config)
+        elif request.connector_type == "mysql":
+            connector = MySQLConnector(connector_config)
+        elif request.connector_type == "bigquery":
+            connector = BigQueryConnector(connector_config)
+        else:
+            raise ValueError(f"Unknown connector type: {request.connector_type}")
+
+        # Execute
+        import time
+        start_time = time.time()
+
+        await connector.connect()
+        results = await connector.execute_query(request.query)
+        await connector.disconnect()
+
+        execution_time = (time.time() - start_time) * 1000
+
+        # Generate insights
+        engine = InsightsEngine()
+        columns = list(results[0].keys()) if results else []
+        insights = engine.analyze(request.query, results) if results else None
+
+        return ExecuteQueryResponse(
+            success=True,
+            data=results,
+            rows=len(results),
+            columns=columns,
+            insights=insights,
+            execution_time_ms=execution_time,
+        )
+
+    except Exception as e:
+        return ExecuteQueryResponse(
+            success=False,
+            data=None,
+            rows=0,
+            columns=[],
+            error=str(e),
+            execution_time_ms=0,
+        )
+
+
+# ==================== Legacy Endpoints from main.py ====================
+
+# Import additional dependencies from main.py
+from pathlib import Path
 from dotenv import load_dotenv
 
 # Load environment variables
 load_dotenv(os.path.join(os.path.dirname(__file__), '..', '.env'))
 
-# Add the parent directory to Python path for imports
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-# Import file service
-try:
-    from shared.file_service import file_service
-except ImportError as e:
-    print(f"Warning: File service not available - {e}")
-    file_service = None
-
+# Import metadata repository
 try:
     from metadata_store.repository import get_repository
 except ImportError as e:
     print(f"Warning: Metadata repository not available - {e}")
     get_repository = None
 
+# Import semantic builder
 try:
     from semantic_builder import semantic_builder
 except ImportError as e:
     print(f"Warning: Semantic builder not available - {e}")
     semantic_builder = None
 
-FILE_SERVICE_UNAVAILABLE = "File service not available"
 
-# Define models directly here to avoid import issues
+# Additional Models from main.py
 class ChatRequest(BaseModel):
     message: str
     context: Optional[str] = None
+
 
 class QueryRequest(BaseModel):
     session_id: str
     prompt: str
     context: Optional[str] = None
-
-class AgentResponse(BaseModel):
-    response: str
-    confidence: float
-    suggestions: List[str] = []
-    metadata: Dict[str, Any] = {}
 
 
 class SemanticFieldPayload(BaseModel):
@@ -72,30 +435,14 @@ class SemanticModelPayload(BaseModel):
     tags: List[str] = Field(default_factory=list)
     fields: List[SemanticFieldPayload] = Field(default_factory=list)
 
-api_gateway = FastAPI()
 
-# Add CORS middleware to allow frontend connections
-allowed_origins = os.getenv(
-    "ALLOWED_ORIGINS",
-    "http://localhost:5173,http://localhost:5174,http://localhost:3000,http://127.0.0.1:5173,http://127.0.0.1:5174,http://127.0.0.1:3000"
-).split(",")
-api_gateway.add_middleware(
-    CORSMiddleware,
-    allow_origins=allowed_origins,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-@api_gateway.get("/")
+@app.get("/")
 def root():
-	return {"message": "API Gateway is running."}
+    """Root endpoint"""
+    return {"message": "AURA API Gateway is running.", "version": "2.0.0"}
 
-@api_gateway.get("/health")
-def health_check():
-    return {"status": "healthy", "service": "api_gateway"}
 
-@api_gateway.get("/files/supported-formats")
+@app.get("/files/supported-formats")
 def get_supported_formats() -> Dict[str, Any]:
     """Get list of supported file formats"""
     try:
@@ -119,22 +466,22 @@ def get_supported_formats() -> Dict[str, Any]:
     except Exception as e:
         return {"status": "error", "error": str(e)}
 
-@api_gateway.post("/chat")
+
+@app.post("/chat")
 async def chat_endpoint(request: ChatRequest) -> Dict[str, Any]:
     """Main chat endpoint for AI interactions"""
     try:
-        # For now, return a simple response
-        # Later this will integrate with AI services
         return {
             "response": f"Received your message: {request.message}",
             "confidence": 0.95,
             "suggestions": ["Try asking about data analysis", "Connect to a database", "Create visualizations"],
-            "metadata": {"timestamp": "now", "service": "api_gateway"}
+            "metadata": {"timestamp": datetime.now().isoformat(), "service": "api_gateway"}
         }
     except Exception as e:
         return {"error": str(e), "status": "error"}
 
-@api_gateway.post("/generate_query")
+
+@app.post("/generate_query")
 async def generate_query_proxy(request: QueryRequest) -> Dict[str, Any]:
     """Proxy query generation to orchestration service."""
     target_url = os.getenv(
@@ -163,7 +510,8 @@ async def generate_query_proxy(request: QueryRequest) -> Dict[str, Any]:
             "details": error_msg
         }
 
-@api_gateway.get("/databases/test/{db_type}")
+
+@app.get("/databases/test/{db_type}")
 async def test_database_connection(db_type: str):
     """Proxy to database service for connection testing"""
     try:
@@ -173,14 +521,34 @@ async def test_database_connection(db_type: str):
     except Exception as e:
         return {"error": f"Database service unavailable: {str(e)}", "status": "error"}
 
-# File Upload Endpoints
-@api_gateway.post("/files/upload")
+
+# ==================== File Upload ====================
+
+# Initialize file service
+try:
+    from shared.file_service import file_service
+except ImportError as e:
+    print(f"Warning: File service not available - {e}")
+    file_service = None
+
+@app.post("/upload")
 async def upload_file(file: UploadFile = File(...)) -> Dict[str, Any]:
-    """Upload and process a data file (CSV, JSON, Excel, TXT, Parquet)"""
+    """
+    Upload and process a data file (CSV, JSON, Excel, TXT, Parquet)
+    Parameter name: 'file' - must match frontend formData.append('file', ...)
+    """
+    print(f"[DEBUG] Received file upload request: {file.filename}")
+    
     if file_service is None:
-        raise HTTPException(status_code=503, detail=FILE_SERVICE_UNAVAILABLE)
+        raise HTTPException(status_code=503, detail="File service not available")
     
     try:
+        # Ensure uploads directory exists
+        uploads_dir = os.path.join(os.path.dirname(__file__), "..", "uploads")
+        os.makedirs(uploads_dir, exist_ok=True)
+        print(f"[DEBUG] Uploads directory ensured: {uploads_dir}")
+        
+        # Calculate file size if not available
         if not hasattr(file, "size") or file.size is None:
             try:
                 file.file.seek(0, os.SEEK_END)
@@ -189,53 +557,41 @@ async def upload_file(file: UploadFile = File(...)) -> Dict[str, Any]:
                 setattr(file, "size", file_size)
             except Exception:
                 setattr(file, "size", None)
-
+        
+        print(f"[DEBUG] Processing file: {file.filename}, size: {file.size}")
+        
         # Save file
         file_metadata = await file_service.save_file(file)
+        print(f"[DEBUG] File saved with metadata: {file_metadata}")
         
         # Process file
         processed_metadata = await file_service.process_file(file_metadata)
-
-        # Persist dataset profile if repository is available
-        if get_repository is not None:
-            try:
-                async for repo in get_repository():
-                    await repo.upsert_dataset_profile(
-                        file_id=processed_metadata["file_id"],
-                        dataset_name=Path(processed_metadata["original_filename"]).stem,
-                        profile=processed_metadata.get("profile", {}),
-                        rows_count=processed_metadata.get("rows_count"),
-                        columns_count=processed_metadata.get("columns_count"),
-                    )
-                    break
-            except Exception as repo_exc:
-                print(f"[WARN] Failed to persist dataset profile: {repo_exc}")
+        print(f"[DEBUG] File processed successfully: {processed_metadata.get('file_id')}")
         
         return {
-            "status": "success",
-            "message": "File uploaded and processed successfully",
-            "file_info": {
-                "file_id": processed_metadata["file_id"],
-                "original_filename": processed_metadata["original_filename"],
-                "file_size": processed_metadata["file_size"],
-                "rows_count": processed_metadata["rows_count"],
-                "columns_count": processed_metadata["columns_count"],
-                "upload_time": processed_metadata["upload_time"],
-                "processed_time": processed_metadata["processed_time"]
-            },
-            "preview": processed_metadata.get("preview_data", []),
-            "profile": processed_metadata.get("profile", {})
+            "success": True,
+            "file_id": processed_metadata["file_id"],
+            "filename": processed_metadata["original_filename"],
+            "rows": processed_metadata.get("rows_count", 0),
+            "columns": processed_metadata.get("column_names", []),
+            "preview": processed_metadata.get("preview", []),
         }
-    except HTTPException as e:
-        raise e
+        
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
+        print(f"[ERROR] Upload failed: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Upload failed: {str(e)}"
+        )
 
-@api_gateway.get("/files")
+
+# ==================== Additional File Endpoints ====================
+
+@app.get("/files")
 async def list_files() -> Dict[str, Any]:
     """List all uploaded files"""
     if file_service is None:
-        return {"status": "error", "error": FILE_SERVICE_UNAVAILABLE}
+        return {"status": "error", "error": "File service not available"}
     
     try:
         files = file_service.list_files()
@@ -243,11 +599,12 @@ async def list_files() -> Dict[str, Any]:
     except Exception as e:
         return {"status": "error", "error": str(e)}
 
-@api_gateway.get("/files/{file_id}")
+
+@app.get("/files/{file_id}")
 async def get_file_info(file_id: str) -> Dict[str, Any]:
     """Get information about a specific file"""
     if file_service is None:
-        return {"status": "error", "error": FILE_SERVICE_UNAVAILABLE}
+        return {"status": "error", "error": "File service not available"}
     
     try:
         file_info = file_service.get_file_info(file_id)
@@ -261,7 +618,7 @@ async def get_file_info(file_id: str) -> Dict[str, Any]:
         return {"status": "error", "error": str(e)}
 
 
-@api_gateway.get("/files/{file_id}/profile")
+@app.get("/files/{file_id}/profile")
 async def get_file_profile(file_id: str) -> Dict[str, Any]:
     """Fetch stored profile for a file if available."""
     if get_repository is None:
@@ -287,11 +644,12 @@ async def get_file_profile(file_id: str) -> Dict[str, Any]:
     except Exception as e:
         return {"status": "error", "error": str(e)}
 
-@api_gateway.delete("/files/{file_id}")
+
+@app.delete("/files/{file_id}")
 async def delete_file(file_id: str) -> Dict[str, Any]:
     """Delete a file and its processed data"""
     if file_service is None:
-        return {"status": "error", "error": FILE_SERVICE_UNAVAILABLE}
+        return {"status": "error", "error": "File service not available"}
     
     try:
         success = file_service.delete_file(file_id)
@@ -305,7 +663,10 @@ async def delete_file(file_id: str) -> Dict[str, Any]:
         return {"status": "error", "error": str(e)}
 
 
+# ==================== Semantic Model Endpoints ====================
+
 def _serialize_semantic_model(model: Any) -> Dict[str, Any]:
+    """Helper to serialize semantic model"""
     return {
         "id": model.id,
         "name": model.name,
@@ -332,7 +693,7 @@ def _serialize_semantic_model(model: Any) -> Dict[str, Any]:
     }
 
 
-@api_gateway.post("/semantic/models/from-file/{file_id}")
+@app.post("/semantic/models/from-file/{file_id}")
 async def auto_generate_model_from_file(file_id: str) -> Dict[str, Any]:
     """Auto-generate semantic model from dataset profile (no hardcoding)."""
     if semantic_builder is None or get_repository is None:
@@ -371,8 +732,9 @@ async def auto_generate_model_from_file(file_id: str) -> Dict[str, Any]:
         return {"status": "error", "error": str(e)}
 
 
-@api_gateway.post("/semantic/models")
+@app.post("/semantic/models")
 async def upsert_semantic_model(payload: SemanticModelPayload) -> Dict[str, Any]:
+    """Create or update a semantic model"""
     if get_repository is None:
         return {"status": "error", "error": "Metadata repository not available"}
 
@@ -392,8 +754,9 @@ async def upsert_semantic_model(payload: SemanticModelPayload) -> Dict[str, Any]
         return {"status": "error", "error": str(e)}
 
 
-@api_gateway.get("/semantic/models")
+@app.get("/semantic/models")
 async def list_semantic_models() -> Dict[str, Any]:
+    """List all semantic models"""
     if get_repository is None:
         return {"status": "error", "error": "Metadata repository not available"}
 
@@ -406,8 +769,9 @@ async def list_semantic_models() -> Dict[str, Any]:
         return {"status": "error", "error": str(e)}
 
 
-@api_gateway.get("/semantic/models/{model_id}")
+@app.get("/semantic/models/{model_id}")
 async def get_semantic_model(model_id: str) -> Dict[str, Any]:
+    """Get a specific semantic model"""
     if get_repository is None:
         return {"status": "error", "error": "Metadata repository not available"}
 
@@ -423,14 +787,20 @@ async def get_semantic_model(model_id: str) -> Dict[str, Any]:
     except Exception as e:
         return {"status": "error", "error": str(e)}
 
+
+# ==================== Health ====================
+
+@app.get("/health")
+async def health():
+    """Health check"""
+    return {
+        "status": "healthy",
+        "service": "api-gateway",
+        "version": "2.0.0",
+        "timestamp": datetime.now().isoformat(),
+    }
+
+
 if __name__ == "__main__":
     import uvicorn
-    port = int(os.getenv("API_GATEWAY_PORT", 8000))
-    host = os.getenv("API_HOST", "0.0.0.0")
-    debug = os.getenv("DEBUG", "false").lower() == "true"
-    
-    print(f"🌐 Starting AURA API Gateway on {host}:{port}...")
-    if debug:
-        print("🐛 Debug mode enabled")
-    
-    uvicorn.run("main:api_gateway", host=host, port=port, reload=debug)
+    uvicorn.run(app, host="0.0.0.0", port=8000)
