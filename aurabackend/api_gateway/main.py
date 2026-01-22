@@ -4,12 +4,12 @@ Enhanced AURA API Gateway with connectors, safety, and insights
 
 import os
 import sys
+import shutil
 from typing import Dict, List, Any, Optional
 from fastapi import FastAPI, HTTPException, UploadFile, File, status
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 import httpx
-import uuid
 from datetime import datetime
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -21,12 +21,8 @@ from connectors import (
     MySQLConnector,
     BigQueryConnector,
 )
-from safety import SQLSafetyValidator, QueryRiskLevel
+from safety import SQLSafetyValidator
 from insights import InsightsEngine
-from shared.file_service import FileService
-from metadata_store.repository import MetadataRepository
-from metadata_store.db import get_session
-from semantic_builder import SemanticModelBuilder
 
 
 app = FastAPI(
@@ -532,57 +528,41 @@ except ImportError as e:
     file_service = None
 
 @app.post("/upload")
-async def upload_file(file: UploadFile = File(...)) -> Dict[str, Any]:
+async def upload_universal(
+    file: UploadFile = File(None),  # Try standard name 'file'
+    upload_file: UploadFile = File(None)  # Try alias 'upload_file'
+):
     """
-    Upload and process a data file (CSV, JSON, Excel, TXT, Parquet)
-    Parameter name: 'file' - must match frontend formData.append('file', ...)
+    Universal file upload endpoint - accepts both 'file' and 'upload_file' parameter names
     """
-    print(f"[DEBUG] Received file upload request: {file.filename}")
+    # 1. Determine which key was used
+    target_file = file or upload_file
     
-    if file_service is None:
-        raise HTTPException(status_code=503, detail="File service not available")
+    if not target_file:
+        print("ERROR: No file received! Checked both 'file' and 'upload_file'.")
+        raise HTTPException(status_code=422, detail="No file sent. Ensure formData uses key 'file'")
+    
+    print(f"DEBUG: Receiving file: {target_file.filename}")
     
     try:
-        # Ensure uploads directory exists
-        uploads_dir = os.path.join(os.path.dirname(__file__), "..", "uploads")
-        os.makedirs(uploads_dir, exist_ok=True)
-        print(f"[DEBUG] Uploads directory ensured: {uploads_dir}")
+        # 2. Create the folder safely
+        os.makedirs("uploads", exist_ok=True)
         
-        # Calculate file size if not available
-        if not hasattr(file, "size") or file.size is None:
-            try:
-                file.file.seek(0, os.SEEK_END)
-                file_size = file.file.tell()
-                file.file.seek(0)
-                setattr(file, "size", file_size)
-            except Exception:
-                setattr(file, "size", None)
+        # 3. Save the file
+        file_path = f"uploads/{target_file.filename}"
+        with open(file_path, "wb") as buffer:
+            shutil.copyfileobj(target_file.file, buffer)
         
-        print(f"[DEBUG] Processing file: {file.filename}, size: {file.size}")
-        
-        # Save file
-        file_metadata = await file_service.save_file(file)
-        print(f"[DEBUG] File saved with metadata: {file_metadata}")
-        
-        # Process file
-        processed_metadata = await file_service.process_file(file_metadata)
-        print(f"[DEBUG] File processed successfully: {processed_metadata.get('file_id')}")
+        print(f"SUCCESS: Saved to {file_path}")
         
         return {
-            "success": True,
-            "file_id": processed_metadata["file_id"],
-            "filename": processed_metadata["original_filename"],
-            "rows": processed_metadata.get("rows_count", 0),
-            "columns": processed_metadata.get("column_names", []),
-            "preview": processed_metadata.get("preview", []),
+            "filename": target_file.filename,
+            "status": "success",
+            "message": "File uploaded successfully"
         }
-        
     except Exception as e:
-        print(f"[ERROR] Upload failed: {str(e)}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"Upload failed: {str(e)}"
-        )
+        print(f"CRITICAL ERROR: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Server save failed: {str(e)}")
 
 
 # ==================== Additional File Endpoints ====================

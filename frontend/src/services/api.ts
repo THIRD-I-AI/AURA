@@ -240,27 +240,32 @@ class ApiClient {
    * Simplified upload with hardcoded backend URL and no headers for proper multipart/form-data handling
    */
   async uploadFile(file: File): Promise<any> {
-    // 1. Force the Backend URL
-    const UPLOAD_URL = 'http://localhost:8000/upload';
+    const TARGET_URL = 'http://localhost:8000/upload';
+    console.log("🚀 STARTING UPLOAD TO:", TARGET_URL);
     
-    // 2. Create the envelope
     const formData = new FormData();
-    formData.append('file', file);
+    formData.append('file', file); // Use 'file' as the key
     
-    // 3. Send using native fetch with NO headers object
-    // (Passing 'undefined' or empty headers allows the browser to auto-set the boundary)
-    const response = await fetch(UPLOAD_URL, {
-      method: 'POST',
-      body: formData,
-      // Do NOT add a 'headers' key here.
-    });
-    
-    if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(`Upload failed: ${response.status} ${errorText}`);
+    try {
+      const response = await fetch(TARGET_URL, {
+        method: 'POST',
+        body: formData,
+        // NO HEADERS defined here (Browser handles it)
+      });
+      
+      console.log("✅ RESPONSE STATUS:", response.status);
+      
+      if (!response.ok) {
+        const text = await response.text();
+        console.error("❌ UPLOAD FAILED:", text);
+        throw new Error(`Upload failed: ${response.status} ${text}`);
+      }
+      
+      return response.json();
+    } catch (error) {
+      console.error("🔥 NETWORK ERROR:", error);
+      throw error;
     }
-    
-    return response.json();
   }
 
   /**
