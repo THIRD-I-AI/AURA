@@ -1,0 +1,92 @@
+[
+  {
+    "column_0": "2024-01-01",
+    "column_1": "Product A",
+    "column_2": "North",
+    "column_3": 100,
+    "column_4": 5000,
+    "column_5": 2000,
+    "column_6": "Enterprise"
+  },
+  {
+    "column_0": "2024-01-01",
+    "column_1": "Product B",
+    "column_2": "South",
+    "column_3": 150,
+    "column_4": 4500,
+    "column_5": 1800,
+    "column_6": "SMB"
+  },
+  {
+    "column_0": "2024-01-02",
+    "column_1": "Product A",
+    "column_2": "East",
+    "column_3": 200,
+    "column_4": 10000,
+    "column_5": 4000,
+    "column_6": "Enterprise"
+  },
+  {
+    "column_0": "2024-01-02",
+    "column_1": "Product B",
+    "column_2": "West",
+    "column_3": 120,
+    "column_4": 3600,
+    "column_5": 1500,
+    "column_6": "Consumer"
+  },
+  {
+    "column_0": "2024-01-03",
+    "column_1": "Product A",
+    "column_2": "North",
+    "column_3": 250,
+    "column_4": 12500,
+    "column_5": 5000,
+    "column_6": "Enterprise"
+  },
+  {
+    "column_0": "2024-01-03",
+    "column_1": "Product B",
+    "column_2": "South",
+    "column_3": 100,
+    "column_4": 3000,
+    "column_5": 1200,
+    "column_6": "SMB"
+  },
+  {
+    "column_0": "2024-01-04",
+    "column_1": "Product C",
+    "column_2": "East",
+    "column_3": 180,
+    "column_4": 7200,
+    "column_5": 2880,
+    "column_6": "Enterprise"
+  },
+  {
+    "column_0": "2024-01-04",
+    "column_1": "Product A",
+    "column_2": "West",
+    "column_3": 90,
+    "column_4": 4500,
+    "column_5": 1800,
+    "column_6": "Consumer"
+  },
+  {
+    "column_0": "2024-01-05",
+    "column_1": "Product B",
+    "column_2": "North",
+    "column_3": 220,
+    "column_4": 6600,
+    "column_5": 2640,
+    "column_6": "SMB"
+  },
+  {
+    "column_0": "2024-01-05",
+    "column_1": "Product C",
+    "column_2": "South",
+    "column_3": 140,
+    "column_4": 5600,
+    "column_5": 2240,
+    "column_6": "Consumer"
+  }
+]

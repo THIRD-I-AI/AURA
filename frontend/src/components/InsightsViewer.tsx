@@ -38,47 +38,12 @@ const InsightsViewer: React.FC<Props> = ({ data, loading = false }) => {
   const [selectedInsight, setSelectedInsight] = useState<number>(0);
   const [chartType, setChartType] = useState<'chart' | 'narrative'>('chart');
 
-  const mockData: InsightsData = {
-    insights: [
-      {
-        type: 'trend',
-        title: 'Revenue Growth Trend',
-        description: 'Revenue increased by 23% month-over-month',
-        metric_name: 'Revenue',
-        metric_value: 125000,
-        confidence: 0.95,
-      },
-      {
-        type: 'anomaly',
-        title: 'Unusual Spike Detected',
-        description: 'Sales volume exceeded expected range on 2024-01-15',
-        confidence: 0.87,
-      },
-      {
-        type: 'comparison',
-        title: 'Regional Performance',
-        description: 'North region outperformed other regions by 18%',
-        confidence: 0.92,
-      },
-    ],
-    charts: [
-      {
-        type: 'line',
-        title: 'Revenue Over Time',
-        data: [
-          { date: '2024-01-01', value: 100000 },
-          { date: '2024-01-02', value: 105000 },
-          { date: '2024-01-03', value: 125000 },
-        ],
-        config: { responsive: true },
-      },
-    ],
-    narrative:
-      'Analysis of 1000 records reveals 3 numeric metrics and 2 categorical dimensions. Key findings: Revenue increased by 23% month-over-month with unusual spike detected on 2024-01-15.',
-    row_count: 1000,
+  const displayData = data || {
+    insights: [],
+    charts: [],
+    narrative: 'No insights available yet. Run a query to generate insights.',
+    row_count: 0,
   };
-
-  const displayData = data || mockData;
 
   return (
     <div className="insights-viewer">

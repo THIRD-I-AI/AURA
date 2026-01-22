@@ -19,7 +19,7 @@ code_gen_app = FastAPI(title="AURA Code Generation Service")
 
 class CodeGenerationEngine:
 	def __init__(self) -> None:
-		self._model_name = os.getenv("CODEGEN_MODEL", os.getenv("GENERATOR_MODEL", "gemini-pro"))
+		self._model_name = os.getenv("CODEGEN_MODEL", os.getenv("GENERATOR_MODEL", "gemini-2.5-flash"))
 		self._api_key = secret_resolver.get_secret("GEMINI_API_KEY") or secret_resolver.get_secret("GOOGLE_API_KEY")
 		self._model: Any | None = None
 		if self._api_key:
@@ -104,6 +104,11 @@ class CodeGenerationEngine:
 
 
 _engine = CodeGenerationEngine()
+
+
+@code_gen_app.get("/health")
+async def health() -> Dict[str, str]:
+	return {"status": "healthy", "service": "code_generation"}
 
 
 @code_gen_app.post("/generate_code")

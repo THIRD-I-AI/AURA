@@ -28,6 +28,13 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Initialize FastAPI app
+scheduler_app = FastAPI(title="AURA Scheduler Service")
+
+@scheduler_app.get("/health")
+async def health():
+    return {"status": "healthy", "service": "scheduler"}
+
 
 # Pydantic models for API requests/responses
 class CreateJobRequest(BaseModel):
@@ -130,6 +137,11 @@ app.add_middleware(
 repository: Optional[SchedulerRepository] = None
 executor: Optional[JobExecutor] = None
 worker: Optional[SchedulerWorker] = None
+
+
+@app.get("/health")
+async def health():
+    return {"status": "healthy", "service": "scheduler"}
 
 
 @app.on_event("startup")

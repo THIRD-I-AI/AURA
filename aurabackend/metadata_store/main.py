@@ -28,6 +28,11 @@ async def _lifespan(_: FastAPI) -> AsyncGenerator[None, None]:
 metadata_app = FastAPI(title="AURA Metadata Store", lifespan=_lifespan)
 
 
+@metadata_app.get("/health")
+async def health():
+	return {"status": "healthy", "service": "metadata_store"}
+
+
 def _serialize_user(user: User) -> Dict[str, Any]:
 	return {
 		"id": user.id,

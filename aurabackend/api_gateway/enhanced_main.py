@@ -35,13 +35,13 @@ app = FastAPI(
     version="2.0.0"
 )
 
-# CORS
+# CORS - Allow ALL origins to fix Cross-Origin POST request blockage
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"],  # Allow ALL origins for now to fix the blockage
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["*"],  # Allow POST, OPTIONS, GET, etc.
+    allow_headers=["*"],  # Allow Authorization, Content-Type, etc.
 )
 
 
@@ -377,6 +377,69 @@ async def execute_query_with_insights(request: ExecuteQueryRequest):
             columns=[],
             error=str(e),
             execution_time_ms=0,
+        )
+
+
+# ==================== File Upload ====================
+
+# Initialize file service
+try:
+    from shared.file_service import file_service
+except ImportError as e:
+    print(f"Warning: File service not available - {e}")
+    file_service = None
+
+@app.post("/upload")
+async def upload_file(file: UploadFile = File(...)) -> Dict[str, Any]:
+    """
+    Upload and process a data file (CSV, JSON, Excel, TXT, Parquet)
+    Parameter name: 'file' - must match frontend formData.append('file', ...)
+    """
+    print(f"[DEBUG] Received file upload request: {file.filename}")
+    
+    if file_service is None:
+        raise HTTPException(status_code=503, detail="File service not available")
+    
+    try:
+        # Ensure uploads directory exists
+        uploads_dir = os.path.join(os.path.dirname(__file__), "..", "uploads")
+        os.makedirs(uploads_dir, exist_ok=True)
+        print(f"[DEBUG] Uploads directory ensured: {uploads_dir}")
+        
+        # Calculate file size if not available
+        if not hasattr(file, "size") or file.size is None:
+            try:
+                file.file.seek(0, os.SEEK_END)
+                file_size = file.file.tell()
+                file.file.seek(0)
+                setattr(file, "size", file_size)
+            except Exception:
+                setattr(file, "size", None)
+        
+        print(f"[DEBUG] Processing file: {file.filename}, size: {file.size}")
+        
+        # Save file
+        file_metadata = await file_service.save_file(file)
+        print(f"[DEBUG] File saved with metadata: {file_metadata}")
+        
+        # Process file
+        processed_metadata = await file_service.process_file(file_metadata)
+        print(f"[DEBUG] File processed successfully: {processed_metadata.get('file_id')}")
+        
+        return {
+            "success": True,
+            "file_id": processed_metadata["file_id"],
+            "filename": processed_metadata["original_filename"],
+            "rows": processed_metadata.get("rows_count", 0),
+            "columns": processed_metadata.get("column_names", []),
+            "preview": processed_metadata.get("preview", []),
+        }
+        
+    except Exception as e:
+        print(f"[ERROR] Upload failed: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Upload failed: {str(e)}"
         )
 
 

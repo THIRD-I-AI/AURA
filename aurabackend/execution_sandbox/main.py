@@ -15,6 +15,12 @@ from shared.models import ExecutionJob, QueryResult
 
 execution_app = FastAPI(title="AURA Execution Sandbox")
 
+
+@execution_app.get("/health")
+async def health():
+	return {"status": "healthy", "service": "execution_sandbox"}
+
+
 DATABASE_SERVICE_URL = os.getenv("DATABASE_SERVICE_URL", "http://localhost:8002")
 SANDBOX_TIMEOUT = float(os.getenv("EXECUTION_TIMEOUT_SECONDS", "15"))
 

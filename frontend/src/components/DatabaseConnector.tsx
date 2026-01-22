@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import './DatabaseConnector.css';
+import { connectorService, type ConnectionCredentials } from '../services/api';
 
 interface DatabaseType {
   type: string;
@@ -124,28 +125,30 @@ const DatabaseConnector: React.FC<DatabaseConnectorProps> = ({ onConnectionsUpda
 
   const loadConnections = async () => {
     try {
-      const response = await fetch('http://localhost:8002/connections');
-      if (response.ok) {
-        const data = await response.json();
-        setConnections(data);
-        onConnectionsUpdated?.(data);
-      }
+      setIsLoading(true);
+      const data = await connectorService.listSources();
+      setConnections(data as any);
+      onConnectionsUpdated?.(data as any);
     } catch (error) {
       console.error('Error loading connections:', error);
+      setError('Failed to load connections. Is the backend running?');
+    } finally {
+      setIsLoading(false);
     }
   };
 
   const loadSupportedDatabases = async () => {
     try {
-      const response = await fetch('http://localhost:8002/supported-databases');
-      if (response.ok) {
-        const data = await response.json();
-        const databases = Array.isArray(data) ? data : data?.databases;
-        if (Array.isArray(databases) && databases.length > 0) {
-          setSupportedDbs(databases);
-        } else {
-          setSupportedDbs(DEFAULT_SUPPORTED_DATABASES);
-        }
+      const databases = await connectorService.getSupportedDatabases();
+      if (Array.isArray(databases) && databases.length > 0) {
+        const mapped = databases.map(type => ({
+          type,
+          name: type.charAt(0).toUpperCase() + type.slice(1),
+          default_port: type === 'postgresql' ? 5432 : type === 'mysql' ? 3306 : 0,
+          supports_ssl: type !== 'sqlite',
+          description: `${type} database`
+        }));
+        setSupportedDbs(mapped);
       } else {
         setSupportedDbs(DEFAULT_SUPPORTED_DATABASES);
       }
@@ -161,34 +164,44 @@ const DatabaseConnector: React.FC<DatabaseConnectorProps> = ({ onConnectionsUpda
     setError(null);
 
     try {
-      const response = await fetch('http://localhost:8002/connections', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(formData),
-      });
+      // Cast form data to ConnectionCredentials
+      const credentials: ConnectionCredentials = {
+        name: formData.name,
+        type: formData.type as 'postgresql' | 'mysql' | 'sqlite',
+        host: formData.host,
+        port: formData.port,
+        database: formData.database,
+        username: formData.username,
+        password: formData.password,
+        ssl: formData.ssl_enabled,
+      };
 
-      if (response.ok) {
-        await loadConnections();
-        setShowAddForm(false);
-        setFormData({
-          name: '',
-          type: 'postgresql',
-          host: '',
-          port: 5432,
-          database: '',
-          username: '',
-          password: '',
-          ssl_enabled: false
-        });
-      } else {
-        const errorData = await response.json();
-        setError(errorData.detail || 'Failed to create connection');
-      }
-    } catch (error) {
+      // Call the API service
+      const newSource = await connectorService.registerSource(credentials);
+
+      // Success! Refresh connections list
+      await loadConnections();
+
+      // Show success notification (could use toast library)
+      alert(`✓ Source "${newSource.name}" connected successfully!`);
+
+      // Reset form
+      setShowAddForm(false);
+      setFormData({
+        name: '',
+        type: 'postgresql',
+        host: '',
+        port: 5432,
+        database: '',
+        username: '',
+        password: '',
+        ssl_enabled: false
+      });
+    } catch (error: any) {
       console.error('Error creating database connection', error);
-      setError('Network error: Unable to create connection');
+      const errorMessage = error.message || 'Connection failed. Check credentials and network.';
+      setError(errorMessage);
+      alert(`✗ Connection Failed: ${errorMessage}`);
     } finally {
       setIsLoading(false);
     }
@@ -196,18 +209,13 @@ const DatabaseConnector: React.FC<DatabaseConnectorProps> = ({ onConnectionsUpda
 
   const handleTestConnection = async (connectionId: string) => {
     setIsLoading(true);
+    setError(null);
     try {
-      const response = await fetch(`http://localhost:8002/connections/${connectionId}/test`, {
-        method: 'POST',
-      });
-      
-      if (response.ok) {
-        const result = await response.json();
-        alert(result.message);
-      }
-    } catch (error) {
+      const result = await connectorService.testConnection(connectionId);
+      alert(result.success ? `✓ ${result.message}` : `✗ ${result.message}`);
+    } catch (error: any) {
       console.error('Error testing database connection', error);
-      alert('Failed to test connection');
+      alert(`✗ Connection test failed: ${error.message || 'Unknown error'}`);
     } finally {
       setIsLoading(false);
     }
@@ -216,21 +224,20 @@ const DatabaseConnector: React.FC<DatabaseConnectorProps> = ({ onConnectionsUpda
   const handleDeleteConnection = async (connectionId: string) => {
     if (!confirm('Are you sure you want to delete this connection?')) return;
 
+    setIsLoading(true);
     try {
-      const response = await fetch(`http://localhost:8002/connections/${connectionId}`, {
-        method: 'DELETE',
-      });
-      
-      if (response.ok) {
-        await loadConnections();
-        if (selectedConnection === connectionId) {
-          setSelectedConnection(null);
-          setSchemaInfo(null);
-        }
+      await connectorService.deleteSource(connectionId);
+      await loadConnections();
+      if (selectedConnection === connectionId) {
+        setSelectedConnection(null);
+        setSchemaInfo(null);
       }
-    } catch (error) {
+      alert('✓ Connection deleted successfully');
+    } catch (error: any) {
       console.error('Error deleting database connection', error);
-      alert('Failed to delete connection');
+      alert(`✗ Failed to delete: ${error.message || 'Unknown error'}`);
+    } finally {
+      setIsLoading(false);
     }
   };
 

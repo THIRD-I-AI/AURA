@@ -25,6 +25,11 @@ async def _lifespan(_: FastAPI) -> AsyncGenerator[None, None]:
 kb_app = FastAPI(title="AURA Knowledge Base Service", lifespan=_lifespan)
 
 
+@kb_app.get("/health")
+async def health():
+	return {"status": "healthy", "service": "knowledge_base"}
+
+
 EMBEDDING_DIM = 256
 
 

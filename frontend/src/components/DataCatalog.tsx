@@ -29,30 +29,9 @@ const DataCatalog: React.FC = () => {
   const [searchQuery, setSearchQuery] = useState('');
 
   useEffect(() => {
-    // In production, fetch from /connectors/available
-    const mockSources: DataSource[] = [
-      {
-        id: 'pg-prod',
-        name: 'Production PostgreSQL',
-        type: 'postgresql',
-        icon: '🐘',
-        connected: true,
-        tables: [
-          { name: 'customers', rows: 10000, columns: 8, icon: '👥' },
-          { name: 'orders', rows: 50000, columns: 5, icon: '📦' },
-          { name: 'products', rows: 1000, columns: 6, icon: '🏷️' },
-        ],
-      },
-      {
-        id: 'bq-analytics',
-        name: 'BigQuery Analytics',
-        type: 'bigquery',
-        icon: '☁️',
-        connected: false,
-        tables: [],
-      },
-    ];
-    setSources(mockSources);
+    // TODO: Fetch from connectorService.listSources()
+    // For now, show empty state until backend integration
+    setSources([]);
   }, []);
 
   const filteredTables = selectedSource
