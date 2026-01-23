@@ -768,6 +768,22 @@ async def get_semantic_model(model_id: str) -> Dict[str, Any]:
         return {"status": "error", "error": str(e)}
 
 
+# ==================== Connections ====================
+
+@app.get("/connections")
+async def get_connections():
+    """
+    Get active data source connections
+    Returns stub data until full connector implementation is ready
+    """
+    return {
+        "success": True,
+        "connections": [],  # Empty for now - will be populated when connector service is integrated
+        "count": 0,
+        "message": "No active connections. Upload a file to get started."
+    }
+
+
 # ==================== Health ====================
 
 @app.get("/health")

@@ -1,11 +1,11 @@
-import React, { useState } from 'react';
+import React from 'react';
 import '../../styles/design-system.css';
 import '../../styles/components.css';
 import Sidebar from './Sidebar';
 import Header from './Header';
 import Button from '../ui/Button';
 
-type PageType = 'dashboard' | 'chat' | 'files' | 'queries' | 'settings';
+export type PageType = 'dashboard' | 'chat' | 'files' | 'queries' | 'settings';
 
 interface SidebarItem {
   id: string;
@@ -14,14 +14,19 @@ interface SidebarItem {
   href: string;
 }
 
+interface AppLayoutProps {
+  children: React.ReactNode;
+  currentPage: PageType;
+  onPageChange: (page: PageType) => void;
+}
+
 /**
  * Enterprise Application Shell
  * Main layout container with professional design
  */
-const AppLayout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [currentPage, setCurrentPage] = useState<PageType>('dashboard');
-  const [sidebarCollapsed] = useState(false);
-  const [notificationCount] = useState(3);
+const AppLayout: React.FC<AppLayoutProps> = ({ children, currentPage, onPageChange }) => {
+  const [sidebarCollapsed] = React.useState(false);
+  const [notificationCount] = React.useState(3);
 
   const sidebarItems: SidebarItem[] = [
     {
@@ -92,7 +97,7 @@ const AppLayout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
       <Sidebar
         items={sidebarItems}
         activeItem={currentPage}
-        onItemClick={(id) => setCurrentPage(id as PageType)}
+        onItemClick={(id) => onPageChange(id as PageType)}
         collapsed={sidebarCollapsed}
       />
 

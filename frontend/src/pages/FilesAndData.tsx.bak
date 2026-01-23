@@ -1,0 +1,374 @@
+import React, { useState, useEffect } from 'react';
+import { type PageType } from '../components/Layout/AppLayout';
+import '../styles/design-system.css';
+import '../styles/components.css';
+
+interface UploadedFileRecord {
+  file: {
+    name: string;
+    size: number;
+    type?: string;
+  };
+  response: {
+    file_id: string;
+    filename: string;
+    rows: number;
+    columns: string[];
+    uploadDate?: string;
+  };
+}
+
+interface FilesAndDataProps {
+  setCurrentPage?: (page: PageType) => void;
+}
+
+/**
+ * Files & Data Page
+ * Displays all uploaded files from localStorage with management actions
+ */
+const FilesAndData: React.FC<FilesAndDataProps> = ({ setCurrentPage }) => {
+  const [files, setFiles] = useState<UploadedFileRecord[]>([]);
+  const [selectedFile, setSelectedFile] = useState<UploadedFileRecord | null>(null);
+
+  // Load files from localStorage on mount
+  useEffect(() => {
+    loadFiles();
+  }, []);
+
+  const loadFiles = () => {
+    try {
+      const stored = localStorage.getItem('recentUploads');
+      if (stored) {
+        const parsed = JSON.parse(stored);
+        // SAFETY CHECK: Ensure it is an array and filter out null/bad entries
+        if (Array.isArray(parsed)) {
+          const validFiles = parsed.filter(file => 
+            file && 
+            file.file && 
+            file.file.name && 
+            file.response
+          );
+          setFiles(validFiles);
+          
+          // If we filtered out bad entries, update localStorage with clean data
+          if (validFiles.length !== parsed.length) {
+            console.warn(`Filtered out ${parsed.length - validFiles.length} invalid file entries`);
+            localStorage.setItem('recentUploads', JSON.stringify(validFiles));
+          }
+        } else {
+          console.error('recentUploads is not an array, clearing storage.');
+          localStorage.removeItem('recentUploads');
+          setFiles([]);
+        }
+      } else {
+        setFiles([]);
+      }
+    } catch (error) {
+      console.error('Corrupt data found, clearing storage:', error);
+      localStorage.removeItem('recentUploads');
+      setFiles([]);
+    }
+  };
+
+  const handleDelete = (index: number) => {
+    try {
+      const updated = files.filter((_, i) => i !== index);
+      setFiles(updated);
+      localStorage.setItem('recentUploads', JSON.stringify(updated));
+      
+      // Clear selected file if it's the one being deleted
+      if (selectedFile && files[index] === selectedFile) {
+        setSelectedFile(null);
+      }
+      
+      // If deleting the last file, also clear the uploadedFile entry
+      if (updated.length === 0) {
+        localStorage.removeItem('uploadedFile');
+      }
+    } catch (error) {
+      console.error('Failed to delete file:', error);
+    }
+  };
+
+  const handleAnalyzeFile = (file: UploadedFileRecord) => {
+    // Save selected file for analysis in a shared key
+    localStorage.setItem('active_dataset', JSON.stringify(file));
+    // Navigate to dashboard/chat
+    if (setCurrentPage) {
+      setCurrentPage('dashboard');
+    }
+  };
+
+  const getFileIcon = (filename: string): string => {
+    const ext = filename.split('.').pop()?.toLowerCase();
+    const icons: Record<string, string> = {
+      csv: '📊',
+      xlsx: '📈',
+      xls: '📈',
+      json: '🔗',
+      parquet: '🗃️',
+      txt: '📄',
+    };
+    return icons[ext || 'txt'] || '📁';
+  };
+
+  const formatFileSize = (bytes: number): string => {
+    const kb = bytes / 1024;
+    if (kb < 1024) return `${kb.toFixed(2)} KB`;
+    const mb = kb / 1024;
+    return `${mb.toFixed(2)} MB`;
+  };
+
+  const formatDate = (dateString?: string): string => {
+    if (!dateString) return 'Just now';
+    try {
+      return new Date(dateString).toLocaleString();
+    } catch {
+      return 'Just now';
+    }
+  };
+
+  return (
+    <div className="w-full min-h-screen bg-[#f8fafc] p-8 overflow-x-hidden">
+      <div className="grid grid-cols-12 gap-8 items-start">
+        {/* Master Table - Left (8 columns) */}
+        <div className="col-span-12 lg:col-span-8 bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+          <div className="bg-slate-900 text-white p-6 border-b border-slate-900">
+            <h2 className="text-2xl font-bold">Files & Data</h2>
+            <p className="text-sm text-slate-300 mt-1">Manage your uploaded files and data sources</p>
+          </div>
+
+          <div className="divide-y divide-slate-200">
+            {files.length === 0 ? (
+              <div className="text-center py-20 text-slate-500 px-6">
+                <div className="text-6xl mb-4">📂</div>
+                <h3 className="text-lg mb-2 text-slate-600 font-semibold">No files uploaded yet</h3>
+                <p className="text-sm">Go to Dashboard to upload your first file</p>
+              </div>
+            ) : (
+              <>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="bg-slate-900 text-white">
+                        <th className="px-6 py-4 text-left font-semibold">Name</th>
+                        <th className="px-6 py-4 text-left font-semibold">Uploaded</th>
+                        <th className="px-6 py-4 text-left font-semibold">Size</th>
+                        <th className="px-6 py-4 text-left font-semibold">Rows</th>
+                        <th className="px-6 py-4 text-center font-semibold">Action</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {files.map((file, index) => {
+                        const isSelected = selectedFile === file;
+                        return (
+                          <tr
+                            key={index}
+                            onClick={() => setSelectedFile(file)}
+                            className={`border-b border-slate-100 transition-all cursor-pointer ${
+                              isSelected
+                                ? 'bg-indigo-50/50 border-l-4 border-indigo-600'
+                                : 'hover:bg-slate-50'
+                            }`}
+                          >
+                            <td className="px-6 py-4">
+                              <div className="flex items-center gap-3">
+                                <span className="text-lg">{getFileIcon(file.file.name)}</span>
+                                <div className="min-w-0">
+                                  <div className="text-slate-900 font-semibold tracking-tight truncate">
+                                    {file.file?.name || 'Unknown file'}
+                                  </div>
+                                  <div className="text-xs text-slate-500 truncate">
+                                    {file.response?.file_id || 'ID-PENDING'}
+                                  </div>
+                                </div>
+                              </div>
+                            </td>
+                            <td className="px-6 py-4 text-slate-600">{formatDate(file.response?.uploadDate)}</td>
+                            <td className="px-6 py-4 text-slate-600">{file.file?.size ? formatFileSize(file.file.size) : 'Unknown'}</td>
+                            <td className="px-6 py-4 text-slate-600">
+                              {file.response?.rows && file.response.rows > 0
+                                ? file.response.rows.toLocaleString()
+                                : <span className="italic text-slate-400">Calculating...</span>}
+                            </td>
+                            <td className="px-6 py-4 text-center">
+                              <button
+                                className="text-sm font-semibold text-red-600 hover:text-red-700"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleDelete(index);
+                                }}
+                              >
+                                Delete
+                              </button>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+
+                <div className="px-6 py-4 bg-slate-50 border-t border-slate-200">
+                  <p className="text-sm text-slate-600">
+                    📋 Total: <span className="font-semibold">{files.length}</span> file{files.length !== 1 ? 's' : ''} • 
+                    <span className="font-semibold ml-2">
+                      {files.reduce((sum, f) => sum + (f.response?.rows || 0), 0).toLocaleString()}
+                    </span> rows
+                  </p>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+
+        {/* Intelligence Sidebar - Right (4 columns, sticky) */}
+        <div className="col-span-12 lg:col-span-4 sticky top-8 h-fit">
+          {!selectedFile ? (
+            <div className="bg-white border border-slate-200 shadow-xl rounded-xl p-8 text-center">
+              <div className="text-5xl mb-4">📄</div>
+              <p className="text-slate-500 text-sm">Select a file to view details and analyze</p>
+            </div>
+          ) : (
+            <div className="space-y-6 bg-white border border-slate-200 shadow-xl rounded-xl p-8">
+              {/* File Header */}
+              <div>
+                <div className="flex items-start gap-4 mb-6">
+                  <div className="text-4xl flex-shrink-0">{getFileIcon(selectedFile.file.name)}</div>
+                  <div className="flex-1 min-w-0">
+                    <h3 className="text-xl font-bold text-slate-900 tracking-tight break-words">
+                      {selectedFile.file.name}
+                    </h3>
+                    <p className="text-xs text-slate-500 mt-1">{formatDate(selectedFile.response?.uploadDate)}</p>
+                  </div>
+                </div>
+
+                {/* Primary Button - Analyze */}
+                <button
+                  onClick={() => handleAnalyzeFile(selectedFile)}
+                  className="w-full bg-[#4f46e5] text-white font-bold py-4 rounded-lg shadow-lg hover:bg-[#4338ca] transition-all active:scale-95"
+                >
+                  🚀 Analyze with AI
+                </button>
+              </div>
+
+              {/* Divider */}
+              <div className="h-px bg-slate-200"></div>
+
+              {/* File Statistics */}
+              <div>
+                <h4 className="text-sm font-semibold text-slate-700 mb-4">File Statistics</h4>
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="bg-slate-50 rounded-lg p-4 border border-slate-200">
+                    <div className="text-xs font-medium text-slate-500 uppercase tracking-wide mb-2">Rows</div>
+                    <div className="text-2xl font-bold text-indigo-700">
+                      {selectedFile.response?.rows && selectedFile.response.rows > 0
+                        ? selectedFile.response.rows.toLocaleString()
+                        : <span className="italic text-slate-400">Calculating...</span>}
+                    </div>
+                  </div>
+                  <div className="bg-slate-50 rounded-lg p-4 border border-slate-200">
+                    <div className="text-xs font-medium text-slate-500 uppercase tracking-wide mb-2">Columns</div>
+                    <div className="text-2xl font-bold text-indigo-700">
+                      {selectedFile.response?.columns?.length || 0}
+                    </div>
+                  </div>
+                  <div className="bg-slate-50 rounded-lg p-4 border border-slate-200">
+                    <div className="text-xs font-medium text-slate-500 uppercase tracking-wide mb-2">Size</div>
+                    <div className="text-base font-bold text-slate-900">
+                      {formatFileSize(selectedFile.file.size)}
+                    </div>
+                  </div>
+                  <div className="bg-slate-50 rounded-lg p-4 border border-slate-200">
+                    <div className="text-xs font-medium text-slate-500 uppercase tracking-wide mb-2">Type</div>
+                    <div className="text-base font-bold text-slate-900">
+                      {selectedFile.file.name.split('.').pop()?.toUpperCase() || 'UNKNOWN'}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Divider */}
+              <div className="h-px bg-slate-200"></div>
+
+              {/* Data Preview */}
+              <div>
+                <h4 className="text-sm font-semibold text-slate-700 mb-4">Data Preview</h4>
+                <div className="bg-slate-50 border border-slate-200 rounded-lg p-4 overflow-x-auto">
+                  {selectedFile.response?.columns && selectedFile.response.columns.length > 0 ? (
+                    <table className="w-full text-xs border-collapse font-mono">
+                      <thead>
+                        <tr className="bg-slate-100 border-b border-slate-200">
+                          {selectedFile.response.columns.slice(0, 4).map((col, idx) => (
+                            <th
+                              key={idx}
+                              className="px-3 py-2 text-left font-semibold text-slate-700 whitespace-nowrap overflow-hidden text-ellipsis max-w-[80px]"
+                            >
+                              {col}
+                            </th>
+                          ))}
+                          {selectedFile.response.columns.length > 4 && (
+                            <th className="px-3 py-2 text-left text-slate-500">...</th>
+                          )}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {[0, 1, 2].map((rowIdx) => (
+                          <tr key={rowIdx} className="border-b border-slate-200 last:border-0">
+                            {selectedFile.response.columns.slice(0, 4).map((_, colIdx) => (
+                              <td key={colIdx} className="px-3 py-2 text-slate-500 italic">
+                                —
+                              </td>
+                            ))}
+                            {selectedFile.response.columns.length > 4 && (
+                              <td className="px-3 py-2 text-slate-500">...</td>
+                            )}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  ) : (
+                    <div className="text-center py-6 text-slate-500 text-xs">No column data available</div>
+                  )}
+                  <div className="mt-3 pt-3 border-t border-slate-200 text-center">
+                    <p className="text-xs text-slate-500">
+                      Preview shows first 4 columns • 
+                      <span className="font-semibold ml-1">
+                        {selectedFile.response?.rows && selectedFile.response.rows > 0
+                          ? selectedFile.response.rows.toLocaleString()
+                          : <span className="italic">Calculating...</span>}
+                      </span> total rows
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              {/* Divider */}
+              <div className="h-px bg-slate-200"></div>
+
+              {/* Secondary Actions */}
+              <div className="space-y-3">
+                <button className="w-full bg-slate-100 text-slate-800 font-semibold py-3 rounded-lg hover:bg-slate-200 transition-all">
+                  ⬇️ Download File
+                </button>
+                <button
+                  onClick={() => {
+                    const index = files.indexOf(selectedFile);
+                    if (index !== -1) {
+                      handleDelete(index);
+                    }
+                  }}
+                  className="w-full bg-red-50 text-red-700 font-medium py-2 rounded-lg hover:bg-red-100 transition-all border border-red-200"
+                >
+                  🗑️ Delete Permanently
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export default FilesAndData;

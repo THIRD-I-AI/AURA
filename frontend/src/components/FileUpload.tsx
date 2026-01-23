@@ -207,11 +207,11 @@ const FileUpload: React.FC<FileUploadProps> = ({ onFileUpload }) => {
         <div className="file-preview">
           <div className="file-info">
             <div className="file-header">
-              <h4>📊 {uploadedFile.file.name}</h4>
+              <h4>📊 {uploadedFile.file?.name || 'Unknown file'}</h4>
               <div className="file-stats">
-                <span className="stat">📏 {uploadedFile.summary.rows} rows</span>
-                <span className="stat">📋 {uploadedFile.summary.columns} columns</span>
-                <span className="stat">💾 {uploadedFile.summary.fileSize}</span>
+                <span className="stat">📏 {uploadedFile.summary?.rows || 0} rows</span>
+                <span className="stat">📋 {uploadedFile.summary?.columns || 0} columns</span>
+                <span className="stat">💾 {uploadedFile.summary?.fileSize || 'Unknown size'}</span>
               </div>
             </div>
             
@@ -222,7 +222,7 @@ const FileUpload: React.FC<FileUploadProps> = ({ onFileUpload }) => {
                   <table>
                     <thead>
                       <tr>
-                        {Object.keys(uploadedFile.preview[0]).map(key => (
+                        {uploadedFile.preview[0] && Object.keys(uploadedFile.preview[0]).map(key => (
                           <th key={key}>{key}</th>
                         ))}
                       </tr>

@@ -18,6 +18,7 @@
   line-height: var(--line-tight);
   cursor: pointer;
   transition: all var(--transition-base);
+  -webkit-user-select: none;
   user-select: none;
   white-space: nowrap;
   text-decoration: none;

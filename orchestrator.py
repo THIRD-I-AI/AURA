@@ -94,10 +94,13 @@ class ServiceOrchestrator:
         print(f"{color}[{timestamp}] [{service_name:20}] {message}{Colors.ENDC}")
 
     def start_service(self, service: Dict) -> bool:
-        """Start a single service using uvicorn"""
+        """Start a single service using uvicorn with port verification"""
+        import socket
+        
         name = service["name"]
-        module_app = service["module"]  # e.g., "aurabackend.api_gateway.enhanced_main:app"
+        module_app = service["module"]
         port = service["port"]
+        timeout = service.get("timeout", 5)
         
         try:
             self.log(name, f"Starting on port {port}...", "INFO")
@@ -108,7 +111,7 @@ class ServiceOrchestrator:
                 "-m",
                 "uvicorn",
                 module_app,
-                "--host", "0.0.0.0",
+                "--host", "127.0.0.1",
                 "--port", str(port),
             ]
             
@@ -125,20 +128,41 @@ class ServiceOrchestrator:
             
             self.processes[name] = process
             
-            # Wait a bit for startup
-            time.sleep(service.get("timeout", 3))
+            # Check if process started and port is active
+            start_time = time.time()
+            port_available = False
             
-            # Check if process is still running
-            if process.poll() is None:
+            while time.time() - start_time < timeout:
+                # Check if process is still running
+                if process.poll() is not None:
+                    stdout_data, _ = process.communicate()
+                    if stdout_data:
+                        self.log(name, f"Start failed: {stdout_data[:200]}", "ERROR")
+                    else:
+                        self.log(name, f"Failed to start (exited immediately)", "ERROR")
+                    return False
+                
+                # Check if port is listening
+                try:
+                    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    sock.settimeout(0.5)
+                    result = sock.connect_ex(('127.0.0.1', port))
+                    sock.close()
+                    
+                    if result == 0:
+                        port_available = True
+                        break
+                except Exception:
+                    pass
+                
+                time.sleep(0.2)
+            
+            if port_available:
                 self.log(name, f"Started (PID: {process.pid})", "SUCCESS")
                 return True
             else:
-                # Process exited immediately - get output
-                stdout_data, _ = process.communicate()
-                if stdout_data:
-                    self.log(name, f"Start failed with output: {stdout_data[:200]}", "ERROR")
-                else:
-                    self.log(name, f"Failed to start (exited immediately)", "ERROR")
+                self.log(name, f"Failed to start - port {port} not available after {timeout}s", "ERROR")
+                process.terminate()
                 return False
                 
         except Exception as e:
@@ -175,7 +199,10 @@ class ServiceOrchestrator:
                 time.sleep(1)
                 
         except KeyboardInterrupt:
+            # User pressed Ctrl+C - stop all services gracefully
             self.log("Orchestrator", "Received interrupt signal", "WARNING")
+            self.stop_all()
+            raise  # Re-raise to let main() handle it
 
     def start_all(self):
         """Start all services"""
@@ -203,12 +230,12 @@ class ServiceOrchestrator:
         
         if success_count == len(SERVICES):
             print(f"\n{Colors.OKGREEN}{Colors.BOLD}")
-            print("✓ All services started successfully!")
+            print("[OK] All services started successfully!")
             print(f"{Colors.ENDC}\n")
             print(f"{Colors.CYAN}Backend available at: http://localhost:8000{Colors.ENDC}")
             print(f"{Colors.CYAN}Frontend should connect via: /api (Vite proxy){Colors.ENDC}\n")
         else:
-            print(f"\n{Colors.FAIL}✗ Some services failed to start!{Colors.ENDC}\n")
+            print(f"\n{Colors.FAIL}[FAILED] Some services failed to start!{Colors.ENDC}\n")
             return False
         
         # Monitor services
@@ -259,7 +286,16 @@ def main():
     
     try:
         success = orchestrator.start_all()
-        sys.exit(0 if success else 1)
+        if not success:
+            sys.exit(1)
+        
+        # Keep orchestrator alive - monitor_services() runs the infinite loop
+        # If we reach here, all services have stopped or user pressed Ctrl+C
+        
+    except KeyboardInterrupt:
+        print(f"\n{Colors.WARNING}[Orchestrator] Received interrupt signal{Colors.ENDC}")
+        orchestrator.stop_all()
+        sys.exit(0)
     except Exception as e:
         print(f"{Colors.FAIL}Fatal error: {str(e)}{Colors.ENDC}")
         orchestrator.stop_all()
