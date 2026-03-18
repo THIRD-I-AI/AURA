@@ -4,11 +4,10 @@ import os
 import sys
 from typing import Any
 
-import google.generativeai as genai
-
 # Add parent directory to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
 
+from shared.llm_provider import get_llm
 from shared.secret_resolver import secret_resolver
 
 
@@ -16,19 +15,7 @@ class GeneratorAgent:
     """Generates SQL using Gemini with deterministic fallbacks."""
 
     def __init__(self) -> None:
-        self._model_name = os.getenv("GENERATOR_MODEL", "gemini-pro")
-        self._api_key = secret_resolver.get_secret("GEMINI_API_KEY")
-        self._model: Any = None
-        if self._api_key:
-            try:
-                configure_fn = getattr(genai, "configure", None)
-                if callable(configure_fn):
-                    configure_fn(api_key=self._api_key)
-                model_cls = getattr(genai, "GenerativeModel", None)
-                if model_cls:
-                    self._model = model_cls(self._model_name)
-            except Exception as exc:
-                print(f"GeneratorAgent: failed to initialize Gemini model - {exc}")
+        self._llm = get_llm(model=os.getenv("GENERATOR_MODEL", ""))
 
     def run(self, prompt: str, context: str, rework_feedback: str = "") -> str:
         instruction = (
@@ -49,10 +36,11 @@ class GeneratorAgent:
                 f"Please correct it based on this feedback:\n{rework_feedback}"
             )
 
-        if self._model:
+        if self._llm.is_available():
             try:
-                response = self._model.generate_content(prompt_parts)
-                return response.text.strip().replace("```sql", "").replace("```", "").strip()
+                raw = self._llm.generate(prompt_parts)
+                if raw:
+                    return raw.strip().replace("```sql", "").replace("```", "").strip()
             except Exception as exc:
                 print(f"GeneratorAgent: remote generation failed - {exc}")
 

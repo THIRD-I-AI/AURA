@@ -26,11 +26,7 @@ from agents.base import (
     Severity,
 )
 from agents.memory import AgentMemory
-
-try:
-    import google.generativeai as genai
-except ImportError:
-    genai = None  # type: ignore
+from shared.llm_provider import get_llm
 
 
 # ────────────────────────────────────────────────────────────────────
@@ -178,25 +174,7 @@ class PlannerAgent(BaseAgent):
     def __init__(self, tool_registry: Any = None, memory: Optional[AgentMemory] = None) -> None:
         super().__init__(tool_registry)
         self.memory = memory or AgentMemory()
-        self._model = self._init_model()
-
-    @staticmethod
-    def _init_model() -> Any:
-        if genai is None:
-            return None
-        api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
-        if not api_key:
-            return None
-        try:
-            configure_fn = getattr(genai, "configure", None)
-            if callable(configure_fn):
-                configure_fn(api_key=api_key)
-            model_cls = getattr(genai, "GenerativeModel", None)
-            if model_cls:
-                return model_cls(os.getenv("PLANNER_MODEL", "gemini-2.5-flash"))
-        except Exception:
-            pass
-        return None
+        self._llm = get_llm(model=os.getenv("PLANNER_MODEL", ""))
 
     # ── core logic ──────────────────────────────────────────────────
 
@@ -256,20 +234,9 @@ class PlannerAgent(BaseAgent):
     # ── LLM call ────────────────────────────────────────────────────
 
     async def _call_llm(self, system_prompt: str, user_message: str) -> Optional[Dict[str, Any]]:
-        if self._model is None:
+        if not self._llm.is_available():
             return None
-        try:
-            response = self._model.generate_content([system_prompt, user_message])
-            text = (response.text or "").strip()
-            # strip markdown fences if present
-            if text.startswith("```"):
-                text = text.split("\n", 1)[-1]
-            if text.endswith("```"):
-                text = text.rsplit("```", 1)[0]
-            text = text.strip()
-            return json.loads(text)
-        except Exception:
-            return None
+        return self._llm.generate_json([system_prompt, user_message])
 
     # ── fallback (no LLM) ──────────────────────────────────────────
 

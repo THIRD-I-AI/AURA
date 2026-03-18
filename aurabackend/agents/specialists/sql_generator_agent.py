@@ -12,11 +12,7 @@ import re
 from typing import Any, Dict, List, Optional
 
 from agents.base import AgentContext, AgentResult, BaseAgent, Severity
-
-try:
-    import google.generativeai as genai
-except ImportError:
-    genai = None  # type: ignore
+from shared.llm_provider import get_llm
 
 
 _SQL_GEN_PROMPT = """\
@@ -44,25 +40,7 @@ class SQLGeneratorAgent(BaseAgent):
 
     def __init__(self, tool_registry: Any = None) -> None:
         super().__init__(tool_registry)
-        self._model = self._init_model()
-
-    @staticmethod
-    def _init_model() -> Any:
-        if genai is None:
-            return None
-        api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
-        if not api_key:
-            return None
-        try:
-            configure_fn = getattr(genai, "configure", None)
-            if callable(configure_fn):
-                configure_fn(api_key=api_key)
-            model_cls = getattr(genai, "GenerativeModel", None)
-            if model_cls:
-                return model_cls(os.getenv("SQL_GEN_MODEL", "gemini-2.5-flash"))
-        except Exception:
-            pass
-        return None
+        self._llm = get_llm(model=os.getenv("SQL_GEN_MODEL", ""))
 
     async def _run(self, ctx: AgentContext, result: AgentResult) -> AgentResult:
         await self._report("Generating SQL…", 10)
@@ -116,12 +94,12 @@ class SQLGeneratorAgent(BaseAgent):
     # ------------------------------------------------------------------
     async def _generate_sql(self, question: str, schema: str) -> Optional[str]:
         # Try LLM first
-        if self._model:
+        if self._llm.is_available():
             try:
                 prompt = _SQL_GEN_PROMPT.format(schema=schema, question=question)
-                response = self._model.generate_content(prompt)
-                text = (response.text or "").strip()
-                return self._strip_fences(text)
+                text = self._llm.generate(prompt)
+                if text:
+                    return self._strip_fences(text)
             except Exception:
                 pass
 

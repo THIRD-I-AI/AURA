@@ -4,12 +4,12 @@ import os
 import sys
 from typing import Any, Dict
 
-import google.generativeai as genai
 from fastapi import FastAPI, HTTPException
 
 # Add parent directory to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from shared.llm_provider import get_llm
 from shared.models import PlanStep
 from shared.secret_resolver import secret_resolver
 
@@ -19,19 +19,7 @@ code_gen_app = FastAPI(title="AURA Code Generation Service")
 
 class CodeGenerationEngine:
 	def __init__(self) -> None:
-		self._model_name = os.getenv("CODEGEN_MODEL", os.getenv("GENERATOR_MODEL", "gemini-2.5-flash"))
-		self._api_key = secret_resolver.get_secret("GEMINI_API_KEY") or secret_resolver.get_secret("GOOGLE_API_KEY")
-		self._model: Any | None = None
-		if self._api_key:
-			try:
-				configure_fn = getattr(genai, "configure", None)
-				if callable(configure_fn):
-					configure_fn(api_key=self._api_key)
-				model_cls = getattr(genai, "GenerativeModel", None)
-				if model_cls:
-					self._model = model_cls(self._model_name)
-			except Exception as exc:  # pragma: no cover - defensive log path
-				print(f"CodeGenerationEngine: failed to initialize Gemini model - {exc}")
+		self._llm = get_llm(model=os.getenv("CODEGEN_MODEL", os.getenv("GENERATOR_MODEL", "")))
 
 	@staticmethod
 	def _build_prompt(step: PlanStep) -> list[str]:
@@ -86,17 +74,18 @@ class CodeGenerationEngine:
 
 	def generate(self, step: PlanStep) -> Dict[str, Any]:
 		prompt = self._build_prompt(step)
-		if self._model:
+		if self._llm.is_available():
 			try:
-				response = self._model.generate_content(prompt)
-				sql = (response.text or "").strip().replace("```sql", "").replace("```", "").strip()
-				if sql:
-					chart = step.chart_type or "table"
-					return {
-						"sql": sql,
-						"visualization_suggestion": chart,
-						"source": "gemini",
-					}
+				raw = self._llm.generate(prompt)
+				if raw:
+					sql = raw.strip().replace("```sql", "").replace("```", "").strip()
+					if sql:
+						chart = step.chart_type or "table"
+						return {
+							"sql": sql,
+							"visualization_suggestion": chart,
+							"source": "llm",
+						}
 			except Exception as exc:  # pragma: no cover - remote failure path
 				print(f"CodeGenerationEngine: remote generation failed - {exc}")
 

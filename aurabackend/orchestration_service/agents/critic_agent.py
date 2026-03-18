@@ -3,11 +3,10 @@ import os
 import sys
 from typing import Any
 
-import google.generativeai as genai
-
 # Add parent directory to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
 
+from shared.llm_provider import get_llm
 from shared.models import ValidationResult
 from shared.secret_resolver import secret_resolver
 
@@ -16,22 +15,7 @@ class CriticAgent:
     """Validates SQL output produced by the generator agent."""
 
     def __init__(self) -> None:
-        self._api_key = secret_resolver.get_secret("GEMINI_API_KEY")
-        self._model: Any = None
-        if self._api_key:
-            try:
-                configure_fn = getattr(genai, "configure", None)
-                if callable(configure_fn):
-                    configure_fn(api_key=self._api_key)
-                model_cls = getattr(genai, "GenerativeModel", None)
-                generation_config_cls = getattr(genai, "GenerationConfig", None)
-                generation_config = None
-                if generation_config_cls:
-                    generation_config = generation_config_cls(response_mime_type="application/json")
-                if model_cls:
-                    self._model = model_cls("gemini-pro", generation_config=generation_config)
-            except Exception as exc:
-                print(f"CriticAgent: failed to initialize Gemini model - {exc}")
+        self._llm = get_llm(model=os.getenv("CRITIC_MODEL", ""))
 
     def run(self, original_prompt: str, generated_sql: str) -> ValidationResult:
         instruction = (
@@ -55,11 +39,11 @@ class CriticAgent:
         }}
         """
 
-        if self._model:
+        if self._llm.is_available():
             try:
-                response = self._model.generate_content(prompt)
-                response_json = json.loads(response.text)
-                return ValidationResult(**response_json)
+                response_json = self._llm.generate_json(prompt)
+                if response_json:
+                    return ValidationResult(**response_json)
             except Exception as exc:
                 print(f"CriticAgent: remote validation failed - {exc}")
 

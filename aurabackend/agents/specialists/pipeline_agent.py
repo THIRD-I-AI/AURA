@@ -13,11 +13,7 @@ import uuid
 from typing import Any, Dict, List, Optional
 
 from agents.base import AgentContext, AgentResult, BaseAgent, Severity
-
-try:
-    import google.generativeai as genai
-except ImportError:
-    genai = None  # type: ignore
+from shared.llm_provider import get_llm
 
 _PIPELINE_PROMPT = """\
 You are a data pipeline architect.  Given the user's request, generate a
@@ -56,25 +52,7 @@ class PipelineAgent(BaseAgent):
 
     def __init__(self, tool_registry: Any = None) -> None:
         super().__init__(tool_registry)
-        self._model = self._init_model()
-
-    @staticmethod
-    def _init_model() -> Any:
-        if genai is None:
-            return None
-        api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
-        if not api_key:
-            return None
-        try:
-            configure_fn = getattr(genai, "configure", None)
-            if callable(configure_fn):
-                configure_fn(api_key=api_key)
-            model_cls = getattr(genai, "GenerativeModel", None)
-            if model_cls:
-                return model_cls(os.getenv("PIPELINE_MODEL", "gemini-2.5-flash"))
-        except Exception:
-            pass
-        return None
+        self._llm = get_llm(model=os.getenv("PIPELINE_MODEL", ""))
 
     async def _run(self, ctx: AgentContext, result: AgentResult) -> AgentResult:
         await self._report("Designing pipeline…", 10)
@@ -138,20 +116,14 @@ class PipelineAgent(BaseAgent):
             indent=2,
         )
 
-        if self._model:
+        if self._llm.is_available():
             try:
                 prompt = _PIPELINE_PROMPT.format(
                     request=ctx.task_description,
                     schema=schema_text,
                     upstream=upstream_text,
                 )
-                response = self._model.generate_content(prompt)
-                text = (response.text or "").strip()
-                if text.startswith("```"):
-                    text = text.split("\n", 1)[-1]
-                if text.endswith("```"):
-                    text = text.rsplit("```", 1)[0]
-                parsed = json.loads(text.strip())
+                parsed = self._llm.generate_json(prompt)
                 if isinstance(parsed, dict) and "steps" in parsed:
                     return parsed
             except Exception:
