@@ -314,6 +314,125 @@ async def analyze_results(
     return analysis
 
 
+# ==================== Lightweight Execute (frontend chat flow) ====================
+
+class _ChatExecuteRequest(BaseModel):
+    """Lightweight execution request from the chat UI."""
+    sql: str
+    connection_id: Optional[str] = None
+
+
+@app.post("/execute")
+async def execute_for_chat(req: _ChatExecuteRequest):
+    """Execute SQL from the chat interface.
+
+    • If *connection_id* is provided, proxy to the execution sandbox (port 8003)
+      which talks to a real database via the connector service.
+    • Otherwise, try to run the query against uploaded file data using DuckDB.
+    """
+    import time
+    start = time.time()
+
+    sql = req.sql.strip()
+    if not sql:
+        raise HTTPException(status_code=400, detail="SQL query is required")
+
+    # ── Safety gate ─────────────────────────────────────────────────────
+    validator = SQLSafetyValidator()
+    validation = validator.validate(sql)
+    if not validation.is_valid:
+        raise HTTPException(status_code=400, detail=f"Query blocked: {validation.errors}")
+
+    # ── If there's a connection_id, proxy to the execution sandbox ──────
+    if req.connection_id:
+        sandbox_url = os.getenv("EXECUTION_SANDBOX_URL", "http://localhost:8003")
+        payload = {
+            "job_id": f"chat-{int(time.time()*1000)}",
+            "sql": sql,
+            "connection_id": req.connection_id,
+            "approved": True,
+            "limit": 1000,
+        }
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                resp = await client.post(f"{sandbox_url}/execute_sql", json=payload)
+                resp.raise_for_status()
+                data = resp.json()
+                # Convert columns+rows into array-of-dicts for the frontend
+                columns = data.get("columns", [])
+                rows = data.get("rows", [])
+                records = [dict(zip(columns, row)) for row in rows]
+                elapsed = (time.time() - start) * 1000
+                return {
+                    "success": True,
+                    "data": records,
+                    "columns": columns,
+                    "row_count": len(records),
+                    "execution_time_ms": round(elapsed, 1),
+                    "chart_spec": data.get("chart_spec"),
+                }
+        except httpx.HTTPStatusError as exc:
+            detail = exc.response.text
+            try:
+                detail = exc.response.json().get("detail", detail)
+            except Exception:
+                pass
+            return {"success": False, "error": str(detail), "data": [], "columns": []}
+        except Exception as exc:
+            return {"success": False, "error": str(exc), "data": [], "columns": []}
+
+    # ── No connection: execute against uploaded files via DuckDB ────────
+    try:
+        import duckdb
+        import pathlib
+
+        # Look in all upload directories
+        base = pathlib.Path(__file__).resolve().parent.parent
+        upload_dirs = [
+            base / "data" / "uploads",   # file_service managed
+            base / "api_gateway" / "uploads",  # legacy direct uploads
+            base.parent / "uploads",      # root uploads dir
+        ]
+
+        con = duckdb.connect(":memory:")
+
+        for upload_dir in upload_dirs:
+            if not upload_dir.exists():
+                continue
+            for csv_file in upload_dir.glob("*.csv"):
+                table_name = csv_file.stem.replace("-", "_").replace(" ", "_")
+                try:
+                    con.execute(
+                        f'CREATE TABLE IF NOT EXISTS "{table_name}" AS SELECT * FROM read_csv_auto(\'{csv_file}\')'
+                    )
+                except Exception:
+                    pass  # Skip files that can't be parsed
+            for pq_file in upload_dir.glob("*.parquet"):
+                table_name = pq_file.stem.replace("-", "_").replace(" ", "_")
+                try:
+                    con.execute(
+                        f'CREATE TABLE IF NOT EXISTS "{table_name}" AS SELECT * FROM read_parquet(\'{pq_file}\')'
+                    )
+                except Exception:
+                    pass
+        result = con.execute(sql)
+        columns = [desc[0] for desc in result.description]
+        rows = result.fetchall()
+        records = [dict(zip(columns, row)) for row in rows]
+        elapsed = (time.time() - start) * 1000
+
+        con.close()
+        return {
+            "success": True,
+            "data": records,
+            "columns": columns,
+            "row_count": len(records),
+            "execution_time_ms": round(elapsed, 1),
+        }
+    except Exception as exc:
+        return {"success": False, "error": str(exc), "data": [], "columns": []}
+
+
 @app.post("/execute/query", response_model=ExecuteQueryResponse)
 async def execute_query_with_insights(request: ExecuteQueryRequest):
     """Execute query with automatic insights generation"""

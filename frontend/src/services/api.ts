@@ -45,9 +45,11 @@ export interface ExecutionResult {
   success: boolean;
   data?: Array<Record<string, any>>;
   columns?: string[];
+  rows?: Array<Array<any>>;
   row_count?: number;
   execution_time_ms?: number;
   error?: string;
+  chart_spec?: Record<string, any>;
 }
 
 export interface DataSource {
@@ -378,7 +380,8 @@ export const connectorService = {
 
   async getSupportedDatabases(): Promise<string[]> {
     try {
-      return client.get<string[]>('/supported-databases');
+      const data = await client.get<Array<{ type: string }>>('/connectors/available');
+      return data.map(c => c.type);
     } catch {
       return ['postgresql', 'mysql', 'sqlite'];
     }
@@ -432,8 +435,8 @@ export const executionService = {
     connectionId?: string
   ): Promise<ExecutionResult> {
     return client.post<ExecutionResult>('/execute', {
-      query,
-      connection_id: connectionId,
+      sql: query,
+      connection_id: connectionId || null,
     });
   },
 
@@ -456,7 +459,7 @@ export const uploadService = {
 
   async getUploadedFiles(): Promise<Array<{ id: string; name: string; uploaded_at: string }>> {
     try {
-      return client.get<Array<{ id: string; name: string; uploaded_at: string }>>('/uploads');
+      return client.get<Array<{ id: string; name: string; uploaded_at: string }>>('/files');
     } catch {
       return [];
     }
