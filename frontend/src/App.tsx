@@ -5,6 +5,9 @@ import AppLayout, { type PageType } from './components/Layout/AppLayout';
 import ChatInterface from './components/ChatInterface';
 import FileUpload from './components/FileUploadPro';
 import FilesAndData from './pages/FilesAndData';
+import QueryHistory from './pages/QueryHistory';
+import Settings from './pages/Settings';
+import AgentPanel from './pages/AgentPanel';
 import Card, { CardHeader, CardBody } from './components/ui/Card';
 import Alert from './components/ui/Alert';
 import Button from './components/ui/Button';
@@ -102,18 +105,26 @@ function App() {
     switch (currentPage) {
       case 'files':
         return <FilesAndData setCurrentPage={setCurrentPage} />;
+      case 'chat':
+        return <ChatInterface />;
+      case 'queries':
+        return <QueryHistory setCurrentPage={setCurrentPage} />;
+      case 'settings':
+        return <Settings setCurrentPage={setCurrentPage} />;
+      case 'agent':
+        return <AgentPanel setCurrentPage={setCurrentPage} />;
       case 'dashboard':
       default:
         return (
           <>
-            <div style={{display:'grid',gridTemplateColumns:'repeat(12,minmax(0,1fr))',gap:'var(--space-4)',marginBottom:'var(--space-5)',opacity:!systemHealth.isOnline?0.6:1,pointerEvents:!systemHealth.isOnline?'none':'auto',transition:'all 300ms ease'}}>
+            <div style={{display:'grid',gridTemplateColumns:'repeat(12,minmax(0,1fr))',gap:'var(--space-4)',marginBottom:'var(--space-5)',opacity:!systemHealth.isOnline?0.7:1,transition:'all 300ms ease'}}>
               {kpis.map((kpi)=>(<div key={kpi.label} style={{gridColumn:'span 3'}}><Card><CardBody><div style={{display:'flex',flexDirection:'column',gap:'var(--space-2)'}}><span style={{color:'var(--text-tertiary)',fontSize:'var(--font-xs)'}}>{kpi.label}</span><span style={{fontSize:'var(--font-xl)',fontWeight:'var(--weight-semibold)'}}>{kpi.value}</span><span style={{color:'var(--text-secondary)',fontSize:'var(--font-xs)'}}>{kpi.hint}</span></div></CardBody></Card></div>))}
             </div>
-            <div style={{display:'grid',gridTemplateColumns:'repeat(12,minmax(0,1fr))',gap:'var(--space-4)',marginBottom:'var(--space-5)',opacity:!systemHealth.isOnline?0.6:1,pointerEvents:!systemHealth.isOnline?'none':'auto',transition:'all 300ms ease'}}>
-              <div style={{gridColumn:'span 6'}}><Card><CardHeader title="Data sources" subtitle="Step through to connect your first source"/><CardBody><ol style={{margin:0,paddingLeft:'1.25rem',color:'var(--text-secondary)',display:'flex',gap:'var(--space-4)',flexWrap:'wrap'}}>{['Choose source type','Provide credentials','Validate access','Run first sync'].map((step)=>(<li key={step} style={{minWidth:'12rem'}}>{step}</li>))}</ol><div style={{marginTop:'var(--space-4)',display:'flex',gap:'var(--space-3)'}}><Button variant="primary" size="sm">Start setup</Button><Button variant="ghost" size="sm">View docs</Button></div></CardBody></Card></div>
-              <div style={{gridColumn:'span 6'}}><Card><CardHeader title="Query activity" subtitle="Recent runs will appear here"/><CardBody><ul style={{margin:0,paddingLeft:'1rem',color:'var(--text-secondary)',display:'flex',flexDirection:'column',gap:'var(--space-2)'}}><li>No queries have been executed yet.</li><li>Submit a query from chat to see history.</li><li>Retention: last 30 runs will be listed.</li></ul><div style={{marginTop:'var(--space-4)'}}><Button variant="secondary" size="sm">Open chat workspace</Button></div></CardBody></Card></div>
+            <div style={{display:'grid',gridTemplateColumns:'repeat(12,minmax(0,1fr))',gap:'var(--space-4)',marginBottom:'var(--space-5)',transition:'all 300ms ease'}}>
+              <div style={{gridColumn:'span 6'}}><Card><CardHeader title="Data sources" subtitle="Step through to connect your first source"/><CardBody><ol style={{margin:0,paddingLeft:'1.25rem',color:'var(--text-secondary)',display:'flex',gap:'var(--space-4)',flexWrap:'wrap'}}>{['Choose source type','Provide credentials','Validate access','Run first sync'].map((step)=>(<li key={step} style={{minWidth:'12rem'}}>{step}</li>))}</ol><div style={{marginTop:'var(--space-4)',display:'flex',gap:'var(--space-3)'}}><Button variant="primary" size="sm" onClick={() => setCurrentPage('files')}>Start setup</Button><Button variant="ghost" size="sm" onClick={() => window.open('https://github.com/THIRD-I-AI/AURA#readme', '_blank')}>View docs</Button></div></CardBody></Card></div>
+              <div style={{gridColumn:'span 6'}}><Card><CardHeader title="Query activity" subtitle="Recent runs will appear here"/><CardBody><ul style={{margin:0,paddingLeft:'1rem',color:'var(--text-secondary)',display:'flex',flexDirection:'column',gap:'var(--space-2)'}}><li>No queries have been executed yet.</li><li>Submit a query from chat to see history.</li><li>Retention: last 30 runs will be listed.</li></ul><div style={{marginTop:'var(--space-4)'}}><Button variant="secondary" size="sm" onClick={() => setCurrentPage('chat')}>Open chat workspace</Button><Button variant="primary" size="sm" onClick={() => setCurrentPage('agent')}>🤖 Launch Agent</Button></div></CardBody></Card></div>
             </div>
-            <div style={{display:'grid',gridTemplateColumns:'repeat(12,minmax(0,1fr))',gap:'var(--space-4)',alignItems:'stretch',opacity:!systemHealth.isOnline?0.6:1,pointerEvents:!systemHealth.isOnline?'none':'auto',transition:'all 300ms ease'}}>
+            <div style={{display:'grid',gridTemplateColumns:'repeat(12,minmax(0,1fr))',gap:'var(--space-4)',alignItems:'stretch',transition:'all 300ms ease'}}>
               <div style={{gridColumn:'span 7',minWidth:0}}><ChatInterface/></div>
               <div style={{gridColumn:'span 5',minWidth:0}}><FileUpload onFileUploaded={(response)=>{console.log('File uploaded successfully:',response);}}/></div>
             </div>

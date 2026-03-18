@@ -31,9 +31,17 @@ export const useSystemHealth = (onStatusChange?: (status: SystemHealthState) => 
   const [health, setHealth] = useState<SystemHealthState>(INITIAL_STATE);
   const timerRef = useRef<number | null>(null);
   const isUnmountingRef = useRef(false);
+  const isCheckingRef = useRef(false);
+  const onStatusChangeRef = useRef(onStatusChange);
+
+  // Keep callback ref up to date without causing re-renders
+  useEffect(() => {
+    onStatusChangeRef.current = onStatusChange;
+  }, [onStatusChange]);
 
   const checkHealth = useCallback(async () => {
-    if (health.isChecking) return;
+    if (isCheckingRef.current) return;
+    isCheckingRef.current = true;
 
     setHealth((prev) => ({ ...prev, isChecking: true }));
 
@@ -41,32 +49,36 @@ export const useSystemHealth = (onStatusChange?: (status: SystemHealthState) => 
       const result = await healthService.checkHealth();
 
       if (!isUnmountingRef.current) {
-        const newStatus: SystemHealthState = {
-          isOnline: true,
-          status: result.status || 'healthy',
-          lastCheck: new Date(),
-          isChecking: false,
-          retries: 0,
-        };
-
-        setHealth(newStatus);
-        onStatusChange?.(newStatus);
+        setHealth((_prev) => {
+          const newStatus: SystemHealthState = {
+            isOnline: true,
+            status: result.status || 'healthy',
+            lastCheck: new Date(),
+            isChecking: false,
+            retries: 0,
+          };
+          onStatusChangeRef.current?.(newStatus);
+          return newStatus;
+        });
       }
     } catch (error) {
       if (!isUnmountingRef.current) {
-        const newStatus: SystemHealthState = {
-          isOnline: false,
-          status: 'down',
-          lastCheck: new Date(),
-          isChecking: false,
-          retries: health.retries + 1,
-        };
-
-        setHealth(newStatus);
-        onStatusChange?.(newStatus);
+        setHealth((prev) => {
+          const newStatus: SystemHealthState = {
+            isOnline: false,
+            status: 'down',
+            lastCheck: new Date(),
+            isChecking: false,
+            retries: prev.retries + 1,
+          };
+          onStatusChangeRef.current?.(newStatus);
+          return newStatus;
+        });
       }
+    } finally {
+      isCheckingRef.current = false;
     }
-  }, [health.isChecking, health.retries, onStatusChange]);
+  }, []);
 
   useEffect(() => {
     isUnmountingRef.current = false;

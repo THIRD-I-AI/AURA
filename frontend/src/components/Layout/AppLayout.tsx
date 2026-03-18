@@ -1,11 +1,12 @@
 import React from 'react';
 import '../../styles/design-system.css';
 import '../../styles/components.css';
+import './Header.css';
 import Sidebar from './Sidebar';
 import Header from './Header';
 import Button from '../ui/Button';
 
-export type PageType = 'dashboard' | 'chat' | 'files' | 'queries' | 'settings';
+export type PageType = 'dashboard' | 'chat' | 'files' | 'queries' | 'settings' | 'agent';
 
 interface SidebarItem {
   id: string;
@@ -53,6 +54,12 @@ const AppLayout: React.FC<AppLayoutProps> = ({ children, currentPage, onPageChan
       icon: '📋',
       href: '#',
     },
+    {
+      id: 'agent',
+      label: 'Agent',
+      icon: '🤖',
+      href: '#',
+    },
   ];
 
   const getPageTitle = (): { title: string; subtitle: string } => {
@@ -77,6 +84,10 @@ const AppLayout: React.FC<AppLayoutProps> = ({ children, currentPage, onPageChan
         title: 'Settings',
         subtitle: 'Manage your preferences and configurations',
       },
+      agent: {
+        title: 'Agent',
+        subtitle: 'Agentic data engineering — one prompt does it all',
+      },
     };
     return titles[currentPage as PageType];
   };
@@ -99,6 +110,7 @@ const AppLayout: React.FC<AppLayoutProps> = ({ children, currentPage, onPageChan
         activeItem={currentPage}
         onItemClick={(id) => onPageChange(id as PageType)}
         collapsed={sidebarCollapsed}
+        onSettingsClick={() => onPageChange('settings')}
       />
 
       {/* Main Content Area */}
@@ -122,29 +134,19 @@ const AppLayout: React.FC<AppLayoutProps> = ({ children, currentPage, onPageChan
           onSearch={(query) => console.log('Search:', query)}
           notificationCount={notificationCount}
           actions={
-            <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-3)' }}>
-              <span
-                style={{
-                  backgroundColor: 'var(--bg-secondary)',
-                  color: 'var(--text-secondary)',
-                  border: '1px solid var(--border-default)',
-                  borderRadius: 'var(--radius-full)',
-                  padding: '0.25rem 0.75rem',
-                  fontSize: 'var(--font-xs)',
-                  lineHeight: 1.2,
-                }}
-              >
+            <>
+              <span className="app-header__status-badge">
                 System status: {systemStatus}
               </span>
               <Button
                 size="md"
                 variant="primary"
                 leftIcon="+"
-                onClick={() => console.log('New action')}
+                onClick={() => onPageChange('files')}
               >
                 New
               </Button>
-            </div>
+            </>
           }
         />
 

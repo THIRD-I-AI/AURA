@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import '../../styles/design-system.css';
 import '../../styles/components.css';
+import './Header.css';
 
 interface HeaderProps {
   title: string;
@@ -15,6 +16,7 @@ interface HeaderProps {
 
 /**
  * Enterprise Header/Top Navigation Bar
+ * Uses CSS classes for responsive scaling at all viewport widths.
  */
 export const Header: React.FC<HeaderProps> = ({
   title,
@@ -35,52 +37,17 @@ export const Header: React.FC<HeaderProps> = ({
   };
 
   return (
-    <header
-      style={{
-        backgroundColor: 'var(--bg-primary)',
-        borderBottom: '1px solid var(--border-default)',
-        position: 'sticky',
-        top: 0,
-        zIndex: 'var(--z-fixed)',
-        backdropFilter: 'blur(10px)',
-      }}
-    >
-      <div
-        style={{
-          padding: 'var(--space-4) var(--space-6)',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-          gap: 'var(--space-6)',
-        }}
-      >
-        {/* Left Section - Title and Breadcrumbs */}
-        <div style={{ flex: 1, minWidth: 0 }}>
+    <header className="app-header">
+      <div className="app-header__inner">
+        {/* Left Section – Title & Breadcrumbs (shrinks gracefully) */}
+        <div className="app-header__left">
           {breadcrumbs && breadcrumbs.length > 0 && (
-            <div
-              style={{
-                display: 'flex',
-                gap: 'var(--space-2)',
-                fontSize: 'var(--font-sm)',
-                color: 'var(--text-tertiary)',
-                marginBottom: 'var(--space-2)',
-                overflow: 'auto',
-              }}
-            >
+            <div className="app-header__breadcrumbs">
               {breadcrumbs.map((item, index) => (
                 <React.Fragment key={index}>
                   {index > 0 && <span>/</span>}
                   {item.href ? (
-                    <a
-                      href={item.href}
-                      style={{
-                        color: 'var(--text-secondary)',
-                        textDecoration: 'none',
-                        cursor: 'pointer',
-                      }}
-                    >
-                      {item.label}
-                    </a>
+                    <a href={item.href}>{item.label}</a>
                   ) : (
                     <span>{item.label}</span>
                   )}
@@ -88,64 +55,27 @@ export const Header: React.FC<HeaderProps> = ({
               ))}
             </div>
           )}
-          <h1
-            style={{
-              margin: 0,
-              fontSize: 'var(--font-2xl)',
-              fontWeight: 'var(--weight-bold)',
-              color: 'var(--text-primary)',
-            }}
-          >
-            {title}
-          </h1>
-          {subtitle && (
-            <p
-              style={{
-                margin: 'var(--space-1) 0 0 0',
-                fontSize: 'var(--font-sm)',
-                color: 'var(--text-secondary)',
-              }}
-            >
-              {subtitle}
-            </p>
-          )}
+          <h1 className="app-header__title">{title}</h1>
+          {subtitle && <p className="app-header__subtitle">{subtitle}</p>}
         </div>
 
-        {/* Middle Section - Search */}
+        {/* Middle Section – Search (fixed width, collapses on small screens) */}
         {searchable && (
-          <div
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              minWidth: '300px',
-            }}
-          >
+          <div className="app-header__search">
             {searchOpen ? (
               <input
                 autoFocus
                 type="text"
+                className="app-header__search-input"
                 placeholder="Search..."
                 value={searchQuery}
                 onChange={(e) => handleSearch(e.target.value)}
                 onBlur={() => !searchQuery && setSearchOpen(false)}
-                style={{
-                  width: '100%',
-                  padding: '0.5rem var(--space-4)',
-                  border: '1px solid var(--border-default)',
-                  borderRadius: 'var(--radius-md)',
-                  fontSize: 'var(--font-sm)',
-                }}
               />
             ) : (
               <button
+                className="app-header__search-btn"
                 onClick={() => setSearchOpen(true)}
-                style={{
-                  background: 'transparent',
-                  border: 'none',
-                  cursor: 'pointer',
-                  fontSize: 'var(--size-icon-md)',
-                  color: 'var(--text-secondary)',
-                }}
                 title="Search"
               >
                 🔍
@@ -154,61 +84,17 @@ export const Header: React.FC<HeaderProps> = ({
           </div>
         )}
 
-        {/* Right Section - Actions and User Menu */}
-        <div
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: 'var(--space-4)',
-          }}
-        >
-          {/* Notifications */}
-          <button
-            style={{
-              position: 'relative',
-              background: 'transparent',
-              border: 'none',
-              cursor: 'pointer',
-              fontSize: 'var(--size-icon-lg)',
-              color: 'var(--text-secondary)',
-              transition: 'color var(--transition-fast)',
-            }}
-            onMouseEnter={(e) => {
-              e.currentTarget.style.color = 'var(--text-primary)';
-            }}
-            onMouseLeave={(e) => {
-              e.currentTarget.style.color = 'var(--text-secondary)';
-            }}
-            title="Notifications"
-          >
+        {/* Right Section – Notifications + Actions (never shrinks) */}
+        <div className="app-header__right">
+          <button className="app-header__notification-btn" title="Notifications">
             🔔
-            {notificationCount && notificationCount > 0 && (
-              <span
-                style={{
-                  position: 'absolute',
-                  top: '-0.25rem',
-                  right: '-0.25rem',
-                  backgroundColor: 'var(--color-error-500)',
-                  color: 'white',
-                  borderRadius: 'var(--radius-full)',
-                  width: '1.25rem',
-                  height: '1.25rem',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  fontSize: 'var(--font-xs)',
-                  fontWeight: 'var(--weight-bold)',
-                }}
-              >
-                {notificationCount}
-              </span>
+            {notificationCount != null && notificationCount > 0 && (
+              <span className="app-header__notification-badge">{notificationCount}</span>
             )}
           </button>
 
-          {/* Custom Actions */}
-          {actions && <div style={{ display: 'flex', gap: 'var(--space-3)' }}>{actions}</div>}
+          {actions && <div className="app-header__actions">{actions}</div>}
 
-          {/* User Menu */}
           {userMenu && userMenu}
         </div>
       </div>

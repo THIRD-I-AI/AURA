@@ -1,0 +1,201 @@
+"""
+Agent API Router
+================
+FastAPI router that exposes the agentic DE framework as REST + SSE endpoints.
+
+POST /agent/execute          — Submit a single prompt, get full execution report
+POST /agent/execute/stream   — Same but streams progress via Server-Sent Events
+POST /agent/plan             — Only generate the plan (no execution)
+GET  /agent/tools            — List available tools
+"""
+from __future__ import annotations
+
+import asyncio
+import json
+import uuid
+from typing import Any, Dict, List, Optional
+
+from fastapi import APIRouter, HTTPException
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, Field
+
+from agents.planner import PlannerAgent
+from agents.executor import DAGExecutor
+from agents.tool_registry import ToolRegistry
+from agents.memory import AgentMemory
+from agents.tools import register_all_tools
+from agents.base import AgentContext, AgentStatus
+
+router = APIRouter(prefix="/agent", tags=["Agentic DE"])
+
+
+# ── Request / Response models ─────────────────────────────────────────
+
+class AgentExecuteRequest(BaseModel):
+    prompt: str = Field(..., description="Natural-language DE task")
+    files: List[str] = Field(default_factory=list, description="Uploaded file paths")
+    connection: Optional[Dict[str, Any]] = Field(default=None, description="DB connection info")
+    schema_context: Optional[Dict[str, Any]] = Field(default=None, description="Pre-loaded schema")
+    execute_sql: bool = Field(default=False, description="Actually execute generated SQL")
+
+
+class AgentPlanResponse(BaseModel):
+    plan_id: str
+    summary: str
+    tasks: List[Dict[str, Any]]
+
+
+class AgentExecuteResponse(BaseModel):
+    success: bool
+    summary: str
+    duration_ms: float
+    tasks: Dict[str, Any]
+    skipped: List[str]
+
+
+# ── Helpers ───────────────────────────────────────────────────────────
+
+def _make_registry() -> ToolRegistry:
+    registry = ToolRegistry()
+    register_all_tools(registry)
+    return registry
+
+
+# ── Routes ────────────────────────────────────────────────────────────
+
+@router.post("/plan", response_model=AgentPlanResponse)
+async def create_plan(req: AgentExecuteRequest):
+    """Generate an execution plan without running it."""
+    planner = PlannerAgent()
+    ctx = AgentContext(
+        user_prompt=req.prompt,
+        task_description=req.prompt,
+        session_id=str(uuid.uuid4()),
+        files=req.files,
+        connection=req.connection,
+        schema_context=req.schema_context,
+    )
+    result = await planner.execute(ctx)
+
+    if result.status != AgentStatus.SUCCESS or "plan" not in result.artifacts:
+        raise HTTPException(status_code=500, detail=result.error or "Planning failed")
+
+    plan = result.artifacts["plan"]
+    return AgentPlanResponse(
+        plan_id=plan.plan_id,
+        summary=plan.summary,
+        tasks=[t.to_dict() if hasattr(t, "to_dict") else _task_dict(t) for t in plan.tasks],
+    )
+
+
+@router.post("/execute", response_model=AgentExecuteResponse)
+async def execute_prompt(req: AgentExecuteRequest):
+    """Plan + execute the full DAG synchronously.  Returns when done."""
+    registry = _make_registry()
+    memory = AgentMemory()
+
+    # 1. Plan
+    planner = PlannerAgent()
+    ctx = AgentContext(
+        user_prompt=req.prompt,
+        task_description=req.prompt,
+        session_id=str(uuid.uuid4()),
+        files=req.files,
+        connection=req.connection,
+        schema_context=req.schema_context,
+        metadata={"execute": req.execute_sql},
+    )
+    plan_result = await planner.execute(ctx)
+    if plan_result.status != AgentStatus.SUCCESS or "plan" not in plan_result.artifacts:
+        raise HTTPException(status_code=500, detail=plan_result.error or "Planning failed")
+
+    plan = plan_result.artifacts["plan"]
+
+    # 2. Execute
+    executor = DAGExecutor(tool_registry=registry, memory=memory)
+    report = await executor.execute(
+        plan=plan,
+        user_prompt=req.prompt,
+        connection=req.connection,
+        files=req.files,
+        schema_context=req.schema_context,
+    )
+
+    return AgentExecuteResponse(**report.to_dict())
+
+
+@router.post("/execute/stream")
+async def execute_prompt_stream(req: AgentExecuteRequest):
+    """Plan + execute with real-time SSE progress."""
+    progress_queue: asyncio.Queue[str] = asyncio.Queue()
+
+    async def _progress_cb(message: str, agent: str, pct: float) -> None:
+        event = json.dumps({"agent": agent, "message": message, "progress": pct})
+        await progress_queue.put(f"data: {event}\n\n")
+
+    async def _generate():
+        registry = _make_registry()
+        memory = AgentMemory()
+
+        # Plan
+        planner = PlannerAgent()
+        planner.set_progress_callback(_progress_cb)
+
+        ctx = AgentContext(
+            user_prompt=req.prompt,
+            task_description=req.prompt,
+            session_id=str(uuid.uuid4()),
+            files=req.files,
+            connection=req.connection,
+            schema_context=req.schema_context,
+            metadata={"execute": req.execute_sql},
+        )
+        plan_result = await planner.execute(ctx)
+        if plan_result.status != AgentStatus.SUCCESS or "plan" not in plan_result.artifacts:
+            yield f"data: {json.dumps({'error': plan_result.error or 'Planning failed'})}\n\n"
+            return
+
+        plan = plan_result.artifacts["plan"]
+
+        # Execute
+        executor = DAGExecutor(
+            tool_registry=registry,
+            memory=memory,
+            progress_cb=_progress_cb,
+        )
+        report = await executor.execute(
+            plan=plan,
+            user_prompt=req.prompt,
+            connection=req.connection,
+            files=req.files,
+            schema_context=req.schema_context,
+        )
+
+        yield f"data: {json.dumps({'done': True, 'report': report.to_dict()})}\n\n"
+
+    return StreamingResponse(_generate(), media_type="text/event-stream")
+
+
+@router.get("/tools")
+async def list_tools():
+    """List all registered agent tools."""
+    registry = _make_registry()
+    tools = registry.list_tools()
+    return {
+        "tools": [
+            {"name": t.name, "description": t.description, "category": t.category}
+            for t in tools
+        ]
+    }
+
+
+# ── Private helpers ───────────────────────────────────────────────────
+
+def _task_dict(t: Any) -> Dict[str, Any]:
+    return {
+        "id": getattr(t, "id", "?"),
+        "task_type": str(getattr(t, "task_type", "")),
+        "description": getattr(t, "description", ""),
+        "agent_name": getattr(t, "agent_name", ""),
+        "depends_on": getattr(t, "depends_on", []),
+    }

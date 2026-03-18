@@ -1,0 +1,180 @@
+/* ============================================================
+   ConnectionsPanel — AURA Design System
+   ============================================================ */
+
+.connections-panel {
+  background: var(--bg-primary);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.connections-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: var(--space-4);
+  border-bottom: 1px solid var(--border-default);
+}
+
+.header-title {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--font-sm);
+  font-weight: var(--weight-semibold);
+  color: var(--text-primary);
+}
+
+.header-icon {
+  font-size: var(--size-icon-md);
+}
+
+.new-connection-btn {
+  width: 2rem;
+  height: 2rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  font-size: var(--font-sm);
+  transition: all var(--transition-fast);
+}
+
+.new-connection-btn:hover {
+  background: var(--color-primary-50);
+  border-color: var(--color-primary-400);
+}
+
+/* List */
+.connections-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: var(--space-2);
+}
+
+/* Item */
+.connection-item {
+  width: 100%;
+  padding: var(--space-3) var(--space-4);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  text-align: left;
+  transition: all var(--transition-fast);
+  margin-bottom: var(--space-1);
+  font-family: inherit;
+}
+
+.connection-item:hover {
+  background: var(--bg-secondary);
+  border-color: var(--border-default);
+}
+
+.connection-item.selected {
+  background: var(--color-primary-50);
+  border-color: var(--color-primary-300);
+}
+
+.connection-info {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.connection-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.connection-icon {
+  font-size: var(--size-icon-sm);
+}
+
+.connection-name {
+  flex: 1;
+  font-size: var(--font-sm);
+  font-weight: var(--weight-medium);
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.connection-status {
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: var(--radius-full);
+  flex-shrink: 0;
+}
+
+.connection-status.connected {
+  background: var(--color-success-500);
+}
+
+.connection-status.disconnected {
+  background: var(--color-neutral-400);
+}
+
+.connection-status.connecting {
+  background: var(--color-warning-500);
+  animation: pulse-status 1.5s ease-in-out infinite;
+}
+
+@keyframes pulse-status {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+.connection-details {
+  display: flex;
+  gap: var(--space-3);
+  font-size: var(--font-xs);
+  color: var(--text-tertiary);
+}
+
+.connection-type {
+  font-weight: var(--weight-semibold);
+  letter-spacing: 0.03em;
+}
+
+/* Empty */
+.empty-state {
+  padding: var(--space-10) var(--space-4);
+  text-align: center;
+}
+
+.empty-icon {
+  font-size: 2rem;
+  margin-bottom: var(--space-3);
+}
+
+.empty-state p {
+  color: var(--text-secondary);
+  font-size: var(--font-sm);
+  margin: 0 0 var(--space-4) 0;
+}
+
+.add-first-connection {
+  padding: var(--space-2) var(--space-4);
+  background: var(--color-primary-500);
+  color: white;
+  border: none;
+  border-radius: var(--radius-md);
+  font-size: var(--font-xs);
+  font-weight: var(--weight-semibold);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.add-first-connection:hover {
+  background: var(--color-primary-600);
+}

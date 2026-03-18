@@ -16,6 +16,7 @@ interface SidebarProps {
   activeItem: string;
   onItemClick: (id: string) => void;
   collapsed?: boolean;
+  onSettingsClick?: () => void;
 }
 
 /**
@@ -26,6 +27,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   activeItem,
   onItemClick,
   collapsed = false,
+  onSettingsClick,
 }) => {
   const [expandedItems, setExpandedItems] = useState<Set<string>>(new Set());
 
@@ -161,6 +163,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
             e.currentTarget.style.color = 'var(--text-secondary)';
           }}
           title="Settings"
+          onClick={() => onSettingsClick?.()}
         >
           ⚙️
         </button>

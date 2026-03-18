@@ -24,6 +24,13 @@ from connectors import (
 from safety import SQLSafetyValidator
 from insights import InsightsEngine
 
+# Agentic DE framework
+try:
+    from agents.api import router as agent_router
+    _AGENT_AVAILABLE = True
+except ImportError:
+    _AGENT_AVAILABLE = False
+
 
 app = FastAPI(
     title="AURA API Gateway",
@@ -39,6 +46,10 @@ app.add_middleware(
     allow_methods=["*"],  # Allow POST, OPTIONS, GET, etc.
     allow_headers=["*"],  # Allow Authorization, Content-Type, etc.
 )
+
+# Mount the agent router
+if _AGENT_AVAILABLE:
+    app.include_router(agent_router)
 
 
 # ==================== Models ====================
