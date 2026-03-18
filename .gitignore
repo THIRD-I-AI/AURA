@@ -30,6 +30,8 @@ env/
 # Environment Variables
 .env
 *.env
+!.env.example
+!.env.production
 
 # IDEs
 .vscode/
@@ -48,6 +50,7 @@ yarn-error.log*
 # Build outputs
 dist/
 build/
+.vite/
 
 # OS generated files
 .DS_Store

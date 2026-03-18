@@ -38,13 +38,17 @@ app = FastAPI(
     version="2.0.0"
 )
 
-# CORS - Allow ALL origins to fix Cross-Origin POST request blockage
+# CORS - Use env-driven origins; fallback to permissive for local dev
+_cors_origins = os.getenv(
+    "CORS_ALLOWED_ORIGINS",
+    "http://localhost:5173,http://localhost:3000",
+).split(",")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Allow ALL origins for now to fix the blockage
+    allow_origins=_cors_origins,
     allow_credentials=True,
-    allow_methods=["*"],  # Allow POST, OPTIONS, GET, etc.
-    allow_headers=["*"],  # Allow Authorization, Content-Type, etc.
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 # Mount the agent router
@@ -493,7 +497,7 @@ async def generate_query_proxy(request: QueryRequest) -> Dict[str, Any]:
     """Proxy query generation to orchestration service."""
     target_url = os.getenv(
         "ORCHESTRATION_SERVICE_URL",
-        "http://localhost:8001/v1/orchestrations/query",
+        "http://localhost:8006/v1/orchestrations/query",
     )
     try:
         async with httpx.AsyncClient(timeout=20.0) as client:

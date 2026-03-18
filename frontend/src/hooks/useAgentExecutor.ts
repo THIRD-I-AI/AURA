@@ -85,22 +85,29 @@ export function useAgentExecutor(): [AgentExecutorState, AgentExecutorActions] {
   const [progress, setProgress] = useState<AgentProgress[]>([]);
   const [error, setError] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const phaseRef = useRef<AgentPhase>('idle');
+
+  // Keep phaseRef in sync with the state value
+  const updatePhase = useCallback((next: AgentPhase) => {
+    phaseRef.current = next;
+    setPhase(next);
+  }, []);
 
   const reset = useCallback(() => {
-    setPhase('idle');
+    updatePhase('idle');
     setPlan(null);
     setReport(null);
     setProgress([]);
     setError(null);
     abortRef.current?.abort();
     abortRef.current = null;
-  }, []);
+  }, [updatePhase]);
 
   const abort = useCallback(() => {
     abortRef.current?.abort();
     abortRef.current = null;
-    setPhase('idle');
-  }, []);
+    updatePhase('idle');
+  }, [updatePhase]);
 
   const buildBody = (prompt: string, opts?: AgentOpts) => ({
     prompt,
@@ -113,7 +120,7 @@ export function useAgentExecutor(): [AgentExecutorState, AgentExecutorActions] {
   // ── Plan only ────────────────────────────────────────────────────
   const planOnly = useCallback(async (prompt: string, opts?: AgentOpts): Promise<AgentPlan | null> => {
     reset();
-    setPhase('planning');
+    updatePhase('planning');
     try {
       const res = await fetch(`${API_BASE}/agent/plan`, {
         method: 'POST',
@@ -126,20 +133,20 @@ export function useAgentExecutor(): [AgentExecutorState, AgentExecutorActions] {
       }
       const data: AgentPlan = await res.json();
       setPlan(data);
-      setPhase('done');
+      updatePhase('done');
       return data;
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       setError(msg);
-      setPhase('error');
+      updatePhase('error');
       return null;
     }
-  }, [reset]);
+  }, [reset, updatePhase]);
 
   // ── Execute (sync) ──────────────────────────────────────────────
   const execute = useCallback(async (prompt: string, opts?: AgentOpts): Promise<AgentReport | null> => {
     reset();
-    setPhase('executing');
+    updatePhase('executing');
     try {
       const res = await fetch(`${API_BASE}/agent/execute`, {
         method: 'POST',
@@ -152,20 +159,20 @@ export function useAgentExecutor(): [AgentExecutorState, AgentExecutorActions] {
       }
       const data: AgentReport = await res.json();
       setReport(data);
-      setPhase('done');
+      updatePhase('done');
       return data;
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       setError(msg);
-      setPhase('error');
+      updatePhase('error');
       return null;
     }
-  }, [reset]);
+  }, [reset, updatePhase]);
 
   // ── Stream (SSE) ────────────────────────────────────────────────
   const stream = useCallback(async (prompt: string, opts?: AgentOpts): Promise<void> => {
     reset();
-    setPhase('streaming');
+    updatePhase('streaming');
 
     const controller = new AbortController();
     abortRef.current = controller;
@@ -205,12 +212,12 @@ export function useAgentExecutor(): [AgentExecutorState, AgentExecutorActions] {
 
             if (event.error) {
               setError(event.error);
-              setPhase('error');
+              updatePhase('error');
               return;
             }
             if (event.done && event.report) {
               setReport(event.report);
-              setPhase('done');
+              updatePhase('done');
               return;
             }
             // Progress event
@@ -221,17 +228,17 @@ export function useAgentExecutor(): [AgentExecutorState, AgentExecutorActions] {
         }
       }
 
-      // Stream ended without explicit done
-      if (phase !== 'done' && phase !== 'error') {
-        setPhase('done');
+      // Stream ended without explicit done — use ref to avoid stale closure
+      if (phaseRef.current !== 'done' && phaseRef.current !== 'error') {
+        updatePhase('done');
       }
     } catch (err) {
       if ((err as Error).name === 'AbortError') return;
       const msg = err instanceof Error ? err.message : String(err);
       setError(msg);
-      setPhase('error');
+      updatePhase('error');
     }
-  }, [reset, phase]);
+  }, [reset, updatePhase]);
 
   const state: AgentExecutorState = { phase, plan, report, progress, error };
   const actions: AgentExecutorActions = { planOnly, execute, stream, reset, abort };

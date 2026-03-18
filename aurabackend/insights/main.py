@@ -22,9 +22,13 @@ app = FastAPI(
 )
 
 # CORS Configuration
+_cors_origins = os.getenv(
+    "CORS_ALLOWED_ORIGINS",
+    "http://localhost:5173,http://localhost:3000",
+).split(",")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -139,6 +143,68 @@ async def suggest_charts(request: ChartSuggestionRequest):
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Chart suggestion failed: {str(e)}",
         )
+
+
+# ==================== Agent Tool Endpoints ====================
+
+class RecommendIndexesRequest(BaseModel):
+    """Request index recommendations"""
+    table: str = Field(..., description="Table name to analyze")
+    query_patterns: List[str] = Field(
+        default_factory=list,
+        description="Common query patterns run against this table",
+    )
+
+
+@app.post("/recommend-indexes")
+async def recommend_indexes(request: RecommendIndexesRequest):
+    """Recommend indexes for a table based on query patterns.
+
+    Used by the agentic DE framework's optimization agent.
+    Returns heuristic-based index suggestions.
+    """
+    suggestions: List[Dict[str, Any]] = []
+    table = request.table
+    patterns = request.query_patterns
+
+    for i, pattern in enumerate(patterns):
+        pattern_lower = pattern.lower()
+
+        # Extract column hints from WHERE, JOIN, ORDER BY clauses
+        recommended_cols: List[str] = []
+        for keyword in ("where", "join", "order by", "group by"):
+            idx = pattern_lower.find(keyword)
+            if idx != -1:
+                # Simple heuristic: grab tokens after the keyword
+                fragment = pattern_lower[idx + len(keyword):].strip()
+                # Take first word-like token as potential column
+                token = fragment.split()[0].strip("(),;") if fragment.split() else None
+                if token and token not in ("and", "or", "on", "by", "asc", "desc"):
+                    recommended_cols.append(token)
+
+        if recommended_cols:
+            suggestions.append({
+                "table": table,
+                "columns": list(set(recommended_cols)),
+                "index_type": "btree",
+                "reason": f"Columns appear in filter/join/sort of pattern #{i + 1}",
+                "pattern": pattern[:120],
+            })
+
+    # Default suggestion if no patterns provided
+    if not suggestions:
+        suggestions.append({
+            "table": table,
+            "columns": [],
+            "index_type": "btree",
+            "reason": "No query patterns provided — consider indexing primary key and common filter columns",
+        })
+
+    return {
+        "table": table,
+        "recommendations": suggestions,
+        "count": len(suggestions),
+    }
 
 
 # ==================== Helper Functions ====================

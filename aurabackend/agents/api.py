@@ -23,7 +23,7 @@ from agents.planner import PlannerAgent
 from agents.executor import DAGExecutor
 from agents.tool_registry import ToolRegistry
 from agents.memory import AgentMemory
-from agents.tools import register_all_tools
+from agents.tools import register_all_tools, ingest_and_profile
 from agents.base import AgentContext, AgentStatus
 
 router = APIRouter(prefix="/agent", tags=["Agentic DE"])
@@ -61,6 +61,29 @@ def _make_registry() -> ToolRegistry:
     return registry
 
 
+async def _enrich_schema_from_files(
+    files: List[str],
+    existing_schema: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """If files are provided but no schema_context, auto-profile them."""
+    schema = dict(existing_schema) if existing_schema else {}
+    if not files or schema:
+        return schema
+
+    for fp in files:
+        try:
+            profile = await ingest_and_profile(file_path=fp)
+            if profile.get("status") == "success":
+                schema[fp] = {
+                    "columns": profile.get("columns", []),
+                    "dtypes": profile.get("dtypes", {}),
+                    "rows": profile.get("rows", 0),
+                }
+        except Exception:
+            pass  # profiling is best-effort
+    return schema
+
+
 # ── Routes ────────────────────────────────────────────────────────────
 
 @router.post("/plan", response_model=AgentPlanResponse)
@@ -72,8 +95,8 @@ async def create_plan(req: AgentExecuteRequest):
         task_description=req.prompt,
         session_id=str(uuid.uuid4()),
         files=req.files,
-        connection=req.connection,
-        schema_context=req.schema_context,
+        connection=req.connection or {},
+        schema_context=req.schema_context or {},
     )
     result = await planner.execute(ctx)
 
@@ -94,6 +117,9 @@ async def execute_prompt(req: AgentExecuteRequest):
     registry = _make_registry()
     memory = AgentMemory()
 
+    # Auto-enrich schema from files if none provided
+    schema = await _enrich_schema_from_files(req.files, req.schema_context)
+
     # 1. Plan
     planner = PlannerAgent()
     ctx = AgentContext(
@@ -101,8 +127,8 @@ async def execute_prompt(req: AgentExecuteRequest):
         task_description=req.prompt,
         session_id=str(uuid.uuid4()),
         files=req.files,
-        connection=req.connection,
-        schema_context=req.schema_context,
+        connection=req.connection or {},
+        schema_context=schema,
         metadata={"execute": req.execute_sql},
     )
     plan_result = await planner.execute(ctx)
@@ -116,9 +142,9 @@ async def execute_prompt(req: AgentExecuteRequest):
     report = await executor.execute(
         plan=plan,
         user_prompt=req.prompt,
-        connection=req.connection,
+        connection=req.connection or {},
         files=req.files,
-        schema_context=req.schema_context,
+        schema_context=schema,
     )
 
     return AgentExecuteResponse(**report.to_dict())
@@ -137,6 +163,9 @@ async def execute_prompt_stream(req: AgentExecuteRequest):
         registry = _make_registry()
         memory = AgentMemory()
 
+        # Auto-enrich schema from files
+        schema = await _enrich_schema_from_files(req.files, req.schema_context)
+
         # Plan
         planner = PlannerAgent()
         planner.set_progress_callback(_progress_cb)
@@ -146,8 +175,8 @@ async def execute_prompt_stream(req: AgentExecuteRequest):
             task_description=req.prompt,
             session_id=str(uuid.uuid4()),
             files=req.files,
-            connection=req.connection,
-            schema_context=req.schema_context,
+            connection=req.connection or {},
+            schema_context=schema,
             metadata={"execute": req.execute_sql},
         )
         plan_result = await planner.execute(ctx)
@@ -166,9 +195,9 @@ async def execute_prompt_stream(req: AgentExecuteRequest):
         report = await executor.execute(
             plan=plan,
             user_prompt=req.prompt,
-            connection=req.connection,
+            connection=req.connection or {},
             files=req.files,
-            schema_context=req.schema_context,
+            schema_context=schema,
         )
 
         yield f"data: {json.dumps({'done': True, 'report': report.to_dict()})}\n\n"

@@ -1,7 +1,7 @@
 version: '3.8'
 
 services:
-  # Database Service - Our new enterprise database connectivity service
+  # Database Service - Enterprise database connectivity
   database_service:
     build: ./aurabackend
     command: uvicorn database.main:app --host 0.0.0.0 --port 8002 --reload
@@ -20,14 +20,21 @@ services:
       retries: 3
     restart: unless-stopped
 
-  # API Gateway - Main entry point
+  # API Gateway - Main entry point (port 8000)
   api_gateway:
     build: ./aurabackend
-    command: uvicorn api_gateway.main:api_gateway --host 0.0.0.0 --port 8000
+    command: uvicorn api_gateway.main:app --host 0.0.0.0 --port 8000
     ports:
       - "8000:8000"
     environment:
       - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY}
+      - ORCHESTRATION_SERVICE_URL=http://orchestration_service:8006/v1/orchestrations/query
+      - AURA_CODEGEN_URL=http://code_generation_service:8001
+      - AURA_CONNECTORS_URL=http://connector_service:8002
+      - AURA_SANDBOX_URL=http://execution_sandbox:8003
+      - AURA_SCHEDULER_URL=http://scheduler_service:8004
+      - AURA_INSIGHTS_URL=http://insights_service:8005
       - PYTHONPATH=/app
     volumes:
       - ./aurabackend:/app
@@ -41,51 +48,49 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
-  # Orchestration Service - Multi-agent system
-  orchestration_service:
+  # Code Generation Service (port 8001)
+  code_generation_service:
     build: ./aurabackend
-    command: uvicorn orchestration_service.main:app --host 0.0.0.0 --port 8001
+    command: uvicorn code_generation_service.main:code_gen_app --host 0.0.0.0 --port 8001
     ports:
       - "8001:8001"
     environment:
       - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY}
       - PYTHONPATH=/app
     volumes:
       - ./aurabackend:/app
-    depends_on:
-      - database_service
     restart: unless-stopped
 
-  # Code Generation Service
-  code_generation_service:
+  # Connector Service (port 8002 — shares with database_service in dev)
+  connector_service:
     build: ./aurabackend
-    command: uvicorn code_generation_service.main:code_gen_app --host 0.0.0.0 --port 8003
+    command: uvicorn connectors.main:app --host 0.0.0.0 --port 8002
+    ports:
+      - "8012:8002"
+    environment:
+      - PYTHONPATH=/app
+    volumes:
+      - ./aurabackend:/app
+    restart: unless-stopped
+
+  # Execution Sandbox (port 8003)
+  execution_sandbox:
+    build: ./aurabackend
+    command: uvicorn execution_sandbox.main:execution_app --host 0.0.0.0 --port 8003
     ports:
       - "8003:8003"
     environment:
-      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - DATABASE_SERVICE_URL=http://database_service:8002
       - PYTHONPATH=/app
     volumes:
       - ./aurabackend:/app
     restart: unless-stopped
 
-  # Execution Sandbox
-  execution_sandbox:
-    build: ./aurabackend
-    command: uvicorn execution_sandbox.main:execution_app --host 0.0.0.0 --port 8007
-    ports:
-      - "8007:8007"
-    environment:
-      - GEMINI_API_KEY=${GEMINI_API_KEY}
-      - PYTHONPATH=/app
-    volumes:
-      - ./aurabackend:/app
-    restart: unless-stopped
-
-  # Scheduler Service - Automated job scheduling and execution
+  # Scheduler Service (port 8004)
   scheduler_service:
     build: ./aurabackend
-    command: uvicorn scheduler_service.main:app --host 0.0.0.0 --port 8004
+    command: uvicorn scheduler_service.main:scheduler_app --host 0.0.0.0 --port 8004
     ports:
       - "8004:8004"
     environment:
@@ -102,10 +107,10 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
-  # Knowledge Base Service
-  knowledge_base:
+  # Insights Service (port 8005)
+  insights_service:
     build: ./aurabackend
-    command: uvicorn knowledge_base.main:kb_app --host 0.0.0.0 --port 8005
+    command: uvicorn insights.main:app --host 0.0.0.0 --port 8005
     ports:
       - "8005:8005"
     environment:
@@ -115,14 +120,29 @@ services:
       - ./aurabackend:/app
     restart: unless-stopped
 
-  # Metadata Store Service
-  metadata_store:
+  # Orchestration Service (port 8006)
+  orchestration_service:
     build: ./aurabackend
-    command: uvicorn metadata_store.main:metadata_app --host 0.0.0.0 --port 8006
+    command: uvicorn orchestration_service.main:app --host 0.0.0.0 --port 8006
     ports:
       - "8006:8006"
     environment:
       - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY}
+      - PYTHONPATH=/app
+    volumes:
+      - ./aurabackend:/app
+    depends_on:
+      - database_service
+    restart: unless-stopped
+
+  # Metadata Store Service (port 8007)
+  metadata_store:
+    build: ./aurabackend
+    command: uvicorn metadata_store.main:metadata_app --host 0.0.0.0 --port 8007
+    ports:
+      - "8007:8007"
+    environment:
       - PYTHONPATH=/app
     volumes:
       - ./aurabackend:/app

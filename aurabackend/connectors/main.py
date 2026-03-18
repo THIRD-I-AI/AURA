@@ -28,9 +28,13 @@ app = FastAPI(
 )
 
 # CORS Configuration
+_cors_origins = os.getenv(
+    "CORS_ALLOWED_ORIGINS",
+    "http://localhost:5173,http://localhost:3000",
+).split(",")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -196,6 +200,146 @@ async def list_available_connectors():
             },
         ]
     }
+
+
+# ==================== Agent Tool Endpoints ====================
+
+class IngestRequest(BaseModel):
+    """Request to ingest a file and profile it"""
+    file_path: str = Field(..., description="Path to the file to ingest")
+
+
+class IntrospectRequest(BaseModel):
+    """Request to introspect a database schema"""
+    connector_type: str = Field(..., description="postgresql, mysql, or bigquery")
+    config: Dict[str, Any] = Field(default_factory=dict, description="Connector configuration")
+
+
+@app.post("/ingest")
+async def ingest_file(request: IngestRequest):
+    """Ingest a file and return basic profiling information.
+
+    Used by the agentic DE framework to ingest data files.
+    """
+    import os as _os
+    file_path = request.file_path
+
+    if not _os.path.exists(file_path):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"File not found: {file_path}",
+        )
+
+    # Basic profiling with pandas if available
+    try:
+        import pandas as pd
+
+        ext = _os.path.splitext(file_path)[1].lower()
+        if ext == ".csv":
+            df = pd.read_csv(file_path, nrows=10_000)
+        elif ext in (".xlsx", ".xls"):
+            df = pd.read_excel(file_path, nrows=10_000)
+        elif ext == ".json":
+            df = pd.read_json(file_path)
+        elif ext == ".parquet":
+            df = pd.read_parquet(file_path)
+        else:
+            return {
+                "file_path": file_path,
+                "status": "unsupported_format",
+                "message": f"Unsupported file extension: {ext}",
+            }
+
+        profile = {
+            "file_path": file_path,
+            "rows": len(df),
+            "columns": list(df.columns),
+            "dtypes": {col: str(dtype) for col, dtype in df.dtypes.items()},
+            "null_counts": df.isnull().sum().to_dict(),
+            "sample": df.head(5).to_dict(orient="records"),
+            "status": "success",
+        }
+        return profile
+
+    except ImportError:
+        return {
+            "file_path": file_path,
+            "status": "limited",
+            "message": "pandas not available — returning file metadata only",
+            "size_bytes": _os.path.getsize(file_path),
+        }
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Ingest failed: {str(e)}",
+        )
+
+
+@app.post("/introspect")
+async def introspect_database(request: IntrospectRequest):
+    """Introspect a database and return schema metadata.
+
+    Used by the agentic DE framework to discover tables and columns.
+    """
+    try:
+        connector_type = request.connector_type.lower()
+
+        if not request.config:
+            return {
+                "connector_type": connector_type,
+                "tables": [],
+                "message": "No config provided — cannot connect",
+            }
+
+        connector_config = ConnectorConfig(
+            source_type=SourceType(connector_type),
+            name=f"introspect-{connector_type}",
+            **request.config,
+        )
+
+        # Create connector
+        if connector_type == "postgresql":
+            connector = PostgreSQLConnector(connector_config)
+        elif connector_type == "mysql":
+            connector = MySQLConnector(connector_config)
+        elif connector_type == "bigquery":
+            connector = BigQueryConnector(connector_config)
+        else:
+            raise ValueError(f"Unknown connector type: {connector_type}")
+
+        # Connect and discover schema
+        await connector.connect()
+        tables = await connector.list_tables()
+
+        schema_info: List[Dict[str, Any]] = []
+        for table_name in tables:
+            try:
+                profile = await connector.profile_table(table_name)
+                schema_info.append({
+                    "table": table_name,
+                    "profile": profile,
+                })
+            except Exception:
+                schema_info.append({
+                    "table": table_name,
+                    "profile": None,
+                })
+
+        await connector.disconnect()
+
+        return {
+            "connector_type": connector_type,
+            "tables": tables,
+            "table_count": len(tables),
+            "schema": schema_info,
+            "status": "success",
+        }
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Introspection failed: {str(e)}",
+        )
 
 
 if __name__ == "__main__":
