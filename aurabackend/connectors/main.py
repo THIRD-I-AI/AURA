@@ -20,6 +20,7 @@ from connectors import (
     PostgreSQLConnector,
     MySQLConnector,
     BigQueryConnector,
+    DuckDBConnector,
 )
 
 app = FastAPI(
@@ -39,6 +40,22 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# ==================== Connector Factory ====================
+
+def _create_connector(connector_type: str, config: ConnectorConfig):
+    """Return the right connector class for a given type string."""
+    _map = {
+        "postgresql": PostgreSQLConnector,
+        "mysql": MySQLConnector,
+        "bigquery": BigQueryConnector,
+        "duckdb": DuckDBConnector,
+    }
+    cls = _map.get(connector_type.lower())
+    if cls is None:
+        raise ValueError(f"Unknown connector type: {connector_type}")
+    return cls(config)
 
 
 # ==================== Models ====================
@@ -97,18 +114,7 @@ async def test_connector(request: ConnectorTestRequest):
         )
 
         # Create appropriate connector
-        if connector_type == "postgresql":
-            connector = PostgreSQLConnector(connector_config)
-        elif connector_type == "mysql":
-            connector = MySQLConnector(connector_config)
-        elif connector_type == "bigquery":
-            connector = BigQueryConnector(connector_config)
-        else:
-            return ConnectorTestResponse(
-                success=False,
-                message=f"Unknown connector type: {connector_type}",
-                error=f"Unsupported connector: {connector_type}",
-            )
+        connector = _create_connector(connector_type, connector_config)
 
         # Test connection
         connected = await connector.connect()
@@ -148,14 +154,7 @@ async def list_tables(request: TableListRequest):
         )
 
         # Create connector
-        if connector_type == "postgresql":
-            connector = PostgreSQLConnector(connector_config)
-        elif connector_type == "mysql":
-            connector = MySQLConnector(connector_config)
-        elif connector_type == "bigquery":
-            connector = BigQueryConnector(connector_config)
-        else:
-            raise ValueError(f"Unknown connector type: {connector_type}")
+        connector = _create_connector(connector_type, connector_config)
 
         # List tables
         await connector.connect()
@@ -183,20 +182,30 @@ async def list_available_connectors():
             {
                 "id": "postgresql",
                 "name": "PostgreSQL",
-                "description": "PostgreSQL database",
+                "description": "PostgreSQL database (+ pgvector, PostGIS)",
                 "icon": "🐘",
+                "capabilities": ["sql", "vector", "spatial"],
             },
             {
                 "id": "mysql",
                 "name": "MySQL",
                 "description": "MySQL database",
                 "icon": "🐬",
+                "capabilities": ["sql"],
             },
             {
                 "id": "bigquery",
                 "name": "Google BigQuery",
                 "description": "BigQuery data warehouse",
                 "icon": "☁️",
+                "capabilities": ["sql"],
+            },
+            {
+                "id": "duckdb",
+                "name": "DuckDB",
+                "description": "Fast local analytics — query CSV/Parquet/JSON directly",
+                "icon": "🦆",
+                "capabilities": ["sql", "file_query"],
             },
         ]
     }
@@ -298,14 +307,7 @@ async def introspect_database(request: IntrospectRequest):
         )
 
         # Create connector
-        if connector_type == "postgresql":
-            connector = PostgreSQLConnector(connector_config)
-        elif connector_type == "mysql":
-            connector = MySQLConnector(connector_config)
-        elif connector_type == "bigquery":
-            connector = BigQueryConnector(connector_config)
-        else:
-            raise ValueError(f"Unknown connector type: {connector_type}")
+        connector = _create_connector(connector_type, connector_config)
 
         # Connect and discover schema
         await connector.connect()
@@ -400,14 +402,7 @@ async def execute_query(connection_id: str, request: QueryRequest):
             **config_copy,
         )
 
-        if connector_type == "postgresql":
-            connector = PostgreSQLConnector(connector_config)
-        elif connector_type == "mysql":
-            connector = MySQLConnector(connector_config)
-        elif connector_type == "bigquery":
-            connector = BigQueryConnector(connector_config)
-        else:
-            raise ValueError(f"Unknown connector type: {connector_type}")
+        connector = _create_connector(connector_type, connector_config)
 
         await connector.connect()
         rows = await connector.execute_query(request.query, limit=request.limit)
@@ -429,6 +424,131 @@ async def execute_query(connection_id: str, request: QueryRequest):
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Query execution failed: {str(e)}",
         )
+
+
+# ==================== Vault Endpoints ====================
+# Expose the hybrid multimodal vault (regular + vector + spatial)
+# through the connector service so the gateway can proxy them.
+
+_vault_instance = None
+
+
+async def _get_vault():
+    """Lazy-init the AuraVault singleton."""
+    global _vault_instance
+    if _vault_instance is None:
+        try:
+            from shared.vault_client import AuraVault
+            _vault_instance = AuraVault()
+            await _vault_instance.connect()
+        except Exception as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=f"Vault unavailable: {exc}",
+            )
+    return _vault_instance
+
+
+@app.get("/vault/health")
+async def vault_health():
+    """Health check for the AURA Vault database."""
+    vault = await _get_vault()
+    info = await vault.health()
+    caps = await vault.capabilities()
+    return {"vault": info, "capabilities": caps}
+
+
+@app.get("/vault/tables")
+async def vault_tables():
+    """List all tables in the vault."""
+    vault = await _get_vault()
+    tables = await vault._db.list_tables()
+    return {"tables": tables, "count": len(tables)}
+
+
+class VaultQueryRequest(BaseModel):
+    query: str = Field(..., description="SQL query to run against the vault")
+    limit: int = Field(default=1000, ge=1, le=100_000)
+
+
+@app.post("/vault/query")
+async def vault_query(request: VaultQueryRequest):
+    """Execute a SQL query against the AURA Vault."""
+    vault = await _get_vault()
+    try:
+        rows = await vault._db.execute_query(request.query, limit=request.limit)
+        columns = list(rows[0].keys()) if rows else []
+        return {
+            "columns": columns,
+            "rows": [list(r.values()) for r in rows],
+            "row_count": len(rows),
+        }
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Vault query failed: {e}",
+        )
+
+
+class VectorSearchRequest(BaseModel):
+    table: str = Field(default="image_assets", description="Table with embeddings")
+    embedding: List[float] = Field(..., description="Query embedding vector")
+    column: str = Field(default="embedding")
+    limit: int = Field(default=10, ge=1, le=1000)
+    metric: str = Field(default="cosine", description="cosine or l2")
+
+
+@app.post("/vault/vector-search")
+async def vault_vector_search(request: VectorSearchRequest):
+    """Find nearest neighbours by vector similarity (pgvector)."""
+    vault = await _get_vault()
+    try:
+        results = await vault._db.vector_search(
+            request.table,
+            request.embedding,
+            column=request.column,
+            limit=request.limit,
+            metric=request.metric,
+        )
+        return {"results": results, "count": len(results)}
+    except NotImplementedError as e:
+        raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail=str(e))
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Vector search failed: {e}",
+        )
+
+
+class SpatialQueryRequest(BaseModel):
+    query: str = Field(..., description="PostGIS-enabled SQL query")
+    params: List[Any] = Field(default_factory=list)
+
+
+@app.post("/vault/spatial-query")
+async def vault_spatial_query(request: SpatialQueryRequest):
+    """Run a spatial/PostGIS query against the vault."""
+    vault = await _get_vault()
+    try:
+        results = await vault._db.spatial_query(
+            request.query,
+            request.params or None,
+        )
+        return {"results": results, "count": len(results)}
+    except NotImplementedError as e:
+        raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail=str(e))
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Spatial query failed: {e}",
+        )
+
+
+@app.get("/vault/capabilities")
+async def vault_capabilities():
+    """Report which data-planes (relational, vector, spatial) are available."""
+    vault = await _get_vault()
+    return await vault.capabilities()
 
 
 if __name__ == "__main__":

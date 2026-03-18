@@ -17,6 +17,7 @@ class SourceType(Enum):
     BIGQUERY = "bigquery"
     SNOWFLAKE = "snowflake"
     MONGODB = "mongodb"
+    DUCKDB = "duckdb"
 
 
 @dataclass
