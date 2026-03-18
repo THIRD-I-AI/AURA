@@ -4,43 +4,37 @@ import json
 import os
 import sys
 
-from fastapi import FastAPI, HTTPException, status
-from fastapi.middleware.cors import CORSMiddleware
-from dotenv import load_dotenv
+from fastapi import HTTPException, status
 
 # Add parent directory to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from shared.service_factory import create_service
+from shared.config import settings
+from shared.logging_config import get_logger
 from shared.models import AgentResponse, ChatRequest
 from orchestration_service.agents.critic_agent import CriticAgent
 from orchestration_service.agents.generator_agent import GeneratorAgent
 from orchestration_service.coordinator import TinyRecursiveConfig, TinyRecursiveCoordinator
 from mcp_core import MCPServer, ToolDescriptor, ToolInvocation, ToolInvocationResult
 
-load_dotenv()
+logger = get_logger("aura.orchestration")
 
-app = FastAPI(
-    title="AURA Orchestration Service",
+app = create_service(
+    name="Orchestration",
+    service_tag="orchestration",
     description="Coordinates multi-agent SQL generation and validation",
-)
-
-allowed_origins = os.getenv("ORCHESTRATION_ALLOWED_ORIGINS", "*").split(",")
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=allowed_origins,
-    allow_methods=["*"],
-    allow_headers=["*"],
 )
 
 generator = GeneratorAgent()
 critic = CriticAgent()
 config = TinyRecursiveConfig(
-    max_depth=int(os.getenv("TINY_RECURSIVE_MAX_DEPTH", "3")),
-    confidence_threshold=float(os.getenv("TINY_RECURSIVE_CONFIDENCE", "0.8")),
+    max_depth=settings.tiny_recursive_max_depth,
+    confidence_threshold=settings.tiny_recursive_confidence,
 )
 coordinator = TinyRecursiveCoordinator(generator, critic, config)
 
-mcp_server = MCPServer(api_key=os.getenv("MCP_API_KEY"))
+mcp_server = MCPServer(api_key=settings.mcp_api_key)
 
 
 def _connection_probe(invocation: ToolInvocation) -> ToolInvocationResult:
@@ -74,9 +68,7 @@ def root() -> dict[str, str]:
     return {"service": "orchestration", "status": "ready"}
 
 
-@app.get("/health", status_code=status.HTTP_200_OK)
-def health() -> dict[str, str]:
-    return {"status": "healthy"}
+# Health is provided by create_service()
 
 
 @app.post("/v1/orchestrations/query", response_model=AgentResponse, status_code=status.HTTP_200_OK)

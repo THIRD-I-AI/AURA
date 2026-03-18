@@ -1,19 +1,18 @@
-"""
-Enhanced AURA API Gateway with connectors, safety, and insights
-"""
+"""Enhanced AURA API Gateway with connectors, safety, and insights"""
 
 import os
 import sys
 import shutil
 from typing import Dict, List, Any, Optional
-from fastapi import FastAPI, HTTPException, UploadFile, File, status
-from fastapi.middleware.cors import CORSMiddleware
+from fastapi import HTTPException, UploadFile, File, status
 from pydantic import BaseModel, Field
 import httpx
 from datetime import datetime
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from shared.service_factory import create_service
+from shared.logging_config import get_logger
 from connectors import (
     ConnectorConfig,
     SourceType,
@@ -24,6 +23,8 @@ from connectors import (
 from safety import SQLSafetyValidator
 from insights import InsightsEngine
 
+logger = get_logger("aura.api_gateway")
+
 # Agentic DE framework
 try:
     from agents.api import router as agent_router
@@ -32,23 +33,10 @@ except ImportError:
     _AGENT_AVAILABLE = False
 
 
-app = FastAPI(
-    title="AURA API Gateway",
+app = create_service(
+    name="API Gateway",
+    service_tag="api_gateway",
     description="Enterprise data analytics platform gateway",
-    version="2.0.0"
-)
-
-# CORS - Use env-driven origins; fallback to permissive for local dev
-_cors_origins = os.getenv(
-    "CORS_ALLOWED_ORIGINS",
-    "http://localhost:5173,http://localhost:3000",
-).split(",")
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=_cors_origins,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
 )
 
 # Mount the agent router
@@ -799,17 +787,7 @@ async def get_connections():
     }
 
 
-# ==================== Health ====================
-
-@app.get("/health")
-async def health():
-    """Health check"""
-    return {
-        "status": "healthy",
-        "service": "api-gateway",
-        "version": "2.0.0",
-        "timestamp": datetime.now().isoformat(),
-    }
+# ── Health is provided by create_service() ──
 
 
 if __name__ == "__main__":

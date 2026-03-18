@@ -7,31 +7,22 @@ import os
 import sys
 from typing import Dict, Any, List, Optional
 
-from fastapi import FastAPI, HTTPException, status
-from fastapi.middleware.cors import CORSMiddleware
+from fastapi import HTTPException, status
 from pydantic import BaseModel, Field
 
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from shared.service_factory import create_service
+from shared.logging_config import get_logger
 from insights.engine import InsightsEngine
 
-app = FastAPI(
-    title="AURA Insights Service",
-    description="Auto-generates insights and visualizations from query results",
-)
+logger = get_logger("aura.insights")
 
-# CORS Configuration
-_cors_origins = os.getenv(
-    "CORS_ALLOWED_ORIGINS",
-    "http://localhost:5173,http://localhost:3000",
-).split(",")
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=_cors_origins,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+app = create_service(
+    name="Insights",
+    service_tag="insights",
+    description="Auto-generates insights and visualizations from query results",
 )
 
 
@@ -77,16 +68,7 @@ class ChartSuggestionResponse(BaseModel):
     )
 
 
-# ==================== Health ====================
-
-@app.get("/health")
-async def health():
-    """Health check endpoint"""
-    return {
-        "status": "healthy",
-        "service": "insights",
-        "version": "1.0.0",
-    }
+# Health is provided by create_service()
 
 
 # ==================== Insights API ====================

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import sys
 from typing import Any, Dict
 
 from contextlib import asynccontextmanager
@@ -8,29 +9,36 @@ from typing import AsyncGenerator
 
 from fastapi import Body, Depends, FastAPI, HTTPException
 
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from shared.service_factory import create_service
+from shared.config import settings
+from shared.logging_config import get_logger
 from .db import get_session, init_db
 from .models import User
 from .repository import MetadataRepository, get_repository
 
+logger = get_logger("aura.metadata_store")
+
 
 @asynccontextmanager
 async def _lifespan(_: FastAPI) -> AsyncGenerator[None, None]:
+	logger.info("Starting Metadata Store — initializing DB")
 	await init_db()
-	seed_admin = os.getenv("AURA_ADMIN_EMAIL")
-	if seed_admin:
+	if settings.admin_email:
 		async for session in get_session():
 			repo = MetadataRepository(session)
-			await repo.upsert_user("admin", name="AURA Admin", email=seed_admin)
+			await repo.upsert_user("admin", name="AURA Admin", email=settings.admin_email)
 			break
 	yield
+	logger.info("Shutting down Metadata Store")
 
 
-metadata_app = FastAPI(title="AURA Metadata Store", lifespan=_lifespan)
-
-
-@metadata_app.get("/health")
-async def health():
-	return {"status": "healthy", "service": "metadata_store"}
+metadata_app = create_service(
+	name="Metadata Store",
+	service_tag="metadata_store",
+	lifespan=_lifespan,
+)
 
 
 def _serialize_user(user: User) -> Dict[str, Any]:

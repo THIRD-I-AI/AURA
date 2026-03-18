@@ -1,5 +1,5 @@
 # Multi-stage Dockerfile for AURA Backend Services
-FROM python:3.11-slim as base
+FROM python:3.13-slim as base
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
@@ -27,8 +27,8 @@ RUN useradd --create-home --shell /bin/bash aura
 RUN chown -R aura:aura /app
 USER aura
 
-# Expose common ports
-EXPOSE 8000 8001 8002 8003 8004 8005
+# Expose all service ports
+EXPOSE 8000 8001 8002 8003 8004 8005 8006 8007
 
-# Default command (can be overridden in docker-compose)
-CMD ["uvicorn", "api_gateway.main:api_gateway", "--host", "0.0.0.0", "--port", "8000"]
+# Default command — API Gateway
+CMD ["uvicorn", "api_gateway.main:app", "--host", "0.0.0.0", "--port", "8000"]

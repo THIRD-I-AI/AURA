@@ -4,35 +4,70 @@ Scheduler Service - FastAPI REST API for managing scheduled jobs
 
 import sys
 import os
+from contextlib import asynccontextmanager
+from typing import AsyncGenerator
 
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from fastapi import FastAPI, HTTPException, status
-from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from typing import Optional, List, Dict, Any
 from datetime import datetime
-import logging
 
+from shared.service_factory import create_service
+from shared.config import settings
+from shared.logging_config import get_logger
 from scheduler_service.models import JobStatus, ScheduleType
 from scheduler_service.repository import SchedulerRepository
 from scheduler_service.executor import JobExecutor
 from scheduler_service.worker import SchedulerWorker
 
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-)
-logger = logging.getLogger(__name__)
+logger = get_logger("aura.scheduler")
+
+# Mutable state container — avoids global keyword issues with asynccontextmanager
+_state: Dict[str, Any] = {"repository": None, "executor": None, "worker": None}
+
+
+@asynccontextmanager
+async def _scheduler_lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
+    """Startup: init DB, executor, worker.  Shutdown: stop worker."""
+    logger.info("Starting Scheduler Service...")
+
+    db_url = settings.scheduler_database_url
+    _state["repository"] = SchedulerRepository(db_url)
+    await _state["repository"].init_db()
+    logger.info("Initialized database: %s", db_url)
+
+    _state["executor"] = JobExecutor(_state["repository"], settings.database_service_url)
+    logger.info("Initialized executor (database service: %s)", settings.database_service_url)
+
+    _state["worker"] = SchedulerWorker(
+        _state["repository"], _state["executor"], settings.scheduler_check_interval,
+    )
+    await _state["worker"].start()
+    logger.info("Scheduler Service started successfully")
+
+    yield
+
+    logger.info("Shutting down Scheduler Service...")
+    if _state["worker"]:
+        await _state["worker"].stop()
+    if _state["executor"]:
+        await _state["executor"].close()
+    logger.info("Scheduler Service shutdown complete")
+
+
+# Convenience helper kept for readability — endpoints use _Proxy aliases below
+
 
 # Initialize FastAPI app — single app used by orchestrator and all routes
-scheduler_app = FastAPI(
-    title="AURA Scheduler Service",
+scheduler_app = create_service(
+    name="Scheduler",
+    service_tag="scheduler",
     description="Automated job scheduling and execution service",
-    version="1.0.0",
+    lifespan=_scheduler_lifespan,
 )
 
 
@@ -117,78 +152,7 @@ class LogEntry(BaseModel):
     details: Optional[Dict[str, Any]]
 
 
-# CORS middleware — applied to the single scheduler_app
-_cors_origins = os.getenv(
-    "CORS_ALLOWED_ORIGINS",
-    "http://localhost:5173,http://localhost:3000",
-).split(",")
-scheduler_app.add_middleware(
-    CORSMiddleware,
-    allow_origins=_cors_origins,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-# Global instances
-repository: Optional[SchedulerRepository] = None
-executor: Optional[JobExecutor] = None
-worker: Optional[SchedulerWorker] = None
-
-
-@scheduler_app.get("/health")
-async def health():
-    return {"status": "healthy", "service": "scheduler"}
-
-
-@scheduler_app.on_event("startup")
-async def startup_event():
-    """Initialize services on startup"""
-    global repository, executor, worker
-    
-    logger.info("Starting Scheduler Service...")
-    
-    # Get database URL from environment or use default
-    db_url = os.getenv(
-        "SCHEDULER_DATABASE_URL",
-        "sqlite+aiosqlite:///data/scheduler.db"
-    )
-    
-    # Initialize repository
-    repository = SchedulerRepository(db_url)
-    await repository.init_db()
-    logger.info(f"Initialized database: {db_url}")
-    
-    # Initialize executor
-    database_service_url = os.getenv(
-        "DATABASE_SERVICE_URL",
-        "http://localhost:8002"
-    )
-    executor = JobExecutor(repository, database_service_url)
-    logger.info(f"Initialized executor (database service: {database_service_url})")
-    
-    # Initialize and start worker
-    check_interval = int(os.getenv("SCHEDULER_CHECK_INTERVAL", "60"))
-    worker = SchedulerWorker(repository, executor, check_interval)
-    await worker.start()
-    
-    logger.info("Scheduler Service started successfully")
-
-
-@scheduler_app.on_event("shutdown")
-async def shutdown_event():
-    """Cleanup on shutdown"""
-    global worker, executor
-    
-    logger.info("Shutting down Scheduler Service...")
-    
-    if worker:
-        await worker.stop()
-    
-    if executor:
-        await executor.close()
-    
-    logger.info("Scheduler Service shutdown complete")
+# (CORS, logging, error handling all provided by create_service)
 
 
 @scheduler_app.get("/")
@@ -197,11 +161,29 @@ async def root():
     return {
         "service": "scheduler",
         "status": "running",
-        "worker_active": worker.running if worker else False
+        "worker_active": _state["worker"].running if _state["worker"] else False
     }
 
 
 # ==================== Job Management Endpoints ====================
+# Note: ``repository``, ``executor``, ``worker`` are resolved via _state dict
+# set during lifespan startup.  We define module-level aliases that lookup at
+# call time so endpoint handler code doesn't need to change.
+
+class _Proxy:
+    """Thin proxy that defers to _state[key] at access time."""
+    def __init__(self, key: str):
+        self._key = key
+    def __getattr__(self, name: str):
+        obj = _state[self._key]
+        if obj is None:
+            raise RuntimeError(f"Scheduler {self._key} not initialized yet")
+        return getattr(obj, name)
+
+repository = _Proxy("repository")  # type: ignore[assignment]
+executor = _Proxy("executor")      # type: ignore[assignment]
+worker = _Proxy("worker")          # type: ignore[assignment]
+
 
 @scheduler_app.post("/jobs", response_model=JobResponse, status_code=status.HTTP_201_CREATED)
 async def create_job(job: CreateJobRequest):

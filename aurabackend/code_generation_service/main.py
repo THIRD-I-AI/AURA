@@ -4,17 +4,22 @@ import os
 import sys
 from typing import Any, Dict
 
-from fastapi import FastAPI, HTTPException
+from fastapi import HTTPException
 
 # Add parent directory to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from shared.service_factory import create_service
+from shared.logging_config import get_logger
 from shared.llm_provider import get_llm
 from shared.models import PlanStep
-from shared.secret_resolver import secret_resolver
 
+logger = get_logger("aura.code_generation")
 
-code_gen_app = FastAPI(title="AURA Code Generation Service")
+code_gen_app = create_service(
+	name="Code Generation",
+	service_tag="code_generation",
+)
 
 
 class CodeGenerationEngine:
@@ -95,9 +100,7 @@ class CodeGenerationEngine:
 _engine = CodeGenerationEngine()
 
 
-@code_gen_app.get("/health")
-async def health() -> Dict[str, str]:
-	return {"status": "healthy", "service": "code_generation"}
+# Health is provided by create_service()
 
 
 @code_gen_app.post("/generate_code")

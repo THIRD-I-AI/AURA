@@ -5,24 +5,26 @@ import sys
 from typing import Any, Dict, List
 
 import httpx
-from fastapi import FastAPI, HTTPException
+from fastapi import HTTPException
 
 # Add parent directory to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from shared.service_factory import create_service
+from shared.config import settings
+from shared.logging_config import get_logger
 from shared.models import ExecutionJob, QueryResult
 
+logger = get_logger("aura.execution_sandbox")
 
-execution_app = FastAPI(title="AURA Execution Sandbox")
+execution_app = create_service(
+    name="Execution Sandbox",
+    service_tag="execution_sandbox",
+)
 
 
-@execution_app.get("/health")
-async def health():
-	return {"status": "healthy", "service": "execution_sandbox"}
-
-
-DATABASE_SERVICE_URL = os.getenv("DATABASE_SERVICE_URL", "http://localhost:8002")
-SANDBOX_TIMEOUT = float(os.getenv("EXECUTION_TIMEOUT_SECONDS", "15"))
+DATABASE_SERVICE_URL = settings.database_service_url
+SANDBOX_TIMEOUT = settings.execution_timeout
 
 
 def _infer_chart(columns: List[str]) -> Dict[str, Any]:
