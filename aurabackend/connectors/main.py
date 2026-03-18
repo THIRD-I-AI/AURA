@@ -342,6 +342,95 @@ async def introspect_database(request: IntrospectRequest):
         )
 
 
+# ==================== Query Execution Endpoint ====================
+# Used by the Execution Sandbox (port 8003) to run SQL against a connection.
+
+class QueryRequest(BaseModel):
+    """Request to execute a SQL query"""
+    connection_id: str = Field(default="default", description="Connection identifier")
+    query: str = Field(..., description="SQL query to execute")
+    limit: int = Field(default=1000, ge=1, le=100_000)
+
+
+# In-memory connection store (maps connection_id → connector config)
+_connection_store: Dict[str, Dict[str, Any]] = {}
+
+
+@app.post("/connections/{connection_id}/query")
+async def execute_query(connection_id: str, request: QueryRequest):
+    """Execute a SQL query against a stored or default connection.
+
+    This is the endpoint the Execution Sandbox proxies to.
+    """
+    # Look up stored connection config, or use env defaults
+    conn_cfg = _connection_store.get(connection_id)
+    if not conn_cfg:
+        # Try environment-variable based defaults
+        db_host = os.getenv("DB_HOST", "")
+        db_port = os.getenv("DB_PORT", "5432")
+        db_user = os.getenv("DB_USER", "")
+        db_pass = os.getenv("DB_PASSWORD", "")
+        db_name = os.getenv("DB_NAME", "")
+        db_type = os.getenv("DB_TYPE", "postgresql")
+
+        if not db_host:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    f"Connection '{connection_id}' not found and no default DB configured. "
+                    "Set DB_HOST, DB_USER, DB_PASSWORD, DB_NAME env vars."
+                ),
+            )
+        conn_cfg = {
+            "connector_type": db_type,
+            "host": db_host,
+            "port": int(db_port),
+            "username": db_user,
+            "password": db_pass,
+            "database": db_name,
+        }
+
+    connector_type = conn_cfg.pop("connector_type", "postgresql")
+    config_copy = {k: v for k, v in conn_cfg.items() if k != "connector_type"}
+
+    try:
+        connector_config = ConnectorConfig(
+            source_type=SourceType(connector_type),
+            name=f"query-{connection_id}",
+            **config_copy,
+        )
+
+        if connector_type == "postgresql":
+            connector = PostgreSQLConnector(connector_config)
+        elif connector_type == "mysql":
+            connector = MySQLConnector(connector_config)
+        elif connector_type == "bigquery":
+            connector = BigQueryConnector(connector_config)
+        else:
+            raise ValueError(f"Unknown connector type: {connector_type}")
+
+        await connector.connect()
+        rows = await connector.execute_query(request.query, limit=request.limit)
+        await connector.disconnect()
+
+        # Derive columns from first row
+        columns = list(rows[0].keys()) if rows else []
+
+        return {
+            "columns": columns,
+            "rows": [list(r.values()) for r in rows],
+            "row_count": len(rows),
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Query execution failed: {str(e)}",
+        )
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8002)

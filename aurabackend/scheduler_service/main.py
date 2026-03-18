@@ -28,12 +28,12 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Initialize FastAPI app
-scheduler_app = FastAPI(title="AURA Scheduler Service")
-
-@scheduler_app.get("/health")
-async def health():
-    return {"status": "healthy", "service": "scheduler"}
+# Initialize FastAPI app — single app used by orchestrator and all routes
+scheduler_app = FastAPI(
+    title="AURA Scheduler Service",
+    description="Automated job scheduling and execution service",
+    version="1.0.0",
+)
 
 
 # Pydantic models for API requests/responses
@@ -117,19 +117,12 @@ class LogEntry(BaseModel):
     details: Optional[Dict[str, Any]]
 
 
-# Initialize FastAPI app
-app = FastAPI(
-    title="AURA Scheduler Service",
-    description="Automated job scheduling and execution service",
-    version="1.0.0"
-)
-
-# CORS middleware
+# CORS middleware — applied to the single scheduler_app
 _cors_origins = os.getenv(
     "CORS_ALLOWED_ORIGINS",
     "http://localhost:5173,http://localhost:3000",
 ).split(",")
-app.add_middleware(
+scheduler_app.add_middleware(
     CORSMiddleware,
     allow_origins=_cors_origins,
     allow_credentials=True,
@@ -143,12 +136,12 @@ executor: Optional[JobExecutor] = None
 worker: Optional[SchedulerWorker] = None
 
 
-@app.get("/health")
+@scheduler_app.get("/health")
 async def health():
     return {"status": "healthy", "service": "scheduler"}
 
 
-@app.on_event("startup")
+@scheduler_app.on_event("startup")
 async def startup_event():
     """Initialize services on startup"""
     global repository, executor, worker
@@ -182,7 +175,7 @@ async def startup_event():
     logger.info("Scheduler Service started successfully")
 
 
-@app.on_event("shutdown")
+@scheduler_app.on_event("shutdown")
 async def shutdown_event():
     """Cleanup on shutdown"""
     global worker, executor
@@ -198,7 +191,7 @@ async def shutdown_event():
     logger.info("Scheduler Service shutdown complete")
 
 
-@app.get("/")
+@scheduler_app.get("/")
 async def root():
     """Health check endpoint"""
     return {
@@ -210,7 +203,7 @@ async def root():
 
 # ==================== Job Management Endpoints ====================
 
-@app.post("/jobs", response_model=JobResponse, status_code=status.HTTP_201_CREATED)
+@scheduler_app.post("/jobs", response_model=JobResponse, status_code=status.HTTP_201_CREATED)
 async def create_job(job: CreateJobRequest):
     """Create a new scheduled job"""
     try:
@@ -245,7 +238,7 @@ async def create_job(job: CreateJobRequest):
         )
 
 
-@app.get("/jobs", response_model=List[JobResponse])
+@scheduler_app.get("/jobs", response_model=List[JobResponse])
 async def list_jobs(is_active: Optional[bool] = None):
     """List all scheduled jobs"""
     try:
@@ -259,7 +252,7 @@ async def list_jobs(is_active: Optional[bool] = None):
         )
 
 
-@app.get("/jobs/{job_id}", response_model=JobResponse)
+@scheduler_app.get("/jobs/{job_id}", response_model=JobResponse)
 async def get_job(job_id: str):
     """Get a specific job by ID"""
     try:
@@ -280,7 +273,7 @@ async def get_job(job_id: str):
         )
 
 
-@app.put("/jobs/{job_id}", response_model=JobResponse)
+@scheduler_app.put("/jobs/{job_id}", response_model=JobResponse)
 async def update_job(job_id: str, updates: UpdateJobRequest):
     """Update a scheduled job"""
     try:
@@ -323,7 +316,7 @@ async def update_job(job_id: str, updates: UpdateJobRequest):
         )
 
 
-@app.delete("/jobs/{job_id}", status_code=status.HTTP_204_NO_CONTENT)
+@scheduler_app.delete("/jobs/{job_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_job(job_id: str):
     """Delete a scheduled job"""
     try:
@@ -354,7 +347,7 @@ async def delete_job(job_id: str):
         )
 
 
-@app.post("/jobs/{job_id}/pause", response_model=JobResponse)
+@scheduler_app.post("/jobs/{job_id}/pause", response_model=JobResponse)
 async def pause_job(job_id: str):
     """Pause a scheduled job"""
     try:
@@ -379,7 +372,7 @@ async def pause_job(job_id: str):
         )
 
 
-@app.post("/jobs/{job_id}/resume", response_model=JobResponse)
+@scheduler_app.post("/jobs/{job_id}/resume", response_model=JobResponse)
 async def resume_job(job_id: str):
     """Resume a paused job"""
     try:
@@ -413,7 +406,7 @@ async def resume_job(job_id: str):
         )
 
 
-@app.post("/jobs/{job_id}/execute", response_model=ExecutionResponse)
+@scheduler_app.post("/jobs/{job_id}/execute", response_model=ExecutionResponse)
 async def execute_job_now(job_id: str):
     """Manually trigger job execution"""
     try:
@@ -442,7 +435,7 @@ async def execute_job_now(job_id: str):
 
 # ==================== Execution History Endpoints ====================
 
-@app.get("/executions", response_model=List[ExecutionResponse])
+@scheduler_app.get("/executions", response_model=List[ExecutionResponse])
 async def list_executions(
     job_id: Optional[str] = None,
     status: Optional[JobStatus] = None,
@@ -460,7 +453,7 @@ async def list_executions(
         )
 
 
-@app.get("/executions/{execution_id}", response_model=ExecutionResponse)
+@scheduler_app.get("/executions/{execution_id}", response_model=ExecutionResponse)
 async def get_execution(execution_id: str):
     """Get a specific execution by ID"""
     try:
@@ -481,7 +474,7 @@ async def get_execution(execution_id: str):
         )
 
 
-@app.get("/executions/{execution_id}/logs", response_model=List[LogEntry])
+@scheduler_app.get("/executions/{execution_id}/logs", response_model=List[LogEntry])
 async def get_execution_logs(
     execution_id: str,
     level: Optional[str] = None
@@ -510,7 +503,7 @@ async def get_execution_logs(
 
 # ==================== Job Execution Endpoints ====================
 
-@app.post("/jobs/{job_id}/run")
+@scheduler_app.post("/jobs/{job_id}/run")
 async def trigger_job_execution(job_id: str):
     """Manually trigger a job execution"""
     try:
@@ -546,7 +539,7 @@ async def trigger_job_execution(job_id: str):
 
 # ==================== Admin Endpoints ====================
 
-@app.post("/admin/cleanup")
+@scheduler_app.post("/admin/cleanup")
 async def cleanup_old_executions(retention_days: int = 30):
     """Clean up old execution records"""
     try:
@@ -567,4 +560,4 @@ async def cleanup_old_executions(retention_days: int = 30):
 if __name__ == "__main__":
     import uvicorn
     port = int(os.getenv("SCHEDULER_PORT", "8004"))
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    uvicorn.run(scheduler_app, host="0.0.0.0", port=port)
