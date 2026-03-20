@@ -31,7 +31,6 @@ env/
 .env
 *.env
 !.env.example
-!.env.production
 
 # IDEs
 .vscode/
@@ -65,10 +64,18 @@ Thumbs.db
 *.log
 logs/
 
-# Database
+# Database files (runtime)
 *.db
 *.sqlite
 *.sqlite3
+
+# Runtime data (keep .gitkeep)
+aurabackend/data/uploads/*
+!aurabackend/data/uploads/.gitkeep
+aurabackend/data/processed/*
+!aurabackend/data/processed/.gitkeep
+aurabackend/data/temp/*
+!aurabackend/data/temp/.gitkeep
 
 # Temporary files
 *.tmp
@@ -86,8 +93,5 @@ coverage.xml
 # Jupyter Notebook
 .ipynb_checkpoints
 
-# Docker
-.dockerignore
-
-# VS Code settings
-.vscode/settings.json
+# Backup files
+*.bak
