@@ -79,12 +79,22 @@ class TinyRecursiveCoordinator:
     @staticmethod
     def _confidence_from_reason(reason: str) -> float:
         reason_lower = reason.lower()
+        # Explicit confidence mentions
         if "high" in reason_lower and "confidence" in reason_lower:
-            return 0.9
-        if "medium" in reason_lower:
-            return 0.7
-        if "low" in reason_lower:
+            return 0.95
+        if "low" in reason_lower and "confidence" in reason_lower:
             return 0.4
+        if "medium" in reason_lower and "confidence" in reason_lower:
+            return 0.7
+        # Positive validation signals → treat as high confidence
+        positive = ("correct", "valid", "proper", "accurate", "well-formed",
+                    "no issue", "no error", "no vulnerabilit", "addresses the user")
+        if any(kw in reason_lower for kw in positive):
+            return 0.9
+        # Negative signals
+        negative = ("invalid", "incorrect", "error", "fail", "vulnerab", "malform")
+        if any(kw in reason_lower for kw in negative):
+            return 0.3
         return 0.6
 
     @staticmethod

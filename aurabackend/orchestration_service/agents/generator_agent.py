@@ -54,22 +54,51 @@ class GeneratorAgent:
         columns = []  # will be populated from context
         
         try:
+            lines = context.split("\n")
             # Try to parse context in multiple formats
-            if "Table:" in context and "columns:" in context:
-                # Format from /chat DuckDB discovery:
-                #   "Table: product — columns: id, name, price"
-                for line in context.split("\n"):
+            if "Table:" in context and "Columns:" in context:
+                # New format from build_schema_context():
+                #   "Table: customer — 847 rows"
+                #   "  Columns: customer_id (BIGINT), first_name (VARCHAR), ..."
+                for i, line in enumerate(lines):
+                    line = line.strip()
+                    if line.startswith("Table:") and not columns:
+                        # Parse "Table: customer — 847 rows" or "Table: customer - columns: ..."
+                        tbl_part = line.split("Table:")[1].strip()
+                        # Remove row count suffix like "— 847 rows"
+                        for sep in ["\u2014", "--", "-"]:
+                            if sep in tbl_part:
+                                tbl_part = tbl_part.split(sep)[0].strip()
+                                break
+                        if tbl_part:
+                            table_name = tbl_part.strip()
+                        # Check if columns are on same line (old format)
+                        if "columns:" in line.lower():
+                            cols_str = line.lower().split("columns:")[1].strip()
+                            columns = [c.strip() for c in cols_str.split(",") if c.strip()]
+                        # Check next line for "Columns:" (new format)
+                        elif i + 1 < len(lines):
+                            next_line = lines[i + 1].strip()
+                            if next_line.startswith("Columns:"):
+                                cols_str = next_line.split("Columns:")[1].strip()
+                                # Strip type annotations like "(BIGINT)"
+                                import re
+                                raw_cols = [c.strip() for c in cols_str.split(",") if c.strip()]
+                                columns = [re.sub(r'\s*\([^)]*\)\s*$', '', c).strip() for c in raw_cols]
+                        break  # use first table found
+            elif "Table:" in context and "columns:" in context:
+                # Legacy format: "Table: product — columns: id, name, price"
+                for line in lines:
                     line = line.strip()
                     if line.startswith("Table:") and "columns:" in line:
-                        # Parse "Table: product — columns: id, name, price"
                         parts = line.split("columns:")
-                        tbl_part = parts[0].replace("Table:", "").replace("—", "").strip()
+                        tbl_part = parts[0].replace("Table:", "").replace("\u2014", "").replace("-", "").strip()
                         if tbl_part:
                             table_name = tbl_part
                         if len(parts) > 1:
                             cols_str = parts[1].strip()
                             columns = [c.strip() for c in cols_str.split(",") if c.strip()]
-                        break  # use first table found
+                        break
             elif "Schema:" in context:
                 schema_part = context.split("Schema:")[1].strip()
                 if "(" in schema_part and ")" in schema_part:

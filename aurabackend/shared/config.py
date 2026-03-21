@@ -45,6 +45,8 @@ class AuraSettings(BaseSettings):
     log_file: Optional[str] = Field(None, alias="LOG_FILE")
 
     # ── AI / LLM ────────────────────────────────────────────────────────
+    groq_api_key: str = Field("", alias="GROQ_API_KEY")
+    groq_model: str = Field("llama-3.3-70b-versatile", alias="GROQ_MODEL")
     gemini_api_key: str = Field("", alias="GEMINI_API_KEY")
     gemini_model: str = Field("gemini-2.5-flash", alias="GEMINI_MODEL")
     codegen_model: str = Field("", alias="CODEGEN_MODEL")

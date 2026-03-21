@@ -386,6 +386,7 @@ async def execute_for_chat(req: _ChatExecuteRequest):
     try:
         import duckdb
         import pathlib
+        from shared.data_utils import build_schema_context
 
         # Look in all upload directories
         base = pathlib.Path(__file__).resolve().parent.parent
@@ -397,25 +398,9 @@ async def execute_for_chat(req: _ChatExecuteRequest):
 
         con = duckdb.connect(":memory:")
 
-        for upload_dir in upload_dirs:
-            if not upload_dir.exists():
-                continue
-            for csv_file in upload_dir.glob("*.csv"):
-                table_name = csv_file.stem.replace("-", "_").replace(" ", "_")
-                try:
-                    con.execute(
-                        f'CREATE TABLE IF NOT EXISTS "{table_name}" AS SELECT * FROM read_csv_auto(\'{csv_file}\')'
-                    )
-                except Exception:
-                    pass  # Skip files that can't be parsed
-            for pq_file in upload_dir.glob("*.parquet"):
-                table_name = pq_file.stem.replace("-", "_").replace(" ", "_")
-                try:
-                    con.execute(
-                        f'CREATE TABLE IF NOT EXISTS "{table_name}" AS SELECT * FROM read_parquet(\'{pq_file}\')'
-                    )
-                except Exception:
-                    pass
+        # Smart-load all files with header inference
+        build_schema_context(con, upload_dirs, use_llm=True)
+
         result = con.execute(sql)
         columns = [desc[0] for desc in result.description]
         rows = result.fetchall()
@@ -594,21 +579,22 @@ def get_supported_formats() -> Dict[str, Any]:
 async def chat_endpoint(request: ChatRequest) -> Dict[str, Any]:
     """Unified chat endpoint: NL → SQL → Execute → Visualize in one call.
 
-    1. Discovers available tables from uploaded files (DuckDB).
-    2. Sends schema context to the orchestration service for SQL generation.
+    1. Discovers available tables from uploaded files (DuckDB) with smart header detection.
+    2. Sends rich schema context (columns, types, sample data, relationships) to LLM.
     3. Auto-executes the SQL on DuckDB.
     4. Returns data + generated SQL + chart suggestion.
     """
     import time
     import duckdb
     import pathlib
+    from shared.data_utils import build_schema_context
 
     t0 = time.time()
     message = request.message.strip()
     if not message:
         raise HTTPException(status_code=400, detail="Message is required")
 
-    # ── Step 1: Discover available tables from uploaded files ────────
+    # ── Step 1: Smart-load all tables with header inference ─────────
     base = pathlib.Path(__file__).resolve().parent.parent
     upload_dirs = [
         base / "data" / "uploads",
@@ -617,38 +603,15 @@ async def chat_endpoint(request: ChatRequest) -> Dict[str, Any]:
     ]
 
     con = duckdb.connect(":memory:")
-    table_schemas: Dict[str, List[str]] = {}
+    schema_result = build_schema_context(con, upload_dirs, use_llm=True)
+    table_schemas = {
+        name: [c["name"] for c in info["columns"]]
+        for name, info in schema_result["tables"].items()
+    }
 
-    for upload_dir in upload_dirs:
-        if not upload_dir.exists():
-            continue
-        for data_file in list(upload_dir.glob("*.csv")) + list(upload_dir.glob("*.parquet")):
-            table_name = data_file.stem.replace("-", "_").replace(" ", "_")
-            ext = data_file.suffix.lower()
-            try:
-                if ext == ".csv":
-                    con.execute(
-                        f'CREATE TABLE IF NOT EXISTS "{table_name}" AS SELECT * FROM read_csv_auto(\'{data_file}\')'
-                    )
-                elif ext == ".parquet":
-                    con.execute(
-                        f'CREATE TABLE IF NOT EXISTS "{table_name}" AS SELECT * FROM read_parquet(\'{data_file}\')'
-                    )
-                # Get column info
-                cols_result = con.execute(
-                    f"SELECT column_name FROM information_schema.columns WHERE table_name = '{table_name}'"
-                )
-                cols = [row[0] for row in cols_result.fetchall()]
-                table_schemas[table_name] = cols
-            except Exception:
-                pass
-
-    # Build schema context string for the LLM
+    # Use the rich context string (includes types, samples, relationships)
     if table_schemas:
-        schema_lines = []
-        for tbl, cols in table_schemas.items():
-            schema_lines.append(f"Table: {tbl} — columns: {', '.join(cols)}")
-        schema_context = "Available tables in DuckDB:\n" + "\n".join(schema_lines)
+        schema_context = schema_result["context_text"]
     else:
         schema_context = "No tables available. User needs to upload a file first."
 
@@ -1282,6 +1245,7 @@ def _build_transform_sql(table: str, steps: List[ETLTransformStep]) -> str:
 async def etl_preview_source(payload: Dict[str, Any]):
     """Preview the schema + first N rows of a source file for ETL configuration."""
     import duckdb
+    from shared.data_utils import smart_load_file
 
     source_file = payload.get("source_file", "")
     limit = payload.get("limit", 20)
@@ -1301,26 +1265,14 @@ async def etl_preview_source(payload: Dict[str, Any]):
     try:
         con = duckdb.connect(":memory:")
         table_name = Path(source_file).stem.replace("-", "_").replace(" ", "_")
+        file_info = smart_load_file(con, file_path, table_name, use_llm=True)
 
-        if source_file.endswith(".csv"):
-            con.execute(f"CREATE TABLE {table_name} AS SELECT * FROM read_csv_auto('{file_path}')")
-        elif source_file.endswith(".parquet"):
-            con.execute(f"CREATE TABLE {table_name} AS SELECT * FROM read_parquet('{file_path}')")
-        elif source_file.endswith(".json"):
-            con.execute(f"CREATE TABLE {table_name} AS SELECT * FROM read_json_auto('{file_path}')")
-        else:
-            raise HTTPException(status_code=400, detail=f"Unsupported file type: {source_file}")
-
-        # Get schema
-        schema_result = con.execute(f"DESCRIBE {table_name}").fetchall()
-        columns = [{"name": r[0], "type": r[1]} for r in schema_result]
-
-        # Get row count
-        row_count = con.execute(f"SELECT COUNT(*) FROM {table_name}").fetchone()[0]
+        columns = file_info["columns"]
+        row_count = file_info["row_count"]
 
         # Get preview rows
-        preview = con.execute(f"SELECT * FROM {table_name} LIMIT {limit}").fetchall()
         col_names = [c["name"] for c in columns]
+        preview = con.execute(f'SELECT * FROM "{table_name}" LIMIT {limit}').fetchall()
         preview_records = [
             {col: _serialize_value(val) for col, val in zip(col_names, row)}
             for row in preview
@@ -1334,6 +1286,7 @@ async def etl_preview_source(payload: Dict[str, Any]):
             "columns": columns,
             "row_count": row_count,
             "preview": preview_records,
+            "headers_inferred": file_info.get("headers_inferred", False),
         }
     except HTTPException:
         raise
@@ -1346,6 +1299,7 @@ async def etl_execute(pipeline: ETLPipelineRequest):
     """Execute an ETL pipeline: load source → apply transforms → write destination."""
     import duckdb
     import time as _time
+    from shared.data_utils import smart_load_file
 
     logger.info(
         "ETL execute: pipeline='%s' source='%s' transforms=%d preview_only=%s",
@@ -1367,21 +1321,12 @@ async def etl_execute(pipeline: ETLPipelineRequest):
         con = duckdb.connect(":memory:")
         table_name = Path(pipeline.source_file).stem.replace("-", "_").replace(" ", "_")
 
-        # Extract: Load source file
-        ext = file_path.suffix.lower()
-        if ext == ".csv":
-            con.execute(f"CREATE TABLE {table_name} AS SELECT * FROM read_csv_auto('{file_path}')")
-        elif ext == ".parquet":
-            con.execute(f"CREATE TABLE {table_name} AS SELECT * FROM read_parquet('{file_path}')")
-        elif ext == ".json":
-            con.execute(f"CREATE TABLE {table_name} AS SELECT * FROM read_json_auto('{file_path}')")
-        else:
-            raise HTTPException(status_code=400, detail=f"Unsupported source format: {ext}")
+        # Extract: Smart-load source file with header inference
+        file_info = smart_load_file(con, str(file_path), table_name, use_llm=True)
 
         # Get source stats
-        source_count = con.execute(f"SELECT COUNT(*) FROM {table_name}").fetchone()[0]
-        source_schema = con.execute(f"DESCRIBE {table_name}").fetchall()
-        source_columns = [{"name": r[0], "type": r[1]} for r in source_schema]
+        source_count = file_info["row_count"]
+        source_columns = file_info["columns"]
 
         # Transform: Build and execute SQL pipeline
         transform_sql = _build_transform_sql(table_name, pipeline.transforms)
@@ -1491,13 +1436,14 @@ async def etl_download(filename: str):
 async def etl_from_natural_language(req: ETLNaturalLanguageRequest):
     """Use LLM to build transform steps from a natural language instruction, then execute."""
     import duckdb
+    from shared.data_utils import smart_load_file
 
     logger.info(
         "ETL NL: source='%s' instruction='%s' format='%s'",
         req.source_file, req.instruction[:80], req.destination_format,
     )
 
-    # 1. Get source file schema
+    # 1. Get source file schema using smart loader
     base = Path(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     file_path = base / "data" / "uploads" / req.source_file
     if not file_path.exists():
@@ -1506,17 +1452,11 @@ async def etl_from_natural_language(req: ETLNaturalLanguageRequest):
     try:
         con = duckdb.connect(":memory:")
         table_name = Path(req.source_file).stem.replace("-", "_").replace(" ", "_")
-        ext = file_path.suffix.lower()
-        if ext == ".csv":
-            con.execute(f"CREATE TABLE {table_name} AS SELECT * FROM read_csv_auto('{file_path}')")
-        elif ext == ".parquet":
-            con.execute(f"CREATE TABLE {table_name} AS SELECT * FROM read_parquet('{file_path}')")
-        elif ext == ".json":
-            con.execute(f"CREATE TABLE {table_name} AS SELECT * FROM read_json_auto('{file_path}')")
+        file_info = smart_load_file(con, str(file_path), table_name, use_llm=True)
 
-        schema_rows = con.execute(f"DESCRIBE {table_name}").fetchall()
-        sample = con.execute(f"SELECT * FROM {table_name} LIMIT 5").fetchall()
-        col_names = [r[0] for r in schema_rows]
+        schema_rows = [(c["name"], c["type"]) for c in file_info["columns"]]
+        col_names = [c["name"] for c in file_info["columns"]]
+        sample = con.execute(f'SELECT * FROM "{table_name}" LIMIT 5').fetchall()
         sample_records = [dict(zip(col_names, row)) for row in sample]
         con.close()
 

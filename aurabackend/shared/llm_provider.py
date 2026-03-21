@@ -4,15 +4,16 @@ LLM Provider Abstraction
 Provider-agnostic wrapper so AURA is never locked to a single AI vendor.
 
 Supported providers (in auto-detect priority order):
-  1. **Ollama**   — local, free, no API key.  Best for air-gapped / self-hosted.
+  1. **Groq**     — free cloud, fastest inference. Requires GROQ_API_KEY.
   2. **Gemini**   — Google cloud API.  Requires GEMINI_API_KEY or GOOGLE_API_KEY.
-  3. **OpenAI**   — OpenAI cloud API.  Requires OPENAI_API_KEY.
+  3. **Ollama**   — local, free, no API key.  Best for air-gapped / self-hosted.
+  4. **OpenAI**   — OpenAI cloud API.  Requires OPENAI_API_KEY.
 
 Usage:
     from shared.llm_provider import get_llm
 
     llm = get_llm()                          # auto-picks best available
-    llm = get_llm(provider="ollama")         # force specific provider
+    llm = get_llm(provider="groq")           # force specific provider
     llm = get_llm(provider="gemini", model="gemini-2.5-flash")
 
     text = llm.generate("Explain CTEs in SQL")
@@ -27,6 +28,17 @@ from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Optional, Union
 
 logger = logging.getLogger(__name__)
+
+
+def _setting(attr: str) -> Optional[str]:
+    """Read a value from shared.config.settings (which loads .env files).
+    Returns None if unavailable or empty."""
+    try:
+        from shared.config import settings
+        val = getattr(settings, attr, None)
+        return val if val else None
+    except Exception:
+        return None
 
 # ────────────────────────────────────────────────────────────────────
 # Base class
@@ -190,6 +202,98 @@ class OllamaProvider(LLMProvider):
 
 
 # ────────────────────────────────────────────────────────────────────
+# Groq provider  (free cloud, fastest inference)
+# ────────────────────────────────────────────────────────────────────
+
+class GroqProvider(LLMProvider):
+    """Calls the Groq API (OpenAI-compatible). Free tier: 30 RPM, 14.4k RPD."""
+
+    provider_name = "groq"
+
+    def __init__(self, model: str = "", **kwargs: Any) -> None:
+        default_model = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+        super().__init__(model=model or default_model, **kwargs)
+        self._api_key = os.getenv("GROQ_API_KEY") or _setting("groq_api_key")
+        self._base_url = os.getenv("GROQ_BASE_URL", "https://api.groq.com/openai/v1")
+        self._client: Any = None
+        self._init()
+
+    def _init(self) -> None:
+        if not self._api_key:
+            return
+        try:
+            from groq import Groq
+            self._client = Groq(api_key=self._api_key)
+        except ImportError:
+            # Fallback: use httpx directly (no extra dependency needed)
+            self._client = "httpx"
+        except Exception as exc:
+            logger.warning("Groq init failed: %s", exc)
+
+    def is_available(self) -> bool:
+        return self._client is not None and self._api_key is not None
+
+    def generate(self, prompt: Union[str, List[str]], **kwargs: Any) -> Optional[str]:
+        if not self.is_available():
+            return None
+
+        # Build messages
+        if isinstance(prompt, list):
+            messages = [{"role": "system", "content": prompt[0]}]
+            for p in prompt[1:]:
+                messages.append({"role": "user", "content": p})
+        else:
+            messages = [{"role": "user", "content": prompt}]
+
+        temperature = kwargs.get("temperature", 0.2)
+        max_tokens = kwargs.get("max_tokens", 4096)
+
+        # Try native groq SDK first
+        if self._client != "httpx":
+            try:
+                response = self._client.chat.completions.create(
+                    model=self.model,
+                    messages=messages,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                )
+                choice = response.choices[0] if response.choices else None
+                if choice and choice.message:
+                    return (choice.message.content or "").strip()
+            except Exception as exc:
+                logger.warning("Groq SDK generation failed: %s", exc)
+                return None
+
+        # Fallback: raw httpx call (OpenAI-compatible API)
+        try:
+            import httpx
+            resp = httpx.post(
+                f"{self._base_url}/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {self._api_key}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": self.model,
+                    "messages": messages,
+                    "temperature": temperature,
+                    "max_tokens": max_tokens,
+                },
+                timeout=float(os.getenv("AURA_LLM_TIMEOUT", "120")),
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                choices = data.get("choices", [])
+                if choices:
+                    return (choices[0].get("message", {}).get("content", "") or "").strip()
+            else:
+                logger.warning("Groq HTTP %d: %s", resp.status_code, resp.text[:200])
+        except Exception as exc:
+            logger.warning("Groq httpx generation failed: %s", exc)
+        return None
+
+
+# ────────────────────────────────────────────────────────────────────
 # Gemini provider  (Google cloud)
 # ────────────────────────────────────────────────────────────────────
 
@@ -204,6 +308,7 @@ class GeminiProvider(LLMProvider):
         self._api_key = (
             os.getenv("GEMINI_API_KEY")
             or os.getenv("GOOGLE_API_KEY")
+            or _setting("gemini_api_key")
         )
         self._genai_model: Any = None
         self._init()
@@ -256,7 +361,7 @@ class OpenAIProvider(LLMProvider):
     def __init__(self, model: str = "", **kwargs: Any) -> None:
         default_model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
         super().__init__(model=model or default_model, **kwargs)
-        self._api_key = os.getenv("OPENAI_API_KEY")
+        self._api_key = os.getenv("OPENAI_API_KEY") or _setting("openai_api_key")
         self._client: Any = None
         self._init()
 
@@ -302,11 +407,12 @@ class OpenAIProvider(LLMProvider):
 # ────────────────────────────────────────────────────────────────────
 
 # Provider priority (env-overridable)
-_PROVIDER_ORDER = os.getenv("AURA_LLM_PROVIDERS", "ollama,gemini,openai").split(",")
+_PROVIDER_ORDER = os.getenv("AURA_LLM_PROVIDERS", "groq,gemini,ollama,openai").split(",")
 
 _PROVIDER_MAP: Dict[str, type] = {
-    "ollama": OllamaProvider,
+    "groq": GroqProvider,
     "gemini": GeminiProvider,
+    "ollama": OllamaProvider,
     "openai": OpenAIProvider,
 }
 

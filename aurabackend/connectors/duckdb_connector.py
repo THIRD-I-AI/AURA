@@ -123,20 +123,12 @@ class DuckDBConnector(BaseConnector):
         return await self.execute_query(query, limit=limit)
 
     async def register_file_as_table(self, file_path: str, table_name: str) -> bool:
-        """Create a virtual table view over a file."""
+        """Create a virtual table view over a file with smart header detection."""
         if not self._conn:
             return False
-        ext = os.path.splitext(file_path)[1].lower()
-        read_fn = {
-            ".csv": "read_csv_auto",
-            ".parquet": "read_parquet",
-            ".json": "read_json_auto",
-        }.get(ext, "read_csv_auto")
         try:
-            self._conn.execute(
-                f"CREATE OR REPLACE VIEW {table_name} AS "
-                f"SELECT * FROM {read_fn}('{file_path}')"
-            )
+            from shared.data_utils import smart_load_file
+            smart_load_file(self._conn, file_path, table_name, use_llm=True)
             return True
         except Exception as exc:
             print(f"DuckDB register_file failed: {exc}")

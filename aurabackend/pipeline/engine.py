@@ -160,7 +160,9 @@ class PipelineEngine:
             raise ValueError(f"Unsupported source type: {source.type}")
 
     def _load_file_source(self, conn: Any, source: PipelineSource) -> str:
-        """Load a CSV/Parquet/JSON file into DuckDB."""
+        """Load a CSV/Parquet/JSON file into DuckDB with smart header detection."""
+        from shared.data_utils import smart_load_file
+
         fname = source.file_name
         if not fname:
             raise ValueError("File source requires file_name")
@@ -170,10 +172,7 @@ class PipelineEngine:
             raise FileNotFoundError(f"Source file not found: {fname}")
 
         table_name = "source_data"
-        ext = Path(fname).suffix.lower()
-        read_fn = {".csv": "read_csv_auto", ".parquet": "read_parquet", ".json": "read_json_auto"}
-        fn = read_fn.get(ext, "read_csv_auto")
-        conn.execute(f"CREATE TABLE {table_name} AS SELECT * FROM {fn}('{file_path}')")
+        smart_load_file(conn, file_path, table_name, use_llm=True)
         return table_name
 
     async def _load_db_source(self, conn: Any, source: PipelineSource) -> str:

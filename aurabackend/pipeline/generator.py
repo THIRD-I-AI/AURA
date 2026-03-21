@@ -303,29 +303,26 @@ class PipelineGenerator:
 
     def get_file_schema(self, file_name: str) -> Dict[str, Any]:
         """
-        Quick-read column names and types from a file using DuckDB.
-        Returns {"columns": [{"name": ..., "type": ...}], "row_count": N}
+        Quick-read column names and types from a file using DuckDB with smart header detection.
+        Returns {"columns": [{"name": ..., "type": ...}], "row_count": N, "sample_data": [...]}
         """
         import duckdb
+        from shared.data_utils import smart_load_file
 
         file_path = os.path.join(UPLOAD_DIR, file_name)
         if not os.path.exists(file_path):
             return {"error": f"File not found: {file_name}"}
 
-        ext = Path(file_name).suffix.lower()
-        read_fn = {".csv": "read_csv_auto", ".parquet": "read_parquet", ".json": "read_json_auto"}
-        fn = read_fn.get(ext, "read_csv_auto")
-
+        table_name = Path(file_name).stem.replace("-", "_").replace(" ", "_")
         conn = duckdb.connect(":memory:")
         try:
-            conn.execute(f"CREATE TABLE tmp AS SELECT * FROM {fn}('{file_path}') LIMIT 1000")
-            cols = conn.execute("DESCRIBE tmp").fetchall()
-            row_count = conn.execute("SELECT COUNT(*) FROM tmp").fetchone()[0]
-
+            info = smart_load_file(conn, file_path, table_name, use_llm=True)
             return {
                 "file_name": file_name,
-                "columns": [{"name": c[0], "type": c[1]} for c in cols],
-                "row_count": row_count,
+                "columns": info["columns"],
+                "row_count": info["row_count"],
+                "sample_data": info.get("sample_data", []),
+                "headers_inferred": info.get("headers_inferred", False),
             }
         finally:
             conn.close()
