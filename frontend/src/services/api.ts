@@ -35,6 +35,9 @@ export interface QueryResponse {
   status: 'Success' | 'Fallback' | 'Error';
   final_query?: string;
   error_message?: string;
+  execution_time_ms?: number;
+  available_tables?: string[];
+  execution_result?: ExecutionResult;
   metadata?: {
     execution_time_ms?: number;
     rows_affected?: number;
@@ -323,7 +326,8 @@ class ApiClient {
 const client = new ApiClient(API_BASE_URL, REQUEST_TIMEOUT);
 
 /**
- * Chat Service - Natural language query generation
+ * Chat Service - Natural language → SQL → Execute → Visualize
+ * Uses the unified /chat endpoint for single-call pipeline
  */
 export const chatService = {
   async sendMessage(
@@ -334,14 +338,15 @@ export const chatService = {
       columns?: string[];
     }
   ): Promise<QueryResponse> {
-    return client.post<QueryResponse>('/generate_query', {
+    return client.post<QueryResponse>('/chat', {
+      message,
       session_id: context?.sessionId || `session_${Date.now()}`,
-      prompt: message,
       context: context?.uploadedFile
         ? `File: ${context.uploadedFile}\nColumns: ${context.columns?.join(', ')}`
         : undefined,
       uploaded_file: context?.uploadedFile || null,
       columns: context?.columns || null,
+      auto_execute: true,
     });
   },
 
@@ -475,6 +480,239 @@ export const healthService = {
     client.startHealthMonitoring(callback),
   stopMonitoring: (callback?: (status: HealthStatus) => void) =>
     client.stopHealthMonitoring(callback),
+};
+
+// =============================================================================
+// ETL Pipeline Types & Service
+// =============================================================================
+
+export interface ETLColumnSchema {
+  name: string;
+  type: string;
+}
+
+export interface ETLTransformStep {
+  id: string;
+  type: 'filter' | 'rename' | 'drop_columns' | 'add_column' | 'sort' | 'aggregate' | 'deduplicate' | 'cast_type' | 'fill_missing' | 'custom_sql';
+  description: string;
+  config: Record<string, any>;
+}
+
+export interface ETLSourcePreview {
+  status: string;
+  source_file: string;
+  table_name: string;
+  columns: ETLColumnSchema[];
+  row_count: number;
+  preview: Array<Record<string, any>>;
+  error?: string;
+}
+
+export interface ETLExecutionResult {
+  status: string;
+  pipeline_name: string;
+  source: {
+    file: string;
+    row_count: number;
+    columns: ETLColumnSchema[];
+  };
+  output: {
+    row_count: number;
+    columns: ETLColumnSchema[];
+    file: string | null;
+    format: string;
+  };
+  transform_sql: string;
+  transforms_applied: number;
+  preview: Array<Record<string, any>>;
+  execution_time_ms: number;
+  preview_only: boolean;
+  error?: string;
+}
+
+export interface ETLNaturalLanguageResult {
+  status: string;
+  source_file: string;
+  instruction: string;
+  transforms: ETLTransformStep[];
+  schema: ETLColumnSchema[];
+  error?: string;
+}
+
+/**
+ * ETL Pipeline Service
+ */
+export const etlService = {
+  /** Preview source file schema and first N rows */
+  async previewSource(sourceFile: string, limit = 20): Promise<ETLSourcePreview> {
+    return client.post<ETLSourcePreview>('/etl/preview-source', {
+      source_file: sourceFile,
+      limit,
+    });
+  },
+
+  /** Execute an ETL pipeline (or preview-only) */
+  async execute(payload: {
+    name: string;
+    source_file: string;
+    destination_format: string;
+    destination_filename?: string;
+    transforms: ETLTransformStep[];
+    preview_only: boolean;
+  }): Promise<ETLExecutionResult> {
+    return client.post<ETLExecutionResult>('/etl/execute', payload);
+  },
+
+  /** Generate transforms from natural language instruction */
+  async fromNaturalLanguage(
+    sourceFile: string,
+    instruction: string,
+    destinationFormat = 'csv',
+  ): Promise<ETLNaturalLanguageResult> {
+    return client.post<ETLNaturalLanguageResult>('/etl/natural-language', {
+      source_file: sourceFile,
+      instruction,
+      destination_format: destinationFormat,
+    });
+  },
+
+  /** Get download URL for a processed file */
+  getDownloadUrl(filename: string): string {
+    return `${API_BASE_URL}/etl/download/${encodeURIComponent(filename)}`;
+  },
+};
+
+
+// =============================================================================
+// AI Pipeline Types & Service
+// =============================================================================
+
+export interface PipelineSourceDef {
+  type: 'file' | 'postgresql' | 'mysql' | 'bigquery' | 'duckdb';
+  file_name?: string;
+  connection?: Record<string, any>;
+  table?: string;
+  query?: string;
+}
+
+export interface PipelineSinkDef {
+  type: 'file' | 'postgresql' | 'duckdb' | 'preview';
+  format?: string;
+  file_name?: string;
+  connection?: Record<string, any>;
+  table?: string;
+  if_exists?: string;
+}
+
+export interface PipelineStepDef {
+  id?: string;
+  type: string;
+  description: string;
+  config: Record<string, any>;
+}
+
+export interface PipelineDef {
+  id?: string;
+  name: string;
+  description?: string;
+  source: PipelineSourceDef;
+  steps: PipelineStepDef[];
+  sink: PipelineSinkDef;
+  status?: string;
+  created_at?: string;
+  generated_from_prompt?: string;
+  tags?: string[];
+}
+
+export interface PipelineRunResult {
+  run_id: string;
+  pipeline_id: string;
+  status: string;
+  rows_read: number;
+  rows_written: number;
+  columns_in: string[];
+  columns_out: string[];
+  output_file?: string;
+  output_table?: string;
+  sql_generated?: string;
+  steps_executed: number;
+  steps_skipped: number;
+  preview_data?: Array<Record<string, any>>;
+  error?: string;
+  duration_ms: number;
+}
+
+export interface PipelineGenerateResponse {
+  status: string;
+  pipeline?: PipelineDef;
+  error?: string;
+}
+
+export interface PipelineExecuteResponse {
+  status: string;
+  run?: PipelineRunResult;
+  error?: string;
+}
+
+export interface PipelineListItem {
+  id: string;
+  name: string;
+  description: string;
+  source: string;
+  steps: number;
+  sink: string;
+  status: string;
+  created_at: string;
+  tags: string[];
+}
+
+export const pipelineService = {
+  /** Generate a pipeline from natural language */
+  async generate(prompt: string, sourceFile?: string): Promise<PipelineGenerateResponse> {
+    return client.post<PipelineGenerateResponse>('/pipeline/generate', {
+      prompt,
+      source_file: sourceFile || undefined,
+      include_schema: true,
+    });
+  },
+
+  /** Execute a pipeline definition */
+  async execute(pipeline: PipelineDef, previewOnly = false): Promise<PipelineExecuteResponse> {
+    return client.post<PipelineExecuteResponse>('/pipeline/execute', {
+      pipeline,
+      preview_only: previewOnly,
+    });
+  },
+
+  /** Save a pipeline */
+  async save(pipeline: PipelineDef): Promise<{ status: string; pipeline_id: string; name: string }> {
+    return client.post('/pipeline/save', { pipeline });
+  },
+
+  /** List saved pipelines */
+  async list(): Promise<{ status: string; count: number; pipelines: PipelineListItem[] }> {
+    return client.get('/pipeline/list');
+  },
+
+  /** Get a pipeline by ID */
+  async get(pipelineId: string): Promise<{ status: string; pipeline: PipelineDef }> {
+    return client.get(`/pipeline/${encodeURIComponent(pipelineId)}`);
+  },
+
+  /** Delete a pipeline */
+  async remove(pipelineId: string): Promise<{ status: string }> {
+    return client.delete(`/pipeline/${encodeURIComponent(pipelineId)}`);
+  },
+
+  /** Get file schema for pipeline builder */
+  async getFileSchema(fileName: string): Promise<{ status: string; schema: any }> {
+    return client.get(`/pipeline/schema/${encodeURIComponent(fileName)}`);
+  },
+
+  /** Get download URL for pipeline output */
+  getDownloadUrl(filename: string): string {
+    return `${API_BASE_URL}/pipeline/download/${encodeURIComponent(filename)}`;
+  },
 };
 
 // =============================================================================

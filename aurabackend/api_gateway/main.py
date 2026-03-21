@@ -1,5 +1,6 @@
 """Enhanced AURA API Gateway with connectors, safety, and insights"""
 
+import json
 import os
 import sys
 import shutil
@@ -526,6 +527,10 @@ except ImportError as e:
 class ChatRequest(BaseModel):
     message: str
     context: Optional[str] = None
+    session_id: Optional[str] = None
+    uploaded_file: Optional[str] = None
+    columns: Optional[List[str]] = None
+    auto_execute: bool = True
 
 
 class QueryRequest(BaseModel):
@@ -587,16 +592,220 @@ def get_supported_formats() -> Dict[str, Any]:
 
 @app.post("/chat")
 async def chat_endpoint(request: ChatRequest) -> Dict[str, Any]:
-    """Main chat endpoint for AI interactions"""
+    """Unified chat endpoint: NL → SQL → Execute → Visualize in one call.
+
+    1. Discovers available tables from uploaded files (DuckDB).
+    2. Sends schema context to the orchestration service for SQL generation.
+    3. Auto-executes the SQL on DuckDB.
+    4. Returns data + generated SQL + chart suggestion.
+    """
+    import time
+    import duckdb
+    import pathlib
+
+    t0 = time.time()
+    message = request.message.strip()
+    if not message:
+        raise HTTPException(status_code=400, detail="Message is required")
+
+    # ── Step 1: Discover available tables from uploaded files ────────
+    base = pathlib.Path(__file__).resolve().parent.parent
+    upload_dirs = [
+        base / "data" / "uploads",
+        base / "api_gateway" / "uploads",
+        base.parent / "uploads",
+    ]
+
+    con = duckdb.connect(":memory:")
+    table_schemas: Dict[str, List[str]] = {}
+
+    for upload_dir in upload_dirs:
+        if not upload_dir.exists():
+            continue
+        for data_file in list(upload_dir.glob("*.csv")) + list(upload_dir.glob("*.parquet")):
+            table_name = data_file.stem.replace("-", "_").replace(" ", "_")
+            ext = data_file.suffix.lower()
+            try:
+                if ext == ".csv":
+                    con.execute(
+                        f'CREATE TABLE IF NOT EXISTS "{table_name}" AS SELECT * FROM read_csv_auto(\'{data_file}\')'
+                    )
+                elif ext == ".parquet":
+                    con.execute(
+                        f'CREATE TABLE IF NOT EXISTS "{table_name}" AS SELECT * FROM read_parquet(\'{data_file}\')'
+                    )
+                # Get column info
+                cols_result = con.execute(
+                    f"SELECT column_name FROM information_schema.columns WHERE table_name = '{table_name}'"
+                )
+                cols = [row[0] for row in cols_result.fetchall()]
+                table_schemas[table_name] = cols
+            except Exception:
+                pass
+
+    # Build schema context string for the LLM
+    if table_schemas:
+        schema_lines = []
+        for tbl, cols in table_schemas.items():
+            schema_lines.append(f"Table: {tbl} — columns: {', '.join(cols)}")
+        schema_context = "Available tables in DuckDB:\n" + "\n".join(schema_lines)
+    else:
+        schema_context = "No tables available. User needs to upload a file first."
+
+    # Merge with any explicit context from the request
+    full_context = schema_context
+    if request.context:
+        full_context = f"{request.context}\n\n{schema_context}"
+    if request.uploaded_file:
+        full_context = f"Active file: {request.uploaded_file}\n{full_context}"
+    if request.columns:
+        full_context = f"Columns: {', '.join(request.columns)}\n{full_context}"
+
+    # ── Step 2: Generate SQL via the orchestration service ──────────
+    session_id = request.session_id or f"chat_{int(time.time()*1000)}"
+    orchestration_url = os.getenv(
+        "ORCHESTRATION_SERVICE_URL",
+        "http://localhost:8006/v1/orchestrations/query",
+    )
+
+    generated_sql = None
+    gen_status = "Error"
+    error_message = None
+
     try:
-        return {
-            "response": f"Received your message: {request.message}",
-            "confidence": 0.95,
-            "suggestions": ["Try asking about data analysis", "Connect to a database", "Create visualizations"],
-            "metadata": {"timestamp": datetime.now().isoformat(), "service": "api_gateway"}
-        }
-    except Exception as e:
-        return {"error": str(e), "status": "error"}
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            resp = await client.post(
+                orchestration_url,
+                json={
+                    "session_id": session_id,
+                    "prompt": message,
+                    "context": full_context,
+                },
+            )
+            resp.raise_for_status()
+            gen_data = resp.json()
+            generated_sql = gen_data.get("final_query")
+            gen_status = gen_data.get("status", "Success")
+    except Exception as exc:
+        error_message = f"SQL generation failed: {exc}"
+        logger.warning("Chat SQL generation failed: %s", exc)
+
+    # ── Step 3: Auto-execute if we got valid SQL ────────────────────
+    execution_result = None
+    if generated_sql and request.auto_execute and gen_status in ("Success", "Fallback"):
+        # Safety check
+        validator = SQLSafetyValidator()
+        validation = validator.validate(generated_sql)
+
+        if validation.is_valid:
+            try:
+                result = con.execute(generated_sql)
+                columns = [desc[0] for desc in result.description]
+                rows = result.fetchall()
+                records = [
+                    {col: _serialize_value(val) for col, val in zip(columns, row)}
+                    for row in rows
+                ]
+
+                # Auto-detect chart type from the query and data
+                chart_spec = _suggest_chart(message, columns, records)
+
+                execution_result = {
+                    "success": True,
+                    "data": records,
+                    "columns": columns,
+                    "rows": [[_serialize_value(cell) for cell in row] for row in rows],
+                    "row_count": len(records),
+                    "chart_spec": chart_spec,
+                }
+            except Exception as exec_err:
+                execution_result = {
+                    "success": False,
+                    "error": str(exec_err),
+                    "data": [],
+                    "columns": [],
+                }
+        else:
+            execution_result = {
+                "success": False,
+                "error": f"Query blocked by safety validator: {validation.errors}",
+                "data": [],
+                "columns": [],
+            }
+
+    con.close()
+    elapsed_ms = (time.time() - t0) * 1000
+
+    # ── Step 4: Build response ──────────────────────────────────────
+    response: Dict[str, Any] = {
+        "status": gen_status,
+        "job_id": f"job_{session_id}",
+        "final_query": generated_sql,
+        "execution_time_ms": round(elapsed_ms, 1),
+        "available_tables": list(table_schemas.keys()),
+        "metadata": {
+            "timestamp": datetime.now().isoformat(),
+            "tables_loaded": len(table_schemas),
+        },
+    }
+
+    if error_message:
+        response["error_message"] = error_message
+    if execution_result:
+        response["execution_result"] = execution_result
+
+    return response
+
+
+def _serialize_value(val: Any) -> Any:
+    """Make DuckDB values JSON-serializable."""
+    import decimal
+    if isinstance(val, decimal.Decimal):
+        return float(val)
+    if isinstance(val, (datetime,)):
+        return val.isoformat()
+    if hasattr(val, 'isoformat'):
+        return val.isoformat()
+    return val
+
+
+def _suggest_chart(user_query: str, columns: List[str], data: List[Dict]) -> Optional[Dict[str, Any]]:
+    """Heuristic chart-type suggestion based on query keywords and result shape."""
+    if not data or not columns:
+        return None
+
+    q = user_query.lower()
+    num_cols = [c for c in columns if data and isinstance(data[0].get(c), (int, float))]
+    str_cols = [c for c in columns if c not in num_cols]
+
+    # Time-series keywords → line chart
+    if any(w in q for w in ["trend", "over time", "monthly", "daily", "weekly", "yearly", "time series", "growth"]):
+        x_col = str_cols[0] if str_cols else columns[0]
+        y_col = num_cols[0] if num_cols else columns[-1]
+        return {"type": "line", "x": x_col, "y": y_col, "title": "Trend"}
+
+    # Distribution / comparison keywords → bar chart
+    if any(w in q for w in ["top", "bottom", "rank", "compare", "by category", "per", "group", "breakdown"]):
+        x_col = str_cols[0] if str_cols else columns[0]
+        y_col = num_cols[0] if num_cols else columns[-1]
+        return {"type": "bar", "x": x_col, "y": y_col, "title": "Comparison"}
+
+    # Proportion keywords → pie chart
+    if any(w in q for w in ["distribution", "share", "percentage", "proportion", "pie", "breakdown"]):
+        x_col = str_cols[0] if str_cols else columns[0]
+        y_col = num_cols[0] if num_cols else columns[-1]
+        return {"type": "pie", "x": x_col, "y": y_col, "title": "Distribution"}
+
+    # Default: if 1 string + 1 numeric column → bar chart
+    if len(str_cols) >= 1 and len(num_cols) >= 1:
+        return {"type": "bar", "x": str_cols[0], "y": num_cols[0], "title": "Results"}
+
+    # Scalar result (1 row, 1-2 columns) → no chart
+    if len(data) <= 1:
+        return None
+
+    # Multiple numeric columns → table (no chart)
+    return None
 
 
 @app.post("/generate_query")
@@ -667,11 +876,12 @@ async def upload_universal(
     print(f"DEBUG: Receiving file: {target_file.filename}")
     
     try:
-        # 2. Create the folder safely
-        os.makedirs("uploads", exist_ok=True)
+        # 2. Create the folder safely — save alongside data/uploads so /chat can find them
+        upload_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "uploads")
+        os.makedirs(upload_dir, exist_ok=True)
         
         # 3. Save the file
-        file_path = f"uploads/{target_file.filename}"
+        file_path = os.path.join(upload_dir, target_file.filename)
         with open(file_path, "wb") as buffer:
             shutil.copyfileobj(target_file.file, buffer)
         
@@ -906,7 +1116,700 @@ async def get_connections():
     }
 
 
+# ==================== ETL Pipeline ====================
+
+class ETLTransformStep(BaseModel):
+    """A single transform step in an ETL pipeline."""
+    id: str = ""
+    type: str = Field(..., description="Transform type: filter, rename, drop_columns, add_column, sort, aggregate, deduplicate, cast_type, fill_missing, custom_sql")
+    description: str = ""
+    config: Dict[str, Any] = Field(default_factory=dict)
+
+class ETLPipelineRequest(BaseModel):
+    """Request to create & execute an ETL pipeline."""
+    name: str = "Untitled Pipeline"
+    source_file: str = Field(..., description="Uploaded filename to use as source")
+    destination_format: str = Field(default="csv", description="Output format: csv, parquet, json")
+    destination_filename: Optional[str] = None
+    transforms: List[ETLTransformStep] = Field(default_factory=list)
+    preview_only: bool = False  # True = return first 50 rows, False = write file
+
+class ETLNaturalLanguageRequest(BaseModel):
+    """Request to build an ETL pipeline from a natural language description."""
+    source_file: str
+    instruction: str
+    destination_format: str = "csv"
+
+
+def _build_transform_sql(table: str, steps: List[ETLTransformStep]) -> str:
+    """Convert a list of transform steps into a single DuckDB SQL pipeline.
+
+    Guards against empty / misconfigured steps — skips any step that cannot
+    produce valid SQL rather than generating broken queries.
+    """
+    if not steps:
+        return f"SELECT * FROM {table}"
+
+    cte_parts: List[str] = []
+    prev = table
+    skipped = 0
+
+    for i, step in enumerate(steps):
+        alias = f"step_{i}"
+        cfg = step.config or {}
+        t = step.type
+
+        if t == "filter":
+            condition = (cfg.get("condition") or "").strip()
+            if not condition:
+                logger.warning("ETL step %d (filter): empty condition — skipping", i)
+                skipped += 1
+                continue
+            cte_parts.append(f"{alias} AS (SELECT * FROM {prev} WHERE {condition})")
+
+        elif t == "rename":
+            mappings = cfg.get("mappings") or {}
+            valid = {old: new for old, new in mappings.items() if old and new}
+            if not valid:
+                logger.warning("ETL step %d (rename): no valid mappings — skipping", i)
+                skipped += 1
+                continue
+            selects = [f'"{old}" AS "{new}"' for old, new in valid.items()]
+            cte_parts.append(f'{alias} AS (SELECT * REPLACE ({", ".join(selects)}) FROM {prev})')
+
+        elif t == "drop_columns":
+            cols = [c for c in (cfg.get("columns") or []) if c]
+            if not cols:
+                logger.warning("ETL step %d (drop_columns): no columns — skipping", i)
+                skipped += 1
+                continue
+            excludes = ", ".join(f'"{c}"' for c in cols)
+            cte_parts.append(f"{alias} AS (SELECT * EXCLUDE ({excludes}) FROM {prev})")
+
+        elif t == "add_column":
+            expr = (cfg.get("expression") or "").strip()
+            col_name = (cfg.get("name") or "").strip()
+            if not expr or not col_name:
+                logger.warning("ETL step %d (add_column): missing name/expression — skipping", i)
+                skipped += 1
+                continue
+            cte_parts.append(f'{alias} AS (SELECT *, ({expr}) AS "{col_name}" FROM {prev})')
+
+        elif t == "sort":
+            col = (cfg.get("column") or "").strip()
+            if not col:
+                logger.warning("ETL step %d (sort): no column — skipping", i)
+                skipped += 1
+                continue
+            order = cfg.get("order", "ASC").upper()
+            if order not in ("ASC", "DESC"):
+                order = "ASC"
+            cte_parts.append(f'{alias} AS (SELECT * FROM {prev} ORDER BY "{col}" {order})')
+
+        elif t == "aggregate":
+            group_by = [c for c in (cfg.get("group_by") or []) if c]
+            agg_exprs = cfg.get("aggregations") or []
+            valid_aggs = [a for a in agg_exprs if a.get("column") and a.get("func")]
+            if not group_by or not valid_aggs:
+                logger.warning("ETL step %d (aggregate): missing group_by/aggregations — skipping", i)
+                skipped += 1
+                continue
+            g = ", ".join(f'"{c}"' for c in group_by)
+            a = ", ".join(
+                f'{agg["func"]}("{agg["column"]}") AS "{agg.get("alias", agg["column"])}"'
+                for agg in valid_aggs
+            )
+            cte_parts.append(f"{alias} AS (SELECT {g}, {a} FROM {prev} GROUP BY {g})")
+
+        elif t == "deduplicate":
+            cols = [c for c in (cfg.get("columns") or []) if c]
+            if cols:
+                partition = ", ".join(f'"{c}"' for c in cols)
+                cte_parts.append(
+                    f"{alias} AS (SELECT * FROM (SELECT *, ROW_NUMBER() OVER "
+                    f"(PARTITION BY {partition}) AS _rn FROM {prev}) WHERE _rn = 1)"
+                )
+            else:
+                cte_parts.append(f"{alias} AS (SELECT DISTINCT * FROM {prev})")
+
+        elif t == "cast_type":
+            col = (cfg.get("column") or "").strip()
+            to_type = (cfg.get("to_type") or "").strip()
+            if not col or not to_type:
+                logger.warning("ETL step %d (cast_type): missing column/type — skipping", i)
+                skipped += 1
+                continue
+            cte_parts.append(
+                f'{alias} AS (SELECT * REPLACE (CAST("{col}" AS {to_type}) AS "{col}") FROM {prev})'
+            )
+
+        elif t == "fill_missing":
+            col = (cfg.get("column") or "").strip()
+            fill_val = (cfg.get("value") or "").strip()
+            if not col or not fill_val:
+                logger.warning("ETL step %d (fill_missing): missing column/value — skipping", i)
+                skipped += 1
+                continue
+            cte_parts.append(
+                f'{alias} AS (SELECT * REPLACE (COALESCE("{col}", {fill_val}) AS "{col}") FROM {prev})'
+            )
+
+        elif t == "custom_sql":
+            sql_expr = (cfg.get("sql") or "").strip()
+            if not sql_expr:
+                logger.warning("ETL step %d (custom_sql): empty sql — skipping", i)
+                skipped += 1
+                continue
+            sql_expr = sql_expr.replace("{{input}}", prev)
+            cte_parts.append(f"{alias} AS ({sql_expr})")
+
+        else:
+            logger.warning("ETL step %d: unknown type '%s' — skipping", i, t)
+            skipped += 1
+            continue
+
+        prev = alias
+
+    if skipped:
+        logger.info("ETL pipeline: %d step(s) skipped due to empty config", skipped)
+
+    if cte_parts:
+        return "WITH " + ",\n".join(cte_parts) + f"\nSELECT * FROM {prev}"
+    return f"SELECT * FROM {table}"
+
+
+@app.post("/etl/preview-source")
+async def etl_preview_source(payload: Dict[str, Any]):
+    """Preview the schema + first N rows of a source file for ETL configuration."""
+    import duckdb
+
+    source_file = payload.get("source_file", "")
+    limit = payload.get("limit", 20)
+    base = Path(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    upload_dirs = [base / "data" / "uploads"]
+
+    file_path = None
+    for d in upload_dirs:
+        candidate = d / source_file
+        if candidate.exists():
+            file_path = str(candidate)
+            break
+
+    if not file_path:
+        raise HTTPException(status_code=404, detail=f"Source file '{source_file}' not found in uploads")
+
+    try:
+        con = duckdb.connect(":memory:")
+        table_name = Path(source_file).stem.replace("-", "_").replace(" ", "_")
+
+        if source_file.endswith(".csv"):
+            con.execute(f"CREATE TABLE {table_name} AS SELECT * FROM read_csv_auto('{file_path}')")
+        elif source_file.endswith(".parquet"):
+            con.execute(f"CREATE TABLE {table_name} AS SELECT * FROM read_parquet('{file_path}')")
+        elif source_file.endswith(".json"):
+            con.execute(f"CREATE TABLE {table_name} AS SELECT * FROM read_json_auto('{file_path}')")
+        else:
+            raise HTTPException(status_code=400, detail=f"Unsupported file type: {source_file}")
+
+        # Get schema
+        schema_result = con.execute(f"DESCRIBE {table_name}").fetchall()
+        columns = [{"name": r[0], "type": r[1]} for r in schema_result]
+
+        # Get row count
+        row_count = con.execute(f"SELECT COUNT(*) FROM {table_name}").fetchone()[0]
+
+        # Get preview rows
+        preview = con.execute(f"SELECT * FROM {table_name} LIMIT {limit}").fetchall()
+        col_names = [c["name"] for c in columns]
+        preview_records = [
+            {col: _serialize_value(val) for col, val in zip(col_names, row)}
+            for row in preview
+        ]
+
+        con.close()
+        return {
+            "status": "success",
+            "source_file": source_file,
+            "table_name": table_name,
+            "columns": columns,
+            "row_count": row_count,
+            "preview": preview_records,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
+
+
+@app.post("/etl/execute")
+async def etl_execute(pipeline: ETLPipelineRequest):
+    """Execute an ETL pipeline: load source → apply transforms → write destination."""
+    import duckdb
+    import time as _time
+
+    logger.info(
+        "ETL execute: pipeline='%s' source='%s' transforms=%d preview_only=%s",
+        pipeline.name, pipeline.source_file, len(pipeline.transforms), pipeline.preview_only,
+    )
+
+    t0 = _time.time()
+    base = Path(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    upload_dir = base / "data" / "uploads"
+    output_dir = base / "data" / "processed"
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Find source file
+    file_path = upload_dir / pipeline.source_file
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail=f"Source file '{pipeline.source_file}' not found")
+
+    try:
+        con = duckdb.connect(":memory:")
+        table_name = Path(pipeline.source_file).stem.replace("-", "_").replace(" ", "_")
+
+        # Extract: Load source file
+        ext = file_path.suffix.lower()
+        if ext == ".csv":
+            con.execute(f"CREATE TABLE {table_name} AS SELECT * FROM read_csv_auto('{file_path}')")
+        elif ext == ".parquet":
+            con.execute(f"CREATE TABLE {table_name} AS SELECT * FROM read_parquet('{file_path}')")
+        elif ext == ".json":
+            con.execute(f"CREATE TABLE {table_name} AS SELECT * FROM read_json_auto('{file_path}')")
+        else:
+            raise HTTPException(status_code=400, detail=f"Unsupported source format: {ext}")
+
+        # Get source stats
+        source_count = con.execute(f"SELECT COUNT(*) FROM {table_name}").fetchone()[0]
+        source_schema = con.execute(f"DESCRIBE {table_name}").fetchall()
+        source_columns = [{"name": r[0], "type": r[1]} for r in source_schema]
+
+        # Transform: Build and execute SQL pipeline
+        transform_sql = _build_transform_sql(table_name, pipeline.transforms)
+        con.execute(f"CREATE TABLE _etl_output AS {transform_sql}")
+
+        # Get output stats
+        output_count = con.execute("SELECT COUNT(*) FROM _etl_output").fetchone()[0]
+        output_schema = con.execute("DESCRIBE _etl_output").fetchall()
+        output_columns = [{"name": r[0], "type": r[1]} for r in output_schema]
+
+        # Preview (always return first 50 rows)
+        preview_result = con.execute("SELECT * FROM _etl_output LIMIT 50").fetchall()
+        col_names = [c["name"] for c in output_columns]
+        preview_records = [
+            {col: _serialize_value(val) for col, val in zip(col_names, row)}
+            for row in preview_result
+        ]
+
+        output_path = None
+        download_filename = None
+
+        if not pipeline.preview_only:
+            # Load: Write to destination file
+            raw_dest = pipeline.destination_filename or f"{table_name}_transformed"
+            # Strip any existing extension to avoid double extensions (e.g. "out.csv.csv")
+            dest_name = Path(raw_dest).stem
+            fmt = pipeline.destination_format.lower()
+
+            if fmt == "csv":
+                download_filename = f"{dest_name}.csv"
+                output_path = str(output_dir / download_filename)
+                con.execute(f"COPY _etl_output TO '{output_path}' (HEADER, DELIMITER ',')")
+            elif fmt == "parquet":
+                download_filename = f"{dest_name}.parquet"
+                output_path = str(output_dir / download_filename)
+                con.execute(f"COPY _etl_output TO '{output_path}' (FORMAT PARQUET)")
+            elif fmt == "json":
+                download_filename = f"{dest_name}.json"
+                output_path = str(output_dir / download_filename)
+                con.execute(f"COPY _etl_output TO '{output_path}' (FORMAT JSON, ARRAY true)")
+            else:
+                raise HTTPException(status_code=400, detail=f"Unsupported destination format: {fmt}")
+
+        con.close()
+        elapsed_ms = (_time.time() - t0) * 1000
+        logger.info(
+            "ETL success: '%s' — %d→%d rows, %d transforms, %.1fms, file=%s",
+            pipeline.name, source_count, output_count,
+            len(pipeline.transforms), elapsed_ms, download_filename,
+        )
+
+        return {
+            "status": "success",
+            "pipeline_name": pipeline.name,
+            "source": {
+                "file": pipeline.source_file,
+                "row_count": source_count,
+                "columns": source_columns,
+            },
+            "output": {
+                "row_count": output_count,
+                "columns": output_columns,
+                "file": download_filename,
+                "format": pipeline.destination_format,
+            },
+            "transform_sql": transform_sql,
+            "transforms_applied": len(pipeline.transforms),
+            "preview": preview_records,
+            "execution_time_ms": round(elapsed_ms, 1),
+            "preview_only": pipeline.preview_only,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("ETL execute failed for '%s': %s", pipeline.name, e, exc_info=True)
+        return {"status": "error", "error": str(e), "transform_sql": "", "preview": []}
+
+
+@app.get("/etl/download/{filename}")
+async def etl_download(filename: str):
+    """Download a processed ETL output file."""
+    from fastapi.responses import FileResponse
+
+    base = Path(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    output_dir = base / "data" / "processed"
+    file_path = output_dir / filename
+
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail=f"Output file '{filename}' not found")
+
+    media_types = {
+        ".csv": "text/csv",
+        ".parquet": "application/octet-stream",
+        ".json": "application/json",
+    }
+    media_type = media_types.get(file_path.suffix.lower(), "application/octet-stream")
+
+    return FileResponse(
+        path=str(file_path),
+        filename=filename,
+        media_type=media_type,
+    )
+
+
+@app.post("/etl/natural-language")
+async def etl_from_natural_language(req: ETLNaturalLanguageRequest):
+    """Use LLM to build transform steps from a natural language instruction, then execute."""
+    import duckdb
+
+    logger.info(
+        "ETL NL: source='%s' instruction='%s' format='%s'",
+        req.source_file, req.instruction[:80], req.destination_format,
+    )
+
+    # 1. Get source file schema
+    base = Path(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    file_path = base / "data" / "uploads" / req.source_file
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail=f"Source file '{req.source_file}' not found")
+
+    try:
+        con = duckdb.connect(":memory:")
+        table_name = Path(req.source_file).stem.replace("-", "_").replace(" ", "_")
+        ext = file_path.suffix.lower()
+        if ext == ".csv":
+            con.execute(f"CREATE TABLE {table_name} AS SELECT * FROM read_csv_auto('{file_path}')")
+        elif ext == ".parquet":
+            con.execute(f"CREATE TABLE {table_name} AS SELECT * FROM read_parquet('{file_path}')")
+        elif ext == ".json":
+            con.execute(f"CREATE TABLE {table_name} AS SELECT * FROM read_json_auto('{file_path}')")
+
+        schema_rows = con.execute(f"DESCRIBE {table_name}").fetchall()
+        sample = con.execute(f"SELECT * FROM {table_name} LIMIT 5").fetchall()
+        col_names = [r[0] for r in schema_rows]
+        sample_records = [dict(zip(col_names, row)) for row in sample]
+        con.close()
+
+        schema_text = ", ".join(f"{r[0]} ({r[1]})" for r in schema_rows)
+    except Exception as e:
+        return {"status": "error", "error": f"Failed to read source: {e}", "transforms": []}
+
+    # 2. Ask LLM to generate transform steps
+    from shared.llm_provider import get_llm
+    llm = get_llm()
+
+    prompt = f"""You are a data transformation expert. Given a source table schema and user instruction,
+generate a list of ETL transform steps as JSON.
+
+SOURCE TABLE: {table_name}
+COLUMNS: {schema_text}
+SAMPLE DATA (first 5 rows): {json.dumps(sample_records[:3], default=str)}
+
+USER INSTRUCTION: {req.instruction}
+
+Return ONLY a JSON array of transform step objects. Each step has:
+- "type": one of "filter", "rename", "drop_columns", "add_column", "sort", "aggregate", "deduplicate", "cast_type", "fill_missing", "custom_sql"
+- "description": what this step does
+- "config": configuration object specific to the step type
+
+Step config examples:
+- filter: {{"condition": "price > 10"}}
+- rename: {{"mappings": {{"old_col": "new_col"}}}}
+- drop_columns: {{"columns": ["col1", "col2"]}}
+- add_column: {{"name": "total", "expression": "price * quantity"}}
+- sort: {{"column": "price", "order": "DESC"}}
+- aggregate: {{"group_by": ["category"], "aggregations": [{{"column": "price", "func": "AVG", "alias": "avg_price"}}]}}
+- deduplicate: {{"columns": ["id"]}}
+- cast_type: {{"column": "price", "to_type": "DOUBLE"}}
+- fill_missing: {{"column": "name", "value": "'Unknown'"}}
+- custom_sql: {{"sql": "SELECT *, price * 1.1 AS price_with_tax FROM {{{{input}}}}"}}
+
+Return ONLY the JSON array, no markdown, no explanation."""
+
+    transforms = []
+    llm_error = None
+    if llm.is_available():
+        try:
+            logger.info("ETL NL: calling LLM (%s)…", llm)
+            parsed = llm.generate_json(prompt)
+            logger.info("ETL NL: LLM returned type=%s", type(parsed).__name__)
+            if isinstance(parsed, list):
+                transforms = parsed
+                logger.info("ETL NL: generated %d transform steps", len(transforms))
+            elif isinstance(parsed, dict) and "transforms" in parsed:
+                transforms = parsed["transforms"]
+                logger.info("ETL NL: extracted %d steps from wrapper", len(transforms))
+            else:
+                logger.warning("ETL NL: LLM returned unexpected format: %s", str(parsed)[:200])
+        except Exception as e:
+            llm_error = str(e)
+            logger.error("ETL NL: LLM call failed: %s", e, exc_info=True)
+    else:
+        llm_error = "No LLM provider available"
+        logger.warning("ETL NL: no LLM provider available")
+
+    if not transforms:
+        if llm_error:
+            return {
+                "status": "error",
+                "error": f"LLM failed: {llm_error}",
+                "source_file": req.source_file,
+                "instruction": req.instruction,
+                "transforms": [],
+                "schema": [{"name": r[0], "type": r[1]} for r in schema_rows],
+            }
+        # Fallback: create a simple custom_sql step from the instruction
+        transforms = [{
+            "type": "custom_sql",
+            "description": req.instruction,
+            "config": {"sql": f"SELECT * FROM {{{{input}}}}"},
+        }]
+
+    return {
+        "status": "success",
+        "source_file": req.source_file,
+        "instruction": req.instruction,
+        "transforms": transforms,
+        "schema": [{"name": r[0], "type": r[1]} for r in schema_rows],
+    }
+
+
 # ── Health is provided by create_service() ──
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Pipeline API  —  AI-driven Source → Process → Sink Pipelines
+# ═══════════════════════════════════════════════════════════════════
+
+from pipeline.engine import PipelineEngine
+from pipeline.generator import PipelineGenerator
+from pipeline.models import (
+    Pipeline as PipelineModel,
+    PipelineRun as PipelineRunModel,
+    PipelineSource as PipelineSourceModel,
+    PipelineSink as PipelineSinkModel,
+    PipelineStatus as PipelineStatusEnum,
+)
+
+_pipeline_engine = PipelineEngine()
+_pipeline_generator: Optional[PipelineGenerator] = None
+
+
+def _get_generator() -> PipelineGenerator:
+    global _pipeline_generator
+    if _pipeline_generator is None:
+        _pipeline_generator = PipelineGenerator()
+    return _pipeline_generator
+
+
+# ── Request / Response models ─────────────────────────────────────
+
+class PipelineGenerateRequest(BaseModel):
+    prompt: str
+    source_file: Optional[str] = None
+    include_schema: bool = True
+
+class PipelineExecuteRequest(BaseModel):
+    pipeline: Dict[str, Any]
+    preview_only: bool = False
+
+class PipelineSaveRequest(BaseModel):
+    pipeline: Dict[str, Any]
+
+
+# ── Generate pipeline from NL prompt ──────────────────────────────
+
+@app.post("/pipeline/generate")
+async def pipeline_generate(req: PipelineGenerateRequest):
+    """Convert a natural language prompt into a Pipeline definition."""
+    logger.info("[Pipeline] Generate request: %s", req.prompt[:200])
+
+    gen = _get_generator()
+
+    # Build schema context if requested
+    schema_context = None
+    available_files = None
+
+    upload_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "uploads")
+    skip = {".gitkeep", ".DS_Store"}
+    data_exts = {".csv", ".parquet", ".json", ".xlsx", ".tsv"}
+    if os.path.isdir(upload_dir):
+        available_files = [
+            f for f in sorted(os.listdir(upload_dir))
+            if f not in skip and os.path.splitext(f)[1].lower() in data_exts
+        ]
+
+    if req.include_schema:
+        schema_context = {}
+        target_file = req.source_file
+        if not target_file and available_files:
+            target_file = available_files[0]
+        if target_file:
+            try:
+                schema_context[target_file] = gen.get_file_schema(target_file)
+            except Exception as e:
+                logger.warning("[Pipeline] Schema read failed for %s: %s", target_file, e)
+
+    try:
+        pipeline = await gen.generate(
+            prompt=req.prompt,
+            available_files=available_files,
+            schema_context=schema_context,
+        )
+        # If user specified a source file, override
+        if req.source_file and pipeline.source.type.value == "file":
+            pipeline.source.file_name = req.source_file
+
+        return {
+            "status": "success",
+            "pipeline": pipeline.model_dump(),
+        }
+    except Exception as e:
+        logger.error("[Pipeline] Generate failed: %s", e, exc_info=True)
+        return {"status": "error", "error": str(e)}
+
+
+# ── Execute a pipeline ────────────────────────────────────────────
+
+@app.post("/pipeline/execute")
+async def pipeline_execute(req: PipelineExecuteRequest):
+    """Execute a pipeline definition and return results."""
+    logger.info("[Pipeline] Execute request (preview=%s)", req.preview_only)
+
+    try:
+        pipeline = PipelineModel(**req.pipeline)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid pipeline: {e}")
+
+    try:
+        run = await _pipeline_engine.execute(
+            pipeline, preview_only=req.preview_only
+        )
+        return {
+            "status": "success",
+            "run": run.model_dump(),
+        }
+    except Exception as e:
+        logger.error("[Pipeline] Execute failed: %s", e, exc_info=True)
+        return {"status": "error", "error": str(e)}
+
+
+# ── Save pipeline ─────────────────────────────────────────────────
+
+@app.post("/pipeline/save")
+async def pipeline_save(req: PipelineSaveRequest):
+    """Save a pipeline definition for later use."""
+    try:
+        pipeline = PipelineModel(**req.pipeline)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid pipeline: {e}")
+
+    saved = _pipeline_engine.save(pipeline)
+    return {"status": "success", "pipeline_id": saved.id, "name": saved.name}
+
+
+# ── List saved pipelines ──────────────────────────────────────────
+
+@app.get("/pipeline/list")
+async def pipeline_list():
+    """List all saved pipelines."""
+    pipelines = _pipeline_engine.list_all()
+    return {
+        "status": "success",
+        "count": len(pipelines),
+        "pipelines": [
+            {
+                "id": p.id,
+                "name": p.name,
+                "description": p.description,
+                "source": p.source.label(),
+                "steps": len(p.steps),
+                "sink": p.sink.type.value,
+                "status": p.status.value,
+                "created_at": p.created_at,
+                "tags": p.tags,
+            }
+            for p in pipelines
+        ],
+    }
+
+
+# ── Get pipeline details ──────────────────────────────────────────
+
+@app.get("/pipeline/{pipeline_id}")
+async def pipeline_get(pipeline_id: str):
+    """Get a saved pipeline by ID."""
+    p = _pipeline_engine.get(pipeline_id)
+    if not p:
+        raise HTTPException(status_code=404, detail="Pipeline not found")
+    return {"status": "success", "pipeline": p.model_dump()}
+
+
+# ── Delete pipeline ───────────────────────────────────────────────
+
+@app.delete("/pipeline/{pipeline_id}")
+async def pipeline_delete(pipeline_id: str):
+    """Delete a saved pipeline."""
+    deleted = _pipeline_engine.delete(pipeline_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Pipeline not found")
+    return {"status": "success", "deleted": pipeline_id}
+
+
+# ── Get file schema (for pipeline builder context) ────────────────
+
+@app.get("/pipeline/schema/{file_name}")
+async def pipeline_file_schema(file_name: str):
+    """Get column schema for a file (used by pipeline builder UI)."""
+    gen = _get_generator()
+    try:
+        schema = gen.get_file_schema(file_name)
+        return {"status": "success", "schema": schema}
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
+
+
+# ── Download pipeline output ──────────────────────────────────────
+
+@app.get("/pipeline/download/{filename}")
+async def pipeline_download(filename: str):
+    """Download a pipeline output file."""
+    from fastapi.responses import FileResponse
+    output_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "processed")
+    file_path = os.path.join(output_dir, filename)
+    if not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail="Output file not found")
+    return FileResponse(file_path, filename=filename)
 
 
 if __name__ == "__main__":

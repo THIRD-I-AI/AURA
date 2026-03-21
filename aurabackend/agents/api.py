@@ -221,9 +221,10 @@ async def list_tools():
 # ── Private helpers ───────────────────────────────────────────────────
 
 def _task_dict(t: Any) -> Dict[str, Any]:
+    tt = getattr(t, "task_type", "")
     return {
         "id": getattr(t, "id", "?"),
-        "task_type": str(getattr(t, "task_type", "")),
+        "task_type": tt.value if hasattr(tt, "value") else str(tt),
         "description": getattr(t, "description", ""),
         "agent_name": getattr(t, "agent_name", ""),
         "depends_on": getattr(t, "depends_on", []),

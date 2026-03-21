@@ -78,7 +78,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
       };
       setMessages((prev) => [...prev, loadingMessage]);
 
-      // Call backend to generate SQL
+      // Call unified /chat endpoint (NL → SQL → Execute → Visualize)
       const response: QueryResponse = await chatService.sendMessage(userInput, { sessionId });
 
       // Remove loading message
@@ -94,22 +94,55 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
           metadata: {
             query: response.final_query,
             jobId: response.job_id,
-            userQuery: userInput, // Store user's original question
+            userQuery: userInput,
           },
         };
         setMessages((prev) => [...prev, sqlMessage]);
 
-        // Show assistant response
-        const assistantMessage: Message = {
-          id: (Date.now() + 1).toString(),
-          type: 'assistant',
-          content:
-            response.status === 'Fallback'
-              ? 'Generated a fallback query. Review and click "Run Query" to execute.'
-              : 'SQL query generated successfully. Click "Run Query" to execute.',
-          timestamp: new Date(),
-        };
-        setMessages((prev) => [...prev, assistantMessage]);
+        // If auto-execute returned results, show them immediately
+        const execResult = response.execution_result;
+        if (execResult && execResult.success && execResult.data?.length > 0) {
+          const resultMessage: Message = {
+            id: (Date.now() + 1).toString(),
+            type: 'assistant',
+            content: `✓ Query executed — ${execResult.row_count || execResult.data.length} rows in ${response.execution_time_ms || 0}ms`,
+            timestamp: new Date(),
+            metadata: {
+              executionResult: {
+                success: true,
+                data: execResult.data,
+                columns: execResult.columns,
+                rows: execResult.rows,
+                row_count: execResult.row_count,
+                execution_time_ms: response.execution_time_ms,
+                chart_spec: execResult.chart_spec,
+              },
+              userQuery: userInput,
+            },
+          };
+          setMessages((prev) => [...prev, resultMessage]);
+        } else if (execResult && !execResult.success) {
+          // Execution failed — show SQL with manual run option
+          const assistantMessage: Message = {
+            id: (Date.now() + 1).toString(),
+            type: 'assistant',
+            content: `SQL generated but execution failed: ${execResult.error || 'Unknown error'}. Click "Run Query" to retry.`,
+            timestamp: new Date(),
+          };
+          setMessages((prev) => [...prev, assistantMessage]);
+        } else {
+          // No auto-execute or no data — prompt manual execution
+          const assistantMessage: Message = {
+            id: (Date.now() + 1).toString(),
+            type: 'assistant',
+            content:
+              response.status === 'Fallback'
+                ? 'Generated a fallback query. Click "Run Query" to execute.'
+                : 'SQL query generated. Click "Run Query" to execute.',
+            timestamp: new Date(),
+          };
+          setMessages((prev) => [...prev, assistantMessage]);
+        }
       } else {
         // Show error
         const errorMessage: Message = {

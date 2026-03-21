@@ -20,8 +20,9 @@ class GeneratorAgent:
     def run(self, prompt: str, context: str, rework_feedback: str = "") -> str:
         instruction = (
             "You are an expert data analyst. Your task is to convert a user's question "
-            "into a syntactically correct SQL query for a PostgreSQL database. "
-            "Use the provided database schema context. Respond ONLY with the SQL query."
+            "into a syntactically correct SQL query. The database is DuckDB (compatible with PostgreSQL syntax). "
+            "Use the provided database schema context — use ONLY the table and column names listed there. "
+            "Respond ONLY with the raw SQL query, no markdown, no explanation."
         )
 
         prompt_parts = [
@@ -48,28 +49,39 @@ class GeneratorAgent:
 
     def fallback(self, prompt: str, context: str) -> str:
 
-
         # Extract table name and columns from context dynamically
-        table_name = "sales_table"  # default
-        columns = ["product_name", "total_revenue", "sale_date"]  # default
+        table_name = "data_table"  # default
+        columns = []  # will be populated from context
         
         try:
-            # Try to parse context to extract schema
-            # Format: "Schema: table_name(col1, col2, col3)"
-            if "Schema:" in context:
+            # Try to parse context in multiple formats
+            if "Table:" in context and "columns:" in context:
+                # Format from /chat DuckDB discovery:
+                #   "Table: product — columns: id, name, price"
+                for line in context.split("\n"):
+                    line = line.strip()
+                    if line.startswith("Table:") and "columns:" in line:
+                        # Parse "Table: product — columns: id, name, price"
+                        parts = line.split("columns:")
+                        tbl_part = parts[0].replace("Table:", "").replace("—", "").strip()
+                        if tbl_part:
+                            table_name = tbl_part
+                        if len(parts) > 1:
+                            cols_str = parts[1].strip()
+                            columns = [c.strip() for c in cols_str.split(",") if c.strip()]
+                        break  # use first table found
+            elif "Schema:" in context:
                 schema_part = context.split("Schema:")[1].strip()
                 if "(" in schema_part and ")" in schema_part:
                     table_name = schema_part[:schema_part.index("(")].strip()
                     cols_str = schema_part[schema_part.index("(")+1:schema_part.index(")")].strip()
                     columns = [col.strip() for col in cols_str.split(",") if col.strip()]
-            # Also try "File: " format from dynamic uploads
             elif "File:" in context:
-                # Extract filename and schema from upload context
                 lines = context.split("\n")
                 for line in lines:
                     if "File:" in line:
                         filename = line.split("File:")[1].strip()
-                        table_name = filename.replace(".csv", "").replace(".xlsx", "").replace(".json", "").replace(".parquet", "").replace("[^a-zA-Z0-9_]", "_")
+                        table_name = filename.replace(".csv", "").replace(".xlsx", "").replace(".json", "").replace(".parquet", "").replace(" ", "_")
                     elif "Schema:" in line:
                         schema_part = line.split("Schema:")[1].strip()
                         if "(" in schema_part and ")" in schema_part:

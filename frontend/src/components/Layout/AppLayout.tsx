@@ -6,7 +6,7 @@ import Sidebar from './Sidebar';
 import Header from './Header';
 import Button from '../ui/Button';
 
-export type PageType = 'dashboard' | 'chat' | 'files' | 'queries' | 'settings' | 'agent';
+export type PageType = 'dashboard' | 'chat' | 'files' | 'queries' | 'settings' | 'agent' | 'pipelines';
 
 interface SidebarItem {
   id: string;
@@ -60,6 +60,12 @@ const AppLayout: React.FC<AppLayoutProps> = ({ children, currentPage, onPageChan
       icon: '🤖',
       href: '#',
     },
+    {
+      id: 'pipelines',
+      label: 'ETL Pipelines',
+      icon: '⚙️',
+      href: '#',
+    },
   ];
 
   const getPageTitle = (): { title: string; subtitle: string } => {
@@ -87,6 +93,10 @@ const AppLayout: React.FC<AppLayoutProps> = ({ children, currentPage, onPageChan
       agent: {
         title: 'Agent',
         subtitle: 'Agentic data engineering — one prompt does it all',
+      },
+      pipelines: {
+        title: 'ETL Pipelines',
+        subtitle: 'Build, run, and manage data transformation pipelines',
       },
     };
     return titles[currentPage as PageType];
