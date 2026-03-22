@@ -35,7 +35,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
     {
       id: '1',
       type: 'system',
-      content: 'Welcome to AURA Analytics. I\'m here to help you analyze your data. Ask me anything about your datasets!',
+      content: import.meta.env.VITE_WELCOME_MESSAGE || 'Welcome to AURA Analytics. I\'m here to help you analyze your data. Ask me anything about your datasets!',
       timestamp: new Date(),
     },
   ]);
@@ -50,6 +50,43 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
   useEffect(() => {
     scrollToBottom();
   }, [messages]);
+
+  // Pick up "Re-run in Chat" from QueryHistory page
+  useEffect(() => {
+    const rerun = localStorage.getItem('rerunQuery');
+    if (rerun) {
+      localStorage.removeItem('rerunQuery');
+      setInput(rerun);
+    }
+    // Pick up "Analyze with AI" from FilesAndData page
+    const dataset = localStorage.getItem('active_dataset');
+    if (dataset) {
+      try {
+        const ds = JSON.parse(dataset);
+        localStorage.removeItem('active_dataset');
+        setInput(`Analyze the ${ds.name} dataset — show me summary statistics and key insights`);
+      } catch { /* ignore */ }
+    }
+  }, []);
+
+  // Save a query execution to localStorage so QueryHistory page can display it
+  const saveToQueryHistory = (prompt: string, sql: string, status: 'success' | 'error', rows: number, executionTime: number) => {
+    try {
+      const existing = JSON.parse(localStorage.getItem('queryHistory') || '[]');
+      const record = {
+        id: `q_${Date.now()}`,
+        prompt,
+        sql,
+        status,
+        rows,
+        executionTime,
+        timestamp: new Date().toISOString(),
+      };
+      existing.unshift(record);
+      // Keep last 50 queries
+      localStorage.setItem('queryHistory', JSON.stringify(existing.slice(0, 50)));
+    } catch { /* ignore storage errors */ }
+  };
 
   const handleSendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -121,6 +158,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
             },
           };
           setMessages((prev) => [...prev, resultMessage]);
+          saveToQueryHistory(userInput, response.final_query || '', 'success', execResult.row_count || execResult.data.length, response.execution_time_ms || 0);
         } else if (execResult && !execResult.success) {
           // Execution failed — show SQL with manual run option
           const assistantMessage: Message = {
@@ -204,6 +242,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
           },
         };
         setMessages((prev) => [...prev, resultMessage]);
+        saveToQueryHistory(userQuery || query, query, 'success', result.row_count || result.data.length, result.execution_time_ms || 0);
       } else {
         // Show error
         const errorMessage: Message = {
@@ -213,6 +252,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
           timestamp: new Date(),
         };
         setMessages((prev) => [...prev, errorMessage]);
+        saveToQueryHistory(userQuery || query, query, 'error', 0, 0);
       }
     } catch (error) {
       setMessages((prev) => prev.filter((m) => !m.loading));

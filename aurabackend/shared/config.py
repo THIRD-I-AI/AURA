@@ -94,6 +94,18 @@ class AuraSettings(BaseSettings):
 
     # ── Security / Auth ─────────────────────────────────────────────────
     secret_key: str = Field("change-me-in-production", alias="SECRET_KEY")
+
+    @field_validator("secret_key", mode="after")
+    @classmethod
+    def _warn_default_secret(cls, v):
+        if v == "change-me-in-production":
+            import warnings
+            warnings.warn(
+                "SECRET_KEY is still the default value. "
+                "Set SECRET_KEY in your .env for production use.",
+                stacklevel=2,
+            )
+        return v
     jwt_algorithm: str = Field("HS256", alias="ALGORITHM")
     access_token_expire_minutes: int = Field(30, alias="ACCESS_TOKEN_EXPIRE_MINUTES")
     mcp_api_key: Optional[str] = Field(None, alias="MCP_API_KEY")

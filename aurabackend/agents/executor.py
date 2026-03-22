@@ -13,6 +13,7 @@ Key design choices:
 from __future__ import annotations
 
 import asyncio
+import os
 import time
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Type
 
@@ -81,7 +82,7 @@ class DAGExecutor:
         tool_registry: Optional[ToolRegistry] = None,
         memory: Optional[AgentMemory] = None,
         progress_cb: Optional[ProgressCallback] = None,
-        max_concurrency: int = 4,
+        max_concurrency: int = int(os.getenv("AURA_MAX_CONCURRENCY", "4")),
     ) -> None:
         self.tools = tool_registry
         self.memory = memory or AgentMemory()

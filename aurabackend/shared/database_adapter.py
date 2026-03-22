@@ -190,7 +190,7 @@ class PostgresAdapter(DatabaseAdapter):
                 user=self.config.username,
                 password=self.config.password,
                 min_size=1,
-                max_size=10,
+                max_size=int(os.getenv("DB_POOL_SIZE", "10")),
                 **self.config.extra,
             )
             self._connected = True

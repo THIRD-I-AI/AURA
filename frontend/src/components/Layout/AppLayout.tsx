@@ -5,6 +5,7 @@ import './Header.css';
 import Sidebar from './Sidebar';
 import Header from './Header';
 import Button from '../ui/Button';
+import { useSystemHealth } from '../../hooks/useSystemHealth';
 
 export type PageType = 'dashboard' | 'chat' | 'files' | 'queries' | 'settings' | 'agent' | 'pipelines';
 
@@ -27,7 +28,9 @@ interface AppLayoutProps {
  */
 const AppLayout: React.FC<AppLayoutProps> = ({ children, currentPage, onPageChange }) => {
   const [sidebarCollapsed] = React.useState(false);
-  const [notificationCount] = React.useState(3);
+  const systemHealth = useSystemHealth();
+
+  const notificationCount = 0; // Real notifications not yet implemented
 
   const sidebarItems: SidebarItem[] = [
     {
@@ -103,7 +106,7 @@ const AppLayout: React.FC<AppLayoutProps> = ({ children, currentPage, onPageChan
   };
 
   const pageInfo = getPageTitle();
-  const systemStatus = 'Waiting for checks';
+  const systemStatus = systemHealth.isOnline ? 'All systems online' : 'Offline';
 
   return (
     <div
@@ -137,11 +140,11 @@ const AppLayout: React.FC<AppLayoutProps> = ({ children, currentPage, onPageChan
           title={pageInfo.title}
           subtitle={pageInfo.subtitle}
           breadcrumbs={[
-            { label: 'Home', href: '#' },
+            { label: 'Home' },
             { label: pageInfo.title },
           ]}
           searchable={currentPage === 'chat' || currentPage === 'files'}
-          onSearch={(query) => console.log('Search:', query)}
+          onSearch={() => { /* search handled at page level */ }}
           notificationCount={notificationCount}
           actions={
             <>

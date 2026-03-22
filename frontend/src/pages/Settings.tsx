@@ -8,7 +8,7 @@ interface SettingsProps {
 }
 
 const Settings: React.FC<SettingsProps> = () => {
-  const [apiUrl, setApiUrl] = useState('http://localhost:8000');
+  const [apiUrl, setApiUrl] = useState(import.meta.env.VITE_API_URL || 'http://localhost:8000');
   const [health, setHealth] = useState<HealthStatus | null>(null);
   const [checking, setChecking] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -104,10 +104,10 @@ const Settings: React.FC<SettingsProps> = () => {
             <div className="settings-option-row">
               <div>
                 <p className="settings-option-label">Dark mode</p>
-                <p className="settings-option-hint">System follows your OS preference by default.</p>
+                <p className="settings-option-hint">Follows your OS preference automatically.</p>
               </div>
-              <span className="settings-option-value">
-                {window.matchMedia('(prefers-color-scheme: dark)').matches ? 'Active' : 'Light'}
+              <span className="settings-option-value" style={{ fontWeight: 600 }}>
+                {window.matchMedia('(prefers-color-scheme: dark)').matches ? '🌙 Active' : '☀️ Light'}
               </span>
             </div>
 
@@ -116,7 +116,7 @@ const Settings: React.FC<SettingsProps> = () => {
                 <p className="settings-option-label">Compact tables</p>
                 <p className="settings-option-hint">Reduce row padding in data tables.</p>
               </div>
-              <span className="settings-option-value">Off</span>
+              <span className="settings-option-value" style={{ fontWeight: 600 }}>Coming soon</span>
             </div>
           </section>
 
@@ -128,7 +128,7 @@ const Settings: React.FC<SettingsProps> = () => {
             <div className="settings-info-grid">
               <div className="settings-info-item">
                 <span className="settings-info-label">App</span>
-                <span className="settings-info-value">AURA Analytics v1.0</span>
+                <span className="settings-info-value">{import.meta.env.VITE_APP_NAME || 'AURA Analytics'} {import.meta.env.VITE_APP_VERSION || 'v1.0'}</span>
               </div>
               <div className="settings-info-item">
                 <span className="settings-info-label">Frontend</span>
@@ -140,7 +140,7 @@ const Settings: React.FC<SettingsProps> = () => {
               </div>
               <div className="settings-info-item">
                 <span className="settings-info-label">AI Model</span>
-                <span className="settings-info-value">Gemini (NL → SQL)</span>
+                <span className="settings-info-value">{import.meta.env.VITE_AI_MODEL_LABEL || 'Groq llama-3.3-70b (NL → SQL)'}</span>
               </div>
             </div>
           </section>

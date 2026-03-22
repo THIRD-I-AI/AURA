@@ -374,4 +374,8 @@ def _get_database_description(db_type: DatabaseType) -> str:
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8002)
+    uvicorn.run(
+        app,
+        host=os.getenv("API_HOST", "0.0.0.0"),
+        port=int(os.getenv("DATABASE_PORT", "8002")),
+    )

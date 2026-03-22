@@ -62,7 +62,7 @@ async def execute_sql(*, query: str, connection_id: str = "default") -> Any:
         "job_id": str(uuid.uuid4()),
         "sql": query,
         "connection_id": connection_id,
-        "limit": 1000,
+        "limit": int(os.getenv("DEFAULT_QUERY_LIMIT", "1000")),
         "approved": True,
     })
 

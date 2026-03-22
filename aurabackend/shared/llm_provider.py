@@ -29,6 +29,14 @@ from typing import Any, Dict, List, Optional, Union
 
 logger = logging.getLogger(__name__)
 
+_DEFAULT_MAX_TOKENS = int(os.getenv("AURA_DEFAULT_MAX_TOKENS", "4096"))
+_OLLAMA_HEALTH_TIMEOUT = int(os.getenv("OLLAMA_HEALTH_TIMEOUT", "3"))
+
+
+class LLMRateLimitError(Exception):
+    """Raised when the LLM provider rejects the request due to rate/size limits."""
+    pass
+
 
 def _setting(attr: str) -> Optional[str]:
     """Read a value from shared.config.settings (which loads .env files).
@@ -98,13 +106,10 @@ class OllamaProvider(LLMProvider):
     provider_name = "ollama"
 
     # Good default models for data engineering tasks (in preference order)
-    _DEFAULT_MODELS = [
-        "qwen2.5-coder:7b",    # excellent at SQL / code
-        "llama3:8b",            # strong general reasoning
-        "mistral:7b",           # fast, good at structured output
-        "phi3:mini",            # tiny & fast fallback
-        "deepseek-coder-v2:16b",
-    ]
+    _DEFAULT_MODELS = os.getenv(
+        "OLLAMA_PREFERRED_MODELS",
+        "qwen2.5-coder:7b,llama3:8b,mistral:7b,phi3:mini,deepseek-coder-v2:16b",
+    ).split(",")
 
     def __init__(self, model: str = "", **kwargs: Any) -> None:
         self._base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
@@ -122,7 +127,7 @@ class OllamaProvider(LLMProvider):
 
         try:
             import httpx
-            resp = httpx.get(f"{self._base_url}/api/tags", timeout=3)
+            resp = httpx.get(f"{self._base_url}/api/tags", timeout=_OLLAMA_HEALTH_TIMEOUT)
             if resp.status_code == 200:
                 available = {m["name"] for m in resp.json().get("models", [])}
                 # Normalise: "llama3:8b" might appear as "llama3:8b" or just "llama3"
@@ -147,7 +152,7 @@ class OllamaProvider(LLMProvider):
     def is_available(self) -> bool:
         try:
             import httpx
-            resp = httpx.get(f"{self._base_url}/api/tags", timeout=3)
+            resp = httpx.get(f"{self._base_url}/api/tags", timeout=_OLLAMA_HEALTH_TIMEOUT)
             if resp.status_code != 200:
                 return False
             models = resp.json().get("models", [])
@@ -183,7 +188,7 @@ class OllamaProvider(LLMProvider):
                 "stream": False,
                 "options": {
                     "temperature": kwargs.get("temperature", 0.2),
-                    "num_predict": kwargs.get("max_tokens", 4096),
+                    "num_predict": kwargs.get("max_tokens", _DEFAULT_MAX_TOKENS),
                 },
             }
             timeout = float(os.getenv("AURA_LLM_TIMEOUT", "120"))
@@ -246,7 +251,7 @@ class GroqProvider(LLMProvider):
             messages = [{"role": "user", "content": prompt}]
 
         temperature = kwargs.get("temperature", 0.2)
-        max_tokens = kwargs.get("max_tokens", 4096)
+        max_tokens = kwargs.get("max_tokens", _DEFAULT_MAX_TOKENS)
 
         # Try native groq SDK first
         if self._client != "httpx":
@@ -261,6 +266,9 @@ class GroqProvider(LLMProvider):
                 if choice and choice.message:
                     return (choice.message.content or "").strip()
             except Exception as exc:
+                exc_str = str(exc).lower()
+                if "rate" in exc_str or "too large" in exc_str or "413" in exc_str or "limit" in exc_str:
+                    raise LLMRateLimitError(f"Groq rate/size limit: {exc}") from exc
                 logger.warning("Groq SDK generation failed: %s", exc)
                 return None
 
@@ -286,8 +294,15 @@ class GroqProvider(LLMProvider):
                 choices = data.get("choices", [])
                 if choices:
                     return (choices[0].get("message", {}).get("content", "") or "").strip()
+            elif resp.status_code in (413, 429):
+                raise LLMRateLimitError(
+                    f"Groq HTTP {resp.status_code}: prompt too large or rate limit exceeded. "
+                    f"Try a simpler prompt or wait a moment."
+                )
             else:
                 logger.warning("Groq HTTP %d: %s", resp.status_code, resp.text[:200])
+        except LLMRateLimitError:
+            raise
         except Exception as exc:
             logger.warning("Groq httpx generation failed: %s", exc)
         return None
@@ -392,7 +407,7 @@ class OpenAIProvider(LLMProvider):
                 model=self.model,
                 messages=messages,
                 temperature=kwargs.get("temperature", 0.2),
-                max_tokens=kwargs.get("max_tokens", 4096),
+                max_tokens=kwargs.get("max_tokens", _DEFAULT_MAX_TOKENS),
             )
             choice = response.choices[0] if response.choices else None
             if choice and choice.message:

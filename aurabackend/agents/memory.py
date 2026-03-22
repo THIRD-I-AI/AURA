@@ -6,6 +6,7 @@ Keeps track of what was done, what was learned, and what failed.
 """
 from __future__ import annotations
 
+import os
 import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
@@ -29,7 +30,7 @@ class AgentMemory:
     the full memory to decide what to do next.
     """
 
-    def __init__(self, max_entries: int = 500) -> None:
+    def __init__(self, max_entries: int = int(os.getenv("AURA_MEMORY_MAX_ENTRIES", "500"))) -> None:
         self._entries: List[MemoryEntry] = []
         self._max = max_entries
 

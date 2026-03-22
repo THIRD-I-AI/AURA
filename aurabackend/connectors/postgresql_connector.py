@@ -2,6 +2,7 @@
 PostgreSQL connector for AURA
 """
 
+import os
 from typing import Any, Dict, List, Optional
 import asyncpg
 import json
@@ -26,7 +27,7 @@ class PostgreSQLConnector(BaseConnector):
                 host=self.config.host or "localhost",
                 port=self.config.port or 5432,
                 min_size=1,
-                max_size=10,
+                max_size=int(os.getenv("DB_POOL_SIZE", "10")),
             )
             self._is_connected = True
             self.metadata.connected = True

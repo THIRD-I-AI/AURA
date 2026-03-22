@@ -55,11 +55,9 @@ const PipelinesPanel: React.FC<PipelinesPanelProps> = () => {
   const [destFormat, setDestFormat] = useState('csv');
   const [destFilename, setDestFilename] = useState('');
   const [result, setResult] = useState<ETLExecutionResult | null>(null);
-  const [nlInstruction, setNlInstruction] = useState('');
   const [isLoading, setIsLoading] = useState(false);
-  const [isNlLoading, setIsNlLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<'visual' | 'natural' | 'ai'>('ai');
+  const [activeTab, setActiveTab] = useState<'visual' | 'ai'>('ai');
   const [showAddStep, setShowAddStep] = useState(false);
 
   // ── AI Pipeline State ──
@@ -77,7 +75,7 @@ const PipelinesPanel: React.FC<PipelinesPanelProps> = () => {
 
   const fetchSourceFiles = async () => {
     try {
-      const resp = await fetch('http://localhost:8000/files');
+      const resp = await fetch(`${localStorage.getItem('apiUrl') || 'http://localhost:8000'}/files`);
       const data = await resp.json();
       if (data.status === 'success' && data.files) {
         const DATA_EXTENSIONS = ['.csv', '.json', '.parquet'];
@@ -183,36 +181,6 @@ const PipelinesPanel: React.FC<PipelinesPanelProps> = () => {
     }
   };
 
-  // ── Natural language mode ──
-  const handleNlGenerate = async () => {
-    if (!selectedSource || !nlInstruction.trim()) return;
-    setIsNlLoading(true);
-    setError(null);
-    console.log('[ETL NL] Generating transforms for:', nlInstruction.trim());
-    try {
-      const res = await etlService.fromNaturalLanguage(
-        selectedSource,
-        nlInstruction.trim(),
-        destFormat,
-      );
-      console.log('[ETL NL] Response:', res);
-      if (res.status === 'success' && res.transforms.length > 0) {
-        const stepsWithIds = res.transforms.map((t, i) => ({
-          ...t,
-          id: t.id || `step_${Date.now()}_${i}`,
-        }));
-        setTransforms(stepsWithIds);
-        setActiveTab('visual'); // Switch to visual to show generated steps
-      } else {
-        setError(res.error || 'Could not generate transform steps. Try a more specific instruction.');
-      }
-    } catch (e: any) {
-      setError(e.message || 'Failed to generate transforms');
-    } finally {
-      setIsNlLoading(false);
-    }
-  };
-
   // ── Download result ──
   const handleDownload = () => {
     if (!result?.output?.file) return;
@@ -286,6 +254,29 @@ const PipelinesPanel: React.FC<PipelinesPanelProps> = () => {
     window.open(url, '_blank');
   };
 
+  // ── AI Pipeline: Edit steps in Visual Builder ──
+  const handleEditInVisualBuilder = () => {
+    if (!aiPipeline) return;
+    // Convert AI pipeline steps → visual builder transforms
+    const converted: ETLTransformStep[] = aiPipeline.steps.map((step, i) => ({
+      id: step.id || `step_${Date.now()}_${i}`,
+      type: step.type as TransformType,
+      description: step.description || '',
+      config: step.config || {},
+    }));
+    setTransforms(converted);
+    // Use AI pipeline source file if available
+    if (aiPipeline.source.file_name && aiPipeline.source.file_name !== selectedSource) {
+      handleSourceChange(aiPipeline.source.file_name);
+    }
+    // Set destination format from sink
+    if (aiPipeline.sink.format) {
+      setDestFormat(aiPipeline.sink.format);
+    }
+    setPipelineName(aiPipeline.name || '');
+    setActiveTab('visual');
+  };
+
   /* ==============================================================
      RENDER
      ============================================================== */
@@ -297,7 +288,7 @@ const PipelinesPanel: React.FC<PipelinesPanelProps> = () => {
           <span className="etl-header__icon">⚙️</span>
           <div>
             <h2 className="etl-header__title">Data Pipeline Builder</h2>
-            <p className="etl-header__subtitle">Build pipelines visually, with natural language, or AI-generated</p>
+            <p className="etl-header__subtitle">Build pipelines with AI or the visual step editor</p>
           </div>
         </div>
         <div className="etl-header__tabs">
@@ -312,12 +303,6 @@ const PipelinesPanel: React.FC<PipelinesPanelProps> = () => {
             onClick={() => setActiveTab('visual')}
           >
             🧩 Visual Builder
-          </button>
-          <button
-            className={`etl-tab ${activeTab === 'natural' ? 'etl-tab--active' : ''}`}
-            onClick={() => setActiveTab('natural')}
-          >
-            🗣️ Natural Language
           </button>
         </div>
       </div>
@@ -382,6 +367,11 @@ const PipelinesPanel: React.FC<PipelinesPanelProps> = () => {
                 <div className="etl-section__header">
                   <span className="etl-step-badge">2</span>
                   <span className="etl-section__title">Generated Pipeline: {aiPipeline.name}</span>
+                  {aiPipeline.tags?.includes('llm-free') && (
+                    <span className="ai-pipeline__local-badge" title="Generated locally without LLM — no API calls, no rate limits">
+                      ⚡ Local
+                    </span>
+                  )}
                 </div>
                 {aiPipeline.description && (
                   <p className="ai-pipeline__desc">{aiPipeline.description}</p>
@@ -465,6 +455,12 @@ const PipelinesPanel: React.FC<PipelinesPanelProps> = () => {
                   onClick={handleAiSave}
                 >
                   💾 Save Pipeline
+                </button>
+                <button
+                  className="etl-btn etl-btn--ghost"
+                  onClick={handleEditInVisualBuilder}
+                >
+                  🧩 Edit in Visual Builder
                 </button>
               </div>
             </>
@@ -649,35 +645,13 @@ const PipelinesPanel: React.FC<PipelinesPanelProps> = () => {
           <span className="etl-step-count">{transforms.length} step{transforms.length !== 1 ? 's' : ''}</span>
         </div>
 
-        {activeTab === 'natural' && (
-          <div className="etl-nl-section">
-            <textarea
-              className="etl-textarea"
-              placeholder="Describe the transformations you need, e.g.: 'Remove rows where price is 0, add a column called discount that is price * 0.1, then sort by price descending'"
-              value={nlInstruction}
-              onChange={e => setNlInstruction(e.target.value)}
-              rows={3}
-            />
-            <button
-              className="etl-btn etl-btn--primary"
-              onClick={handleNlGenerate}
-              disabled={isNlLoading || !selectedSource || !nlInstruction.trim()}
-            >
-              {isNlLoading ? '⏳ Generating…' : '🤖 Generate Steps'}
-            </button>
-          </div>
-        )}
-
         {/* Transform steps list */}
         <div className="etl-steps-list">
           {transforms.length === 0 ? (
             <div className="etl-empty-steps">
               <p>No transform steps yet.</p>
               <p className="etl-empty-hint">
-                {activeTab === 'visual'
-                  ? 'Click "Add Step" below to start building your pipeline.'
-                  : 'Describe your transforms above and click "Generate Steps".'
-                }
+                Click "Add Step" below, or use the AI Pipeline tab to generate steps automatically.
               </p>
             </div>
           ) : (
@@ -696,7 +670,7 @@ const PipelinesPanel: React.FC<PipelinesPanelProps> = () => {
           )}
         </div>
 
-        {activeTab === 'visual' && (
+        {/* Add Step grid — always shown in visual builder */}
           <div className="etl-add-step-area">
             {showAddStep ? (
               <div className="etl-add-step-grid">
@@ -727,7 +701,6 @@ const PipelinesPanel: React.FC<PipelinesPanelProps> = () => {
               </button>
             )}
           </div>
-        )}
       </div>
 
       {/* ── STEP 3: Destination ── */}

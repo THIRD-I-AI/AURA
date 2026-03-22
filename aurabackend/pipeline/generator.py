@@ -1,8 +1,13 @@
 """
 AI Pipeline Generator
 =====================
-Converts a natural-language prompt into a fully-typed Pipeline definition
-by calling the configured LLM (Gemini / Ollama / OpenAI).
+Hybrid NLP → Pipeline engine with three-tier fallback:
+
+  1. **Local rule-based parser** — instant, no LLM, no API key, no token limits.
+     Handles ~80 % of common ETL requests deterministically.
+  2. **Ollama local model** — for complex prompts the rule parser can't handle.
+     Uses self-hosted SQL-specific models (sqlcoder / duckdb-nsql).
+  3. **Cloud LLM** (Groq / Gemini / OpenAI) — last resort fallback.
 
 Usage:
     from pipeline.generator import PipelineGenerator
@@ -27,6 +32,8 @@ from pipeline.models import (
     StepType,
     PipelineStatus,
 )
+from pipeline.local_parser import LocalPipelineParser
+from shared.llm_provider import LLMRateLimitError
 
 logger = logging.getLogger("aura.pipeline.generator")
 
@@ -106,12 +113,16 @@ RULES:
 
 
 class PipelineGenerator:
-    """Generates Pipeline definitions from natural language using LLM."""
+    """Generates Pipeline definitions from natural language using a three-tier approach."""
+
+    # Minimum confidence score from the local parser to skip LLM entirely
+    LOCAL_CONFIDENCE_THRESHOLD = 0.5
 
     def __init__(self) -> None:
         from shared.llm_provider import get_llm
         self._llm = get_llm()
-        logger.info(f"PipelineGenerator using LLM: {self._llm}")
+        self._local_parser = LocalPipelineParser()
+        logger.info(f"PipelineGenerator ready — local parser + LLM ({self._llm})")
 
     # ── Public API ────────────────────────────────────────────────────
 
@@ -125,29 +136,74 @@ class PipelineGenerator:
         """
         Convert a natural-language prompt into a Pipeline object.
 
-        Args:
-            prompt:          User's natural language instruction.
-            available_files: List of uploaded file names the user can use.
-            schema_context:  Column info for available files/tables.
-            connections:     List of available database connections.
-
-        Returns:
-            A Pipeline object ready for execution.
+        Resolution order:
+          1. Local rule-based parser (instant, no LLM)
+          2. Cloud/local LLM fallback (Groq → Gemini → Ollama → OpenAI)
         """
+        # ── Tier 1: Local rule-based parser ──────────────────────────
+        try:
+            source_file = None
+            if available_files:
+                source_file = available_files[0]
+            elif schema_context:
+                source_file = next(iter(schema_context), None)
+
+            result = self._local_parser.parse(
+                prompt,
+                schema_context=schema_context,
+                available_files=available_files or self._discover_files(),
+                source_file=source_file,
+            )
+            if result is not None:
+                pipeline, confidence = result
+                logger.info(
+                    "[Generator] Local parser succeeded (confidence=%.2f, steps=%d)",
+                    confidence, len(pipeline.steps),
+                )
+                if confidence >= self.LOCAL_CONFIDENCE_THRESHOLD:
+                    return pipeline
+                # Low confidence — we'll try LLM for a better result,
+                # but keep this as a fallback
+                local_fallback = pipeline
+            else:
+                local_fallback = None
+        except Exception as e:
+            logger.warning("[Generator] Local parser error: %s", e)
+            local_fallback = None
+
+        # ── Tier 2: LLM-based generation ─────────────────────────────
         context = self._build_context(available_files, schema_context, connections)
         user_message = f"{context}\n\nUser request: {prompt}"
+        logger.info(f"[Generator] Falling back to LLM for: {prompt[:120]}...")
 
-        logger.info(f"[Generator] Generating pipeline for: {prompt[:120]}...")
+        try:
+            raw = self._llm.generate_json([_SYSTEM_PROMPT, user_message])
+            if raw is None:
+                text = self._llm.generate([_SYSTEM_PROMPT, user_message])
+                if text:
+                    raw = self._parse_json(text)
+        except LLMRateLimitError as e:
+            # If we have a local result, use it instead of failing
+            if local_fallback is not None:
+                logger.info("[Generator] LLM rate-limited — using local parser result")
+                return local_fallback
+            raise ValueError(
+                f"Prompt too large for the LLM provider. "
+                f"Try a shorter prompt or select a specific source file. ({e})"
+            )
 
-        raw = self._llm.generate_json([_SYSTEM_PROMPT, user_message])
         if raw is None:
-            # Fallback: try plain generate and parse
-            text = self._llm.generate([_SYSTEM_PROMPT, user_message])
-            if text:
-                raw = self._parse_json(text)
-
-        if raw is None:
-            raise ValueError("LLM failed to generate a valid pipeline definition")
+            # Return local fallback if available
+            if local_fallback is not None:
+                logger.info("[Generator] LLM returned no result — using local parser result")
+                return local_fallback
+            if not self._llm.is_available():
+                raise ValueError(
+                    "No LLM provider available. Check that GROQ_API_KEY (or another provider key) is set."
+                )
+            raise ValueError(
+                "LLM returned an unparseable response. Try rephrasing your pipeline description."
+            )
 
         pipeline = self._parse_pipeline(raw, prompt)
         logger.info(
@@ -199,9 +255,32 @@ class PipelineGenerator:
         if files:
             parts.append(f"Available uploaded files: {', '.join(files)}")
 
-        # Schema info
+        # Schema info (truncated to keep prompt within LLM token limits)
         if schema_context:
-            parts.append(f"Schema information:\n{json.dumps(schema_context, indent=2)}")
+            compact = {}
+            for fname, info in schema_context.items():
+                cols = info.get("columns", [])
+                sample = info.get("sample_data", [])[:3]  # max 3 sample rows
+                # Truncate long string values in sample data
+                trimmed_sample = []
+                for row in sample:
+                    trimmed_sample.append(
+                        {k: (str(v)[:80] if isinstance(v, str) and len(str(v)) > 80 else v)
+                         for k, v in (row.items() if isinstance(row, dict) else {})}
+                    )
+                compact[fname] = {
+                    "columns": cols,
+                    "row_count": info.get("row_count", 0),
+                    "sample_data": trimmed_sample,
+                }
+            schema_json = json.dumps(compact, indent=2, default=str)
+            # Hard cap to avoid blowing through token limits
+            if len(schema_json) > 4000:
+                # Fall back to columns-only (no sample data)
+                for fname in compact:
+                    compact[fname].pop("sample_data", None)
+                schema_json = json.dumps(compact, indent=2, default=str)
+            parts.append(f"Schema information:\n{schema_json}")
 
         # Database connections
         if connections:

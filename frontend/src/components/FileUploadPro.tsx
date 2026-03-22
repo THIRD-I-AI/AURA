@@ -89,7 +89,7 @@ export const FileUpload: React.FC<FileUploadProps> = ({
         return;
       }
 
-      const maxSize = 100 * 1024 * 1024; // 100MB
+      const maxSize = Number(import.meta.env.VITE_MAX_UPLOAD_SIZE) || 100 * 1024 * 1024; // 100MB
       if (file.size > maxSize) {
         errors.push(`${file.name}: Exceeds 100MB limit`);
         return;

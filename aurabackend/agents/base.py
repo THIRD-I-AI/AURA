@@ -6,6 +6,7 @@ An agent receives an AgentContext, calls tools, and returns an AgentResult.
 """
 from __future__ import annotations
 
+import os
 import uuid
 import time
 from abc import ABC, abstractmethod
@@ -67,7 +68,7 @@ class AgentContext:
     metadata: Dict[str, Any] = field(default_factory=dict)
 
     # Maximum seconds this agent may run
-    timeout_seconds: int = 120
+    timeout_seconds: int = int(os.getenv("AURA_AGENT_TIMEOUT", "120"))
 
 
 # ────────────────────────────────────────────────────────────────────

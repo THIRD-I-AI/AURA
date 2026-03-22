@@ -352,7 +352,7 @@ async def execute_for_chat(req: _ChatExecuteRequest):
             "sql": sql,
             "connection_id": req.connection_id,
             "approved": True,
-            "limit": 1000,
+            "limit": int(os.getenv("DEFAULT_QUERY_LIMIT", "1000")),
         }
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
@@ -805,8 +805,9 @@ async def generate_query_proxy(request: QueryRequest) -> Dict[str, Any]:
 async def test_database_connection(db_type: str):
     """Proxy to database service for connection testing"""
     try:
+        db_svc = os.getenv("DATABASE_SERVICE_URL", "http://localhost:8002")
         async with httpx.AsyncClient(timeout=10.0) as client:
-            response = await client.get(f"http://localhost:8002/databases/test/{db_type}")
+            response = await client.get(f"{db_svc}/databases/test/{db_type}")
             return response.json()
     except Exception as e:
         return {"error": f"Database service unavailable: {str(e)}", "status": "error"}
@@ -1754,4 +1755,8 @@ async def pipeline_download(filename: str):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(
+        app,
+        host=os.getenv("API_HOST", "0.0.0.0"),
+        port=int(os.getenv("API_GATEWAY_PORT", "8000")),
+    )

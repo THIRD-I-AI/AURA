@@ -252,4 +252,8 @@ def _suggest_charts(
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8005)
+    uvicorn.run(
+        app,
+        host=os.getenv("API_HOST", "0.0.0.0"),
+        port=int(os.getenv("INSIGHTS_PORT", "8005")),
+    )

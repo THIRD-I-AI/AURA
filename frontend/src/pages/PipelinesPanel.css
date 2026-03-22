@@ -837,6 +837,20 @@
   flex-shrink: 0;
 }
 
+.ai-pipeline__local-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  font-size: var(--font-xs);
+  font-weight: var(--weight-semibold);
+  color: #059669;
+  background: #ecfdf5;
+  border: 1px solid #a7f3d0;
+  border-radius: var(--radius-sm);
+  padding: 0.15rem 0.5rem;
+  margin-left: 0.5rem;
+}
+
 /* ── Step Detail Cards ─────────────────────────────────────────── */
 .ai-pipeline__steps-detail {
   display: flex;

@@ -7,9 +7,9 @@
 // Configuration
 // =============================================================================
 
-const API_BASE_URL = 'http://localhost:8000'; // Direct backend connection with CORS
-const REQUEST_TIMEOUT = 30000; // 30 seconds
-const HEALTH_CHECK_INTERVAL = 10000; // 10 seconds for faster detection
+const API_BASE_URL = localStorage.getItem('apiUrl') || import.meta.env.VITE_API_URL || 'http://localhost:8000'; // Configurable via Settings page
+const REQUEST_TIMEOUT = Number(import.meta.env.VITE_REQUEST_TIMEOUT) || 30000; // 30 seconds
+const HEALTH_CHECK_INTERVAL = Number(import.meta.env.VITE_HEALTH_CHECK_INTERVAL) || 10000; // 10 seconds for faster detection
 
 // =============================================================================
 // Type Definitions
@@ -245,7 +245,7 @@ class ApiClient {
    * Simplified upload with hardcoded backend URL and no headers for proper multipart/form-data handling
    */
   async uploadFile(file: File): Promise<any> {
-    const TARGET_URL = 'http://localhost:8000/upload';
+    const TARGET_URL = `${API_BASE_URL}/upload`;
     console.log("🚀 STARTING UPLOAD TO:", TARGET_URL);
     
     const formData = new FormData();
@@ -350,11 +350,11 @@ export const chatService = {
     });
   },
 
+  // TODO: Backend GET /chat/history/{sessionId} not yet implemented
   async getChatHistory(sessionId: string): Promise<ChatMessage[]> {
     try {
       return client.get<ChatMessage[]>(`/chat/history/${sessionId}`);
-    } catch (error) {
-      // History endpoint may not exist yet, return empty
+    } catch {
       return [];
     }
   },
@@ -368,10 +368,12 @@ export const connectorService = {
     return client.get<DataSource[]>('/connections');
   },
 
+  // TODO: Backend POST /connections not yet implemented
   async registerSource(credentials: ConnectionCredentials): Promise<DataSource> {
     return client.post<DataSource>('/connections', credentials);
   },
 
+  // TODO: Backend POST /connections/{id}/test not yet implemented
   async testConnection(connectionId: string): Promise<{ success: boolean; message: string }> {
     return client.post<{ success: boolean; message: string }>(
       `/connections/${connectionId}/test`,
@@ -379,6 +381,7 @@ export const connectorService = {
     );
   },
 
+  // TODO: Backend DELETE /connections/{id} not yet implemented
   async deleteSource(connectionId: string): Promise<void> {
     return client.delete<void>(`/connections/${connectionId}`);
   },
@@ -392,6 +395,7 @@ export const connectorService = {
     }
   },
 
+  // TODO: Backend GET /connections/{id}/schema not yet implemented
   async getSchema(connectionId: string): Promise<Record<string, string[]>> {
     return client.get<Record<string, string[]>>(`/connections/${connectionId}/schema`);
   },
@@ -426,6 +430,7 @@ export const analyticsService = {
     }
   },
 
+  // TODO: Backend GET /insights/{datasetId} not yet implemented
   async getInsights(datasetId: string): Promise<any> {
     return client.get<any>(`/insights/${datasetId}`);
   },
@@ -445,10 +450,12 @@ export const executionService = {
     });
   },
 
+  // TODO: Backend POST /jobs/{id}/approve not yet implemented
   async approveExecution(jobId: string): Promise<ExecutionResult> {
     return client.post<ExecutionResult>(`/jobs/${jobId}/approve`, {});
   },
 
+  // TODO: Backend POST /jobs/{id}/cancel not yet implemented
   async cancelExecution(jobId: string): Promise<void> {
     return client.post<void>(`/jobs/${jobId}/cancel`, {});
   },

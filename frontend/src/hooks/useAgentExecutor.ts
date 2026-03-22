@@ -4,7 +4,7 @@
  */
 import { useState, useCallback, useRef } from 'react';
 
-const API_BASE = 'http://localhost:8000';
+const API_BASE = localStorage.getItem('apiUrl') || 'http://localhost:8000';
 
 // ── Types ────────────────────────────────────────────────────────────
 
