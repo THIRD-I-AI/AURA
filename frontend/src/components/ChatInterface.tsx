@@ -161,6 +161,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
                 row_count: execResult.row_count,
                 execution_time_ms: response.execution_time_ms,
                 chart_spec: execResult.chart_spec,
+                conclusion: execResult.conclusion,
               },
               userQuery: userInput,
             },

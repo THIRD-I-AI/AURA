@@ -97,10 +97,13 @@ class SQLGeneratorAgent(BaseAgent):
         if self._llm.is_available():
             try:
                 prompt = _SQL_GEN_PROMPT.format(schema=schema, question=question)
+                print(f"=== [SQL GENERATOR PROMPT] ===\n{prompt}\n================================")
                 text = self._llm.generate(prompt)
+                print(f"=== [SQL GENERATOR OUTPUT] ===\n{text}\n================================")
                 if text:
                     return self._strip_fences(text)
-            except Exception:
+            except Exception as e:
+                print(f"=== [SQL GENERATOR ERROR] ===\n{e}\n================================")
                 pass
 
         # Try code-gen microservice

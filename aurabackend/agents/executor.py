@@ -30,6 +30,10 @@ from agents.specialists.quality_agent import QualityAgent
 from agents.specialists.pipeline_agent import PipelineAgent
 from agents.specialists.optimization_agent import OptimizationAgent
 from agents.specialists.sql_generator_agent import SQLGeneratorAgent
+from agents.specialists.analysis_agent import AnalysisAgent
+from agents.specialists.intent_agent import IntentAgent
+from agents.specialists.execution_agent import ExecutionAgent
+from agents.specialists.visualization_agent import VisualizationAgent
 
 
 # ── Agent registry ────────────────────────────────────────────────────
@@ -41,6 +45,10 @@ AGENT_MAP: Dict[str, Type[BaseAgent]] = {
     "PipelineAgent": PipelineAgent,
     "OptimizationAgent": OptimizationAgent,
     "SQLGeneratorAgent": SQLGeneratorAgent,
+    "AnalysisAgent": AnalysisAgent,
+    "IntentAgent": IntentAgent,
+    "ExecutionAgent": ExecutionAgent,
+    "VisualizationAgent": VisualizationAgent,
 }
 
 

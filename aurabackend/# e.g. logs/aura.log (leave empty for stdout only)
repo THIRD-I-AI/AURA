@@ -1372,3 +1372,798 @@ Provide a brief, conclusive answer to the user's question based strictly on this
 2026-03-23 19:05:16 | INFO     | aura.middleware | POST /chat → 200 (32330.6 ms) [84d723f3-b7f8-4977-83c6-fa629ea99b25]
 2026-03-23 19:05:16 | INFO     | aura.factory | Shutting down AURA API Gateway service
 2026-03-23 19:05:16 | INFO     | aura.factory | Shutting down AURA Orchestration service
+2026-03-23 19:05:19 | INFO     | aura.factory | AURA Orchestration service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:05:20 | INFO     | shared.llm_provider | AURA LLM: auto-selected gemini (model=gemini-2.5-flash)
+2026-03-23 19:05:20 | INFO     | shared.llm_provider | AURA LLM: auto-selected gemini (model=gemini-2.5-flash)
+2026-03-23 19:05:20 | INFO     | aura.factory | Starting AURA Orchestration service (env=development)
+2026-03-23 19:05:20 | INFO     | aura.factory | AURA API Gateway service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:05:21 | INFO     | aura.factory | Starting AURA API Gateway service (env=development)
+2026-03-23 19:06:12 | INFO     | shared.llm_provider | AURA LLM: auto-selected gemini (model=gemini-2.5-flash)
+2026-03-23 19:06:12 | INFO     | aura.api_gateway | === [INTENT CLASSIFIER PROMPT] ===
+You are AURA, an intelligent data assistant. Analyze the user's message and determine if it requires executing a SQL query against the database, or if it is a general conversational message (like a greeting, thanking, asking for help, or asking about the metadata/columns available).
+
+Available Schema Context:
+Available tables in DuckDB:
+
+Table: Titanic_Dataset — 891 rows
+  Columns: PassengerId (BIGINT), Survived (BIGINT), Pclass (BIGINT), Name (VARCHAR), Sex (VARCHAR), Age (DOUBLE), SibSp (BIGINT), Parch (BIGINT), Ticket (VARCHAR), Fare (DOUBLE), Cabin (VARCHAR), Embarked (VARCHAR)
+  Sample data (first 3 rows):
+    Row 1: {'PassengerId': 1, 'Survived': 0, 'Pclass': 3, 'Name': 'Braund, Mr. Owen Harris', 'Sex': 'male', 'Age': 22.0, 'SibSp': 1, 'Parch': 0, 'Ticket': 'A/5 21171', 'Fare': 7.25, 'Cabin': None, 'Embarked': 'S'}
+    Row 2: {'PassengerId': 2, 'Survived': 1, 'Pclass': 1, 'Name': 'Cumings, Mrs. John Bradley (Florence Briggs Thayer)', 'Sex': 'female', 'Age': 38.0, 'SibSp': 1, 'Parch': 0, 'Ticket': 'PC 17599', 'Fare': 71.2833, 'Cabin': 'C85', 'Embarked': 'C'}
+    Row 3: {'PassengerId': 3, 'Survived': 1, 'Pclass': 3, 'Name': 'Heikkinen, Miss. Laina', 'Sex': 'female', 'Age': 26.0, 'SibSp': 0, 'Parch': 0, 'Ticket': 'STON/O2. 3101282', 'Fare': 7.925, 'Cabin': None, 'Embarked': 'S'}
+
+
+User's message: "hi"
+
+Respond STRICTLY with a JSON object in this format (no markdown code blocks, just raw JSON):
+{"intent": "sql" or "conversation", "message": "If conversation, put your helpful natural language response here. If sql, leave blank."}
+
+================================
+2026-03-23 19:06:14 | INFO     | aura.middleware | POST /chat → 200 (1911.9 ms) [8234900c-96eb-468b-88fb-15c65c3bc130]
+2026-03-23 19:15:47 | INFO     | aura.factory | Shutting down AURA API Gateway service
+2026-03-23 19:15:47 | INFO     | aura.factory | Shutting down AURA Code Generation service
+2026-03-23 19:15:47 | INFO     | aura.factory | Shutting down AURA Connectors service
+2026-03-23 19:15:48 | INFO     | aura.factory | Shutting down AURA Orchestration service
+2026-03-23 19:15:48 | INFO     | aura.metadata_store | Shutting down Metadata Store
+2026-03-23 19:15:48 | INFO     | aura.factory | Shutting down AURA Insights service
+2026-03-23 19:15:48 | INFO     | aura.scheduler | Shutting down Scheduler Service...
+2026-03-23 19:15:48 | INFO     | scheduler_service.worker | Scheduler worker stopped
+2026-03-23 19:15:48 | INFO     | aura.scheduler | Scheduler Service shutdown complete
+2026-03-23 19:15:48 | INFO     | aura.factory | Shutting down AURA Execution Sandbox service
+2026-03-23 19:15:59 | INFO     | aura.factory | AURA Code Generation service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:15:59 | INFO     | aura.factory | AURA Insights service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:16:00 | INFO     | aura.factory | Starting AURA Insights service (env=development)
+2026-03-23 19:16:00 | INFO     | aura.factory | Shutting down AURA Insights service
+2026-03-23 19:16:00 | INFO     | aura.factory | AURA Execution Sandbox service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:16:01 | INFO     | aura.factory | Starting AURA Execution Sandbox service (env=development)
+2026-03-23 19:16:01 | INFO     | aura.factory | Shutting down AURA Execution Sandbox service
+2026-03-23 19:16:03 | INFO     | aura.factory | AURA Metadata Store service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:16:03 | INFO     | aura.metadata_store | Starting Metadata Store — initializing DB
+2026-03-23 19:16:04 | INFO     | aura.factory | AURA Scheduler service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:16:04 | INFO     | aura.metadata_store | Shutting down Metadata Store
+2026-03-23 19:16:04 | INFO     | aura.factory | AURA Orchestration service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:16:04 | INFO     | aura.scheduler | Starting Scheduler Service...
+2026-03-23 19:16:04 | INFO     | aura.scheduler | Initialized database: sqlite+aiosqlite:///data/scheduler.db
+2026-03-23 19:16:04 | INFO     | aura.scheduler | Initialized executor (database service: http://connector_service:8002)
+2026-03-23 19:16:04 | INFO     | scheduler_service.worker | Scheduler worker started (check interval: 60s)
+2026-03-23 19:16:04 | INFO     | aura.scheduler | Scheduler Service started successfully
+2026-03-23 19:16:05 | INFO     | aura.scheduler | Shutting down Scheduler Service...
+2026-03-23 19:16:05 | INFO     | scheduler_service.worker | Scheduler worker stopped
+2026-03-23 19:16:05 | INFO     | aura.scheduler | Scheduler Service shutdown complete
+2026-03-23 19:16:06 | INFO     | shared.llm_provider | AURA LLM: auto-selected gemini (model=gemini-2.5-flash)
+2026-03-23 19:16:06 | INFO     | aura.factory | Starting AURA Code Generation service (env=development)
+2026-03-23 19:16:06 | INFO     | aura.factory | Shutting down AURA Code Generation service
+2026-03-23 19:16:07 | INFO     | aura.factory | AURA Connectors service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:16:07 | INFO     | aura.factory | Starting AURA Connectors service (env=development)
+2026-03-23 19:16:07 | INFO     | aura.factory | Shutting down AURA Connectors service
+2026-03-23 19:16:07 | INFO     | aura.factory | AURA Insights service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:16:07 | INFO     | aura.factory | Starting AURA Insights service (env=development)
+2026-03-23 19:16:07 | INFO     | shared.llm_provider | AURA LLM: auto-selected gemini (model=gemini-2.5-flash)
+2026-03-23 19:16:07 | INFO     | shared.llm_provider | AURA LLM: auto-selected gemini (model=gemini-2.5-flash)
+2026-03-23 19:16:07 | INFO     | aura.factory | AURA Execution Sandbox service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:16:07 | INFO     | aura.factory | Starting AURA Orchestration service (env=development)
+2026-03-23 19:16:07 | INFO     | aura.factory | Starting AURA Execution Sandbox service (env=development)
+2026-03-23 19:16:07 | INFO     | aura.factory | Shutting down AURA Orchestration service
+2026-03-23 19:16:09 | INFO     | aura.factory | AURA Metadata Store service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:16:09 | INFO     | aura.metadata_store | Starting Metadata Store — initializing DB
+2026-03-23 19:16:09 | INFO     | aura.factory | AURA API Gateway service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:16:10 | INFO     | aura.factory | AURA Code Generation service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:16:10 | INFO     | aura.factory | AURA Scheduler service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:16:10 | INFO     | aura.scheduler | Starting Scheduler Service...
+2026-03-23 19:16:10 | INFO     | aura.scheduler | Initialized database: sqlite+aiosqlite:///data/scheduler.db
+2026-03-23 19:16:10 | INFO     | aura.scheduler | Initialized executor (database service: http://connector_service:8002)
+2026-03-23 19:16:10 | INFO     | scheduler_service.worker | Scheduler worker started (check interval: 60s)
+2026-03-23 19:16:10 | INFO     | aura.scheduler | Scheduler Service started successfully
+2026-03-23 19:16:11 | INFO     | aura.factory | Starting AURA API Gateway service (env=development)
+2026-03-23 19:16:11 | INFO     | aura.factory | Shutting down AURA API Gateway service
+2026-03-23 19:16:11 | INFO     | aura.factory | AURA Orchestration service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:16:11 | INFO     | shared.llm_provider | AURA LLM: auto-selected gemini (model=gemini-2.5-flash)
+2026-03-23 19:16:11 | INFO     | aura.factory | Starting AURA Code Generation service (env=development)
+2026-03-23 19:16:13 | INFO     | aura.factory | AURA Connectors service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:16:13 | INFO     | aura.factory | Starting AURA Connectors service (env=development)
+2026-03-23 19:16:13 | INFO     | shared.llm_provider | AURA LLM: auto-selected gemini (model=gemini-2.5-flash)
+2026-03-23 19:16:13 | INFO     | shared.llm_provider | AURA LLM: auto-selected gemini (model=gemini-2.5-flash)
+2026-03-23 19:16:13 | INFO     | aura.factory | Starting AURA Orchestration service (env=development)
+2026-03-23 19:16:16 | INFO     | aura.factory | AURA API Gateway service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:16:16 | INFO     | aura.factory | Starting AURA API Gateway service (env=development)
+2026-03-23 19:18:15 | INFO     | aura.middleware | OPTIONS /chat → 200 (0.4 ms) [1f85b21c-44b7-4666-9a50-9b4a2249672d]
+2026-03-23 19:18:16 | INFO     | shared.llm_provider | AURA LLM: auto-selected gemini (model=gemini-2.5-flash)
+2026-03-23 19:18:16 | INFO     | aura.api_gateway | === [INTENT CLASSIFIER PROMPT] ===
+You are AURA, an intelligent data assistant. Analyze the user's message and determine if it requires executing a SQL query against the database, or if it is a general conversational message (like a greeting, thanking, asking for help, or asking about the metadata/columns available).
+
+Available Schema Context:
+Available tables in DuckDB:
+
+Table: Titanic_Dataset — 891 rows
+  Columns: PassengerId (BIGINT), Survived (BIGINT), Pclass (BIGINT), Name (VARCHAR), Sex (VARCHAR), Age (DOUBLE), SibSp (BIGINT), Parch (BIGINT), Ticket (VARCHAR), Fare (DOUBLE), Cabin (VARCHAR), Embarked (VARCHAR)
+  Sample data (first 3 rows):
+    Row 1: {'PassengerId': 1, 'Survived': 0, 'Pclass': 3, 'Name': 'Braund, Mr. Owen Harris', 'Sex': 'male', 'Age': 22.0, 'SibSp': 1, 'Parch': 0, 'Ticket': 'A/5 21171', 'Fare': 7.25, 'Cabin': None, 'Embarked': 'S'}
+    Row 2: {'PassengerId': 2, 'Survived': 1, 'Pclass': 1, 'Name': 'Cumings, Mrs. John Bradley (Florence Briggs Thayer)', 'Sex': 'female', 'Age': 38.0, 'SibSp': 1, 'Parch': 0, 'Ticket': 'PC 17599', 'Fare': 71.2833, 'Cabin': 'C85', 'Embarked': 'C'}
+    Row 3: {'PassengerId': 3, 'Survived': 1, 'Pclass': 3, 'Name': 'Heikkinen, Miss. Laina', 'Sex': 'female', 'Age': 26.0, 'SibSp': 0, 'Parch': 0, 'Ticket': 'STON/O2. 3101282', 'Fare': 7.925, 'Cabin': None, 'Embarked': 'S'}
+
+
+User's message: "hi"
+
+Respond STRICTLY with a JSON object in this format (no markdown code blocks, just raw JSON):
+{"intent": "sql" or "conversation", "message": "If conversation, put your helpful natural language response here. If sql, leave blank."}
+
+================================
+2026-03-23 19:18:17 | INFO     | aura.middleware | POST /chat → 200 (2042.8 ms) [3aaef96a-1a67-4e16-97e6-63ffdb749706]
+2026-03-23 19:19:04 | INFO     | aura.factory | Shutting down AURA Code Generation service
+2026-03-23 19:19:04 | INFO     | aura.factory | Shutting down AURA Insights service
+2026-03-23 19:19:04 | INFO     | aura.factory | Shutting down AURA Orchestration service
+2026-03-23 19:19:04 | INFO     | aura.scheduler | Shutting down Scheduler Service...
+2026-03-23 19:19:04 | INFO     | scheduler_service.worker | Scheduler worker stopped
+2026-03-23 19:19:04 | INFO     | aura.scheduler | Scheduler Service shutdown complete
+2026-03-23 19:19:04 | INFO     | aura.factory | Shutting down AURA API Gateway service
+2026-03-23 19:19:04 | INFO     | aura.factory | Shutting down AURA Execution Sandbox service
+2026-03-23 19:19:04 | INFO     | aura.metadata_store | Shutting down Metadata Store
+2026-03-23 19:19:07 | INFO     | aura.factory | Shutting down AURA Connectors service
+2026-03-23 19:19:14 | INFO     | aura.factory | AURA Insights service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:19:14 | INFO     | aura.factory | AURA Code Generation service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:19:14 | INFO     | aura.factory | Starting AURA Insights service (env=development)
+2026-03-23 19:19:15 | INFO     | aura.factory | AURA Metadata Store service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:19:15 | INFO     | aura.metadata_store | Starting Metadata Store — initializing DB
+2026-03-23 19:19:15 | INFO     | shared.llm_provider | AURA LLM: auto-selected gemini (model=gemini-2.5-flash)
+2026-03-23 19:19:15 | INFO     | aura.factory | Starting AURA Code Generation service (env=development)
+2026-03-23 19:19:16 | INFO     | aura.factory | AURA Connectors service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:19:16 | INFO     | aura.factory | Starting AURA Connectors service (env=development)
+2026-03-23 19:19:46 | INFO     | aura.factory | AURA Execution Sandbox service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:19:46 | INFO     | aura.factory | Starting AURA Execution Sandbox service (env=development)
+2026-03-23 19:19:46 | INFO     | aura.factory | AURA Orchestration service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:19:46 | INFO     | aura.factory | AURA Scheduler service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:19:46 | INFO     | aura.scheduler | Starting Scheduler Service...
+2026-03-23 19:19:46 | INFO     | aura.scheduler | Initialized database: sqlite+aiosqlite:///data/scheduler.db
+2026-03-23 19:19:47 | INFO     | aura.scheduler | Initialized executor (database service: http://connector_service:8002)
+2026-03-23 19:19:47 | INFO     | scheduler_service.worker | Scheduler worker started (check interval: 60s)
+2026-03-23 19:19:47 | INFO     | aura.scheduler | Scheduler Service started successfully
+2026-03-23 19:19:48 | INFO     | shared.llm_provider | AURA LLM: auto-selected gemini (model=gemini-2.5-flash)
+2026-03-23 19:19:48 | INFO     | shared.llm_provider | AURA LLM: auto-selected gemini (model=gemini-2.5-flash)
+2026-03-23 19:19:48 | INFO     | aura.factory | Starting AURA Orchestration service (env=development)
+2026-03-23 19:19:48 | INFO     | aura.factory | AURA API Gateway service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:19:49 | INFO     | aura.factory | Starting AURA API Gateway service (env=development)
+2026-03-23 19:19:57 | INFO     | shared.llm_provider | AURA LLM: auto-selected gemini (model=gemini-2.5-flash)
+2026-03-23 19:19:57 | INFO     | aura.api_gateway | === [INTENT CLASSIFIER PROMPT] ===
+You are AURA, an intelligent data assistant. Analyze the user's message and determine if it requires executing a SQL query against the database, or if it is a general conversational message (like a greeting, thanking, asking for help, or asking about the metadata/columns available).
+
+Available Schema Context:
+Available tables in DuckDB:
+
+Table: Titanic_Dataset — 891 rows
+  Columns: PassengerId (BIGINT), Survived (BIGINT), Pclass (BIGINT), Name (VARCHAR), Sex (VARCHAR), Age (DOUBLE), SibSp (BIGINT), Parch (BIGINT), Ticket (VARCHAR), Fare (DOUBLE), Cabin (VARCHAR), Embarked (VARCHAR)
+  Sample data (first 3 rows):
+    Row 1: {'PassengerId': 1, 'Survived': 0, 'Pclass': 3, 'Name': 'Braund, Mr. Owen Harris', 'Sex': 'male', 'Age': 22.0, 'SibSp': 1, 'Parch': 0, 'Ticket': 'A/5 21171', 'Fare': 7.25, 'Cabin': None, 'Embarked': 'S'}
+    Row 2: {'PassengerId': 2, 'Survived': 1, 'Pclass': 1, 'Name': 'Cumings, Mrs. John Bradley (Florence Briggs Thayer)', 'Sex': 'female', 'Age': 38.0, 'SibSp': 1, 'Parch': 0, 'Ticket': 'PC 17599', 'Fare': 71.2833, 'Cabin': 'C85', 'Embarked': 'C'}
+    Row 3: {'PassengerId': 3, 'Survived': 1, 'Pclass': 3, 'Name': 'Heikkinen, Miss. Laina', 'Sex': 'female', 'Age': 26.0, 'SibSp': 0, 'Parch': 0, 'Ticket': 'STON/O2. 3101282', 'Fare': 7.925, 'Cabin': None, 'Embarked': 'S'}
+
+
+User's message: "hi"
+
+Respond STRICTLY with a JSON object in this format (no markdown code blocks, just raw JSON):
+{"intent": "sql" or "conversation", "message": "If conversation, put your helpful natural language response here. If sql, leave blank."}
+
+================================
+2026-03-23 19:19:58 | INFO     | aura.middleware | POST /chat → 200 (1759.6 ms) [a87b0786-050a-4316-ba1a-9302f01c15c0]
+2026-03-23 19:23:08 | INFO     | aura.api_gateway | === [INTENT CLASSIFIER PROMPT] ===
+You are AURA, an intelligent data assistant. Analyze the user's message and determine if it requires executing a SQL query against the database, or if it is a general conversational message (like a greeting, thanking, asking for help, or asking about the metadata/columns available).
+
+Available Schema Context:
+Available tables in DuckDB:
+
+Table: Titanic_Dataset — 891 rows
+  Columns: PassengerId (BIGINT), Survived (BIGINT), Pclass (BIGINT), Name (VARCHAR), Sex (VARCHAR), Age (DOUBLE), SibSp (BIGINT), Parch (BIGINT), Ticket (VARCHAR), Fare (DOUBLE), Cabin (VARCHAR), Embarked (VARCHAR)
+  Sample data (first 3 rows):
+    Row 1: {'PassengerId': 1, 'Survived': 0, 'Pclass': 3, 'Name': 'Braund, Mr. Owen Harris', 'Sex': 'male', 'Age': 22.0, 'SibSp': 1, 'Parch': 0, 'Ticket': 'A/5 21171', 'Fare': 7.25, 'Cabin': None, 'Embarked': 'S'}
+    Row 2: {'PassengerId': 2, 'Survived': 1, 'Pclass': 1, 'Name': 'Cumings, Mrs. John Bradley (Florence Briggs Thayer)', 'Sex': 'female', 'Age': 38.0, 'SibSp': 1, 'Parch': 0, 'Ticket': 'PC 17599', 'Fare': 71.2833, 'Cabin': 'C85', 'Embarked': 'C'}
+    Row 3: {'PassengerId': 3, 'Survived': 1, 'Pclass': 3, 'Name': 'Heikkinen, Miss. Laina', 'Sex': 'female', 'Age': 26.0, 'SibSp': 0, 'Parch': 0, 'Ticket': 'STON/O2. 3101282', 'Fare': 7.925, 'Cabin': None, 'Embarked': 'S'}
+
+
+User's message: "give me male to female ratio"
+
+Respond STRICTLY with a JSON object in this format (no markdown code blocks, just raw JSON):
+{"intent": "sql" or "conversation", "message": "If conversation, put your helpful natural language response here. If sql, leave blank."}
+
+================================
+2026-03-23 19:23:24 | INFO     | aura.middleware | POST /v1/orchestrations/query → 200 (15363.6 ms) [b60fbb3f-9bfa-4596-b068-8860bfb30d10]
+2026-03-23 19:23:26 | INFO     | aura.middleware | POST /chat → 200 (17960.6 ms) [2259809c-e729-44da-8a6e-2414706590f9]
+2026-03-23 19:26:23 | INFO     | aura.factory | Shutting down AURA Connectors service
+2026-03-23 19:26:23 | INFO     | aura.scheduler | Shutting down Scheduler Service...
+2026-03-23 19:26:23 | INFO     | scheduler_service.worker | Scheduler worker stopped
+2026-03-23 19:26:23 | INFO     | aura.scheduler | Scheduler Service shutdown complete
+2026-03-23 19:26:23 | INFO     | aura.metadata_store | Shutting down Metadata Store
+2026-03-23 19:26:23 | INFO     | aura.factory | Shutting down AURA Insights service
+2026-03-23 19:26:23 | INFO     | aura.factory | Shutting down AURA Orchestration service
+2026-03-23 19:26:23 | INFO     | aura.factory | Shutting down AURA Execution Sandbox service
+2026-03-23 19:26:23 | INFO     | aura.factory | Shutting down AURA API Gateway service
+2026-03-23 19:26:24 | INFO     | aura.factory | Shutting down AURA Code Generation service
+2026-03-23 19:26:27 | INFO     | aura.factory | AURA Insights service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:26:27 | INFO     | aura.factory | Starting AURA Insights service (env=development)
+2026-03-23 19:26:27 | INFO     | aura.factory | Shutting down AURA Insights service
+2026-03-23 19:26:27 | INFO     | aura.factory | AURA Execution Sandbox service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:26:27 | INFO     | aura.factory | Starting AURA Execution Sandbox service (env=development)
+2026-03-23 19:26:27 | INFO     | aura.factory | Shutting down AURA Execution Sandbox service
+2026-03-23 19:26:28 | INFO     | aura.factory | AURA Scheduler service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:26:28 | INFO     | aura.factory | AURA Code Generation service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:26:28 | INFO     | aura.scheduler | Starting Scheduler Service...
+2026-03-23 19:26:28 | INFO     | aura.scheduler | Initialized database: sqlite+aiosqlite:///data/scheduler.db
+2026-03-23 19:26:28 | INFO     | aura.factory | AURA Metadata Store service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:26:28 | INFO     | aura.metadata_store | Starting Metadata Store — initializing DB
+2026-03-23 19:26:28 | INFO     | aura.scheduler | Initialized executor (database service: http://connector_service:8002)
+2026-03-23 19:26:28 | INFO     | scheduler_service.worker | Scheduler worker started (check interval: 60s)
+2026-03-23 19:26:28 | INFO     | aura.scheduler | Scheduler Service started successfully
+2026-03-23 19:26:28 | INFO     | aura.factory | AURA Orchestration service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:26:28 | INFO     | aura.scheduler | Shutting down Scheduler Service...
+2026-03-23 19:26:28 | INFO     | scheduler_service.worker | Scheduler worker stopped
+2026-03-23 19:26:28 | INFO     | aura.scheduler | Scheduler Service shutdown complete
+2026-03-23 19:26:28 | INFO     | aura.metadata_store | Shutting down Metadata Store
+2026-03-23 19:26:30 | INFO     | aura.factory | AURA Connectors service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:26:30 | INFO     | aura.factory | Starting AURA Connectors service (env=development)
+2026-03-23 19:26:30 | INFO     | aura.factory | Shutting down AURA Connectors service
+2026-03-23 19:26:30 | INFO     | aura.factory | AURA Insights service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:26:30 | INFO     | aura.factory | Starting AURA Insights service (env=development)
+2026-03-23 19:26:30 | INFO     | shared.llm_provider | AURA LLM: auto-selected gemini (model=gemini-2.5-flash)
+2026-03-23 19:26:30 | INFO     | aura.factory | Starting AURA Code Generation service (env=development)
+2026-03-23 19:26:30 | INFO     | aura.factory | Shutting down AURA Code Generation service
+2026-03-23 19:26:30 | INFO     | aura.factory | AURA Execution Sandbox service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:26:30 | INFO     | shared.llm_provider | AURA LLM: auto-selected gemini (model=gemini-2.5-flash)
+2026-03-23 19:26:30 | INFO     | shared.llm_provider | AURA LLM: auto-selected gemini (model=gemini-2.5-flash)
+2026-03-23 19:26:31 | INFO     | aura.factory | Starting AURA Execution Sandbox service (env=development)
+2026-03-23 19:26:31 | INFO     | aura.factory | Starting AURA Orchestration service (env=development)
+2026-03-23 19:26:31 | INFO     | aura.factory | Shutting down AURA Orchestration service
+2026-03-23 19:26:32 | INFO     | aura.factory | AURA Scheduler service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:26:32 | INFO     | aura.scheduler | Starting Scheduler Service...
+2026-03-23 19:26:32 | INFO     | aura.scheduler | Initialized database: sqlite+aiosqlite:///data/scheduler.db
+2026-03-23 19:26:32 | INFO     | aura.factory | AURA Metadata Store service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:26:32 | INFO     | aura.factory | AURA API Gateway service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:26:32 | INFO     | aura.scheduler | Initialized executor (database service: http://connector_service:8002)
+2026-03-23 19:26:32 | INFO     | scheduler_service.worker | Scheduler worker started (check interval: 60s)
+2026-03-23 19:26:32 | INFO     | aura.scheduler | Scheduler Service started successfully
+2026-03-23 19:26:32 | INFO     | aura.metadata_store | Starting Metadata Store — initializing DB
+2026-03-23 19:26:33 | INFO     | aura.factory | AURA Code Generation service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:26:34 | INFO     | aura.factory | Starting AURA API Gateway service (env=development)
+2026-03-23 19:26:34 | INFO     | aura.factory | Shutting down AURA API Gateway service
+2026-03-23 19:26:34 | INFO     | aura.factory | AURA Orchestration service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:26:35 | INFO     | shared.llm_provider | AURA LLM: auto-selected gemini (model=gemini-2.5-flash)
+2026-03-23 19:26:35 | INFO     | aura.factory | Starting AURA Code Generation service (env=development)
+2026-03-23 19:26:35 | INFO     | aura.factory | AURA Connectors service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:26:36 | INFO     | aura.factory | Starting AURA Connectors service (env=development)
+2026-03-23 19:26:36 | INFO     | shared.llm_provider | AURA LLM: auto-selected gemini (model=gemini-2.5-flash)
+2026-03-23 19:26:36 | INFO     | shared.llm_provider | AURA LLM: auto-selected gemini (model=gemini-2.5-flash)
+2026-03-23 19:26:36 | INFO     | aura.factory | Starting AURA Orchestration service (env=development)
+2026-03-23 19:26:38 | INFO     | aura.factory | AURA API Gateway service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:26:39 | INFO     | aura.factory | Starting AURA API Gateway service (env=development)
+2026-03-23 19:26:54 | INFO     | shared.llm_provider | AURA LLM: auto-selected gemini (model=gemini-2.5-flash)
+2026-03-23 19:26:54 | INFO     | aura.api_gateway | === [INTENT CLASSIFIER PROMPT] ===
+You are AURA, an intelligent data assistant. Analyze the user's message and determine if it requires executing a SQL query against the database, or if it is a general conversational message (like a greeting, thanking, asking for help, or asking about the metadata/columns available).
+
+Available Schema Context:
+Available tables in DuckDB:
+
+Table: Titanic_Dataset — 891 rows
+  Columns: PassengerId (BIGINT), Survived (BIGINT), Pclass (BIGINT), Name (VARCHAR), Sex (VARCHAR), Age (DOUBLE), SibSp (BIGINT), Parch (BIGINT), Ticket (VARCHAR), Fare (DOUBLE), Cabin (VARCHAR), Embarked (VARCHAR)
+  Sample data (first 3 rows):
+    Row 1: {'PassengerId': 1, 'Survived': 0, 'Pclass': 3, 'Name': 'Braund, Mr. Owen Harris', 'Sex': 'male', 'Age': 22.0, 'SibSp': 1, 'Parch': 0, 'Ticket': 'A/5 21171', 'Fare': 7.25, 'Cabin': None, 'Embarked': 'S'}
+    Row 2: {'PassengerId': 2, 'Survived': 1, 'Pclass': 1, 'Name': 'Cumings, Mrs. John Bradley (Florence Briggs Thayer)', 'Sex': 'female', 'Age': 38.0, 'SibSp': 1, 'Parch': 0, 'Ticket': 'PC 17599', 'Fare': 71.2833, 'Cabin': 'C85', 'Embarked': 'C'}
+    Row 3: {'PassengerId': 3, 'Survived': 1, 'Pclass': 3, 'Name': 'Heikkinen, Miss. Laina', 'Sex': 'female', 'Age': 26.0, 'SibSp': 0, 'Parch': 0, 'Ticket': 'STON/O2. 3101282', 'Fare': 7.925, 'Cabin': None, 'Embarked': 'S'}
+
+
+User's message: "give me men to women ratio and their survial rate of both"
+
+Respond STRICTLY with a JSON object in this format (no markdown code blocks, just raw JSON):
+{"intent": "sql" or "conversation", "message": "If conversation, put your helpful natural language response here. If sql, leave blank."}
+
+================================
+2026-03-23 19:27:07 | INFO     | aura.middleware | POST /v1/orchestrations/query → 200 (12053.9 ms) [ec792359-4707-4792-b610-7c211a2b13f6]
+2026-03-23 19:27:07 | INFO     | aura.api_gateway | [AnalysisAgent] Starting AnalysisAgent…
+2026-03-23 19:27:09 | INFO     | aura.api_gateway | [AnalysisAgent] ✓ AnalysisAgent (1751 ms)
+2026-03-23 19:27:09 | INFO     | aura.api_gateway | Agent Steps Executed: ['analyze_data', 'synthesize_conclusion']
+2026-03-23 19:27:09 | INFO     | aura.middleware | POST /chat → 200 (15786.4 ms) [2a23bbd6-a58b-407b-b1f2-22d79ce30df8]
+2026-03-23 19:28:38 | INFO     | aura.middleware | OPTIONS /chat → 200 (0.8 ms) [f9cd5e09-3042-411a-a05e-04c1ba86bfd3]
+2026-03-23 19:28:38 | INFO     | aura.api_gateway | === [INTENT CLASSIFIER PROMPT] ===
+You are AURA, an intelligent data assistant. Analyze the user's message and determine if it requires executing a SQL query against the database, or if it is a general conversational message (like a greeting, thanking, asking for help, or asking about the metadata/columns available).
+
+Available Schema Context:
+Available tables in DuckDB:
+
+Table: Titanic_Dataset — 891 rows
+  Columns: PassengerId (BIGINT), Survived (BIGINT), Pclass (BIGINT), Name (VARCHAR), Sex (VARCHAR), Age (DOUBLE), SibSp (BIGINT), Parch (BIGINT), Ticket (VARCHAR), Fare (DOUBLE), Cabin (VARCHAR), Embarked (VARCHAR)
+  Sample data (first 3 rows):
+    Row 1: {'PassengerId': 1, 'Survived': 0, 'Pclass': 3, 'Name': 'Braund, Mr. Owen Harris', 'Sex': 'male', 'Age': 22.0, 'SibSp': 1, 'Parch': 0, 'Ticket': 'A/5 21171', 'Fare': 7.25, 'Cabin': None, 'Embarked': 'S'}
+    Row 2: {'PassengerId': 2, 'Survived': 1, 'Pclass': 1, 'Name': 'Cumings, Mrs. John Bradley (Florence Briggs Thayer)', 'Sex': 'female', 'Age': 38.0, 'SibSp': 1, 'Parch': 0, 'Ticket': 'PC 17599', 'Fare': 71.2833, 'Cabin': 'C85', 'Embarked': 'C'}
+    Row 3: {'PassengerId': 3, 'Survived': 1, 'Pclass': 3, 'Name': 'Heikkinen, Miss. Laina', 'Sex': 'female', 'Age': 26.0, 'SibSp': 0, 'Parch': 0, 'Ticket': 'STON/O2. 3101282', 'Fare': 7.925, 'Cabin': None, 'Embarked': 'S'}
+
+
+User's message: "Calculate the survival rate for each Passenger Class (Pclass). Which class had the highest survival rate, and does this align with the "women and children first" narrative?"
+
+Respond STRICTLY with a JSON object in this format (no markdown code blocks, just raw JSON):
+{"intent": "sql" or "conversation", "message": "If conversation, put your helpful natural language response here. If sql, leave blank."}
+
+================================
+2026-03-23 19:29:41 | INFO     | aura.middleware | POST /v1/orchestrations/query → 200 (62619.6 ms) [a74d0410-1f5e-48df-afe1-f1c8f66ea673]
+2026-03-23 19:29:41 | INFO     | aura.api_gateway | [AnalysisAgent] Starting AnalysisAgent…
+2026-03-23 19:29:54 | INFO     | aura.api_gateway | [AnalysisAgent] ✓ AnalysisAgent (12309 ms)
+2026-03-23 19:29:54 | INFO     | aura.api_gateway | Agent Steps Executed: ['analyze_data', 'synthesize_conclusion']
+2026-03-23 19:29:54 | INFO     | aura.middleware | POST /chat → 200 (76061.8 ms) [6a9eb759-06e3-4845-bf04-e8dfc9505557]
+2026-03-23 19:34:07 | INFO     | aura.factory | Shutting down AURA Orchestration service
+2026-03-23 19:34:07 | INFO     | aura.factory | Shutting down AURA Execution Sandbox service
+2026-03-23 19:34:07 | INFO     | aura.scheduler | Shutting down Scheduler Service...
+2026-03-23 19:34:07 | INFO     | scheduler_service.worker | Scheduler worker stopped
+2026-03-23 19:34:07 | INFO     | aura.scheduler | Scheduler Service shutdown complete
+2026-03-23 19:34:07 | INFO     | aura.metadata_store | Shutting down Metadata Store
+2026-03-23 19:34:07 | INFO     | aura.factory | Shutting down AURA Connectors service
+2026-03-23 19:34:07 | INFO     | aura.factory | Shutting down AURA Code Generation service
+2026-03-23 19:34:07 | INFO     | aura.factory | Shutting down AURA Insights service
+2026-03-23 19:34:08 | INFO     | aura.factory | Shutting down AURA API Gateway service
+2026-03-23 19:34:10 | INFO     | aura.factory | AURA Execution Sandbox service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:34:11 | INFO     | aura.factory | Starting AURA Execution Sandbox service (env=development)
+2026-03-23 19:34:11 | INFO     | aura.factory | AURA Code Generation service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:34:11 | INFO     | aura.factory | AURA Insights service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:34:11 | INFO     | aura.factory | Starting AURA Insights service (env=development)
+2026-03-23 19:34:12 | INFO     | aura.factory | AURA Scheduler service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:34:12 | INFO     | aura.factory | AURA Orchestration service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:34:12 | INFO     | aura.scheduler | Starting Scheduler Service...
+2026-03-23 19:34:12 | INFO     | aura.scheduler | Initialized database: sqlite+aiosqlite:///data/scheduler.db
+2026-03-23 19:34:12 | INFO     | aura.factory | AURA Metadata Store service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:34:12 | INFO     | aura.scheduler | Initialized executor (database service: http://connector_service:8002)
+2026-03-23 19:34:12 | INFO     | scheduler_service.worker | Scheduler worker started (check interval: 60s)
+2026-03-23 19:34:12 | INFO     | aura.scheduler | Scheduler Service started successfully
+2026-03-23 19:34:12 | INFO     | aura.metadata_store | Starting Metadata Store — initializing DB
+2026-03-23 19:34:14 | INFO     | shared.llm_provider | AURA LLM: auto-selected gemini (model=gemini-2.5-flash)
+2026-03-23 19:34:14 | INFO     | aura.factory | Starting AURA Code Generation service (env=development)
+2026-03-23 19:34:14 | INFO     | shared.llm_provider | AURA LLM: auto-selected gemini (model=gemini-2.5-flash)
+2026-03-23 19:34:14 | INFO     | shared.llm_provider | AURA LLM: auto-selected gemini (model=gemini-2.5-flash)
+2026-03-23 19:34:14 | INFO     | aura.factory | Starting AURA Orchestration service (env=development)
+2026-03-23 19:34:14 | INFO     | aura.factory | AURA Connectors service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:34:15 | INFO     | aura.factory | Starting AURA Connectors service (env=development)
+2026-03-23 19:34:16 | INFO     | aura.factory | AURA API Gateway service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:34:16 | INFO     | aura.factory | Starting AURA API Gateway service (env=development)
+2026-03-23 19:35:40 | INFO     | aura.factory | Shutting down AURA Execution Sandbox service
+2026-03-23 19:35:40 | INFO     | aura.metadata_store | Shutting down Metadata Store
+2026-03-23 19:35:41 | INFO     | aura.factory | Shutting down AURA Orchestration service
+2026-03-23 19:35:41 | INFO     | aura.scheduler | Shutting down Scheduler Service...
+2026-03-23 19:35:41 | INFO     | scheduler_service.worker | Scheduler worker stopped
+2026-03-23 19:35:41 | INFO     | aura.scheduler | Scheduler Service shutdown complete
+2026-03-23 19:35:41 | INFO     | aura.factory | Shutting down AURA Insights service
+2026-03-23 19:35:41 | INFO     | aura.factory | Shutting down AURA Connectors service
+2026-03-23 19:35:41 | INFO     | aura.factory | Shutting down AURA Code Generation service
+2026-03-23 19:35:42 | INFO     | aura.factory | Shutting down AURA API Gateway service
+2026-03-23 19:35:51 | INFO     | aura.factory | AURA Execution Sandbox service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:35:51 | INFO     | aura.factory | Starting AURA Execution Sandbox service (env=development)
+2026-03-23 19:35:51 | INFO     | aura.factory | AURA Insights service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:35:51 | INFO     | aura.factory | Starting AURA Insights service (env=development)
+2026-03-23 19:35:52 | INFO     | aura.factory | Shutting down AURA Insights service
+2026-03-23 19:35:52 | INFO     | aura.factory | AURA Code Generation service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:35:54 | INFO     | aura.factory | AURA Metadata Store service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:35:54 | INFO     | aura.metadata_store | Starting Metadata Store — initializing DB
+2026-03-23 19:35:54 | INFO     | aura.factory | AURA Scheduler service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:35:55 | INFO     | aura.scheduler | Starting Scheduler Service...
+2026-03-23 19:35:55 | INFO     | aura.factory | Shutting down AURA Execution Sandbox service
+2026-03-23 19:35:55 | INFO     | aura.scheduler | Initialized database: sqlite+aiosqlite:///data/scheduler.db
+2026-03-23 19:35:55 | INFO     | aura.factory | AURA Orchestration service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:35:55 | INFO     | aura.scheduler | Initialized executor (database service: http://connector_service:8002)
+2026-03-23 19:35:55 | INFO     | scheduler_service.worker | Scheduler worker started (check interval: 60s)
+2026-03-23 19:35:55 | INFO     | aura.scheduler | Scheduler Service started successfully
+2026-03-23 19:35:56 | INFO     | aura.scheduler | Shutting down Scheduler Service...
+2026-03-23 19:35:56 | INFO     | scheduler_service.worker | Scheduler worker stopped
+2026-03-23 19:35:56 | INFO     | aura.scheduler | Scheduler Service shutdown complete
+2026-03-23 19:35:56 | INFO     | aura.metadata_store | Shutting down Metadata Store
+2026-03-23 19:36:00 | INFO     | aura.factory | AURA Insights service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:36:00 | INFO     | shared.llm_provider | AURA LLM: auto-selected gemini (model=gemini-2.5-flash)
+2026-03-23 19:36:00 | INFO     | aura.factory | Starting AURA Code Generation service (env=development)
+2026-03-23 19:36:00 | INFO     | aura.factory | Starting AURA Insights service (env=development)
+2026-03-23 19:36:00 | INFO     | aura.factory | Shutting down AURA Code Generation service
+2026-03-23 19:36:01 | INFO     | shared.llm_provider | AURA LLM: auto-selected gemini (model=gemini-2.5-flash)
+2026-03-23 19:36:01 | INFO     | shared.llm_provider | AURA LLM: auto-selected gemini (model=gemini-2.5-flash)
+2026-03-23 19:36:01 | INFO     | aura.factory | Starting AURA Orchestration service (env=development)
+2026-03-23 19:36:01 | INFO     | aura.factory | Shutting down AURA Orchestration service
+2026-03-23 19:36:01 | INFO     | aura.factory | AURA Connectors service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:36:01 | INFO     | aura.factory | Starting AURA Connectors service (env=development)
+2026-03-23 19:36:01 | INFO     | aura.factory | Shutting down AURA Connectors service
+2026-03-23 19:36:01 | INFO     | aura.factory | AURA Execution Sandbox service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:36:01 | INFO     | aura.factory | Starting AURA Execution Sandbox service (env=development)
+2026-03-23 19:36:03 | INFO     | aura.factory | AURA Metadata Store service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:36:03 | INFO     | aura.metadata_store | Starting Metadata Store — initializing DB
+2026-03-23 19:36:03 | INFO     | aura.factory | AURA API Gateway service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:36:03 | INFO     | aura.factory | AURA Scheduler service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:36:03 | INFO     | aura.scheduler | Starting Scheduler Service...
+2026-03-23 19:36:03 | INFO     | aura.scheduler | Initialized database: sqlite+aiosqlite:///data/scheduler.db
+2026-03-23 19:36:03 | INFO     | aura.scheduler | Initialized executor (database service: http://connector_service:8002)
+2026-03-23 19:36:03 | INFO     | scheduler_service.worker | Scheduler worker started (check interval: 60s)
+2026-03-23 19:36:03 | INFO     | aura.scheduler | Scheduler Service started successfully
+2026-03-23 19:36:03 | INFO     | aura.factory | AURA Code Generation service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:36:04 | INFO     | aura.factory | Starting AURA API Gateway service (env=development)
+2026-03-23 19:36:04 | INFO     | aura.factory | Shutting down AURA API Gateway service
+2026-03-23 19:36:04 | INFO     | aura.factory | AURA Orchestration service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:36:05 | INFO     | shared.llm_provider | AURA LLM: auto-selected gemini (model=gemini-2.5-flash)
+2026-03-23 19:36:05 | INFO     | aura.factory | Starting AURA Code Generation service (env=development)
+2026-03-23 19:36:05 | INFO     | aura.metadata_store | Shutting down Metadata Store
+2026-03-23 19:36:05 | INFO     | aura.scheduler | Shutting down Scheduler Service...
+2026-03-23 19:36:06 | INFO     | scheduler_service.worker | Scheduler worker stopped
+2026-03-23 19:36:06 | INFO     | aura.scheduler | Scheduler Service shutdown complete
+2026-03-23 19:36:06 | INFO     | aura.factory | Shutting down AURA Insights service
+2026-03-23 19:36:06 | INFO     | aura.factory | Shutting down AURA Code Generation service
+2026-03-23 19:36:06 | INFO     | shared.llm_provider | AURA LLM: auto-selected gemini (model=gemini-2.5-flash)
+2026-03-23 19:36:06 | INFO     | shared.llm_provider | AURA LLM: auto-selected gemini (model=gemini-2.5-flash)
+2026-03-23 19:36:06 | INFO     | aura.factory | Shutting down AURA Execution Sandbox service
+2026-03-23 19:36:06 | INFO     | aura.factory | Starting AURA Orchestration service (env=development)
+2026-03-23 19:36:07 | INFO     | aura.factory | AURA Connectors service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:36:07 | INFO     | aura.factory | Shutting down AURA Orchestration service
+2026-03-23 19:36:07 | INFO     | aura.factory | Starting AURA Connectors service (env=development)
+2026-03-23 19:36:07 | INFO     | aura.factory | Shutting down AURA Connectors service
+2026-03-23 19:36:09 | INFO     | aura.factory | AURA Insights service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:36:09 | INFO     | aura.factory | Starting AURA Insights service (env=development)
+2026-03-23 19:36:09 | INFO     | aura.factory | AURA Code Generation service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:36:10 | INFO     | aura.factory | AURA Scheduler service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:36:10 | INFO     | aura.factory | AURA Metadata Store service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:36:10 | INFO     | aura.metadata_store | Starting Metadata Store — initializing DB
+2026-03-23 19:36:10 | INFO     | aura.scheduler | Starting Scheduler Service...
+2026-03-23 19:36:10 | INFO     | aura.scheduler | Initialized database: sqlite+aiosqlite:///data/scheduler.db
+2026-03-23 19:36:10 | INFO     | aura.scheduler | Initialized executor (database service: http://connector_service:8002)
+2026-03-23 19:36:10 | INFO     | scheduler_service.worker | Scheduler worker started (check interval: 60s)
+2026-03-23 19:36:10 | INFO     | aura.scheduler | Scheduler Service started successfully
+2026-03-23 19:36:10 | INFO     | aura.factory | AURA Execution Sandbox service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:36:10 | INFO     | aura.factory | Starting AURA Execution Sandbox service (env=development)
+2026-03-23 19:36:11 | INFO     | aura.factory | AURA Orchestration service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:36:11 | INFO     | shared.llm_provider | AURA LLM: auto-selected gemini (model=gemini-2.5-flash)
+2026-03-23 19:36:12 | INFO     | aura.factory | Starting AURA Code Generation service (env=development)
+2026-03-23 19:36:12 | INFO     | aura.factory | AURA API Gateway service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:36:12 | INFO     | shared.llm_provider | AURA LLM: auto-selected gemini (model=gemini-2.5-flash)
+2026-03-23 19:36:12 | INFO     | shared.llm_provider | AURA LLM: auto-selected gemini (model=gemini-2.5-flash)
+2026-03-23 19:36:12 | INFO     | aura.factory | Starting AURA Orchestration service (env=development)
+2026-03-23 19:36:13 | INFO     | aura.factory | AURA Connectors service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:36:13 | INFO     | aura.factory | Starting AURA Connectors service (env=development)
+2026-03-23 19:36:13 | INFO     | aura.factory | Starting AURA API Gateway service (env=development)
+2026-03-23 19:36:13 | INFO     | aura.factory | Shutting down AURA API Gateway service
+2026-03-23 19:36:16 | INFO     | aura.factory | AURA API Gateway service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:36:17 | INFO     | aura.factory | Starting AURA API Gateway service (env=development)
+2026-03-23 19:37:40 | INFO     | aura.factory | Shutting down AURA Connectors service
+2026-03-23 19:37:40 | INFO     | aura.factory | Shutting down AURA Code Generation service
+2026-03-23 19:37:40 | INFO     | aura.scheduler | Shutting down Scheduler Service...
+2026-03-23 19:37:40 | INFO     | scheduler_service.worker | Scheduler worker stopped
+2026-03-23 19:37:40 | INFO     | aura.scheduler | Scheduler Service shutdown complete
+2026-03-23 19:37:40 | INFO     | aura.factory | Shutting down AURA Orchestration service
+2026-03-23 19:37:40 | INFO     | aura.factory | Shutting down AURA Insights service
+2026-03-23 19:37:41 | INFO     | aura.factory | Shutting down AURA Execution Sandbox service
+2026-03-23 19:37:41 | INFO     | aura.metadata_store | Shutting down Metadata Store
+2026-03-23 19:37:41 | INFO     | aura.factory | Shutting down AURA API Gateway service
+2026-03-23 19:37:44 | INFO     | aura.factory | AURA Code Generation service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:37:44 | INFO     | aura.factory | AURA Insights service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:37:44 | INFO     | aura.factory | Starting AURA Insights service (env=development)
+2026-03-23 19:37:44 | INFO     | aura.factory | AURA Execution Sandbox service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:37:44 | INFO     | aura.factory | Starting AURA Execution Sandbox service (env=development)
+2026-03-23 19:37:44 | INFO     | aura.factory | AURA Scheduler service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:37:44 | INFO     | aura.factory | AURA Orchestration service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:37:45 | INFO     | aura.scheduler | Starting Scheduler Service...
+2026-03-23 19:37:45 | INFO     | aura.scheduler | Initialized database: sqlite+aiosqlite:///data/scheduler.db
+2026-03-23 19:37:45 | INFO     | aura.scheduler | Initialized executor (database service: http://connector_service:8002)
+2026-03-23 19:37:45 | INFO     | scheduler_service.worker | Scheduler worker started (check interval: 60s)
+2026-03-23 19:37:45 | INFO     | aura.scheduler | Scheduler Service started successfully
+2026-03-23 19:37:45 | INFO     | aura.factory | AURA Metadata Store service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:37:45 | INFO     | aura.metadata_store | Starting Metadata Store — initializing DB
+2026-03-23 19:37:46 | INFO     | shared.llm_provider | AURA LLM: auto-selected gemini (model=gemini-2.5-flash)
+2026-03-23 19:37:46 | INFO     | aura.factory | Starting AURA Code Generation service (env=development)
+2026-03-23 19:37:46 | INFO     | shared.llm_provider | AURA LLM: auto-selected gemini (model=gemini-2.5-flash)
+2026-03-23 19:37:46 | INFO     | shared.llm_provider | AURA LLM: auto-selected gemini (model=gemini-2.5-flash)
+2026-03-23 19:37:46 | INFO     | aura.factory | AURA Connectors service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:37:46 | INFO     | aura.factory | Starting AURA Orchestration service (env=development)
+2026-03-23 19:37:46 | INFO     | aura.factory | Starting AURA Connectors service (env=development)
+2026-03-23 19:37:47 | INFO     | aura.factory | AURA API Gateway service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:37:49 | INFO     | aura.factory | Starting AURA API Gateway service (env=development)
+2026-03-23 19:40:00 | INFO     | aura.middleware | OPTIONS /chat → 200 (0.3 ms) [a38655e4-580f-447f-8bc3-a7aa16b170ea]
+2026-03-23 19:40:01 | INFO     | aura.api_gateway | [IntentAgent] Starting IntentAgent…
+2026-03-23 19:40:01 | INFO     | shared.llm_provider | AURA LLM: auto-selected gemini (model=gemini-2.5-flash)
+2026-03-23 19:40:02 | INFO     | aura.api_gateway | [IntentAgent] ✓ IntentAgent (1715 ms)
+2026-03-23 19:40:02 | INFO     | aura.api_gateway | [▶ Running SQLGeneratorAgent: Generate SQL] SQLGeneratorAgent
+2026-03-23 19:40:05 | INFO     | aura.api_gateway | [▶ Running ExecutionAgent: Execute Query] ExecutionAgent
+2026-03-23 19:40:05 | INFO     | aura.api_gateway | [▶ Running VisualizationAgent: Suggest Chart] VisualizationAgent
+2026-03-23 19:40:05 | INFO     | aura.api_gateway | [▶ Running AnalysisAgent: Analyze Output] AnalysisAgent
+2026-03-23 19:40:05 | INFO     | aura.api_gateway | [✅ Executed 4/4 tasks successfully in 2768ms. Skipped: 0. Failures: 0.] executor
+2026-03-23 19:40:05 | INFO     | aura.middleware | POST /chat → 200 (4734.7 ms) [7f2b5dcb-dfdc-4d0f-8c2f-f430724331d2]
+2026-03-23 19:41:10 | INFO     | aura.middleware | GET /connections → 200 (12.5 ms) [16fc170b-bb7f-4997-873e-adee3090dddd]
+2026-03-23 19:41:10 | INFO     | aura.middleware | GET /connections → 200 (2.6 ms) [f30e06b9-1a13-44dc-909c-86a9ceab4643]
+2026-03-23 19:41:19 | INFO     | aura.api_gateway | [IntentAgent] Starting IntentAgent…
+2026-03-23 19:41:20 | INFO     | aura.api_gateway | [IntentAgent] ✓ IntentAgent (1105 ms)
+2026-03-23 19:41:20 | INFO     | aura.api_gateway | [▶ Running SQLGeneratorAgent: Generate SQL] SQLGeneratorAgent
+2026-03-23 19:41:26 | INFO     | aura.api_gateway | [▶ Running ExecutionAgent: Execute Query] ExecutionAgent
+2026-03-23 19:41:26 | INFO     | aura.api_gateway | [▶ Running VisualizationAgent: Suggest Chart] VisualizationAgent
+2026-03-23 19:41:26 | INFO     | aura.api_gateway | [▶ Running AnalysisAgent: Analyze Output] AnalysisAgent
+2026-03-23 19:41:26 | INFO     | aura.api_gateway | [✅ Executed 4/4 tasks successfully in 5461ms. Skipped: 0. Failures: 0.] executor
+2026-03-23 19:41:26 | INFO     | aura.middleware | POST /chat → 200 (6659.7 ms) [65fc4c15-72d6-4782-94b7-88b873b72d43]
+2026-03-23 19:42:53 | INFO     | aura.factory | Shutting down AURA Insights service
+2026-03-23 19:42:53 | INFO     | aura.factory | Shutting down AURA Code Generation service
+2026-03-23 19:42:53 | INFO     | aura.factory | Shutting down AURA API Gateway service
+2026-03-23 19:42:54 | INFO     | aura.factory | Shutting down AURA Execution Sandbox service
+2026-03-23 19:42:54 | INFO     | aura.factory | Shutting down AURA Connectors service
+2026-03-23 19:42:54 | INFO     | aura.factory | Shutting down AURA Orchestration service
+2026-03-23 19:42:54 | INFO     | aura.scheduler | Shutting down Scheduler Service...
+2026-03-23 19:42:54 | INFO     | scheduler_service.worker | Scheduler worker stopped
+2026-03-23 19:42:54 | INFO     | aura.scheduler | Scheduler Service shutdown complete
+2026-03-23 19:42:55 | INFO     | aura.metadata_store | Shutting down Metadata Store
+2026-03-23 19:42:56 | INFO     | aura.factory | AURA Insights service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:42:56 | INFO     | aura.factory | Starting AURA Insights service (env=development)
+2026-03-23 19:42:56 | INFO     | aura.factory | AURA Code Generation service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:42:57 | INFO     | aura.factory | AURA Execution Sandbox service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:42:57 | INFO     | aura.factory | Starting AURA Execution Sandbox service (env=development)
+2026-03-23 19:42:58 | INFO     | aura.factory | AURA Orchestration service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:42:58 | INFO     | aura.factory | AURA Scheduler service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:42:58 | INFO     | aura.scheduler | Starting Scheduler Service...
+2026-03-23 19:42:58 | INFO     | aura.scheduler | Initialized database: sqlite+aiosqlite:///data/scheduler.db
+2026-03-23 19:42:58 | INFO     | aura.scheduler | Initialized executor (database service: http://connector_service:8002)
+2026-03-23 19:42:58 | INFO     | scheduler_service.worker | Scheduler worker started (check interval: 60s)
+2026-03-23 19:42:58 | INFO     | aura.scheduler | Scheduler Service started successfully
+2026-03-23 19:42:58 | INFO     | aura.factory | AURA Metadata Store service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:42:58 | INFO     | aura.metadata_store | Starting Metadata Store — initializing DB
+2026-03-23 19:42:58 | INFO     | shared.llm_provider | AURA LLM: auto-selected gemini (model=gemini-2.5-flash)
+2026-03-23 19:42:59 | INFO     | aura.factory | Starting AURA Code Generation service (env=development)
+2026-03-23 19:42:59 | INFO     | aura.factory | AURA Connectors service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:42:59 | INFO     | shared.llm_provider | AURA LLM: auto-selected gemini (model=gemini-2.5-flash)
+2026-03-23 19:42:59 | INFO     | shared.llm_provider | AURA LLM: auto-selected gemini (model=gemini-2.5-flash)
+2026-03-23 19:43:00 | INFO     | aura.factory | Starting AURA Orchestration service (env=development)
+2026-03-23 19:43:00 | INFO     | aura.factory | Starting AURA Connectors service (env=development)
+2026-03-23 19:43:00 | INFO     | aura.factory | AURA API Gateway service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:43:01 | INFO     | aura.factory | Starting AURA API Gateway service (env=development)
+2026-03-23 19:43:30 | INFO     | aura.api_gateway | [IntentAgent] Starting IntentAgent…
+2026-03-23 19:43:30 | INFO     | shared.llm_provider | AURA LLM: auto-selected gemini (model=gemini-2.5-flash)
+2026-03-23 19:43:31 | INFO     | aura.api_gateway | [IntentAgent] ✓ IntentAgent (1479 ms)
+2026-03-23 19:43:31 | INFO     | aura.api_gateway | [▶ Running SQLGeneratorAgent: Generate SQL] SQLGeneratorAgent
+2026-03-23 19:43:33 | INFO     | aura.api_gateway | [▶ Running ExecutionAgent: Execute Query] ExecutionAgent
+2026-03-23 19:43:33 | INFO     | aura.api_gateway | [▶ Running VisualizationAgent: Suggest Chart] VisualizationAgent
+2026-03-23 19:43:33 | INFO     | aura.api_gateway | [▶ Running AnalysisAgent: Analyze Output] AnalysisAgent
+2026-03-23 19:43:43 | INFO     | aura.api_gateway | [✅ Executed 4/4 tasks successfully in 11985ms. Skipped: 0. Failures: 0.] executor
+2026-03-23 19:43:43 | INFO     | aura.middleware | POST /chat → 200 (13733.4 ms) [29cdab9c-b7c0-439b-9604-631cb790a04f]
+2026-03-23 19:43:56 | INFO     | aura.middleware | GET /connections → 200 (8.4 ms) [579f07fe-1dce-4246-9282-2c7321ed62c3]
+2026-03-23 19:43:56 | INFO     | aura.middleware | GET /connections → 200 (1.5 ms) [29d8b0f6-2edf-4076-a93f-5a0340ca33e7]
+2026-03-23 19:44:00 | INFO     | aura.api_gateway | [IntentAgent] Starting IntentAgent…
+2026-03-23 19:44:01 | INFO     | aura.api_gateway | [IntentAgent] ✓ IntentAgent (1117 ms)
+2026-03-23 19:44:01 | INFO     | aura.api_gateway | [▶ Running SQLGeneratorAgent: Generate SQL] SQLGeneratorAgent
+2026-03-23 19:44:06 | INFO     | aura.api_gateway | [▶ Running ExecutionAgent: Execute Query] ExecutionAgent
+2026-03-23 19:44:06 | INFO     | aura.api_gateway | [▶ Running VisualizationAgent: Suggest Chart] VisualizationAgent
+2026-03-23 19:44:06 | INFO     | aura.api_gateway | [▶ Running AnalysisAgent: Analyze Output] AnalysisAgent
+2026-03-23 19:44:13 | INFO     | aura.api_gateway | [✅ Executed 4/4 tasks successfully in 11289ms. Skipped: 0. Failures: 0.] executor
+2026-03-23 19:44:13 | INFO     | aura.middleware | POST /chat → 200 (12505.7 ms) [9354fa3b-2ba2-40b8-9449-d85bc7e5aa4e]
+2026-03-23 19:46:58 | INFO     | aura.scheduler | Shutting down Scheduler Service...
+2026-03-23 19:46:58 | INFO     | scheduler_service.worker | Scheduler worker stopped
+2026-03-23 19:46:58 | INFO     | aura.scheduler | Scheduler Service shutdown complete
+2026-03-23 19:46:58 | INFO     | aura.factory | Shutting down AURA Code Generation service
+2026-03-23 19:46:59 | INFO     | aura.factory | Shutting down AURA Connectors service
+2026-03-23 19:46:59 | INFO     | aura.factory | Shutting down AURA Orchestration service
+2026-03-23 19:46:59 | INFO     | aura.factory | Shutting down AURA Execution Sandbox service
+2026-03-23 19:46:59 | INFO     | aura.factory | Shutting down AURA API Gateway service
+2026-03-23 19:46:59 | INFO     | aura.factory | Shutting down AURA Insights service
+2026-03-23 19:46:59 | INFO     | aura.metadata_store | Shutting down Metadata Store
+2026-03-23 19:47:02 | INFO     | aura.factory | AURA Code Generation service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:47:02 | INFO     | aura.factory | AURA Insights service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:47:02 | INFO     | aura.factory | Starting AURA Insights service (env=development)
+2026-03-23 19:47:02 | INFO     | aura.factory | AURA Scheduler service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:47:02 | INFO     | aura.factory | AURA Execution Sandbox service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:47:02 | INFO     | aura.factory | Starting AURA Execution Sandbox service (env=development)
+2026-03-23 19:47:02 | INFO     | aura.scheduler | Starting Scheduler Service...
+2026-03-23 19:47:02 | INFO     | aura.scheduler | Initialized database: sqlite+aiosqlite:///data/scheduler.db
+2026-03-23 19:47:03 | INFO     | aura.scheduler | Initialized executor (database service: http://connector_service:8002)
+2026-03-23 19:47:03 | INFO     | scheduler_service.worker | Scheduler worker started (check interval: 60s)
+2026-03-23 19:47:03 | INFO     | aura.scheduler | Scheduler Service started successfully
+2026-03-23 19:47:03 | INFO     | aura.factory | AURA Orchestration service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:47:03 | INFO     | aura.factory | AURA Metadata Store service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:47:03 | INFO     | aura.metadata_store | Starting Metadata Store — initializing DB
+2026-03-23 19:47:04 | INFO     | shared.llm_provider | AURA LLM: auto-selected gemini (model=gemini-2.5-flash)
+2026-03-23 19:47:04 | INFO     | aura.factory | Starting AURA Code Generation service (env=development)
+2026-03-23 19:47:05 | INFO     | shared.llm_provider | AURA LLM: auto-selected gemini (model=gemini-2.5-flash)
+2026-03-23 19:47:05 | INFO     | shared.llm_provider | AURA LLM: auto-selected gemini (model=gemini-2.5-flash)
+2026-03-23 19:47:05 | INFO     | aura.factory | Starting AURA Orchestration service (env=development)
+2026-03-23 19:47:05 | INFO     | aura.factory | AURA Connectors service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:47:05 | INFO     | aura.factory | Starting AURA Connectors service (env=development)
+2026-03-23 19:47:05 | INFO     | aura.factory | AURA API Gateway service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:47:06 | INFO     | aura.factory | Starting AURA API Gateway service (env=development)
+2026-03-23 19:47:32 | INFO     | aura.middleware | GET /connections → 200 (39.8 ms) [14971615-f7d8-4f0d-8f70-a2cfaebd600b]
+2026-03-23 19:47:32 | INFO     | aura.middleware | GET /connections → 200 (2.9 ms) [54404471-1606-4a2d-96bb-37c4e907cebf]
+2026-03-23 19:47:35 | INFO     | aura.api_gateway | [IntentAgent] Starting IntentAgent…
+2026-03-23 19:47:35 | INFO     | shared.llm_provider | AURA LLM: auto-selected gemini (model=gemini-2.5-flash)
+2026-03-23 19:47:36 | INFO     | aura.api_gateway | [IntentAgent] ✓ IntentAgent (1566 ms)
+2026-03-23 19:47:36 | INFO     | aura.api_gateway | [▶ Running SQLGeneratorAgent: Generate SQL to answer: Calculate the survival rate for each] SQLGeneratorAgent
+2026-03-23 19:47:42 | INFO     | aura.api_gateway | [▶ Running ExecutionAgent: Execute Query] ExecutionAgent
+2026-03-23 19:47:42 | INFO     | aura.api_gateway | [▶ Running VisualizationAgent: Suggest Chart] VisualizationAgent
+2026-03-23 19:47:42 | INFO     | aura.api_gateway | [▶ Running AnalysisAgent: Analyze Output] AnalysisAgent
+2026-03-23 19:47:49 | INFO     | aura.api_gateway | [✅ Executed 4/4 tasks successfully in 12956ms. Skipped: 0. Failures: 0.] executor
+2026-03-23 19:47:49 | INFO     | aura.middleware | POST /chat → 200 (14709.5 ms) [4d0da595-7f97-4eee-be18-70010a5ae13c]
+2026-03-23 19:48:00 | INFO     | aura.factory | Shutting down AURA Insights service
+2026-03-23 19:48:00 | INFO     | aura.factory | Shutting down AURA Orchestration service
+2026-03-23 19:48:00 | INFO     | aura.scheduler | Shutting down Scheduler Service...
+2026-03-23 19:48:00 | INFO     | scheduler_service.worker | Scheduler worker stopped
+2026-03-23 19:48:00 | INFO     | aura.scheduler | Scheduler Service shutdown complete
+2026-03-23 19:48:01 | INFO     | aura.factory | Shutting down AURA Connectors service
+2026-03-23 19:48:01 | INFO     | aura.factory | Shutting down AURA Execution Sandbox service
+2026-03-23 19:48:01 | INFO     | aura.factory | Shutting down AURA API Gateway service
+2026-03-23 19:48:01 | INFO     | aura.metadata_store | Shutting down Metadata Store
+2026-03-23 19:48:01 | INFO     | aura.factory | Shutting down AURA Code Generation service
+2026-03-23 19:48:04 | INFO     | aura.factory | AURA Insights service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:48:04 | INFO     | aura.factory | Starting AURA Insights service (env=development)
+2026-03-23 19:48:04 | INFO     | aura.factory | AURA Execution Sandbox service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:48:04 | INFO     | aura.factory | Starting AURA Execution Sandbox service (env=development)
+2026-03-23 19:48:04 | INFO     | aura.factory | AURA Code Generation service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:48:05 | INFO     | aura.factory | AURA Scheduler service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:48:05 | INFO     | aura.factory | AURA Orchestration service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:48:05 | INFO     | aura.scheduler | Starting Scheduler Service...
+2026-03-23 19:48:05 | INFO     | aura.scheduler | Initialized database: sqlite+aiosqlite:///data/scheduler.db
+2026-03-23 19:48:05 | INFO     | aura.scheduler | Initialized executor (database service: http://connector_service:8002)
+2026-03-23 19:48:05 | INFO     | scheduler_service.worker | Scheduler worker started (check interval: 60s)
+2026-03-23 19:48:05 | INFO     | aura.scheduler | Scheduler Service started successfully
+2026-03-23 19:48:05 | INFO     | aura.factory | AURA Metadata Store service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:48:05 | INFO     | aura.metadata_store | Starting Metadata Store — initializing DB
+2026-03-23 19:48:07 | INFO     | shared.llm_provider | AURA LLM: auto-selected gemini (model=gemini-2.5-flash)
+2026-03-23 19:48:07 | INFO     | aura.factory | Starting AURA Code Generation service (env=development)
+2026-03-23 19:48:07 | INFO     | shared.llm_provider | AURA LLM: auto-selected gemini (model=gemini-2.5-flash)
+2026-03-23 19:48:07 | INFO     | shared.llm_provider | AURA LLM: auto-selected gemini (model=gemini-2.5-flash)
+2026-03-23 19:48:07 | INFO     | aura.factory | Starting AURA Orchestration service (env=development)
+2026-03-23 19:48:07 | INFO     | aura.factory | AURA Connectors service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:48:07 | INFO     | aura.factory | Starting AURA Connectors service (env=development)
+2026-03-23 19:48:08 | INFO     | aura.factory | AURA API Gateway service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:48:08 | INFO     | aura.factory | Starting AURA API Gateway service (env=development)
+2026-03-23 19:48:44 | INFO     | aura.api_gateway | [IntentAgent] Starting IntentAgent…
+2026-03-23 19:48:45 | INFO     | shared.llm_provider | AURA LLM: auto-selected gemini (model=gemini-2.5-flash)
+2026-03-23 19:48:46 | INFO     | aura.api_gateway | [IntentAgent] ✓ IntentAgent (1499 ms)
+2026-03-23 19:48:46 | INFO     | aura.api_gateway | [▶ Running SQLGeneratorAgent: Generate SQL to answer: Calculate the survival rate for each] SQLGeneratorAgent
+2026-03-23 19:48:50 | INFO     | aura.api_gateway | [▶ Running ExecutionAgent: Execute Query] ExecutionAgent
+2026-03-23 19:48:50 | INFO     | aura.api_gateway | [▶ Running VisualizationAgent: Suggest Chart] VisualizationAgent
+2026-03-23 19:48:50 | INFO     | aura.api_gateway | [▶ Running AnalysisAgent: Analyze Output] AnalysisAgent
+2026-03-23 19:48:52 | INFO     | aura.api_gateway | [✅ Executed 4/4 tasks successfully in 5922ms. Skipped: 0. Failures: 0.] executor
+2026-03-23 19:48:52 | INFO     | aura.middleware | POST /chat → 200 (7651.8 ms) [b49ecb18-f2ba-4bbb-bfbe-f88ccc326fe2]
+2026-03-23 19:49:37 | INFO     | aura.middleware | GET /connections → 200 (9.0 ms) [4d43455b-8ebd-4652-9528-f7d6fcc2ecde]
+2026-03-23 19:49:37 | INFO     | aura.middleware | GET /connections → 200 (2.5 ms) [e00116f6-d7a5-4f4b-9634-0cba04c41d49]
+2026-03-23 19:49:44 | INFO     | aura.api_gateway | [IntentAgent] Starting IntentAgent…
+2026-03-23 19:49:46 | INFO     | aura.api_gateway | [IntentAgent] ✓ IntentAgent (1454 ms)
+2026-03-23 19:49:46 | INFO     | aura.api_gateway | [▶ Running SQLGeneratorAgent: Generate SQL to answer: Calculate the survival rate for each] SQLGeneratorAgent
+2026-03-23 19:49:49 | INFO     | aura.api_gateway | [▶ Running ExecutionAgent: Execute Query] ExecutionAgent
+2026-03-23 19:49:49 | INFO     | aura.api_gateway | [▶ Running VisualizationAgent: Suggest Chart] VisualizationAgent
+2026-03-23 19:49:49 | INFO     | aura.api_gateway | [▶ Running AnalysisAgent: Analyze Output] AnalysisAgent
+2026-03-23 19:49:53 | INFO     | aura.api_gateway | [✅ Executed 4/4 tasks successfully in 7444ms. Skipped: 0. Failures: 0.] executor
+2026-03-23 19:49:53 | INFO     | aura.middleware | POST /chat → 200 (8988.6 ms) [1debf0d1-2fa1-4ec7-acf3-298f2fa438cb]
+2026-03-23 19:52:29 | INFO     | aura.factory | Shutting down AURA Code Generation service
+2026-03-23 19:52:29 | INFO     | aura.factory | Shutting down AURA Execution Sandbox service
+2026-03-23 19:52:29 | INFO     | aura.metadata_store | Shutting down Metadata Store
+2026-03-23 19:52:29 | INFO     | aura.factory | Shutting down AURA Orchestration service
+2026-03-23 19:52:30 | INFO     | aura.factory | Shutting down AURA Connectors service
+2026-03-23 19:52:30 | INFO     | aura.scheduler | Shutting down Scheduler Service...
+2026-03-23 19:52:30 | INFO     | scheduler_service.worker | Scheduler worker stopped
+2026-03-23 19:52:30 | INFO     | aura.scheduler | Scheduler Service shutdown complete
+2026-03-23 19:52:31 | INFO     | aura.factory | Shutting down AURA API Gateway service
+2026-03-23 19:52:31 | INFO     | aura.factory | Shutting down AURA Insights service
+2026-03-23 19:52:32 | INFO     | aura.factory | AURA Code Generation service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:52:32 | INFO     | aura.factory | AURA Execution Sandbox service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:52:33 | INFO     | aura.factory | Starting AURA Execution Sandbox service (env=development)
+2026-03-23 19:52:33 | INFO     | aura.factory | AURA Orchestration service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:52:33 | INFO     | aura.factory | AURA Metadata Store service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:52:33 | INFO     | aura.metadata_store | Starting Metadata Store — initializing DB
+2026-03-23 19:52:34 | INFO     | aura.factory | AURA Insights service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:52:34 | INFO     | aura.factory | Starting AURA Insights service (env=development)
+2026-03-23 19:52:34 | INFO     | aura.factory | AURA Scheduler service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:52:34 | INFO     | aura.scheduler | Starting Scheduler Service...
+2026-03-23 19:52:34 | INFO     | aura.scheduler | Initialized database: sqlite+aiosqlite:///data/scheduler.db
+2026-03-23 19:52:34 | INFO     | aura.scheduler | Initialized executor (database service: http://connector_service:8002)
+2026-03-23 19:52:34 | INFO     | scheduler_service.worker | Scheduler worker started (check interval: 60s)
+2026-03-23 19:52:34 | INFO     | aura.scheduler | Scheduler Service started successfully
+2026-03-23 19:52:34 | INFO     | shared.llm_provider | AURA LLM: auto-selected gemini (model=gemini-2.5-flash)
+2026-03-23 19:52:34 | INFO     | aura.factory | Starting AURA Code Generation service (env=development)
+2026-03-23 19:52:35 | INFO     | shared.llm_provider | AURA LLM: auto-selected gemini (model=gemini-2.5-flash)
+2026-03-23 19:52:35 | INFO     | shared.llm_provider | AURA LLM: auto-selected gemini (model=gemini-2.5-flash)
+2026-03-23 19:52:35 | INFO     | aura.factory | Starting AURA Orchestration service (env=development)
+2026-03-23 19:52:35 | INFO     | aura.factory | AURA Connectors service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:52:35 | INFO     | aura.factory | Starting AURA Connectors service (env=development)
+2026-03-23 19:52:36 | INFO     | aura.factory | AURA API Gateway service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:52:37 | INFO     | aura.factory | Starting AURA API Gateway service (env=development)
+2026-03-23 19:53:20 | INFO     | aura.middleware | OPTIONS /chat → 200 (0.7 ms) [9a059eb9-0b8c-4215-91f6-d9e0d2574490]
+2026-03-23 19:53:20 | INFO     | aura.api_gateway | [IntentAgent] Starting IntentAgent…
+2026-03-23 19:53:21 | INFO     | shared.llm_provider | AURA LLM: auto-selected gemini (model=gemini-2.5-flash)
+2026-03-23 19:53:23 | INFO     | aura.api_gateway | [IntentAgent] ✓ IntentAgent (2129 ms)
+2026-03-23 19:53:23 | INFO     | aura.api_gateway | [▶ Running SQLGeneratorAgent: Generate SQL to answer: Calculate the survival rate for each] SQLGeneratorAgent
+2026-03-23 19:53:25 | INFO     | aura.api_gateway | [▶ Running ExecutionAgent: Execute Query] ExecutionAgent
+2026-03-23 19:53:25 | INFO     | aura.api_gateway | [▶ Running VisualizationAgent: Suggest Chart] VisualizationAgent
+2026-03-23 19:53:25 | INFO     | aura.api_gateway | [▶ Running AnalysisAgent: Analyze Output] AnalysisAgent
+2026-03-23 19:53:30 | INFO     | aura.api_gateway | [✅ Executed 4/4 tasks successfully in 7354ms. Skipped: 0. Failures: 0.] executor
+2026-03-23 19:53:30 | INFO     | aura.middleware | POST /chat → 200 (9698.1 ms) [620c655b-237c-44e7-9aa7-cfa6e5372db9]
+2026-03-23 19:53:34 | INFO     | aura.middleware | GET /connections → 200 (8.5 ms) [e09b0bc2-0022-4175-b004-8e99a5d5d08e]
+2026-03-23 19:53:34 | INFO     | aura.middleware | GET /connections → 200 (1.2 ms) [92c2417c-50f1-4fab-86c3-1b936d560ece]
+2026-03-23 19:53:37 | INFO     | aura.api_gateway | [IntentAgent] Starting IntentAgent…
+2026-03-23 19:53:38 | INFO     | aura.api_gateway | [IntentAgent] ✓ IntentAgent (1191 ms)
+2026-03-23 19:53:38 | INFO     | aura.api_gateway | [▶ Running SQLGeneratorAgent: Generate SQL to answer: Calculate the survival rate for each] SQLGeneratorAgent
+2026-03-23 19:53:40 | INFO     | aura.api_gateway | [▶ Running ExecutionAgent: Execute Query] ExecutionAgent
+2026-03-23 19:53:40 | INFO     | aura.api_gateway | [▶ Running VisualizationAgent: Suggest Chart] VisualizationAgent
+2026-03-23 19:53:40 | INFO     | aura.api_gateway | [▶ Running AnalysisAgent: Analyze Output] AnalysisAgent
+2026-03-23 19:53:45 | INFO     | aura.api_gateway | [✅ Executed 4/4 tasks successfully in 6419ms. Skipped: 0. Failures: 0.] executor
+2026-03-23 19:53:45 | INFO     | aura.middleware | POST /chat → 200 (7680.4 ms) [3e7bd3da-bbed-4f6f-a497-f7dc02fb67ae]
+2026-03-23 19:55:50 | INFO     | aura.factory | Shutting down AURA Execution Sandbox service
+2026-03-23 19:55:50 | INFO     | aura.metadata_store | Shutting down Metadata Store
+2026-03-23 19:55:50 | INFO     | aura.factory | Shutting down AURA API Gateway service
+2026-03-23 19:55:50 | INFO     | aura.factory | Shutting down AURA Insights service
+2026-03-23 19:55:50 | INFO     | aura.factory | Shutting down AURA Code Generation service
+2026-03-23 19:55:50 | INFO     | aura.factory | Shutting down AURA Orchestration service
+2026-03-23 19:55:51 | INFO     | aura.scheduler | Shutting down Scheduler Service...
+2026-03-23 19:55:51 | INFO     | scheduler_service.worker | Scheduler worker stopped
+2026-03-23 19:55:51 | INFO     | aura.scheduler | Scheduler Service shutdown complete
+2026-03-23 19:55:51 | INFO     | aura.factory | Shutting down AURA Connectors service
+2026-03-23 19:55:53 | INFO     | aura.factory | AURA Execution Sandbox service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:55:53 | INFO     | aura.factory | Starting AURA Execution Sandbox service (env=development)
+2026-03-23 19:55:54 | INFO     | aura.factory | AURA Insights service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:55:54 | INFO     | aura.factory | AURA Code Generation service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:55:54 | INFO     | aura.factory | Starting AURA Insights service (env=development)
+2026-03-23 19:55:54 | INFO     | aura.factory | AURA Metadata Store service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:55:54 | INFO     | aura.metadata_store | Starting Metadata Store — initializing DB
+2026-03-23 19:55:55 | INFO     | aura.factory | AURA Orchestration service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:55:55 | INFO     | aura.factory | AURA Scheduler service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:55:55 | INFO     | aura.scheduler | Starting Scheduler Service...
+2026-03-23 19:55:55 | INFO     | aura.scheduler | Initialized database: sqlite+aiosqlite:///data/scheduler.db
+2026-03-23 19:55:55 | INFO     | aura.scheduler | Initialized executor (database service: http://connector_service:8002)
+2026-03-23 19:55:55 | INFO     | scheduler_service.worker | Scheduler worker started (check interval: 60s)
+2026-03-23 19:55:55 | INFO     | aura.scheduler | Scheduler Service started successfully
+2026-03-23 19:55:56 | INFO     | shared.llm_provider | AURA LLM: auto-selected gemini (model=gemini-2.5-flash)
+2026-03-23 19:55:56 | INFO     | aura.factory | Starting AURA Code Generation service (env=development)
+2026-03-23 19:55:57 | INFO     | shared.llm_provider | AURA LLM: auto-selected gemini (model=gemini-2.5-flash)
+2026-03-23 19:55:57 | INFO     | shared.llm_provider | AURA LLM: auto-selected gemini (model=gemini-2.5-flash)
+2026-03-23 19:55:57 | INFO     | aura.factory | Starting AURA Orchestration service (env=development)
+2026-03-23 19:55:58 | INFO     | aura.factory | AURA Connectors service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:55:58 | INFO     | aura.factory | Starting AURA Connectors service (env=development)
+2026-03-23 19:55:58 | INFO     | aura.factory | AURA API Gateway service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:55:59 | INFO     | aura.factory | Starting AURA API Gateway service (env=development)
+2026-03-23 19:56:25 | INFO     | aura.factory | Shutting down AURA Code Generation service
+2026-03-23 19:56:25 | INFO     | aura.factory | Shutting down AURA API Gateway service
+2026-03-23 19:56:25 | INFO     | aura.factory | Shutting down AURA Orchestration service
+2026-03-23 19:56:25 | INFO     | aura.metadata_store | Shutting down Metadata Store
+2026-03-23 19:56:25 | INFO     | aura.factory | Shutting down AURA Connectors service
+2026-03-23 19:56:25 | INFO     | aura.scheduler | Shutting down Scheduler Service...
+2026-03-23 19:56:25 | INFO     | scheduler_service.worker | Scheduler worker stopped
+2026-03-23 19:56:25 | INFO     | aura.scheduler | Scheduler Service shutdown complete
+2026-03-23 19:56:25 | INFO     | aura.factory | Shutting down AURA Insights service
+2026-03-23 19:56:25 | INFO     | aura.factory | Shutting down AURA Execution Sandbox service
+2026-03-23 19:56:28 | INFO     | aura.factory | AURA Code Generation service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:56:29 | INFO     | aura.factory | AURA Insights service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:56:29 | INFO     | aura.factory | AURA Execution Sandbox service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:56:29 | INFO     | aura.factory | Starting AURA Insights service (env=development)
+2026-03-23 19:56:29 | INFO     | aura.factory | Starting AURA Execution Sandbox service (env=development)
+2026-03-23 19:56:29 | INFO     | aura.factory | AURA Orchestration service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:56:30 | INFO     | aura.factory | AURA Metadata Store service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:56:30 | INFO     | aura.metadata_store | Starting Metadata Store — initializing DB
+2026-03-23 19:56:30 | INFO     | aura.factory | AURA Scheduler service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:56:30 | INFO     | aura.scheduler | Starting Scheduler Service...
+2026-03-23 19:56:30 | INFO     | aura.scheduler | Initialized database: sqlite+aiosqlite:///data/scheduler.db
+2026-03-23 19:56:30 | INFO     | aura.scheduler | Initialized executor (database service: http://connector_service:8002)
+2026-03-23 19:56:30 | INFO     | scheduler_service.worker | Scheduler worker started (check interval: 60s)
+2026-03-23 19:56:30 | INFO     | aura.scheduler | Scheduler Service started successfully
+2026-03-23 19:56:30 | INFO     | shared.llm_provider | AURA LLM: auto-selected gemini (model=gemini-2.5-flash)
+2026-03-23 19:56:30 | INFO     | aura.factory | Starting AURA Code Generation service (env=development)
+2026-03-23 19:56:31 | INFO     | shared.llm_provider | AURA LLM: auto-selected gemini (model=gemini-2.5-flash)
+2026-03-23 19:56:31 | INFO     | shared.llm_provider | AURA LLM: auto-selected gemini (model=gemini-2.5-flash)
+2026-03-23 19:56:31 | INFO     | aura.factory | Starting AURA Orchestration service (env=development)
+2026-03-23 19:56:31 | INFO     | aura.factory | AURA Connectors service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:56:31 | INFO     | aura.factory | Starting AURA Connectors service (env=development)
+2026-03-23 19:56:32 | INFO     | aura.factory | AURA API Gateway service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:56:32 | INFO     | aura.factory | Starting AURA API Gateway service (env=development)
+2026-03-23 19:57:00 | INFO     | aura.middleware | GET /connections → 200 (31.8 ms) [d013ba66-873e-4a37-9552-3233383f060d]
+2026-03-23 19:57:00 | INFO     | aura.middleware | GET /connections → 200 (1.5 ms) [447e8150-86bc-4221-9caa-45f99f2deaa9]
+2026-03-23 19:57:03 | INFO     | aura.api_gateway | [IntentAgent] Starting IntentAgent…
+2026-03-23 19:57:03 | INFO     | shared.llm_provider | AURA LLM: auto-selected gemini (model=gemini-2.5-flash)
+2026-03-23 19:57:06 | INFO     | aura.api_gateway | [IntentAgent] ✓ IntentAgent (3370 ms)
+2026-03-23 19:57:06 | INFO     | aura.api_gateway | [▶ Running SQLGeneratorAgent: Generate SQL to answer: Calculate the survival rate for each] SQLGeneratorAgent
+2026-03-23 19:57:10 | INFO     | aura.api_gateway | [▶ Running ExecutionAgent: Execute Query] ExecutionAgent
+2026-03-23 19:57:10 | INFO     | aura.api_gateway | [▶ Running VisualizationAgent: Suggest Chart] VisualizationAgent
+2026-03-23 19:57:10 | INFO     | aura.api_gateway | [▶ Running AnalysisAgent: Analyze Output] AnalysisAgent
+2026-03-23 19:57:15 | INFO     | aura.api_gateway | [✅ Executed 4/4 tasks successfully in 8775ms. Skipped: 0. Failures: 0.] executor
+2026-03-23 19:57:15 | INFO     | aura.middleware | POST /chat → 200 (12358.1 ms) [346382cf-bcfb-447e-9474-70a76e91c249]
+2026-03-23 19:58:08 | INFO     | aura.middleware | GET /connections → 200 (1.8 ms) [9e5e6486-8a5e-4748-a3e2-a3a94823c9f9]
+2026-03-23 19:58:08 | INFO     | aura.middleware | GET /connections → 200 (2.4 ms) [f18ce066-bf3e-4393-ac34-6bce67c52762]
+2026-03-23 19:58:11 | INFO     | aura.api_gateway | [IntentAgent] Starting IntentAgent…
+2026-03-23 19:58:11 | INFO     | aura.api_gateway | [IntentAgent] ✓ IntentAgent (895 ms)
+2026-03-23 19:58:11 | INFO     | aura.api_gateway | [▶ Running SQLGeneratorAgent: Generate SQL to answer: Calculate the survival rate for each] SQLGeneratorAgent
+2026-03-23 19:58:14 | INFO     | aura.api_gateway | [▶ Running ExecutionAgent: Execute Query] ExecutionAgent
+2026-03-23 19:58:14 | INFO     | aura.api_gateway | [▶ Running VisualizationAgent: Suggest Chart] VisualizationAgent
+2026-03-23 19:58:14 | INFO     | aura.api_gateway | [▶ Running AnalysisAgent: Analyze Output] AnalysisAgent
+2026-03-23 19:58:22 | INFO     | aura.api_gateway | [✅ Executed 4/4 tasks successfully in 10759ms. Skipped: 0. Failures: 0.] executor
+2026-03-23 19:58:22 | INFO     | aura.middleware | POST /chat → 200 (11738.9 ms) [b11231e8-af33-473e-bfa0-1472b0db3b4e]
+2026-03-23 20:00:37 | INFO     | aura.factory | Shutting down AURA Insights service
+2026-03-23 20:00:37 | INFO     | aura.factory | Shutting down AURA Execution Sandbox service
+2026-03-23 20:00:37 | INFO     | aura.factory | Shutting down AURA Orchestration service
+2026-03-23 20:00:37 | INFO     | aura.scheduler | Shutting down Scheduler Service...
+2026-03-23 20:00:37 | INFO     | scheduler_service.worker | Scheduler worker stopped
+2026-03-23 20:00:37 | INFO     | aura.factory | Shutting down AURA API Gateway service
+2026-03-23 20:00:37 | INFO     | aura.scheduler | Scheduler Service shutdown complete
+2026-03-23 20:00:37 | INFO     | aura.factory | Shutting down AURA Code Generation service
+2026-03-23 20:00:37 | INFO     | aura.metadata_store | Shutting down Metadata Store
+2026-03-23 20:00:39 | INFO     | aura.factory | Shutting down AURA Connectors service

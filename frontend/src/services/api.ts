@@ -8,7 +8,7 @@
 // =============================================================================
 
 const API_BASE_URL = localStorage.getItem('apiUrl') || import.meta.env.VITE_API_URL || 'http://localhost:8000'; // Configurable via Settings page
-const REQUEST_TIMEOUT = 120000; // 120 seconds (2 minutes) to allow heavy queries
+const REQUEST_TIMEOUT = 300000; // 300 seconds (5 minutes) to allow massive agent queries
 const HEALTH_CHECK_INTERVAL = Number(import.meta.env.VITE_HEALTH_CHECK_INTERVAL) || 10000; // 10 seconds for faster detection
 
 // =============================================================================

@@ -405,6 +405,22 @@ async def execute_for_chat(req: _ChatExecuteRequest):
         columns = [desc[0] for desc in result.description]
         rows = result.fetchall()
         records = [dict(zip(columns, row)) for row in rows]
+        
+        # Manually generate insight using the unified AnalysisAgent
+        conclusion = None
+        if records:
+            from agents.specialists.analysis_agent import AnalysisAgent
+            from agents.base import AgentContext
+            agent = AnalysisAgent()
+            ctx = AgentContext(
+                user_prompt="Explain these executed SQL results conceptually.",
+                task_description="Analyze the executed query results.",
+                upstream_results={"t2": {"records": records}}
+            )
+            analysis_res = await agent.execute(ctx)
+            if analysis_res.succeeded:
+                conclusion = analysis_res.output.get("conclusion")
+
         elapsed = (time.time() - start) * 1000
 
         con.close()
@@ -414,6 +430,7 @@ async def execute_for_chat(req: _ChatExecuteRequest):
             "columns": columns,
             "row_count": len(records),
             "execution_time_ms": round(elapsed, 1),
+            "conclusion": conclusion,
         }
     except Exception as exc:
         return {"success": False, "error": str(exc), "data": [], "columns": []}
@@ -459,17 +476,31 @@ async def execute_query_with_insights(request: ExecuteQueryRequest):
 
         execution_time = (time.time() - start_time) * 1000
 
-        # Generate insights
-        engine = InsightsEngine()
+        execution_time = (time.time() - start_time) * 1000
+
+        # Generate insights natively via AnalysisAgent
+        conclusion = None
+        if results:
+            from agents.specialists.analysis_agent import AnalysisAgent
+            from agents.base import AgentContext
+            agent = AnalysisAgent()
+            ctx = AgentContext(
+                user_prompt="Explain these results conceptually.",
+                task_description="Analyze the executed query results.",
+                upstream_results={"t2": {"records": results}}
+            )
+            analysis_res = await agent.execute(ctx)
+            if analysis_res.succeeded:
+                conclusion = analysis_res.output.get("conclusion")
+
         columns = list(results[0].keys()) if results else []
-        insights = engine.analyze(request.query, results) if results else None
 
         return ExecuteQueryResponse(
             success=True,
             data=results,
             rows=len(results),
             columns=columns,
-            insights=insights,
+            insights={"conclusion": conclusion} if conclusion else None,
             execution_time_ms=execution_time,
         )
 
@@ -626,127 +657,103 @@ async def chat_endpoint(request: ChatRequest) -> Dict[str, Any]:
 
     session_id = request.session_id or f"chat_{int(time.time()*1000)}"
 
-    # ── Step 1.5: Intent Classification ─────────────────────────────
-    try:
-        from shared.llm_provider import get_llm
-        llm = get_llm()
-        
-        intent_prompt = f"""You are AURA, an intelligent data assistant. Analyze the user's message and determine if it requires executing a SQL query against the database, or if it is a general conversational message (like a greeting, thanking, asking for help, or asking about the metadata/columns available).
+    # ── Step 2: Unified Agent DAG Pipeline ──────────────────────────
+    from agents.base import AgentContext
+    from agents.specialists.intent_agent import IntentAgent
+    from agents.executor import DAGExecutor
+    from agents.planner import ExecutionPlan, TaskNode, TaskType
 
-Available Schema Context:
-{full_context}
-
-User's message: "{message}"
-
-Respond STRICTLY with a JSON object in this format (no markdown code blocks, just raw JSON):
-{{"intent": "sql" or "conversation", "message": "If conversation, put your helpful natural language response here. If sql, leave blank."}}
-"""
-        logger.info(f"=== [INTENT CLASSIFIER PROMPT] ===\n{intent_prompt}\n================================")
-        classifier_result = llm.generate_json(intent_prompt)
-        if classifier_result and classifier_result.get("intent") == "conversation":
-            # Return immediately with the conversational response
-            return {
-                "status": "Conversational",
-                "job_id": f"job_{session_id}",
-                "message": classifier_result.get("message", "Hello! How can I help you with your data today?"),
-                "execution_time_ms": round((time.time() - t0) * 1000, 1),
-                "available_tables": list(table_schemas.keys()),
-            }
-    except Exception as e:
-        logger.warning(f"Intent classification failed: {e}")
-        # If it fails, we just fall back to the normal SQL flow
-
-    # ── Step 2: Generate SQL via the orchestration service ──────────
-    orchestration_url = os.getenv(
-        "ORCHESTRATION_SERVICE_URL",
-        "http://localhost:8006/v1/orchestrations/query",
+    # 1. Check Intent First (Standalone early exit)
+    intent_agent = IntentAgent()
+    ctx = AgentContext(
+        user_prompt=message,
+        task_description="Determine intent.",
+        schema_context=table_schemas
     )
     
+    async def console_cb(agent_name: str, msg: str, pct: float):
+        logger.info(f"[{agent_name}] {msg}")
+        
+    intent_agent.set_progress_callback(console_cb)
+    intent_result = await intent_agent.execute(ctx)
+    intent = intent_result.output.get("intent") if intent_result.succeeded else "sql"
+    
+    if intent == "conversation":
+        con.close()
+        return {
+            "status": "Conversational",
+            "job_id": f"job_{session_id}",
+            "message": intent_result.output.get("message", "Hello! How can I help you today?"),
+            "execution_time_ms": round((time.time() - t0) * 1000, 1),
+            "available_tables": list(table_schemas.keys()),
+        }
 
+    # 2. Build explicit execution plan for SQL queries
+    plan = ExecutionPlan(
+        plan_id=session_id,
+        user_prompt=message,
+        summary="Unified SQL Pipeline",
+        tasks=[
+            TaskNode(id="t1", task_type=TaskType.GENERATE_SQL, description=f"Generate SQL to answer: {message}", agent_name="SQLGeneratorAgent", depends_on=[]),
+            TaskNode(id="t2", task_type=TaskType.EXECUTE_SQL, description="Execute Query", agent_name="ExecutionAgent", depends_on=["t1"], parameters={"duckdb_con": con}),
+            TaskNode(id="t3", task_type=TaskType.TRANSFORM, description="Suggest Chart", agent_name="VisualizationAgent", depends_on=["t2"]),
+            TaskNode(id="t4", task_type=TaskType.TRANSFORM, description="Analyze Output", agent_name="AnalysisAgent", depends_on=["t2"]),
+        ]
+    )
+    
+    # 3. Execute the DAG!
+    executor = DAGExecutor()
+    executor.progress_cb = console_cb
+    
+    report = await executor.execute(
+        plan, 
+        user_prompt=message, 
+        schema_context={"tables": table_schemas, "rich_context": full_context}
+    )
+    
+    # Extract results from plan execution
     generated_sql = None
-    gen_status = "Error"
-    error_message = None
-
-    try:
-        async with httpx.AsyncClient(timeout=120.0) as client:
-            resp = await client.post(
-                orchestration_url,
-                json={
-                    "session_id": session_id,
-                    "prompt": message,
-                    "context": full_context,
-                },
-            )
-            resp.raise_for_status()
-            gen_data = resp.json()
-            generated_sql = gen_data.get("final_query")
-            gen_status = gen_data.get("status", "Success")
-    except Exception as exc:
-        error_message = f"SQL generation failed: {exc}"
-        logger.warning("Chat SQL generation failed: %s", exc)
-
-    # ── Step 3: Auto-execute if we got valid SQL ────────────────────
-    execution_result = None
-    if generated_sql and request.auto_execute and gen_status in ("Success", "Fallback"):
-        # Safety check
-        validator = SQLSafetyValidator()
-        validation = validator.validate(generated_sql)
-
-        if validation.is_valid:
-            try:
-                result = con.execute(generated_sql)
-                columns = [desc[0] for desc in result.description]
-                rows = result.fetchall()
-                records = [
-                    {col: _serialize_value(val) for col, val in zip(columns, row)}
-                    for row in rows
-                ]
-
-                # Auto-detect chart type from the query and data
-                chart_spec = _suggest_chart(message, columns, records)
-
-                conclusion = None
-                if records:
-                    try:
-                        from shared.llm_provider import get_llm
-                        llm = get_llm()
-                        limited_records = records[:20]
-                        conclusion_prompt = f"User asked: '{message}'\nData result (first 20 rows):\n{limited_records}\nProvide a brief, conclusive answer to the user's question based strictly on this data. Do not show the SQL. Keep it to 1-3 sentences in a friendly, helpful tone."
-                        logger.info(f"=== [CONCLUSION LLM PROMPT] ===\n{conclusion_prompt}\n================================")
-                        conclusion = llm.generate(conclusion_prompt)
-                    except Exception as e:
-                        logger.warning(f"Failed to generate analytical conclusion: {e}")
-
-                execution_result = {
-                    "success": True,
-                    "data": records,
-                    "columns": columns,
-                    "rows": [[_serialize_value(cell) for cell in row] for row in rows],
-                    "row_count": len(records),
-                    "chart_spec": chart_spec,
-                    "conclusion": conclusion,
-                }
-            except Exception as exec_err:
-                execution_result = {
-                    "success": False,
-                    "error": str(exec_err),
-                    "data": [],
-                    "columns": [],
-                }
-        else:
-            execution_result = {
-                "success": False,
-                "error": f"Query blocked by safety validator: {validation.errors}",
-                "data": [],
-                "columns": [],
-            }
-
+    gen_status = "Success" if report.success else "Error"
+    error_message = report.summary if not report.success else None
+    
+    execution_result = {
+        "success": False,
+        "data": [],
+        "columns": [],
+        "rows": [],
+        "row_count": 0,
+        "chart_spec": None,
+        "conclusion": None,
+        "error": None
+    }
+    
+    for task_id, task_result in report.task_results.items():
+        if not task_result.succeeded and task_id == "t1":
+            error_message = f"SQL Generation failed: {task_result.error}"
+        if not task_result.succeeded and task_id == "t2":
+            execution_result["error"] = f"Execution failed: {task_result.error}"
+            
+        task_output = task_result.output
+        if "sql" in task_output and task_output["sql"]:
+             generated_sql = task_output["sql"]
+        if "records" in task_output:
+             execution_result["success"] = True
+             execution_result["data"] = task_output["records"]
+             execution_result["columns"] = task_output["columns"]
+             execution_result["rows"] = task_output["rows"]
+             execution_result["row_count"] = len(task_output["records"])
+        if "chart_spec" in task_output:
+             execution_result["chart_spec"] = task_output["chart_spec"]
+        if "conclusion" in task_output:
+             execution_result["conclusion"] = task_output["conclusion"]
+             
     con.close()
     elapsed_ms = (time.time() - t0) * 1000
 
     # ── Step 4: Build response ──────────────────────────────────────
-    response: Dict[str, Any] = {
-        "status": gen_status,
+    from datetime import datetime
+    response = {
+        "status": "Success" if error_message is None else "Error",
         "job_id": f"job_{session_id}",
         "final_query": generated_sql,
         "execution_time_ms": round(elapsed_ms, 1),
@@ -759,7 +766,7 @@ Respond STRICTLY with a JSON object in this format (no markdown code blocks, jus
 
     if error_message:
         response["error_message"] = error_message
-    if execution_result:
+    if execution_result.get("success") or execution_result.get("error"):
         response["execution_result"] = execution_result
 
     return response
