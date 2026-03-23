@@ -121,7 +121,15 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
       // Remove loading message
       setMessages((prev) => prev.filter((m) => m.id !== loadingMessage.id));
 
-      if (response.status === 'Success' || response.status === 'Fallback') {
+      if (response.status === 'Conversational') {
+        const chatMessage: Message = {
+          id: Date.now().toString(),
+          type: 'assistant',
+          content: response.message || 'I am not sure how to respond to that.',
+          timestamp: new Date(),
+        };
+        setMessages((prev) => [...prev, chatMessage]);
+      } else if (response.status === 'Success' || response.status === 'Fallback') {
         // Show generated SQL
         const sqlMessage: Message = {
           id: Date.now().toString(),
@@ -467,6 +475,23 @@ const MessageBubble: React.FC<MessageBubbleProps> = ({ message, onExecuteQuery }
         <div style={{ color: 'var(--text-secondary)', fontSize: 'var(--font-sm)' }}>
           {message.content}
         </div>
+        
+        {/* Analytical Conclusion / Insight */}
+        {result.conclusion && (
+          <div
+            style={{
+              padding: 'var(--space-3)',
+              backgroundColor: 'var(--color-primary-50)',
+              border: '1px solid var(--color-primary-200)',
+              borderRadius: 'var(--radius-md)',
+              color: 'var(--color-primary-900)',
+              fontSize: 'var(--font-sm)',
+              marginBottom: 'var(--space-2)',
+            }}
+          >
+            <strong>💡 Insight:</strong> {result.conclusion}
+          </div>
+        )}
         
         {/* Auto-visualization - show chart before table */}
         {shouldShowChart && (

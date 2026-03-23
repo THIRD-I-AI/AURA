@@ -37,9 +37,12 @@ class GeneratorAgent:
                 f"Please correct it based on this feedback:\n{rework_feedback}"
             )
 
+        print(f"=== [SQL GENERATOR PROMPT] ===\n{chr(10).join(prompt_parts)}\n================================")
+
         if self._llm.is_available():
             try:
                 raw = self._llm.generate(prompt_parts)
+                print(f"=== [SQL GENERATOR RESPONSE] ===\n{raw}\n================================")
                 if raw:
                     return raw.strip().replace("```sql", "").replace("```", "").strip()
             except Exception as exc:

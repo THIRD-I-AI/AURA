@@ -1,0 +1,1374 @@
+2026-03-23 17:22:47 | INFO     | aura.factory | AURA Connectors service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 17:22:47 | INFO     | aura.factory | Starting AURA Connectors service (env=development)
+2026-03-23 17:23:08 | INFO     | aura.factory | Shutting down AURA Connectors service
+2026-03-23 17:23:12 | INFO     | aura.factory | AURA Insights service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 17:23:12 | INFO     | aura.factory | Starting AURA Insights service (env=development)
+2026-03-23 17:23:13 | INFO     | aura.factory | AURA Code Generation service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 17:23:14 | INFO     | aura.factory | AURA Metadata Store service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 17:23:14 | INFO     | aura.metadata_store | Starting Metadata Store — initializing DB
+2026-03-23 17:23:17 | INFO     | shared.llm_provider | AURA LLM: auto-selected gemini (model=gemini-2.5-flash)
+2026-03-23 17:23:17 | INFO     | aura.factory | Starting AURA Code Generation service (env=development)
+2026-03-23 17:23:26 | INFO     | aura.factory | AURA Insights service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 17:23:26 | INFO     | aura.factory | Starting AURA Insights service (env=development)
+2026-03-23 17:23:26 | INFO     | aura.factory | AURA Code Generation service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 17:23:27 | INFO     | aura.factory | AURA Metadata Store service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 17:23:27 | INFO     | aura.metadata_store | Starting Metadata Store — initializing DB
+2026-03-23 17:23:30 | INFO     | shared.llm_provider | AURA LLM: auto-selected gemini (model=gemini-2.5-flash)
+2026-03-23 17:23:30 | INFO     | aura.factory | Starting AURA Code Generation service (env=development)
+2026-03-23 17:23:31 | INFO     | aura.factory | AURA Connectors service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 17:23:31 | INFO     | aura.factory | Starting AURA Connectors service (env=development)
+2026-03-23 17:23:57 | INFO     | aura.factory | AURA Execution Sandbox service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 17:23:57 | INFO     | aura.factory | Starting AURA Execution Sandbox service (env=development)
+2026-03-23 17:23:59 | INFO     | aura.factory | AURA Orchestration service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 17:23:59 | INFO     | aura.factory | AURA Scheduler service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 17:24:00 | INFO     | aura.scheduler | Starting Scheduler Service...
+2026-03-23 17:24:00 | INFO     | aura.scheduler | Initialized database: sqlite+aiosqlite:///data/scheduler.db
+2026-03-23 17:24:00 | INFO     | aura.scheduler | Initialized executor (database service: http://connector_service:8002)
+2026-03-23 17:24:00 | INFO     | scheduler_service.worker | Scheduler worker started (check interval: 60s)
+2026-03-23 17:24:00 | INFO     | aura.scheduler | Scheduler Service started successfully
+2026-03-23 17:24:03 | INFO     | shared.llm_provider | AURA LLM: auto-selected gemini (model=gemini-2.5-flash)
+2026-03-23 17:24:03 | INFO     | shared.llm_provider | AURA LLM: auto-selected gemini (model=gemini-2.5-flash)
+2026-03-23 17:24:03 | INFO     | aura.factory | Starting AURA Orchestration service (env=development)
+2026-03-23 17:24:05 | INFO     | aura.factory | AURA API Gateway service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 17:24:07 | INFO     | aura.factory | Starting AURA API Gateway service (env=development)
+2026-03-23 17:24:41 | INFO     | aura.middleware | GET /connections → 200 (56.6 ms) [13d01be2-f823-4ccb-9153-787242e4f2cf]
+2026-03-23 17:24:41 | INFO     | aura.middleware | GET /connections → 200 (6.0 ms) [4b79ef2e-e695-4c25-97e6-a3ef9decb99f]
+2026-03-23 17:25:18 | INFO     | aura.middleware | GET / → 200 (14.9 ms) [9b99b2e6-ad15-4592-bee1-650aaad34035]
+2026-03-23 17:25:18 | INFO     | aura.middleware | GET /favicon.ico → 404 (2.2 ms) [5c3ecac9-1ae1-4c52-ba3c-ebb3664beaf5]
+2026-03-23 17:26:52 | INFO     | aura.middleware | POST /upload → 200 (89.1 ms) [b9eee662-50e9-4451-9d10-a4b4ea676ac3]
+2026-03-23 17:27:10 | INFO     | aura.middleware | OPTIONS /chat → 200 (5.7 ms) [a480dd7d-cda5-43b8-889d-146e55f46e0f]
+2026-03-23 17:27:10 | ERROR    | aura.middleware | Unhandled exception on POST /chat
+  + Exception Group Traceback (most recent call last):
+  |   File "/usr/local/lib/python3.13/site-packages/starlette/_utils.py", line 81, in collapse_excgroups
+  |     yield
+  |   File "/usr/local/lib/python3.13/site-packages/starlette/middleware/base.py", line 192, in __call__
+  |     async with anyio.create_task_group() as task_group:
+  |                ~~~~~~~~~~~~~~~~~~~~~~~^^
+  |   File "/usr/local/lib/python3.13/site-packages/anyio/_backends/_asyncio.py", line 783, in __aexit__
+  |     raise BaseExceptionGroup(
+  |         "unhandled errors in a TaskGroup", self._exceptions
+  |     ) from None
+  | ExceptionGroup: unhandled errors in a TaskGroup (1 sub-exception)
+  +-+---------------- 1 ----------------
+    | Traceback (most recent call last):
+    |   File "/usr/local/lib/python3.13/site-packages/starlette/middleware/errors.py", line 164, in __call__
+    |     await self.app(scope, receive, _send)
+    |   File "/usr/local/lib/python3.13/site-packages/starlette/middleware/base.py", line 191, in __call__
+    |     with recv_stream, send_stream, collapse_excgroups():
+    |                                    ~~~~~~~~~~~~~~~~~~^^
+    |   File "/usr/local/lib/python3.13/contextlib.py", line 162, in __exit__
+    |     self.gen.throw(value)
+    |     ~~~~~~~~~~~~~~^^^^^^^
+    |   File "/usr/local/lib/python3.13/site-packages/starlette/_utils.py", line 87, in collapse_excgroups
+    |     raise exc
+    |   File "/usr/local/lib/python3.13/site-packages/starlette/middleware/base.py", line 193, in __call__
+    |     response = await self.dispatch_func(request, call_next)
+    |                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |   File "/app/shared/middleware.py", line 53, in dispatch
+    |     response = await call_next(request)
+    |                ^^^^^^^^^^^^^^^^^^^^^^^^
+    |   File "/usr/local/lib/python3.13/site-packages/starlette/middleware/base.py", line 168, in call_next
+    |     raise app_exc from app_exc.__cause__ or app_exc.__context__
+    |   File "/usr/local/lib/python3.13/site-packages/starlette/middleware/base.py", line 144, in coro
+    |     await self.app(scope, receive_or_disconnect, send_no_error)
+    |   File "/usr/local/lib/python3.13/site-packages/starlette/middleware/base.py", line 191, in __call__
+    |     with recv_stream, send_stream, collapse_excgroups():
+    |                                    ~~~~~~~~~~~~~~~~~~^^
+    |   File "/usr/local/lib/python3.13/contextlib.py", line 162, in __exit__
+    |     self.gen.throw(value)
+    |     ~~~~~~~~~~~~~~^^^^^^^
+    |   File "/usr/local/lib/python3.13/site-packages/starlette/_utils.py", line 87, in collapse_excgroups
+    |     raise exc
+    |   File "/usr/local/lib/python3.13/site-packages/starlette/middleware/base.py", line 193, in __call__
+    |     response = await self.dispatch_func(request, call_next)
+    |                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |   File "/app/shared/middleware.py", line 41, in dispatch
+    |     response = await call_next(request)
+    |                ^^^^^^^^^^^^^^^^^^^^^^^^
+    |   File "/usr/local/lib/python3.13/site-packages/starlette/middleware/base.py", line 168, in call_next
+    |     raise app_exc from app_exc.__cause__ or app_exc.__context__
+    |   File "/usr/local/lib/python3.13/site-packages/starlette/middleware/base.py", line 144, in coro
+    |     await self.app(scope, receive_or_disconnect, send_no_error)
+    |   File "/usr/local/lib/python3.13/site-packages/starlette/middleware/cors.py", line 96, in __call__
+    |     await self.simple_response(scope, receive, send, request_headers=headers)
+    |   File "/usr/local/lib/python3.13/site-packages/starlette/middleware/cors.py", line 154, in simple_response
+    |     await self.app(scope, receive, send)
+    |   File "/usr/local/lib/python3.13/site-packages/starlette/middleware/exceptions.py", line 63, in __call__
+    |     await wrap_app_handling_exceptions(self.app, conn)(scope, receive, send)
+    |   File "/usr/local/lib/python3.13/site-packages/starlette/_exception_handler.py", line 53, in wrapped_app
+    |     raise exc
+    |   File "/usr/local/lib/python3.13/site-packages/starlette/_exception_handler.py", line 42, in wrapped_app
+    |     await app(scope, receive, sender)
+    |   File "/usr/local/lib/python3.13/site-packages/fastapi/middleware/asyncexitstack.py", line 18, in __call__
+    |     await self.app(scope, receive, send)
+    |   File "/usr/local/lib/python3.13/site-packages/starlette/routing.py", line 660, in __call__
+    |     await self.middleware_stack(scope, receive, send)
+    |   File "/usr/local/lib/python3.13/site-packages/starlette/routing.py", line 680, in app
+    |     await route.handle(scope, receive, send)
+    |   File "/usr/local/lib/python3.13/site-packages/starlette/routing.py", line 276, in handle
+    |     await self.app(scope, receive, send)
+    |   File "/usr/local/lib/python3.13/site-packages/fastapi/routing.py", line 134, in app
+    |     await wrap_app_handling_exceptions(app, request)(scope, receive, send)
+    |   File "/usr/local/lib/python3.13/site-packages/starlette/_exception_handler.py", line 53, in wrapped_app
+    |     raise exc
+    |   File "/usr/local/lib/python3.13/site-packages/starlette/_exception_handler.py", line 42, in wrapped_app
+    |     await app(scope, receive, sender)
+    |   File "/usr/local/lib/python3.13/site-packages/fastapi/routing.py", line 120, in app
+    |     response = await f(request)
+    |                ^^^^^^^^^^^^^^^^
+    |   File "/usr/local/lib/python3.13/site-packages/fastapi/routing.py", line 674, in app
+    |     raw_response = await run_endpoint_function(
+    |                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |     ...<3 lines>...
+    |     )
+    |     ^
+    |   File "/usr/local/lib/python3.13/site-packages/fastapi/routing.py", line 328, in run_endpoint_function
+    |     return await dependant.call(**values)
+    |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |   File "/app/api_gateway/main.py", line 588, in chat_endpoint
+    |     import duckdb
+    | ModuleNotFoundError: No module named 'duckdb'
+    +------------------------------------
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.13/site-packages/starlette/middleware/errors.py", line 164, in __call__
+    await self.app(scope, receive, _send)
+  File "/usr/local/lib/python3.13/site-packages/starlette/middleware/base.py", line 191, in __call__
+    with recv_stream, send_stream, collapse_excgroups():
+                                   ~~~~~~~~~~~~~~~~~~^^
+  File "/usr/local/lib/python3.13/contextlib.py", line 162, in __exit__
+    self.gen.throw(value)
+    ~~~~~~~~~~~~~~^^^^^^^
+  File "/usr/local/lib/python3.13/site-packages/starlette/_utils.py", line 87, in collapse_excgroups
+    raise exc
+  File "/usr/local/lib/python3.13/site-packages/starlette/middleware/base.py", line 193, in __call__
+    response = await self.dispatch_func(request, call_next)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/app/shared/middleware.py", line 53, in dispatch
+    response = await call_next(request)
+               ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.13/site-packages/starlette/middleware/base.py", line 168, in call_next
+    raise app_exc from app_exc.__cause__ or app_exc.__context__
+  File "/usr/local/lib/python3.13/site-packages/starlette/middleware/base.py", line 144, in coro
+    await self.app(scope, receive_or_disconnect, send_no_error)
+  File "/usr/local/lib/python3.13/site-packages/starlette/middleware/base.py", line 191, in __call__
+    with recv_stream, send_stream, collapse_excgroups():
+                                   ~~~~~~~~~~~~~~~~~~^^
+  File "/usr/local/lib/python3.13/contextlib.py", line 162, in __exit__
+    self.gen.throw(value)
+    ~~~~~~~~~~~~~~^^^^^^^
+  File "/usr/local/lib/python3.13/site-packages/starlette/_utils.py", line 87, in collapse_excgroups
+    raise exc
+  File "/usr/local/lib/python3.13/site-packages/starlette/middleware/base.py", line 193, in __call__
+    response = await self.dispatch_func(request, call_next)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/app/shared/middleware.py", line 41, in dispatch
+    response = await call_next(request)
+               ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.13/site-packages/starlette/middleware/base.py", line 168, in call_next
+    raise app_exc from app_exc.__cause__ or app_exc.__context__
+  File "/usr/local/lib/python3.13/site-packages/starlette/middleware/base.py", line 144, in coro
+    await self.app(scope, receive_or_disconnect, send_no_error)
+  File "/usr/local/lib/python3.13/site-packages/starlette/middleware/cors.py", line 96, in __call__
+    await self.simple_response(scope, receive, send, request_headers=headers)
+  File "/usr/local/lib/python3.13/site-packages/starlette/middleware/cors.py", line 154, in simple_response
+    await self.app(scope, receive, send)
+  File "/usr/local/lib/python3.13/site-packages/starlette/middleware/exceptions.py", line 63, in __call__
+    await wrap_app_handling_exceptions(self.app, conn)(scope, receive, send)
+  File "/usr/local/lib/python3.13/site-packages/starlette/_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "/usr/local/lib/python3.13/site-packages/starlette/_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "/usr/local/lib/python3.13/site-packages/fastapi/middleware/asyncexitstack.py", line 18, in __call__
+    await self.app(scope, receive, send)
+  File "/usr/local/lib/python3.13/site-packages/starlette/routing.py", line 660, in __call__
+    await self.middleware_stack(scope, receive, send)
+  File "/usr/local/lib/python3.13/site-packages/starlette/routing.py", line 680, in app
+    await route.handle(scope, receive, send)
+  File "/usr/local/lib/python3.13/site-packages/starlette/routing.py", line 276, in handle
+    await self.app(scope, receive, send)
+  File "/usr/local/lib/python3.13/site-packages/fastapi/routing.py", line 134, in app
+    await wrap_app_handling_exceptions(app, request)(scope, receive, send)
+  File "/usr/local/lib/python3.13/site-packages/starlette/_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "/usr/local/lib/python3.13/site-packages/starlette/_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "/usr/local/lib/python3.13/site-packages/fastapi/routing.py", line 120, in app
+    response = await f(request)
+               ^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.13/site-packages/fastapi/routing.py", line 674, in app
+    raw_response = await run_endpoint_function(
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<3 lines>...
+    )
+    ^
+  File "/usr/local/lib/python3.13/site-packages/fastapi/routing.py", line 328, in run_endpoint_function
+    return await dependant.call(**values)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/app/api_gateway/main.py", line 588, in chat_endpoint
+    import duckdb
+ModuleNotFoundError: No module named 'duckdb'
+2026-03-23 17:27:50 | ERROR    | aura.middleware | Unhandled exception on POST /chat
+  + Exception Group Traceback (most recent call last):
+  |   File "/usr/local/lib/python3.13/site-packages/starlette/_utils.py", line 81, in collapse_excgroups
+  |     yield
+  |   File "/usr/local/lib/python3.13/site-packages/starlette/middleware/base.py", line 192, in __call__
+  |     async with anyio.create_task_group() as task_group:
+  |                ~~~~~~~~~~~~~~~~~~~~~~~^^
+  |   File "/usr/local/lib/python3.13/site-packages/anyio/_backends/_asyncio.py", line 783, in __aexit__
+  |     raise BaseExceptionGroup(
+  |         "unhandled errors in a TaskGroup", self._exceptions
+  |     ) from None
+  | ExceptionGroup: unhandled errors in a TaskGroup (1 sub-exception)
+  +-+---------------- 1 ----------------
+    | Traceback (most recent call last):
+    |   File "/usr/local/lib/python3.13/site-packages/starlette/middleware/errors.py", line 164, in __call__
+    |     await self.app(scope, receive, _send)
+    |   File "/usr/local/lib/python3.13/site-packages/starlette/middleware/base.py", line 191, in __call__
+    |     with recv_stream, send_stream, collapse_excgroups():
+    |                                    ~~~~~~~~~~~~~~~~~~^^
+    |   File "/usr/local/lib/python3.13/contextlib.py", line 162, in __exit__
+    |     self.gen.throw(value)
+    |     ~~~~~~~~~~~~~~^^^^^^^
+    |   File "/usr/local/lib/python3.13/site-packages/starlette/_utils.py", line 87, in collapse_excgroups
+    |     raise exc
+    |   File "/usr/local/lib/python3.13/site-packages/starlette/middleware/base.py", line 193, in __call__
+    |     response = await self.dispatch_func(request, call_next)
+    |                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |   File "/app/shared/middleware.py", line 53, in dispatch
+    |     response = await call_next(request)
+    |                ^^^^^^^^^^^^^^^^^^^^^^^^
+    |   File "/usr/local/lib/python3.13/site-packages/starlette/middleware/base.py", line 168, in call_next
+    |     raise app_exc from app_exc.__cause__ or app_exc.__context__
+    |   File "/usr/local/lib/python3.13/site-packages/starlette/middleware/base.py", line 144, in coro
+    |     await self.app(scope, receive_or_disconnect, send_no_error)
+    |   File "/usr/local/lib/python3.13/site-packages/starlette/middleware/base.py", line 191, in __call__
+    |     with recv_stream, send_stream, collapse_excgroups():
+    |                                    ~~~~~~~~~~~~~~~~~~^^
+    |   File "/usr/local/lib/python3.13/contextlib.py", line 162, in __exit__
+    |     self.gen.throw(value)
+    |     ~~~~~~~~~~~~~~^^^^^^^
+    |   File "/usr/local/lib/python3.13/site-packages/starlette/_utils.py", line 87, in collapse_excgroups
+    |     raise exc
+    |   File "/usr/local/lib/python3.13/site-packages/starlette/middleware/base.py", line 193, in __call__
+    |     response = await self.dispatch_func(request, call_next)
+    |                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |   File "/app/shared/middleware.py", line 41, in dispatch
+    |     response = await call_next(request)
+    |                ^^^^^^^^^^^^^^^^^^^^^^^^
+    |   File "/usr/local/lib/python3.13/site-packages/starlette/middleware/base.py", line 168, in call_next
+    |     raise app_exc from app_exc.__cause__ or app_exc.__context__
+    |   File "/usr/local/lib/python3.13/site-packages/starlette/middleware/base.py", line 144, in coro
+    |     await self.app(scope, receive_or_disconnect, send_no_error)
+    |   File "/usr/local/lib/python3.13/site-packages/starlette/middleware/cors.py", line 96, in __call__
+    |     await self.simple_response(scope, receive, send, request_headers=headers)
+    |   File "/usr/local/lib/python3.13/site-packages/starlette/middleware/cors.py", line 154, in simple_response
+    |     await self.app(scope, receive, send)
+    |   File "/usr/local/lib/python3.13/site-packages/starlette/middleware/exceptions.py", line 63, in __call__
+    |     await wrap_app_handling_exceptions(self.app, conn)(scope, receive, send)
+    |   File "/usr/local/lib/python3.13/site-packages/starlette/_exception_handler.py", line 53, in wrapped_app
+    |     raise exc
+    |   File "/usr/local/lib/python3.13/site-packages/starlette/_exception_handler.py", line 42, in wrapped_app
+    |     await app(scope, receive, sender)
+    |   File "/usr/local/lib/python3.13/site-packages/fastapi/middleware/asyncexitstack.py", line 18, in __call__
+    |     await self.app(scope, receive, send)
+    |   File "/usr/local/lib/python3.13/site-packages/starlette/routing.py", line 660, in __call__
+    |     await self.middleware_stack(scope, receive, send)
+    |   File "/usr/local/lib/python3.13/site-packages/starlette/routing.py", line 680, in app
+    |     await route.handle(scope, receive, send)
+    |   File "/usr/local/lib/python3.13/site-packages/starlette/routing.py", line 276, in handle
+    |     await self.app(scope, receive, send)
+    |   File "/usr/local/lib/python3.13/site-packages/fastapi/routing.py", line 134, in app
+    |     await wrap_app_handling_exceptions(app, request)(scope, receive, send)
+    |   File "/usr/local/lib/python3.13/site-packages/starlette/_exception_handler.py", line 53, in wrapped_app
+    |     raise exc
+    |   File "/usr/local/lib/python3.13/site-packages/starlette/_exception_handler.py", line 42, in wrapped_app
+    |     await app(scope, receive, sender)
+    |   File "/usr/local/lib/python3.13/site-packages/fastapi/routing.py", line 120, in app
+    |     response = await f(request)
+    |                ^^^^^^^^^^^^^^^^
+    |   File "/usr/local/lib/python3.13/site-packages/fastapi/routing.py", line 674, in app
+    |     raw_response = await run_endpoint_function(
+    |                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |     ...<3 lines>...
+    |     )
+    |     ^
+    |   File "/usr/local/lib/python3.13/site-packages/fastapi/routing.py", line 328, in run_endpoint_function
+    |     return await dependant.call(**values)
+    |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |   File "/app/api_gateway/main.py", line 588, in chat_endpoint
+    |     import duckdb
+    | ModuleNotFoundError: No module named 'duckdb'
+    +------------------------------------
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.13/site-packages/starlette/middleware/errors.py", line 164, in __call__
+    await self.app(scope, receive, _send)
+  File "/usr/local/lib/python3.13/site-packages/starlette/middleware/base.py", line 191, in __call__
+    with recv_stream, send_stream, collapse_excgroups():
+                                   ~~~~~~~~~~~~~~~~~~^^
+  File "/usr/local/lib/python3.13/contextlib.py", line 162, in __exit__
+    self.gen.throw(value)
+    ~~~~~~~~~~~~~~^^^^^^^
+  File "/usr/local/lib/python3.13/site-packages/starlette/_utils.py", line 87, in collapse_excgroups
+    raise exc
+  File "/usr/local/lib/python3.13/site-packages/starlette/middleware/base.py", line 193, in __call__
+    response = await self.dispatch_func(request, call_next)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/app/shared/middleware.py", line 53, in dispatch
+    response = await call_next(request)
+               ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.13/site-packages/starlette/middleware/base.py", line 168, in call_next
+    raise app_exc from app_exc.__cause__ or app_exc.__context__
+  File "/usr/local/lib/python3.13/site-packages/starlette/middleware/base.py", line 144, in coro
+    await self.app(scope, receive_or_disconnect, send_no_error)
+  File "/usr/local/lib/python3.13/site-packages/starlette/middleware/base.py", line 191, in __call__
+    with recv_stream, send_stream, collapse_excgroups():
+                                   ~~~~~~~~~~~~~~~~~~^^
+  File "/usr/local/lib/python3.13/contextlib.py", line 162, in __exit__
+    self.gen.throw(value)
+    ~~~~~~~~~~~~~~^^^^^^^
+  File "/usr/local/lib/python3.13/site-packages/starlette/_utils.py", line 87, in collapse_excgroups
+    raise exc
+  File "/usr/local/lib/python3.13/site-packages/starlette/middleware/base.py", line 193, in __call__
+    response = await self.dispatch_func(request, call_next)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/app/shared/middleware.py", line 41, in dispatch
+    response = await call_next(request)
+               ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.13/site-packages/starlette/middleware/base.py", line 168, in call_next
+    raise app_exc from app_exc.__cause__ or app_exc.__context__
+  File "/usr/local/lib/python3.13/site-packages/starlette/middleware/base.py", line 144, in coro
+    await self.app(scope, receive_or_disconnect, send_no_error)
+  File "/usr/local/lib/python3.13/site-packages/starlette/middleware/cors.py", line 96, in __call__
+    await self.simple_response(scope, receive, send, request_headers=headers)
+  File "/usr/local/lib/python3.13/site-packages/starlette/middleware/cors.py", line 154, in simple_response
+    await self.app(scope, receive, send)
+  File "/usr/local/lib/python3.13/site-packages/starlette/middleware/exceptions.py", line 63, in __call__
+    await wrap_app_handling_exceptions(self.app, conn)(scope, receive, send)
+  File "/usr/local/lib/python3.13/site-packages/starlette/_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "/usr/local/lib/python3.13/site-packages/starlette/_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "/usr/local/lib/python3.13/site-packages/fastapi/middleware/asyncexitstack.py", line 18, in __call__
+    await self.app(scope, receive, send)
+  File "/usr/local/lib/python3.13/site-packages/starlette/routing.py", line 660, in __call__
+    await self.middleware_stack(scope, receive, send)
+  File "/usr/local/lib/python3.13/site-packages/starlette/routing.py", line 680, in app
+    await route.handle(scope, receive, send)
+  File "/usr/local/lib/python3.13/site-packages/starlette/routing.py", line 276, in handle
+    await self.app(scope, receive, send)
+  File "/usr/local/lib/python3.13/site-packages/fastapi/routing.py", line 134, in app
+    await wrap_app_handling_exceptions(app, request)(scope, receive, send)
+  File "/usr/local/lib/python3.13/site-packages/starlette/_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "/usr/local/lib/python3.13/site-packages/starlette/_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "/usr/local/lib/python3.13/site-packages/fastapi/routing.py", line 120, in app
+    response = await f(request)
+               ^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.13/site-packages/fastapi/routing.py", line 674, in app
+    raw_response = await run_endpoint_function(
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<3 lines>...
+    )
+    ^
+  File "/usr/local/lib/python3.13/site-packages/fastapi/routing.py", line 328, in run_endpoint_function
+    return await dependant.call(**values)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/app/api_gateway/main.py", line 588, in chat_endpoint
+    import duckdb
+ModuleNotFoundError: No module named 'duckdb'
+2026-03-23 17:28:20 | INFO     | aura.middleware | GET /files → 200 (3996.2 ms) [2e8fbd69-9c0f-419f-9872-e21755067dd8]
+2026-03-23 17:28:21 | INFO     | aura.middleware | GET /files → 200 (747.2 ms) [9989b8f1-8b44-410e-ae2d-69ee75dac318]
+2026-03-23 17:29:34 | ERROR    | aura.middleware | Unhandled exception on POST /chat
+  + Exception Group Traceback (most recent call last):
+  |   File "/usr/local/lib/python3.13/site-packages/starlette/_utils.py", line 81, in collapse_excgroups
+  |     yield
+  |   File "/usr/local/lib/python3.13/site-packages/starlette/middleware/base.py", line 192, in __call__
+  |     async with anyio.create_task_group() as task_group:
+  |                ~~~~~~~~~~~~~~~~~~~~~~~^^
+  |   File "/usr/local/lib/python3.13/site-packages/anyio/_backends/_asyncio.py", line 783, in __aexit__
+  |     raise BaseExceptionGroup(
+  |         "unhandled errors in a TaskGroup", self._exceptions
+  |     ) from None
+  | ExceptionGroup: unhandled errors in a TaskGroup (1 sub-exception)
+  +-+---------------- 1 ----------------
+    | Traceback (most recent call last):
+    |   File "/usr/local/lib/python3.13/site-packages/starlette/middleware/errors.py", line 164, in __call__
+    |     await self.app(scope, receive, _send)
+    |   File "/usr/local/lib/python3.13/site-packages/starlette/middleware/base.py", line 191, in __call__
+    |     with recv_stream, send_stream, collapse_excgroups():
+    |                                    ~~~~~~~~~~~~~~~~~~^^
+    |   File "/usr/local/lib/python3.13/contextlib.py", line 162, in __exit__
+    |     self.gen.throw(value)
+    |     ~~~~~~~~~~~~~~^^^^^^^
+    |   File "/usr/local/lib/python3.13/site-packages/starlette/_utils.py", line 87, in collapse_excgroups
+    |     raise exc
+    |   File "/usr/local/lib/python3.13/site-packages/starlette/middleware/base.py", line 193, in __call__
+    |     response = await self.dispatch_func(request, call_next)
+    |                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |   File "/app/shared/middleware.py", line 53, in dispatch
+    |     response = await call_next(request)
+    |                ^^^^^^^^^^^^^^^^^^^^^^^^
+    |   File "/usr/local/lib/python3.13/site-packages/starlette/middleware/base.py", line 168, in call_next
+    |     raise app_exc from app_exc.__cause__ or app_exc.__context__
+    |   File "/usr/local/lib/python3.13/site-packages/starlette/middleware/base.py", line 144, in coro
+    |     await self.app(scope, receive_or_disconnect, send_no_error)
+    |   File "/usr/local/lib/python3.13/site-packages/starlette/middleware/base.py", line 191, in __call__
+    |     with recv_stream, send_stream, collapse_excgroups():
+    |                                    ~~~~~~~~~~~~~~~~~~^^
+    |   File "/usr/local/lib/python3.13/contextlib.py", line 162, in __exit__
+    |     self.gen.throw(value)
+    |     ~~~~~~~~~~~~~~^^^^^^^
+    |   File "/usr/local/lib/python3.13/site-packages/starlette/_utils.py", line 87, in collapse_excgroups
+    |     raise exc
+    |   File "/usr/local/lib/python3.13/site-packages/starlette/middleware/base.py", line 193, in __call__
+    |     response = await self.dispatch_func(request, call_next)
+    |                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |   File "/app/shared/middleware.py", line 41, in dispatch
+    |     response = await call_next(request)
+    |                ^^^^^^^^^^^^^^^^^^^^^^^^
+    |   File "/usr/local/lib/python3.13/site-packages/starlette/middleware/base.py", line 168, in call_next
+    |     raise app_exc from app_exc.__cause__ or app_exc.__context__
+    |   File "/usr/local/lib/python3.13/site-packages/starlette/middleware/base.py", line 144, in coro
+    |     await self.app(scope, receive_or_disconnect, send_no_error)
+    |   File "/usr/local/lib/python3.13/site-packages/starlette/middleware/cors.py", line 96, in __call__
+    |     await self.simple_response(scope, receive, send, request_headers=headers)
+    |   File "/usr/local/lib/python3.13/site-packages/starlette/middleware/cors.py", line 154, in simple_response
+    |     await self.app(scope, receive, send)
+    |   File "/usr/local/lib/python3.13/site-packages/starlette/middleware/exceptions.py", line 63, in __call__
+    |     await wrap_app_handling_exceptions(self.app, conn)(scope, receive, send)
+    |   File "/usr/local/lib/python3.13/site-packages/starlette/_exception_handler.py", line 53, in wrapped_app
+    |     raise exc
+    |   File "/usr/local/lib/python3.13/site-packages/starlette/_exception_handler.py", line 42, in wrapped_app
+    |     await app(scope, receive, sender)
+    |   File "/usr/local/lib/python3.13/site-packages/fastapi/middleware/asyncexitstack.py", line 18, in __call__
+    |     await self.app(scope, receive, send)
+    |   File "/usr/local/lib/python3.13/site-packages/starlette/routing.py", line 660, in __call__
+    |     await self.middleware_stack(scope, receive, send)
+    |   File "/usr/local/lib/python3.13/site-packages/starlette/routing.py", line 680, in app
+    |     await route.handle(scope, receive, send)
+    |   File "/usr/local/lib/python3.13/site-packages/starlette/routing.py", line 276, in handle
+    |     await self.app(scope, receive, send)
+    |   File "/usr/local/lib/python3.13/site-packages/fastapi/routing.py", line 134, in app
+    |     await wrap_app_handling_exceptions(app, request)(scope, receive, send)
+    |   File "/usr/local/lib/python3.13/site-packages/starlette/_exception_handler.py", line 53, in wrapped_app
+    |     raise exc
+    |   File "/usr/local/lib/python3.13/site-packages/starlette/_exception_handler.py", line 42, in wrapped_app
+    |     await app(scope, receive, sender)
+    |   File "/usr/local/lib/python3.13/site-packages/fastapi/routing.py", line 120, in app
+    |     response = await f(request)
+    |                ^^^^^^^^^^^^^^^^
+    |   File "/usr/local/lib/python3.13/site-packages/fastapi/routing.py", line 674, in app
+    |     raw_response = await run_endpoint_function(
+    |                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |     ...<3 lines>...
+    |     )
+    |     ^
+    |   File "/usr/local/lib/python3.13/site-packages/fastapi/routing.py", line 328, in run_endpoint_function
+    |     return await dependant.call(**values)
+    |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |   File "/app/api_gateway/main.py", line 588, in chat_endpoint
+    |     import duckdb
+    | ModuleNotFoundError: No module named 'duckdb'
+    +------------------------------------
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.13/site-packages/starlette/middleware/errors.py", line 164, in __call__
+    await self.app(scope, receive, _send)
+  File "/usr/local/lib/python3.13/site-packages/starlette/middleware/base.py", line 191, in __call__
+    with recv_stream, send_stream, collapse_excgroups():
+                                   ~~~~~~~~~~~~~~~~~~^^
+  File "/usr/local/lib/python3.13/contextlib.py", line 162, in __exit__
+    self.gen.throw(value)
+    ~~~~~~~~~~~~~~^^^^^^^
+  File "/usr/local/lib/python3.13/site-packages/starlette/_utils.py", line 87, in collapse_excgroups
+    raise exc
+  File "/usr/local/lib/python3.13/site-packages/starlette/middleware/base.py", line 193, in __call__
+    response = await self.dispatch_func(request, call_next)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/app/shared/middleware.py", line 53, in dispatch
+    response = await call_next(request)
+               ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.13/site-packages/starlette/middleware/base.py", line 168, in call_next
+    raise app_exc from app_exc.__cause__ or app_exc.__context__
+  File "/usr/local/lib/python3.13/site-packages/starlette/middleware/base.py", line 144, in coro
+    await self.app(scope, receive_or_disconnect, send_no_error)
+  File "/usr/local/lib/python3.13/site-packages/starlette/middleware/base.py", line 191, in __call__
+    with recv_stream, send_stream, collapse_excgroups():
+                                   ~~~~~~~~~~~~~~~~~~^^
+  File "/usr/local/lib/python3.13/contextlib.py", line 162, in __exit__
+    self.gen.throw(value)
+    ~~~~~~~~~~~~~~^^^^^^^
+  File "/usr/local/lib/python3.13/site-packages/starlette/_utils.py", line 87, in collapse_excgroups
+    raise exc
+  File "/usr/local/lib/python3.13/site-packages/starlette/middleware/base.py", line 193, in __call__
+    response = await self.dispatch_func(request, call_next)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/app/shared/middleware.py", line 41, in dispatch
+    response = await call_next(request)
+               ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.13/site-packages/starlette/middleware/base.py", line 168, in call_next
+    raise app_exc from app_exc.__cause__ or app_exc.__context__
+  File "/usr/local/lib/python3.13/site-packages/starlette/middleware/base.py", line 144, in coro
+    await self.app(scope, receive_or_disconnect, send_no_error)
+  File "/usr/local/lib/python3.13/site-packages/starlette/middleware/cors.py", line 96, in __call__
+    await self.simple_response(scope, receive, send, request_headers=headers)
+  File "/usr/local/lib/python3.13/site-packages/starlette/middleware/cors.py", line 154, in simple_response
+    await self.app(scope, receive, send)
+  File "/usr/local/lib/python3.13/site-packages/starlette/middleware/exceptions.py", line 63, in __call__
+    await wrap_app_handling_exceptions(self.app, conn)(scope, receive, send)
+  File "/usr/local/lib/python3.13/site-packages/starlette/_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "/usr/local/lib/python3.13/site-packages/starlette/_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "/usr/local/lib/python3.13/site-packages/fastapi/middleware/asyncexitstack.py", line 18, in __call__
+    await self.app(scope, receive, send)
+  File "/usr/local/lib/python3.13/site-packages/starlette/routing.py", line 660, in __call__
+    await self.middleware_stack(scope, receive, send)
+  File "/usr/local/lib/python3.13/site-packages/starlette/routing.py", line 680, in app
+    await route.handle(scope, receive, send)
+  File "/usr/local/lib/python3.13/site-packages/starlette/routing.py", line 276, in handle
+    await self.app(scope, receive, send)
+  File "/usr/local/lib/python3.13/site-packages/fastapi/routing.py", line 134, in app
+    await wrap_app_handling_exceptions(app, request)(scope, receive, send)
+  File "/usr/local/lib/python3.13/site-packages/starlette/_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "/usr/local/lib/python3.13/site-packages/starlette/_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "/usr/local/lib/python3.13/site-packages/fastapi/routing.py", line 120, in app
+    response = await f(request)
+               ^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.13/site-packages/fastapi/routing.py", line 674, in app
+    raw_response = await run_endpoint_function(
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<3 lines>...
+    )
+    ^
+  File "/usr/local/lib/python3.13/site-packages/fastapi/routing.py", line 328, in run_endpoint_function
+    return await dependant.call(**values)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/app/api_gateway/main.py", line 588, in chat_endpoint
+    import duckdb
+ModuleNotFoundError: No module named 'duckdb'
+2026-03-23 17:33:57 | INFO     | aura.metadata_store | Shutting down Metadata Store
+2026-03-23 17:33:57 | INFO     | aura.factory | Shutting down AURA Connectors service
+2026-03-23 17:33:57 | INFO     | aura.factory | Shutting down AURA Insights service
+2026-03-23 17:33:57 | INFO     | aura.factory | Shutting down AURA Code Generation service
+2026-03-23 17:34:02 | INFO     | aura.factory | Shutting down AURA API Gateway service
+2026-03-23 17:34:02 | INFO     | aura.factory | Shutting down AURA Orchestration service
+2026-03-23 17:34:02 | INFO     | aura.scheduler | Shutting down Scheduler Service...
+2026-03-23 17:34:02 | INFO     | scheduler_service.worker | Scheduler worker stopped
+2026-03-23 17:34:02 | INFO     | aura.scheduler | Scheduler Service shutdown complete
+2026-03-23 17:34:02 | INFO     | aura.factory | Shutting down AURA Execution Sandbox service
+2026-03-23 17:34:10 | INFO     | aura.factory | AURA Code Generation service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 17:34:10 | INFO     | aura.factory | AURA Insights service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 17:34:10 | INFO     | aura.factory | Starting AURA Insights service (env=development)
+2026-03-23 17:34:11 | INFO     | aura.factory | AURA Metadata Store service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 17:34:11 | INFO     | aura.metadata_store | Starting Metadata Store — initializing DB
+2026-03-23 17:34:12 | INFO     | shared.llm_provider | AURA LLM: auto-selected gemini (model=gemini-2.5-flash)
+2026-03-23 17:34:12 | INFO     | aura.factory | Starting AURA Code Generation service (env=development)
+2026-03-23 17:34:13 | INFO     | aura.factory | AURA Connectors service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 17:34:13 | INFO     | aura.factory | Starting AURA Connectors service (env=development)
+2026-03-23 17:34:44 | INFO     | aura.factory | AURA Execution Sandbox service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 17:34:44 | INFO     | aura.factory | Starting AURA Execution Sandbox service (env=development)
+2026-03-23 17:34:46 | INFO     | aura.factory | AURA Scheduler service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 17:34:46 | INFO     | aura.factory | AURA Orchestration service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 17:34:46 | INFO     | aura.scheduler | Starting Scheduler Service...
+2026-03-23 17:34:46 | INFO     | aura.scheduler | Initialized database: sqlite+aiosqlite:///data/scheduler.db
+2026-03-23 17:34:46 | INFO     | aura.scheduler | Initialized executor (database service: http://connector_service:8002)
+2026-03-23 17:34:46 | INFO     | scheduler_service.worker | Scheduler worker started (check interval: 60s)
+2026-03-23 17:34:46 | INFO     | aura.scheduler | Scheduler Service started successfully
+2026-03-23 17:34:51 | INFO     | shared.llm_provider | AURA LLM: auto-selected gemini (model=gemini-2.5-flash)
+2026-03-23 17:34:51 | INFO     | shared.llm_provider | AURA LLM: auto-selected gemini (model=gemini-2.5-flash)
+2026-03-23 17:34:51 | INFO     | aura.factory | Starting AURA Orchestration service (env=development)
+2026-03-23 17:34:53 | INFO     | aura.factory | AURA API Gateway service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 17:34:55 | INFO     | aura.factory | Starting AURA API Gateway service (env=development)
+2026-03-23 17:36:36 | INFO     | aura.factory | Shutting down AURA Connectors service
+2026-03-23 17:36:36 | INFO     | aura.factory | Shutting down AURA Insights service
+2026-03-23 17:36:36 | INFO     | aura.factory | Shutting down AURA Code Generation service
+2026-03-23 17:36:36 | INFO     | aura.metadata_store | Shutting down Metadata Store
+2026-03-23 17:36:38 | INFO     | aura.factory | Shutting down AURA API Gateway service
+2026-03-23 17:36:38 | INFO     | aura.factory | Shutting down AURA Execution Sandbox service
+2026-03-23 17:36:38 | INFO     | aura.factory | Shutting down AURA Orchestration service
+2026-03-23 17:36:39 | INFO     | aura.scheduler | Shutting down Scheduler Service...
+2026-03-23 17:36:39 | INFO     | scheduler_service.worker | Scheduler worker stopped
+2026-03-23 17:36:39 | INFO     | aura.scheduler | Scheduler Service shutdown complete
+2026-03-23 17:36:49 | INFO     | aura.factory | AURA Insights service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 17:36:49 | INFO     | aura.factory | Starting AURA Insights service (env=development)
+2026-03-23 17:36:50 | INFO     | aura.factory | AURA Code Generation service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 17:36:51 | INFO     | aura.factory | AURA Metadata Store service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 17:36:51 | INFO     | aura.metadata_store | Starting Metadata Store — initializing DB
+2026-03-23 17:36:54 | INFO     | shared.llm_provider | AURA LLM: auto-selected gemini (model=gemini-2.5-flash)
+2026-03-23 17:36:54 | INFO     | aura.factory | Starting AURA Code Generation service (env=development)
+2026-03-23 17:36:55 | INFO     | aura.factory | AURA Connectors service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 17:36:55 | INFO     | aura.factory | Starting AURA Connectors service (env=development)
+2026-03-23 17:37:22 | INFO     | aura.factory | AURA Execution Sandbox service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 17:37:22 | INFO     | aura.factory | Starting AURA Execution Sandbox service (env=development)
+2026-03-23 17:37:24 | INFO     | aura.factory | AURA Orchestration service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 17:37:24 | INFO     | aura.factory | AURA Scheduler service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 17:37:24 | INFO     | aura.scheduler | Starting Scheduler Service...
+2026-03-23 17:37:25 | INFO     | aura.scheduler | Initialized database: sqlite+aiosqlite:///data/scheduler.db
+2026-03-23 17:37:25 | INFO     | aura.scheduler | Initialized executor (database service: http://connector_service:8002)
+2026-03-23 17:37:25 | INFO     | scheduler_service.worker | Scheduler worker started (check interval: 60s)
+2026-03-23 17:37:25 | INFO     | aura.scheduler | Scheduler Service started successfully
+2026-03-23 17:37:27 | INFO     | shared.llm_provider | AURA LLM: auto-selected gemini (model=gemini-2.5-flash)
+2026-03-23 17:37:27 | INFO     | shared.llm_provider | AURA LLM: auto-selected gemini (model=gemini-2.5-flash)
+2026-03-23 17:37:27 | INFO     | aura.factory | Starting AURA Orchestration service (env=development)
+2026-03-23 17:37:28 | INFO     | aura.factory | AURA API Gateway service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 17:37:29 | INFO     | aura.factory | Starting AURA API Gateway service (env=development)
+2026-03-23 17:38:07 | INFO     | aura.middleware | OPTIONS /chat → 200 (1.5 ms) [746bfcd2-0ca3-44e6-85bd-a6578fb51d3f]
+2026-03-23 17:38:09 | WARNING  | shared.llm_provider | Gemini generation failed: 400 API key not valid. Please pass a valid API key. [reason: "API_KEY_INVALID"
+domain: "googleapis.com"
+metadata {
+  key: "service"
+  value: "generativelanguage.googleapis.com"
+}
+, locale: "en-US"
+message: "API key not valid. Please pass a valid API key."
+]
+2026-03-23 17:38:09 | WARNING  | shared.llm_provider | Gemini generation failed: 400 API key not valid. Please pass a valid API key. [reason: "API_KEY_INVALID"
+domain: "googleapis.com"
+metadata {
+  key: "service"
+  value: "generativelanguage.googleapis.com"
+}
+, locale: "en-US"
+message: "API key not valid. Please pass a valid API key."
+]
+2026-03-23 17:38:09 | INFO     | aura.middleware | POST /v1/orchestrations/query → 200 (545.0 ms) [419beba4-134c-4de5-896f-71c071296012]
+2026-03-23 17:38:09 | INFO     | aura.middleware | POST /chat → 200 (1523.8 ms) [e22f588f-2d47-4e71-ae2e-8317aadc6f0c]
+2026-03-23 17:39:29 | WARNING  | shared.llm_provider | Gemini generation failed: 400 API key not valid. Please pass a valid API key. [reason: "API_KEY_INVALID"
+domain: "googleapis.com"
+metadata {
+  key: "service"
+  value: "generativelanguage.googleapis.com"
+}
+, locale: "en-US"
+message: "API key not valid. Please pass a valid API key."
+]
+2026-03-23 17:39:29 | WARNING  | shared.llm_provider | Gemini generation failed: 400 API key not valid. Please pass a valid API key. [reason: "API_KEY_INVALID"
+domain: "googleapis.com"
+metadata {
+  key: "service"
+  value: "generativelanguage.googleapis.com"
+}
+, locale: "en-US"
+message: "API key not valid. Please pass a valid API key."
+]
+2026-03-23 17:39:29 | INFO     | aura.middleware | POST /v1/orchestrations/query → 200 (124.1 ms) [e34f8172-8b46-4aa5-9c31-f40697f62c31]
+2026-03-23 17:39:29 | INFO     | aura.middleware | POST /chat → 200 (313.8 ms) [1d2ae811-2122-473b-b2bf-7c09965cfcf8]
+2026-03-23 17:54:11 | INFO     | aura.factory | Shutting down AURA Execution Sandbox service
+2026-03-23 17:54:11 | INFO     | aura.factory | Shutting down AURA Insights service
+2026-03-23 17:54:11 | INFO     | aura.factory | Shutting down AURA API Gateway service
+2026-03-23 17:54:11 | INFO     | aura.factory | Shutting down AURA Connectors service
+2026-03-23 17:54:12 | INFO     | aura.factory | Shutting down AURA Code Generation service
+2026-03-23 17:54:12 | INFO     | aura.metadata_store | Shutting down Metadata Store
+2026-03-23 17:54:12 | INFO     | aura.factory | Shutting down AURA Orchestration service
+2026-03-23 17:54:13 | INFO     | aura.scheduler | Shutting down Scheduler Service...
+2026-03-23 17:54:13 | INFO     | scheduler_service.worker | Scheduler worker stopped
+2026-03-23 17:54:13 | INFO     | aura.scheduler | Scheduler Service shutdown complete
+2026-03-23 17:54:20 | INFO     | aura.factory | AURA Insights service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 17:54:20 | INFO     | aura.factory | AURA Execution Sandbox service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 17:54:20 | INFO     | aura.factory | AURA Code Generation service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 17:54:20 | INFO     | aura.factory | Starting AURA Insights service (env=development)
+2026-03-23 17:54:21 | INFO     | aura.factory | Starting AURA Execution Sandbox service (env=development)
+2026-03-23 17:54:22 | INFO     | aura.factory | AURA Orchestration service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 17:54:23 | INFO     | aura.factory | AURA Metadata Store service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 17:54:23 | INFO     | aura.metadata_store | Starting Metadata Store — initializing DB
+2026-03-23 17:54:23 | INFO     | aura.factory | AURA Scheduler service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 17:54:23 | INFO     | aura.scheduler | Starting Scheduler Service...
+2026-03-23 17:54:24 | INFO     | aura.scheduler | Initialized database: sqlite+aiosqlite:///data/scheduler.db
+2026-03-23 17:54:24 | INFO     | aura.scheduler | Initialized executor (database service: http://connector_service:8002)
+2026-03-23 17:54:24 | INFO     | scheduler_service.worker | Scheduler worker started (check interval: 60s)
+2026-03-23 17:54:24 | INFO     | aura.scheduler | Scheduler Service started successfully
+2026-03-23 17:54:26 | INFO     | shared.llm_provider | AURA LLM: auto-selected gemini (model=gemini-2.5-flash)
+2026-03-23 17:54:26 | INFO     | aura.factory | Starting AURA Code Generation service (env=development)
+2026-03-23 17:54:27 | INFO     | shared.llm_provider | AURA LLM: auto-selected gemini (model=gemini-2.5-flash)
+2026-03-23 17:54:27 | INFO     | shared.llm_provider | AURA LLM: auto-selected gemini (model=gemini-2.5-flash)
+2026-03-23 17:54:27 | INFO     | aura.factory | Starting AURA Orchestration service (env=development)
+2026-03-23 17:54:30 | INFO     | aura.factory | AURA Connectors service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 17:54:31 | INFO     | aura.factory | Starting AURA Connectors service (env=development)
+2026-03-23 17:54:32 | INFO     | aura.factory | AURA API Gateway service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 17:54:35 | INFO     | aura.factory | Starting AURA API Gateway service (env=development)
+2026-03-23 17:57:48 | INFO     | aura.middleware | GET /connections → 200 (42.0 ms) [689db7e4-969f-41fa-9c33-27d7a8b0b775]
+2026-03-23 17:57:48 | INFO     | aura.middleware | GET /connections → 200 (2.2 ms) [a3e509b3-2274-4c05-96b2-cd88cc8f490d]
+2026-03-23 17:57:51 | INFO     | aura.middleware | OPTIONS /chat → 200 (0.5 ms) [cf439258-6314-48c8-8c6a-ebdebd1c8698]
+2026-03-23 17:57:52 | INFO     | shared.llm_provider | AURA LLM: auto-selected gemini (model=gemini-2.5-flash)
+2026-03-23 17:57:52 | WARNING  | shared.llm_provider | Gemini generation failed: 400 API key not valid. Please pass a valid API key. [reason: "API_KEY_INVALID"
+domain: "googleapis.com"
+metadata {
+  key: "service"
+  value: "generativelanguage.googleapis.com"
+}
+, locale: "en-US"
+message: "API key not valid. Please pass a valid API key."
+]
+2026-03-23 17:57:53 | WARNING  | shared.llm_provider | Gemini generation failed: 400 API key not valid. Please pass a valid API key. [reason: "API_KEY_INVALID"
+domain: "googleapis.com"
+metadata {
+  key: "service"
+  value: "generativelanguage.googleapis.com"
+}
+, locale: "en-US"
+message: "API key not valid. Please pass a valid API key."
+]
+2026-03-23 17:57:53 | WARNING  | shared.llm_provider | Gemini generation failed: 400 API key not valid. Please pass a valid API key. [reason: "API_KEY_INVALID"
+domain: "googleapis.com"
+metadata {
+  key: "service"
+  value: "generativelanguage.googleapis.com"
+}
+, locale: "en-US"
+message: "API key not valid. Please pass a valid API key."
+]
+2026-03-23 17:57:53 | INFO     | aura.middleware | POST /v1/orchestrations/query → 200 (326.5 ms) [4f2dc914-50ff-4ac6-a6ad-232422e1697c]
+2026-03-23 17:57:53 | INFO     | aura.middleware | POST /chat → 200 (1573.8 ms) [183fb1c8-dddd-4ea2-acc1-9bcfb354156e]
+2026-03-23 18:02:01 | WARNING  | shared.llm_provider | Gemini generation failed: 400 API key not valid. Please pass a valid API key. [reason: "API_KEY_INVALID"
+domain: "googleapis.com"
+metadata {
+  key: "service"
+  value: "generativelanguage.googleapis.com"
+}
+, locale: "en-US"
+message: "API key not valid. Please pass a valid API key."
+]
+2026-03-23 18:02:01 | WARNING  | shared.llm_provider | Gemini generation failed: 400 API key not valid. Please pass a valid API key. [reason: "API_KEY_INVALID"
+domain: "googleapis.com"
+metadata {
+  key: "service"
+  value: "generativelanguage.googleapis.com"
+}
+, locale: "en-US"
+message: "API key not valid. Please pass a valid API key."
+]
+2026-03-23 18:02:01 | WARNING  | shared.llm_provider | Gemini generation failed: 400 API key not valid. Please pass a valid API key. [reason: "API_KEY_INVALID"
+domain: "googleapis.com"
+metadata {
+  key: "service"
+  value: "generativelanguage.googleapis.com"
+}
+, locale: "en-US"
+message: "API key not valid. Please pass a valid API key."
+]
+2026-03-23 18:02:01 | INFO     | aura.middleware | POST /v1/orchestrations/query → 200 (228.7 ms) [13cc4845-3fbf-49a5-882d-125f9fee4616]
+2026-03-23 18:02:01 | INFO     | aura.middleware | POST /chat → 200 (461.1 ms) [e849b262-047e-482b-8b31-14926726fcfe]
+2026-03-23 18:03:14 | INFO     | aura.scheduler | Shutting down Scheduler Service...
+2026-03-23 18:03:14 | INFO     | scheduler_service.worker | Scheduler worker stopped
+2026-03-23 18:03:14 | INFO     | aura.scheduler | Scheduler Service shutdown complete
+2026-03-23 18:03:14 | INFO     | aura.factory | Shutting down AURA Orchestration service
+2026-03-23 18:03:14 | INFO     | aura.factory | Shutting down AURA Code Generation service
+2026-03-23 18:03:15 | INFO     | aura.metadata_store | Shutting down Metadata Store
+2026-03-23 18:03:15 | INFO     | aura.factory | Shutting down AURA API Gateway service
+2026-03-23 18:03:15 | INFO     | aura.factory | Shutting down AURA Insights service
+2026-03-23 18:03:15 | INFO     | aura.factory | Shutting down AURA Execution Sandbox service
+2026-03-23 18:03:16 | INFO     | aura.factory | Shutting down AURA Connectors service
+2026-03-23 18:03:30 | INFO     | aura.factory | AURA Insights service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 18:03:30 | INFO     | aura.factory | Starting AURA Insights service (env=development)
+2026-03-23 18:03:30 | INFO     | aura.factory | AURA Code Generation service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 18:03:31 | INFO     | aura.factory | AURA Metadata Store service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 18:03:31 | INFO     | aura.metadata_store | Starting Metadata Store — initializing DB
+2026-03-23 18:03:32 | INFO     | shared.llm_provider | AURA LLM: auto-selected gemini (model=gemini-2.5-flash)
+2026-03-23 18:03:32 | INFO     | aura.factory | Starting AURA Code Generation service (env=development)
+2026-03-23 18:03:32 | INFO     | aura.factory | AURA Connectors service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 18:03:33 | INFO     | aura.factory | Starting AURA Connectors service (env=development)
+2026-03-23 18:04:02 | INFO     | aura.factory | AURA Execution Sandbox service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 18:04:02 | INFO     | aura.factory | Starting AURA Execution Sandbox service (env=development)
+2026-03-23 18:04:02 | INFO     | aura.factory | AURA Orchestration service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 18:04:02 | INFO     | aura.factory | AURA Scheduler service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 18:04:02 | INFO     | aura.scheduler | Starting Scheduler Service...
+2026-03-23 18:04:02 | INFO     | aura.scheduler | Initialized database: sqlite+aiosqlite:///data/scheduler.db
+2026-03-23 18:04:02 | INFO     | aura.scheduler | Initialized executor (database service: http://connector_service:8002)
+2026-03-23 18:04:02 | INFO     | scheduler_service.worker | Scheduler worker started (check interval: 60s)
+2026-03-23 18:04:02 | INFO     | aura.scheduler | Scheduler Service started successfully
+2026-03-23 18:04:03 | INFO     | shared.llm_provider | AURA LLM: auto-selected gemini (model=gemini-2.5-flash)
+2026-03-23 18:04:03 | INFO     | shared.llm_provider | AURA LLM: auto-selected gemini (model=gemini-2.5-flash)
+2026-03-23 18:04:03 | INFO     | aura.factory | Starting AURA Orchestration service (env=development)
+2026-03-23 18:04:04 | INFO     | aura.factory | AURA API Gateway service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 18:04:05 | INFO     | aura.factory | Starting AURA API Gateway service (env=development)
+2026-03-23 18:04:30 | INFO     | shared.llm_provider | AURA LLM: auto-selected gemini (model=gemini-2.5-flash)
+2026-03-23 18:04:31 | INFO     | aura.middleware | POST /chat → 200 (1862.1 ms) [ed065d99-d3a8-4c3a-b238-301886b4eac4]
+2026-03-23 18:04:57 | INFO     | aura.middleware | POST /chat → 200 (953.7 ms) [fe143fa3-06ff-47f2-ae8e-56edb9835972]
+2026-03-23 18:05:57 | INFO     | aura.middleware | POST /v1/orchestrations/query → 200 (27392.5 ms) [c9501800-2112-4f2c-97a3-88e121eb8fc2]
+2026-03-23 18:05:57 | INFO     | aura.middleware | POST /chat → 200 (28584.0 ms) [9afa89ca-ace0-4816-9ff9-656123395062]
+2026-03-23 18:08:13 | INFO     | aura.middleware | OPTIONS /chat → 200 (0.7 ms) [f6a36592-68ee-4952-9f49-a6f2bf0a0f60]
+2026-03-23 18:09:01 | INFO     | aura.middleware | POST /v1/orchestrations/query → 200 (46271.9 ms) [0360ee8b-8d74-41cb-acab-282eeb2fd9b9]
+2026-03-23 18:09:01 | INFO     | aura.middleware | POST /chat → 200 (47898.7 ms) [fccb67e5-97f1-48aa-8da8-7be29ca25388]
+2026-03-23 18:09:40 | INFO     | aura.middleware | POST /chat → 200 (987.3 ms) [163aaaea-3c24-4f00-8a67-afcd63ecabe0]
+2026-03-23 18:09:53 | INFO     | aura.middleware | POST /chat → 200 (1022.7 ms) [ef1d8d1d-954c-4db0-832e-4f570b73c7b8]
+2026-03-23 18:10:24 | INFO     | aura.middleware | POST /v1/orchestrations/query → 200 (4971.9 ms) [2861f642-fe18-47af-96e9-f3f96c463202]
+2026-03-23 18:10:24 | INFO     | aura.middleware | POST /chat → 200 (6662.9 ms) [d0b5a78f-5a33-4d05-9a60-a8807fe44920]
+2026-03-23 18:11:26 | INFO     | aura.factory | Shutting down AURA API Gateway service
+2026-03-23 18:11:26 | INFO     | aura.factory | Shutting down AURA Orchestration service
+2026-03-23 18:11:26 | INFO     | aura.metadata_store | Shutting down Metadata Store
+2026-03-23 18:11:26 | INFO     | aura.factory | Shutting down AURA Execution Sandbox service
+2026-03-23 18:11:26 | INFO     | aura.scheduler | Shutting down Scheduler Service...
+2026-03-23 18:11:26 | INFO     | scheduler_service.worker | Scheduler worker stopped
+2026-03-23 18:11:26 | INFO     | aura.scheduler | Scheduler Service shutdown complete
+2026-03-23 18:11:26 | INFO     | aura.factory | Shutting down AURA Insights service
+2026-03-23 18:11:26 | INFO     | aura.factory | Shutting down AURA Code Generation service
+2026-03-23 18:11:27 | INFO     | aura.factory | Shutting down AURA Connectors service
+2026-03-23 18:11:30 | INFO     | aura.factory | AURA Insights service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 18:11:30 | INFO     | aura.factory | AURA Execution Sandbox service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 18:11:30 | INFO     | aura.factory | Starting AURA Insights service (env=development)
+2026-03-23 18:11:30 | INFO     | aura.factory | Starting AURA Execution Sandbox service (env=development)
+2026-03-23 18:11:30 | INFO     | aura.factory | AURA Code Generation service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 18:11:30 | INFO     | aura.factory | Shutting down AURA Insights service
+2026-03-23 18:11:30 | INFO     | aura.factory | Shutting down AURA Execution Sandbox service
+2026-03-23 18:11:31 | INFO     | aura.factory | AURA Orchestration service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 18:11:31 | INFO     | aura.factory | AURA Metadata Store service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 18:11:31 | INFO     | aura.factory | AURA Scheduler service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 18:11:31 | INFO     | aura.metadata_store | Starting Metadata Store — initializing DB
+2026-03-23 18:11:31 | INFO     | aura.scheduler | Starting Scheduler Service...
+2026-03-23 18:11:31 | INFO     | aura.scheduler | Initialized database: sqlite+aiosqlite:///data/scheduler.db
+2026-03-23 18:11:31 | INFO     | aura.metadata_store | Shutting down Metadata Store
+2026-03-23 18:11:31 | INFO     | aura.scheduler | Initialized executor (database service: http://connector_service:8002)
+2026-03-23 18:11:31 | INFO     | scheduler_service.worker | Scheduler worker started (check interval: 60s)
+2026-03-23 18:11:31 | INFO     | aura.scheduler | Scheduler Service started successfully
+2026-03-23 18:11:31 | INFO     | aura.scheduler | Shutting down Scheduler Service...
+2026-03-23 18:11:31 | INFO     | scheduler_service.worker | Scheduler worker stopped
+2026-03-23 18:11:31 | INFO     | aura.scheduler | Scheduler Service shutdown complete
+2026-03-23 18:11:33 | INFO     | shared.llm_provider | AURA LLM: auto-selected gemini (model=gemini-2.5-flash)
+2026-03-23 18:11:33 | INFO     | aura.factory | Starting AURA Code Generation service (env=development)
+2026-03-23 18:11:33 | INFO     | aura.factory | AURA Insights service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 18:11:33 | INFO     | aura.factory | Starting AURA Insights service (env=development)
+2026-03-23 18:11:33 | INFO     | aura.factory | Shutting down AURA Code Generation service
+2026-03-23 18:11:33 | INFO     | aura.factory | AURA Execution Sandbox service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 18:11:33 | INFO     | aura.factory | Starting AURA Execution Sandbox service (env=development)
+2026-03-23 18:11:33 | INFO     | shared.llm_provider | AURA LLM: auto-selected gemini (model=gemini-2.5-flash)
+2026-03-23 18:11:33 | INFO     | shared.llm_provider | AURA LLM: auto-selected gemini (model=gemini-2.5-flash)
+2026-03-23 18:11:33 | INFO     | aura.factory | Starting AURA Orchestration service (env=development)
+2026-03-23 18:11:33 | INFO     | aura.factory | Shutting down AURA Orchestration service
+2026-03-23 18:11:34 | INFO     | aura.factory | AURA Connectors service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 18:11:34 | INFO     | aura.factory | Starting AURA Connectors service (env=development)
+2026-03-23 18:11:34 | INFO     | aura.factory | Shutting down AURA Connectors service
+2026-03-23 18:11:34 | INFO     | aura.factory | AURA API Gateway service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 18:11:35 | INFO     | aura.factory | AURA Metadata Store service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 18:11:35 | INFO     | aura.factory | AURA Scheduler service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 18:11:35 | INFO     | aura.metadata_store | Starting Metadata Store — initializing DB
+2026-03-23 18:11:35 | INFO     | aura.scheduler | Starting Scheduler Service...
+2026-03-23 18:11:35 | INFO     | aura.scheduler | Initialized database: sqlite+aiosqlite:///data/scheduler.db
+2026-03-23 18:11:35 | INFO     | aura.scheduler | Initialized executor (database service: http://connector_service:8002)
+2026-03-23 18:11:35 | INFO     | scheduler_service.worker | Scheduler worker started (check interval: 60s)
+2026-03-23 18:11:35 | INFO     | aura.scheduler | Scheduler Service started successfully
+2026-03-23 18:11:36 | INFO     | aura.factory | AURA Code Generation service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 18:11:36 | INFO     | aura.factory | Starting AURA API Gateway service (env=development)
+2026-03-23 18:11:36 | INFO     | aura.factory | Shutting down AURA API Gateway service
+2026-03-23 18:11:37 | INFO     | aura.factory | AURA Orchestration service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 18:11:37 | INFO     | shared.llm_provider | AURA LLM: auto-selected gemini (model=gemini-2.5-flash)
+2026-03-23 18:11:38 | INFO     | aura.factory | Starting AURA Code Generation service (env=development)
+2026-03-23 18:11:38 | INFO     | shared.llm_provider | AURA LLM: auto-selected gemini (model=gemini-2.5-flash)
+2026-03-23 18:11:38 | INFO     | shared.llm_provider | AURA LLM: auto-selected gemini (model=gemini-2.5-flash)
+2026-03-23 18:11:38 | INFO     | aura.factory | Starting AURA Orchestration service (env=development)
+2026-03-23 18:11:39 | INFO     | aura.factory | AURA Connectors service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 18:11:39 | INFO     | aura.factory | Starting AURA Connectors service (env=development)
+2026-03-23 18:11:41 | INFO     | aura.factory | AURA API Gateway service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 18:11:41 | INFO     | aura.factory | Starting AURA API Gateway service (env=development)
+2026-03-23 18:12:31 | INFO     | shared.llm_provider | AURA LLM: auto-selected gemini (model=gemini-2.5-flash)
+2026-03-23 18:12:31 | INFO     | aura.api_gateway | === [INTENT CLASSIFIER PROMPT] ===
+You are AURA, an intelligent data assistant. Analyze the user's message and determine if it requires executing a SQL query against the database, or if it is a general conversational message (like a greeting, thanking, asking for help, or asking about the metadata/columns available).
+
+Available Schema Context:
+Available tables in DuckDB:
+
+Table: Titanic_Dataset — 891 rows
+  Columns: PassengerId (BIGINT), Survived (BIGINT), Pclass (BIGINT), Name (VARCHAR), Sex (VARCHAR), Age (DOUBLE), SibSp (BIGINT), Parch (BIGINT), Ticket (VARCHAR), Fare (DOUBLE), Cabin (VARCHAR), Embarked (VARCHAR)
+  Sample data (first 3 rows):
+    Row 1: {'PassengerId': 1, 'Survived': 0, 'Pclass': 3, 'Name': 'Braund, Mr. Owen Harris', 'Sex': 'male', 'Age': 22.0, 'SibSp': 1, 'Parch': 0, 'Ticket': 'A/5 21171', 'Fare': 7.25, 'Cabin': None, 'Embarked': 'S'}
+    Row 2: {'PassengerId': 2, 'Survived': 1, 'Pclass': 1, 'Name': 'Cumings, Mrs. John Bradley (Florence Briggs Thayer)', 'Sex': 'female', 'Age': 38.0, 'SibSp': 1, 'Parch': 0, 'Ticket': 'PC 17599', 'Fare': 71.2833, 'Cabin': 'C85', 'Embarked': 'C'}
+    Row 3: {'PassengerId': 3, 'Survived': 1, 'Pclass': 3, 'Name': 'Heikkinen, Miss. Laina', 'Sex': 'female', 'Age': 26.0, 'SibSp': 0, 'Parch': 0, 'Ticket': 'STON/O2. 3101282', 'Fare': 7.925, 'Cabin': None, 'Embarked': 'S'}
+
+
+User's message: "hi"
+
+Respond STRICTLY with a JSON object in this format (no markdown code blocks, just raw JSON):
+{"intent": "sql" or "conversation", "message": "If conversation, put your helpful natural language response here. If sql, leave blank."}
+
+================================
+2026-03-23 18:12:32 | INFO     | aura.middleware | POST /chat → 200 (1961.3 ms) [cae15e09-f52a-4e89-8ae2-6c287241944a]
+2026-03-23 18:14:51 | INFO     | aura.factory | Shutting down AURA Execution Sandbox service
+2026-03-23 18:14:51 | INFO     | aura.factory | Shutting down AURA API Gateway service
+2026-03-23 18:14:51 | INFO     | aura.factory | Shutting down AURA Code Generation service
+2026-03-23 18:14:51 | INFO     | aura.metadata_store | Shutting down Metadata Store
+2026-03-23 18:14:51 | INFO     | aura.factory | Shutting down AURA Orchestration service
+2026-03-23 18:14:51 | INFO     | aura.factory | Shutting down AURA Insights service
+2026-03-23 18:14:51 | INFO     | aura.factory | Shutting down AURA Connectors service
+2026-03-23 18:14:51 | INFO     | aura.scheduler | Shutting down Scheduler Service...
+2026-03-23 18:14:51 | INFO     | scheduler_service.worker | Scheduler worker stopped
+2026-03-23 18:14:51 | INFO     | aura.scheduler | Scheduler Service shutdown complete
+2026-03-23 18:14:54 | INFO     | aura.factory | AURA Insights service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 18:14:54 | INFO     | aura.factory | AURA Execution Sandbox service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 18:14:54 | INFO     | aura.factory | AURA Code Generation service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 18:14:55 | INFO     | aura.factory | Starting AURA Insights service (env=development)
+2026-03-23 18:14:55 | INFO     | aura.factory | Starting AURA Execution Sandbox service (env=development)
+2026-03-23 18:14:55 | INFO     | aura.factory | Shutting down AURA Insights service
+2026-03-23 18:14:55 | INFO     | aura.factory | Shutting down AURA Execution Sandbox service
+2026-03-23 18:14:56 | INFO     | aura.factory | AURA Metadata Store service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 18:14:56 | INFO     | aura.factory | AURA Orchestration service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 18:14:56 | INFO     | aura.metadata_store | Starting Metadata Store — initializing DB
+2026-03-23 18:14:56 | INFO     | aura.metadata_store | Shutting down Metadata Store
+2026-03-23 18:14:57 | INFO     | aura.factory | AURA Scheduler service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 18:14:57 | INFO     | shared.llm_provider | AURA LLM: auto-selected gemini (model=gemini-2.5-flash)
+2026-03-23 18:14:57 | INFO     | aura.factory | Starting AURA Code Generation service (env=development)
+2026-03-23 18:14:57 | INFO     | aura.scheduler | Starting Scheduler Service...
+2026-03-23 18:14:57 | INFO     | aura.factory | Shutting down AURA Code Generation service
+2026-03-23 18:14:57 | INFO     | aura.scheduler | Initialized database: sqlite+aiosqlite:///data/scheduler.db
+2026-03-23 18:14:58 | INFO     | aura.scheduler | Initialized executor (database service: http://connector_service:8002)
+2026-03-23 18:14:58 | INFO     | scheduler_service.worker | Scheduler worker started (check interval: 60s)
+2026-03-23 18:14:58 | INFO     | aura.scheduler | Scheduler Service started successfully
+2026-03-23 18:14:58 | INFO     | aura.factory | AURA Insights service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 18:14:58 | INFO     | aura.factory | Starting AURA Insights service (env=development)
+2026-03-23 18:14:58 | INFO     | aura.factory | AURA Execution Sandbox service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 18:14:58 | INFO     | aura.factory | Starting AURA Execution Sandbox service (env=development)
+2026-03-23 18:14:58 | INFO     | shared.llm_provider | AURA LLM: auto-selected gemini (model=gemini-2.5-flash)
+2026-03-23 18:14:58 | INFO     | shared.llm_provider | AURA LLM: auto-selected gemini (model=gemini-2.5-flash)
+2026-03-23 18:14:58 | INFO     | aura.factory | Starting AURA Orchestration service (env=development)
+2026-03-23 18:14:58 | INFO     | aura.factory | Shutting down AURA Orchestration service
+2026-03-23 18:14:58 | INFO     | aura.factory | AURA Connectors service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 18:14:58 | INFO     | aura.factory | Starting AURA Connectors service (env=development)
+2026-03-23 18:14:59 | INFO     | aura.factory | Shutting down AURA Connectors service
+2026-03-23 18:14:59 | INFO     | aura.factory | AURA API Gateway service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 18:15:00 | INFO     | aura.factory | AURA Metadata Store service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 18:15:00 | INFO     | aura.metadata_store | Starting Metadata Store — initializing DB
+2026-03-23 18:15:00 | INFO     | aura.factory | AURA Code Generation service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 18:15:01 | INFO     | aura.factory | Starting AURA API Gateway service (env=development)
+2026-03-23 18:15:01 | INFO     | aura.factory | Shutting down AURA API Gateway service
+2026-03-23 18:15:02 | INFO     | aura.factory | AURA Orchestration service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 18:15:02 | INFO     | shared.llm_provider | AURA LLM: auto-selected gemini (model=gemini-2.5-flash)
+2026-03-23 18:15:02 | INFO     | aura.factory | Starting AURA Code Generation service (env=development)
+2026-03-23 18:15:03 | INFO     | shared.llm_provider | AURA LLM: auto-selected gemini (model=gemini-2.5-flash)
+2026-03-23 18:15:03 | INFO     | shared.llm_provider | AURA LLM: auto-selected gemini (model=gemini-2.5-flash)
+2026-03-23 18:15:03 | INFO     | aura.factory | Starting AURA Orchestration service (env=development)
+2026-03-23 18:15:04 | INFO     | aura.factory | AURA Connectors service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 18:15:04 | INFO     | aura.factory | Starting AURA Connectors service (env=development)
+2026-03-23 18:15:06 | INFO     | aura.factory | AURA API Gateway service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 18:15:06 | INFO     | aura.factory | Starting AURA API Gateway service (env=development)
+2026-03-23 18:15:31 | INFO     | shared.llm_provider | AURA LLM: auto-selected gemini (model=gemini-2.5-flash)
+2026-03-23 18:15:31 | INFO     | aura.api_gateway | === [INTENT CLASSIFIER PROMPT] ===
+You are AURA, an intelligent data assistant. Analyze the user's message and determine if it requires executing a SQL query against the database, or if it is a general conversational message (like a greeting, thanking, asking for help, or asking about the metadata/columns available).
+
+Available Schema Context:
+Available tables in DuckDB:
+
+Table: Titanic_Dataset — 891 rows
+  Columns: PassengerId (BIGINT), Survived (BIGINT), Pclass (BIGINT), Name (VARCHAR), Sex (VARCHAR), Age (DOUBLE), SibSp (BIGINT), Parch (BIGINT), Ticket (VARCHAR), Fare (DOUBLE), Cabin (VARCHAR), Embarked (VARCHAR)
+  Sample data (first 3 rows):
+    Row 1: {'PassengerId': 1, 'Survived': 0, 'Pclass': 3, 'Name': 'Braund, Mr. Owen Harris', 'Sex': 'male', 'Age': 22.0, 'SibSp': 1, 'Parch': 0, 'Ticket': 'A/5 21171', 'Fare': 7.25, 'Cabin': None, 'Embarked': 'S'}
+    Row 2: {'PassengerId': 2, 'Survived': 1, 'Pclass': 1, 'Name': 'Cumings, Mrs. John Bradley (Florence Briggs Thayer)', 'Sex': 'female', 'Age': 38.0, 'SibSp': 1, 'Parch': 0, 'Ticket': 'PC 17599', 'Fare': 71.2833, 'Cabin': 'C85', 'Embarked': 'C'}
+    Row 3: {'PassengerId': 3, 'Survived': 1, 'Pclass': 3, 'Name': 'Heikkinen, Miss. Laina', 'Sex': 'female', 'Age': 26.0, 'SibSp': 0, 'Parch': 0, 'Ticket': 'STON/O2. 3101282', 'Fare': 7.925, 'Cabin': None, 'Embarked': 'S'}
+
+
+User's message: "tell me the number of female passengers"
+
+Respond STRICTLY with a JSON object in this format (no markdown code blocks, just raw JSON):
+{"intent": "sql" or "conversation", "message": "If conversation, put your helpful natural language response here. If sql, leave blank."}
+
+================================
+2026-03-23 18:15:38 | INFO     | aura.middleware | POST /v1/orchestrations/query → 200 (5097.4 ms) [5623c62b-128d-46d7-ad06-d78474d46fac]
+2026-03-23 18:15:38 | INFO     | aura.middleware | POST /chat → 200 (7314.2 ms) [0f6c8ef0-5b9b-435c-9f11-eb166a44ac98]
+2026-03-23 18:16:58 | INFO     | aura.api_gateway | === [INTENT CLASSIFIER PROMPT] ===
+You are AURA, an intelligent data assistant. Analyze the user's message and determine if it requires executing a SQL query against the database, or if it is a general conversational message (like a greeting, thanking, asking for help, or asking about the metadata/columns available).
+
+Available Schema Context:
+Available tables in DuckDB:
+
+Table: Titanic_Dataset — 891 rows
+  Columns: PassengerId (BIGINT), Survived (BIGINT), Pclass (BIGINT), Name (VARCHAR), Sex (VARCHAR), Age (DOUBLE), SibSp (BIGINT), Parch (BIGINT), Ticket (VARCHAR), Fare (DOUBLE), Cabin (VARCHAR), Embarked (VARCHAR)
+  Sample data (first 3 rows):
+    Row 1: {'PassengerId': 1, 'Survived': 0, 'Pclass': 3, 'Name': 'Braund, Mr. Owen Harris', 'Sex': 'male', 'Age': 22.0, 'SibSp': 1, 'Parch': 0, 'Ticket': 'A/5 21171', 'Fare': 7.25, 'Cabin': None, 'Embarked': 'S'}
+    Row 2: {'PassengerId': 2, 'Survived': 1, 'Pclass': 1, 'Name': 'Cumings, Mrs. John Bradley (Florence Briggs Thayer)', 'Sex': 'female', 'Age': 38.0, 'SibSp': 1, 'Parch': 0, 'Ticket': 'PC 17599', 'Fare': 71.2833, 'Cabin': 'C85', 'Embarked': 'C'}
+    Row 3: {'PassengerId': 3, 'Survived': 1, 'Pclass': 3, 'Name': 'Heikkinen, Miss. Laina', 'Sex': 'female', 'Age': 26.0, 'SibSp': 0, 'Parch': 0, 'Ticket': 'STON/O2. 3101282', 'Fare': 7.925, 'Cabin': None, 'Embarked': 'S'}
+
+
+User's message: "Calculate the survival rate for each Passenger Class (Pclass). Which class had the highest survival rate, and does this align with the "women and children first" narrative?"
+
+Respond STRICTLY with a JSON object in this format (no markdown code blocks, just raw JSON):
+{"intent": "sql" or "conversation", "message": "If conversation, put your helpful natural language response here. If sql, leave blank."}
+
+================================
+2026-03-23 18:17:59 | WARNING  | aura.api_gateway | Chat SQL generation failed: 
+2026-03-23 18:17:59 | INFO     | aura.middleware | POST /chat → 200 (61222.9 ms) [7f6f99d4-3f60-4a9d-b3b9-1909561f1e7d]
+2026-03-23 18:18:05 | INFO     | aura.middleware | POST /v1/orchestrations/query → 200 (65939.5 ms) [849d5dc5-de4e-45ad-93ef-cd83439ecc50]
+2026-03-23 18:18:15 | INFO     | aura.middleware | OPTIONS /chat → 200 (0.6 ms) [02b75c73-f296-4fd9-bf85-399211ceb0b7]
+2026-03-23 18:18:16 | INFO     | aura.api_gateway | === [INTENT CLASSIFIER PROMPT] ===
+You are AURA, an intelligent data assistant. Analyze the user's message and determine if it requires executing a SQL query against the database, or if it is a general conversational message (like a greeting, thanking, asking for help, or asking about the metadata/columns available).
+
+Available Schema Context:
+Available tables in DuckDB:
+
+Table: Titanic_Dataset — 891 rows
+  Columns: PassengerId (BIGINT), Survived (BIGINT), Pclass (BIGINT), Name (VARCHAR), Sex (VARCHAR), Age (DOUBLE), SibSp (BIGINT), Parch (BIGINT), Ticket (VARCHAR), Fare (DOUBLE), Cabin (VARCHAR), Embarked (VARCHAR)
+  Sample data (first 3 rows):
+    Row 1: {'PassengerId': 1, 'Survived': 0, 'Pclass': 3, 'Name': 'Braund, Mr. Owen Harris', 'Sex': 'male', 'Age': 22.0, 'SibSp': 1, 'Parch': 0, 'Ticket': 'A/5 21171', 'Fare': 7.25, 'Cabin': None, 'Embarked': 'S'}
+    Row 2: {'PassengerId': 2, 'Survived': 1, 'Pclass': 1, 'Name': 'Cumings, Mrs. John Bradley (Florence Briggs Thayer)', 'Sex': 'female', 'Age': 38.0, 'SibSp': 1, 'Parch': 0, 'Ticket': 'PC 17599', 'Fare': 71.2833, 'Cabin': 'C85', 'Embarked': 'C'}
+    Row 3: {'PassengerId': 3, 'Survived': 1, 'Pclass': 3, 'Name': 'Heikkinen, Miss. Laina', 'Sex': 'female', 'Age': 26.0, 'SibSp': 0, 'Parch': 0, 'Ticket': 'STON/O2. 3101282', 'Fare': 7.925, 'Cabin': None, 'Embarked': 'S'}
+
+
+User's message: "Calculate the survival rate for each Passenger Class (Pclass). Which class had the highest survival rate, and does this align with the "women and children first" narrative?"
+
+Respond STRICTLY with a JSON object in this format (no markdown code blocks, just raw JSON):
+{"intent": "sql" or "conversation", "message": "If conversation, put your helpful natural language response here. If sql, leave blank."}
+
+================================
+2026-03-23 18:19:04 | INFO     | aura.middleware | POST /v1/orchestrations/query → 200 (46301.0 ms) [537f8f4b-216e-4e87-98bd-408f7e89c8c6]
+2026-03-23 18:19:04 | INFO     | aura.middleware | POST /chat → 200 (48761.2 ms) [a80a4665-5817-4596-9524-404f01b69254]
+2026-03-23 18:30:51 | INFO     | aura.metadata_store | Shutting down Metadata Store
+2026-03-23 18:30:52 | INFO     | aura.scheduler | Shutting down Scheduler Service...
+2026-03-23 18:30:52 | INFO     | scheduler_service.worker | Scheduler worker stopped
+2026-03-23 18:30:52 | INFO     | aura.scheduler | Scheduler Service shutdown complete
+2026-03-23 18:30:53 | INFO     | aura.factory | Shutting down AURA API Gateway service
+2026-03-23 18:30:53 | INFO     | aura.factory | Shutting down AURA Connectors service
+2026-03-23 18:30:53 | INFO     | aura.factory | Shutting down AURA Orchestration service
+2026-03-23 18:30:53 | INFO     | aura.factory | Shutting down AURA Insights service
+2026-03-23 18:30:53 | INFO     | aura.factory | Shutting down AURA Execution Sandbox service
+2026-03-23 18:30:53 | INFO     | aura.factory | Shutting down AURA Code Generation service
+2026-03-23 18:30:56 | INFO     | aura.factory | AURA Metadata Store service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 18:30:56 | INFO     | aura.metadata_store | Starting Metadata Store — initializing DB
+2026-03-23 18:30:57 | INFO     | aura.factory | AURA Insights service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 18:30:57 | INFO     | aura.factory | AURA Code Generation service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 18:30:57 | INFO     | aura.factory | Starting AURA Insights service (env=development)
+2026-03-23 18:30:57 | INFO     | aura.factory | AURA Execution Sandbox service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 18:30:57 | INFO     | aura.factory | Starting AURA Execution Sandbox service (env=development)
+2026-03-23 18:30:57 | INFO     | aura.factory | AURA Scheduler service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 18:30:57 | INFO     | aura.scheduler | Starting Scheduler Service...
+2026-03-23 18:30:58 | INFO     | aura.factory | AURA Orchestration service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 18:30:58 | INFO     | aura.scheduler | Initialized database: sqlite+aiosqlite:///data/scheduler.db
+2026-03-23 18:30:58 | INFO     | aura.scheduler | Initialized executor (database service: http://connector_service:8002)
+2026-03-23 18:30:58 | INFO     | scheduler_service.worker | Scheduler worker started (check interval: 60s)
+2026-03-23 18:30:58 | INFO     | aura.scheduler | Scheduler Service started successfully
+2026-03-23 18:30:59 | INFO     | shared.llm_provider | AURA LLM: auto-selected gemini (model=gemini-2.5-flash)
+2026-03-23 18:30:59 | INFO     | aura.factory | Starting AURA Code Generation service (env=development)
+2026-03-23 18:31:00 | INFO     | shared.llm_provider | AURA LLM: auto-selected gemini (model=gemini-2.5-flash)
+2026-03-23 18:31:00 | INFO     | shared.llm_provider | AURA LLM: auto-selected gemini (model=gemini-2.5-flash)
+2026-03-23 18:31:00 | INFO     | aura.factory | AURA Connectors service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 18:31:00 | INFO     | aura.factory | Starting AURA Orchestration service (env=development)
+2026-03-23 18:31:00 | INFO     | aura.factory | Starting AURA Connectors service (env=development)
+2026-03-23 18:31:01 | INFO     | aura.factory | AURA API Gateway service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 18:31:02 | INFO     | aura.factory | Starting AURA API Gateway service (env=development)
+2026-03-23 18:31:24 | INFO     | aura.middleware | OPTIONS /chat → 200 (0.5 ms) [ca9b6bcf-ce43-4fe1-93e4-66fd11b348b5]
+2026-03-23 18:31:25 | INFO     | shared.llm_provider | AURA LLM: auto-selected gemini (model=gemini-2.5-flash)
+2026-03-23 18:31:25 | INFO     | aura.api_gateway | === [INTENT CLASSIFIER PROMPT] ===
+You are AURA, an intelligent data assistant. Analyze the user's message and determine if it requires executing a SQL query against the database, or if it is a general conversational message (like a greeting, thanking, asking for help, or asking about the metadata/columns available).
+
+Available Schema Context:
+Available tables in DuckDB:
+
+Table: Titanic_Dataset — 891 rows
+  Columns: PassengerId (BIGINT), Survived (BIGINT), Pclass (BIGINT), Name (VARCHAR), Sex (VARCHAR), Age (DOUBLE), SibSp (BIGINT), Parch (BIGINT), Ticket (VARCHAR), Fare (DOUBLE), Cabin (VARCHAR), Embarked (VARCHAR)
+  Sample data (first 3 rows):
+    Row 1: {'PassengerId': 1, 'Survived': 0, 'Pclass': 3, 'Name': 'Braund, Mr. Owen Harris', 'Sex': 'male', 'Age': 22.0, 'SibSp': 1, 'Parch': 0, 'Ticket': 'A/5 21171', 'Fare': 7.25, 'Cabin': None, 'Embarked': 'S'}
+    Row 2: {'PassengerId': 2, 'Survived': 1, 'Pclass': 1, 'Name': 'Cumings, Mrs. John Bradley (Florence Briggs Thayer)', 'Sex': 'female', 'Age': 38.0, 'SibSp': 1, 'Parch': 0, 'Ticket': 'PC 17599', 'Fare': 71.2833, 'Cabin': 'C85', 'Embarked': 'C'}
+    Row 3: {'PassengerId': 3, 'Survived': 1, 'Pclass': 3, 'Name': 'Heikkinen, Miss. Laina', 'Sex': 'female', 'Age': 26.0, 'SibSp': 0, 'Parch': 0, 'Ticket': 'STON/O2. 3101282', 'Fare': 7.925, 'Cabin': None, 'Embarked': 'S'}
+
+
+User's message: "Calculate the survival rate for each Passenger Class (Pclass). Which class had the highest survival rate, and does this align with the "women and children first" narrative?"
+
+Respond STRICTLY with a JSON object in this format (no markdown code blocks, just raw JSON):
+{"intent": "sql" or "conversation", "message": "If conversation, put your helpful natural language response here. If sql, leave blank."}
+
+================================
+2026-03-23 18:31:52 | INFO     | aura.middleware | POST /v1/orchestrations/query → 200 (26069.4 ms) [993a9a45-39d9-406b-b7d5-738cbd20d036]
+2026-03-23 18:31:52 | INFO     | aura.middleware | POST /chat → 200 (28103.7 ms) [2cdbf285-1d05-4126-91fe-f288805a4f07]
+2026-03-23 18:34:17 | INFO     | aura.factory | Shutting down AURA Insights service
+2026-03-23 18:34:17 | INFO     | aura.factory | Shutting down AURA Connectors service
+2026-03-23 18:34:17 | INFO     | aura.scheduler | Shutting down Scheduler Service...
+2026-03-23 18:34:17 | INFO     | scheduler_service.worker | Scheduler worker stopped
+2026-03-23 18:34:17 | INFO     | aura.scheduler | Scheduler Service shutdown complete
+2026-03-23 18:34:17 | INFO     | aura.factory | Shutting down AURA Execution Sandbox service
+2026-03-23 18:34:17 | INFO     | aura.factory | Shutting down AURA Code Generation service
+2026-03-23 18:34:17 | INFO     | aura.metadata_store | Shutting down Metadata Store
+2026-03-23 18:34:18 | INFO     | aura.factory | Shutting down AURA API Gateway service
+2026-03-23 18:34:18 | INFO     | aura.factory | Shutting down AURA Orchestration service
+2026-03-23 18:34:22 | INFO     | aura.factory | AURA Insights service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 18:34:22 | INFO     | aura.factory | Starting AURA Insights service (env=development)
+2026-03-23 18:34:22 | INFO     | aura.factory | AURA Execution Sandbox service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 18:34:22 | INFO     | aura.factory | Starting AURA Execution Sandbox service (env=development)
+2026-03-23 18:34:22 | INFO     | aura.factory | AURA Code Generation service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 18:34:23 | INFO     | aura.factory | AURA Scheduler service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 18:34:23 | INFO     | aura.scheduler | Starting Scheduler Service...
+2026-03-23 18:34:24 | INFO     | aura.scheduler | Initialized database: sqlite+aiosqlite:///data/scheduler.db
+2026-03-23 18:34:24 | INFO     | aura.factory | AURA Metadata Store service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 18:34:24 | INFO     | aura.scheduler | Initialized executor (database service: http://connector_service:8002)
+2026-03-23 18:34:24 | INFO     | scheduler_service.worker | Scheduler worker started (check interval: 60s)
+2026-03-23 18:34:24 | INFO     | aura.scheduler | Scheduler Service started successfully
+2026-03-23 18:34:24 | INFO     | aura.metadata_store | Starting Metadata Store — initializing DB
+2026-03-23 18:34:24 | INFO     | aura.factory | AURA Orchestration service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 18:34:25 | INFO     | shared.llm_provider | AURA LLM: auto-selected gemini (model=gemini-2.5-flash)
+2026-03-23 18:34:26 | INFO     | aura.factory | Starting AURA Code Generation service (env=development)
+2026-03-23 18:34:26 | INFO     | aura.factory | AURA Connectors service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 18:34:26 | INFO     | aura.factory | Starting AURA Connectors service (env=development)
+2026-03-23 18:34:26 | INFO     | shared.llm_provider | AURA LLM: auto-selected gemini (model=gemini-2.5-flash)
+2026-03-23 18:34:26 | INFO     | shared.llm_provider | AURA LLM: auto-selected gemini (model=gemini-2.5-flash)
+2026-03-23 18:34:26 | INFO     | aura.factory | Starting AURA Orchestration service (env=development)
+2026-03-23 18:34:27 | INFO     | aura.factory | AURA API Gateway service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 18:34:28 | INFO     | aura.factory | Starting AURA API Gateway service (env=development)
+2026-03-23 18:34:43 | INFO     | shared.llm_provider | AURA LLM: auto-selected gemini (model=gemini-2.5-flash)
+2026-03-23 18:34:43 | INFO     | aura.api_gateway | === [INTENT CLASSIFIER PROMPT] ===
+You are AURA, an intelligent data assistant. Analyze the user's message and determine if it requires executing a SQL query against the database, or if it is a general conversational message (like a greeting, thanking, asking for help, or asking about the metadata/columns available).
+
+Available Schema Context:
+Available tables in DuckDB:
+
+Table: Titanic_Dataset — 891 rows
+  Columns: PassengerId (BIGINT), Survived (BIGINT), Pclass (BIGINT), Name (VARCHAR), Sex (VARCHAR), Age (DOUBLE), SibSp (BIGINT), Parch (BIGINT), Ticket (VARCHAR), Fare (DOUBLE), Cabin (VARCHAR), Embarked (VARCHAR)
+  Sample data (first 3 rows):
+    Row 1: {'PassengerId': 1, 'Survived': 0, 'Pclass': 3, 'Name': 'Braund, Mr. Owen Harris', 'Sex': 'male', 'Age': 22.0, 'SibSp': 1, 'Parch': 0, 'Ticket': 'A/5 21171', 'Fare': 7.25, 'Cabin': None, 'Embarked': 'S'}
+    Row 2: {'PassengerId': 2, 'Survived': 1, 'Pclass': 1, 'Name': 'Cumings, Mrs. John Bradley (Florence Briggs Thayer)', 'Sex': 'female', 'Age': 38.0, 'SibSp': 1, 'Parch': 0, 'Ticket': 'PC 17599', 'Fare': 71.2833, 'Cabin': 'C85', 'Embarked': 'C'}
+    Row 3: {'PassengerId': 3, 'Survived': 1, 'Pclass': 3, 'Name': 'Heikkinen, Miss. Laina', 'Sex': 'female', 'Age': 26.0, 'SibSp': 0, 'Parch': 0, 'Ticket': 'STON/O2. 3101282', 'Fare': 7.925, 'Cabin': None, 'Embarked': 'S'}
+
+
+User's message: "Calculate the survival rate for each Passenger Class (Pclass). Which class had the highest survival rate, and does this align with the "women and children first" narrative?"
+
+Respond STRICTLY with a JSON object in this format (no markdown code blocks, just raw JSON):
+{"intent": "sql" or "conversation", "message": "If conversation, put your helpful natural language response here. If sql, leave blank."}
+
+================================
+2026-03-23 18:35:31 | INFO     | aura.middleware | POST /v1/orchestrations/query → 200 (46023.5 ms) [6c13031b-a3bc-4c25-8bf8-f46433f84cdc]
+2026-03-23 18:35:31 | INFO     | aura.api_gateway | === [CONCLUSION LLM PROMPT] ===
+User asked: 'Calculate the survival rate for each Passenger Class (Pclass). Which class had the highest survival rate, and does this align with the "women and children first" narrative?'
+Data result (first 20 rows):
+[{'PassengerId': 1, 'Survived': 0, 'Pclass': 3, 'Name': 'Braund, Mr. Owen Harris', 'Sex': 'male'}, {'PassengerId': 2, 'Survived': 1, 'Pclass': 1, 'Name': 'Cumings, Mrs. John Bradley (Florence Briggs Thayer)', 'Sex': 'female'}, {'PassengerId': 3, 'Survived': 1, 'Pclass': 3, 'Name': 'Heikkinen, Miss. Laina', 'Sex': 'female'}, {'PassengerId': 4, 'Survived': 1, 'Pclass': 1, 'Name': 'Futrelle, Mrs. Jacques Heath (Lily May Peel)', 'Sex': 'female'}, {'PassengerId': 5, 'Survived': 0, 'Pclass': 3, 'Name': 'Allen, Mr. William Henry', 'Sex': 'male'}]
+Provide a brief, conclusive answer to the user's question based strictly on this data. Do not show the SQL. Keep it to 1-3 sentences in a friendly, helpful tone.
+================================
+2026-03-23 18:35:39 | INFO     | aura.middleware | POST /chat → 200 (56671.2 ms) [9b82c6ca-672b-48f5-be12-83774e0d2ffd]
+2026-03-23 18:37:26 | INFO     | aura.api_gateway | === [INTENT CLASSIFIER PROMPT] ===
+You are AURA, an intelligent data assistant. Analyze the user's message and determine if it requires executing a SQL query against the database, or if it is a general conversational message (like a greeting, thanking, asking for help, or asking about the metadata/columns available).
+
+Available Schema Context:
+Available tables in DuckDB:
+
+Table: Titanic_Dataset — 891 rows
+  Columns: PassengerId (BIGINT), Survived (BIGINT), Pclass (BIGINT), Name (VARCHAR), Sex (VARCHAR), Age (DOUBLE), SibSp (BIGINT), Parch (BIGINT), Ticket (VARCHAR), Fare (DOUBLE), Cabin (VARCHAR), Embarked (VARCHAR)
+  Sample data (first 3 rows):
+    Row 1: {'PassengerId': 1, 'Survived': 0, 'Pclass': 3, 'Name': 'Braund, Mr. Owen Harris', 'Sex': 'male', 'Age': 22.0, 'SibSp': 1, 'Parch': 0, 'Ticket': 'A/5 21171', 'Fare': 7.25, 'Cabin': None, 'Embarked': 'S'}
+    Row 2: {'PassengerId': 2, 'Survived': 1, 'Pclass': 1, 'Name': 'Cumings, Mrs. John Bradley (Florence Briggs Thayer)', 'Sex': 'female', 'Age': 38.0, 'SibSp': 1, 'Parch': 0, 'Ticket': 'PC 17599', 'Fare': 71.2833, 'Cabin': 'C85', 'Embarked': 'C'}
+    Row 3: {'PassengerId': 3, 'Survived': 1, 'Pclass': 3, 'Name': 'Heikkinen, Miss. Laina', 'Sex': 'female', 'Age': 26.0, 'SibSp': 0, 'Parch': 0, 'Ticket': 'STON/O2. 3101282', 'Fare': 7.925, 'Cabin': None, 'Embarked': 'S'}
+
+
+User's message: "do you think there are more men on ship then women"
+
+Respond STRICTLY with a JSON object in this format (no markdown code blocks, just raw JSON):
+{"intent": "sql" or "conversation", "message": "If conversation, put your helpful natural language response here. If sql, leave blank."}
+
+================================
+2026-03-23 18:37:44 | INFO     | aura.middleware | POST /v1/orchestrations/query → 200 (17003.8 ms) [4dad4a81-3e2e-4722-b7b8-2580fb4ebbcd]
+2026-03-23 18:37:44 | INFO     | aura.api_gateway | === [CONCLUSION LLM PROMPT] ===
+User asked: 'do you think there are more men on ship then women'
+Data result (first 20 rows):
+[{'AnswerToQuestion': 'Yes, there are more men.'}]
+Provide a brief, conclusive answer to the user's question based strictly on this data. Do not show the SQL. Keep it to 1-3 sentences in a friendly, helpful tone.
+================================
+2026-03-23 18:37:46 | INFO     | aura.middleware | POST /chat → 200 (19393.4 ms) [5037e792-6ddf-4de7-82ec-1445f09ad639]
+2026-03-23 18:40:15 | INFO     | aura.middleware | GET /connections → 200 (10.4 ms) [588df8df-c9a5-43e9-bc77-71a5b40356dd]
+2026-03-23 18:40:15 | INFO     | aura.middleware | GET /connections → 200 (1.9 ms) [acd0c762-14dc-40f6-84e8-fb3a8a3cc5d1]
+2026-03-23 18:40:20 | INFO     | aura.api_gateway | === [INTENT CLASSIFIER PROMPT] ===
+You are AURA, an intelligent data assistant. Analyze the user's message and determine if it requires executing a SQL query against the database, or if it is a general conversational message (like a greeting, thanking, asking for help, or asking about the metadata/columns available).
+
+Available Schema Context:
+Available tables in DuckDB:
+
+Table: Titanic_Dataset — 891 rows
+  Columns: PassengerId (BIGINT), Survived (BIGINT), Pclass (BIGINT), Name (VARCHAR), Sex (VARCHAR), Age (DOUBLE), SibSp (BIGINT), Parch (BIGINT), Ticket (VARCHAR), Fare (DOUBLE), Cabin (VARCHAR), Embarked (VARCHAR)
+  Sample data (first 3 rows):
+    Row 1: {'PassengerId': 1, 'Survived': 0, 'Pclass': 3, 'Name': 'Braund, Mr. Owen Harris', 'Sex': 'male', 'Age': 22.0, 'SibSp': 1, 'Parch': 0, 'Ticket': 'A/5 21171', 'Fare': 7.25, 'Cabin': None, 'Embarked': 'S'}
+    Row 2: {'PassengerId': 2, 'Survived': 1, 'Pclass': 1, 'Name': 'Cumings, Mrs. John Bradley (Florence Briggs Thayer)', 'Sex': 'female', 'Age': 38.0, 'SibSp': 1, 'Parch': 0, 'Ticket': 'PC 17599', 'Fare': 71.2833, 'Cabin': 'C85', 'Embarked': 'C'}
+    Row 3: {'PassengerId': 3, 'Survived': 1, 'Pclass': 3, 'Name': 'Heikkinen, Miss. Laina', 'Sex': 'female', 'Age': 26.0, 'SibSp': 0, 'Parch': 0, 'Ticket': 'STON/O2. 3101282', 'Fare': 7.925, 'Cabin': None, 'Embarked': 'S'}
+
+
+User's message: "hi"
+
+Respond STRICTLY with a JSON object in this format (no markdown code blocks, just raw JSON):
+{"intent": "sql" or "conversation", "message": "If conversation, put your helpful natural language response here. If sql, leave blank."}
+
+================================
+2026-03-23 18:40:21 | INFO     | aura.middleware | POST /chat → 200 (1045.3 ms) [55bf947c-b309-42d1-9a38-5103bb37037c]
+2026-03-23 18:40:35 | INFO     | aura.api_gateway | === [INTENT CLASSIFIER PROMPT] ===
+You are AURA, an intelligent data assistant. Analyze the user's message and determine if it requires executing a SQL query against the database, or if it is a general conversational message (like a greeting, thanking, asking for help, or asking about the metadata/columns available).
+
+Available Schema Context:
+Available tables in DuckDB:
+
+Table: Titanic_Dataset — 891 rows
+  Columns: PassengerId (BIGINT), Survived (BIGINT), Pclass (BIGINT), Name (VARCHAR), Sex (VARCHAR), Age (DOUBLE), SibSp (BIGINT), Parch (BIGINT), Ticket (VARCHAR), Fare (DOUBLE), Cabin (VARCHAR), Embarked (VARCHAR)
+  Sample data (first 3 rows):
+    Row 1: {'PassengerId': 1, 'Survived': 0, 'Pclass': 3, 'Name': 'Braund, Mr. Owen Harris', 'Sex': 'male', 'Age': 22.0, 'SibSp': 1, 'Parch': 0, 'Ticket': 'A/5 21171', 'Fare': 7.25, 'Cabin': None, 'Embarked': 'S'}
+    Row 2: {'PassengerId': 2, 'Survived': 1, 'Pclass': 1, 'Name': 'Cumings, Mrs. John Bradley (Florence Briggs Thayer)', 'Sex': 'female', 'Age': 38.0, 'SibSp': 1, 'Parch': 0, 'Ticket': 'PC 17599', 'Fare': 71.2833, 'Cabin': 'C85', 'Embarked': 'C'}
+    Row 3: {'PassengerId': 3, 'Survived': 1, 'Pclass': 3, 'Name': 'Heikkinen, Miss. Laina', 'Sex': 'female', 'Age': 26.0, 'SibSp': 0, 'Parch': 0, 'Ticket': 'STON/O2. 3101282', 'Fare': 7.925, 'Cabin': None, 'Embarked': 'S'}
+
+
+User's message: "who is the presisdent of us"
+
+Respond STRICTLY with a JSON object in this format (no markdown code blocks, just raw JSON):
+{"intent": "sql" or "conversation", "message": "If conversation, put your helpful natural language response here. If sql, leave blank."}
+
+================================
+2026-03-23 18:40:36 | INFO     | aura.middleware | POST /chat → 200 (1337.1 ms) [4ad4ba24-4ce1-43e9-a05c-312778390b05]
+2026-03-23 18:40:54 | INFO     | aura.api_gateway | === [INTENT CLASSIFIER PROMPT] ===
+You are AURA, an intelligent data assistant. Analyze the user's message and determine if it requires executing a SQL query against the database, or if it is a general conversational message (like a greeting, thanking, asking for help, or asking about the metadata/columns available).
+
+Available Schema Context:
+Available tables in DuckDB:
+
+Table: Titanic_Dataset — 891 rows
+  Columns: PassengerId (BIGINT), Survived (BIGINT), Pclass (BIGINT), Name (VARCHAR), Sex (VARCHAR), Age (DOUBLE), SibSp (BIGINT), Parch (BIGINT), Ticket (VARCHAR), Fare (DOUBLE), Cabin (VARCHAR), Embarked (VARCHAR)
+  Sample data (first 3 rows):
+    Row 1: {'PassengerId': 1, 'Survived': 0, 'Pclass': 3, 'Name': 'Braund, Mr. Owen Harris', 'Sex': 'male', 'Age': 22.0, 'SibSp': 1, 'Parch': 0, 'Ticket': 'A/5 21171', 'Fare': 7.25, 'Cabin': None, 'Embarked': 'S'}
+    Row 2: {'PassengerId': 2, 'Survived': 1, 'Pclass': 1, 'Name': 'Cumings, Mrs. John Bradley (Florence Briggs Thayer)', 'Sex': 'female', 'Age': 38.0, 'SibSp': 1, 'Parch': 0, 'Ticket': 'PC 17599', 'Fare': 71.2833, 'Cabin': 'C85', 'Embarked': 'C'}
+    Row 3: {'PassengerId': 3, 'Survived': 1, 'Pclass': 3, 'Name': 'Heikkinen, Miss. Laina', 'Sex': 'female', 'Age': 26.0, 'SibSp': 0, 'Parch': 0, 'Ticket': 'STON/O2. 3101282', 'Fare': 7.925, 'Cabin': None, 'Embarked': 'S'}
+
+
+User's message: "tell me male to female ratio"
+
+Respond STRICTLY with a JSON object in this format (no markdown code blocks, just raw JSON):
+{"intent": "sql" or "conversation", "message": "If conversation, put your helpful natural language response here. If sql, leave blank."}
+
+================================
+2026-03-23 18:41:09 | INFO     | aura.middleware | POST /v1/orchestrations/query → 200 (14787.0 ms) [4ef926e2-215c-4795-ac32-6a126a4561f0]
+2026-03-23 18:41:09 | INFO     | aura.api_gateway | === [CONCLUSION LLM PROMPT] ===
+User asked: 'tell me male to female ratio'
+Data result (first 20 rows):
+[{'(CAST(sum(CASE  WHEN ((Sex = \'male\')) THEN (1) ELSE 0 END) AS "DOUBLE") / "nullif"(sum(CASE  WHEN ((Sex = \'female\')) THEN (1) ELSE 0 END), 0))': 1.8375796178343948}]
+Provide a brief, conclusive answer to the user's question based strictly on this data. Do not show the SQL. Keep it to 1-3 sentences in a friendly, helpful tone.
+================================
+2026-03-23 18:41:11 | INFO     | aura.middleware | POST /chat → 200 (17547.2 ms) [7e87be07-df6e-4081-833c-bf8a4dead90a]
+2026-03-23 18:41:44 | INFO     | aura.middleware | OPTIONS /chat → 200 (0.4 ms) [816ccd76-2bc9-4ad5-853d-0e3d89eed427]
+2026-03-23 18:41:44 | INFO     | aura.api_gateway | === [INTENT CLASSIFIER PROMPT] ===
+You are AURA, an intelligent data assistant. Analyze the user's message and determine if it requires executing a SQL query against the database, or if it is a general conversational message (like a greeting, thanking, asking for help, or asking about the metadata/columns available).
+
+Available Schema Context:
+Available tables in DuckDB:
+
+Table: Titanic_Dataset — 891 rows
+  Columns: PassengerId (BIGINT), Survived (BIGINT), Pclass (BIGINT), Name (VARCHAR), Sex (VARCHAR), Age (DOUBLE), SibSp (BIGINT), Parch (BIGINT), Ticket (VARCHAR), Fare (DOUBLE), Cabin (VARCHAR), Embarked (VARCHAR)
+  Sample data (first 3 rows):
+    Row 1: {'PassengerId': 1, 'Survived': 0, 'Pclass': 3, 'Name': 'Braund, Mr. Owen Harris', 'Sex': 'male', 'Age': 22.0, 'SibSp': 1, 'Parch': 0, 'Ticket': 'A/5 21171', 'Fare': 7.25, 'Cabin': None, 'Embarked': 'S'}
+    Row 2: {'PassengerId': 2, 'Survived': 1, 'Pclass': 1, 'Name': 'Cumings, Mrs. John Bradley (Florence Briggs Thayer)', 'Sex': 'female', 'Age': 38.0, 'SibSp': 1, 'Parch': 0, 'Ticket': 'PC 17599', 'Fare': 71.2833, 'Cabin': 'C85', 'Embarked': 'C'}
+    Row 3: {'PassengerId': 3, 'Survived': 1, 'Pclass': 3, 'Name': 'Heikkinen, Miss. Laina', 'Sex': 'female', 'Age': 26.0, 'SibSp': 0, 'Parch': 0, 'Ticket': 'STON/O2. 3101282', 'Fare': 7.925, 'Cabin': None, 'Embarked': 'S'}
+
+
+User's message: "are men more on board or females"
+
+Respond STRICTLY with a JSON object in this format (no markdown code blocks, just raw JSON):
+{"intent": "sql" or "conversation", "message": "If conversation, put your helpful natural language response here. If sql, leave blank."}
+
+================================
+2026-03-23 18:42:16 | INFO     | aura.middleware | POST /v1/orchestrations/query → 200 (31033.7 ms) [2b11f8db-952e-40a5-b61a-5a2d63c439e0]
+2026-03-23 18:42:16 | INFO     | aura.api_gateway | === [CONCLUSION LLM PROMPT] ===
+User asked: 'are men more on board or females'
+Data result (first 20 rows):
+[{'gender_onboard_comparison': 'Men are more on board'}]
+Provide a brief, conclusive answer to the user's question based strictly on this data. Do not show the SQL. Keep it to 1-3 sentences in a friendly, helpful tone.
+================================
+2026-03-23 18:42:18 | INFO     | aura.middleware | POST /chat → 200 (33272.0 ms) [fe47b471-e8af-4068-84de-8aef16045ff0]
+2026-03-23 18:42:31 | INFO     | aura.middleware | GET /files → 200 (18.3 ms) [41713661-7242-4007-9670-036eee376166]
+2026-03-23 18:42:31 | INFO     | aura.middleware | GET /files → 200 (17.2 ms) [bac628d6-e216-46fd-b7bb-858fd8ed3de7]
+2026-03-23 18:42:52 | INFO     | aura.middleware | GET /files → 200 (13.1 ms) [0942f317-9e08-4f85-9b38-9f1114465e17]
+2026-03-23 18:42:52 | INFO     | aura.middleware | GET /files → 200 (11.7 ms) [596b8ee9-15d7-4057-bf7b-c14f87885e4e]
+2026-03-23 18:43:05 | INFO     | aura.middleware | GET /files → 200 (20.8 ms) [b73803ae-2001-4d59-9656-88c179432646]
+2026-03-23 18:43:05 | INFO     | aura.middleware | GET /files → 200 (24.7 ms) [976815f1-8298-4933-bad8-8535e48df5d6]
+2026-03-23 19:04:02 | INFO     | aura.scheduler | Shutting down Scheduler Service...
+2026-03-23 19:04:02 | INFO     | scheduler_service.worker | Scheduler worker stopped
+2026-03-23 19:04:02 | INFO     | aura.scheduler | Scheduler Service shutdown complete
+2026-03-23 19:04:02 | INFO     | aura.factory | Shutting down AURA Insights service
+2026-03-23 19:04:02 | INFO     | aura.factory | Shutting down AURA Orchestration service
+2026-03-23 19:04:02 | INFO     | aura.factory | Shutting down AURA Connectors service
+2026-03-23 19:04:02 | INFO     | aura.factory | Shutting down AURA Code Generation service
+2026-03-23 19:04:03 | INFO     | aura.metadata_store | Shutting down Metadata Store
+2026-03-23 19:04:03 | INFO     | aura.factory | Shutting down AURA API Gateway service
+2026-03-23 19:04:03 | INFO     | aura.factory | Shutting down AURA Execution Sandbox service
+2026-03-23 19:04:06 | INFO     | aura.factory | AURA Insights service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:04:06 | INFO     | aura.factory | Starting AURA Insights service (env=development)
+2026-03-23 19:04:07 | INFO     | aura.factory | AURA Code Generation service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:04:07 | INFO     | aura.factory | AURA Execution Sandbox service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:04:07 | INFO     | aura.factory | Starting AURA Execution Sandbox service (env=development)
+2026-03-23 19:04:07 | INFO     | aura.factory | AURA Scheduler service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:04:07 | INFO     | aura.scheduler | Starting Scheduler Service...
+2026-03-23 19:04:07 | INFO     | aura.scheduler | Initialized database: sqlite+aiosqlite:///data/scheduler.db
+2026-03-23 19:04:07 | INFO     | aura.scheduler | Initialized executor (database service: http://connector_service:8002)
+2026-03-23 19:04:07 | INFO     | scheduler_service.worker | Scheduler worker started (check interval: 60s)
+2026-03-23 19:04:07 | INFO     | aura.scheduler | Scheduler Service started successfully
+2026-03-23 19:04:08 | INFO     | aura.factory | AURA Orchestration service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:04:08 | INFO     | aura.factory | AURA Metadata Store service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:04:08 | INFO     | aura.metadata_store | Starting Metadata Store — initializing DB
+2026-03-23 19:04:09 | INFO     | shared.llm_provider | AURA LLM: auto-selected gemini (model=gemini-2.5-flash)
+2026-03-23 19:04:09 | INFO     | aura.factory | Starting AURA Code Generation service (env=development)
+2026-03-23 19:04:09 | INFO     | aura.factory | AURA Connectors service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:04:09 | INFO     | shared.llm_provider | AURA LLM: auto-selected gemini (model=gemini-2.5-flash)
+2026-03-23 19:04:09 | INFO     | shared.llm_provider | AURA LLM: auto-selected gemini (model=gemini-2.5-flash)
+2026-03-23 19:04:09 | INFO     | aura.factory | Starting AURA Orchestration service (env=development)
+2026-03-23 19:04:09 | INFO     | aura.factory | Starting AURA Connectors service (env=development)
+2026-03-23 19:04:10 | INFO     | aura.factory | AURA API Gateway service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:04:11 | INFO     | aura.factory | Starting AURA API Gateway service (env=development)
+2026-03-23 19:04:23 | INFO     | aura.factory | Shutting down AURA Code Generation service
+2026-03-23 19:04:23 | INFO     | aura.factory | Shutting down AURA Execution Sandbox service
+2026-03-23 19:04:23 | INFO     | aura.factory | Shutting down AURA Orchestration service
+2026-03-23 19:04:23 | INFO     | aura.metadata_store | Shutting down Metadata Store
+2026-03-23 19:04:23 | INFO     | aura.scheduler | Shutting down Scheduler Service...
+2026-03-23 19:04:23 | INFO     | scheduler_service.worker | Scheduler worker stopped
+2026-03-23 19:04:23 | INFO     | aura.scheduler | Scheduler Service shutdown complete
+2026-03-23 19:04:23 | INFO     | aura.factory | Shutting down AURA API Gateway service
+2026-03-23 19:04:23 | INFO     | aura.factory | Shutting down AURA Insights service
+2026-03-23 19:04:23 | INFO     | aura.factory | Shutting down AURA Connectors service
+2026-03-23 19:04:37 | INFO     | aura.factory | AURA Execution Sandbox service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:04:37 | INFO     | aura.factory | AURA Code Generation service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:04:37 | INFO     | aura.factory | Starting AURA Execution Sandbox service (env=development)
+2026-03-23 19:04:39 | INFO     | aura.factory | AURA Insights service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:04:39 | INFO     | aura.factory | AURA Scheduler service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:04:39 | INFO     | aura.factory | Starting AURA Insights service (env=development)
+2026-03-23 19:04:39 | INFO     | aura.factory | AURA Orchestration service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:04:39 | INFO     | aura.scheduler | Starting Scheduler Service...
+2026-03-23 19:04:39 | INFO     | aura.scheduler | Initialized database: sqlite+aiosqlite:///data/scheduler.db
+2026-03-23 19:04:39 | INFO     | aura.factory | AURA Metadata Store service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:04:39 | INFO     | aura.scheduler | Initialized executor (database service: http://connector_service:8002)
+2026-03-23 19:04:39 | INFO     | scheduler_service.worker | Scheduler worker started (check interval: 60s)
+2026-03-23 19:04:39 | INFO     | aura.scheduler | Scheduler Service started successfully
+2026-03-23 19:04:39 | INFO     | aura.metadata_store | Starting Metadata Store — initializing DB
+2026-03-23 19:04:41 | INFO     | shared.llm_provider | AURA LLM: auto-selected gemini (model=gemini-2.5-flash)
+2026-03-23 19:04:41 | INFO     | aura.factory | Starting AURA Code Generation service (env=development)
+2026-03-23 19:04:42 | INFO     | shared.llm_provider | AURA LLM: auto-selected gemini (model=gemini-2.5-flash)
+2026-03-23 19:04:42 | INFO     | shared.llm_provider | AURA LLM: auto-selected gemini (model=gemini-2.5-flash)
+2026-03-23 19:04:42 | INFO     | aura.factory | Starting AURA Orchestration service (env=development)
+2026-03-23 19:04:42 | INFO     | aura.factory | AURA Connectors service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:04:42 | INFO     | aura.factory | Starting AURA Connectors service (env=development)
+2026-03-23 19:04:43 | INFO     | aura.factory | AURA API Gateway service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:04:44 | INFO     | aura.factory | Starting AURA API Gateway service (env=development)
+2026-03-23 19:04:44 | INFO     | aura.middleware | GET /connections → 200 (24.0 ms) [90595a28-73c7-4bdf-a205-061ad8f742e0]
+2026-03-23 19:04:44 | INFO     | aura.middleware | GET /connections → 200 (1.5 ms) [47293920-ad4d-4eaf-a0a3-428441a974cc]
+2026-03-23 19:04:44 | INFO     | aura.middleware | OPTIONS /chat → 200 (0.5 ms) [44920ab9-2ff8-418c-acc7-8c43c95c6faa]
+2026-03-23 19:04:54 | INFO     | aura.factory | Shutting down AURA Code Generation service
+2026-03-23 19:04:54 | INFO     | aura.factory | Shutting down AURA Connectors service
+2026-03-23 19:04:54 | INFO     | aura.factory | Shutting down AURA Insights service
+2026-03-23 19:04:54 | INFO     | aura.scheduler | Shutting down Scheduler Service...
+2026-03-23 19:04:54 | INFO     | scheduler_service.worker | Scheduler worker stopped
+2026-03-23 19:04:54 | INFO     | aura.scheduler | Scheduler Service shutdown complete
+2026-03-23 19:04:54 | INFO     | aura.factory | Shutting down AURA Execution Sandbox service
+2026-03-23 19:04:54 | INFO     | aura.metadata_store | Shutting down Metadata Store
+2026-03-23 19:04:58 | INFO     | aura.factory | AURA Code Generation service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:04:58 | INFO     | aura.factory | AURA Insights service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:04:58 | INFO     | aura.factory | Starting AURA Insights service (env=development)
+2026-03-23 19:04:58 | INFO     | aura.factory | AURA Execution Sandbox service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:04:58 | INFO     | aura.factory | Starting AURA Execution Sandbox service (env=development)
+2026-03-23 19:04:59 | INFO     | aura.factory | AURA Scheduler service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:04:59 | INFO     | aura.scheduler | Starting Scheduler Service...
+2026-03-23 19:04:59 | INFO     | aura.factory | AURA Metadata Store service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:04:59 | INFO     | aura.scheduler | Initialized database: sqlite+aiosqlite:///data/scheduler.db
+2026-03-23 19:04:59 | INFO     | aura.metadata_store | Starting Metadata Store — initializing DB
+2026-03-23 19:04:59 | INFO     | aura.scheduler | Initialized executor (database service: http://connector_service:8002)
+2026-03-23 19:04:59 | INFO     | scheduler_service.worker | Scheduler worker started (check interval: 60s)
+2026-03-23 19:04:59 | INFO     | aura.scheduler | Scheduler Service started successfully
+2026-03-23 19:04:59 | INFO     | shared.llm_provider | AURA LLM: auto-selected gemini (model=gemini-2.5-flash)
+2026-03-23 19:04:59 | INFO     | aura.factory | Starting AURA Code Generation service (env=development)
+2026-03-23 19:05:00 | INFO     | aura.factory | AURA Connectors service created (CORS origins=['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'])
+2026-03-23 19:05:00 | INFO     | aura.factory | Starting AURA Connectors service (env=development)
+2026-03-23 19:05:00 | WARNING  | shared.llm_provider | Gemini generation failed: Invalid operation: The `response.text` quick accessor requires the response to contain a valid `Part`, but none were returned. The candidate's [finish_reason](https://ai.google.dev/api/generate-content#finishreason) is 1.
+2026-03-23 19:05:16 | INFO     | aura.middleware | POST /v1/orchestrations/query → 200 (32064.0 ms) [9bfcdbfc-0d0c-45b3-91a1-870082c8dcfb]
+2026-03-23 19:05:16 | INFO     | aura.middleware | POST /chat → 200 (32330.6 ms) [84d723f3-b7f8-4977-83c6-fa629ea99b25]
+2026-03-23 19:05:16 | INFO     | aura.factory | Shutting down AURA API Gateway service
+2026-03-23 19:05:16 | INFO     | aura.factory | Shutting down AURA Orchestration service

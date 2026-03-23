@@ -8,7 +8,7 @@
 // =============================================================================
 
 const API_BASE_URL = localStorage.getItem('apiUrl') || import.meta.env.VITE_API_URL || 'http://localhost:8000'; // Configurable via Settings page
-const REQUEST_TIMEOUT = Number(import.meta.env.VITE_REQUEST_TIMEOUT) || 30000; // 30 seconds
+const REQUEST_TIMEOUT = 120000; // 120 seconds (2 minutes) to allow heavy queries
 const HEALTH_CHECK_INTERVAL = Number(import.meta.env.VITE_HEALTH_CHECK_INTERVAL) || 10000; // 10 seconds for faster detection
 
 // =============================================================================
@@ -32,7 +32,8 @@ export interface HealthStatus {
 
 export interface QueryResponse {
   job_id: string;
-  status: 'Success' | 'Fallback' | 'Error';
+  status: 'Success' | 'Fallback' | 'Error' | 'Conversational';
+  message?: string;
   final_query?: string;
   error_message?: string;
   execution_time_ms?: number;
@@ -53,6 +54,7 @@ export interface ExecutionResult {
   execution_time_ms?: number;
   error?: string;
   chart_spec?: Record<string, any>;
+  conclusion?: string;
 }
 
 export interface DataSource {

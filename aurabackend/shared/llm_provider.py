@@ -69,6 +69,7 @@ class LLMProvider(ABC):
     def generate_json(self, prompt: Union[str, List[str]], **kwargs: Any) -> Optional[Dict[str, Any]]:
         """Convenience: generate and parse as JSON."""
         text = self.generate(prompt, **kwargs)
+        print(f"=== [LLM RAW RESPONSE] ===\n{text}\n================================")
         if text is None:
             return None
         # Strip markdown code fences

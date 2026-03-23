@@ -624,19 +624,51 @@ async def chat_endpoint(request: ChatRequest) -> Dict[str, Any]:
     if request.columns:
         full_context = f"Columns: {', '.join(request.columns)}\n{full_context}"
 
-    # ── Step 2: Generate SQL via the orchestration service ──────────
     session_id = request.session_id or f"chat_{int(time.time()*1000)}"
+
+    # ── Step 1.5: Intent Classification ─────────────────────────────
+    try:
+        from shared.llm_provider import get_llm
+        llm = get_llm()
+        
+        intent_prompt = f"""You are AURA, an intelligent data assistant. Analyze the user's message and determine if it requires executing a SQL query against the database, or if it is a general conversational message (like a greeting, thanking, asking for help, or asking about the metadata/columns available).
+
+Available Schema Context:
+{full_context}
+
+User's message: "{message}"
+
+Respond STRICTLY with a JSON object in this format (no markdown code blocks, just raw JSON):
+{{"intent": "sql" or "conversation", "message": "If conversation, put your helpful natural language response here. If sql, leave blank."}}
+"""
+        logger.info(f"=== [INTENT CLASSIFIER PROMPT] ===\n{intent_prompt}\n================================")
+        classifier_result = llm.generate_json(intent_prompt)
+        if classifier_result and classifier_result.get("intent") == "conversation":
+            # Return immediately with the conversational response
+            return {
+                "status": "Conversational",
+                "job_id": f"job_{session_id}",
+                "message": classifier_result.get("message", "Hello! How can I help you with your data today?"),
+                "execution_time_ms": round((time.time() - t0) * 1000, 1),
+                "available_tables": list(table_schemas.keys()),
+            }
+    except Exception as e:
+        logger.warning(f"Intent classification failed: {e}")
+        # If it fails, we just fall back to the normal SQL flow
+
+    # ── Step 2: Generate SQL via the orchestration service ──────────
     orchestration_url = os.getenv(
         "ORCHESTRATION_SERVICE_URL",
         "http://localhost:8006/v1/orchestrations/query",
     )
+    
 
     generated_sql = None
     gen_status = "Error"
     error_message = None
 
     try:
-        async with httpx.AsyncClient(timeout=60.0) as client:
+        async with httpx.AsyncClient(timeout=120.0) as client:
             resp = await client.post(
                 orchestration_url,
                 json={
@@ -673,6 +705,18 @@ async def chat_endpoint(request: ChatRequest) -> Dict[str, Any]:
                 # Auto-detect chart type from the query and data
                 chart_spec = _suggest_chart(message, columns, records)
 
+                conclusion = None
+                if records:
+                    try:
+                        from shared.llm_provider import get_llm
+                        llm = get_llm()
+                        limited_records = records[:20]
+                        conclusion_prompt = f"User asked: '{message}'\nData result (first 20 rows):\n{limited_records}\nProvide a brief, conclusive answer to the user's question based strictly on this data. Do not show the SQL. Keep it to 1-3 sentences in a friendly, helpful tone."
+                        logger.info(f"=== [CONCLUSION LLM PROMPT] ===\n{conclusion_prompt}\n================================")
+                        conclusion = llm.generate(conclusion_prompt)
+                    except Exception as e:
+                        logger.warning(f"Failed to generate analytical conclusion: {e}")
+
                 execution_result = {
                     "success": True,
                     "data": records,
@@ -680,6 +724,7 @@ async def chat_endpoint(request: ChatRequest) -> Dict[str, Any]:
                     "rows": [[_serialize_value(cell) for cell in row] for row in rows],
                     "row_count": len(records),
                     "chart_spec": chart_spec,
+                    "conclusion": conclusion,
                 }
             except Exception as exec_err:
                 execution_result = {

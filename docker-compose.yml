@@ -17,7 +17,7 @@ services:
   # ── Port 8000 — API Gateway ──────────────────────────────────────────
   api_gateway:
     <<: *common
-    command: uvicorn api_gateway.main:app --host 0.0.0.0 --port 8000
+    command: uvicorn api_gateway.main:app --host 0.0.0.0 --port 8000 --reload
     ports:
       - "8000:8000"
     environment:
@@ -40,7 +40,7 @@ services:
   # ── Port 8001 — Code Generation ──────────────────────────────────────
   code_generation_service:
     <<: *common
-    command: uvicorn code_generation_service.main:code_gen_app --host 0.0.0.0 --port 8001
+    command: uvicorn code_generation_service.main:code_gen_app --host 0.0.0.0 --port 8001 --reload
     ports:
       - "8001:8001"
     healthcheck:
@@ -52,7 +52,7 @@ services:
   # ── Port 8002 — Connectors (+ Vault endpoints) ──────────────────────
   connector_service:
     <<: *common
-    command: uvicorn connectors.main:app --host 0.0.0.0 --port 8002
+    command: uvicorn connectors.main:app --host 0.0.0.0 --port 8002 --reload
     ports:
       - "8002:8002"
     healthcheck:
@@ -64,7 +64,7 @@ services:
   # ── Port 8003 — Execution Sandbox ────────────────────────────────────
   execution_sandbox:
     <<: *common
-    command: uvicorn execution_sandbox.main:execution_app --host 0.0.0.0 --port 8003
+    command: uvicorn execution_sandbox.main:execution_app --host 0.0.0.0 --port 8003 --reload
     ports:
       - "8003:8003"
     environment:
@@ -82,7 +82,7 @@ services:
   # ── Port 8004 — Scheduler ───────────────────────────────────────────
   scheduler_service:
     <<: *common
-    command: uvicorn scheduler_service.main:scheduler_app --host 0.0.0.0 --port 8004
+    command: uvicorn scheduler_service.main:scheduler_app --host 0.0.0.0 --port 8004 --reload
     ports:
       - "8004:8004"
     volumes:
@@ -103,7 +103,7 @@ services:
   # ── Port 8005 — Insights ────────────────────────────────────────────
   insights_service:
     <<: *common
-    command: uvicorn insights.main:app --host 0.0.0.0 --port 8005
+    command: uvicorn insights.main:app --host 0.0.0.0 --port 8005 --reload
     ports:
       - "8005:8005"
     healthcheck:
@@ -115,7 +115,7 @@ services:
   # ── Port 8006 — Orchestration ───────────────────────────────────────
   orchestration_service:
     <<: *common
-    command: uvicorn orchestration_service.main:app --host 0.0.0.0 --port 8006
+    command: uvicorn orchestration_service.main:app --host 0.0.0.0 --port 8006 --reload
     ports:
       - "8006:8006"
     healthcheck:
@@ -130,7 +130,7 @@ services:
   # ── Port 8007 — Metadata Store ──────────────────────────────────────
   metadata_store:
     <<: *common
-    command: uvicorn metadata_store.main:metadata_app --host 0.0.0.0 --port 8007
+    command: uvicorn metadata_store.main:metadata_app --host 0.0.0.0 --port 8007 --reload
     ports:
       - "8007:8007"
     healthcheck:
