@@ -105,10 +105,11 @@ RULES:
 1. Output ONLY valid JSON — no markdown, no explanation, no code fences.
 2. Every step MUST have type, description, and config.
 3. Use the EXACT column names from the schema context provided.
-4. If the user doesn't specify a sink, default to "preview".
-5. If the user doesn't specify a source, infer from context or use the first available file.
-6. Keep step descriptions short and clear.
-7. Values in filter configs should be strings (they get cast at execution time).
+4. Always enclose ALL table and column names in double quotes (e.g., "my_table"."my_column") to ensure compatibility with identifiers containing special characters like '&', spaces, or reserved keywords.
+5. If the user doesn't specify a sink, default to "preview".
+6. If the user doesn't specify a source, infer from context or use the first available file.
+7. Keep step descriptions short and clear.
+8. Values in filter configs should be strings (they get cast at execution time).
 """
 
 

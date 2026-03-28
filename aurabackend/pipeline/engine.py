@@ -46,6 +46,11 @@ def _sanitize_id(name: str) -> str:
     return cleaned or "col"
 
 
+def _q(name: str) -> str:
+    """Double-quote a SQL identifier to handle special characters like & in table names."""
+    return '"' + name.replace('"', '""') + '"'
+
+
 class PipelineEngine:
     """Executes Pipeline definitions using DuckDB."""
 
@@ -93,11 +98,11 @@ class PipelineEngine:
             logger.info(f"[Pipeline:{pipeline.id}] Source loaded as '{source_table}'")
 
             # Count source rows
-            src_count = conn.execute(f"SELECT COUNT(*) FROM {source_table}").fetchone()[0]
+            src_count = conn.execute(f"SELECT COUNT(*) FROM {_q(source_table)}").fetchone()[0]
             run.rows_read = src_count
 
             # Source columns
-            src_cols = [desc[0] for desc in conn.execute(f"SELECT * FROM {source_table} LIMIT 0").description]
+            src_cols = [desc[0] for desc in conn.execute(f"SELECT * FROM {_q(source_table)} LIMIT 0").description]
             run.columns_in = src_cols
 
             # ── 2. BUILD PROCESSING SQL ───────────────────────────────
@@ -114,16 +119,16 @@ class PipelineEngine:
             conn.execute(sql)
 
             # Get output metadata
-            out_count = conn.execute(f"SELECT COUNT(*) FROM {final_table}").fetchone()[0]
-            out_cols = [desc[0] for desc in conn.execute(f"SELECT * FROM {final_table} LIMIT 0").description]
+            out_count = conn.execute(f"SELECT COUNT(*) FROM {_q(final_table)}").fetchone()[0]
+            out_cols = [desc[0] for desc in conn.execute(f"SELECT * FROM {_q(final_table)} LIMIT 0").description]
             run.rows_written = out_count
             run.columns_out = out_cols
 
             # Preview rows
             preview_rows = conn.execute(
-                f"SELECT * FROM {final_table} LIMIT {preview_limit}"
+                f"SELECT * FROM {_q(final_table)} LIMIT {preview_limit}"
             ).fetchall()
-            col_descs = [desc[0] for desc in conn.execute(f"SELECT * FROM {final_table} LIMIT 0").description]
+            col_descs = [desc[0] for desc in conn.execute(f"SELECT * FROM {_q(final_table)} LIMIT 0").description]
             run.preview_data = [dict(zip(col_descs, row)) for row in preview_rows]
 
             # ── 3. WRITE SINK (unless preview_only) ───────────────────
@@ -198,7 +203,7 @@ class PipelineEngine:
             raise ConnectionError(f"Cannot connect to {source.type.value} source")
 
         try:
-            query = source.query or f"SELECT * FROM {source.table}"
+            query = source.query or f"SELECT * FROM {_q(source.table)}"
             rows = await connector.execute_query(query, limit=100_000)
         finally:
             await connector.disconnect()
@@ -211,11 +216,11 @@ class PipelineEngine:
         table_name = "source_data"
         columns = list(rows[0].keys())
         col_defs = ", ".join(f'"{_sanitize_id(c)}" VARCHAR' for c in columns)
-        conn.execute(f"CREATE TABLE {table_name} ({col_defs})")
+        conn.execute(f"CREATE TABLE {_q(table_name)} ({col_defs})")
 
         for row in rows:
             values = ", ".join(f"'{str(v).replace(chr(39), chr(39)+chr(39))}'" if v is not None else "NULL" for v in row.values())
-            conn.execute(f"INSERT INTO {table_name} VALUES ({values})")
+            conn.execute(f"INSERT INTO {_q(table_name)} VALUES ({values})")
 
         return table_name
 
@@ -242,7 +247,7 @@ class PipelineEngine:
         """
         if not steps:
             # No transforms — create output as passthrough
-            sql = f"CREATE TABLE pipeline_output AS SELECT * FROM {source_table}"
+            sql = f"CREATE TABLE pipeline_output AS SELECT * FROM {_q(source_table)}"
             return "pipeline_output", sql, 0, 0
 
         ctes: List[str] = []
@@ -261,13 +266,13 @@ class PipelineEngine:
             prev = alias
 
         if not ctes:
-            sql = f"CREATE TABLE pipeline_output AS SELECT * FROM {source_table}"
+            sql = f"CREATE TABLE pipeline_output AS SELECT * FROM {_q(source_table)}"
             return "pipeline_output", sql, 0, skipped
 
         cte_sql = "WITH " + ",\n".join(ctes)
-        sql = f"{cte_sql}\nCREATE TABLE pipeline_output AS SELECT * FROM {prev}"
+        sql = f"{cte_sql}\nCREATE TABLE pipeline_output AS SELECT * FROM {_q(prev)}"
         # DuckDB needs CREATE TABLE ... AS WITH ... format:
-        sql = f"CREATE TABLE pipeline_output AS {cte_sql} SELECT * FROM {prev}"
+        sql = f"CREATE TABLE pipeline_output AS {cte_sql} SELECT * FROM {_q(prev)}"
         return "pipeline_output", sql, step_num, skipped
 
     def _step_to_sql(self, conn: Any, step: ProcessingStep, prev: str) -> Optional[str]:
@@ -285,9 +290,9 @@ class PipelineEngine:
             if op.upper() not in allowed_ops:
                 op = "="
             if op.upper() in ("IS NULL", "IS NOT NULL"):
-                return f'SELECT * FROM {prev} WHERE "{_sanitize_id(col)}" {op}'
+                return f'SELECT * FROM {_q(prev)} WHERE "{_sanitize_id(col)}" {op}'
             safe_val = str(val).replace("'", "''")
-            return f"SELECT * FROM {prev} WHERE \"{_sanitize_id(col)}\" {op} '{safe_val}'"
+            return f"SELECT * FROM {_q(prev)} WHERE \"{_sanitize_id(col)}\" {op} '{safe_val}'"
 
         elif t == StepType.SORT:
             col = cfg.get("column", "")
@@ -296,7 +301,7 @@ class PipelineEngine:
                 return None
             if direction not in ("ASC", "DESC"):
                 direction = "ASC"
-            return f'SELECT * FROM {prev} ORDER BY "{_sanitize_id(col)}" {direction}'
+            return f'SELECT * FROM {_q(prev)} ORDER BY "{_sanitize_id(col)}" {direction}'
 
         elif t == StepType.DROP_COLUMNS:
             columns = cfg.get("columns", [])
@@ -305,7 +310,7 @@ class PipelineEngine:
             excludes = ", ".join(f'"{_sanitize_id(c)}"' for c in columns if c)
             if not excludes:
                 return None
-            return f"SELECT * EXCLUDE ({excludes}) FROM {prev}"
+            return f"SELECT * EXCLUDE ({excludes}) FROM {_q(prev)}"
 
         elif t == StepType.RENAME_COLUMNS:
             mapping = cfg.get("mapping", {})
@@ -317,14 +322,14 @@ class PipelineEngine:
             )
             if not renames:
                 return None
-            return f"SELECT {renames}, * EXCLUDE ({', '.join(chr(34) + _sanitize_id(old) + chr(34) for old in mapping if old)}) FROM {prev}"
+            return f"SELECT {renames}, * EXCLUDE ({', '.join(chr(34) + _sanitize_id(old) + chr(34) for old in mapping if old)}) FROM {_q(prev)}"
 
         elif t == StepType.ADD_COLUMN:
             name = cfg.get("name", "")
             expression = cfg.get("expression", "")
             if not name or not expression:
                 return None
-            return f'SELECT *, ({expression}) AS "{_sanitize_id(name)}" FROM {prev}'
+            return f'SELECT *, ({expression}) AS "{_sanitize_id(name)}" FROM {_q(prev)}'
 
         elif t == StepType.CAST_TYPE:
             col = cfg.get("column", "")
@@ -334,7 +339,7 @@ class PipelineEngine:
             allowed_types = {"INTEGER", "VARCHAR", "DOUBLE", "BOOLEAN", "DATE", "TIMESTAMP", "BIGINT", "FLOAT", "TEXT"}
             if new_type.upper() not in allowed_types:
                 return None
-            return f'SELECT *, CAST("{_sanitize_id(col)}" AS {new_type.upper()}) AS "{_sanitize_id(col)}_cast" FROM {prev}'
+            return f'SELECT *, CAST("{_sanitize_id(col)}" AS {new_type.upper()}) AS "{_sanitize_id(col)}_cast" FROM {_q(prev)}'
 
         elif t == StepType.FILL_MISSING:
             col = cfg.get("column", "")
@@ -342,20 +347,77 @@ class PipelineEngine:
             strategy = cfg.get("strategy", "value")
             if not col:
                 return None
+
+            # ── Fill ALL columns when column is "*" ──
+            if col == "*":
+                try:
+                    schema = conn.execute(f'DESCRIBE {_q(prev)}').fetchall()
+                except Exception:
+                    return None
+
+                # Detect whether the user's fill value looks numeric
+                _val_is_numeric = False
+                if value:
+                    try:
+                        float(str(value))
+                        _val_is_numeric = True
+                    except ValueError:
+                        pass
+
+                # ── Optimisation: only touch columns that actually have NULLs ──
+                try:
+                    null_count_exprs = ", ".join(
+                        f'SUM(CASE WHEN "{c}" IS NULL THEN 1 ELSE 0 END) AS "{c}"'
+                        for c, *_ in schema
+                    )
+                    null_row = conn.execute(
+                        f'SELECT {null_count_exprs} FROM {_q(prev)}'
+                    ).fetchone()
+                    cols_with_nulls = {schema[j][0] for j, cnt in enumerate(null_row) if cnt and cnt > 0}
+                except Exception:
+                    cols_with_nulls = None  # fallback: fill all
+
+                replaces = []
+                for c_name, c_type, *_ in schema:
+                    # Skip columns that have no NULLs (when we could detect)
+                    if cols_with_nulls is not None and c_name not in cols_with_nulls:
+                        continue
+                    is_numeric = any(t in c_type.upper() for t in ("INT", "FLOAT", "DOUBLE", "DECIMAL", "NUMERIC", "BIGINT", "SMALLINT", "TINYINT", "REAL"))
+                    if strategy == "mean" and is_numeric:
+                        replaces.append(f'COALESCE("{c_name}", AVG("{c_name}") OVER ()) AS "{c_name}"')
+                    elif strategy == "median" and is_numeric:
+                        replaces.append(f'COALESCE("{c_name}", MEDIAN("{c_name}") OVER ()) AS "{c_name}"')
+                    elif strategy in ("mean", "median") and not is_numeric:
+                        if value and not _val_is_numeric:
+                            safe = str(value).replace("'", "''")
+                            replaces.append(f"COALESCE(\"{c_name}\", '{safe}') AS \"{c_name}\"")
+                        # else: skip text cols for mean/median
+                    elif is_numeric and value:
+                        replaces.append(f'COALESCE("{c_name}", {value}) AS "{c_name}"')
+                    elif is_numeric and not value:
+                        replaces.append(f'COALESCE("{c_name}", 0) AS "{c_name}"')
+                    elif not is_numeric and value and not _val_is_numeric:
+                        safe = str(value).replace("'", "''")
+                        replaces.append(f"COALESCE(\"{c_name}\", '{safe}') AS \"{c_name}\"")
+                    # else: text column + numeric value → skip
+                if not replaces:
+                    return None
+                return f'SELECT * REPLACE ({", ".join(replaces)}) FROM {_q(prev)}'
+
             if strategy == "mean":
-                return f'SELECT *, COALESCE("{_sanitize_id(col)}", AVG("{_sanitize_id(col)}") OVER ()) AS "{_sanitize_id(col)}_filled" FROM {prev}'
+                return f'SELECT *, COALESCE("{_sanitize_id(col)}", AVG("{_sanitize_id(col)}") OVER ()) AS "{_sanitize_id(col)}_filled" FROM {_q(prev)}'
             elif strategy == "median":
-                return f'SELECT *, COALESCE("{_sanitize_id(col)}", MEDIAN("{_sanitize_id(col)}") OVER ()) AS "{_sanitize_id(col)}_filled" FROM {prev}'
+                return f'SELECT *, COALESCE("{_sanitize_id(col)}", MEDIAN("{_sanitize_id(col)}") OVER ()) AS "{_sanitize_id(col)}_filled" FROM {_q(prev)}'
             else:
                 safe_val = str(value).replace("'", "''")
-                return f"SELECT *, COALESCE(\"{_sanitize_id(col)}\", '{safe_val}') AS \"{_sanitize_id(col)}_filled\" FROM {prev}"
+                return f"SELECT *, COALESCE(\"{_sanitize_id(col)}\", '{safe_val}') AS \"{_sanitize_id(col)}_filled\" FROM {_q(prev)}"
 
         elif t == StepType.DEDUPLICATE:
             columns = cfg.get("columns", [])
             if columns:
                 cols = ", ".join(f'"{_sanitize_id(c)}"' for c in columns if c)
-                return f"SELECT DISTINCT ON ({cols}) * FROM {prev}"
-            return f"SELECT DISTINCT * FROM {prev}"
+                return f"SELECT DISTINCT ON ({cols}) * FROM {_q(prev)}"
+            return f"SELECT DISTINCT * FROM {_q(prev)}"
 
         elif t == StepType.AGGREGATE:
             group_by = cfg.get("group_by", [])
@@ -375,7 +437,7 @@ class PipelineEngine:
                 agg_parts.append(f'{func}({col_ref}) AS "{_sanitize_id(alias)}"')
             if not agg_parts:
                 return None
-            return f"SELECT {gb_cols}, {', '.join(agg_parts)} FROM {prev} GROUP BY {gb_cols}"
+            return f"SELECT {gb_cols}, {', '.join(agg_parts)} FROM {_q(prev)} GROUP BY {gb_cols}"
 
         elif t == StepType.JOIN:
             join_type = cfg.get("join_type", "INNER").upper()
@@ -388,9 +450,9 @@ class PipelineEngine:
             if join_type not in allowed_joins:
                 join_type = "INNER"
             return (
-                f"SELECT * FROM {prev} "
-                f'{join_type} JOIN {right_table} '
-                f'ON {prev}."{_sanitize_id(left_key)}" = {right_table}."{_sanitize_id(right_key)}"'
+                f"SELECT * FROM {_q(prev)} "
+                f'{join_type} JOIN {_q(right_table)} '
+                f'ON {_q(prev)}."{_sanitize_id(left_key)}" = {_q(right_table)}."{_sanitize_id(right_key)}"'
             )
 
         elif t == StepType.WINDOW:
@@ -409,7 +471,7 @@ class PipelineEngine:
                 partition_clause = f"PARTITION BY {pb} " if pb else ""
             return (
                 f'SELECT *, {function}() OVER ({partition_clause}ORDER BY "{_sanitize_id(order_by)}") '
-                f'AS "{_sanitize_id(alias)}" FROM {prev}'
+                f'AS "{_sanitize_id(alias)}" FROM {_q(prev)}'
             )
 
         elif t == StepType.PIVOT:
@@ -419,7 +481,7 @@ class PipelineEngine:
             if not values_col or not pivot_col:
                 return None
             return (
-                f'PIVOT {prev} ON "{_sanitize_id(pivot_col)}" '
+                f'PIVOT {_q(prev)} ON "{_sanitize_id(pivot_col)}" '
                 f'USING {agg_func}("{_sanitize_id(values_col)}")'
             )
 
@@ -428,18 +490,18 @@ class PipelineEngine:
             if not columns:
                 return None
             cols = ", ".join(f'"{_sanitize_id(c)}"' for c in columns if c)
-            return f"UNPIVOT {prev} ON {cols} INTO NAME variable VALUE value"
+            return f"UNPIVOT {_q(prev)} ON {cols} INTO NAME variable VALUE value"
 
         elif t == StepType.LIMIT:
             n = cfg.get("count", 100)
-            return f"SELECT * FROM {prev} LIMIT {int(n)}"
+            return f"SELECT * FROM {_q(prev)} LIMIT {int(n)}"
 
         elif t == StepType.CUSTOM_SQL:
             expression = cfg.get("expression", "").strip()
             if not expression:
                 return None
             # Custom SQL must reference {{prev}} as the upstream table
-            return expression.replace("{{prev}}", prev)
+            return expression.replace("{{prev}}", _q(prev))
 
         return None
 
@@ -473,13 +535,13 @@ class PipelineEngine:
         out_path = os.path.join(OUTPUT_DIR, out_name)
 
         if fmt == "csv":
-            conn.execute(f"COPY {final_table} TO '{out_path}' (HEADER, DELIMITER ',')")
+            conn.execute(f"COPY {_q(final_table)} TO '{out_path}' (HEADER, DELIMITER ',')")
         elif fmt == "parquet":
-            conn.execute(f"COPY {final_table} TO '{out_path}' (FORMAT PARQUET)")
+            conn.execute(f"COPY {_q(final_table)} TO '{out_path}' (FORMAT PARQUET)")
         elif fmt == "json":
-            conn.execute(f"COPY {final_table} TO '{out_path}' (FORMAT JSON, ARRAY true)")
+            conn.execute(f"COPY {_q(final_table)} TO '{out_path}' (FORMAT JSON, ARRAY true)")
         else:
-            conn.execute(f"COPY {final_table} TO '{out_path}' (HEADER, DELIMITER ',')")
+            conn.execute(f"COPY {_q(final_table)} TO '{out_path}' (HEADER, DELIMITER ',')")
 
         run.output_file = out_name
         logger.info(f"[Pipeline] Wrote {out_name} ({run.rows_written} rows)")
@@ -509,7 +571,7 @@ class PipelineEngine:
 
         try:
             # Get data from DuckDB
-            result = conn.execute(f"SELECT * FROM {final_table}")
+            result = conn.execute(f"SELECT * FROM {_q(final_table)}")
             col_names = [desc[0] for desc in result.description]
             rows = result.fetchall()
 
@@ -522,7 +584,7 @@ class PipelineEngine:
                     await pg_conn.execute(f"DROP TABLE IF EXISTS {table_name}")
 
                 # Build CREATE TABLE from DuckDB column info
-                duck_schema = conn.execute(f"DESCRIBE {final_table}").fetchall()
+                duck_schema = conn.execute(f"DESCRIBE {_q(final_table)}").fetchall()
                 pg_type_map = {
                     "INTEGER": "INTEGER", "BIGINT": "BIGINT", "DOUBLE": "DOUBLE PRECISION",
                     "FLOAT": "REAL", "VARCHAR": "TEXT", "BOOLEAN": "BOOLEAN",
@@ -556,7 +618,7 @@ class PipelineEngine:
     ) -> None:
         table_name = sink.table or "pipeline_output_saved"
         if sink.if_exists == "replace":
-            conn.execute(f"DROP TABLE IF EXISTS {table_name}")
-        conn.execute(f"CREATE TABLE {table_name} AS SELECT * FROM {final_table}")
+            conn.execute(f"DROP TABLE IF EXISTS {_q(table_name)}")
+        conn.execute(f"CREATE TABLE {_q(table_name)} AS SELECT * FROM {_q(final_table)}")
         run.output_table = table_name
         logger.info(f"[Pipeline] Wrote to DuckDB table: {table_name}")

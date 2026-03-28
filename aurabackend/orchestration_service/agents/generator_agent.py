@@ -22,6 +22,9 @@ class GeneratorAgent:
             "You are an expert data analyst. Your task is to convert a user's question "
             "into a syntactically correct SQL query. The database is DuckDB (compatible with PostgreSQL syntax). "
             "Use the provided database schema context — use ONLY the table and column names listed there. "
+            "Always enclose ALL table and column names in double quotes "
+            '(e.g., "my_table"."my_column") to ensure compatibility with identifiers '
+            "containing special characters like '&', spaces, or reserved keywords. "
             "Respond ONLY with the raw SQL query, no markdown, no explanation."
         )
 

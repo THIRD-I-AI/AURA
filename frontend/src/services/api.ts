@@ -282,7 +282,8 @@ class ApiClient {
     try {
       const response = await this.get<HealthStatus>('/health');
       return response;
-    } catch (error) {
+    } catch {
+      // Service unreachable — report as down
       return {
         status: 'down',
         timestamp: new Date().toISOString(),
@@ -352,13 +353,18 @@ export const chatService = {
     });
   },
 
-  // TODO: Backend GET /chat/history/{sessionId} not yet implemented
   async getChatHistory(sessionId: string): Promise<ChatMessage[]> {
     try {
-      return client.get<ChatMessage[]>(`/chat/history/${sessionId}`);
+      return await client.get<ChatMessage[]>(`/chat/history/${sessionId}`);
     } catch {
       return [];
     }
+  },
+
+  async saveChatMessage(sessionId: string, message: { type: string; content: string; metadata?: any }): Promise<void> {
+    try {
+      await client.post(`/chat/history/${sessionId}`, message);
+    } catch { /* best-effort */ }
   },
 };
 
@@ -366,16 +372,15 @@ export const chatService = {
  * Connector Service - Database connections management
  */
 export const connectorService = {
-  async listSources(): Promise<DataSource[]> {
-    return client.get<DataSource[]>('/connections');
+  async listSources(): Promise<any> {
+    return client.get<any>('/connections');
   },
 
-  // TODO: Backend POST /connections not yet implemented
   async registerSource(credentials: ConnectionCredentials): Promise<DataSource> {
-    return client.post<DataSource>('/connections', credentials);
+    const resp = await client.post<{ success: boolean; connection: DataSource }>('/connections', credentials);
+    return resp.connection;
   },
 
-  // TODO: Backend POST /connections/{id}/test not yet implemented
   async testConnection(connectionId: string): Promise<{ success: boolean; message: string }> {
     return client.post<{ success: boolean; message: string }>(
       `/connections/${connectionId}/test`,
@@ -383,23 +388,22 @@ export const connectorService = {
     );
   },
 
-  // TODO: Backend DELETE /connections/{id} not yet implemented
   async deleteSource(connectionId: string): Promise<void> {
     return client.delete<void>(`/connections/${connectionId}`);
   },
 
   async getSupportedDatabases(): Promise<string[]> {
     try {
-      const data = await client.get<Array<{ type: string }>>('/connectors/available');
-      return data.map(c => c.type);
+      const data = await client.get<{ connectors: Array<{ id: string }> }>('/connectors/available');
+      return data.connectors.map(c => c.id);
     } catch {
-      return ['postgresql', 'mysql', 'sqlite'];
+      return ['postgresql', 'mysql', 'bigquery'];
     }
   },
 
-  // TODO: Backend GET /connections/{id}/schema not yet implemented
   async getSchema(connectionId: string): Promise<Record<string, string[]>> {
-    return client.get<Record<string, string[]>>(`/connections/${connectionId}/schema`);
+    const resp = await client.get<{ success: boolean; schema: Record<string, string[]> }>(`/connections/${connectionId}/schema`);
+    return resp.schema;
   },
 };
 
@@ -409,19 +413,7 @@ export const connectorService = {
 export const analyticsService = {
   async getDashboardStats(): Promise<DashboardStats> {
     try {
-      const [sources, health] = await Promise.all([
-        connectorService.listSources(),
-        client.checkHealth(),
-      ]);
-
-      // TODO: Replace with real backend endpoint when available
-      return {
-        total_rows: 0, // Will be populated by metadata service
-        active_sources: sources.filter((s) => s.is_active).length,
-        queries_run: 0, // Will be populated by execution logs
-        system_health: health.status,
-        uptime_percentage: health.status === 'healthy' ? 99.9 : 85.0,
-      };
+      return await client.get<DashboardStats>('/dashboard/stats');
     } catch {
       return {
         total_rows: 0,
@@ -432,9 +424,19 @@ export const analyticsService = {
     }
   },
 
-  // TODO: Backend GET /insights/{datasetId} not yet implemented
   async getInsights(datasetId: string): Promise<any> {
     return client.get<any>(`/insights/${datasetId}`);
+  },
+
+  async getQueryHistory(limit = 50, statusFilter?: string): Promise<{ success: boolean; queries: any[]; total: number }> {
+    const params = statusFilter && statusFilter !== 'all' ? `?limit=${limit}&status_filter=${statusFilter}` : `?limit=${limit}`;
+    return client.get(`/query-history${params}`);
+  },
+
+  async saveQueryRecord(record: { prompt: string; sql: string; status: string; rows: number; executionTime: number }): Promise<void> {
+    try {
+      await client.post('/query-history', record);
+    } catch { /* best-effort */ }
   },
 };
 
@@ -452,12 +454,10 @@ export const executionService = {
     });
   },
 
-  // TODO: Backend POST /jobs/{id}/approve not yet implemented
   async approveExecution(jobId: string): Promise<ExecutionResult> {
     return client.post<ExecutionResult>(`/jobs/${jobId}/approve`, {});
   },
 
-  // TODO: Backend POST /jobs/{id}/cancel not yet implemented
   async cancelExecution(jobId: string): Promise<void> {
     return client.post<void>(`/jobs/${jobId}/cancel`, {});
   },
@@ -473,7 +473,7 @@ export const uploadService = {
 
   async getUploadedFiles(): Promise<Array<{ id: string; name: string; uploaded_at: string }>> {
     try {
-      return client.get<Array<{ id: string; name: string; uploaded_at: string }>>('/files');
+      return await client.get<Array<{ id: string; name: string; uploaded_at: string }>>('/files');
     } catch {
       return [];
     }

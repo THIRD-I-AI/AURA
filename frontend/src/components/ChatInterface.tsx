@@ -4,7 +4,7 @@ import '../styles/components.css';
 import Button from './ui/Button';
 import Card from './ui/Card';
 import RechartsVisualization from './RechartsVisualization';
-import { chatService, executionService, type QueryResponse, type ExecutionResult } from '../services/api';
+import { chatService, executionService, analyticsService, type QueryResponse, type ExecutionResult } from '../services/api';
 
 interface Message {
   id: string;
@@ -69,21 +69,23 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
     }
   }, []);
 
-  // Save a query execution to localStorage so QueryHistory page can display it
+  // Save a query execution to both server and localStorage (fallback)
   const saveToQueryHistory = (prompt: string, sql: string, status: 'success' | 'error', rows: number, executionTime: number) => {
+    const record = {
+      id: `q_${Date.now()}`,
+      prompt,
+      sql,
+      status,
+      rows,
+      executionTime,
+      timestamp: new Date().toISOString(),
+    };
+    // Server-side persistence (fire-and-forget)
+    analyticsService.saveQueryRecord(record).catch(() => { /* best-effort */ });
+    // localStorage fallback
     try {
       const existing = JSON.parse(localStorage.getItem('queryHistory') || '[]');
-      const record = {
-        id: `q_${Date.now()}`,
-        prompt,
-        sql,
-        status,
-        rows,
-        executionTime,
-        timestamp: new Date().toISOString(),
-      };
       existing.unshift(record);
-      // Keep last 50 queries
       localStorage.setItem('queryHistory', JSON.stringify(existing.slice(0, 50)));
     } catch { /* ignore storage errors */ }
   };
@@ -288,17 +290,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
   return (
     <Card className="chat-container">
       {/* Chat History */}
-      <div
-        style={{
-          height: '500px',
-          overflow: 'auto',
-          padding: 'var(--space-6)',
-          display: 'flex',
-          flexDirection: 'column',
-          gap: 'var(--space-4)',
-          backgroundColor: 'var(--bg-primary)',
-        }}
-      >
+      <div className="chat-messages">
         {messages.length === 1 && (
           <div
             style={{
@@ -369,13 +361,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
       </div>
 
       {/* Input Area */}
-      <div
-        style={{
-          borderTop: '1px solid var(--border-default)',
-          padding: 'var(--space-4)',
-          backgroundColor: 'var(--bg-secondary)',
-        }}
-      >
+      <div className="chat-input-area">
         <form onSubmit={handleSendMessage} style={{ display: 'flex', gap: 'var(--space-3)' }}>
           <input
             type="text"

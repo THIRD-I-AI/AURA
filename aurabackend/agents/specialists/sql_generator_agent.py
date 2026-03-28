@@ -27,7 +27,7 @@ USER QUESTION:
 
 RULES:
 - Return ONLY the SQL statement.  No explanations, no markdown fences.
-- Use double-quotes for identifiers that might be reserved words.
+- Always enclose ALL table and column names in double quotes (e.g., "my_table"."my_column") to ensure compatibility with identifiers containing special characters like '&', spaces, or reserved keywords.
 - Prefer CTEs for readability.
 - Include a LIMIT clause unless the user asked for all rows.
 - If the question is ambiguous, pick the most reasonable interpretation.

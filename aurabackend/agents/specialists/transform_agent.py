@@ -28,6 +28,7 @@ USER REQUEST:
 RULES:
 - Use CTEs for readability.
 - Always alias computed columns.
+- Always enclose ALL table and column names in double quotes (e.g., "my_table"."my_column") to ensure compatibility with identifiers containing special characters like '&', spaces, or reserved keywords.
 - If asked to "clean", handle: trim whitespace, cast types, remove duplicates.
 - If asked to "join", infer join keys from column names.
 - Return ONLY a JSON array of SQL strings.  No markdown.

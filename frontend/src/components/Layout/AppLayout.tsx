@@ -1,6 +1,7 @@
 import React from 'react';
 import '../../styles/design-system.css';
 import '../../styles/components.css';
+import './AppLayout.css';
 import './Header.css';
 import Sidebar from './Sidebar';
 import Header from './Header';
@@ -109,14 +110,7 @@ const AppLayout: React.FC<AppLayoutProps> = ({ children, currentPage, onPageChan
   const systemStatus = systemHealth.isOnline ? 'All systems online' : 'Offline';
 
   return (
-    <div
-      style={{
-        display: 'flex',
-        height: '100vh',
-        backgroundColor: 'var(--bg-secondary)',
-        overflow: 'hidden',
-      }}
-    >
+    <div className="app-shell">
       {/* Sidebar */}
       <Sidebar
         items={sidebarItems}
@@ -127,14 +121,7 @@ const AppLayout: React.FC<AppLayoutProps> = ({ children, currentPage, onPageChan
       />
 
       {/* Main Content Area */}
-      <div
-        style={{
-          flex: 1,
-          display: 'flex',
-          flexDirection: 'column',
-          overflow: 'auto',
-        }}
-      >
+      <div className="app-shell__content">
         {/* Header */}
         <Header
           title={pageInfo.title}
@@ -164,14 +151,8 @@ const AppLayout: React.FC<AppLayoutProps> = ({ children, currentPage, onPageChan
         />
 
         {/* Page Content */}
-        <main
-          style={{
-            flex: 1,
-            padding: 'var(--space-6)',
-            overflow: 'auto',
-          }}
-        >
-          <div style={{ maxWidth: '100%', margin: 0, width: '100%' }}>
+        <main className="app-shell__main">
+          <div className="app-shell__main-inner">
             {children}
           </div>
         </main>

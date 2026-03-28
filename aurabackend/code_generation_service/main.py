@@ -30,7 +30,10 @@ class CodeGenerationEngine:
 	def _build_prompt(step: PlanStep) -> list[str]:
 		instructions = (
 			"You are AURA's analytics assistant. Generate a valid PostgreSQL SQL query "
-			"for the described plan step. Include only SQL in the response body."
+			"for the described plan step. Include only SQL in the response body. "
+			"Always enclose ALL table and column names in double quotes "
+			'(e.g., "my_table"."my_column") to ensure compatibility with identifiers '
+			"containing special characters like '&', spaces, or reserved keywords."
 		)
 		context_bits = [instructions]
 		context_bits.append(f"Plan step: {step.step}")

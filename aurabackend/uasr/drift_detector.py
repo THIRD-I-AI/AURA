@@ -1,0 +1,541 @@
+"""
+UASR Latent Drift Detector
+============================
+Monitors the statistical manifold of incoming data batches.
+
+Detection methods:
+  1. Schema drift  — column additions / removals / type changes
+  2. Statistical drift — KL-Divergence between batch P and baseline Q
+  3. Semantic drift  — cosine distance between batch embedding and reference matrix
+
+KL Divergence:
+    D_KL(P || Q) = Σ P(x) · log(P(x) / Q(x))
+
+Dynamic threshold ζ adapts based on historical variance of D_KL values.
+"""
+from __future__ import annotations
+
+import math
+import logging
+import uuid
+from collections import Counter
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional, Tuple
+
+from .models import (
+    BatchPayload,
+    ColumnDistribution,
+    DriftDetectionResult,
+    DriftSeverity,
+    DriftType,
+)
+
+logger = logging.getLogger("uasr.drift_detector")
+
+# Small constant to prevent log(0)
+_EPS = 1e-10
+
+# Default bins for continuous-valued histograms
+_DEFAULT_BINS = 50
+
+
+class DriftDetector:
+    """
+    Stateful detector that compares incoming batches against stored baselines.
+
+    Usage:
+        detector = DriftDetector()
+        detector.register_baseline("src_1", baseline_distributions)
+        result = detector.detect(batch)
+    """
+
+    def __init__(
+        self,
+        default_zeta: float = 0.15,
+        schema_strict: bool = True,
+        semantic_threshold: float = 0.25,
+    ) -> None:
+        # ζ — KL-divergence threshold.  Adapted dynamically per source.
+        self._default_zeta = default_zeta
+        self._schema_strict = schema_strict
+        self._semantic_threshold = semantic_threshold
+
+        # In-memory baselines: source_id → {column_name → ColumnDistribution}
+        self._baselines: Dict[str, Dict[str, ColumnDistribution]] = {}
+
+        # Historical KL values for dynamic threshold: source_id → [kl_values]
+        self._kl_history: Dict[str, List[float]] = {}
+
+        # Schema baselines: source_id → {column_name → dtype_str}
+        self._schema_baselines: Dict[str, Dict[str, str]] = {}
+
+        # Reference embeddings: source_id → List[List[float]]
+        self._reference_embeddings: Dict[str, List[List[float]]] = {}
+
+    # ────────────────────────────────────────────────────────────────
+    # Baseline management
+    # ────────────────────────────────────────────────────────────────
+
+    def register_baseline(
+        self,
+        source_id: str,
+        distributions_or_batch: "Dict[str, ColumnDistribution] | BatchPayload",
+        schema: Optional[Dict[str, str]] = None,
+    ) -> None:
+        """Store a known-good distribution profile as the reference.
+
+        Accepts either a pre-computed distribution dict or a raw
+        ``BatchPayload`` (in which case distributions, schema and the
+        reference embedding are computed automatically).
+        """
+        if isinstance(distributions_or_batch, BatchPayload):
+            batch = distributions_or_batch
+            distributions = self._compute_distributions(batch)
+            if not schema:
+                schema = batch.schema_snapshot or (
+                    {c: "unknown" for c in batch.columns} if batch.columns else None
+                )
+            # Also register a reference embedding so semantic drift works
+            emb = self._compute_batch_embedding(batch)
+            if emb:
+                self.register_reference_embedding(source_id, emb)
+        else:
+            distributions = distributions_or_batch
+
+        self._baselines[source_id] = distributions
+        if schema:
+            self._schema_baselines[source_id] = schema
+        logger.info("Registered baseline for source=%s (%d columns)", source_id, len(distributions))
+
+    def register_reference_embedding(self, source_id: str, embedding: List[float]) -> None:
+        """Add a reference embedding vector to the source's context matrix."""
+        self._reference_embeddings.setdefault(source_id, []).append(embedding)
+
+    # ────────────────────────────────────────────────────────────────
+    # Main detection
+    # ────────────────────────────────────────────────────────────────
+
+    def detect(self, batch: BatchPayload) -> DriftDetectionResult:
+        """Run all drift checks on an incoming batch."""
+        result = DriftDetectionResult(
+            source_id=batch.source_id,
+            batch_id=batch.batch_id,
+        )
+
+        # 1. Schema drift
+        schema_drift = self._check_schema_drift(batch)
+        if schema_drift:
+            result.drift_detected = True
+            result.drift_type = DriftType.SCHEMA
+            result.severity = schema_drift["severity"]
+            result.affected_columns = schema_drift["affected_columns"]
+            result.drift_vector = schema_drift
+            result.details = schema_drift.get("details", "")
+            return result
+
+        # 2. Statistical drift (KL-Divergence)
+        stat_drift = self._check_statistical_drift(batch)
+        if stat_drift:
+            result.drift_detected = True
+            result.drift_type = DriftType.STATISTICAL
+            result.severity = stat_drift["severity"]
+            result.kl_divergence = stat_drift["max_kl"]
+            result.affected_columns = stat_drift["affected_columns"]
+            result.drift_vector = stat_drift
+            result.details = stat_drift.get("details", "")
+            return result
+
+        # 3. Semantic drift (embedding distance) — only if embeddings registered
+        sem_drift = self._check_semantic_drift(batch)
+        if sem_drift:
+            result.drift_detected = True
+            result.drift_type = DriftType.SEMANTIC
+            result.severity = sem_drift["severity"]
+            result.cosine_distance = sem_drift["cosine_distance"]
+            result.drift_vector = sem_drift
+            result.details = sem_drift.get("details", "")
+            return result
+
+        result.details = "No drift detected"
+        return result
+
+    # ────────────────────────────────────────────────────────────────
+    # Schema drift
+    # ────────────────────────────────────────────────────────────────
+
+    def _check_schema_drift(self, batch: BatchPayload) -> Optional[Dict[str, Any]]:
+        baseline_schema = self._schema_baselines.get(batch.source_id)
+        if not baseline_schema:
+            # First time — treat batch schema as baseline
+            if batch.schema_snapshot:
+                self._schema_baselines[batch.source_id] = batch.schema_snapshot
+            elif batch.columns:
+                self._schema_baselines[batch.source_id] = {c: "unknown" for c in batch.columns}
+            return None
+
+        current_cols = set(batch.columns) if batch.columns else set()
+        if batch.schema_snapshot:
+            current_cols = set(batch.schema_snapshot.keys())
+
+        baseline_cols = set(baseline_schema.keys())
+
+        added = current_cols - baseline_cols
+        removed = baseline_cols - current_cols
+
+        if not added and not removed:
+            # Check type changes if schema_snapshot provided
+            if batch.schema_snapshot:
+                type_changes = []
+                for col, dtype in batch.schema_snapshot.items():
+                    if col in baseline_schema and baseline_schema[col] != dtype and baseline_schema[col] != "unknown":
+                        type_changes.append(col)
+                if type_changes:
+                    return {
+                        "type": "type_change",
+                        "affected_columns": type_changes,
+                        "severity": DriftSeverity.MEDIUM,
+                        "details": f"Type changed in columns: {type_changes}",
+                        "old_types": {c: baseline_schema[c] for c in type_changes},
+                        "new_types": {c: batch.schema_snapshot[c] for c in type_changes},
+                    }
+            return None
+
+        severity = DriftSeverity.HIGH if removed else DriftSeverity.MEDIUM
+        if len(removed) > len(baseline_cols) * 0.5:
+            severity = DriftSeverity.CRITICAL
+
+        return {
+            "type": "schema_change",
+            "added": list(added),
+            "removed": list(removed),
+            "affected_columns": list(added | removed),
+            "severity": severity,
+            "details": f"Added: {list(added)}, Removed: {list(removed)}",
+        }
+
+    # ────────────────────────────────────────────────────────────────
+    # Statistical drift — KL-Divergence
+    # ────────────────────────────────────────────────────────────────
+
+    def _check_statistical_drift(self, batch: BatchPayload) -> Optional[Dict[str, Any]]:
+        baseline = self._baselines.get(batch.source_id)
+        if not baseline or not batch.rows:
+            return None
+
+        batch_dists = self._compute_distributions(batch)
+        drifted_cols: List[str] = []
+        kl_values: Dict[str, float] = {}
+        max_kl = 0.0
+
+        zeta = self._dynamic_threshold(batch.source_id)
+
+        for col_name, batch_dist in batch_dists.items():
+            if col_name not in baseline:
+                continue
+
+            ref_dist = baseline[col_name]
+            kl = self._kl_divergence(batch_dist.histogram, ref_dist.histogram)
+
+            # Location / scale shift: if both have mean & std, compute a
+            # normalised distance so that range shifts (e.g. 10-500 vs
+            # 10 000-500 000) are detected even when histogram shapes match.
+            if (
+                ref_dist.mean is not None
+                and batch_dist.mean is not None
+                and ref_dist.std is not None
+            ):
+                scale = ref_dist.std if ref_dist.std > 0 else 1.0
+                loc_shift = abs(batch_dist.mean - ref_dist.mean) / scale
+                # Treat a >2-sigma shift as additional KL
+                if loc_shift > 2.0:
+                    kl = max(kl, loc_shift * zeta)
+
+            kl_values[col_name] = round(kl, 6)
+
+            if kl > zeta:
+                drifted_cols.append(col_name)
+                max_kl = max(max_kl, kl)
+
+        # Record for dynamic threshold adaptation
+        if kl_values:
+            avg_kl = sum(kl_values.values()) / len(kl_values)
+            self._kl_history.setdefault(batch.source_id, []).append(avg_kl)
+            # Keep last 200 samples
+            self._kl_history[batch.source_id] = self._kl_history[batch.source_id][-200:]
+
+        if not drifted_cols:
+            return None
+
+        severity = DriftSeverity.LOW
+        if max_kl > zeta * 3:
+            severity = DriftSeverity.CRITICAL
+        elif max_kl > zeta * 2:
+            severity = DriftSeverity.HIGH
+        elif max_kl > zeta * 1.5:
+            severity = DriftSeverity.MEDIUM
+
+        return {
+            "type": "statistical",
+            "affected_columns": drifted_cols,
+            "kl_values": kl_values,
+            "max_kl": round(max_kl, 6),
+            "threshold_zeta": round(zeta, 6),
+            "severity": severity,
+            "details": (
+                f"KL divergence exceeded ζ={zeta:.4f} in {len(drifted_cols)} column(s). "
+                f"Max D_KL={max_kl:.4f}"
+            ),
+        }
+
+    # ────────────────────────────────────────────────────────────────
+    # Semantic drift — embedding cosine distance
+    # ────────────────────────────────────────────────────────────────
+
+    def _check_semantic_drift(self, batch: BatchPayload) -> Optional[Dict[str, Any]]:
+        refs = self._reference_embeddings.get(batch.source_id)
+        if not refs:
+            return None
+
+        batch_emb = self._compute_batch_embedding(batch)
+        if not batch_emb:
+            return None
+
+        # Compare against reference context matrix (average distance)
+        min_distance = float("inf")
+        for ref_emb in refs:
+            dist = self._cosine_distance(batch_emb, ref_emb)
+            min_distance = min(min_distance, dist)
+
+        if min_distance <= self._semantic_threshold:
+            return None
+
+        severity = DriftSeverity.LOW
+        if min_distance > self._semantic_threshold * 3:
+            severity = DriftSeverity.CRITICAL
+        elif min_distance > self._semantic_threshold * 2:
+            severity = DriftSeverity.HIGH
+        elif min_distance > self._semantic_threshold * 1.5:
+            severity = DriftSeverity.MEDIUM
+
+        return {
+            "type": "semantic",
+            "cosine_distance": round(min_distance, 6),
+            "threshold": self._semantic_threshold,
+            "severity": severity,
+            "details": f"Semantic distance {min_distance:.4f} exceeds threshold {self._semantic_threshold}",
+        }
+
+    # ────────────────────────────────────────────────────────────────
+    # KL-Divergence computation
+    # ────────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _kl_divergence(p_hist: Dict[str, Any], q_hist: Dict[str, Any]) -> float:
+        """
+        Compute KL(P || Q) from two histogram dicts.
+
+        Histogram format: {"bins": [...], "counts": [...]}
+        For categorical: {"categories": {"a": 10, "b": 5}}
+        Plain dicts like {"a": 0.9, "b": 0.1} are also accepted as
+        categorical distributions (keys → categories, values → weights).
+        """
+        # Detect plain categorical dict (no special keys)
+        _special = {"categories", "bins", "counts"}
+        p_is_plain = bool(p_hist) and not (set(p_hist.keys()) & _special)
+        q_is_plain = bool(q_hist) and not (set(q_hist.keys()) & _special)
+
+        # Normalise to {"categories": {...}} form
+        if p_is_plain:
+            p_hist = {"categories": p_hist}
+        if q_is_plain:
+            q_hist = {"categories": q_hist}
+
+        # Categorical histograms
+        if "categories" in p_hist and "categories" in q_hist:
+            p_cats = p_hist["categories"]
+            q_cats = q_hist["categories"]
+            all_keys = set(p_cats.keys()) | set(q_cats.keys())
+
+            p_total = sum(p_cats.values()) or 1
+            q_total = sum(q_cats.values()) or 1
+
+            kl = 0.0
+            for k in all_keys:
+                p_val = (p_cats.get(k, 0) / p_total) + _EPS
+                q_val = (q_cats.get(k, 0) / q_total) + _EPS
+                kl += p_val * math.log(p_val / q_val)
+            return max(kl, 0.0)
+
+        # Numeric histograms with bins/counts
+        p_counts = p_hist.get("counts", [])
+        q_counts = q_hist.get("counts", [])
+
+        if not p_counts or not q_counts:
+            return 0.0
+
+        # Align lengths
+        max_len = max(len(p_counts), len(q_counts))
+        p_arr = list(p_counts) + [0] * (max_len - len(p_counts))
+        q_arr = list(q_counts) + [0] * (max_len - len(q_counts))
+
+        p_total = sum(p_arr) or 1
+        q_total = sum(q_arr) or 1
+
+        kl = 0.0
+        for i in range(max_len):
+            p_val = (p_arr[i] / p_total) + _EPS
+            q_val = (q_arr[i] / q_total) + _EPS
+            kl += p_val * math.log(p_val / q_val)
+
+        return max(kl, 0.0)
+
+    # ────────────────────────────────────────────────────────────────
+    # Dynamic threshold
+    # ────────────────────────────────────────────────────────────────
+
+    def _dynamic_threshold(self, source_id: str) -> float:
+        """
+        Adaptive ζ based on historical KL variance.
+        ζ = mean(D_KL) + 2·std(D_KL), floored at the default.
+        """
+        history = self._kl_history.get(source_id, [])
+        if len(history) < 5:
+            return self._default_zeta
+
+        mean_kl = sum(history) / len(history)
+        var_kl = sum((x - mean_kl) ** 2 for x in history) / len(history)
+        std_kl = math.sqrt(var_kl)
+
+        adaptive = mean_kl + 2 * std_kl
+        return max(adaptive, self._default_zeta * 0.5)
+
+    # ────────────────────────────────────────────────────────────────
+    # Distribution computation from raw batch
+    # ────────────────────────────────────────────────────────────────
+
+    def _compute_distributions(self, batch: BatchPayload) -> Dict[str, ColumnDistribution]:
+        """Build column-level distributions from batch rows."""
+        if not batch.rows:
+            return {}
+
+        columns = batch.columns or (list(batch.rows[0].keys()) if batch.rows else [])
+        result: Dict[str, ColumnDistribution] = {}
+
+        for col in columns:
+            values = [row.get(col) for row in batch.rows if row.get(col) is not None]
+            if not values:
+                continue
+
+            dist = ColumnDistribution(column_name=col, sample_size=len(values))
+
+            # Numeric vs categorical
+            numeric_vals = []
+            for v in values:
+                try:
+                    numeric_vals.append(float(v))
+                except (ValueError, TypeError):
+                    break
+
+            if len(numeric_vals) == len(values) and numeric_vals:
+                # Numeric distribution
+                dist.mean = sum(numeric_vals) / len(numeric_vals)
+                dist.std = math.sqrt(
+                    sum((x - dist.mean) ** 2 for x in numeric_vals) / max(len(numeric_vals), 1)
+                )
+                dist.null_rate = 1.0 - len(values) / max(len(batch.rows), 1)
+                dist.distinct_count = len(set(numeric_vals))
+                dist.histogram = self._build_numeric_histogram(numeric_vals)
+            else:
+                # Categorical distribution
+                str_vals = [str(v) for v in values]
+                counts = Counter(str_vals)
+                dist.distinct_count = len(counts)
+                dist.null_rate = 1.0 - len(values) / max(len(batch.rows), 1)
+                dist.histogram = {"categories": dict(counts)}
+
+            result[col] = dist
+
+        return result
+
+    @staticmethod
+    def _build_numeric_histogram(values: List[float], bins: int = _DEFAULT_BINS) -> Dict[str, Any]:
+        """Build a simple equal-width histogram."""
+        if not values:
+            return {"bins": [], "counts": []}
+
+        min_val = min(values)
+        max_val = max(values)
+
+        if min_val == max_val:
+            return {"bins": [min_val], "counts": [len(values)]}
+
+        bin_width = (max_val - min_val) / bins
+        bin_edges = [min_val + i * bin_width for i in range(bins + 1)]
+        counts = [0] * bins
+
+        for v in values:
+            idx = min(int((v - min_val) / bin_width), bins - 1)
+            counts[idx] += 1
+
+        return {"bins": bin_edges, "counts": counts}
+
+    # ────────────────────────────────────────────────────────────────
+    # Batch embedding (hash-projection, no external API needed)
+    # ────────────────────────────────────────────────────────────────
+
+    def _compute_batch_embedding(self, batch: BatchPayload, dim: int = 256) -> Optional[List[float]]:
+        """
+        Compute a lightweight embedding for the entire batch using
+        feature hashing (random projection). No external model needed.
+        """
+        if not batch.rows:
+            return None
+
+        vector = [0.0] * dim
+        row_count = 0
+
+        for row in batch.rows:
+            for col, val in row.items():
+                if val is None:
+                    continue
+                # Hash column+value to get a dimension index
+                token = f"{col}:{val}"
+                h = hash(token)
+                idx = abs(h) % dim
+                sign = 1.0 if h >= 0 else -1.0
+                vector[idx] += sign
+                row_count += 1
+
+        # Normalize
+        if row_count > 0:
+            norm = math.sqrt(sum(x * x for x in vector)) or 1.0
+            vector = [x / norm for x in vector]
+
+        return vector
+
+    # ────────────────────────────────────────────────────────────────
+    # Cosine distance
+    # ────────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _cosine_distance(a: List[float], b: List[float]) -> float:
+        """1 - cosine_similarity(a, b)."""
+        if len(a) != len(b):
+            return 1.0
+
+        dot = sum(x * y for x, y in zip(a, b))
+        norm_a = math.sqrt(sum(x * x for x in a)) or 1.0
+        norm_b = math.sqrt(sum(x * x for x in b)) or 1.0
+
+        similarity = dot / (norm_a * norm_b)
+        return 1.0 - similarity
+
+    # ────────────────────────────────────────────────────────────────
+    # Utility — snapshot current distributions for persistence
+    # ────────────────────────────────────────────────────────────────
+
+    def snapshot_distributions(
+        self, batch: BatchPayload
+    ) -> Dict[str, ColumnDistribution]:
+        """Compute & return distributions without checking drift. Useful for initial baselining."""
+        return self._compute_distributions(batch)

@@ -78,6 +78,8 @@ class AuraSettings(BaseSettings):
     sandbox_url: str = Field("http://localhost:8003", alias="AURA_SANDBOX_URL")
     scheduler_url: str = Field("http://localhost:8004", alias="AURA_SCHEDULER_URL")
     insights_url: str = Field("http://localhost:8005", alias="AURA_INSIGHTS_URL")
+    uasr_port: int = Field(8009, alias="UASR_SERVICE_PORT")
+    uasr_url: str = Field("http://localhost:8009", alias="AURA_UASR_URL")
 
     # ── CORS ────────────────────────────────────────────────────────────
     cors_origins: List[str] = Field(

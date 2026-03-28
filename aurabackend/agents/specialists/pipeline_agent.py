@@ -28,6 +28,10 @@ AVAILABLE SCHEMA:
 UPSTREAM RESULTS (previous agent outputs):
 {upstream}
 
+RULES:
+- Always enclose ALL table and column names in double quotes (e.g., "my_table"."my_column") to ensure compatibility with identifiers containing special characters like '&', spaces, or reserved keywords.
+- Return ONLY valid JSON — no markdown fences, no explanation.
+
 Return ONLY valid JSON with this structure (no markdown):
 {{
   "name": "pipeline_name",

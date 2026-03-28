@@ -321,7 +321,7 @@ def build_schema_context(
             ext = data_file.suffix.lower()
             if ext not in (".csv", ".parquet", ".json"):
                 continue
-            table_name = data_file.stem.replace("-", "_").replace(" ", "_")
+            table_name = re.sub(r"[^A-Za-z0-9_]", "_", data_file.stem)
             try:
                 info = smart_load_file(conn, str(data_file), table_name, use_llm=use_llm)
                 tables[table_name] = info

@@ -1,10 +1,10 @@
-/* FilesAndData.css - Dark theme styles for Data Library page */
+/* FilesAndData.css - Data Library page */
 
 .files-data-page {
   width: 100%;
-  min-height: 100vh;
-  background-color: #111827;
-  padding: 32px 24px;
+  min-height: 0; /* let flex layout determine height */
+  background-color: var(--bg-primary);
+  padding: var(--space-6) var(--space-4);
 }
 
 .files-data-container {
@@ -34,14 +34,16 @@
   display: flex;
   gap: 32px;
   align-items: flex-start;
+  flex-wrap: wrap;
 }
 
 /* Master Table Panel */
 .files-data-table-panel {
-  flex: 0 0 65%;
-  background-color: #1f2937;
+  flex: 1 1 500px;
+  min-width: 0;
+  background-color: var(--bg-secondary);
   border-radius: 16px;
-  border: 1px solid #374151;
+  border: 1px solid var(--border-default);
   box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.3);
   overflow: hidden;
 }
@@ -115,6 +117,37 @@
   font-size: 14px;
 }
 
+.files-data-date {
+  padding: 20px;
+  color: #9ca3af;
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.files-data-status {
+  padding: 20px;
+  font-size: 13px;
+}
+
+.files-data-status-badge {
+  display: inline-block;
+  padding: 3px 10px;
+  border-radius: 9999px;
+  font-weight: 600;
+  font-size: 12px;
+  letter-spacing: 0.025em;
+}
+
+.files-data-status--ready {
+  background-color: rgba(16, 185, 129, 0.15);
+  color: #34d399;
+}
+
+.files-data-status--uploaded {
+  background-color: rgba(99, 102, 241, 0.15);
+  color: #818cf8;
+}
+
 .files-data-empty {
   padding: 60px 20px;
   text-align: center;
@@ -128,9 +161,8 @@
 
 /* Detail Panel */
 .files-data-detail-panel {
-  flex: 1;
-  position: sticky;
-  top: 32px;
+  flex: 0 1 380px;
+  min-width: 280px;
 }
 
 .files-data-detail-card {

@@ -1,5 +1,6 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { type PageType } from '../components/Layout/AppLayout';
+import { analyticsService } from '../services/api';
 import './QueryHistory.css';
 
 interface QueryHistoryProps {
@@ -20,17 +21,33 @@ const QueryHistory: React.FC<QueryHistoryProps> = ({ setCurrentPage }) => {
   const [queries, setQueries] = useState<QueryRecord[]>([]);
   const [selectedQuery, setSelectedQuery] = useState<QueryRecord | null>(null);
   const [filter, setFilter] = useState<'all' | 'success' | 'error'>('all');
+  const [isLoading, setIsLoading] = useState(true);
+
+  const fetchHistory = useCallback(async () => {
+    setIsLoading(true);
+    try {
+      const resp = await analyticsService.getQueryHistory(100, filter === 'all' ? undefined : filter);
+      if (resp.success && resp.queries.length > 0) {
+        setQueries(resp.queries);
+      } else {
+        // Fallback to localStorage
+        const saved = localStorage.getItem('queryHistory');
+        if (saved) setQueries(JSON.parse(saved));
+      }
+    } catch {
+      // Offline fallback
+      const saved = localStorage.getItem('queryHistory');
+      if (saved) {
+        try { setQueries(JSON.parse(saved)); } catch { /* ignore */ }
+      }
+    } finally {
+      setIsLoading(false);
+    }
+  }, [filter]);
 
   useEffect(() => {
-    const saved = localStorage.getItem('queryHistory');
-    if (saved) {
-      try {
-        setQueries(JSON.parse(saved));
-      } catch (e) {
-        console.error('Failed to load query history:', e);
-      }
-    }
-  }, []);
+    fetchHistory();
+  }, [fetchHistory]);
 
   const filtered = filter === 'all' ? queries : queries.filter((q) => q.status === filter);
 
@@ -73,10 +90,17 @@ const QueryHistory: React.FC<QueryHistoryProps> = ({ setCurrentPage }) => {
           <div className="query-history-header-left">
             <h1 className="query-history-title">Query History</h1>
             <p className="query-history-subtitle">
-              {queries.length} queries executed · Last 30 days
+              {isLoading ? 'Loading...' : `${queries.length} queries executed · Last 30 days`}
             </p>
           </div>
           <div className="query-history-filters">
+            <button
+              className="query-history-filter-btn"
+              onClick={() => fetchHistory()}
+              title="Refresh"
+            >
+              🔄
+            </button>
             {(['all', 'success', 'error'] as const).map((f) => (
               <button
                 key={f}

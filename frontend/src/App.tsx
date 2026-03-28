@@ -1,6 +1,7 @@
 ﻿import { useState, useEffect } from 'react';
 import './styles/design-system.css';
 import './styles/components.css';
+import './components/Layout/AppLayout.css';
 import AppLayout, { type PageType } from './components/Layout/AppLayout';
 import ChatInterface from './components/ChatInterface';
 import FileUpload from './components/FileUploadPro';
@@ -54,7 +55,14 @@ function App() {
 
   useEffect(() => {
     fetchStatsInternal();
-  }, []);
+    // Refresh dashboard stats every 15 seconds when on dashboard
+    const interval = setInterval(() => {
+      if (currentPage === 'dashboard') {
+        fetchStatsInternal();
+      }
+    }, 15000);
+    return () => clearInterval(interval);
+  }, [currentPage]);
 
   useEffect(() => {
     const handleHealthUpdate = (status: HealthStatus) => {
@@ -82,22 +90,22 @@ function App() {
     : [
         {
           label: 'Total rows',
-          value: stats?.total_rows ? formatNumber(stats.total_rows) : '',
-          hint: stats?.total_rows ? 'Across all sources' : 'Populates after first ingest',
+          value: stats?.total_rows ? formatNumber(stats.total_rows) : '0',
+          hint: stats?.total_rows ? 'Across all uploaded files' : 'Upload a file to begin',
         },
         {
           label: 'Active sources',
-          value: stats?.active_sources.toString() || '0',
-          hint: stats?.active_sources ? 'Connected and synced' : 'Connect a source to begin',
+          value: String(stats?.active_sources ?? 0),
+          hint: stats?.active_sources ? `${stats.file_sources ?? 0} files, ${(stats.active_sources ?? 0) - (stats.file_sources ?? 0)} connections` : 'Upload files or connect a database',
         },
         {
           label: 'Queries run',
-          value: stats?.queries_run ? formatNumber(stats.queries_run) : '',
-          hint: stats?.queries_run ? 'Last 30 days' : 'Runs appear after execution',
+          value: stats?.queries_run ? formatNumber(stats.queries_run) : '0',
+          hint: stats?.queries_run ? 'This session' : 'Ask a question in chat',
         },
         {
           label: 'System health',
-          value: healthStatus?.status === 'healthy' ? '' : healthStatus?.status === 'degraded' ? '' : '',
+          value: healthStatus?.status === 'healthy' ? 'Online' : healthStatus?.status === 'degraded' ? 'Degraded' : 'Offline',
           hint: healthStatus?.status === 'healthy' ? 'All systems operational' : healthStatus?.status === 'degraded' ? 'Some issues detected' : 'System offline',
         },
       ];
@@ -120,16 +128,16 @@ function App() {
       default:
         return (
           <>
-            <div style={{display:'grid',gridTemplateColumns:'repeat(12,minmax(0,1fr))',gap:'var(--space-4)',marginBottom:'var(--space-5)',opacity:!systemHealth.isOnline?0.7:1,transition:'all 300ms ease'}}>
-              {kpis.map((kpi)=>(<div key={kpi.label} style={{gridColumn:'span 3'}}><Card><CardBody><div style={{display:'flex',flexDirection:'column',gap:'var(--space-2)'}}><span style={{color:'var(--text-tertiary)',fontSize:'var(--font-xs)'}}>{kpi.label}</span><span style={{fontSize:'var(--font-xl)',fontWeight:'var(--weight-semibold)'}}>{kpi.value}</span><span style={{color:'var(--text-secondary)',fontSize:'var(--font-xs)'}}>{kpi.hint}</span></div></CardBody></Card></div>))}
+            <div className="dashboard-grid dashboard-grid--kpis" style={{opacity:!systemHealth.isOnline?0.7:1}}>
+              {kpis.map((kpi)=>(<div key={kpi.label}><Card><CardBody><div style={{display:'flex',flexDirection:'column',gap:'var(--space-2)'}}><span style={{color:'var(--text-tertiary)',fontSize:'var(--font-xs)'}}>{kpi.label}</span><span style={{fontSize:'var(--font-xl)',fontWeight:'var(--weight-semibold)'}}>{kpi.value}</span><span style={{color:'var(--text-secondary)',fontSize:'var(--font-xs)'}}>{kpi.hint}</span></div></CardBody></Card></div>))}
             </div>
-            <div style={{display:'grid',gridTemplateColumns:'repeat(12,minmax(0,1fr))',gap:'var(--space-4)',marginBottom:'var(--space-5)',transition:'all 300ms ease'}}>
-              <div style={{gridColumn:'span 6'}}><Card><CardHeader title="Data sources" subtitle="Step through to connect your first source"/><CardBody><ol style={{margin:0,paddingLeft:'1.25rem',color:'var(--text-secondary)',display:'flex',gap:'var(--space-4)',flexWrap:'wrap'}}>{['Choose source type','Provide credentials','Validate access','Run first sync'].map((step)=>(<li key={step} style={{minWidth:'12rem'}}>{step}</li>))}</ol><div style={{marginTop:'var(--space-4)',display:'flex',gap:'var(--space-3)'}}><Button variant="primary" size="sm" onClick={() => setCurrentPage('files')}>Start setup</Button><Button variant="ghost" size="sm" onClick={() => window.open(import.meta.env.VITE_DOCS_URL || 'https://github.com/THIRD-I-AI/AURA#readme', '_blank')}>View docs</Button></div></CardBody></Card></div>
-              <div style={{gridColumn:'span 6'}}><Card><CardHeader title="Query activity" subtitle="Recent runs will appear here"/><CardBody><ul style={{margin:0,paddingLeft:'1rem',color:'var(--text-secondary)',display:'flex',flexDirection:'column',gap:'var(--space-2)'}}><li>No queries have been executed yet.</li><li>Submit a query from chat to see history.</li><li>Retention: last 30 runs will be listed.</li></ul><div style={{marginTop:'var(--space-4)'}}><Button variant="secondary" size="sm" onClick={() => setCurrentPage('chat')}>Open chat workspace</Button><Button variant="primary" size="sm" onClick={() => setCurrentPage('agent')}>🤖 Launch Agent</Button></div></CardBody></Card></div>
+            <div className="dashboard-grid dashboard-grid--panels">
+              <div><Card><CardHeader title="Data sources" subtitle="Step through to connect your first source"/><CardBody><ol style={{margin:0,paddingLeft:'1.25rem',color:'var(--text-secondary)',display:'flex',gap:'var(--space-4)',flexWrap:'wrap'}}>{['Choose source type','Provide credentials','Validate access','Run first sync'].map((step)=>(<li key={step} style={{minWidth:'12rem'}}>{step}</li>))}</ol><div style={{marginTop:'var(--space-4)',display:'flex',gap:'var(--space-3)'}}><Button variant="primary" size="sm" onClick={() => setCurrentPage('files')}>Start setup</Button><Button variant="ghost" size="sm" onClick={() => window.open(import.meta.env.VITE_DOCS_URL || 'https://github.com/THIRD-I-AI/AURA#readme', '_blank')}>View docs</Button></div></CardBody></Card></div>
+              <div><Card><CardHeader title="Query activity" subtitle="Recent runs will appear here"/><CardBody><ul style={{margin:0,paddingLeft:'1rem',color:'var(--text-secondary)',display:'flex',flexDirection:'column',gap:'var(--space-2)'}}><li>No queries have been executed yet.</li><li>Submit a query from chat to see history.</li><li>Retention: last 30 runs will be listed.</li></ul><div style={{marginTop:'var(--space-4)'}}><Button variant="secondary" size="sm" onClick={() => setCurrentPage('chat')}>Open chat workspace</Button><Button variant="primary" size="sm" onClick={() => setCurrentPage('agent')}>🤖 Launch Agent</Button></div></CardBody></Card></div>
             </div>
-            <div style={{display:'grid',gridTemplateColumns:'repeat(12,minmax(0,1fr))',gap:'var(--space-4)',alignItems:'stretch',transition:'all 300ms ease'}}>
-              <div style={{gridColumn:'span 7',minWidth:0}}><ChatInterface/></div>
-              <div style={{gridColumn:'span 5',minWidth:0}}><FileUpload onFileUploaded={(response)=>{console.log('File uploaded successfully:',response);}}/></div>
+            <div className="dashboard-grid dashboard-grid--workspace">
+              <div><ChatInterface/></div>
+              <div><FileUpload onFileUploaded={(response)=>{console.log('File uploaded successfully:',response);}}/></div>
             </div>
           </>
         );

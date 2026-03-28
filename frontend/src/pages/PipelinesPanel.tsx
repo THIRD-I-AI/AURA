@@ -9,6 +9,7 @@ import {
   type ETLExecutionResult,
   type PipelineDef,
   type PipelineRunResult,
+  type PipelineListItem,
 } from '../services/api';
 import './PipelinesPanel.css';
 
@@ -37,6 +38,63 @@ const DEST_FORMATS = [
   { value: 'json', label: 'JSON', icon: '{ }' },
 ];
 
+/* ================================================================
+   Pipeline Templates
+   ================================================================ */
+
+interface PipelineTemplate {
+  name: string;
+  description: string;
+  icon: string;
+  prompt: string;
+  tags: string[];
+}
+
+const PIPELINE_TEMPLATES: PipelineTemplate[] = [
+  {
+    name: 'Clean & Deduplicate',
+    description: 'Remove duplicates and fill missing values for a clean dataset',
+    icon: '🧹',
+    prompt: 'Remove all duplicate rows, fill missing values with appropriate defaults, and export as CSV',
+    tags: ['cleaning', 'dedup'],
+  },
+  {
+    name: 'Top-N Analysis',
+    description: 'Filter and sort to find the top N records by a metric',
+    icon: '🏆',
+    prompt: 'Sort by the main numeric column descending, take the top 100 rows, and export as CSV',
+    tags: ['analysis', 'ranking'],
+  },
+  {
+    name: 'Aggregate Summary',
+    description: 'Group data by category and compute summary statistics',
+    icon: '📊',
+    prompt: 'Group by the first text/category column, compute COUNT, SUM, and AVG of all numeric columns, and export as CSV',
+    tags: ['aggregation', 'summary'],
+  },
+  {
+    name: 'Column Cleanup',
+    description: 'Drop unnecessary columns, rename for clarity, and cast types',
+    icon: '✂️',
+    prompt: 'Drop any columns that look like IDs or internal fields, rename remaining columns to clean snake_case names, and export as CSV',
+    tags: ['schema', 'rename'],
+  },
+  {
+    name: 'Date Filter',
+    description: 'Filter records within a specific date range',
+    icon: '📅',
+    prompt: 'Filter rows where the date column is within the last 30 days, sort by date descending, and export as CSV',
+    tags: ['filter', 'date'],
+  },
+  {
+    name: 'Format Conversion',
+    description: 'Convert a file from one format to another with no transforms',
+    icon: '🔄',
+    prompt: 'Read the file and export as Parquet format with no transformations',
+    tags: ['convert', 'export'],
+  },
+];
+
 interface PipelinesPanelProps {
   setCurrentPage?: (page: PageType) => void;
 }
@@ -57,7 +115,7 @@ const PipelinesPanel: React.FC<PipelinesPanelProps> = () => {
   const [result, setResult] = useState<ETLExecutionResult | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<'visual' | 'ai'>('ai');
+  const [activeTab, setActiveTab] = useState<'visual' | 'ai' | 'saved'>('ai');
   const [showAddStep, setShowAddStep] = useState(false);
 
   // ── AI Pipeline State ──
@@ -68,10 +126,87 @@ const PipelinesPanel: React.FC<PipelinesPanelProps> = () => {
   const [aiExecuting, setAiExecuting] = useState(false);
   const [aiError, setAiError] = useState<string | null>(null);
 
+  // ── Saved Pipelines State ──
+  const [savedPipelines, setSavedPipelines] = useState<PipelineListItem[]>([]);
+  const [savedLoading, setSavedLoading] = useState(false);
+  const [savedError, setSavedError] = useState<string | null>(null);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+
+  // ── Toast Notification State ──
+  const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
+
+  const showToast = (message: string, type: 'success' | 'error' = 'success') => {
+    setToast({ message, type });
+    setTimeout(() => setToast(null), 4000);
+  };
+
   // ── Fetch available uploaded files ──
   useEffect(() => {
     fetchSourceFiles();
   }, []);
+
+  // ── Fetch saved pipelines when tab changes ──
+  useEffect(() => {
+    if (activeTab === 'saved') {
+      fetchSavedPipelines();
+    }
+  }, [activeTab]);
+
+  const fetchSavedPipelines = async () => {
+    setSavedLoading(true);
+    setSavedError(null);
+    try {
+      const resp = await pipelineService.list();
+      if (resp.status === 'success') {
+        setSavedPipelines(resp.pipelines);
+      } else {
+        setSavedError('Failed to load saved pipelines');
+      }
+    } catch (e: any) {
+      setSavedError(e.message || 'Failed to load saved pipelines');
+    } finally {
+      setSavedLoading(false);
+    }
+  };
+
+  const handleLoadPipeline = async (pipelineId: string) => {
+    try {
+      const resp = await pipelineService.get(pipelineId);
+      if (resp.status === 'success' && resp.pipeline) {
+        setAiPipeline(resp.pipeline);
+        setAiRun(null);
+        setAiError(null);
+        setAiPrompt(resp.pipeline.generated_from_prompt || resp.pipeline.description || '');
+        setActiveTab('ai');
+        showToast(`Loaded pipeline: ${resp.pipeline.name}`);
+      }
+    } catch (e: any) {
+      showToast(e.message || 'Failed to load pipeline', 'error');
+    }
+  };
+
+  const handleDeletePipeline = async (pipelineId: string, name: string) => {
+    if (!confirm(`Delete pipeline "${name}"? This cannot be undone.`)) return;
+    setDeletingId(pipelineId);
+    try {
+      await pipelineService.remove(pipelineId);
+      setSavedPipelines(prev => prev.filter(p => p.id !== pipelineId));
+      showToast(`Deleted pipeline: ${name}`);
+    } catch (e: any) {
+      showToast(e.message || 'Failed to delete pipeline', 'error');
+    } finally {
+      setDeletingId(null);
+    }
+  };
+
+  const handleUseTemplate = (template: PipelineTemplate) => {
+    setAiPrompt(template.prompt);
+    setAiPipeline(null);
+    setAiRun(null);
+    setAiError(null);
+    setActiveTab('ai');
+    showToast(`Template loaded: ${template.name}`);
+  };
 
   const fetchSourceFiles = async () => {
     try {
@@ -240,10 +375,44 @@ const PipelinesPanel: React.FC<PipelinesPanelProps> = () => {
       const resp = await pipelineService.save(aiPipeline);
       if (resp.status === 'success') {
         setAiError(null);
-        alert(`Pipeline saved: ${resp.name} (${resp.pipeline_id})`);
+        showToast(`Pipeline saved: ${resp.name}`);
+        // Refresh saved list in background
+        fetchSavedPipelines();
       }
     } catch (e: any) {
       setAiError(e.message || 'Failed to save pipeline');
+      showToast(e.message || 'Failed to save pipeline', 'error');
+    }
+  };
+
+  // ── Visual Builder: Save as Pipeline ──
+  const handleVisualSave = async () => {
+    if (!selectedSource || transforms.length === 0) {
+      setError('Add at least one transform step before saving.');
+      return;
+    }
+    const pipeline: PipelineDef = {
+      name: pipelineName || 'Untitled Pipeline',
+      description: `Visual pipeline: ${transforms.length} step(s) on ${selectedSource}`,
+      source: { type: 'file', file_name: selectedSource },
+      steps: transforms.map((t, i) => ({
+        id: t.id || `step_${i}`,
+        type: t.type,
+        description: t.description || `${t.type} step`,
+        config: t.config,
+      })),
+      sink: { type: 'file', format: destFormat, file_name: destFilename || undefined },
+      tags: ['visual-builder'],
+    };
+    try {
+      const resp = await pipelineService.save(pipeline);
+      if (resp.status === 'success') {
+        showToast(`Pipeline saved: ${resp.name}`);
+        fetchSavedPipelines();
+      }
+    } catch (e: any) {
+      setError(e.message || 'Failed to save pipeline');
+      showToast(e.message || 'Failed to save pipeline', 'error');
     }
   };
 
@@ -282,6 +451,14 @@ const PipelinesPanel: React.FC<PipelinesPanelProps> = () => {
      ============================================================== */
   return (
     <div className="etl-panel">
+      {/* ── Toast Notification ── */}
+      {toast && (
+        <div className={`etl-toast etl-toast--${toast.type}`}>
+          <span>{toast.type === 'success' ? '✅' : '⚠️'} {toast.message}</span>
+          <button className="etl-toast__close" onClick={() => setToast(null)}>✕</button>
+        </div>
+      )}
+
       {/* ── Header ── */}
       <div className="etl-header">
         <div className="etl-header__left">
@@ -303,6 +480,12 @@ const PipelinesPanel: React.FC<PipelinesPanelProps> = () => {
             onClick={() => setActiveTab('visual')}
           >
             🧩 Visual Builder
+          </button>
+          <button
+            className={`etl-tab ${activeTab === 'saved' ? 'etl-tab--active' : ''}`}
+            onClick={() => setActiveTab('saved')}
+          >
+            📁 Saved Pipelines
           </button>
         </div>
       </div>
@@ -546,7 +729,7 @@ const PipelinesPanel: React.FC<PipelinesPanelProps> = () => {
       {/* ═══════════════════════════════════════════════════════════
           Visual / Natural Language Tabs (existing ETL)
           ═══════════════════════════════════════════════════════════ */}
-      {activeTab !== 'ai' && (
+      {activeTab !== 'ai' && activeTab !== 'saved' && (
         <>
 
       {/* ── Pipeline Name ── */}
@@ -746,6 +929,13 @@ const PipelinesPanel: React.FC<PipelinesPanelProps> = () => {
         >
           {isLoading ? '⏳ Running…' : '▶ Execute Pipeline'}
         </button>
+        <button
+          className="etl-btn etl-btn--ghost"
+          onClick={handleVisualSave}
+          disabled={!selectedSource || transforms.length === 0}
+        >
+          💾 Save Pipeline
+        </button>
       </div>
 
       {/* ── Result ── */}
@@ -820,6 +1010,137 @@ const PipelinesPanel: React.FC<PipelinesPanelProps> = () => {
       )}
 
         </>
+      )}
+
+      {/* ═══════════════════════════════════════════════════════════
+          Saved Pipelines Tab
+          ═══════════════════════════════════════════════════════════ */}
+      {activeTab === 'saved' && (
+        <div className="saved-pipelines">
+          {/* Templates Section */}
+          <div className="etl-section">
+            <div className="etl-section__header">
+              <span className="etl-step-badge">⚡</span>
+              <span className="etl-section__title">Quick-Start Templates</span>
+              <span className="etl-step-count">{PIPELINE_TEMPLATES.length} templates</span>
+            </div>
+            <div className="saved-pipelines__templates-grid">
+              {PIPELINE_TEMPLATES.map(t => (
+                <button
+                  key={t.name}
+                  className="saved-pipelines__template-card"
+                  onClick={() => handleUseTemplate(t)}
+                >
+                  <span className="saved-pipelines__template-icon">{t.icon}</span>
+                  <span className="saved-pipelines__template-name">{t.name}</span>
+                  <span className="saved-pipelines__template-desc">{t.description}</span>
+                  <div className="saved-pipelines__template-tags">
+                    {t.tags.map(tag => (
+                      <span key={tag} className="saved-pipelines__tag">{tag}</span>
+                    ))}
+                  </div>
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Saved Pipelines List */}
+          <div className="etl-section">
+            <div className="etl-section__header">
+              <span className="etl-step-badge">📁</span>
+              <span className="etl-section__title">Saved Pipelines</span>
+              <span className="etl-step-count">{savedPipelines.length} pipeline{savedPipelines.length !== 1 ? 's' : ''}</span>
+              <button
+                className="etl-btn etl-btn--ghost"
+                onClick={fetchSavedPipelines}
+                disabled={savedLoading}
+                title="Refresh"
+                style={{ marginLeft: 'auto' }}
+              >
+                {savedLoading ? '⏳' : '🔄'}
+              </button>
+            </div>
+
+            {savedError && (
+              <div className="etl-error">
+                ⚠️ {savedError}
+                <button className="etl-error__close" onClick={() => setSavedError(null)}>✕</button>
+              </div>
+            )}
+
+            {savedLoading && savedPipelines.length === 0 && (
+              <div className="etl-loading">Loading saved pipelines…</div>
+            )}
+
+            {!savedLoading && savedPipelines.length === 0 && !savedError && (
+              <div className="saved-pipelines__empty">
+                <span className="saved-pipelines__empty-icon">📦</span>
+                <p className="saved-pipelines__empty-title">No saved pipelines yet</p>
+                <p className="saved-pipelines__empty-text">
+                  Generate a pipeline with AI or build one manually, then click "Save Pipeline" to store it here.
+                </p>
+                <button
+                  className="etl-btn etl-btn--primary"
+                  onClick={() => setActiveTab('ai')}
+                >
+                  🤖 Create with AI
+                </button>
+              </div>
+            )}
+
+            {savedPipelines.length > 0 && (
+              <div className="saved-pipelines__list">
+                {savedPipelines.map(p => (
+                  <div key={p.id} className="saved-pipelines__card">
+                    <div className="saved-pipelines__card-header">
+                      <div className="saved-pipelines__card-info">
+                        <h4 className="saved-pipelines__card-name">{p.name}</h4>
+                        {p.description && (
+                          <p className="saved-pipelines__card-desc">{p.description}</p>
+                        )}
+                      </div>
+                      <span className={`saved-pipelines__status saved-pipelines__status--${p.status}`}>
+                        {p.status}
+                      </span>
+                    </div>
+                    <div className="saved-pipelines__card-meta">
+                      <span className="saved-pipelines__meta-item">📄 {p.source}</span>
+                      <span className="saved-pipelines__meta-item">🔧 {p.steps} step{p.steps !== 1 ? 's' : ''}</span>
+                      <span className="saved-pipelines__meta-item">📤 {p.sink}</span>
+                      {p.created_at && (
+                        <span className="saved-pipelines__meta-item saved-pipelines__meta-item--muted">
+                          {new Date(p.created_at).toLocaleDateString()}
+                        </span>
+                      )}
+                    </div>
+                    {p.tags.length > 0 && (
+                      <div className="saved-pipelines__card-tags">
+                        {p.tags.map(tag => (
+                          <span key={tag} className="saved-pipelines__tag">{tag}</span>
+                        ))}
+                      </div>
+                    )}
+                    <div className="saved-pipelines__card-actions">
+                      <button
+                        className="etl-btn etl-btn--primary"
+                        onClick={() => handleLoadPipeline(p.id)}
+                      >
+                        📂 Load & Run
+                      </button>
+                      <button
+                        className="etl-btn etl-btn--secondary saved-pipelines__delete-btn"
+                        onClick={() => handleDeletePipeline(p.id, p.name)}
+                        disabled={deletingId === p.id}
+                      >
+                        {deletingId === p.id ? '⏳' : '🗑️'} Delete
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
       )}
     </div>
   );
@@ -1066,7 +1387,7 @@ const TransformStepCard: React.FC<TransformStepCardProps> = ({
         )}
 
         {step.type === 'fill_missing' && (
-          <div className="etl-config-row">
+          <div className="etl-config-row" style={{ flexWrap: 'wrap' }}>
             <div className="etl-config-field">
               <label>Column</label>
               <select
@@ -1075,14 +1396,27 @@ const TransformStepCard: React.FC<TransformStepCardProps> = ({
                 onChange={e => updateConfig('column', e.target.value)}
               >
                 <option value="">Select…</option>
+                <option value="*">✦ All Columns</option>
                 {columns.map(c => <option key={c.name} value={c.name}>{c.name}</option>)}
               </select>
             </div>
+            <div className="etl-config-field">
+              <label>Strategy</label>
+              <select
+                className="etl-select"
+                value={step.config.strategy || 'value'}
+                onChange={e => updateConfig('strategy', e.target.value)}
+              >
+                <option value="value">Fixed Value</option>
+                <option value="mean">Mean (numeric cols)</option>
+                <option value="median">Median (numeric cols)</option>
+              </select>
+            </div>
             <div className="etl-config-field etl-config-field--grow">
-              <label>Fill Value (SQL expression)</label>
+              <label>{(step.config.strategy === 'mean' || step.config.strategy === 'median') ? 'Fallback for text columns' : 'Fill Value (SQL expression)'}</label>
               <input
                 className="etl-input"
-                placeholder="0 or 'Unknown' or AVG(col)"
+                placeholder={step.config.column === '*' ? '0  (numeric default, text → N/A)' : "0 or 'Unknown' or AVG(col)"}
                 value={step.config.value || ''}
                 onChange={e => updateConfig('value', e.target.value)}
               />
@@ -1121,7 +1455,7 @@ function getDefaultConfig(type: TransformType): Record<string, any> {
     case 'aggregate': return { group_by: [], aggregations: [] };
     case 'deduplicate': return { columns: [] };
     case 'cast_type': return { column: '', to_type: 'VARCHAR' };
-    case 'fill_missing': return { column: '', value: '' };
+    case 'fill_missing': return { column: '', value: '', strategy: 'value' };
     case 'custom_sql': return { sql: '' };
     default: return {};
   }

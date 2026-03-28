@@ -15,22 +15,56 @@ const FilesAndData: React.FC<FilesAndDataProps> = ({ setCurrentPage }) => {
     if (saved) {
       try {
         const parsed = JSON.parse(saved);
+        // localStorage stores: { file: { name, size, type }, response: { file_id, filename, rows, columns, ... } }
         const enhanced = parsed.map((f: any) => ({
           ...f,
-          id: f.id || `AURA-${Math.random().toString(36).substr(2, 5).toUpperCase()}`,
-          rows: typeof f.rows === 'number' && f.rows > 0 ? f.rows : (typeof f.size === 'number' ? Math.floor(f.size / 150) : 0),
-          columns: f.columns || (Array.isArray(f.response?.columns) ? f.response.columns.length : 0)
+          name: f.file?.name || f.response?.filename || f.name || 'Untitled dataset',
+          id: f.response?.file_id || f.id || `AURA-${Math.random().toString(36).substr(2, 5).toUpperCase()}`,
+          sizeBytes: f.file?.size || f.size || 0,
+          rows: (typeof f.response?.rows === 'number' && f.response.rows > 0)
+            ? f.response.rows
+            : (typeof f.rows === 'number' && f.rows > 0)
+              ? f.rows
+              : 0,
+          columns: Array.isArray(f.response?.columns)
+            ? f.response.columns.length
+            : (typeof f.columns === 'number' ? f.columns : 0),
+          columnNames: Array.isArray(f.response?.columns) ? f.response.columns : [],
+          uploadedAt: f.uploadedAt || null,
+          status: 'ready' as const,
         }));
         setFiles(enhanced);
       } catch (e) { console.error(e); }
     }
   }, []);
 
-  const getRowDisplay = (rows: any) => {
-    if (typeof rows === 'number' && rows > 0) {
-      return `${rows.toLocaleString()} rows`;
+  const formatFileSize = (bytes: number): string => {
+    if (!bytes || bytes <= 0) return '—';
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  };
+
+  const getRowDisplay = (file: any) => {
+    if (typeof file.rows === 'number' && file.rows > 0) {
+      return `${file.rows.toLocaleString()} rows`;
     }
-    return 'Processing...';
+    return 'Uploaded';
+  };
+
+  const getStatusBadge = (file: any) => {
+    if (typeof file.rows === 'number' && file.rows > 0) {
+      return { label: 'Ready', className: 'files-data-status--ready' };
+    }
+    return { label: 'Uploaded', className: 'files-data-status--uploaded' };
+  };
+
+  const formatDate = (iso: string | null) => {
+    if (!iso) return '—';
+    const d = new Date(iso);
+    if (isNaN(d.getTime())) return '—';
+    return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })
+      + ' ' + d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
   };
 
   const handleAnalyze = () => {
@@ -62,10 +96,14 @@ const FilesAndData: React.FC<FilesAndDataProps> = ({ setCurrentPage }) => {
                   <th className="files-data-table-header-cell">Dataset Name</th>
                   <th className="files-data-table-header-cell">Size</th>
                   <th className="files-data-table-header-cell">Records</th>
+                  <th className="files-data-table-header-cell">Uploaded</th>
+                  <th className="files-data-table-header-cell">Status</th>
                 </tr>
               </thead>
               <tbody>
-                {files.map((file) => (
+                {files.map((file) => {
+                  const status = getStatusBadge(file);
+                  return (
                   <tr 
                     key={file.id} 
                     onClick={() => setSelectedFile(file)}
@@ -75,10 +113,13 @@ const FilesAndData: React.FC<FilesAndDataProps> = ({ setCurrentPage }) => {
                       <div className="files-data-filename">{file.name}</div>
                       <div className="files-data-fileid">{file.id}</div>
                     </td>
-                    <td className="files-data-size">{file.size || 'N/A'}</td>
-                    <td className="files-data-records">{getRowDisplay(file.rows)}</td>
+                    <td className="files-data-size">{formatFileSize(file.sizeBytes)}</td>
+                    <td className="files-data-records">{getRowDisplay(file)}</td>
+                    <td className="files-data-date">{formatDate(file.uploadedAt)}</td>
+                    <td className="files-data-status"><span className={`files-data-status-badge ${status.className}`}>{status.label}</span></td>
                   </tr>
-                ))}
+                  );
+                })}
               </tbody>
             </table>
             {files.length === 0 && (
@@ -92,9 +133,9 @@ const FilesAndData: React.FC<FilesAndDataProps> = ({ setCurrentPage }) => {
           <div className="files-data-detail-panel">
             {selectedFile ? (
               <div className="files-data-detail-card">
-                <span className="files-data-badge">Ready to Analyze</span>
+                <span className="files-data-badge">{typeof selectedFile.rows === 'number' && selectedFile.rows > 0 ? 'Ready to Analyze' : 'Uploaded'}</span>
                 <h2 className="files-data-detail-title">{selectedFile.name}</h2>
-                <p className="files-data-detail-subtitle">Schema verified for AI processing.</p>
+                <p className="files-data-detail-subtitle">{formatFileSize(selectedFile.sizeBytes)} • {selectedFile.file?.type || 'Unknown type'}</p>
                 
                 <div className="files-data-stats-grid">
                   <div className="files-data-stat-card">

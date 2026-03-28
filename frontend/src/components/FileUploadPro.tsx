@@ -259,6 +259,7 @@ export const FileUpload: React.FC<FileUploadProps> = ({
       const uploadedFile = {
         file: { name: file.name, size: file.size, type: file.type },
         response: enrichedResponse,
+        uploadedAt: new Date().toISOString(),
       };
 
       // Add to recent uploads list (newest first, with duplicate check)

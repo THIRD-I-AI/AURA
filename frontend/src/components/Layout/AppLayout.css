@@ -1,0 +1,173 @@
+/* =============================================================================
+   AppLayout — Responsive Application Shell
+   ============================================================================= */
+
+/* ── Root shell ─────────────────────────────────────────────────── */
+.app-shell {
+  display: flex;
+  height: 100vh;
+  height: 100dvh; /* dynamic viewport height for mobile browsers */
+  width: 100%;
+  background-color: var(--bg-secondary);
+  overflow: hidden;
+}
+
+/* ── Sidebar ────────────────────────────────────────────────────── */
+.app-shell__sidebar {
+  flex-shrink: 0;
+  width: var(--layout-sidebar-width);
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  background-color: var(--bg-secondary);
+  border-right: 1px solid var(--border-default);
+  overflow-y: auto;
+  overflow-x: hidden;
+  transition: width var(--transition-base);
+}
+
+.app-shell__sidebar--collapsed {
+  width: var(--layout-sidebar-width-collapsed);
+}
+
+/* ── Content area (header + main) ───────────────────────────────── */
+.app-shell__content {
+  flex: 1;
+  min-width: 0; /* allow flex child to shrink below intrinsic width */
+  display: flex;
+  flex-direction: column;
+  overflow: hidden; /* main element handles its own scroll */
+}
+
+/* ── Main scrollable region ─────────────────────────────────────── */
+.app-shell__main {
+  flex: 1;
+  padding: var(--space-6);
+  overflow-y: auto;
+  overflow-x: hidden;
+  min-height: 0; /* required for flex child to respect overflow */
+}
+
+.app-shell__main-inner {
+  width: 100%;
+  max-width: 100%;
+}
+
+/* ── Dashboard responsive grids ─────────────────────────────────── */
+.dashboard-grid {
+  display: grid;
+  gap: var(--space-4);
+  margin-bottom: var(--space-5);
+  transition: all 300ms ease;
+}
+
+.dashboard-grid--kpis {
+  grid-template-columns: repeat(4, 1fr);
+}
+
+.dashboard-grid--panels {
+  grid-template-columns: repeat(2, 1fr);
+}
+
+.dashboard-grid--workspace {
+  grid-template-columns: 7fr 5fr;
+  align-items: stretch;
+}
+
+.dashboard-grid--workspace > * {
+  min-width: 0;
+}
+
+/* ── Chat fills available space ─────────────────────────────────── */
+.chat-container {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.chat-messages {
+  flex: 1;
+  min-height: 200px;
+  max-height: calc(100vh - 300px);
+  overflow-y: auto;
+  padding: var(--space-6);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  background-color: var(--bg-primary);
+}
+
+.chat-input-area {
+  flex-shrink: 0;
+  border-top: 1px solid var(--border-default);
+  padding: var(--space-4);
+  background-color: var(--bg-secondary);
+}
+
+/* =============================================================================
+   RESPONSIVE BREAKPOINTS
+   ============================================================================= */
+
+/* ── Tablet: < 1024px ──────────────────────────────────────────── */
+@media (max-width: 1024px) {
+  .app-shell__sidebar {
+    width: var(--layout-sidebar-width-collapsed);
+  }
+
+  .app-shell__main {
+    padding: var(--space-4);
+  }
+
+  .dashboard-grid--kpis {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
+  .dashboard-grid--panels {
+    grid-template-columns: 1fr;
+  }
+
+  .dashboard-grid--workspace {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* ── Small tablet / large phone: < 768px ───────────────────────── */
+@media (max-width: 768px) {
+  .app-shell__sidebar {
+    position: fixed;
+    left: 0;
+    top: 0;
+    z-index: var(--z-overlay, 500);
+    width: var(--layout-sidebar-width);
+    transform: translateX(-100%);
+    transition: transform var(--transition-base);
+  }
+
+  .app-shell__sidebar--open {
+    transform: translateX(0);
+    box-shadow: var(--shadow-xl);
+  }
+
+  .app-shell__main {
+    padding: var(--space-3);
+  }
+
+  .dashboard-grid--kpis {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .chat-messages {
+    max-height: calc(100vh - 260px);
+  }
+}
+
+/* ── Phone: < 480px ────────────────────────────────────────────── */
+@media (max-width: 480px) {
+  .dashboard-grid--kpis {
+    grid-template-columns: 1fr;
+  }
+
+  .dashboard-grid--panels {
+    grid-template-columns: 1fr;
+  }
+}

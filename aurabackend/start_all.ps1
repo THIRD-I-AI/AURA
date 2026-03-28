@@ -30,6 +30,7 @@ $services = @(
     @{ Name = "Insights";          Port = 8005; Mod = "insights.main:app" }
     @{ Name = "Orchestration";     Port = 8006; Mod = "orchestration_service.main:app" }
     @{ Name = "Metadata-Store";    Port = 8007; Mod = "metadata_store.main:metadata_app" }
+    @{ Name = "UASR-Service";      Port = 8009; Mod = "uasr.service:app" }
 )
 
 Write-Host "============================================================" -ForegroundColor Cyan

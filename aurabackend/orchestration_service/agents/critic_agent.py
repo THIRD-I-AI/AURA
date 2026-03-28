@@ -23,6 +23,8 @@ class CriticAgent:
             "Analyze the provided SQL query based on the user's original request. "
             "Check for: 1. Syntactic correctness. 2. Security vulnerabilities. "
             "3. Correctness in addressing the user's request. "
+            "4. All table and column names MUST be enclosed in double quotes "
+            '(e.g., "my_table"."my_column") for identifiers with special characters, spaces, or reserved keywords. '
             "Respond ONLY with a JSON object matching the specified format."
         )
 

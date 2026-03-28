@@ -43,18 +43,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
   return (
     <aside
-      style={{
-        width: collapsed ? 'var(--layout-sidebar-width-collapsed)' : 'var(--layout-sidebar-width)',
-        backgroundColor: 'var(--bg-secondary)',
-        borderRight: '1px solid var(--border-default)',
-        display: 'flex',
-        flexDirection: 'column',
-        transition: 'width var(--transition-base)',
-        overflowY: 'auto',
-        position: 'sticky',
-        top: 0,
-        height: '100vh',
-      }}
+      className={`app-shell__sidebar${collapsed ? ' app-shell__sidebar--collapsed' : ''}`}
     >
       {/* Sidebar Header */}
       <div
