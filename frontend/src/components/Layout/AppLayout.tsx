@@ -8,7 +8,7 @@ import Header from './Header';
 import Button from '../ui/Button';
 import { useSystemHealth } from '../../hooks/useSystemHealth';
 
-export type PageType = 'dashboard' | 'chat' | 'files' | 'queries' | 'settings' | 'agent' | 'pipelines';
+export type PageType = 'dashboard' | 'chat' | 'files' | 'queries' | 'settings' | 'agent' | 'pipelines' | 'streaming';
 
 interface SidebarItem {
   id: string;
@@ -70,6 +70,12 @@ const AppLayout: React.FC<AppLayoutProps> = ({ children, currentPage, onPageChan
       icon: '⚙️',
       href: '#',
     },
+    {
+      id: 'streaming',
+      label: 'Streaming',
+      icon: '🌊',
+      href: '#',
+    },
   ];
 
   const getPageTitle = (): { title: string; subtitle: string } => {
@@ -101,6 +107,10 @@ const AppLayout: React.FC<AppLayoutProps> = ({ children, currentPage, onPageChan
       pipelines: {
         title: 'ETL Pipelines',
         subtitle: 'Build, run, and manage data transformation pipelines',
+      },
+      streaming: {
+        title: 'Streaming Pipelines',
+        subtitle: 'Real-time data streaming with temporal windows and live metrics',
       },
     };
     return titles[currentPage as PageType];

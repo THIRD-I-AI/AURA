@@ -10,6 +10,7 @@ import QueryHistory from './pages/QueryHistory';
 import Settings from './pages/Settings';
 import AgentPanel from './pages/AgentPanel';
 import PipelinesPanel from './pages/PipelinesPanel';
+import StreamingPanel from './pages/StreamingPanel';
 import Card, { CardHeader, CardBody } from './components/ui/Card';
 import Alert from './components/ui/Alert';
 import Button from './components/ui/Button';
@@ -124,6 +125,8 @@ function App() {
         return <AgentPanel setCurrentPage={setCurrentPage} />;
       case 'pipelines':
         return <PipelinesPanel setCurrentPage={setCurrentPage} />;
+      case 'streaming':
+        return <StreamingPanel setCurrentPage={setCurrentPage} />;
       case 'dashboard':
       default:
         return (

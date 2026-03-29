@@ -34,6 +34,13 @@ try:
 except ImportError:
     _AGENT_AVAILABLE = False
 
+# Streaming pipeline engine
+try:
+    from pipeline.streaming.streaming_api import router as streaming_router
+    _STREAMING_AVAILABLE = True
+except ImportError:
+    _STREAMING_AVAILABLE = False
+
 
 app = create_service(
     name="API Gateway",
@@ -44,6 +51,10 @@ app = create_service(
 # Mount the agent router
 if _AGENT_AVAILABLE:
     app.include_router(agent_router)
+
+# Mount the streaming router
+if _STREAMING_AVAILABLE:
+    app.include_router(streaming_router)
 
 
 # ==================== Models ====================
