@@ -251,6 +251,178 @@ async def stream_events(pipeline_id: str):
 
 
 # ────────────────────────────────────────────────────────────────────
+# Schema Discovery — drives dynamic frontend forms
+# ────────────────────────────────────────────────────────────────────
+
+_SOURCE_SCHEMAS = {
+    "simulated": {
+        "label": "Simulated (Test Data)",
+        "description": "Generates synthetic events at a configurable rate — good for testing pipelines.",
+        "implemented": True,
+        "fields": [
+            {"key": "event_type",        "label": "Event Type",          "type": "text",   "default": "orders",  "required": True,  "help": "Label for the event stream"},
+            {"key": "events_per_second", "label": "Events / Second",     "type": "number", "default": 10,        "required": True,  "help": "Generation rate"},
+            {"key": "num_keys",          "label": "Partition Keys",      "type": "number", "default": 5,         "required": False, "help": "Number of distinct grouping keys"},
+        ],
+    },
+    "file_watcher": {
+        "label": "File Watcher",
+        "description": "Watches a directory for new CSV/JSON files and emits each row as an event.",
+        "implemented": True,
+        "fields": [
+            {"key": "watch_dir",             "label": "Watch Directory",    "type": "text",   "default": "data/uploads", "required": True,  "help": "Directory to monitor for new files"},
+            {"key": "pattern",               "label": "File Pattern",       "type": "text",   "default": "*.csv",        "required": False, "help": "Glob pattern (e.g. *.csv, *.json)"},
+            {"key": "poll_interval_seconds", "label": "Poll Interval (s)",  "type": "number", "default": 2.0,            "required": False, "help": "How often to scan for new files"},
+        ],
+    },
+    "kafka": {
+        "label": "Kafka",
+        "description": "Consume from an Apache Kafka topic.",
+        "implemented": False,
+        "fields": [
+            {"key": "bootstrap_servers", "label": "Bootstrap Servers", "type": "text",   "default": "localhost:9092", "required": True},
+            {"key": "topic",             "label": "Topic",             "type": "text",   "default": "",               "required": True},
+            {"key": "group_id",          "label": "Consumer Group",    "type": "text",   "default": "aura-streaming", "required": False},
+            {"key": "auto_offset_reset", "label": "Offset Reset",     "type": "select", "default": "latest",         "required": False, "options": ["earliest", "latest"]},
+        ],
+    },
+    "websocket": {
+        "label": "WebSocket",
+        "description": "Connect to a WebSocket endpoint and receive events in real-time.",
+        "implemented": False,
+        "fields": [
+            {"key": "url",     "label": "WebSocket URL", "type": "text", "default": "ws://localhost:8080/ws", "required": True},
+            {"key": "headers", "label": "Headers (JSON)", "type": "text", "default": "{}",                     "required": False},
+        ],
+    },
+}
+
+_SINK_SCHEMAS = {
+    "sse": {
+        "label": "SSE (Live to UI)",
+        "description": "Streams window results to the frontend in real-time via Server-Sent Events.",
+        "implemented": True,
+        "fields": [],  # no config needed
+        "auto_add": True,  # always added if not present
+    },
+    "console": {
+        "label": "Console (Log Output)",
+        "description": "Logs window results to the server console — useful for debugging.",
+        "implemented": True,
+        "fields": [],
+    },
+    "file": {
+        "label": "File (CSV / JSON)",
+        "description": "Writes window results to micro-batch files on disk.",
+        "implemented": True,
+        "fields": [
+            {"key": "output_dir",  "label": "Output Directory", "type": "text",   "default": "data/streaming_output", "required": True,  "help": "Where to write batch files"},
+            {"key": "format",      "label": "Format",           "type": "select", "default": "json",                  "required": False, "options": ["json", "csv"]},
+            {"key": "flush_every", "label": "Flush Every N",     "type": "number", "default": 50,                      "required": False, "help": "Flush buffer after N window results"},
+        ],
+    },
+    "database": {
+        "label": "Database (DuckDB)",
+        "description": "Inserts window results into a DuckDB table.",
+        "implemented": True,
+        "fields": [
+            {"key": "connection", "label": "DB Path",    "type": "text", "default": "data/streaming.duckdb", "required": True,  "help": "Path to the DuckDB file"},
+            {"key": "table",      "label": "Table Name", "type": "text", "default": "stream_results",        "required": True},
+        ],
+    },
+    "alert": {
+        "label": "Alert (Threshold Rules)",
+        "description": "Fires alerts when aggregated values cross configurable thresholds.",
+        "implemented": True,
+        "fields": [
+            {"key": "rules", "label": "Alert Rules", "type": "alert_rules", "default": [], "required": True, "help": "List of {field, operator, threshold, label}"},
+        ],
+    },
+    "kafka": {
+        "label": "Kafka (Produce)",
+        "description": "Emit window results to a Kafka topic.",
+        "implemented": False,
+        "fields": [
+            {"key": "bootstrap_servers", "label": "Bootstrap Servers", "type": "text", "default": "localhost:9092", "required": True},
+            {"key": "topic",             "label": "Topic",             "type": "text", "default": "",               "required": True},
+        ],
+    },
+}
+
+_WINDOW_SCHEMAS = {
+    "tumbling": {
+        "label": "Tumbling",
+        "description": "Fixed-size, non-overlapping time windows.",
+        "fields": [
+            {"key": "size_seconds",              "label": "Window Size (s)",       "type": "number", "default": 60, "required": True},
+            {"key": "late_data_policy",          "label": "Late Data Policy",      "type": "select", "default": "drop", "options": ["drop", "update", "dead_letter"]},
+            {"key": "allowed_lateness_seconds",  "label": "Allowed Lateness (s)",  "type": "number", "default": 10},
+        ],
+    },
+    "sliding": {
+        "label": "Sliding",
+        "description": "Fixed-size, overlapping windows that slide forward by an interval.",
+        "fields": [
+            {"key": "size_seconds",              "label": "Window Size (s)",        "type": "number", "default": 120, "required": True},
+            {"key": "slide_seconds",             "label": "Slide Interval (s)",     "type": "number", "default": 30,  "required": True},
+            {"key": "late_data_policy",          "label": "Late Data Policy",       "type": "select", "default": "drop", "options": ["drop", "update", "dead_letter"]},
+            {"key": "allowed_lateness_seconds",  "label": "Allowed Lateness (s)",   "type": "number", "default": 10},
+        ],
+    },
+    "session": {
+        "label": "Session",
+        "description": "Groups events by activity — a new window starts after an inactivity gap.",
+        "fields": [
+            {"key": "gap_seconds",               "label": "Session Gap (s)",        "type": "number", "default": 30, "required": True},
+            {"key": "late_data_policy",          "label": "Late Data Policy",       "type": "select", "default": "update", "options": ["drop", "update", "dead_letter"]},
+            {"key": "allowed_lateness_seconds",  "label": "Allowed Lateness (s)",   "type": "number", "default": 10},
+        ],
+    },
+    "global": {
+        "label": "Global",
+        "description": "A single window across all time — never closes automatically.",
+        "fields": [],
+    },
+}
+
+_TRANSFORM_SCHEMAS = {
+    "key_by": {
+        "label": "Key By",
+        "description": "Set the grouping key for windowed aggregation.",
+        "fields": [
+            {"key": "field", "label": "Key Field", "type": "text", "required": True, "help": "Name of the data field to group by"},
+        ],
+    },
+    "aggregate": {
+        "label": "Aggregate",
+        "description": "Compute running aggregations within each window.",
+        "fields": [
+            {"key": "fields", "label": "Aggregations", "type": "agg_fields", "required": True, "help": "List of {field, function} where function is SUM|COUNT|MIN|MAX|AVG"},
+        ],
+    },
+    "filter": {
+        "label": "Filter",
+        "description": "Drop events that don't match a condition.",
+        "fields": [
+            {"key": "field",    "label": "Field",    "type": "text",   "required": True},
+            {"key": "operator", "label": "Operator",  "type": "select", "default": "==", "options": ["==", "!=", ">", "<", ">=", "<="]},
+            {"key": "value",    "label": "Value",     "type": "text",   "required": True},
+        ],
+    },
+}
+
+
+@router.get("/schemas", summary="Get available source/sink/window/transform schemas for dynamic forms")
+async def get_schemas():
+    return {
+        "sources": _SOURCE_SCHEMAS,
+        "sinks": _SINK_SCHEMAS,
+        "windows": _WINDOW_SCHEMAS,
+        "transforms": _TRANSFORM_SCHEMAS,
+    }
+
+
+# ────────────────────────────────────────────────────────────────────
 # Templates
 # ────────────────────────────────────────────────────────────────────
 

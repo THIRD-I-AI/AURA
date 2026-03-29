@@ -796,6 +796,51 @@ export interface StreamTemplate {
   pipeline: Omit<StreamPipelineDef, 'id' | 'status' | 'created_at' | 'updated_at' | 'metrics'>;
 }
 
+/** Schema field descriptor — drives dynamic form rendering */
+export interface SchemaField {
+  key: string;
+  label: string;
+  type: 'text' | 'number' | 'select' | 'alert_rules' | 'agg_fields';
+  default?: any;
+  required?: boolean;
+  help?: string;
+  options?: string[];
+}
+
+export interface SourceSchema {
+  label: string;
+  description: string;
+  implemented: boolean;
+  fields: SchemaField[];
+}
+
+export interface SinkSchema {
+  label: string;
+  description: string;
+  implemented: boolean;
+  fields: SchemaField[];
+  auto_add?: boolean;
+}
+
+export interface WindowSchema {
+  label: string;
+  description: string;
+  fields: SchemaField[];
+}
+
+export interface TransformSchema {
+  label: string;
+  description: string;
+  fields: SchemaField[];
+}
+
+export interface StreamingSchemas {
+  sources: Record<string, SourceSchema>;
+  sinks: Record<string, SinkSchema>;
+  windows: Record<string, WindowSchema>;
+  transforms: Record<string, TransformSchema>;
+}
+
 export const streamingService = {
   /** List all streaming pipelines */
   async list(): Promise<{ pipelines: StreamPipelineDef[]; total: number }> {
@@ -855,6 +900,11 @@ export const streamingService = {
   /** Get streaming templates */
   async templates(): Promise<{ templates: StreamTemplate[] }> {
     return client.get('/streaming/templates');
+  },
+
+  /** Get available source/sink/window/transform schemas for dynamic forms */
+  async schemas(): Promise<StreamingSchemas> {
+    return client.get('/streaming/schemas');
   },
 };
 

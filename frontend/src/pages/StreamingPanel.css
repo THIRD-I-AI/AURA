@@ -472,3 +472,212 @@
     transform: translateY(0);
   }
 }
+
+/* ════════════════════════════════════════════════════════════════
+   CREATE FORM – dynamic pipeline builder
+   ════════════════════════════════════════════════════════════════ */
+.streaming-create-form {
+  padding: 0 0.5rem 2rem;
+  max-width: 960px;
+  animation: streaming-slideIn 0.2s ease;
+}
+.streaming-create-form h2 {
+  margin: 0 0 0.25rem;
+  font-size: 1.4rem;
+  color: var(--color-text-primary, #e0e0f0);
+}
+.sf-subtitle {
+  font-size: 0.88rem;
+  color: var(--color-text-tertiary, #888);
+  margin: 0 0 1.2rem;
+}
+
+/* ── Fieldsets / sections ── */
+.sf-section {
+  border: 1px solid var(--color-border, #2a2a3a);
+  border-radius: 10px;
+  padding: 1rem 1.2rem 1.2rem;
+  margin-bottom: 1.2rem;
+  background: var(--color-surface-1, #191927);
+}
+.sf-section legend {
+  padding: 0 0.5rem;
+  font-weight: 600;
+  font-size: 0.95rem;
+  color: var(--color-text-primary, #e0e0f0);
+}
+
+/* ── Row layout for fields ── */
+.sf-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem 1rem;
+  margin-top: 0.5rem;
+}
+
+/* ── Individual fields ── */
+.sf-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  min-width: 180px;
+  flex: 1;
+}
+.sf-field--wide {
+  flex: 2;
+  min-width: 260px;
+}
+.sf-label {
+  font-size: 0.82rem;
+  font-weight: 500;
+  color: var(--color-text-secondary, #a0a0b8);
+}
+.sf-required {
+  color: #ef4444;
+  margin-left: 2px;
+}
+.sf-input {
+  padding: 0.45rem 0.65rem;
+  border-radius: 6px;
+  border: 1px solid var(--color-border, #2a2a3a);
+  background: var(--color-surface-0, #12121e);
+  color: var(--color-text-primary, #e0e0f0);
+  font-size: 0.88rem;
+  outline: none;
+  transition: border-color 0.15s;
+}
+.sf-input:focus {
+  border-color: var(--color-accent, #6c63ff);
+}
+.sf-input--sm { max-width: 150px; }
+.sf-input--xs { max-width: 80px; }
+.sf-select {
+  cursor: pointer;
+  appearance: auto;
+}
+.sf-help {
+  font-size: 0.75rem;
+  color: var(--color-text-tertiary, #666);
+}
+.sf-help-block {
+  font-size: 0.82rem;
+  color: var(--color-text-tertiary, #888);
+  margin: 0;
+}
+
+/* ── Source / Window selection cards ── */
+.sf-source-cards,
+.sf-window-cards {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+  margin-top: 0.3rem;
+}
+.sf-source-card,
+.sf-window-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  padding: 0.65rem 0.9rem;
+  border-radius: 8px;
+  border: 1.5px solid var(--color-border, #2a2a3a);
+  background: var(--color-surface-0, #12121e);
+  cursor: pointer;
+  min-width: 160px;
+  max-width: 220px;
+  text-align: left;
+  transition: border-color 0.15s, background 0.15s;
+}
+.sf-source-card:hover,
+.sf-window-card:hover {
+  border-color: var(--color-accent, #6c63ff);
+}
+.sf-source-card--selected,
+.sf-window-card--selected {
+  border-color: var(--color-accent, #6c63ff);
+  background: rgba(108, 99, 255, 0.1);
+}
+.sf-source-card--disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.sf-source-card--disabled:hover { border-color: var(--color-border, #2a2a3a); }
+.sf-source-card strong,
+.sf-window-card strong {
+  font-size: 0.88rem;
+  color: var(--color-text-primary, #e0e0f0);
+}
+.sf-source-card span,
+.sf-window-card span {
+  font-size: 0.75rem;
+  color: var(--color-text-tertiary, #888);
+}
+.sf-coming-soon {
+  display: inline-block;
+  margin-top: 0.2rem;
+  padding: 0.1rem 0.5rem;
+  border-radius: 4px;
+  background: rgba(245, 158, 11, 0.15);
+  color: #f59e0b;
+  font-size: 0.7rem;
+  font-weight: 600;
+}
+
+/* ── Sink / Transform blocks ── */
+.sf-sink-block,
+.sf-transform-block {
+  border: 1px solid var(--color-border, #2a2a3a);
+  border-radius: 8px;
+  padding: 0.65rem 0.85rem;
+  margin-bottom: 0.6rem;
+  background: rgba(255,255,255,0.02);
+}
+.sf-sink-header,
+.sf-transform-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.4rem;
+}
+.sf-sink-header strong,
+.sf-transform-header strong {
+  font-size: 0.88rem;
+  color: var(--color-text-primary, #e0e0f0);
+}
+.sf-btn-rm {
+  font-size: 1.1rem;
+  padding: 0 0.35rem;
+  line-height: 1;
+  color: #ef4444;
+}
+.sf-add-btns {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+.sf-btn-add {
+  font-size: 0.82rem;
+  padding: 0.35rem 0.75rem;
+}
+
+/* ── Alert rule builder ── */
+.sf-alert-rules { flex: 1; }
+.sf-alert-rule-row,
+.sf-agg-row {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin-bottom: 0.35rem;
+}
+
+/* ── Submit row ── */
+.sf-submit-row {
+  display: flex;
+  gap: 0.75rem;
+  margin-top: 1.5rem;
+}
+.sf-submit-btn {
+  font-size: 1rem;
+  padding: 0.6rem 2rem;
+}
