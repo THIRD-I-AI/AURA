@@ -83,7 +83,7 @@ class AuraSettings(BaseSettings):
 
     # ── CORS ────────────────────────────────────────────────────────────
     cors_origins: List[str] = Field(
-        default=["http://localhost:5173", "http://localhost:5174", "http://localhost:3000"],
+        default=["http://localhost:5173", "http://localhost:5174", "http://localhost:5175", "http://localhost:3000"],
         alias="CORS_ALLOWED_ORIGINS",
     )
 
@@ -158,6 +158,9 @@ class AuraSettings(BaseSettings):
 
     # ── Metadata Admin ──────────────────────────────────────────────────
     admin_email: Optional[str] = Field(None, alias="AURA_ADMIN_EMAIL")
+
+    # ── API Key Auth (opt-in) ───────────────────────────────────────────
+    api_key: Optional[str] = Field(None, alias="AURA_API_KEY")
 
     model_config = {
         "env_file": _locate_env_files(),

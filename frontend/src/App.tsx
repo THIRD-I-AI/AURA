@@ -1,143 +1,247 @@
-﻿import { useState, useEffect } from 'react';
+import { useState, useEffect, lazy, Suspense } from 'react';
 import './styles/design-system.css';
 import './styles/components.css';
 import './components/Layout/AppLayout.css';
 import AppLayout, { type PageType } from './components/Layout/AppLayout';
 import ChatInterface from './components/ChatInterface';
 import FileUpload from './components/FileUploadPro';
-import FilesAndData from './pages/FilesAndData';
-import QueryHistory from './pages/QueryHistory';
-import Settings from './pages/Settings';
-import AgentPanel from './pages/AgentPanel';
-import PipelinesPanel from './pages/PipelinesPanel';
 import Card, { CardHeader, CardBody } from './components/ui/Card';
-import Alert from './components/ui/Alert';
 import Button from './components/ui/Button';
-import { analyticsService, healthService, type DashboardStats, type HealthStatus } from './services/api';
-import { useSystemHealth, type SystemHealthState } from './hooks/useSystemHealth';
+import ErrorBoundary from './components/ui/ErrorBoundary';
+import { KPISkeleton } from './components/ui/Skeleton';
+import ToastContainer from './components/ui/Toast';
+import { ToastProvider, useToast } from './contexts/ToastContext';
+import { healthService, type HealthStatus } from './services/api';
+import { useSystemHealth } from './hooks/useSystemHealth';
+import { AuraProvider, useAuraStore } from './store';
 
-/**
- * AURA - Enterprise Data Analytics Application
- * Professional UI with modern design system
- */
-function App() {
+const FilesAndData   = lazy(() => import('./pages/FilesAndData'));
+const QueryHistory   = lazy(() => import('./pages/QueryHistory'));
+const Settings       = lazy(() => import('./pages/Settings'));
+const AgentPanel     = lazy(() => import('./pages/AgentPanel'));
+const PipelinesPanel = lazy(() => import('./pages/PipelinesPanel'));
+const StreamingPanel = lazy(() => import('./pages/StreamingPanel'));
+const LiveDashboard  = lazy(() => import('./components/LiveDashboard'));
+
+function PageFallback() {
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 'var(--space-16)', color: 'var(--text-tertiary)', fontSize: 'var(--font-sm)' }}>
+      Loading…
+    </div>
+  );
+}
+
+/* ── KPI card ─────────────────────────────────────────────────────── */
+function KPICard({
+  label,
+  value,
+  hint,
+  trend,
+  accentColor = 'var(--accent)',
+}: {
+  label: string;
+  value: string;
+  hint?: string;
+  trend?: { direction: 'up' | 'down' | 'flat'; label: string };
+  accentColor?: string;
+}) {
+  return (
+    <div style={{
+      background: 'var(--bg-surface)',
+      border: '1px solid var(--border-default)',
+      borderRadius: 'var(--radius-lg)',
+      padding: 'var(--space-5)',
+      display: 'flex',
+      flexDirection: 'column',
+      gap: 'var(--space-2)',
+      transition: 'border-color var(--dur-fast)',
+    }}
+      onMouseEnter={e => (e.currentTarget.style.borderColor = 'var(--border-strong)')}
+      onMouseLeave={e => (e.currentTarget.style.borderColor = 'var(--border-default)')}
+    >
+      <span style={{ fontSize: 'var(--font-xs)', color: 'var(--text-tertiary)', fontWeight: 500, letterSpacing: '0.06em', textTransform: 'uppercase' }}>
+        {label}
+      </span>
+      <span style={{ fontSize: 'var(--font-3xl)', fontWeight: 700, color: 'var(--text-primary)', letterSpacing: '-0.03em', lineHeight: 1 }}>
+        {value}
+      </span>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}>
+        {trend && (
+          <span style={{
+            fontSize: 'var(--font-xs)',
+            fontWeight: 600,
+            color: trend.direction === 'up' ? 'var(--green)' : trend.direction === 'down' ? 'var(--red)' : 'var(--text-tertiary)',
+          }}>
+            {trend.direction === 'up' ? '↑' : trend.direction === 'down' ? '↓' : '—'} {trend.label}
+          </span>
+        )}
+        {hint && <span style={{ fontSize: 'var(--font-xs)', color: 'var(--text-tertiary)' }}>{hint}</span>}
+      </div>
+      {/* Accent bar */}
+      <div style={{ height: 2, background: accentColor, borderRadius: 1, opacity: 0.6, marginTop: 'var(--space-1)' }} />
+    </div>
+  );
+}
+
+/* ── Main App inner ───────────────────────────────────────────────── */
+function AppInner() {
   const [currentPage, setCurrentPage] = useState<PageType>('dashboard');
-  const [showAlert, setShowAlert] = useState(true);
-  const [stats, setStats] = useState<DashboardStats | null>(null);
   const [healthStatus, setHealthStatus] = useState<HealthStatus | null>(null);
-  const [isLoading, setIsLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [showReconnecting, setShowReconnecting] = useState(false);
 
-  // System health monitoring
-  const systemHealth = useSystemHealth((status: SystemHealthState) => {
-    if (!status.isOnline && !showReconnecting) {
-      setShowReconnecting(true);
-    } else if (status.isOnline && showReconnecting) {
-      setShowReconnecting(false);
-      fetchStatsInternal();
+  const toast = useToast();
+  const { state: { stats, statsLoading, statsError }, actions: { fetchStats, loadFilesFromStorage } } = useAuraStore();
+  const systemHealth = useSystemHealth((status) => {
+    if (!status.isOnline) {
+      toast.warning('Backend offline', { message: 'Attempting to reconnect…', duration: 0 });
+    } else {
+      toast.success('Back online', { message: 'Connection restored.' });
+      fetchStats();
     }
   });
 
-  const fetchStatsInternal = async () => {
-    try {
-      setIsLoading(true);
-      const data = await analyticsService.getDashboardStats();
-      setStats(data);
-      setError(null);
-    } catch (err) {
-      console.error('Failed to fetch dashboard stats:', err);
-      setError('Backend services offline');
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
+  useEffect(() => { fetchStats(); loadFilesFromStorage(); }, []);
+  useEffect(() => { if (statsError) toast.error('Stats unavailable', { message: statsError }); }, [statsError]);
   useEffect(() => {
-    fetchStatsInternal();
-    // Refresh dashboard stats every 15 seconds when on dashboard
-    const interval = setInterval(() => {
-      if (currentPage === 'dashboard') {
-        fetchStatsInternal();
-      }
-    }, 15000);
-    return () => clearInterval(interval);
+    const id = setInterval(() => { if (currentPage === 'dashboard') fetchStats(); }, 30_000);
+    return () => clearInterval(id);
   }, [currentPage]);
-
   useEffect(() => {
-    const handleHealthUpdate = (status: HealthStatus) => {
-      setHealthStatus(status);
-    };
-    healthService.startMonitoring(handleHealthUpdate);
-    return () => {
-      healthService.stopMonitoring(handleHealthUpdate);
-    };
+    healthService.startMonitoring(setHealthStatus);
+    return () => healthService.stopMonitoring(setHealthStatus);
   }, []);
 
-  const formatNumber = (num: number): string => {
-    if (num >= 1_000_000) return `${(num / 1_000_000).toFixed(1)}M`;
-    if (num >= 1_000) return `${(num / 1_000).toFixed(1)}K`;
-    return num.toString();
-  };
-
-  const kpis = isLoading
-    ? [
-        { label: 'Total rows', value: '...', hint: 'Loading...' },
-        { label: 'Active sources', value: '...', hint: 'Loading...' },
-        { label: 'Queries run', value: '...', hint: 'Loading...' },
-        { label: 'System health', value: '...', hint: 'Loading...' },
-      ]
-    : [
-        {
-          label: 'Total rows',
-          value: stats?.total_rows ? formatNumber(stats.total_rows) : '0',
-          hint: stats?.total_rows ? 'Across all uploaded files' : 'Upload a file to begin',
-        },
-        {
-          label: 'Active sources',
-          value: String(stats?.active_sources ?? 0),
-          hint: stats?.active_sources ? `${stats.file_sources ?? 0} files, ${(stats.active_sources ?? 0) - (stats.file_sources ?? 0)} connections` : 'Upload files or connect a database',
-        },
-        {
-          label: 'Queries run',
-          value: stats?.queries_run ? formatNumber(stats.queries_run) : '0',
-          hint: stats?.queries_run ? 'This session' : 'Ask a question in chat',
-        },
-        {
-          label: 'System health',
-          value: healthStatus?.status === 'healthy' ? 'Online' : healthStatus?.status === 'degraded' ? 'Degraded' : 'Offline',
-          hint: healthStatus?.status === 'healthy' ? 'All systems operational' : healthStatus?.status === 'degraded' ? 'Some issues detected' : 'System offline',
-        },
-      ];
+  const fmt = (n: number) => n >= 1e6 ? `${(n/1e6).toFixed(1)}M` : n >= 1e3 ? `${(n/1e3).toFixed(1)}K` : String(n);
 
   const renderPage = () => {
     switch (currentPage) {
-      case 'files':
-        return <FilesAndData setCurrentPage={setCurrentPage} />;
-      case 'chat':
-        return <ChatInterface />;
-      case 'queries':
-        return <QueryHistory setCurrentPage={setCurrentPage} />;
-      case 'settings':
-        return <Settings setCurrentPage={setCurrentPage} />;
-      case 'agent':
-        return <AgentPanel setCurrentPage={setCurrentPage} />;
-      case 'pipelines':
-        return <PipelinesPanel setCurrentPage={setCurrentPage} />;
+      case 'files':     return <Suspense fallback={<PageFallback />}><FilesAndData   setCurrentPage={setCurrentPage} /></Suspense>;
+      case 'chat':      return <ChatInterface />;
+      case 'queries':   return <Suspense fallback={<PageFallback />}><QueryHistory   setCurrentPage={setCurrentPage} /></Suspense>;
+      case 'settings':  return <Suspense fallback={<PageFallback />}><Settings       setCurrentPage={setCurrentPage} /></Suspense>;
+      case 'agent':     return <Suspense fallback={<PageFallback />}><AgentPanel     setCurrentPage={setCurrentPage} /></Suspense>;
+      case 'pipelines': return <Suspense fallback={<PageFallback />}><PipelinesPanel setCurrentPage={setCurrentPage} /></Suspense>;
+      case 'streaming': return <Suspense fallback={<PageFallback />}><StreamingPanel setCurrentPage={setCurrentPage} /></Suspense>;
       case 'dashboard':
       default:
         return (
           <>
-            <div className="dashboard-grid dashboard-grid--kpis" style={{opacity:!systemHealth.isOnline?0.7:1}}>
-              {kpis.map((kpi)=>(<div key={kpi.label}><Card><CardBody><div style={{display:'flex',flexDirection:'column',gap:'var(--space-2)'}}><span style={{color:'var(--text-tertiary)',fontSize:'var(--font-xs)'}}>{kpi.label}</span><span style={{fontSize:'var(--font-xl)',fontWeight:'var(--weight-semibold)'}}>{kpi.value}</span><span style={{color:'var(--text-secondary)',fontSize:'var(--font-xs)'}}>{kpi.hint}</span></div></CardBody></Card></div>))}
+            {/* ── KPI strip ─────────────────────────────────── */}
+            {statsLoading ? (
+              <div style={{ marginBottom: 'var(--space-6)' }}><KPISkeleton /></div>
+            ) : (
+              <div className="dashboard-grid--kpis" style={{ opacity: systemHealth.isOnline ? 1 : 0.65, transition: 'opacity 0.3s' }}>
+                <KPICard
+                  label="Total rows"
+                  value={stats?.total_rows ? fmt(stats.total_rows) : '0'}
+                  hint="Across all data sources"
+                  trend={stats?.total_rows ? { direction: 'up', label: 'live' } : undefined}
+                  accentColor="var(--accent)"
+                />
+                <KPICard
+                  label="Active sources"
+                  value={String(stats?.active_sources ?? 0)}
+                  hint={`${stats?.file_sources ?? 0} files · ${((stats?.active_sources ?? 0) - (stats?.file_sources ?? 0))} connections`}
+                  accentColor="var(--green)"
+                />
+                <KPICard
+                  label="Queries run"
+                  value={stats?.queries_run ? fmt(stats.queries_run) : '0'}
+                  hint="This session"
+                  trend={stats?.queries_run ? { direction: 'flat', label: 'session' } : undefined}
+                  accentColor="var(--purple)"
+                />
+                <KPICard
+                  label="System health"
+                  value={
+                    healthStatus?.status === 'healthy' ? 'Online'
+                    : healthStatus?.status === 'degraded' ? 'Degraded'
+                    : 'Offline'
+                  }
+                  hint={healthStatus?.status === 'healthy' ? 'All services operational' : 'Check services'}
+                  accentColor={
+                    healthStatus?.status === 'healthy' ? 'var(--green)'
+                    : healthStatus?.status === 'degraded' ? 'var(--yellow)'
+                    : 'var(--red)'
+                  }
+                />
+              </div>
+            )}
+
+            {/* ── Live charts ───────────────────────────────── */}
+            <div style={{ marginBottom: 'var(--space-6)' }}>
+              <ErrorBoundary resetLabel="Reload charts">
+                <Suspense fallback={<PageFallback />}>
+                  <LiveDashboard />
+                </Suspense>
+              </ErrorBoundary>
             </div>
-            <div className="dashboard-grid dashboard-grid--panels">
-              <div><Card><CardHeader title="Data sources" subtitle="Step through to connect your first source"/><CardBody><ol style={{margin:0,paddingLeft:'1.25rem',color:'var(--text-secondary)',display:'flex',gap:'var(--space-4)',flexWrap:'wrap'}}>{['Choose source type','Provide credentials','Validate access','Run first sync'].map((step)=>(<li key={step} style={{minWidth:'12rem'}}>{step}</li>))}</ol><div style={{marginTop:'var(--space-4)',display:'flex',gap:'var(--space-3)'}}><Button variant="primary" size="sm" onClick={() => setCurrentPage('files')}>Start setup</Button><Button variant="ghost" size="sm" onClick={() => window.open(import.meta.env.VITE_DOCS_URL || 'https://github.com/THIRD-I-AI/AURA#readme', '_blank')}>View docs</Button></div></CardBody></Card></div>
-              <div><Card><CardHeader title="Query activity" subtitle="Recent runs will appear here"/><CardBody><ul style={{margin:0,paddingLeft:'1rem',color:'var(--text-secondary)',display:'flex',flexDirection:'column',gap:'var(--space-2)'}}><li>No queries have been executed yet.</li><li>Submit a query from chat to see history.</li><li>Retention: last 30 runs will be listed.</li></ul><div style={{marginTop:'var(--space-4)'}}><Button variant="secondary" size="sm" onClick={() => setCurrentPage('chat')}>Open chat workspace</Button><Button variant="primary" size="sm" onClick={() => setCurrentPage('agent')}>🤖 Launch Agent</Button></div></CardBody></Card></div>
+
+            {/* ── Quick start panels ────────────────────────── */}
+            <div className="dashboard-grid--panels" style={{ marginBottom: 'var(--space-6)' }}>
+              <Card>
+                <CardHeader title="Data sources" subtitle="Connect files, databases, or APIs" />
+                <CardBody>
+                  <ol style={{ paddingLeft: 'var(--space-5)', color: 'var(--text-secondary)', fontSize: 'var(--font-sm)', display: 'flex', flexDirection: 'column', gap: 'var(--space-2)', lineHeight: 'var(--line-relaxed)' }}>
+                    <li>Choose source type (file, DB, API)</li>
+                    <li>Provide credentials or upload file</li>
+                    <li>Validate access and preview schema</li>
+                    <li>Run first sync or query</li>
+                  </ol>
+                  <div style={{ marginTop: 'var(--space-4)', display: 'flex', gap: 'var(--space-2)' }}>
+                    <Button variant="primary" size="sm" onClick={() => setCurrentPage('files')}>Get started</Button>
+                    <Button variant="ghost" size="sm" onClick={() => window.open(import.meta.env.VITE_DOCS_URL || 'https://github.com/THIRD-I-AI/AURA#readme', '_blank')}>View docs</Button>
+                  </div>
+                </CardBody>
+              </Card>
+              <Card>
+                <CardHeader title="Quick actions" subtitle="Jump to common workflows" />
+                <CardBody>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-2)' }}>
+                    {[
+                      { label: 'Ask a question about your data', page: 'chat' as PageType, color: 'var(--accent)' },
+                      { label: 'Run the AI Agent on a new task', page: 'agent' as PageType, color: 'var(--purple)' },
+                      { label: 'Build an ETL transformation', page: 'pipelines' as PageType, color: 'var(--green)' },
+                      { label: 'Monitor streaming pipelines', page: 'streaming' as PageType, color: 'var(--cyan)' },
+                    ].map(({ label, page, color }) => (
+                      <button
+                        key={page}
+                        onClick={() => setCurrentPage(page)}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: 'var(--space-3)',
+                          padding: 'var(--space-2-5) var(--space-3)',
+                          background: 'var(--bg-surface-2)',
+                          border: '1px solid var(--border-subtle)',
+                          borderRadius: 'var(--radius-md)',
+                          cursor: 'pointer',
+                          color: 'var(--text-secondary)',
+                          fontSize: 'var(--font-sm)',
+                          textAlign: 'left',
+                          transition: 'all var(--dur-fast)',
+                          fontFamily: 'var(--font-sans)',
+                        }}
+                        onMouseEnter={e => { (e.currentTarget as HTMLButtonElement).style.borderColor = color; (e.currentTarget as HTMLButtonElement).style.color = 'var(--text-primary)'; }}
+                        onMouseLeave={e => { (e.currentTarget as HTMLButtonElement).style.borderColor = 'var(--border-subtle)'; (e.currentTarget as HTMLButtonElement).style.color = 'var(--text-secondary)'; }}
+                      >
+                        <span style={{ width: 6, height: 6, borderRadius: '50%', background: color, flexShrink: 0 }} />
+                        {label}
+                        <span style={{ marginLeft: 'auto', color: 'var(--text-disabled)' }}>→</span>
+                      </button>
+                    ))}
+                  </div>
+                </CardBody>
+              </Card>
             </div>
-            <div className="dashboard-grid dashboard-grid--workspace">
-              <div><ChatInterface/></div>
-              <div><FileUpload onFileUploaded={(response)=>{console.log('File uploaded successfully:',response);}}/></div>
+
+            {/* ── Chat + Upload workspace ───────────────────── */}
+            <div className="dashboard-grid--workspace">
+              <div><ChatInterface /></div>
+              <div>
+                <FileUpload onFileUploaded={(r) => {
+                  toast.success('File uploaded', { message: r.filename ?? 'Upload complete' });
+                }} />
+              </div>
             </div>
           </>
         );
@@ -146,11 +250,21 @@ function App() {
 
   return (
     <AppLayout currentPage={currentPage} onPageChange={setCurrentPage}>
-      {showAlert&&(<div style={{marginBottom:'var(--space-4)'}}><Alert type="info" title="System ready" message="Backend services are online. You can upload files and run queries." onClose={()=>setShowAlert(false)}/></div>)}
-      {showReconnecting&&(<div style={{marginBottom:'var(--space-4)'}}><Alert type="warning" title="Reconnecting" message="Connection to backend services was lost. Attempting to reconnect..." onClose={()=>setShowReconnecting(false)}/></div>)}
-      {error&&(<div style={{marginBottom:'var(--space-4)'}}><Alert type="error" title="System Offline" message={error} onClose={()=>setError(null)}/></div>)}
       {renderPage()}
+      <ToastContainer />
     </AppLayout>
+  );
+}
+
+function App() {
+  return (
+    <AuraProvider>
+      <ToastProvider>
+        <ErrorBoundary>
+          <AppInner />
+        </ErrorBoundary>
+      </ToastProvider>
+    </AuraProvider>
   );
 }
 

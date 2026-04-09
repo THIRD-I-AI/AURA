@@ -1,8 +1,8 @@
-﻿import os
+import os
 import uuid
 import hashlib
 import mimetypes
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, Dict, List, Any
 import json
@@ -102,7 +102,7 @@ class FileService:
             'file_extension': file_extension,
             'file_size': len(content),
             'file_hash': file_hash,
-            'upload_time': datetime.utcnow().isoformat(),
+            'upload_time': datetime.now(timezone.utc).isoformat(),
             'status': 'uploaded'
         }
 
@@ -246,7 +246,7 @@ class FileService:
                 'processed_filename': processed_filename,
                 'rows_count': rows_count,
                 'columns_count': columns_count,
-                'processed_time': datetime.utcnow().isoformat(),
+                'processed_time': datetime.now(timezone.utc).isoformat(),
                 'preview_data': processed_data[:5] if isinstance(processed_data, list) else processed_data,
                 'profile': profile
             })
@@ -256,7 +256,7 @@ class FileService:
         except Exception as e:
             file_metadata['status'] = 'error'
             file_metadata['error'] = str(e)
-            file_metadata['error_time'] = datetime.utcnow().isoformat()
+            file_metadata['error_time'] = datetime.now(timezone.utc).isoformat()
             raise HTTPException(status_code=500, detail=f"Error processing file: {str(e)}")
 
     def get_file_info(self, file_id: str) -> Optional[Dict[str, Any]]:

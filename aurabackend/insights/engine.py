@@ -3,6 +3,8 @@ AURA Insights Engine
 Auto-generates insights, charts, and narratives from data
 """
 
+import math
+import statistics as _stats
 from typing import List, Dict, Any, Optional, Tuple
 from dataclasses import dataclass
 from enum import Enum
@@ -235,41 +237,113 @@ class InsightsEngine:
         columns: List[str],
         column_types: Dict[str, str],
     ) -> None:
-        """Generate insights from results"""
+        """Generate statistical insights from results."""
         if not results:
             return
 
         numeric_cols = [c for c in columns if column_types.get(c) == "numeric"]
 
-        # Summary statistics
-        for col in numeric_cols[:1]:  # Analyze first numeric column
-            values = [float(r.get(col, 0)) for r in results if r.get(col) is not None]
-            if values:
-                avg = sum(values) / len(values)
-                min_val = min(values)
-                max_val = max(values)
-                range_val = max_val - min_val
+        col_values: Dict[str, List[float]] = {}
+        for col in numeric_cols[:6]:
+            vals = [float(r[col]) for r in results if r.get(col) is not None]
+            if vals:
+                col_values[col] = vals
 
-                self.insights.append(
-                    Insight(
-                        type=InsightType.DISTRIBUTION,
-                        title=f"{col} Summary",
-                        description=f"Average: {avg:.2f}, Range: {min_val:.2f} - {max_val:.2f}",
-                        metric_name=col,
-                        metric_value=avg,
-                    )
+        for col, values in col_values.items():
+            n = len(values)
+            mean = _stats.mean(values)
+            min_val = min(values)
+            max_val = max(values)
+
+            desc = f"Count: {n}, Mean: {mean:.2f}, Min: {min_val:.2f}, Max: {max_val:.2f}"
+            if n >= 2:
+                std = _stats.stdev(values)
+                median = _stats.median(values)
+                desc += f", Median: {median:.2f}, Std: {std:.2f}"
+
+            self.insights.append(
+                Insight(
+                    type=InsightType.DISTRIBUTION,
+                    title=f"{col} Summary",
+                    description=desc,
+                    metric_name=col,
+                    metric_value=mean,
                 )
+            )
 
-                # Outlier detection
-                if range_val > 0:
-                    outliers = [v for v in values if v < min_val + range_val * 0.1 or v > max_val - range_val * 0.1]
+            # IQR-based outlier detection
+            if n >= 4:
+                sorted_v = sorted(values)
+                q1 = sorted_v[int(n * 0.25)]
+                q3 = sorted_v[int(n * 0.75)]
+                iqr = q3 - q1
+                if iqr > 0:
+                    lower, upper = q1 - 1.5 * iqr, q3 + 1.5 * iqr
+                    outliers = [v for v in values if v < lower or v > upper]
                     if outliers:
                         self.insights.append(
                             Insight(
                                 type=InsightType.OUTLIER,
-                                title=f"Outliers Detected in {col}",
-                                description=f"Found {len(outliers)} values outside normal range",
-                                confidence=0.8,
+                                title=f"Outliers in {col}",
+                                description=(
+                                    f"{len(outliers)} value(s) outside IQR bounds "
+                                    f"[{lower:.2f}, {upper:.2f}]"
+                                ),
+                                confidence=0.85,
+                            )
+                        )
+
+            # Trend detection: compare first-half mean vs second-half mean
+            if n >= 6:
+                mid = n // 2
+                first_mean = _stats.mean(values[:mid])
+                second_mean = _stats.mean(values[mid:])
+                change_pct = ((second_mean - first_mean) / first_mean * 100) if first_mean else 0
+                if abs(change_pct) >= 10:
+                    direction = "increased" if change_pct > 0 else "decreased"
+                    self.insights.append(
+                        Insight(
+                            type=InsightType.TREND,
+                            title=f"{col} Trend",
+                            description=(
+                                f"{col} {direction} by {abs(change_pct):.1f}% "
+                                f"(from {first_mean:.2f} to {second_mean:.2f})"
+                            ),
+                            metric_name=col,
+                            metric_value=second_mean,
+                            metric_change=round(change_pct, 2),
+                            confidence=0.75,
+                        )
+                    )
+
+        # Pairwise correlations for first 4 numeric columns
+        num_cols = list(col_values.keys())[:4]
+        for i in range(len(num_cols)):
+            for j in range(i + 1, len(num_cols)):
+                a, b = num_cols[i], num_cols[j]
+                xa, xb = col_values[a], col_values[b]
+                n = min(len(xa), len(xb))
+                if n < 3:
+                    continue
+                xa, xb = xa[:n], xb[:n]
+                mx, my = _stats.mean(xa), _stats.mean(xb)
+                num = sum((xi - mx) * (yi - my) for xi, yi in zip(xa, xb))
+                den_a = math.sqrt(sum((xi - mx) ** 2 for xi in xa))
+                den_b = math.sqrt(sum((yi - my) ** 2 for yi in xb))
+                if den_a > 0 and den_b > 0:
+                    corr = num / (den_a * den_b)
+                    if abs(corr) >= 0.6:
+                        strength = "strong" if abs(corr) >= 0.8 else "moderate"
+                        direction = "positive" if corr > 0 else "negative"
+                        self.insights.append(
+                            Insight(
+                                type=InsightType.CORRELATION,
+                                title=f"Correlation: {a} & {b}",
+                                description=(
+                                    f"{strength.capitalize()} {direction} correlation "
+                                    f"(r={corr:.3f}) between {a} and {b}"
+                                ),
+                                confidence=round(abs(corr), 2),
                             )
                         )
 
@@ -279,30 +353,40 @@ class InsightsEngine:
         results: List[Dict[str, Any]],
         column_types: Dict[str, str],
     ) -> str:
-        """Generate human-readable narrative of results"""
+        """Generate human-readable narrative of results."""
         if not results:
             return "No data to analyze."
 
-        narrative_parts = []
-        narrative_parts.append(f"Analysis of {len(results)} records")
-
-        # Describe columns
         columns = list(results[0].keys())
         numeric_cols = [c for c in columns if column_types.get(c) == "numeric"]
         string_cols = [c for c in columns if column_types.get(c) == "string"]
+        date_cols = [c for c in columns if column_types.get(c) == "date"]
 
-        if numeric_cols:
-            narrative_parts.append(f"with {len(numeric_cols)} numeric metric(s)")
+        parts = [f"Analysis of {len(results):,} records across {len(columns)} column(s)."]
+
+        if date_cols:
+            parts.append(f"Time dimension: {date_cols[0]}.")
         if string_cols:
-            narrative_parts.append(f"and {len(string_cols)} categorical dimension(s)")
+            parts.append(f"Categorical dimensions: {', '.join(string_cols[:3])}.")
+        if numeric_cols:
+            parts.append(f"Numeric metrics: {', '.join(numeric_cols[:3])}.")
 
-        narrative_parts.append(".")
+        # Summarize key insights
+        dist_insights = [i for i in self.insights if i.type == InsightType.DISTRIBUTION]
+        trend_insights = [i for i in self.insights if i.type == InsightType.TREND]
+        outlier_insights = [i for i in self.insights if i.type == InsightType.OUTLIER]
+        corr_insights = [i for i in self.insights if i.type == InsightType.CORRELATION]
 
-        # Add insights summary
-        if self.insights:
-            narrative_parts.append(f"Key findings: {self.insights[0].description}")
+        if dist_insights:
+            parts.append(f"Key metric — {dist_insights[0].description}.")
+        if trend_insights:
+            parts.append(f"Trend detected: {trend_insights[0].description}.")
+        if outlier_insights:
+            parts.append(f"Note: {outlier_insights[0].description}.")
+        if corr_insights:
+            parts.append(f"Relationship: {corr_insights[0].description}.")
 
-        return " ".join(narrative_parts)
+        return " ".join(parts)
 
     def _chart_to_dict(self, chart: ChartSpec) -> Dict[str, Any]:
         """Convert chart to dictionary"""

@@ -8,7 +8,6 @@ from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 
 # Add parent directory to path for imports
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from fastapi import FastAPI, HTTPException, status
 from pydantic import BaseModel, Field

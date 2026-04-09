@@ -72,6 +72,7 @@ export interface DataSource {
 export interface DashboardStats {
   total_rows: number;
   active_sources: number;
+  file_sources?: number;
   queries_run: number;
   system_health: 'healthy' | 'degraded' | 'down';
   uptime_percentage?: number;
@@ -721,6 +722,190 @@ export const pipelineService = {
   /** Get download URL for pipeline output */
   getDownloadUrl(filename: string): string {
     return `${API_BASE_URL}/pipeline/download/${encodeURIComponent(filename)}`;
+  },
+};
+
+// =============================================================================
+// Streaming Pipeline Types & Service
+// =============================================================================
+
+export interface StreamPipelineSource {
+  type: 'kafka' | 'file_watcher' | 'cdc' | 'websocket' | 'simulated';
+  config: Record<string, any>;
+}
+
+export interface StreamPipelineSink {
+  type: 'sse' | 'database' | 'file' | 'kafka' | 'alert' | 'console';
+  config: Record<string, any>;
+}
+
+export interface StreamWindowConfig {
+  type: 'tumbling' | 'sliding' | 'session' | 'global';
+  size_seconds: number;
+  slide_seconds?: number;
+  gap_seconds?: number;
+  late_data_policy: 'drop' | 'update' | 'dead_letter';
+  allowed_lateness_seconds?: number;
+}
+
+export interface StreamTransform {
+  id?: string;
+  type: 'filter' | 'map' | 'aggregate' | 'flat_map' | 'key_by';
+  description: string;
+  config: Record<string, any>;
+}
+
+export interface StreamPipelineDef {
+  id: string;
+  name: string;
+  description: string;
+  source: StreamPipelineSource;
+  event_time_field: string;
+  watermark_delay_seconds: number;
+  window: StreamWindowConfig;
+  transforms: StreamTransform[];
+  sinks: StreamPipelineSink[];
+  checkpoint_interval_seconds: number;
+  status: string;
+  created_at: string;
+  updated_at?: string;
+  tags: string[];
+  metrics?: StreamPipelineMetrics;
+}
+
+export interface StreamPipelineMetrics {
+  pipeline_id: string;
+  status: string;
+  events_in: number;
+  events_out: number;
+  events_late: number;
+  events_dropped: number;
+  events_per_second: number;
+  watermark_position: number;
+  active_windows: number;
+  closed_windows: number;
+  last_checkpoint_at?: string;
+  uptime_seconds: number;
+  errors: string[];
+}
+
+export interface StreamTemplate {
+  id: string;
+  name: string;
+  description: string;
+  tags: string[];
+  pipeline: Omit<StreamPipelineDef, 'id' | 'status' | 'created_at' | 'updated_at' | 'metrics'>;
+}
+
+/** Schema field descriptor — drives dynamic form rendering */
+export interface SchemaField {
+  key: string;
+  label: string;
+  type: 'text' | 'number' | 'select' | 'alert_rules' | 'agg_fields';
+  default?: any;
+  required?: boolean;
+  help?: string;
+  options?: string[];
+}
+
+export interface SourceSchema {
+  label: string;
+  description: string;
+  implemented: boolean;
+  fields: SchemaField[];
+}
+
+export interface SinkSchema {
+  label: string;
+  description: string;
+  implemented: boolean;
+  fields: SchemaField[];
+  auto_add?: boolean;
+}
+
+export interface WindowSchema {
+  label: string;
+  description: string;
+  fields: SchemaField[];
+}
+
+export interface TransformSchema {
+  label: string;
+  description: string;
+  fields: SchemaField[];
+}
+
+export interface StreamingSchemas {
+  sources: Record<string, SourceSchema>;
+  sinks: Record<string, SinkSchema>;
+  windows: Record<string, WindowSchema>;
+  transforms: Record<string, TransformSchema>;
+}
+
+export const streamingService = {
+  /** List all streaming pipelines */
+  async list(): Promise<{ pipelines: StreamPipelineDef[]; total: number }> {
+    return client.get('/streaming/pipelines');
+  },
+
+  /** Get a single pipeline with metrics */
+  async get(pipelineId: string): Promise<StreamPipelineDef> {
+    return client.get(`/streaming/pipelines/${encodeURIComponent(pipelineId)}`);
+  },
+
+  /** Create a new streaming pipeline */
+  async create(pipeline: Omit<StreamPipelineDef, 'id' | 'status' | 'created_at' | 'updated_at' | 'metrics'> | Partial<StreamPipelineDef>): Promise<StreamPipelineDef> {
+    return client.post('/streaming/pipelines', pipeline);
+  },
+
+  /** Update a pipeline */
+  async update(pipelineId: string, updates: Partial<StreamPipelineDef>): Promise<StreamPipelineDef> {
+    return client.put(`/streaming/pipelines/${encodeURIComponent(pipelineId)}`, updates);
+  },
+
+  /** Delete a pipeline */
+  async remove(pipelineId: string): Promise<{ deleted: string }> {
+    return client.delete(`/streaming/pipelines/${encodeURIComponent(pipelineId)}`);
+  },
+
+  /** Start a pipeline */
+  async start(pipelineId: string): Promise<{ status: string; pipeline_id: string }> {
+    return client.post(`/streaming/pipelines/${encodeURIComponent(pipelineId)}/start`, {});
+  },
+
+  /** Stop a pipeline */
+  async stop(pipelineId: string): Promise<{ status: string; pipeline_id: string }> {
+    return client.post(`/streaming/pipelines/${encodeURIComponent(pipelineId)}/stop`, {});
+  },
+
+  /** Pause a pipeline */
+  async pause(pipelineId: string): Promise<{ status: string; pipeline_id: string }> {
+    return client.post(`/streaming/pipelines/${encodeURIComponent(pipelineId)}/pause`, {});
+  },
+
+  /** Resume a paused pipeline */
+  async resume(pipelineId: string): Promise<{ status: string; pipeline_id: string }> {
+    return client.post(`/streaming/pipelines/${encodeURIComponent(pipelineId)}/resume`, {});
+  },
+
+  /** Get pipeline metrics */
+  async metrics(pipelineId: string): Promise<StreamPipelineMetrics> {
+    return client.get(`/streaming/pipelines/${encodeURIComponent(pipelineId)}/metrics`);
+  },
+
+  /** Get SSE event stream URL */
+  streamUrl(pipelineId: string): string {
+    return `${API_BASE_URL}/streaming/pipelines/${encodeURIComponent(pipelineId)}/stream`;
+  },
+
+  /** Get streaming templates */
+  async templates(): Promise<{ templates: StreamTemplate[] }> {
+    return client.get('/streaming/templates');
+  },
+
+  /** Get available source/sink/window/transform schemas for dynamic forms */
+  async schemas(): Promise<StreamingSchemas> {
+    return client.get('/streaming/schemas');
   },
 };
 

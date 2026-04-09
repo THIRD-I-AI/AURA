@@ -5,8 +5,13 @@ Handles actual query execution, retry logic, and result storage
 
 import asyncio
 import httpx
-from datetime import datetime, timedelta
-from typing import Dict, Any, Optional
+import os
+import smtplib
+import ssl
+from datetime import datetime, timedelta, timezone
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from typing import Dict, Any, List, Optional
 import traceback
 import uuid
 
@@ -14,9 +19,118 @@ from .models import JobStatus, ScheduledJob, JobExecution
 from .repository import SchedulerRepository
 
 
+class NotificationService:
+    """Sends failure notifications via email and/or webhooks."""
+
+    def __init__(self):
+        # Email config (optional)
+        self.smtp_host = os.getenv("SMTP_HOST", "")
+        self.smtp_port = int(os.getenv("SMTP_PORT", "587"))
+        self.smtp_user = os.getenv("SMTP_USER", "")
+        self.smtp_password = os.getenv("SMTP_PASSWORD", "")
+        self.alert_from = os.getenv("ALERT_FROM_EMAIL", self.smtp_user)
+        self.alert_to: List[str] = [
+            e.strip() for e in os.getenv("ALERT_TO_EMAILS", "").split(",") if e.strip()
+        ]
+        # Slack / generic webhook (optional)
+        self.slack_webhook_url = os.getenv("SLACK_WEBHOOK_URL", "")
+        self.generic_webhook_url = os.getenv("ALERT_WEBHOOK_URL", "")
+
+    async def notify_job_failure(
+        self,
+        job_name: str,
+        job_id: str,
+        execution_id: str,
+        error_message: str,
+        retry_count: int,
+        max_retries: int,
+    ) -> None:
+        """Send failure notifications via all configured channels."""
+        subject = f"[AURA] Scheduled job failed: {job_name}"
+        body = (
+            f"Job '{job_name}' (ID: {job_id}) has failed.\n\n"
+            f"Execution ID : {execution_id}\n"
+            f"Retries      : {retry_count}/{max_retries}\n"
+            f"Error        : {error_message}\n"
+            f"Time (UTC)   : {datetime.now(timezone.utc).isoformat()}\n"
+        )
+
+        tasks = []
+        if self.smtp_host and self.alert_to:
+            tasks.append(self._send_email(subject, body))
+        if self.slack_webhook_url:
+            tasks.append(self._send_slack(job_name, error_message, execution_id))
+        if self.generic_webhook_url:
+            tasks.append(
+                self._send_webhook(
+                    self.generic_webhook_url,
+                    {
+                        "event": "job_failed",
+                        "job_id": job_id,
+                        "job_name": job_name,
+                        "execution_id": execution_id,
+                        "error": error_message,
+                        "retry_count": retry_count,
+                        "max_retries": max_retries,
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                    },
+                )
+            )
+
+        if tasks:
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            for r in results:
+                if isinstance(r, Exception):
+                    # Log but never crash the scheduler
+                    print(f"[NotificationService] Warning: notification delivery failed: {r}")
+
+    async def _send_email(self, subject: str, body: str) -> None:
+        """Send an email alert using SMTP."""
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, self._send_email_sync, subject, body)
+
+    def _send_email_sync(self, subject: str, body: str) -> None:
+        msg = MIMEMultipart("alternative")
+        msg["Subject"] = subject
+        msg["From"] = self.alert_from
+        msg["To"] = ", ".join(self.alert_to)
+        msg.attach(MIMEText(body, "plain"))
+
+        context = ssl.create_default_context()
+        with smtplib.SMTP(self.smtp_host, self.smtp_port) as server:
+            server.ehlo()
+            server.starttls(context=context)
+            if self.smtp_user and self.smtp_password:
+                server.login(self.smtp_user, self.smtp_password)
+            server.sendmail(self.alert_from, self.alert_to, msg.as_string())
+
+    async def _send_slack(self, job_name: str, error: str, execution_id: str) -> None:
+        """Post a failure message to a Slack incoming webhook."""
+        payload = {
+            "text": f":red_circle: *AURA Job Failed*: `{job_name}`",
+            "attachments": [
+                {
+                    "color": "danger",
+                    "fields": [
+                        {"title": "Error", "value": error[:500], "short": False},
+                        {"title": "Execution ID", "value": execution_id, "short": True},
+                        {"title": "Time (UTC)", "value": datetime.now(timezone.utc).isoformat(), "short": True},
+                    ],
+                }
+            ],
+        }
+        await self._send_webhook(self.slack_webhook_url, payload)
+
+    @staticmethod
+    async def _send_webhook(url: str, payload: Dict[str, Any]) -> None:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.post(url, json=payload)
+            response.raise_for_status()
+
+
 class JobExecutor:
     """Executes scheduled jobs and handles retries"""
-    
+
     def __init__(
         self,
         repository: SchedulerRepository,
@@ -25,6 +139,7 @@ class JobExecutor:
         self.repository = repository
         self.database_service_url = database_service_url
         self.http_client = httpx.AsyncClient(timeout=300.0)
+        self.notifications = NotificationService()
     
     async def execute_job(
         self,
@@ -49,7 +164,7 @@ class JobExecutor:
                 execution.id,
                 {
                     "status": JobStatus.RUNNING,
-                    "started_at": datetime.utcnow()
+                    "started_at": datetime.now(timezone.utc)
                 }
             )
             
@@ -61,14 +176,14 @@ class JobExecutor:
             )
             
             # Calculate duration
-            duration = (datetime.utcnow() - execution.started_at).total_seconds() if execution.started_at else 0
+            duration = (datetime.now(timezone.utc) - execution.started_at).total_seconds() if execution.started_at else 0
             
             # Update execution with results
             await self.repository.update_execution(
                 execution.id,
                 {
                     "status": JobStatus.SUCCESS,
-                    "completed_at": datetime.utcnow(),
+                    "completed_at": datetime.now(timezone.utc),
                     "duration_seconds": int(duration),
                     "rows_affected": result.get("row_count", 0),
                     "result_summary": {
@@ -88,7 +203,7 @@ class JobExecutor:
             await self.repository.update_job(
                 job.id,
                 {
-                    "last_execution_time": datetime.utcnow(),
+                    "last_execution_time": datetime.now(timezone.utc),
                     "next_execution_time": self._calculate_next_execution(job)
                 }
             )
@@ -133,20 +248,31 @@ class JobExecutor:
                 return await self.execute_job(job, triggered_by)
             else:
                 # Max retries exceeded
-                duration = (datetime.utcnow() - execution.started_at).total_seconds() if execution.started_at else 0
+                duration = (datetime.now(timezone.utc) - execution.started_at).total_seconds() if execution.started_at else 0
                 
                 await self.repository.update_execution(
                     execution.id,
                     {
                         "status": JobStatus.FAILED,
-                        "completed_at": datetime.utcnow(),
+                        "completed_at": datetime.now(timezone.utc),
                         "duration_seconds": int(duration),
                         "error_message": error_message,
                         "error_details": error_details
                     }
                 )
                 
-                # TODO: Send failure notification emails
+                # Send failure notifications (email, Slack, webhook)
+                try:
+                    await self.notifications.notify_job_failure(
+                        job_name=job.name,
+                        job_id=job.id,
+                        execution_id=execution.id,
+                        error_message=error_message,
+                        retry_count=execution.retry_count,
+                        max_retries=job.max_retries,
+                    )
+                except Exception as notify_err:
+                    await self._log(execution.id, "WARNING", f"Notification failed: {notify_err}")
         
         # Fetch and return final execution state
         return await self.repository.get_execution(execution.id)
@@ -198,7 +324,7 @@ class JobExecutor:
     
     def _calculate_next_execution(self, job: ScheduledJob) -> Optional[datetime]:
         """Calculate next execution time based on schedule"""
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         
         if not job.is_active:
             return None

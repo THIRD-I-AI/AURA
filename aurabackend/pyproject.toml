@@ -78,9 +78,12 @@ include = [
     "mcp_core*",
     "metadata_store*",
     "orchestration_service*",
+    "pipeline*",
     "safety*",
     "scheduler_service*",
+    "semantic_builder*",
     "shared*",
+    "uasr*",
 ]
 
 [tool.ruff]

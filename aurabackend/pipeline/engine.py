@@ -60,8 +60,8 @@ class PipelineEngine:
     # ── Pipeline CRUD ─────────────────────────────────────────────────
 
     def save(self, pipeline: Pipeline) -> Pipeline:
-        from datetime import datetime
-        pipeline.updated_at = datetime.utcnow().isoformat()
+        from datetime import datetime, timezone
+        pipeline.updated_at = datetime.now(timezone.utc).isoformat()
         self._pipelines[pipeline.id] = pipeline
         return pipeline
 
@@ -145,8 +145,8 @@ class PipelineEngine:
             run.error = str(exc)
         finally:
             run.duration_ms = (time.perf_counter() - t0) * 1000
-            from datetime import datetime
-            run.finished_at = datetime.utcnow().isoformat()
+            from datetime import datetime, timezone
+            run.finished_at = datetime.now(timezone.utc).isoformat()
             conn.close()
 
         return run

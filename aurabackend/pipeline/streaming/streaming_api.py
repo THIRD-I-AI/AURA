@@ -1,0 +1,524 @@
+"""
+Streaming Pipeline API Routes
+================================
+FastAPI router for streaming pipeline management:
+  - CRUD operations for streaming pipeline definitions
+  - Start / stop / pause / resume lifecycle
+  - SSE endpoint for real-time metrics & window results
+  - Pipeline metrics polling
+  - Template gallery
+"""
+from __future__ import annotations
+
+import asyncio
+import uuid
+import logging
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional
+
+from fastapi import APIRouter, HTTPException, status
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, Field
+
+from pipeline.streaming.models import (
+    StreamPipeline,
+    StreamPipelineStatus,
+    StreamMetrics,
+    StreamSource,
+    StreamSourceType,
+    StreamSink,
+    StreamSinkType,
+    WindowConfig,
+    WindowType,
+    LateDataPolicy,
+    StreamTransform,
+    TransformType,
+)
+from pipeline.streaming.streaming_engine import StreamingEngine
+
+logger = logging.getLogger("aura.streaming.api")
+
+router = APIRouter(prefix="/streaming", tags=["Streaming Pipelines"])
+
+# ────────────────────────────────────────────────────────────────────
+# In-memory stores (thread-safe via GIL + async single-thread)
+# ────────────────────────────────────────────────────────────────────
+
+_pipelines: Dict[str, StreamPipeline] = {}
+_engines: Dict[str, StreamingEngine] = {}
+
+
+# ────────────────────────────────────────────────────────────────────
+# Request / Response models
+# ────────────────────────────────────────────────────────────────────
+
+class CreateStreamPipelineRequest(BaseModel):
+    name: str
+    description: str = ""
+    source: StreamSource
+    event_time_field: str = "timestamp"
+    watermark_delay_seconds: int = 10
+    window: WindowConfig = Field(default_factory=WindowConfig)
+    transforms: List[StreamTransform] = Field(default_factory=list)
+    sinks: List[StreamSink] = Field(default_factory=list)
+    checkpoint_interval_seconds: int = 30
+    tags: List[str] = Field(default_factory=list)
+
+
+class UpdateStreamPipelineRequest(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    source: Optional[StreamSource] = None
+    event_time_field: Optional[str] = None
+    watermark_delay_seconds: Optional[int] = None
+    window: Optional[WindowConfig] = None
+    transforms: Optional[List[StreamTransform]] = None
+    sinks: Optional[List[StreamSink]] = None
+    checkpoint_interval_seconds: Optional[int] = None
+    tags: Optional[List[str]] = None
+
+
+# ────────────────────────────────────────────────────────────────────
+# CRUD
+# ────────────────────────────────────────────────────────────────────
+
+@router.get("/pipelines", summary="List all streaming pipelines")
+async def list_pipelines():
+    pipelines = []
+    for pid, pipe in _pipelines.items():
+        entry = pipe.model_dump()
+        if pid in _engines:
+            entry["metrics"] = _engines[pid].metrics.model_dump()
+        pipelines.append(entry)
+    return {"pipelines": pipelines, "total": len(pipelines)}
+
+
+@router.get("/pipelines/{pipeline_id}", summary="Get pipeline details + metrics")
+async def get_pipeline(pipeline_id: str):
+    pipe = _pipelines.get(pipeline_id)
+    if not pipe:
+        raise HTTPException(status_code=404, detail="Pipeline not found")
+    result = pipe.model_dump()
+    engine = _engines.get(pipeline_id)
+    if engine:
+        result["metrics"] = engine.metrics.model_dump()
+    return result
+
+
+@router.post("/pipelines", summary="Create a new streaming pipeline", status_code=201)
+async def create_pipeline(req: CreateStreamPipelineRequest):
+    # Ensure at least one SSE sink for frontend connectivity
+    has_sse = any(s.type == StreamSinkType.SSE for s in req.sinks)
+    sinks = list(req.sinks)
+    if not has_sse:
+        sinks.append(StreamSink(type=StreamSinkType.SSE, config={}))
+
+    pipe = StreamPipeline(
+        name=req.name,
+        description=req.description,
+        source=req.source,
+        event_time_field=req.event_time_field,
+        watermark_delay_seconds=req.watermark_delay_seconds,
+        window=req.window,
+        transforms=req.transforms,
+        sinks=sinks,
+        checkpoint_interval_seconds=req.checkpoint_interval_seconds,
+        tags=req.tags,
+    )
+    _pipelines[pipe.id] = pipe
+    logger.info("Created streaming pipeline: %s (%s)", pipe.name, pipe.id)
+    return pipe.model_dump()
+
+
+@router.put("/pipelines/{pipeline_id}", summary="Update a pipeline (must be stopped/draft)")
+async def update_pipeline(pipeline_id: str, req: UpdateStreamPipelineRequest):
+    pipe = _pipelines.get(pipeline_id)
+    if not pipe:
+        raise HTTPException(status_code=404, detail="Pipeline not found")
+    if pipe.status not in (StreamPipelineStatus.DRAFT, StreamPipelineStatus.STOPPED, StreamPipelineStatus.FAILED):
+        raise HTTPException(status_code=409, detail="Pipeline must be stopped to edit")
+
+    for field, value in req.model_dump(exclude_none=True).items():
+        setattr(pipe, field, value)
+    pipe.updated_at = datetime.now(timezone.utc).isoformat()
+    return pipe.model_dump()
+
+
+@router.delete("/pipelines/{pipeline_id}", summary="Delete a pipeline (must be stopped)")
+async def delete_pipeline(pipeline_id: str):
+    pipe = _pipelines.get(pipeline_id)
+    if not pipe:
+        raise HTTPException(status_code=404, detail="Pipeline not found")
+    if pipe.status == StreamPipelineStatus.RUNNING:
+        raise HTTPException(status_code=409, detail="Stop the pipeline before deleting")
+    _pipelines.pop(pipeline_id, None)
+    _engines.pop(pipeline_id, None)
+    return {"deleted": pipeline_id}
+
+
+# ────────────────────────────────────────────────────────────────────
+# Lifecycle
+# ────────────────────────────────────────────────────────────────────
+
+@router.post("/pipelines/{pipeline_id}/start", summary="Start the pipeline")
+async def start_pipeline(pipeline_id: str):
+    pipe = _pipelines.get(pipeline_id)
+    if not pipe:
+        raise HTTPException(status_code=404, detail="Pipeline not found")
+    if pipe.status == StreamPipelineStatus.RUNNING:
+        raise HTTPException(status_code=409, detail="Already running")
+
+    engine = StreamingEngine(pipe)
+    _engines[pipeline_id] = engine
+    await engine.start()
+    return {"status": pipe.status.value, "pipeline_id": pipeline_id}
+
+
+@router.post("/pipelines/{pipeline_id}/stop", summary="Stop the pipeline")
+async def stop_pipeline(pipeline_id: str):
+    engine = _engines.get(pipeline_id)
+    if not engine:
+        raise HTTPException(status_code=404, detail="No running engine for this pipeline")
+    await engine.stop()
+    return {"status": engine.pipeline.status.value, "pipeline_id": pipeline_id}
+
+
+@router.post("/pipelines/{pipeline_id}/pause", summary="Pause the pipeline")
+async def pause_pipeline(pipeline_id: str):
+    engine = _engines.get(pipeline_id)
+    if not engine:
+        raise HTTPException(status_code=404, detail="No running engine for this pipeline")
+    await engine.pause()
+    return {"status": engine.pipeline.status.value, "pipeline_id": pipeline_id}
+
+
+@router.post("/pipelines/{pipeline_id}/resume", summary="Resume a paused pipeline")
+async def resume_pipeline(pipeline_id: str):
+    engine = _engines.get(pipeline_id)
+    if not engine:
+        raise HTTPException(status_code=404, detail="No running engine for this pipeline")
+    await engine.resume()
+    return {"status": engine.pipeline.status.value, "pipeline_id": pipeline_id}
+
+
+# ────────────────────────────────────────────────────────────────────
+# Metrics & SSE
+# ────────────────────────────────────────────────────────────────────
+
+@router.get("/pipelines/{pipeline_id}/metrics", summary="Get current metrics")
+async def get_metrics(pipeline_id: str):
+    engine = _engines.get(pipeline_id)
+    if not engine:
+        pipe = _pipelines.get(pipeline_id)
+        if not pipe:
+            raise HTTPException(status_code=404, detail="Pipeline not found")
+        return StreamMetrics(pipeline_id=pipeline_id).model_dump()
+    return engine.metrics.model_dump()
+
+
+@router.get("/pipelines/{pipeline_id}/stream", summary="SSE stream of metrics + window events")
+async def stream_events(pipeline_id: str):
+    engine = _engines.get(pipeline_id)
+    if not engine:
+        raise HTTPException(status_code=404, detail="No running engine for this pipeline")
+
+    sse_sink = engine.get_sse_sink()
+    if not sse_sink:
+        raise HTTPException(status_code=409, detail="Pipeline has no SSE sink configured")
+
+    client_id = uuid.uuid4().hex[:8]
+    queue = sse_sink.subscribe(client_id)
+
+    async def event_generator():
+        try:
+            while True:
+                payload = await queue.get()
+                if payload is None:
+                    break
+                yield f"data: {payload}\n\n"
+        finally:
+            sse_sink.unsubscribe(client_id)
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+# ────────────────────────────────────────────────────────────────────
+# Schema Discovery — drives dynamic frontend forms
+# ────────────────────────────────────────────────────────────────────
+
+_SOURCE_SCHEMAS = {
+    "simulated": {
+        "label": "Simulated (Test Data)",
+        "description": "Generates synthetic events at a configurable rate — good for testing pipelines.",
+        "implemented": True,
+        "fields": [
+            {"key": "event_type",        "label": "Event Type",          "type": "text",   "default": "orders",  "required": True,  "help": "Label for the event stream"},
+            {"key": "events_per_second", "label": "Events / Second",     "type": "number", "default": 10,        "required": True,  "help": "Generation rate"},
+            {"key": "num_keys",          "label": "Partition Keys",      "type": "number", "default": 5,         "required": False, "help": "Number of distinct grouping keys"},
+        ],
+    },
+    "file_watcher": {
+        "label": "File Watcher",
+        "description": "Watches a directory for new CSV/JSON files and emits each row as an event.",
+        "implemented": True,
+        "fields": [
+            {"key": "watch_dir",             "label": "Watch Directory",    "type": "text",   "default": "data/uploads", "required": True,  "help": "Directory to monitor for new files"},
+            {"key": "pattern",               "label": "File Pattern",       "type": "text",   "default": "*.csv",        "required": False, "help": "Glob pattern (e.g. *.csv, *.json)"},
+            {"key": "poll_interval_seconds", "label": "Poll Interval (s)",  "type": "number", "default": 2.0,            "required": False, "help": "How often to scan for new files"},
+        ],
+    },
+    "kafka": {
+        "label": "Kafka",
+        "description": "Consume from an Apache Kafka topic.",
+        "implemented": False,
+        "fields": [
+            {"key": "bootstrap_servers", "label": "Bootstrap Servers", "type": "text",   "default": "localhost:9092", "required": True},
+            {"key": "topic",             "label": "Topic",             "type": "text",   "default": "",               "required": True},
+            {"key": "group_id",          "label": "Consumer Group",    "type": "text",   "default": "aura-streaming", "required": False},
+            {"key": "auto_offset_reset", "label": "Offset Reset",     "type": "select", "default": "latest",         "required": False, "options": ["earliest", "latest"]},
+        ],
+    },
+    "websocket": {
+        "label": "WebSocket",
+        "description": "Connect to a WebSocket endpoint and receive events in real-time.",
+        "implemented": False,
+        "fields": [
+            {"key": "url",     "label": "WebSocket URL", "type": "text", "default": "ws://localhost:8080/ws", "required": True},
+            {"key": "headers", "label": "Headers (JSON)", "type": "text", "default": "{}",                     "required": False},
+        ],
+    },
+}
+
+_SINK_SCHEMAS = {
+    "sse": {
+        "label": "SSE (Live to UI)",
+        "description": "Streams window results to the frontend in real-time via Server-Sent Events.",
+        "implemented": True,
+        "fields": [],  # no config needed
+        "auto_add": True,  # always added if not present
+    },
+    "console": {
+        "label": "Console (Log Output)",
+        "description": "Logs window results to the server console — useful for debugging.",
+        "implemented": True,
+        "fields": [],
+    },
+    "file": {
+        "label": "File (CSV / JSON)",
+        "description": "Writes window results to micro-batch files on disk.",
+        "implemented": True,
+        "fields": [
+            {"key": "output_dir",  "label": "Output Directory", "type": "text",   "default": "data/streaming_output", "required": True,  "help": "Where to write batch files"},
+            {"key": "format",      "label": "Format",           "type": "select", "default": "json",                  "required": False, "options": ["json", "csv"]},
+            {"key": "flush_every", "label": "Flush Every N",     "type": "number", "default": 50,                      "required": False, "help": "Flush buffer after N window results"},
+        ],
+    },
+    "database": {
+        "label": "Database (DuckDB)",
+        "description": "Inserts window results into a DuckDB table.",
+        "implemented": True,
+        "fields": [
+            {"key": "connection", "label": "DB Path",    "type": "text", "default": "data/streaming.duckdb", "required": True,  "help": "Path to the DuckDB file"},
+            {"key": "table",      "label": "Table Name", "type": "text", "default": "stream_results",        "required": True},
+        ],
+    },
+    "alert": {
+        "label": "Alert (Threshold Rules)",
+        "description": "Fires alerts when aggregated values cross configurable thresholds.",
+        "implemented": True,
+        "fields": [
+            {"key": "rules", "label": "Alert Rules", "type": "alert_rules", "default": [], "required": True, "help": "List of {field, operator, threshold, label}"},
+        ],
+    },
+    "kafka": {
+        "label": "Kafka (Produce)",
+        "description": "Emit window results to a Kafka topic.",
+        "implemented": False,
+        "fields": [
+            {"key": "bootstrap_servers", "label": "Bootstrap Servers", "type": "text", "default": "localhost:9092", "required": True},
+            {"key": "topic",             "label": "Topic",             "type": "text", "default": "",               "required": True},
+        ],
+    },
+}
+
+_WINDOW_SCHEMAS = {
+    "tumbling": {
+        "label": "Tumbling",
+        "description": "Fixed-size, non-overlapping time windows.",
+        "fields": [
+            {"key": "size_seconds",              "label": "Window Size (s)",       "type": "number", "default": 60, "required": True},
+            {"key": "late_data_policy",          "label": "Late Data Policy",      "type": "select", "default": "drop", "options": ["drop", "update", "dead_letter"]},
+            {"key": "allowed_lateness_seconds",  "label": "Allowed Lateness (s)",  "type": "number", "default": 10},
+        ],
+    },
+    "sliding": {
+        "label": "Sliding",
+        "description": "Fixed-size, overlapping windows that slide forward by an interval.",
+        "fields": [
+            {"key": "size_seconds",              "label": "Window Size (s)",        "type": "number", "default": 120, "required": True},
+            {"key": "slide_seconds",             "label": "Slide Interval (s)",     "type": "number", "default": 30,  "required": True},
+            {"key": "late_data_policy",          "label": "Late Data Policy",       "type": "select", "default": "drop", "options": ["drop", "update", "dead_letter"]},
+            {"key": "allowed_lateness_seconds",  "label": "Allowed Lateness (s)",   "type": "number", "default": 10},
+        ],
+    },
+    "session": {
+        "label": "Session",
+        "description": "Groups events by activity — a new window starts after an inactivity gap.",
+        "fields": [
+            {"key": "gap_seconds",               "label": "Session Gap (s)",        "type": "number", "default": 30, "required": True},
+            {"key": "late_data_policy",          "label": "Late Data Policy",       "type": "select", "default": "update", "options": ["drop", "update", "dead_letter"]},
+            {"key": "allowed_lateness_seconds",  "label": "Allowed Lateness (s)",   "type": "number", "default": 10},
+        ],
+    },
+    "global": {
+        "label": "Global",
+        "description": "A single window across all time — never closes automatically.",
+        "fields": [],
+    },
+}
+
+_TRANSFORM_SCHEMAS = {
+    "key_by": {
+        "label": "Key By",
+        "description": "Set the grouping key for windowed aggregation.",
+        "fields": [
+            {"key": "field", "label": "Key Field", "type": "text", "required": True, "help": "Name of the data field to group by"},
+        ],
+    },
+    "aggregate": {
+        "label": "Aggregate",
+        "description": "Compute running aggregations within each window.",
+        "fields": [
+            {"key": "fields", "label": "Aggregations", "type": "agg_fields", "required": True, "help": "List of {field, function} where function is SUM|COUNT|MIN|MAX|AVG"},
+        ],
+    },
+    "filter": {
+        "label": "Filter",
+        "description": "Drop events that don't match a condition.",
+        "fields": [
+            {"key": "field",    "label": "Field",    "type": "text",   "required": True},
+            {"key": "operator", "label": "Operator",  "type": "select", "default": "==", "options": ["==", "!=", ">", "<", ">=", "<="]},
+            {"key": "value",    "label": "Value",     "type": "text",   "required": True},
+        ],
+    },
+}
+
+
+@router.get("/schemas", summary="Get available source/sink/window/transform schemas for dynamic forms")
+async def get_schemas():
+    return {
+        "sources": _SOURCE_SCHEMAS,
+        "sinks": _SINK_SCHEMAS,
+        "windows": _WINDOW_SCHEMAS,
+        "transforms": _TRANSFORM_SCHEMAS,
+    }
+
+
+# ────────────────────────────────────────────────────────────────────
+# Templates
+# ────────────────────────────────────────────────────────────────────
+
+@router.get("/templates", summary="Get streaming pipeline templates")
+async def list_templates():
+    return {
+        "templates": [
+            {
+                "id": "ecommerce_orders",
+                "name": "E-Commerce Order Stream",
+                "description": "Simulated order events with 60s tumbling windows, tracking revenue and order count per region.",
+                "tags": ["demo", "ecommerce", "tumbling"],
+                "pipeline": {
+                    "name": "E-Commerce Order Stream",
+                    "description": "Real-time order analytics with tumbling windows",
+                    "source": {"type": "simulated", "config": {"event_type": "orders", "events_per_second": 10, "num_keys": 5}},
+                    "event_time_field": "timestamp",
+                    "watermark_delay_seconds": 10,
+                    "window": {"type": "tumbling", "size_seconds": 60, "late_data_policy": "drop", "allowed_lateness_seconds": 10},
+                    "transforms": [
+                        {"type": "key_by", "description": "Group by region", "config": {"field": "region"}},
+                        {"type": "aggregate", "description": "Sum revenue & count orders", "config": {"fields": [{"field": "amount", "function": "SUM"}, {"field": "amount", "function": "COUNT"}]}},
+                    ],
+                    "sinks": [
+                        {"type": "sse", "config": {}},
+                        {"type": "console", "config": {}},
+                    ],
+                    "checkpoint_interval_seconds": 30,
+                    "tags": ["demo", "ecommerce"],
+                },
+            },
+            {
+                "id": "iot_sensors",
+                "name": "IoT Sensor Monitoring",
+                "description": "Sliding window over sensor readings. Alerts when temperature exceeds threshold.",
+                "tags": ["demo", "iot", "sliding", "alerts"],
+                "pipeline": {
+                    "name": "IoT Sensor Monitor",
+                    "description": "Sliding window temperature monitoring with alerts",
+                    "source": {"type": "simulated", "config": {"event_type": "sensors", "events_per_second": 20, "num_keys": 8, "schema": [{"name": "sensor_id", "type": "string"}, {"name": "temperature", "type": "float"}, {"name": "humidity", "type": "float"}, {"name": "location", "type": "choice:floor_1,floor_2,floor_3,roof"}]}},
+                    "event_time_field": "timestamp",
+                    "watermark_delay_seconds": 5,
+                    "window": {"type": "sliding", "size_seconds": 120, "slide_seconds": 30, "late_data_policy": "drop"},
+                    "transforms": [
+                        {"type": "key_by", "description": "Group by location", "config": {"field": "location"}},
+                        {"type": "aggregate", "description": "Avg temperature", "config": {"fields": [{"field": "temperature", "function": "AVG"}, {"field": "temperature", "function": "MAX"}]}},
+                    ],
+                    "sinks": [
+                        {"type": "sse", "config": {}},
+                        {"type": "alert", "config": {"rules": [{"field": "max_temperature", "operator": ">", "threshold": 85, "label": "High temperature"}]}},
+                    ],
+                    "tags": ["demo", "iot"],
+                },
+            },
+            {
+                "id": "session_analytics",
+                "name": "User Session Analytics",
+                "description": "Session windows that group user clickstream events by activity gaps.",
+                "tags": ["demo", "session", "clickstream"],
+                "pipeline": {
+                    "name": "User Session Analytics",
+                    "description": "Session-based clickstream analysis",
+                    "source": {"type": "simulated", "config": {"event_type": "clicks", "events_per_second": 15, "num_keys": 20, "schema": [{"name": "user_id", "type": "string"}, {"name": "page", "type": "choice:/home,/products,/cart,/checkout,/profile"}, {"name": "action", "type": "choice:view,click,scroll,add_to_cart,purchase"}, {"name": "duration_ms", "type": "int"}]}},
+                    "event_time_field": "timestamp",
+                    "watermark_delay_seconds": 15,
+                    "window": {"type": "session", "gap_seconds": 30, "late_data_policy": "update"},
+                    "transforms": [
+                        {"type": "key_by", "description": "Group by user", "config": {"field": "user_id"}},
+                        {"type": "aggregate", "description": "Count page views per session", "config": {"fields": [{"field": "duration_ms", "function": "SUM"}, {"field": "page", "function": "COUNT"}]}},
+                    ],
+                    "sinks": [
+                        {"type": "sse", "config": {}},
+                        {"type": "console", "config": {}},
+                    ],
+                    "tags": ["demo", "sessions"],
+                },
+            },
+            {
+                "id": "file_watcher_etl",
+                "name": "File Drop ETL",
+                "description": "Watches a folder for new CSV files, applies tumbling windows to aggregate records.",
+                "tags": ["etl", "file", "tumbling"],
+                "pipeline": {
+                    "name": "File Drop ETL",
+                    "description": "Process CSV file drops in real-time",
+                    "source": {"type": "file_watcher", "config": {"watch_dir": "data/uploads", "pattern": "*.csv", "poll_interval_seconds": 3}},
+                    "event_time_field": "timestamp",
+                    "watermark_delay_seconds": 30,
+                    "window": {"type": "tumbling", "size_seconds": 300, "late_data_policy": "update", "allowed_lateness_seconds": 60},
+                    "transforms": [],
+                    "sinks": [
+                        {"type": "sse", "config": {}},
+                        {"type": "file", "config": {"output_dir": "data/streaming_output", "format": "json"}},
+                    ],
+                    "tags": ["etl", "file"],
+                },
+            },
+        ]
+    }

@@ -30,15 +30,15 @@
 │  │ • DatabaseConnector             ││        │ PORT  SERVICE                │
 │  │ • PipelinesPanel (Simplified)   ││        ├──────────────────────────────┤
 │  │ • GlassBox + TrendAnalysis      ││        │ 8000  API Gateway            │
-│  │ • FileUpload                    ││        │ 8001  Orchestration Service  │
-│  │ • ResizableLayout               ││        │ 8002  Database Service       │
-│  │ • BackgroundParticles           ││        │ 8003  Code Generation        │
+│  │ • FileUpload                    ││        │ 8001  Code Generation        │
+│  │ • ResizableLayout               ││        │ 8002  Connectors Service     │
+│  │ • BackgroundParticles           ││        │ 8003  Execution Sandbox      │
 │  │ • DataVisualization + DataTable ││        │ 8004  Scheduler Service ⭐   │
-│  │ • ErrorBoundary                 ││        │ 8005  Knowledge Base         │
-│  └─────────────────────────────────┘│        │ 8006  Metadata Store         │
-│                                      │        │ 8007  Execution Sandbox      │
-│  ┌─────────────────────────────────┐│        └──────────────────────────────┘
-│  │   Styling & Utilities           ││
+│  │ • ErrorBoundary                 ││        │ 8005  Insights Service       │
+│  └─────────────────────────────────┘│        │ 8006  Orchestration Service  │
+│                                      │        │ 8007  Metadata Store         │
+│  ┌─────────────────────────────────┐│        │ 8009  UASR (Self-Healing)    │
+│  │   Styling & Utilities           ││        └──────────────────────────────┘
 │  ├─────────────────────────────────┤│
 │  │ • CSS Modules (Component-level) ││
 │  │ • Theme Variables               ││

@@ -34,6 +34,7 @@ from agents.specialists.analysis_agent import AnalysisAgent
 from agents.specialists.intent_agent import IntentAgent
 from agents.specialists.execution_agent import ExecutionAgent
 from agents.specialists.visualization_agent import VisualizationAgent
+from agents.specialists.monitor_agent import MonitorAgent
 
 
 # ── Agent registry ────────────────────────────────────────────────────
@@ -49,6 +50,7 @@ AGENT_MAP: Dict[str, Type[BaseAgent]] = {
     "IntentAgent": IntentAgent,
     "ExecutionAgent": ExecutionAgent,
     "VisualizationAgent": VisualizationAgent,
+    "MonitorAgent": MonitorAgent,
 }
 
 
@@ -234,7 +236,57 @@ class DAGExecutor:
         )
 
         await self._progress(f"✅ {report.summary}", "executor", 100)
+
+        # Feed results back to the evolution engine for learning
+        asyncio.create_task(
+            self._record_in_evolution_engine(plan, user_prompt, report)
+        )
+
         return report
+
+    @staticmethod
+    async def _record_in_evolution_engine(
+        plan: ExecutionPlan,
+        user_prompt: str,
+        report: ExecutionReport,
+    ) -> None:
+        """Best-effort: persist execution outcome in evolution engine."""
+        try:
+            from evolution.engine import get_evolution_engine
+            from evolution.models import PatternType
+            engine = get_evolution_engine()
+
+            # Record each task's outcome as agent feedback
+            for task_id, result in report.task_results.items():
+                task = next((t for t in plan.tasks if t.id == task_id), None)
+                if task is None:
+                    continue
+                await engine.record_feedback(
+                    session_id=plan.plan_id,
+                    agent_name=task.agent_name,
+                    task_type=task.task_type if hasattr(task, "task_type") else "unknown",
+                    user_prompt=user_prompt,
+                    agent_output=result.output or {},
+                    success=result.status == AgentStatus.SUCCESS,
+                    duration_ms=result.duration_ms or 0.0,
+                )
+
+            # Record overall plan as a pipeline pattern
+            if report.success:
+                await engine.record_pattern(
+                    pattern_type=PatternType.AGENT_PLAN,
+                    intent=user_prompt,
+                    pattern_data={
+                        "plan_id": plan.plan_id,
+                        "task_count": len(plan.tasks),
+                        "agents": [t.agent_name for t in plan.tasks],
+                        "summary": report.summary,
+                    },
+                    duration_ms=report.duration_ms,
+                    success=True,
+                )
+        except Exception:
+            pass  # Evolution engine is best-effort
 
     async def _progress(self, message: str, agent: str, pct: float) -> None:
         if self.progress_cb:

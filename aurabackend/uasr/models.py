@@ -16,7 +16,6 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 # Re-use the metadata store's Base so all tables live in the same DB
 import sys, os
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from metadata_store.db import Base
 
 

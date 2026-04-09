@@ -29,6 +29,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from shared.config import settings
 from shared.logging_config import get_logger, setup_logging
 from shared.middleware import (
+    APIKeyMiddleware,
     RequestIDMiddleware,
     RequestLoggingMiddleware,
     register_exception_handlers,
@@ -107,9 +108,13 @@ def create_service(
         allow_methods=["*"],
         allow_headers=["*"],
     )
-    #  2. Request-ID  (sets request.state.request_id)
+    #  2. API Key auth  (opt-in — only when AURA_API_KEY is set)
+    if settings.api_key:
+        app.add_middleware(APIKeyMiddleware, api_key=settings.api_key)
+        logger.info("API key authentication ENABLED for %s", name)
+    #  3. Request-ID  (sets request.state.request_id)
     app.add_middleware(RequestIDMiddleware)
-    #  3. Request logging  (uses request_id set above)
+    #  4. Request logging  (uses request_id set above)
     app.add_middleware(RequestLoggingMiddleware)
 
     # ── Exception handlers ──────────────────────────────────────────────

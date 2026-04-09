@@ -20,22 +20,22 @@ import './PipelinesPanel.css';
 type TransformType = ETLTransformStep['type'];
 
 const TRANSFORM_TYPES: { value: TransformType; label: string; icon: string }[] = [
-  { value: 'filter', label: 'Filter Rows', icon: '🔍' },
-  { value: 'sort', label: 'Sort', icon: '↕️' },
-  { value: 'drop_columns', label: 'Drop Columns', icon: '✂️' },
-  { value: 'rename', label: 'Rename Columns', icon: '✏️' },
-  { value: 'add_column', label: 'Add Column', icon: '➕' },
-  { value: 'aggregate', label: 'Aggregate', icon: '📊' },
-  { value: 'deduplicate', label: 'Deduplicate', icon: '🧹' },
-  { value: 'cast_type', label: 'Cast Type', icon: '🔄' },
-  { value: 'fill_missing', label: 'Fill Missing', icon: '🩹' },
-  { value: 'custom_sql', label: 'Custom SQL', icon: '⚡' },
+  { value: 'filter',       label: 'Filter Rows',     icon: 'FI' },
+  { value: 'sort',         label: 'Sort',             icon: 'SO' },
+  { value: 'drop_columns', label: 'Drop Columns',     icon: 'DR' },
+  { value: 'rename',       label: 'Rename Columns',   icon: 'RN' },
+  { value: 'add_column',   label: 'Add Column',       icon: '+C' },
+  { value: 'aggregate',    label: 'Aggregate',        icon: 'AG' },
+  { value: 'deduplicate',  label: 'Deduplicate',      icon: 'DD' },
+  { value: 'cast_type',    label: 'Cast Type',        icon: 'CT' },
+  { value: 'fill_missing', label: 'Fill Missing',     icon: 'FM' },
+  { value: 'custom_sql',   label: 'Custom SQL',       icon: 'SQL' },
 ];
 
 const DEST_FORMATS = [
-  { value: 'csv', label: 'CSV', icon: '📄' },
-  { value: 'parquet', label: 'Parquet', icon: '🗂️' },
-  { value: 'json', label: 'JSON', icon: '{ }' },
+  { value: 'csv',     label: 'CSV',     icon: 'CSV' },
+  { value: 'parquet', label: 'Parquet', icon: 'PQ'  },
+  { value: 'json',    label: 'JSON',    icon: '{ }' },
 ];
 
 /* ================================================================
@@ -54,42 +54,42 @@ const PIPELINE_TEMPLATES: PipelineTemplate[] = [
   {
     name: 'Clean & Deduplicate',
     description: 'Remove duplicates and fill missing values for a clean dataset',
-    icon: '🧹',
+    icon: 'CLN',
     prompt: 'Remove all duplicate rows, fill missing values with appropriate defaults, and export as CSV',
     tags: ['cleaning', 'dedup'],
   },
   {
     name: 'Top-N Analysis',
     description: 'Filter and sort to find the top N records by a metric',
-    icon: '🏆',
+    icon: 'TOP',
     prompt: 'Sort by the main numeric column descending, take the top 100 rows, and export as CSV',
     tags: ['analysis', 'ranking'],
   },
   {
     name: 'Aggregate Summary',
     description: 'Group data by category and compute summary statistics',
-    icon: '📊',
+    icon: 'AGG',
     prompt: 'Group by the first text/category column, compute COUNT, SUM, and AVG of all numeric columns, and export as CSV',
     tags: ['aggregation', 'summary'],
   },
   {
     name: 'Column Cleanup',
     description: 'Drop unnecessary columns, rename for clarity, and cast types',
-    icon: '✂️',
+    icon: 'SCH',
     prompt: 'Drop any columns that look like IDs or internal fields, rename remaining columns to clean snake_case names, and export as CSV',
     tags: ['schema', 'rename'],
   },
   {
     name: 'Date Filter',
     description: 'Filter records within a specific date range',
-    icon: '📅',
+    icon: 'DT',
     prompt: 'Filter rows where the date column is within the last 30 days, sort by date descending, and export as CSV',
     tags: ['filter', 'date'],
   },
   {
     name: 'Format Conversion',
     description: 'Convert a file from one format to another with no transforms',
-    icon: '🔄',
+    icon: 'CVT',
     prompt: 'Read the file and export as Parquet format with no transformations',
     tags: ['convert', 'export'],
   },
@@ -454,7 +454,7 @@ const PipelinesPanel: React.FC<PipelinesPanelProps> = () => {
       {/* ── Toast Notification ── */}
       {toast && (
         <div className={`etl-toast etl-toast--${toast.type}`}>
-          <span>{toast.type === 'success' ? '✅' : '⚠️'} {toast.message}</span>
+          <span>{toast.message}</span>
           <button className="etl-toast__close" onClick={() => setToast(null)}>✕</button>
         </div>
       )}
@@ -462,7 +462,9 @@ const PipelinesPanel: React.FC<PipelinesPanelProps> = () => {
       {/* ── Header ── */}
       <div className="etl-header">
         <div className="etl-header__left">
-          <span className="etl-header__icon">⚙️</span>
+          <span className="etl-header__icon">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z"/></svg>
+          </span>
           <div>
             <h2 className="etl-header__title">Data Pipeline Builder</h2>
             <p className="etl-header__subtitle">Build pipelines with AI or the visual step editor</p>
@@ -473,29 +475,52 @@ const PipelinesPanel: React.FC<PipelinesPanelProps> = () => {
             className={`etl-tab ${activeTab === 'ai' ? 'etl-tab--active' : ''}`}
             onClick={() => setActiveTab('ai')}
           >
-            🤖 AI Pipeline
+            AI Pipeline
           </button>
           <button
             className={`etl-tab ${activeTab === 'visual' ? 'etl-tab--active' : ''}`}
             onClick={() => setActiveTab('visual')}
           >
-            🧩 Visual Builder
+            Visual Builder
           </button>
           <button
             className={`etl-tab ${activeTab === 'saved' ? 'etl-tab--active' : ''}`}
             onClick={() => setActiveTab('saved')}
           >
-            📁 Saved Pipelines
+            Saved
           </button>
         </div>
       </div>
 
       {error && activeTab !== 'ai' && (
         <div className="etl-error">
-          ⚠️ {error}
+          {error}
           <button className="etl-error__close" onClick={() => setError(null)}>✕</button>
         </div>
       )}
+
+      {/* ── KPI Stats Bar ── */}
+      {(() => {
+        const outputRows = result?.output_rows ?? aiRun?.output_rows ?? null;
+        const lastStatus = result?.status ?? aiRun?.status ?? null;
+        const statusColor = lastStatus === 'success' ? '#34d399' : lastStatus === 'error' ? '#f87171' : 'var(--text-primary)';
+        return (
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 'var(--space-3)', flexShrink: 0 }}>
+            {[
+              { label: 'Source Files', value: String(sourceFiles.length), sub: 'available' },
+              { label: 'Pipeline Steps', value: String(transforms.length), sub: 'build steps' },
+              { label: 'Output Rows', value: outputRows != null ? outputRows.toLocaleString() : '—', sub: 'last run' },
+              { label: 'Last Status', value: lastStatus ? lastStatus.charAt(0).toUpperCase() + lastStatus.slice(1) : '—', sub: 'execution', color: statusColor },
+            ].map(({ label, value, sub, color }) => (
+              <div key={label} style={{ background: 'var(--bg-surface)', border: '1px solid var(--border-default)', borderRadius: 'var(--radius-lg)', padding: 'var(--space-4) var(--space-5)' }}>
+                <div style={{ fontSize: '10px', textTransform: 'uppercase', letterSpacing: '0.07em', color: 'var(--text-tertiary)', fontWeight: 600 }}>{label}</div>
+                <div style={{ fontSize: 'var(--font-2xl)', fontWeight: 700, color: color || 'var(--text-primary)', fontFamily: 'var(--font-mono)', lineHeight: 1.1, marginTop: 4 }}>{value}</div>
+                <div style={{ fontSize: 'var(--font-xs)', color: 'var(--text-tertiary)', marginTop: 2 }}>{sub}</div>
+              </div>
+            ))}
+          </div>
+        );
+      })()}
 
       {/* ═══════════════════════════════════════════════════════════
           AI Pipeline Tab
@@ -531,14 +556,14 @@ const PipelinesPanel: React.FC<PipelinesPanelProps> = () => {
                 onClick={handleAiGenerate}
                 disabled={aiGenerating || !aiPrompt.trim()}
               >
-                {aiGenerating ? '⏳ Generating…' : '🤖 Generate Pipeline'}
+                {aiGenerating ? 'Generating…' : 'Generate Pipeline'}
               </button>
             </div>
           </div>
 
           {aiError && (
             <div className="etl-error">
-              ⚠️ {aiError}
+              {aiError}
               <button className="etl-error__close" onClick={() => setAiError(null)}>✕</button>
             </div>
           )}
@@ -552,7 +577,7 @@ const PipelinesPanel: React.FC<PipelinesPanelProps> = () => {
                   <span className="etl-section__title">Generated Pipeline: {aiPipeline.name}</span>
                   {aiPipeline.tags?.includes('llm-free') && (
                     <span className="ai-pipeline__local-badge" title="Generated locally without LLM — no API calls, no rate limits">
-                      ⚡ Local
+                      Local
                     </span>
                   )}
                 </div>
@@ -566,8 +591,8 @@ const PipelinesPanel: React.FC<PipelinesPanelProps> = () => {
                     <span className="ai-pipeline__node-label">Source</span>
                     <span className="ai-pipeline__node-value">
                       {aiPipeline.source.type === 'file'
-                        ? `📄 ${aiPipeline.source.file_name || 'file'}`
-                        : `🗄️ ${aiPipeline.source.type}://${aiPipeline.source.table || 'query'}`}
+                        ? aiPipeline.source.file_name || 'file'
+                        : `${aiPipeline.source.type}://${aiPipeline.source.table || 'query'}`}
                     </span>
                   </div>
 
@@ -588,10 +613,10 @@ const PipelinesPanel: React.FC<PipelinesPanelProps> = () => {
                     <span className="ai-pipeline__node-label">Sink</span>
                     <span className="ai-pipeline__node-value">
                       {aiPipeline.sink.type === 'file'
-                        ? `📄 ${aiPipeline.sink.format || 'csv'}`
+                        ? aiPipeline.sink.format || 'csv'
                         : aiPipeline.sink.type === 'preview'
-                          ? '👁️ Preview'
-                          : `🗄️ ${aiPipeline.sink.type}`}
+                          ? 'Preview'
+                          : aiPipeline.sink.type}
                     </span>
                   </div>
                 </div>
@@ -624,26 +649,26 @@ const PipelinesPanel: React.FC<PipelinesPanelProps> = () => {
                   onClick={() => handleAiExecute(true)}
                   disabled={aiExecuting}
                 >
-                  {aiExecuting ? '⏳' : '👁️'} Preview
+                  {aiExecuting ? 'Loading…' : 'Preview'}
                 </button>
                 <button
                   className="etl-btn etl-btn--primary etl-btn--lg"
                   onClick={() => handleAiExecute(false)}
                   disabled={aiExecuting}
                 >
-                  {aiExecuting ? '⏳ Running…' : '▶ Execute Pipeline'}
+                  {aiExecuting ? 'Running…' : 'Execute Pipeline'}
                 </button>
                 <button
                   className="etl-btn etl-btn--ghost"
                   onClick={handleAiSave}
                 >
-                  💾 Save Pipeline
+                  Save Pipeline
                 </button>
                 <button
                   className="etl-btn etl-btn--ghost"
                   onClick={handleEditInVisualBuilder}
                 >
-                  🧩 Edit in Visual Builder
+                  Edit in Visual Builder
                 </button>
               </div>
             </>
@@ -654,7 +679,7 @@ const PipelinesPanel: React.FC<PipelinesPanelProps> = () => {
             <div className="etl-result">
               <div className="etl-result__header">
                 <h3>
-                  {aiRun.status === 'success' ? '✅ Pipeline Complete' : '❌ Pipeline Failed'}
+                  {aiRun.status === 'success' ? 'Pipeline Complete' : 'Pipeline Failed'}
                 </h3>
                 <div className="etl-result__stats">
                   <span className="etl-stat">
@@ -671,7 +696,7 @@ const PipelinesPanel: React.FC<PipelinesPanelProps> = () => {
               </div>
 
               {aiRun.error && (
-                <div className="etl-error">⚠️ {aiRun.error}</div>
+                <div className="etl-error">{aiRun.error}</div>
               )}
 
               {/* Output columns */}
@@ -717,7 +742,7 @@ const PipelinesPanel: React.FC<PipelinesPanelProps> = () => {
               {aiRun.output_file && (
                 <div className="etl-download-row">
                   <button className="etl-btn etl-btn--primary" onClick={handleAiDownload}>
-                    ⬇️ Download {aiRun.output_file}
+                    Download {aiRun.output_file}
                   </button>
                 </div>
               )}
@@ -765,7 +790,7 @@ const PipelinesPanel: React.FC<PipelinesPanelProps> = () => {
             onClick={fetchSourceFiles}
             title="Refresh file list"
           >
-            🔄
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
           </button>
         </div>
 
@@ -920,21 +945,21 @@ const PipelinesPanel: React.FC<PipelinesPanelProps> = () => {
           onClick={() => executePipeline(true)}
           disabled={isLoading || !selectedSource}
         >
-          {isLoading ? '⏳' : '👁️'} Preview Result
+          {isLoading ? 'Loading…' : 'Preview Result'}
         </button>
         <button
           className="etl-btn etl-btn--primary etl-btn--lg"
           onClick={() => executePipeline(false)}
           disabled={isLoading || !selectedSource}
         >
-          {isLoading ? '⏳ Running…' : '▶ Execute Pipeline'}
+          {isLoading ? 'Running…' : 'Execute Pipeline'}
         </button>
         <button
           className="etl-btn etl-btn--ghost"
           onClick={handleVisualSave}
           disabled={!selectedSource || transforms.length === 0}
         >
-          💾 Save Pipeline
+          Save Pipeline
         </button>
       </div>
 
@@ -943,7 +968,7 @@ const PipelinesPanel: React.FC<PipelinesPanelProps> = () => {
         <div className="etl-result">
           <div className="etl-result__header">
             <h3>
-              {result.preview_only ? '👁️ Preview Result' : '✅ Pipeline Complete'}
+              {result.preview_only ? 'Preview Result' : 'Pipeline Complete'}
             </h3>
             <div className="etl-result__stats">
               <span className="etl-stat">
@@ -1002,7 +1027,7 @@ const PipelinesPanel: React.FC<PipelinesPanelProps> = () => {
           {!result.preview_only && result.output.file && (
             <div className="etl-download-row">
               <button className="etl-btn etl-btn--primary" onClick={handleDownload}>
-                ⬇️ Download {result.output.file}
+                Download {result.output.file}
               </button>
             </div>
           )}
@@ -1020,7 +1045,7 @@ const PipelinesPanel: React.FC<PipelinesPanelProps> = () => {
           {/* Templates Section */}
           <div className="etl-section">
             <div className="etl-section__header">
-              <span className="etl-step-badge">⚡</span>
+              <span className="etl-step-badge">~</span>
               <span className="etl-section__title">Quick-Start Templates</span>
               <span className="etl-step-count">{PIPELINE_TEMPLATES.length} templates</span>
             </div>
@@ -1047,7 +1072,7 @@ const PipelinesPanel: React.FC<PipelinesPanelProps> = () => {
           {/* Saved Pipelines List */}
           <div className="etl-section">
             <div className="etl-section__header">
-              <span className="etl-step-badge">📁</span>
+              <span className="etl-step-badge">#</span>
               <span className="etl-section__title">Saved Pipelines</span>
               <span className="etl-step-count">{savedPipelines.length} pipeline{savedPipelines.length !== 1 ? 's' : ''}</span>
               <button
@@ -1057,7 +1082,7 @@ const PipelinesPanel: React.FC<PipelinesPanelProps> = () => {
                 title="Refresh"
                 style={{ marginLeft: 'auto' }}
               >
-                {savedLoading ? '⏳' : '🔄'}
+                {savedLoading ? '…' : 'Refresh'}
               </button>
             </div>
 
@@ -1074,7 +1099,7 @@ const PipelinesPanel: React.FC<PipelinesPanelProps> = () => {
 
             {!savedLoading && savedPipelines.length === 0 && !savedError && (
               <div className="saved-pipelines__empty">
-                <span className="saved-pipelines__empty-icon">📦</span>
+                <span className="saved-pipelines__empty-icon"></span>
                 <p className="saved-pipelines__empty-title">No saved pipelines yet</p>
                 <p className="saved-pipelines__empty-text">
                   Generate a pipeline with AI or build one manually, then click "Save Pipeline" to store it here.
@@ -1083,7 +1108,7 @@ const PipelinesPanel: React.FC<PipelinesPanelProps> = () => {
                   className="etl-btn etl-btn--primary"
                   onClick={() => setActiveTab('ai')}
                 >
-                  🤖 Create with AI
+                  Create with AI
                 </button>
               </div>
             )}
@@ -1104,9 +1129,9 @@ const PipelinesPanel: React.FC<PipelinesPanelProps> = () => {
                       </span>
                     </div>
                     <div className="saved-pipelines__card-meta">
-                      <span className="saved-pipelines__meta-item">📄 {p.source}</span>
-                      <span className="saved-pipelines__meta-item">🔧 {p.steps} step{p.steps !== 1 ? 's' : ''}</span>
-                      <span className="saved-pipelines__meta-item">📤 {p.sink}</span>
+                      <span className="saved-pipelines__meta-item">{p.source}</span>
+                      <span className="saved-pipelines__meta-item">{p.steps} step{p.steps !== 1 ? 's' : ''}</span>
+                      <span className="saved-pipelines__meta-item">{p.sink}</span>
                       {p.created_at && (
                         <span className="saved-pipelines__meta-item saved-pipelines__meta-item--muted">
                           {new Date(p.created_at).toLocaleDateString()}
@@ -1125,14 +1150,14 @@ const PipelinesPanel: React.FC<PipelinesPanelProps> = () => {
                         className="etl-btn etl-btn--primary"
                         onClick={() => handleLoadPipeline(p.id)}
                       >
-                        📂 Load & Run
+                        Load & Run
                       </button>
                       <button
                         className="etl-btn etl-btn--secondary saved-pipelines__delete-btn"
                         onClick={() => handleDeletePipeline(p.id, p.name)}
                         disabled={deletingId === p.id}
                       >
-                        {deletingId === p.id ? '⏳' : '🗑️'} Delete
+                        {deletingId === p.id ? 'Deleting…' : 'Delete'}
                       </button>
                     </div>
                   </div>

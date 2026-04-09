@@ -1,24 +1,6 @@
-/* =============================================================================
-   AURA — Global Reset
-   Keep this minimal; design-system.css handles tokens, components.css handles UI.
-   ============================================================================= */
-
-* {
-  margin: 0;
-  padding: 0;
-  box-sizing: border-box;
-}
-
+/* Global base — design-system.css owns all tokens and resets */
 html, body, #root {
   height: 100%;
   width: 100%;
-  margin: 0;
-  padding: 0;
-  overflow: hidden; /* AppLayout shell manages all scrolling */
-}
-
-a {
-  font-weight: 500;
-  color: inherit;
-  text-decoration: inherit;
+  overflow: hidden; /* AppLayout shell manages scrolling */
 }

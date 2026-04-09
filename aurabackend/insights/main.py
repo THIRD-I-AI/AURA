@@ -11,7 +11,6 @@ from fastapi import HTTPException, status
 from pydantic import BaseModel, Field
 
 # Add parent directory to path for imports
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from shared.service_factory import create_service
 from shared.logging_config import get_logger
@@ -196,57 +195,111 @@ def _suggest_charts(
     data_sample: List[Dict[str, Any]],
     query: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
-    """Suggest appropriate chart types based on data"""
-    suggestions = []
-    
+    """Suggest appropriate chart types based on column profiles and query intent."""
+    suggestions: List[Dict[str, Any]] = []
+
     if not columns or not data_sample:
-        return suggestions
-    
+        return [{"type": "table", "title": "Data Table", "confidence": 1.0}]
+
     query_lower = (query or "").lower()
-    
-    # Check for time-based data
-    time_columns = [c for c in columns if any(
-        t in c.lower() for t in ["date", "time", "year", "month", "day"]
-    )]
-    
-    # Check for numeric columns
-    numeric_columns = []
+
+    # Classify columns
+    time_columns = [
+        c for c in columns
+        if any(t in c.lower() for t in ["date", "time", "year", "month", "day", "week", "quarter"])
+    ]
+
+    numeric_columns: List[str] = []
+    categorical_columns: List[str] = []
     for col in columns:
-        try:
-            if data_sample and col in data_sample[0]:
-                val = data_sample[0][col]
-                if isinstance(val, (int, float)):
-                    numeric_columns.append(col)
-        except:
-            pass
-    
-    # Line chart for time series
+        val = data_sample[0].get(col) if data_sample else None
+        if isinstance(val, (int, float)):
+            numeric_columns.append(col)
+        elif isinstance(val, str) and val:
+            categorical_columns.append(col)
+
+    row_count = len(data_sample)
+
+    # 1. Time-series → line chart (highest confidence for time + numeric)
     if time_columns and numeric_columns:
         suggestions.append({
             "type": "line",
-            "title": "Time Series",
+            "title": f"{numeric_columns[0]} Over Time",
             "xAxis": time_columns[0],
             "yAxis": numeric_columns[0],
+            "series": numeric_columns[:3],
             "confidence": 0.95,
+            "reason": "Time column detected with numeric metric",
         })
-    
-    # Bar chart for categorical with aggregates
-    if len(columns) >= 2 and "top" in query_lower:
+
+    # 2. Category + numeric → bar / horizontal bar
+    if categorical_columns and numeric_columns:
+        orient = "horizontal" if row_count > 10 else "vertical"
         suggestions.append({
             "type": "bar",
-            "title": "Top N Analysis",
-            "xAxis": columns[0],
-            "yAxis": numeric_columns[0] if numeric_columns else columns[1],
+            "title": f"{numeric_columns[0]} by {categorical_columns[0]}",
+            "xAxis": categorical_columns[0],
+            "yAxis": numeric_columns[0],
+            "orientation": orient,
             "confidence": 0.90,
+            "reason": "Categorical grouping with numeric measure",
         })
-    
-    # Table as fallback
-    suggestions.append({
-        "type": "table",
-        "title": "Data Table",
-        "confidence": 1.0,
-    })
-    
+
+    # 3. Single categorical with 2-8 unique values → pie chart
+    if categorical_columns and numeric_columns and row_count <= 8:
+        suggestions.append({
+            "type": "pie",
+            "title": f"Distribution of {numeric_columns[0]}",
+            "dimension": categorical_columns[0],
+            "measure": numeric_columns[0],
+            "confidence": 0.80,
+            "reason": "Small number of categories — good for proportional view",
+        })
+
+    # 4. Two numeric columns → scatter plot
+    if len(numeric_columns) >= 2:
+        suggestions.append({
+            "type": "scatter",
+            "title": f"{numeric_columns[0]} vs {numeric_columns[1]}",
+            "xAxis": numeric_columns[0],
+            "yAxis": numeric_columns[1],
+            "confidence": 0.75,
+            "reason": "Two numeric columns — scatter shows correlation",
+        })
+
+    # 5. Single numeric column → histogram (distribution)
+    if len(numeric_columns) == 1 and not time_columns:
+        suggestions.append({
+            "type": "histogram",
+            "title": f"Distribution of {numeric_columns[0]}",
+            "column": numeric_columns[0],
+            "bins": 20,
+            "confidence": 0.85,
+            "reason": "Single numeric column — histogram shows distribution",
+        })
+
+    # 6. Query-intent boosts
+    if any(kw in query_lower for kw in ["trend", "over time", "monthly", "daily", "weekly"]):
+        for s in suggestions:
+            if s["type"] == "line":
+                s["confidence"] = min(1.0, s["confidence"] + 0.05)
+
+    if any(kw in query_lower for kw in ["top", "rank", "best", "worst", "largest", "smallest"]):
+        for s in suggestions:
+            if s["type"] == "bar":
+                s["confidence"] = min(1.0, s["confidence"] + 0.05)
+                s["sort"] = "desc"
+
+    if any(kw in query_lower for kw in ["compare", "versus", "vs", "correlation"]):
+        for s in suggestions:
+            if s["type"] == "scatter":
+                s["confidence"] = min(1.0, s["confidence"] + 0.10)
+
+    # Always include table as fallback
+    suggestions.append({"type": "table", "title": "Data Table", "confidence": 1.0})
+
+    # Sort by confidence descending
+    suggestions.sort(key=lambda s: s.get("confidence", 0), reverse=True)
     return suggestions
 
 

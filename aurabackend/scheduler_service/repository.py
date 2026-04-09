@@ -6,7 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine, AsyncSessio
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy import select, update, delete
 from typing import List, Optional, Dict, Any
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import os
 import uuid
 
@@ -84,7 +84,7 @@ class SchedulerRepository:
     async def update_job(self, job_id: str, updates: Dict[str, Any]) -> Optional[ScheduledJob]:
         """Update job configuration"""
         async with self.async_session() as session:
-            updates["updated_at"] = datetime.utcnow()
+            updates["updated_at"] = datetime.now(timezone.utc)
             
             await session.execute(
                 update(ScheduledJob)
@@ -219,7 +219,7 @@ class SchedulerRepository:
     
     async def cleanup_old_executions(self, retention_days: int = 30) -> int:
         """Delete old execution records"""
-        cutoff_date = datetime.utcnow() - timedelta(days=retention_days)
+        cutoff_date = datetime.now(timezone.utc) - timedelta(days=retention_days)
         
         async with self.async_session() as session:
             # Delete old logs
