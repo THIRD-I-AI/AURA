@@ -1,0 +1,234 @@
+/* =============================================================================
+   Sidebar — no inline styles in TSX; all visual logic lives here
+   ============================================================================= */
+
+/* ── Logo strip ──────────────────────────────────────────────────── */
+.sidebar-logo {
+  height: var(--header-height);
+  display: flex;
+  align-items: center;
+  padding: 0 var(--space-4);
+  border-bottom: 1px solid var(--border-subtle);
+  flex-shrink: 0;
+  gap: var(--space-3);
+  overflow: hidden;
+  transition: padding var(--t-layout);
+}
+
+.sidebar-logo--collapsed {
+  padding: 0;
+  justify-content: center;
+}
+
+.sidebar-logo__mark {
+  width: 28px;
+  height: 28px;
+  min-width: 28px;
+  border-radius: var(--radius-md);
+  background: linear-gradient(135deg, var(--accent) 0%, #7c3aed 100%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: var(--weight-bold);
+  font-size: 13px;
+  color: var(--text-on-accent);
+  letter-spacing: -0.5px;
+  box-shadow: 0 0 12px rgba(59,130,246,0.35);
+  flex-shrink: 0;
+  user-select: none;
+}
+
+.sidebar-logo__text {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.sidebar-logo__name {
+  font-size: var(--font-md);
+  font-weight: var(--weight-bold);
+  letter-spacing: -0.03em;
+  background: linear-gradient(90deg, #e8eaf0 0%, var(--accent) 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+  line-height: 1.1;
+  white-space: nowrap;
+}
+
+.sidebar-logo__sub {
+  font-size: 9px;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-widest);
+  margin-top: 1px;
+}
+
+/* ── Nav ─────────────────────────────────────────────────────────── */
+.sidebar-nav {
+  flex: 1;
+  padding: var(--space-2) 0;
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+/* ── Nav item ────────────────────────────────────────────────────── */
+.sidebar-nav-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  width: 100%;
+  padding: var(--space-2-5) var(--space-4);
+  background: transparent;
+  border: none;
+  border-left: 2px solid transparent;
+  cursor: pointer;
+  color: var(--text-tertiary);
+  font-family: var(--font-sans);
+  font-size: var(--font-sm);
+  font-weight: var(--weight-regular);
+  text-align: left;
+  transition: var(--t-hover);
+  border-radius: 0;
+  outline: none;
+}
+
+.sidebar-nav-item--collapsed {
+  padding: var(--space-2-5) 0;
+  justify-content: center;
+}
+
+.sidebar-nav-item:hover {
+  background: var(--bg-hover);
+  color: var(--text-secondary);
+}
+
+.sidebar-nav-item--active {
+  background: var(--bg-selected);
+  border-left-color: var(--accent);
+  color: var(--fg-accent);
+  font-weight: var(--weight-medium);
+  border-radius: 0 var(--radius-md) var(--radius-md) 0;
+}
+
+.sidebar-nav-item--active:hover {
+  background: var(--bg-selected);
+  color: var(--fg-accent);
+}
+
+.sidebar-nav-item:focus-visible {
+  outline: none;
+  box-shadow: inset 0 0 0 2px var(--border-focus);
+}
+
+/* ── Icon slot ───────────────────────────────────────────────────── */
+.sidebar-nav-item__icon {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  opacity: 0.7;
+  transition: opacity var(--dur-fast) var(--ease-out);
+}
+.sidebar-nav-item--active .sidebar-nav-item__icon,
+.sidebar-nav-item:hover .sidebar-nav-item__icon {
+  opacity: 1;
+}
+
+/* ── Label ───────────────────────────────────────────────────────── */
+.sidebar-nav-item__label {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ── Badge ───────────────────────────────────────────────────────── */
+.sidebar-nav-item__badge {
+  background: var(--red);
+  color: var(--text-on-accent);
+  border-radius: var(--radius-full);
+  font-size: 10px;
+  font-weight: var(--weight-bold);
+  padding: 1px 5px;
+  flex-shrink: 0;
+  min-width: 18px;
+  text-align: center;
+}
+
+/* ── Footer ──────────────────────────────────────────────────────── */
+.sidebar-footer {
+  padding: var(--space-3);
+  border-top: 1px solid var(--border-subtle);
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.sidebar-footer--collapsed {
+  flex-direction: column;
+  justify-content: center;
+}
+
+/* ── Footer icon buttons ─────────────────────────────────────────── */
+.sidebar-icon-btn {
+  width: 30px;
+  height: 30px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  color: var(--text-tertiary);
+  transition: var(--t-hover);
+  flex-shrink: 0;
+  outline: none;
+}
+
+.sidebar-icon-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text-secondary);
+  border-color: var(--border-subtle);
+}
+
+.sidebar-icon-btn--active {
+  background: var(--bg-selected);
+  color: var(--fg-accent);
+}
+
+.sidebar-icon-btn--active:hover {
+  background: var(--bg-selected);
+  color: var(--fg-accent);
+}
+
+.sidebar-icon-btn:focus-visible {
+  outline: none;
+  box-shadow: var(--accent-glow);
+}
+
+/* ── Mobile overlay (< 768px) ────────────────────────────────────── */
+@media (max-width: 767px) {
+  .app-shell__sidebar {
+    position: fixed;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    z-index: var(--z-sticky);
+    transform: translateX(-100%);
+    transition: transform var(--dur-base) var(--ease-out),
+                width var(--dur-slow) var(--ease-out),
+                min-width var(--dur-slow) var(--ease-out);
+  }
+  .app-shell__sidebar--open {
+    transform: translateX(0);
+  }
+  .app-shell__sidebar--collapsed {
+    /* On mobile collapsed still shows overlay; hide it fully instead */
+    transform: translateX(-100%);
+  }
+}

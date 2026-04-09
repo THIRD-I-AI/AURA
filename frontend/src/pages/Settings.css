@@ -77,9 +77,9 @@
 .health-item__name { font-size: var(--font-sm); color: var(--text-secondary); font-weight: 500; }
 
 .health-badge { font-size: 10px; font-weight: 700; padding: 2px 7px; border-radius: var(--radius-full); border: 1px solid; margin-left: auto; }
-.health-badge--healthy  { background: var(--green-dim);  color: #34d399; border-color: var(--green-border); }
-.health-badge--degraded { background: var(--yellow-dim); color: #fbbf24; border-color: var(--yellow-border); }
-.health-badge--down     { background: var(--red-dim);    color: #f87171; border-color: var(--red-border); }
+.health-badge--healthy  { background: var(--green-dim);  color: var(--fg-green); border-color: var(--green-border); }
+.health-badge--degraded { background: var(--yellow-dim); color: var(--fg-yellow); border-color: var(--yellow-border); }
+.health-badge--down     { background: var(--red-dim);    color: var(--fg-red); border-color: var(--red-border); }
 
 /* Info grid */
 .info-grid {
@@ -94,4 +94,4 @@
 /* Danger zone */
 .danger-zone { border-color: var(--red-border); }
 .danger-zone .settings-section__header { background: var(--red-dim); border-bottom-color: var(--red-border); }
-.danger-zone .settings-section__title  { color: #f87171; }
+.danger-zone .settings-section__title  { color: var(--fg-red); }

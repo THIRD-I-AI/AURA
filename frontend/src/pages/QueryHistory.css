@@ -51,7 +51,7 @@
 .query-filter-btn.active     {
   background: var(--accent-dim);
   border-color: var(--accent-border);
-  color: #93c5fd;
+  color: var(--fg-accent);
 }
 
 .query-list__items {
@@ -106,9 +106,9 @@
   align-items: center;
   gap: 4px;
 }
-.q-status--success { background: var(--green-dim);  color: #34d399; border-color: var(--green-border); }
-.q-status--error   { background: var(--red-dim);    color: #f87171; border-color: var(--red-border); }
-.q-status--running { background: var(--blue-dim);   color: #60a5fa; border-color: var(--accent-border); }
+.q-status--success { background: var(--green-dim);  color: var(--fg-green); border-color: var(--green-border); }
+.q-status--error   { background: var(--red-dim);    color: var(--fg-red);   border-color: var(--red-border); }
+.q-status--running { background: var(--blue-dim);   color: var(--fg-blue);  border-color: var(--accent-border); }
 
 /* ── Detail panel (right) ─────────────────────────────────────────── */
 .query-detail {
@@ -175,7 +175,7 @@
   padding: var(--space-4);
   font-family: var(--font-mono);
   font-size: var(--font-xs);
-  color: #a5b4fc;
+  color: var(--fg-indigo);
   overflow-x: auto;
   line-height: 1.75;
   white-space: pre;
@@ -211,7 +211,7 @@
   background: var(--accent);
   border: none;
   border-radius: var(--radius-md);
-  color: #fff;
+  color: var(--text-on-accent);
   font-size: var(--font-sm);
   font-weight: 600;
   cursor: pointer;

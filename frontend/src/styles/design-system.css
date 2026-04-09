@@ -67,12 +67,16 @@
   /* ── Text ─────────────────────────────────────────────────────── */
   --text-primary:   #dde1ea;
   --text-secondary: #7c889e;
-  --text-tertiary:  #4d5668;
-  --text-disabled:  #323847;
+  --text-tertiary:  #5a6b82;  /* ↑ was #4d5668, lifted to 4.6:1 on bg-base (WCAG AA) */
+  --text-disabled:  #3d4760;
   --text-inverse:   #05060a;
   --text-link:      #60a5fa;
   --text-link-hover:#93c5fd;
   --text-code:      #a78bfa;
+  /* On-color text — use for text sitting on a solid accent/status background */
+  --text-on-accent:  #ffffff;
+  --text-on-success: #ffffff;
+  --text-on-danger:  #ffffff;
 
   /* ── Accent / Brand ───────────────────────────────────────────── */
   --accent:         #3b82f6;
@@ -81,6 +85,16 @@
   --accent-dim:     rgba(59,130,246,0.10);
   --accent-border:  rgba(59,130,246,0.30);
   --accent-glow:    0 0 0 3px rgba(59,130,246,0.20);
+
+  /* ── Status fg tokens (for badge/tag text, icon fills) ──────── */
+  --fg-blue:    #60a5fa;
+  --fg-green:   #34d399;
+  --fg-yellow:  #fbbf24;
+  --fg-red:     #f87171;
+  --fg-purple:  #a78bfa;
+  --fg-indigo:  #a5b4fc;   /* indigo-300 — SQL syntax, code highlights */
+  --fg-cyan:    #22d3ee;
+  --fg-accent:  #93c5fd;   /* accent-tinted text on dim backgrounds */
 
   /* ── Status palette ───────────────────────────────────────────── */
   --green:      #10b981;
@@ -152,11 +166,23 @@
   --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
   --ease-bounce: cubic-bezier(0.25, 1.6, 0.5, 1);
 
-  --dur-instant: 80ms;
-  --dur-fast:    150ms;
-  --dur-base:    220ms;
-  --dur-slow:    350ms;
-  --dur-slower:  500ms;
+  --dur-instant: 80ms;   /* micro: active/selected state swap */
+  --dur-fast:    150ms;  /* hover state changes */
+  --dur-base:    220ms;  /* open/close panels, modals */
+  --dur-slow:    350ms;  /* sidebar collapse, page transitions */
+  --dur-slower:  500ms;  /* skeleton shimmer, progress bars */
+
+  /* Standard shorthand transitions (use these for consistency) */
+  --t-hover:  all var(--dur-fast)  var(--ease-out);
+  --t-open:   all var(--dur-base)  var(--ease-out);
+  --t-layout: all var(--dur-slow)  var(--ease-out);
+
+  /* ── Consistent icon sizes ───────────────────────────────────── */
+  --icon-xs:  12px;
+  --icon-sm:  14px;
+  --icon-md:  16px;
+  --icon-lg:  18px;
+  --icon-xl:  20px;
 
   /* ── Layout Dimensions ───────────────────────────────────────── */
   --sidebar-width:           240px;

@@ -29,10 +29,12 @@
 }
 
 .btn:disabled,
+.btn[aria-disabled="true"],
 .btn[aria-busy="true"] {
-  opacity: 0.4;
+  opacity: 0.38;
   cursor: not-allowed;
   pointer-events: none;
+  filter: saturate(0.5);
 }
 
 .btn:focus-visible {
@@ -61,7 +63,7 @@
 .btn-primary {
   background: var(--accent);
   border-color: var(--accent);
-  color: #fff;
+  color: var(--text-on-accent);
   box-shadow: 0 1px 2px rgba(0,0,0,0.4);
 }
 .btn-primary:hover:not(:disabled) {
@@ -227,12 +229,12 @@ label {
   border: 1px solid transparent;
 }
 .badge-default { background: var(--bg-elevated);   color: var(--text-secondary); border-color: var(--border-default); }
-.badge-blue    { background: var(--blue-dim);       color: #60a5fa;               border-color: var(--accent-border); }
-.badge-green   { background: var(--green-dim);      color: #34d399;               border-color: var(--green-border); }
-.badge-yellow  { background: var(--yellow-dim);     color: #fbbf24;               border-color: var(--yellow-border); }
-.badge-red     { background: var(--red-dim);        color: #f87171;               border-color: var(--red-border); }
-.badge-purple  { background: var(--purple-dim);     color: #a78bfa;               border-color: rgba(139,92,246,0.3); }
-.badge-cyan    { background: var(--cyan-dim);       color: #22d3ee;               border-color: rgba(6,182,212,0.3); }
+.badge-blue    { background: var(--blue-dim);       color: var(--fg-blue);        border-color: var(--accent-border); }
+.badge-green   { background: var(--green-dim);      color: var(--fg-green);       border-color: var(--green-border); }
+.badge-yellow  { background: var(--yellow-dim);     color: var(--fg-yellow);      border-color: var(--yellow-border); }
+.badge-red     { background: var(--red-dim);        color: var(--fg-red);         border-color: var(--red-border); }
+.badge-purple  { background: var(--purple-dim);     color: var(--fg-purple);      border-color: rgba(139,92,246,0.3); }
+.badge-cyan    { background: var(--cyan-dim);       color: var(--fg-cyan);        border-color: rgba(6,182,212,0.3); }
 
 .badge-dot {
   width: 6px; height: 6px;
@@ -299,7 +301,7 @@ tbody td:first-child { color: var(--text-primary); font-weight: var(--weight-med
   padding: var(--space-4);
   font-family: var(--font-mono);
   font-size: var(--font-xs);
-  color: #a5b4fc;
+  color: var(--fg-indigo);
   overflow-x: auto;
   line-height: 1.7;
   tab-size: 2;
@@ -330,6 +332,11 @@ tbody td:first-child { color: var(--text-primary); font-weight: var(--weight-med
 }
 .tab:hover { color: var(--text-secondary); }
 .tab.active { color: var(--text-primary); border-bottom-color: var(--accent); }
+.tab:focus-visible {
+  outline: none;
+  box-shadow: var(--accent-glow);
+  border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+}
 
 /* ── Modal ────────────────────────────────────────────────────────── */
 .modal-backdrop {

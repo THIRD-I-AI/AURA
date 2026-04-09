@@ -11,6 +11,7 @@ interface HeaderProps {
   onSearch?: (query: string) => void;
   notificationCount?: number;
   isOnline?: boolean;
+  onMobileMenuClick?: () => void;
 }
 
 const BellIcon = () => (
@@ -27,6 +28,12 @@ const SearchIcon = () => (
   </svg>
 );
 
+const HamburgerIcon = () => (
+  <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+    <path d="M2 4h12M2 8h12M2 12h12" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+  </svg>
+);
+
 export const Header: React.FC<HeaderProps> = ({
   title,
   breadcrumbs,
@@ -35,12 +42,24 @@ export const Header: React.FC<HeaderProps> = ({
   onSearch,
   notificationCount,
   isOnline = true,
+  onMobileMenuClick,
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
 
   return (
     <header className="app-header">
       <div className="app-header__inner">
+
+        {/* Mobile menu toggle */}
+        {onMobileMenuClick && (
+          <button
+            className="sidebar-mobile-toggle"
+            onClick={onMobileMenuClick}
+            aria-label="Toggle navigation"
+          >
+            <HamburgerIcon />
+          </button>
+        )}
 
         {/* Left: breadcrumbs + title */}
         <div className="app-header__left">

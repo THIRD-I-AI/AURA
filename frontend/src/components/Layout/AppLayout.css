@@ -155,12 +155,17 @@
   color: var(--text-secondary);
 }
 
+.app-header__icon-btn:focus-visible {
+  outline: none;
+  box-shadow: var(--accent-glow);
+}
+
 .app-header__notification-badge {
   position: absolute;
   top: 3px; right: 3px;
   width: 14px; height: 14px;
   background: var(--red);
-  color: #fff;
+  color: var(--text-on-accent);
   font-size: 9px;
   font-weight: 700;
   border-radius: 50%;
@@ -199,7 +204,7 @@
   justify-content: center;
   font-size: 11px;
   font-weight: var(--weight-semibold);
-  color: #fff;
+  color: var(--text-on-accent);
   cursor: pointer;
   border: 1px solid var(--border-default);
   transition: opacity var(--dur-fast) var(--ease-out);
@@ -262,4 +267,56 @@
 @media (max-width: 640px) {
   .dashboard-grid--kpis { grid-template-columns: 1fr 1fr; }
   .app-header__search-wrapper { display: none; }
+}
+
+/* ── Mobile sidebar ─────────────────────────────────────────────── */
+/* Hamburger button — shown only at mobile */
+.sidebar-mobile-toggle {
+  display: none;
+  width: 30px; height: 30px;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  color: var(--text-tertiary);
+  transition: var(--t-hover);
+  flex-shrink: 0;
+}
+.sidebar-mobile-toggle:hover { background: var(--bg-hover); color: var(--text-secondary); }
+.sidebar-mobile-toggle:focus-visible { outline: none; box-shadow: var(--accent-glow); }
+
+/* Scrim behind open sidebar */
+.sidebar-scrim {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: var(--bg-overlay);
+  z-index: calc(var(--z-sticky) - 1);
+  backdrop-filter: blur(2px);
+}
+
+@media (max-width: 767px) {
+  .sidebar-mobile-toggle { display: flex; }
+
+  .app-shell__sidebar {
+    position: fixed;
+    left: 0; top: 0; bottom: 0;
+    z-index: var(--z-sticky);
+    transform: translateX(-100%);
+    transition: transform var(--dur-base) var(--ease-out);
+    box-shadow: var(--shadow-xl);
+  }
+  .app-shell__sidebar--mobile-open {
+    transform: translateX(0);
+  }
+  /* Force full-width sidebar on mobile (ignore collapsed state) */
+  .app-shell__sidebar,
+  .app-shell__sidebar--collapsed {
+    width: var(--sidebar-width);
+    min-width: var(--sidebar-width);
+  }
+
+  .sidebar-scrim--visible { display: block; }
 }

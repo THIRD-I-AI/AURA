@@ -46,19 +46,33 @@ const NAV_ITEMS = [
 
 const AppLayout: React.FC<AppLayoutProps> = ({ children, currentPage, onPageChange }) => {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const systemHealth = useSystemHealth();
 
   const { title, subtitle } = PAGE_META[currentPage] ?? PAGE_META.dashboard;
 
+  const handleNavClick = (id: string) => {
+    onPageChange(id as PageType);
+    setMobileSidebarOpen(false);
+  };
+
   return (
     <div className="app-shell">
+      {/* Mobile scrim */}
+      <div
+        className={`sidebar-scrim${mobileSidebarOpen ? ' sidebar-scrim--visible' : ''}`}
+        onClick={() => setMobileSidebarOpen(false)}
+        aria-hidden="true"
+      />
+
       <Sidebar
         items={NAV_ITEMS}
         activeItem={currentPage}
-        onItemClick={(id) => onPageChange(id as PageType)}
+        onItemClick={handleNavClick}
         collapsed={sidebarCollapsed}
         onCollapsedChange={setSidebarCollapsed}
-        onSettingsClick={() => onPageChange('settings')}
+        onSettingsClick={() => { onPageChange('settings'); setMobileSidebarOpen(false); }}
+        mobileOpen={mobileSidebarOpen}
       />
 
       <div className="app-shell__content">
@@ -68,6 +82,7 @@ const AppLayout: React.FC<AppLayoutProps> = ({ children, currentPage, onPageChan
           breadcrumbs={[{ label: 'AURA' }, { label: title }]}
           searchable
           isOnline={systemHealth.isOnline}
+          onMobileMenuClick={() => setMobileSidebarOpen((v) => !v)}
           actions={
             <Button
               size="sm"

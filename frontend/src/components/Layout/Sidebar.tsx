@@ -1,10 +1,11 @@
 import React from 'react';
+import './Sidebar.css';
 
 /* ── SVG Icon set ─────────────────────────────────────────────────── */
 
 const Icons = {
   dashboard: (
-    <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+    <svg width="var(--icon-lg)" height="var(--icon-lg)" viewBox="0 0 18 18" fill="none">
       <rect x="1" y="1" width="6" height="6" rx="1.5" stroke="currentColor" strokeWidth="1.5"/>
       <rect x="11" y="1" width="6" height="6" rx="1.5" stroke="currentColor" strokeWidth="1.5"/>
       <rect x="1" y="11" width="6" height="6" rx="1.5" stroke="currentColor" strokeWidth="1.5"/>
@@ -97,6 +98,7 @@ interface SidebarProps {
   collapsed?: boolean;
   onCollapsedChange?: (v: boolean) => void;
   onSettingsClick?: () => void;
+  mobileOpen?: boolean;
 }
 
 /* ── Sidebar ──────────────────────────────────────────────────────── */
@@ -108,154 +110,49 @@ export const Sidebar: React.FC<SidebarProps> = ({
   collapsed = false,
   onCollapsedChange,
   onSettingsClick,
+  mobileOpen = false,
 }) => {
   return (
-    <aside
-      className={`app-shell__sidebar${collapsed ? ' app-shell__sidebar--collapsed' : ''}`}
-      style={{ userSelect: 'none' }}
-    >
+    <aside className={[
+      'app-shell__sidebar',
+      collapsed && 'app-shell__sidebar--collapsed',
+      mobileOpen && 'app-shell__sidebar--mobile-open',
+    ].filter(Boolean).join(' ')}>
+
       {/* ── Logo ──────────────────────────────────────────────── */}
-      <div style={{
-        height: 'var(--header-height)',
-        display: 'flex',
-        alignItems: 'center',
-        padding: collapsed ? '0' : '0 var(--space-4)',
-        justifyContent: collapsed ? 'center' : 'flex-start',
-        borderBottom: '1px solid var(--border-subtle)',
-        flexShrink: 0,
-        gap: 'var(--space-3)',
-      }}>
-        {/* Logo mark */}
-        <div style={{
-          width: 28, height: 28,
-          borderRadius: 'var(--radius-md)',
-          background: 'linear-gradient(135deg, var(--accent) 0%, #7c3aed 100%)',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          fontWeight: 700,
-          fontSize: '13px',
-          color: '#fff',
-          flexShrink: 0,
-          boxShadow: '0 0 12px rgba(59,130,246,0.4)',
-          letterSpacing: '-0.5px',
-        }}>
-          A
-        </div>
+      <div className={`sidebar-logo${collapsed ? ' sidebar-logo--collapsed' : ''}`}>
+        <div className="sidebar-logo__mark">A</div>
         {!collapsed && (
-          <div>
-            <div style={{
-              fontSize: 'var(--font-md)',
-              fontWeight: 700,
-              letterSpacing: '-0.03em',
-              background: 'linear-gradient(90deg, #e8eaf0 0%, var(--accent) 100%)',
-              WebkitBackgroundClip: 'text',
-              WebkitTextFillColor: 'transparent',
-              backgroundClip: 'text',
-              lineHeight: 1.1,
-            }}>
-              AURA
-            </div>
-            <div style={{
-              fontSize: '9px',
-              color: 'var(--text-tertiary)',
-              textTransform: 'uppercase',
-              letterSpacing: '0.12em',
-              marginTop: '1px',
-            }}>
-              Analytics
-            </div>
+          <div className="sidebar-logo__text">
+            <span className="sidebar-logo__name">AURA</span>
+            <span className="sidebar-logo__sub">Analytics</span>
           </div>
         )}
       </div>
 
-      {/* ── Nav items ────────────────────────────────────────── */}
-      <nav style={{
-        flex: 1,
-        padding: 'var(--space-2) 0',
-        display: 'flex',
-        flexDirection: 'column',
-        overflowY: 'auto',
-        overflowX: 'hidden',
-      }}>
+      {/* ── Nav ───────────────────────────────────────────────── */}
+      <nav className="sidebar-nav">
         {items.map((item) => {
           const isActive = activeItem === item.id;
           const icon = item.icon ?? NAV_ICON_MAP[item.id];
-
           return (
             <button
               key={item.id}
               onClick={() => onItemClick(item.id)}
               title={collapsed ? item.label : undefined}
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: 'var(--space-3)',
-                width: '100%',
-                padding: collapsed
-                  ? 'var(--space-2-5) 0'
-                  : 'var(--space-2-5) var(--space-4)',
-                justifyContent: collapsed ? 'center' : 'flex-start',
-                background: isActive ? 'var(--bg-selected)' : 'transparent',
-                border: 'none',
-                borderLeft: isActive
-                  ? '2px solid var(--accent)'
-                  : '2px solid transparent',
-                cursor: 'pointer',
-                color: isActive ? '#93c5fd' : 'var(--text-tertiary)',
-                fontFamily: 'var(--font-sans)',
-                fontSize: 'var(--font-sm)',
-                fontWeight: isActive ? 'var(--weight-medium)' : 'var(--weight-regular)',
-                transition: 'all var(--dur-fast) var(--ease-out)',
-                textAlign: 'left',
-                borderRadius: isActive ? '0 var(--radius-md) var(--radius-md) 0' : 0,
-                marginLeft: 0,
-              }}
-              onMouseEnter={(e) => {
-                if (!isActive) {
-                  (e.currentTarget as HTMLButtonElement).style.background = 'var(--bg-hover)';
-                  (e.currentTarget as HTMLButtonElement).style.color = 'var(--text-secondary)';
-                }
-              }}
-              onMouseLeave={(e) => {
-                if (!isActive) {
-                  (e.currentTarget as HTMLButtonElement).style.background = 'transparent';
-                  (e.currentTarget as HTMLButtonElement).style.color = 'var(--text-tertiary)';
-                }
-              }}
+              aria-current={isActive ? 'page' : undefined}
+              className={[
+                'sidebar-nav-item',
+                isActive && 'sidebar-nav-item--active',
+                collapsed && 'sidebar-nav-item--collapsed',
+              ].filter(Boolean).join(' ')}
             >
-              <span style={{
-                flexShrink: 0,
-                display: 'flex',
-                alignItems: 'center',
-                opacity: isActive ? 1 : 0.7,
-              }}>
-                {icon}
-              </span>
-
+              <span className="sidebar-nav-item__icon">{icon}</span>
               {!collapsed && (
-                <span style={{
-                  flex: 1,
-                  overflow: 'hidden',
-                  textOverflow: 'ellipsis',
-                  whiteSpace: 'nowrap',
-                }}>
-                  {item.label}
-                </span>
+                <span className="sidebar-nav-item__label">{item.label}</span>
               )}
-
               {!collapsed && item.badge != null && item.badge > 0 && (
-                <span style={{
-                  background: 'var(--red)',
-                  color: '#fff',
-                  borderRadius: 'var(--radius-full)',
-                  fontSize: '10px',
-                  fontWeight: 700,
-                  padding: '1px 5px',
-                  flexShrink: 0,
-                }}>
-                  {item.badge}
-                </span>
+                <span className="sidebar-nav-item__badge">{item.badge}</span>
               )}
             </button>
           );
@@ -263,70 +160,25 @@ export const Sidebar: React.FC<SidebarProps> = ({
       </nav>
 
       {/* ── Footer ───────────────────────────────────────────── */}
-      <div style={{
-        padding: 'var(--space-3) var(--space-3)',
-        borderTop: '1px solid var(--border-subtle)',
-        display: 'flex',
-        flexDirection: collapsed ? 'column' : 'row',
-        alignItems: 'center',
-        justifyContent: collapsed ? 'center' : 'space-between',
-        gap: 'var(--space-2)',
-      }}>
-        {/* Settings */}
+      <div className={`sidebar-footer${collapsed ? ' sidebar-footer--collapsed' : ''}`}>
         <button
           onClick={() => onSettingsClick?.()}
           title="Settings"
-          style={{
-            width: 30, height: 30,
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            background: activeItem === 'settings' ? 'var(--bg-selected)' : 'transparent',
-            border: '1px solid transparent',
-            borderRadius: 'var(--radius-md)',
-            cursor: 'pointer',
-            color: activeItem === 'settings' ? '#93c5fd' : 'var(--text-tertiary)',
-            transition: 'all var(--dur-fast) var(--ease-out)',
-          }}
-          onMouseEnter={(e) => {
-            (e.currentTarget as HTMLButtonElement).style.background = 'var(--bg-hover)';
-            (e.currentTarget as HTMLButtonElement).style.color = 'var(--text-secondary)';
-          }}
-          onMouseLeave={(e) => {
-            if (activeItem !== 'settings') {
-              (e.currentTarget as HTMLButtonElement).style.background = 'transparent';
-              (e.currentTarget as HTMLButtonElement).style.color = 'var(--text-tertiary)';
-            }
-          }}
+          aria-label="Settings"
+          className={[
+            'sidebar-icon-btn',
+            activeItem === 'settings' && 'sidebar-icon-btn--active',
+          ].filter(Boolean).join(' ')}
         >
           {Icons.settings}
         </button>
 
-        {/* Collapse toggle */}
         {onCollapsedChange && (
           <button
             onClick={() => onCollapsedChange(!collapsed)}
             title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
-            style={{
-              width: 30, height: 30,
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              background: 'transparent',
-              border: '1px solid transparent',
-              borderRadius: 'var(--radius-md)',
-              cursor: 'pointer',
-              color: 'var(--text-tertiary)',
-              transition: 'all var(--dur-fast) var(--ease-out)',
-            }}
-            onMouseEnter={(e) => {
-              (e.currentTarget as HTMLButtonElement).style.background = 'var(--bg-hover)';
-              (e.currentTarget as HTMLButtonElement).style.color = 'var(--text-secondary)';
-            }}
-            onMouseLeave={(e) => {
-              (e.currentTarget as HTMLButtonElement).style.background = 'transparent';
-              (e.currentTarget as HTMLButtonElement).style.color = 'var(--text-tertiary)';
-            }}
+            aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+            className="sidebar-icon-btn"
           >
             {collapsed ? Icons.expand : Icons.collapse}
           </button>

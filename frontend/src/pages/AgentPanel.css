@@ -43,11 +43,11 @@
   text-transform: uppercase;
   letter-spacing: 0.05em;
 }
-.phase-badge--planning   { background: var(--blue-dim);   color: #60a5fa; border-color: var(--accent-border); }
-.phase-badge--executing  { background: var(--yellow-dim); color: #fbbf24; border-color: var(--yellow-border); }
-.phase-badge--streaming  { background: var(--purple-dim); color: #a78bfa; border-color: rgba(139,92,246,0.3); }
-.phase-badge--done       { background: var(--green-dim);  color: #34d399; border-color: var(--green-border); }
-.phase-badge--error      { background: var(--red-dim);    color: #f87171; border-color: var(--red-border); }
+.phase-badge--planning   { background: var(--blue-dim);   color: var(--fg-blue);   border-color: var(--accent-border); }
+.phase-badge--executing  { background: var(--yellow-dim); color: var(--fg-yellow); border-color: var(--yellow-border); }
+.phase-badge--streaming  { background: var(--purple-dim); color: var(--fg-purple); border-color: rgba(139,92,246,0.3); }
+.phase-badge--done       { background: var(--green-dim);  color: var(--fg-green);  border-color: var(--green-border); }
+.phase-badge--error      { background: var(--red-dim);    color: var(--fg-red);    border-color: var(--red-border); }
 
 /* Progress feed */
 .agent-feed {
@@ -72,9 +72,9 @@
   animation: fade-in var(--dur-base) var(--ease-out);
 }
 .agent-feed-line__ts { color: var(--text-disabled); flex-shrink: 0; }
-.agent-feed-line--success .agent-feed-line__msg { color: #34d399; }
-.agent-feed-line--error   .agent-feed-line__msg { color: #f87171; }
-.agent-feed-line--info    .agent-feed-line__msg { color: #60a5fa; }
+.agent-feed-line--success .agent-feed-line__msg { color: var(--fg-green); }
+.agent-feed-line--error   .agent-feed-line__msg { color: var(--fg-red); }
+.agent-feed-line--info    .agent-feed-line__msg { color: var(--fg-blue); }
 
 /* Plan / report cards */
 .agent-plan-card,
@@ -97,7 +97,7 @@
 }
 .agent-task-item:last-child { border-bottom: none; }
 .agent-task-item--done  { color: var(--text-tertiary); text-decoration: line-through; }
-.agent-task-item--error { color: #f87171; }
+.agent-task-item--error { color: var(--fg-red); }
 .agent-task-icon { flex-shrink: 0; width: 16px; text-align: center; }
 
 /* Suggestions chips */
@@ -120,5 +120,5 @@
 .agent-suggestion-chip:hover {
   background: var(--accent-dim);
   border-color: var(--accent-border);
-  color: #93c5fd;
+  color: var(--fg-accent);
 }

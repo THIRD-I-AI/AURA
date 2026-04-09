@@ -17,7 +17,7 @@
   position: fixed;
   bottom: var(--space-5);
   right: var(--space-5);
-  z-index: 999;
+  z-index: var(--z-toast);
   display: flex;
   align-items: center;
   gap: var(--space-3);
@@ -29,8 +29,8 @@
   animation: toast-slide-in var(--dur-base) var(--ease-out);
   max-width: 380px;
 }
-.etl-toast--success { background: var(--green-dim); color: #34d399; border-color: var(--green-border); }
-.etl-toast--error   { background: var(--red-dim);   color: #f87171; border-color: var(--red-border); }
+.etl-toast--success { background: var(--green-dim); color: var(--fg-green); border-color: var(--green-border); }
+.etl-toast--error   { background: var(--red-dim);   color: var(--fg-red); border-color: var(--red-border); }
 .etl-toast__close {
   margin-left: auto;
   background: none; border: none; cursor: pointer;
@@ -82,7 +82,7 @@
   transition: all var(--dur-fast);
 }
 .etl-tab:hover       { background: var(--bg-hover); color: var(--text-secondary); }
-.etl-tab--active     { background: var(--accent-dim); border-color: var(--accent-border); color: #93c5fd; }
+.etl-tab--active     { background: var(--accent-dim); border-color: var(--accent-border); color: var(--fg-accent); }
 
 /* ── Error bar ────────────────────────────────────────────────────── */
 .etl-error {
@@ -94,7 +94,7 @@
   border: 1px solid var(--red-border);
   border-radius: var(--radius-md);
   font-size: var(--font-sm);
-  color: #f87171;
+  color: var(--fg-red);
   margin: var(--space-4) 0 0;
 }
 .etl-error__close {
@@ -138,7 +138,7 @@
 .etl-section__title  { font-size: var(--font-sm); font-weight: 600; color: var(--text-primary); }
 .etl-step-badge {
   width: 22px; height: 22px; border-radius: var(--radius-full);
-  background: var(--accent); color: #fff;
+  background: var(--accent); color: var(--text-on-accent);
   font-size: 11px; font-weight: 700;
   display: flex; align-items: center; justify-content: center;
   flex-shrink: 0;
@@ -177,14 +177,14 @@
   white-space: nowrap;
 }
 .etl-btn:disabled { opacity: 0.45; cursor: not-allowed; }
-.etl-btn--primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.etl-btn--primary { background: var(--accent); border-color: var(--accent); color: var(--text-on-accent); }
 .etl-btn--primary:hover:not(:disabled) { opacity: 0.85; }
 .etl-btn--secondary { background: var(--bg-elevated); border-color: var(--border-default); color: var(--text-secondary); }
 .etl-btn--secondary:hover:not(:disabled) { border-color: var(--border-strong); color: var(--text-primary); }
 .etl-btn--ghost { background: transparent; border-color: var(--border-default); color: var(--text-tertiary); }
 .etl-btn--ghost:hover:not(:disabled) { background: var(--bg-hover); color: var(--text-secondary); }
 .etl-btn--dashed { background: var(--bg-sunken); border-color: var(--border-default); border-style: dashed; color: var(--text-tertiary); width: 100%; justify-content: center; }
-.etl-btn--dashed:hover:not(:disabled) { border-color: var(--accent-border); color: #93c5fd; background: var(--accent-dim); }
+.etl-btn--dashed:hover:not(:disabled) { border-color: var(--accent-border); color: var(--fg-accent); background: var(--accent-dim); }
 .etl-btn--lg { padding: var(--space-2-5) var(--space-5); font-size: var(--font-base); }
 
 /* ── Actions row ─────────────────────────────────────────────────── */
@@ -211,7 +211,7 @@
   font-family: var(--font-mono);
 }
 .etl-chip__type    { color: var(--text-disabled); font-size: 10px; }
-.etl-chip--output  { background: var(--green-dim); border-color: var(--green-border); color: #34d399; }
+.etl-chip--output  { background: var(--green-dim); border-color: var(--green-border); color: var(--fg-green); }
 
 /* ── Preview details ─────────────────────────────────────────────── */
 .etl-preview-details { margin-top: var(--space-2); }
@@ -235,7 +235,7 @@
   border-bottom: 1px solid var(--border-hairline); font-family: var(--font-mono);
 }
 .etl-table tr:hover td { background: var(--bg-hover); }
-.etl-table--result th  { background: var(--green-dim); color: #34d399; border-bottom-color: var(--green-border); }
+.etl-table--result th  { background: var(--green-dim); color: var(--fg-green); border-bottom-color: var(--green-border); }
 
 /* ── SQL details ─────────────────────────────────────────────────── */
 .etl-sql-details { margin-top: var(--space-3); }
@@ -243,7 +243,7 @@
 .etl-sql-pre {
   margin-top: var(--space-2); padding: var(--space-3); background: var(--bg-sunken);
   border: 1px solid var(--border-subtle); border-radius: var(--radius-md);
-  font-family: var(--font-mono); font-size: var(--font-xs); color: #a5b4fc;
+  font-family: var(--font-mono); font-size: var(--font-xs); color: var(--fg-indigo);
   overflow-x: auto; white-space: pre; line-height: 1.7;
 }
 
@@ -272,7 +272,7 @@
 .etl-step-card__icon {
   font-size: 11px; font-weight: 700; padding: 1px 6px;
   background: var(--accent-dim); border: 1px solid var(--accent-border);
-  border-radius: var(--radius-full); color: #93c5fd; font-family: var(--font-mono);
+  border-radius: var(--radius-full); color: var(--fg-accent); font-family: var(--font-mono);
 }
 .etl-step-card__label { flex: 1; font-size: var(--font-sm); font-weight: 500; color: var(--text-primary); }
 .etl-step-card__actions { display: flex; gap: var(--space-1); margin-left: auto; }
@@ -283,7 +283,7 @@
 }
 .etl-step-card__actions button:hover { background: var(--bg-hover); color: var(--text-primary); }
 .etl-step-card__actions button:disabled { opacity: 0.3; cursor: not-allowed; }
-.etl-step-card__remove:hover { background: var(--red-dim) !important; color: #f87171 !important; border-color: var(--red-border) !important; }
+.etl-step-card__remove:hover { background: var(--red-dim) !important; color: var(--fg-red) !important; border-color: var(--red-border) !important; }
 .etl-step-card .etl-input--sm { margin: var(--space-2-5) var(--space-3); width: calc(100% - 24px); }
 .etl-step-card__config { padding: var(--space-2-5) var(--space-3) var(--space-3); }
 
@@ -306,7 +306,7 @@
   border-radius: var(--radius-md); cursor: pointer; font-family: var(--font-sans);
   font-size: 11px; color: var(--text-secondary); transition: all var(--dur-fast);
 }
-.etl-add-step-btn:hover { background: var(--accent-dim); border-color: var(--accent-border); color: #93c5fd; }
+.etl-add-step-btn:hover { background: var(--accent-dim); border-color: var(--accent-border); color: var(--fg-accent); }
 .etl-add-step-btn__icon {
   font-size: 12px; font-weight: 800; color: var(--accent);
   font-family: var(--font-mono); line-height: 1;
@@ -315,7 +315,7 @@
   background: transparent; border-style: dashed; color: var(--text-disabled);
   grid-column: 1 / -1;
 }
-.etl-add-step-btn--cancel:hover { background: var(--red-dim); border-color: var(--red-border); color: #f87171; }
+.etl-add-step-btn--cancel:hover { background: var(--red-dim); border-color: var(--red-border); color: var(--fg-red); }
 
 /* ── Destination ─────────────────────────────────────────────────── */
 .etl-dest-row { display: flex; gap: var(--space-3); align-items: center; }
@@ -328,7 +328,7 @@
   display: flex; align-items: center; gap: var(--space-1-5);
 }
 .etl-format-btn:hover        { border-color: var(--border-strong); color: var(--text-secondary); }
-.etl-format-btn--active      { background: var(--accent-dim); border-color: var(--accent-border); color: #93c5fd; }
+.etl-format-btn--active      { background: var(--accent-dim); border-color: var(--accent-border); color: var(--fg-accent); }
 
 /* ── Result ──────────────────────────────────────────────────────── */
 .etl-result {
@@ -356,7 +356,7 @@
 .ai-pipeline__local-badge {
   font-size: 10px; font-weight: 700; padding: 2px 7px;
   background: var(--yellow-dim); border: 1px solid var(--yellow-border);
-  border-radius: var(--radius-full); color: #fbbf24;
+  border-radius: var(--radius-full); color: var(--fg-yellow);
 }
 
 /* ── Pipeline flow diagram ───────────────────────────────────────── */
@@ -394,7 +394,7 @@
 .ai-pipeline__step-num {
   width: 20px; height: 20px; border-radius: var(--radius-full);
   background: var(--accent-dim); border: 1px solid var(--accent-border);
-  font-size: 10px; font-weight: 700; color: #93c5fd;
+  font-size: 10px; font-weight: 700; color: var(--fg-accent);
   display: flex; align-items: center; justify-content: center; flex-shrink: 0;
 }
 .ai-pipeline__step-desc { font-size: var(--font-xs); color: var(--text-tertiary); }
@@ -452,9 +452,9 @@
   border-radius: var(--radius-full); border: 1px solid; white-space: nowrap; flex-shrink: 0;
 }
 .saved-pipelines__status--draft    { background: var(--bg-elevated); color: var(--text-tertiary); border-color: var(--border-default); }
-.saved-pipelines__status--active   { background: var(--green-dim); color: #34d399; border-color: var(--green-border); }
-.saved-pipelines__status--inactive { background: var(--yellow-dim); color: #fbbf24; border-color: var(--yellow-border); }
-.saved-pipelines__status--error    { background: var(--red-dim); color: #f87171; border-color: var(--red-border); }
+.saved-pipelines__status--active   { background: var(--green-dim); color: var(--fg-green); border-color: var(--green-border); }
+.saved-pipelines__status--inactive { background: var(--yellow-dim); color: var(--fg-yellow); border-color: var(--yellow-border); }
+.saved-pipelines__status--error    { background: var(--red-dim); color: var(--fg-red); border-color: var(--red-border); }
 .saved-pipelines__card-meta {
   display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap;
   padding: var(--space-2) var(--space-4); background: var(--bg-sunken);
@@ -464,7 +464,7 @@
 .saved-pipelines__meta-item--muted { color: var(--text-disabled); margin-left: auto; }
 .saved-pipelines__card-tags { display: flex; gap: var(--space-1-5); flex-wrap: wrap; padding: var(--space-2) var(--space-4); }
 .saved-pipelines__card-actions { display: flex; gap: var(--space-2); padding: var(--space-3) var(--space-4); }
-.saved-pipelines__delete-btn { color: #f87171 !important; border-color: var(--red-border) !important; }
+.saved-pipelines__delete-btn { color: var(--fg-red) !important; border-color: var(--red-border) !important; }
 .saved-pipelines__delete-btn:hover:not(:disabled) { background: var(--red-dim) !important; }
 .saved-pipelines__empty { text-align: center; padding: var(--space-8); display: flex; flex-direction: column; align-items: center; gap: var(--space-3); }
 .saved-pipelines__empty-icon { color: var(--text-disabled); font-size: 32px; }
