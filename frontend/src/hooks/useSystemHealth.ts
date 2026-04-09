@@ -1,9 +1,8 @@
 /**
  * useSystemHealth Hook
- * Monitors backend health status and provides connection state
- * Used by Dashboard and App components for graceful degradation
+ * Monitors backend health and fires the callback ONLY when the
+ * online/offline status actually changes — never on every poll tick.
  */
-
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { healthService } from '../services/api';
 
@@ -23,21 +22,17 @@ const INITIAL_STATE: SystemHealthState = {
   retries: 0,
 };
 
-/**
- * Hook for monitoring system health
- * Polls backend every 10 seconds to detect connection issues
- */
 export const useSystemHealth = (onStatusChange?: (status: SystemHealthState) => void) => {
   const [health, setHealth] = useState<SystemHealthState>(INITIAL_STATE);
-  const timerRef = useRef<number | null>(null);
-  const isUnmountingRef = useRef(false);
-  const isCheckingRef = useRef(false);
-  const onStatusChangeRef = useRef(onStatusChange);
 
-  // Keep callback ref up to date without causing re-renders
-  useEffect(() => {
-    onStatusChangeRef.current = onStatusChange;
-  }, [onStatusChange]);
+  const timerRef          = useRef<number | null>(null);
+  const isUnmountingRef   = useRef(false);
+  const isCheckingRef     = useRef(false);
+  const onStatusChangeRef = useRef(onStatusChange);
+  /** null = first check not done yet; true/false = last known state */
+  const prevOnlineRef     = useRef<boolean | null>(null);
+
+  useEffect(() => { onStatusChangeRef.current = onStatusChange; }, [onStatusChange]);
 
   const checkHealth = useCallback(async () => {
     if (isCheckingRef.current) return;
@@ -50,29 +45,37 @@ export const useSystemHealth = (onStatusChange?: (status: SystemHealthState) => 
 
       if (!isUnmountingRef.current) {
         setHealth((_prev) => {
-          const newStatus: SystemHealthState = {
+          const next: SystemHealthState = {
             isOnline: true,
             status: result.status || 'healthy',
             lastCheck: new Date(),
             isChecking: false,
             retries: 0,
           };
-          onStatusChangeRef.current?.(newStatus);
-          return newStatus;
+          // Only fire callback when transitioning from offline → online
+          if (prevOnlineRef.current === false) {
+            onStatusChangeRef.current?.(next);
+          }
+          prevOnlineRef.current = true;
+          return next;
         });
       }
-    } catch (error) {
+    } catch {
       if (!isUnmountingRef.current) {
         setHealth((prev) => {
-          const newStatus: SystemHealthState = {
+          const next: SystemHealthState = {
             isOnline: false,
             status: 'down',
             lastCheck: new Date(),
             isChecking: false,
             retries: prev.retries + 1,
           };
-          onStatusChangeRef.current?.(newStatus);
-          return newStatus;
+          // Only fire callback on first failure (online → offline), not on every retry
+          if (prevOnlineRef.current === true) {
+            onStatusChangeRef.current?.(next);
+          }
+          prevOnlineRef.current = false;
+          return next;
         });
       }
     } finally {
@@ -82,29 +85,17 @@ export const useSystemHealth = (onStatusChange?: (status: SystemHealthState) => 
 
   useEffect(() => {
     isUnmountingRef.current = false;
-
-    // Initial check
     checkHealth();
-
-    // Start periodic polling (10 seconds)
-    timerRef.current = window.setInterval(() => {
-      checkHealth();
-    }, 10000);
-
+    timerRef.current = window.setInterval(checkHealth, 30_000); // 30 s — less noisy than 10 s
     return () => {
       isUnmountingRef.current = true;
-      if (timerRef.current) {
-        clearInterval(timerRef.current);
-      }
+      if (timerRef.current) clearInterval(timerRef.current);
     };
   }, [checkHealth]);
 
   return health;
 };
 
-/**
- * Hook for managing reconnection attempts
- */
 export const useReconnect = () => {
   const [isReconnecting, setIsReconnecting] = useState(false);
 

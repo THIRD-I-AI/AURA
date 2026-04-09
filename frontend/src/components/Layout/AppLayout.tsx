@@ -1,21 +1,21 @@
-import React from 'react';
+import React, { useState } from 'react';
 import '../../styles/design-system.css';
 import '../../styles/components.css';
 import './AppLayout.css';
-import './Header.css';
 import Sidebar from './Sidebar';
 import Header from './Header';
 import Button from '../ui/Button';
 import { useSystemHealth } from '../../hooks/useSystemHealth';
 
-export type PageType = 'dashboard' | 'chat' | 'files' | 'queries' | 'settings' | 'agent' | 'pipelines' | 'streaming';
-
-interface SidebarItem {
-  id: string;
-  label: string;
-  icon: React.ReactNode;
-  href: string;
-}
+export type PageType =
+  | 'dashboard'
+  | 'chat'
+  | 'files'
+  | 'queries'
+  | 'settings'
+  | 'agent'
+  | 'pipelines'
+  | 'streaming';
 
 interface AppLayoutProps {
   children: React.ReactNode;
@@ -23,144 +23,67 @@ interface AppLayoutProps {
   onPageChange: (page: PageType) => void;
 }
 
-/**
- * Enterprise Application Shell
- * Main layout container with professional design
- */
+const PAGE_META: Record<PageType, { title: string; subtitle: string }> = {
+  dashboard:  { title: 'Dashboard',          subtitle: 'Platform overview & live metrics' },
+  chat:       { title: 'Chat',               subtitle: 'Ask questions about your data' },
+  files:      { title: 'Files & Data',       subtitle: 'Manage uploaded files and data sources' },
+  queries:    { title: 'Query History',      subtitle: 'View and replay previous SQL runs' },
+  settings:   { title: 'Settings',           subtitle: 'Preferences and configuration' },
+  agent:      { title: 'Agent',              subtitle: 'Agentic data engineering — one prompt does it all' },
+  pipelines:  { title: 'ETL Pipelines',      subtitle: 'Build, run, and manage data transformation pipelines' },
+  streaming:  { title: 'Streaming',          subtitle: 'Real-time data streaming with live metrics' },
+};
+
+const NAV_ITEMS = [
+  { id: 'dashboard', label: 'Dashboard', href: '#' },
+  { id: 'chat',      label: 'Chat',      href: '#' },
+  { id: 'files',     label: 'Files & Data', href: '#' },
+  { id: 'queries',   label: 'Query History', href: '#' },
+  { id: 'agent',     label: 'Agent',     href: '#' },
+  { id: 'pipelines', label: 'ETL Pipelines', href: '#' },
+  { id: 'streaming', label: 'Streaming', href: '#' },
+];
+
 const AppLayout: React.FC<AppLayoutProps> = ({ children, currentPage, onPageChange }) => {
-  const [sidebarCollapsed] = React.useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const systemHealth = useSystemHealth();
 
-  const notificationCount = 0; // Real notifications not yet implemented
-
-  const sidebarItems: SidebarItem[] = [
-    {
-      id: 'dashboard',
-      label: 'Dashboard',
-      icon: '📊',
-      href: '#',
-    },
-    {
-      id: 'chat',
-      label: 'Chat',
-      icon: '💬',
-      href: '#',
-    },
-    {
-      id: 'files',
-      label: 'Files & Data',
-      icon: '📁',
-      href: '#',
-    },
-    {
-      id: 'queries',
-      label: 'Query History',
-      icon: '📋',
-      href: '#',
-    },
-    {
-      id: 'agent',
-      label: 'Agent',
-      icon: '🤖',
-      href: '#',
-    },
-    {
-      id: 'pipelines',
-      label: 'ETL Pipelines',
-      icon: '⚙️',
-      href: '#',
-    },
-    {
-      id: 'streaming',
-      label: 'Streaming',
-      icon: '🌊',
-      href: '#',
-    },
-  ];
-
-  const getPageTitle = (): { title: string; subtitle: string } => {
-    const titles: Record<PageType, { title: string; subtitle: string }> = {
-      dashboard: {
-        title: 'Dashboard',
-        subtitle: 'Welcome back! Here\'s your analytics overview.',
-      },
-      chat: {
-        title: 'Chat',
-        subtitle: 'Ask questions about your data',
-      },
-      files: {
-        title: 'Files & Data',
-        subtitle: 'Manage your uploaded files and data sources',
-      },
-      queries: {
-        title: 'Query History',
-        subtitle: 'View and manage your previous queries',
-      },
-      settings: {
-        title: 'Settings',
-        subtitle: 'Manage your preferences and configurations',
-      },
-      agent: {
-        title: 'Agent',
-        subtitle: 'Agentic data engineering — one prompt does it all',
-      },
-      pipelines: {
-        title: 'ETL Pipelines',
-        subtitle: 'Build, run, and manage data transformation pipelines',
-      },
-      streaming: {
-        title: 'Streaming Pipelines',
-        subtitle: 'Real-time data streaming with temporal windows and live metrics',
-      },
-    };
-    return titles[currentPage as PageType];
-  };
-
-  const pageInfo = getPageTitle();
-  const systemStatus = systemHealth.isOnline ? 'All systems online' : 'Offline';
+  const { title, subtitle } = PAGE_META[currentPage] ?? PAGE_META.dashboard;
 
   return (
     <div className="app-shell">
-      {/* Sidebar */}
       <Sidebar
-        items={sidebarItems}
+        items={NAV_ITEMS}
         activeItem={currentPage}
         onItemClick={(id) => onPageChange(id as PageType)}
         collapsed={sidebarCollapsed}
+        onCollapsedChange={setSidebarCollapsed}
         onSettingsClick={() => onPageChange('settings')}
       />
 
-      {/* Main Content Area */}
       <div className="app-shell__content">
-        {/* Header */}
         <Header
-          title={pageInfo.title}
-          subtitle={pageInfo.subtitle}
-          breadcrumbs={[
-            { label: 'Home' },
-            { label: pageInfo.title },
-          ]}
-          searchable={currentPage === 'chat' || currentPage === 'files'}
-          onSearch={() => { /* search handled at page level */ }}
-          notificationCount={notificationCount}
+          title={title}
+          subtitle={subtitle}
+          breadcrumbs={[{ label: 'AURA' }, { label: title }]}
+          searchable
+          isOnline={systemHealth.isOnline}
           actions={
-            <>
-              <span className="app-header__status-badge">
-                System status: {systemStatus}
-              </span>
-              <Button
-                size="md"
-                variant="primary"
-                leftIcon="+"
-                onClick={() => onPageChange('files')}
-              >
-                New
-              </Button>
-            </>
+            <Button
+              size="sm"
+              variant="primary"
+              leftIcon={
+                <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+                  <path d="M6 1v10M1 6h10" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/>
+                </svg>
+              }
+              onClick={() => onPageChange('files')}
+            >
+              New
+            </Button>
           }
         />
 
-        {/* Page Content */}
         <main className="app-shell__main">
           <div className="app-shell__main-inner">
             {children}

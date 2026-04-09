@@ -1,7 +1,6 @@
 import React, { useState } from 'react';
-import '../../styles/design-system.css';
-import '../../styles/components.css';
 import './Header.css';
+import './AppLayout.css';
 
 interface HeaderProps {
   title: string;
@@ -11,91 +10,99 @@ interface HeaderProps {
   searchable?: boolean;
   onSearch?: (query: string) => void;
   notificationCount?: number;
-  userMenu?: React.ReactNode;
+  isOnline?: boolean;
 }
 
-/**
- * Enterprise Header/Top Navigation Bar
- * Uses CSS classes for responsive scaling at all viewport widths.
- */
+const BellIcon = () => (
+  <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+    <path d="M8 1.5A4.5 4.5 0 003.5 6v3.5L2 11h12l-1.5-1.5V6A4.5 4.5 0 008 1.5z" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round"/>
+    <path d="M6.5 13a1.5 1.5 0 003 0" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/>
+  </svg>
+);
+
+const SearchIcon = () => (
+  <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+    <circle cx="6" cy="6" r="4.5" stroke="currentColor" strokeWidth="1.3"/>
+    <path d="M9.5 9.5l2.5 2.5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/>
+  </svg>
+);
+
 export const Header: React.FC<HeaderProps> = ({
   title,
-  subtitle,
   breadcrumbs,
   actions,
-  searchable = false,
+  searchable = true,
   onSearch,
   notificationCount,
-  userMenu,
+  isOnline = true,
 }) => {
-  const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
-
-  const handleSearch = (query: string) => {
-    setSearchQuery(query);
-    onSearch?.(query);
-  };
 
   return (
     <header className="app-header">
       <div className="app-header__inner">
-        {/* Left Section – Title & Breadcrumbs (shrinks gracefully) */}
+
+        {/* Left: breadcrumbs + title */}
         <div className="app-header__left">
-          {breadcrumbs && breadcrumbs.length > 0 && (
+          {breadcrumbs && breadcrumbs.length > 1 && (
             <div className="app-header__breadcrumbs">
-              {breadcrumbs.map((item, index) => (
-                <React.Fragment key={index}>
-                  {index > 0 && <span>/</span>}
-                  {item.href ? (
-                    <a href={item.href}>{item.label}</a>
-                  ) : (
-                    <span>{item.label}</span>
-                  )}
+              {breadcrumbs.map((item, i) => (
+                <React.Fragment key={i}>
+                  {i > 0 && <span>/</span>}
+                  {item.href
+                    ? <a href={item.href}>{item.label}</a>
+                    : <span style={{ color: i === breadcrumbs.length - 1 ? 'var(--text-secondary)' : undefined }}>{item.label}</span>
+                  }
                 </React.Fragment>
               ))}
             </div>
           )}
           <h1 className="app-header__title">{title}</h1>
-          {subtitle && <p className="app-header__subtitle">{subtitle}</p>}
         </div>
 
-        {/* Middle Section – Search (fixed width, collapses on small screens) */}
+        {/* Center: search */}
         {searchable && (
-          <div className="app-header__search">
-            {searchOpen ? (
-              <input
-                autoFocus
-                type="text"
-                className="app-header__search-input"
-                placeholder="Search..."
-                value={searchQuery}
-                onChange={(e) => handleSearch(e.target.value)}
-                onBlur={() => !searchQuery && setSearchOpen(false)}
-              />
-            ) : (
-              <button
-                className="app-header__search-btn"
-                onClick={() => setSearchOpen(true)}
-                title="Search"
-              >
-                🔍
-              </button>
-            )}
+          <div className="app-header__search-wrapper">
+            <span className="app-header__search-icon">
+              <SearchIcon />
+            </span>
+            <input
+              type="search"
+              className="app-header__search-input"
+              placeholder="Search…"
+              value={searchQuery}
+              onChange={(e) => {
+                setSearchQuery(e.target.value);
+                onSearch?.(e.target.value);
+              }}
+            />
           </div>
         )}
 
-        {/* Right Section – Notifications + Actions (never shrinks) */}
+        {/* Right: status + notifications + actions + avatar */}
         <div className="app-header__right">
-          <button className="app-header__notification-btn" title="Notifications">
-            🔔
+          <div className="app-header__status-badge">
+            <span
+              className={`status-dot ${isOnline ? 'status-dot--live' : 'status-dot--offline'}`}
+              style={{ width: 6, height: 6 }}
+            />
+            <span>{isOnline ? 'Online' : 'Offline'}</span>
+          </div>
+
+          <button className="app-header__icon-btn" title="Notifications" aria-label="Notifications">
+            <BellIcon />
             {notificationCount != null && notificationCount > 0 && (
               <span className="app-header__notification-badge">{notificationCount}</span>
             )}
           </button>
 
-          {actions && <div className="app-header__actions">{actions}</div>}
+          {actions && (
+            <div className="app-header__actions">{actions}</div>
+          )}
 
-          {userMenu && userMenu}
+          <div className="app-header__avatar" title="User account">
+            AU
+          </div>
         </div>
       </div>
     </header>
