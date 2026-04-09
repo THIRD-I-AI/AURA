@@ -67,6 +67,53 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
         return response
 
 
+# ── API Key Authentication Middleware ────────────────────────────────
+
+# Paths that never require authentication
+_PUBLIC_PATHS = {"/health", "/healthz", "/ready", "/docs", "/openapi.json", "/redoc"}
+
+
+class APIKeyMiddleware(BaseHTTPMiddleware):
+    """Opt-in API key gate.
+
+    When ``api_key`` is set (non-empty), every request must include::
+
+        X-API-Key: <the-configured-key>
+
+    Health and OpenAPI doc endpoints are always public.
+    """
+
+    def __init__(self, app, api_key: str) -> None:
+        super().__init__(app)
+        self._api_key = api_key
+
+    async def dispatch(self, request: Request, call_next: Callable):
+        # Always allow public paths
+        if request.url.path in _PUBLIC_PATHS:
+            return await call_next(request)
+
+        # Allow CORS preflight
+        if request.method == "OPTIONS":
+            return await call_next(request)
+
+        supplied = request.headers.get("X-API-Key", "")
+        if supplied != self._api_key:
+            logger.warning(
+                "API key rejected for %s %s (from %s)",
+                request.method,
+                request.url.path,
+                request.client.host if request.client else "unknown",
+            )
+            return JSONResponse(
+                status_code=401,
+                content={"error": "UNAUTHORIZED", "message": "Invalid or missing API key"},
+            )
+
+        return await call_next(request)
+
+
+
+
 # ── Exception Handlers ──────────────────────────────────────────────────
 
 def register_exception_handlers(app: FastAPI) -> None:

@@ -11,9 +11,11 @@ Pluggable sources that yield StreamEvent objects:
 from pipeline.streaming.sources.base import BaseSource
 from pipeline.streaming.sources.simulated import SimulatedSource
 from pipeline.streaming.sources.file_watcher import FileWatcherSource
+from pipeline.streaming.sources.kafka_source import KafkaSource
 
 __all__ = [
     "BaseSource",
     "SimulatedSource",
     "FileWatcherSource",
+    "KafkaSource",
 ]

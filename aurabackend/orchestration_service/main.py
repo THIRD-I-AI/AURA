@@ -7,7 +7,6 @@ import sys
 from fastapi import HTTPException, status
 
 # Add parent directory to path
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from shared.service_factory import create_service
 from shared.config import settings

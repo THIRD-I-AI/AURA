@@ -4,7 +4,6 @@ import sys
 from typing import Any
 
 # Add parent directory to path
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
 
 from shared.llm_provider import get_llm
 from shared.models import ValidationResult

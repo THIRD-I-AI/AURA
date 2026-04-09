@@ -17,7 +17,6 @@ import logging
 from typing import Any, Dict, Optional
 
 import sys, os
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from agents.base import AgentContext, AgentResult, AgentStatus, BaseAgent, Severity
 from uasr.models import DiagnosisResult, DriftDetectionResult, DriftType

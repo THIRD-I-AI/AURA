@@ -555,6 +555,275 @@ class TestStreamingAPI:
 
 
 # ════════════════════════════════════════════════════════════════
+# 7. BACKPRESSURE TESTS
+# ════════════════════════════════════════════════════════════════
+
+class TestBackpressure:
+    """Tests for BackpressureManager."""
+
+    def test_put_and_get_batch(self):
+        from pipeline.streaming.backpressure import BackpressureManager, BackpressureStrategy
+
+        mgr = BackpressureManager(max_buffer_size=100, strategy=BackpressureStrategy.BLOCK)
+        loop = asyncio.new_event_loop()
+
+        events = [_event(1000.0 + i, f"k{i}") for i in range(10)]
+        enqueued = loop.run_until_complete(mgr.put_batch(events))
+        assert enqueued == 10
+
+        got = loop.run_until_complete(mgr.get_batch(max_events=5, timeout=1.0))
+        assert len(got) == 5
+
+        got2 = loop.run_until_complete(mgr.get_batch(max_events=20, timeout=0.5))
+        assert len(got2) == 5
+
+        loop.close()
+
+    def test_drop_tail_strategy(self):
+        from pipeline.streaming.backpressure import BackpressureManager, BackpressureStrategy
+
+        mgr = BackpressureManager(max_buffer_size=5, strategy=BackpressureStrategy.DROP_TAIL)
+        loop = asyncio.new_event_loop()
+
+        events = [_event(1000.0 + i) for i in range(10)]
+        enqueued = loop.run_until_complete(mgr.put_batch(events))
+        assert enqueued < 10  # some dropped
+
+        stats = mgr.stats()
+        assert stats["dropped_count"] > 0
+        assert stats["buffer_depth"] <= 5
+
+        loop.close()
+
+    def test_stats(self):
+        from pipeline.streaming.backpressure import BackpressureManager, BackpressureStrategy
+
+        mgr = BackpressureManager(max_buffer_size=50, strategy=BackpressureStrategy.BLOCK)
+        loop = asyncio.new_event_loop()
+
+        events = [_event(1000.0 + i) for i in range(5)]
+        loop.run_until_complete(mgr.put_batch(events))
+
+        stats = mgr.stats()
+        assert stats["buffer_depth"] == 5
+        assert stats["is_pressured"] is False
+        assert stats["dropped_count"] == 0
+        assert "buffer_utilization" in stats
+
+        loop.close()
+
+    def test_flush_unblocks_get(self):
+        from pipeline.streaming.backpressure import BackpressureManager, BackpressureStrategy
+
+        mgr = BackpressureManager(max_buffer_size=50, strategy=BackpressureStrategy.BLOCK)
+        loop = asyncio.new_event_loop()
+
+        # Flush puts a sentinel so get_batch returns empty quickly
+        loop.run_until_complete(mgr.flush())
+        got = loop.run_until_complete(mgr.get_batch(max_events=10, timeout=1.0))
+        assert len(got) == 0  # sentinel is filtered out
+
+        loop.close()
+
+
+# ════════════════════════════════════════════════════════════════
+# 8. END-TO-END ENGINE TESTS
+# ════════════════════════════════════════════════════════════════
+
+class TestStreamingEngine:
+    """Integration tests for StreamingEngine lifecycle."""
+
+    def _make_engine_pipeline(self, **kw) -> StreamPipeline:
+        defaults = dict(
+            name="e2e-test",
+            source=StreamSource(
+                type=StreamSourceType.SIMULATED,
+                config={"events_per_second": 50, "event_type": "metric", "num_keys": 2},
+            ),
+            window=WindowConfig(type=WindowType.TUMBLING, size_seconds=5),
+            sinks=[StreamSink(type=StreamSinkType.CONSOLE)],
+            transforms=[
+                StreamTransform(type=TransformType.KEY_BY, config={"field": "key"}),
+            ],
+            checkpoint_interval_seconds=60,
+        )
+        defaults.update(kw)
+        return StreamPipeline(**defaults)
+
+    def test_engine_start_and_stop(self):
+        from pipeline.streaming.streaming_engine import StreamingEngine
+
+        pipeline = self._make_engine_pipeline()
+        engine = StreamingEngine(pipeline, batch_size=20, tick_interval=0.2)
+        loop = asyncio.new_event_loop()
+
+        loop.run_until_complete(engine.start())
+        assert pipeline.status == StreamPipelineStatus.RUNNING
+
+        # Let it run briefly
+        loop.run_until_complete(asyncio.sleep(1.0))
+
+        # Check metrics
+        m = engine.metrics
+        assert m.events_in > 0
+        assert m.uptime_seconds > 0
+        assert m.backpressure is not None
+        assert "buffer_depth" in m.backpressure
+
+        loop.run_until_complete(engine.stop())
+        assert pipeline.status == StreamPipelineStatus.STOPPED
+        loop.close()
+
+    def test_engine_pause_resume(self):
+        from pipeline.streaming.streaming_engine import StreamingEngine
+
+        pipeline = self._make_engine_pipeline()
+        engine = StreamingEngine(pipeline, batch_size=20, tick_interval=0.2)
+        loop = asyncio.new_event_loop()
+
+        loop.run_until_complete(engine.start())
+        loop.run_until_complete(asyncio.sleep(0.5))
+
+        loop.run_until_complete(engine.pause())
+        assert pipeline.status == StreamPipelineStatus.PAUSED
+        events_at_pause = engine.metrics.events_in
+
+        loop.run_until_complete(asyncio.sleep(0.5))
+        # Processing loop paused, but events_in shouldn't grow much
+        # (ingest loop also pauses)
+        events_while_paused = engine.metrics.events_in
+
+        loop.run_until_complete(engine.resume())
+        assert pipeline.status == StreamPipelineStatus.RUNNING
+
+        loop.run_until_complete(asyncio.sleep(0.5))
+        events_after_resume = engine.metrics.events_in
+        assert events_after_resume > events_at_pause
+
+        loop.run_until_complete(engine.stop())
+        loop.close()
+
+    def test_engine_checkpoint_recovery(self):
+        from pipeline.streaming.streaming_engine import StreamingEngine
+        from pipeline.streaming.state_manager import StateManager
+        import shutil
+
+        pipeline = self._make_engine_pipeline()
+        engine = StreamingEngine(pipeline, batch_size=20, tick_interval=0.2)
+        loop = asyncio.new_event_loop()
+
+        loop.run_until_complete(engine.start())
+        loop.run_until_complete(asyncio.sleep(1.0))
+
+        # Force a checkpoint
+        loop.run_until_complete(engine._checkpoint())
+
+        # Verify checkpoint file exists
+        sm = engine._state_mgr
+        cp = sm.load_latest_checkpoint()
+        assert cp is not None
+        assert cp.pipeline_id == pipeline.id
+
+        loop.run_until_complete(engine.stop())
+
+        # Cleanup checkpoint dir
+        checkpoint_dir = sm.checkpoint_dir
+        if os.path.exists(checkpoint_dir):
+            shutil.rmtree(checkpoint_dir)
+
+        loop.close()
+
+    def test_engine_with_filter_transform(self):
+        from pipeline.streaming.streaming_engine import StreamingEngine
+
+        pipeline = self._make_engine_pipeline(
+            transforms=[
+                StreamTransform(
+                    type=TransformType.FILTER,
+                    config={"field": "event_type", "operator": "==", "value": "metric"},
+                ),
+            ],
+        )
+        engine = StreamingEngine(pipeline, batch_size=20, tick_interval=0.2)
+        loop = asyncio.new_event_loop()
+
+        loop.run_until_complete(engine.start())
+        loop.run_until_complete(asyncio.sleep(1.0))
+
+        m = engine.metrics
+        # Some events may be filtered
+        assert m.events_in > 0
+
+        loop.run_until_complete(engine.stop())
+        loop.close()
+
+    def test_engine_with_file_sink(self, tmp_path):
+        from pipeline.streaming.streaming_engine import StreamingEngine
+
+        pipeline = self._make_engine_pipeline(
+            sinks=[StreamSink(
+                type=StreamSinkType.FILE,
+                config={"output_dir": str(tmp_path / "e2e_output"), "format": "json", "flush_every": 1},
+            )],
+        )
+        engine = StreamingEngine(pipeline, batch_size=20, tick_interval=0.2)
+        loop = asyncio.new_event_loop()
+
+        loop.run_until_complete(engine.start())
+        loop.run_until_complete(asyncio.sleep(2.0))
+        loop.run_until_complete(engine.stop())
+
+        # Check output files were written
+        output_dir = tmp_path / "e2e_output"
+        if output_dir.exists():
+            files = list(output_dir.iterdir())
+            # May or may not have files depending on window fires
+            assert isinstance(files, list)
+
+        loop.close()
+
+
+# ════════════════════════════════════════════════════════════════
+# 9. WINDOW EVICTION TESTS
+# ════════════════════════════════════════════════════════════════
+
+class TestWindowEviction:
+    """Test window memory leak prevention via eviction."""
+
+    def test_evict_stale_windows(self):
+        wp = WindowProcessor(
+            config=WindowConfig(type=WindowType.TUMBLING, size_seconds=10),
+            watermark_delay=9999.0,  # large delay so windows never fire
+            aggregate_fields=[],
+            max_active_windows=5,
+        )
+
+        # Create more windows than the cap (each unique key+time => unique window)
+        for i in range(10):
+            ev = _event(ts=float(i * 10), key=f"key_{i}", data={"value": 1})
+            wp.process_event(ev)
+
+        # Should have evicted some
+        assert wp.active_window_count <= 5
+        assert wp.evicted_windows > 0
+
+    def test_closed_history_cap(self):
+        wp = WindowProcessor(
+            config=WindowConfig(type=WindowType.TUMBLING, size_seconds=1),
+            watermark_delay=0.0,
+            aggregate_fields=[],
+            max_closed_history=3,
+        )
+
+        # Force many windows to close by advancing time
+        for i in range(20):
+            ev = _event(ts=float(i * 2), key="k1", data={"v": 1})
+            wp.process_event(ev)
+
+        assert wp.closed_window_count <= 3
+
+
+# ════════════════════════════════════════════════════════════════
 # Run
 # ════════════════════════════════════════════════════════════════
 

@@ -10,7 +10,6 @@ import numpy as np
 from fastapi import Body, Depends, FastAPI, HTTPException, Query
 
 # Add parent directory to path
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from metadata_store.db import init_db
 from metadata_store.repository import MetadataRepository, get_repository

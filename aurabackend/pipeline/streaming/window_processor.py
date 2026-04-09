@@ -16,6 +16,7 @@ Features:
 """
 from __future__ import annotations
 
+import logging
 import math
 import time
 from collections import defaultdict
@@ -35,6 +36,9 @@ def _window_key(event_key: Optional[str], window_start: float, window_end: float
     return f"{event_key or '__global__'}|{window_start:.0f}-{window_end:.0f}"
 
 
+logger = logging.getLogger("aura.streaming.window_processor")
+
+
 class WindowProcessor:
     """
     Stateful window processor with event-time semantics.
@@ -51,6 +55,8 @@ class WindowProcessor:
         config: WindowConfig,
         watermark_delay: float = 10.0,
         aggregate_fields: Optional[List[Dict[str, str]]] = None,
+        max_active_windows: int = 50_000,
+        max_closed_history: int = 500,
     ):
         self.config = config
         self.watermark_delay = watermark_delay
@@ -61,9 +67,14 @@ class WindowProcessor:
         self._watermark: float = 0.0
         self._closed_windows: List[WindowState] = []
 
+        # Memory limits
+        self._max_active_windows = max_active_windows
+        self._max_closed_history = max_closed_history
+
         # Metrics
         self.late_events = 0
         self.total_events = 0
+        self.evicted_windows = 0
 
     @property
     def watermark(self) -> float:
@@ -304,10 +315,33 @@ class WindowProcessor:
         for ws in fired:
             self._windows.pop(ws.window_key, None)
 
-        if len(self._closed_windows) > 1000:
-            self._closed_windows = self._closed_windows[-500:]
+        if len(self._closed_windows) > self._max_closed_history:
+            self._closed_windows = self._closed_windows[-self._max_closed_history:]
+
+        # Evict stale active windows if we exceed memory limit
+        self._evict_stale_windows()
 
         return fired
+
+    def _evict_stale_windows(self) -> None:
+        """Remove the oldest active windows when count exceeds the cap."""
+        if len(self._windows) <= self._max_active_windows:
+            return
+
+        # Sort active windows by last_event_time, evict the oldest
+        active = [(k, ws) for k, ws in self._windows.items() if not ws.is_closed]
+        active.sort(key=lambda x: x[1].last_event_time)
+
+        evict_count = len(self._windows) - self._max_active_windows
+        for k, ws in active[:evict_count]:
+            del self._windows[k]
+            self.evicted_windows += 1
+
+        if evict_count > 0:
+            logger.warning(
+                "Window eviction: removed %d stale windows (active=%d, cap=%d)",
+                evict_count, len(self._windows), self._max_active_windows,
+            )
 
     # ── Serialisation for Checkpointing ───────────────────────────
 

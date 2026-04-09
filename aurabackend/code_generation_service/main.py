@@ -7,7 +7,6 @@ from typing import Any, Dict
 from fastapi import HTTPException
 
 # Add parent directory to path
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from shared.service_factory import create_service
 from shared.logging_config import get_logger

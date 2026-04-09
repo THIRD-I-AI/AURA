@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import uuid
-from typing import Any, AsyncGenerator, Iterable, List, Optional
+from typing import Any, AsyncGenerator, Dict, Iterable, List, Optional
 
 import numpy as np
 from sqlalchemy import select
