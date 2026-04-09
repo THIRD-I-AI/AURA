@@ -5,7 +5,7 @@ Stores scheduled jobs, execution history, and logs
 
 from sqlalchemy import Column, String, Integer, Boolean, DateTime, Text, JSON, Enum as SQLEnum
 from sqlalchemy.ext.declarative import declarative_base
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 
 Base = declarative_base()
@@ -52,11 +52,15 @@ class ScheduledJob(Base):
     max_retries = Column(Integer, default=3)
     retry_delay_seconds = Column(Integer, default=60)
     
+    # Job dependency DAG
+    depends_on = Column(JSON, nullable=True)  # List[str] of job IDs that must succeed first
+    on_failure_action = Column(String(32), default="abort")  # abort | continue | retry_upstream
+
     # Output configuration
     store_results = Column(Boolean, default=True)
     result_retention_days = Column(Integer, default=30)
     notification_emails = Column(JSON, nullable=True)  # List of emails for alerts
-    
+
     # Status
     is_active = Column(Boolean, default=True)
     last_execution_time = Column(DateTime, nullable=True)
@@ -64,8 +68,8 @@ class ScheduledJob(Base):
     
     # Metadata
     created_by = Column(String(100), nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
 
 class JobExecution(Base):
@@ -94,7 +98,7 @@ class JobExecution(Base):
     # Metadata
     triggered_by = Column(String(50), default="scheduler")  # scheduler, manual, api
     execution_metadata = Column(JSON, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 
 class ExecutionLog(Base):
@@ -105,7 +109,7 @@ class ExecutionLog(Base):
     execution_id = Column(String(36), nullable=False, index=True)
     
     # Log entry
-    timestamp = Column(DateTime, default=datetime.utcnow)
+    timestamp = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     level = Column(String(20), nullable=False)  # INFO, WARNING, ERROR
     message = Column(Text, nullable=False)
     details = Column(JSON, nullable=True)

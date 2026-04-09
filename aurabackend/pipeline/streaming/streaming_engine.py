@@ -20,7 +20,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional
 
 from pipeline.streaming.models import (
@@ -35,14 +35,17 @@ from pipeline.streaming.models import (
 from pipeline.streaming.sources.base import BaseSource
 from pipeline.streaming.sources.simulated import SimulatedSource
 from pipeline.streaming.sources.file_watcher import FileWatcherSource
+from pipeline.streaming.sources.kafka_source import KafkaSource
 from pipeline.streaming.sinks.base import BaseSink
 from pipeline.streaming.sinks.sse_sink import SSESink
 from pipeline.streaming.sinks.console_sink import ConsoleSink
 from pipeline.streaming.sinks.database_sink import DatabaseSink
 from pipeline.streaming.sinks.file_sink import FileSink
 from pipeline.streaming.sinks.alert_sink import AlertSink
+from pipeline.streaming.sinks.kafka_sink import KafkaSink
 from pipeline.streaming.window_processor import WindowProcessor
 from pipeline.streaming.state_manager import StateManager
+from pipeline.streaming.backpressure import BackpressureManager, BackpressureStrategy
 
 logger = logging.getLogger("aura.streaming.engine")
 
@@ -58,6 +61,8 @@ def _create_source(pipeline: StreamPipeline) -> BaseSource:
         return SimulatedSource(cfg)
     if src.type.value == "file_watcher":
         return FileWatcherSource(cfg)
+    if src.type.value == "kafka":
+        return KafkaSource(cfg)
     raise ValueError(f"Unsupported source type: {src.type}")
 
 
@@ -74,6 +79,8 @@ def _create_sink(sink_def) -> BaseSink:
         return FileSink(cfg)
     if t == "alert":
         return AlertSink(cfg)
+    if t == "kafka":
+        return KafkaSink(cfg)
     raise ValueError(f"Unsupported sink type: {t}")
 
 
@@ -139,6 +146,8 @@ class StreamingEngine:
         pipeline: StreamPipeline,
         batch_size: int = 100,
         tick_interval: float = 0.5,
+        backpressure_buffer: int = 10_000,
+        backpressure_strategy: str = "block",
     ):
         self.pipeline = pipeline
         self.batch_size = batch_size
@@ -149,9 +158,15 @@ class StreamingEngine:
         self._sinks: List[BaseSink] = []
         self._window_proc: Optional[WindowProcessor] = None
         self._state_mgr: Optional[StateManager] = None
+        self._backpressure: Optional[BackpressureManager] = None
+
+        # Backpressure config
+        self._bp_buffer_size = backpressure_buffer
+        self._bp_strategy = BackpressureStrategy(backpressure_strategy)
 
         # Runtime
         self._task: Optional[asyncio.Task] = None
+        self._ingest_task: Optional[asyncio.Task] = None
         self._paused = False
         self._start_time: float = 0.0
 
@@ -170,9 +185,12 @@ class StreamingEngine:
             m.closed_windows = self._window_proc.closed_window_count
         if self._start_time > 0 and self.pipeline.status == StreamPipelineStatus.RUNNING:
             m.uptime_seconds = round(time.time() - self._start_time, 1)
+        if self._backpressure:
+            bp_stats = self._backpressure.stats()
+            m.backpressure = bp_stats
         if self._state_mgr and self._state_mgr.last_checkpoint_time > 0:
-            m.last_checkpoint_at = datetime.utcfromtimestamp(
-                self._state_mgr.last_checkpoint_time
+            m.last_checkpoint_at = datetime.fromtimestamp(
+                self._state_mgr.last_checkpoint_time, tz=timezone.utc
             ).isoformat()
         return m
 
@@ -224,12 +242,19 @@ class StreamingEngine:
                             checkpoint.watermark, len(checkpoint.window_states))
                 self._window_proc.restore_state(checkpoint.window_states, checkpoint.watermark)
                 if self._source:
-                    self._source.commit_offsets(checkpoint.source_offsets)
+                    await self._source.commit_offsets(checkpoint.source_offsets)
 
-            # Start main loop
+            # Backpressure buffer
+            self._backpressure = BackpressureManager(
+                max_buffer_size=self._bp_buffer_size,
+                strategy=self._bp_strategy,
+            )
+
+            # Start main loop + ingest loop
             self.pipeline.status = StreamPipelineStatus.RUNNING
             self._start_time = time.time()
             self._paused = False
+            self._ingest_task = asyncio.create_task(self._ingest_loop())
             self._task = asyncio.create_task(self._run_loop())
             logger.info("Pipeline %s is now RUNNING", self.pipeline.id)
 
@@ -250,13 +275,25 @@ class StreamingEngine:
         self.pipeline.status = StreamPipelineStatus.STOPPING
         logger.info("Stopping pipeline %s ...", self.pipeline.id)
 
-        # Cancel loop
+        # Cancel ingest loop
+        if self._ingest_task and not self._ingest_task.done():
+            self._ingest_task.cancel()
+            try:
+                await self._ingest_task
+            except asyncio.CancelledError:
+                pass
+
+        # Cancel processing loop
         if self._task and not self._task.done():
             self._task.cancel()
             try:
                 await self._task
             except asyncio.CancelledError:
                 pass
+
+        # Flush backpressure buffer
+        if self._backpressure:
+            await self._backpressure.flush()
 
         # Final checkpoint
         await self._checkpoint()
@@ -288,6 +325,26 @@ class StreamingEngine:
         self.pipeline.status = StreamPipelineStatus.RUNNING
         logger.info("Pipeline %s resumed", self.pipeline.id)
 
+    # ── Ingest Loop ────────────────────────────────────────────────
+
+    async def _ingest_loop(self) -> None:
+        """Read from source and push into backpressure buffer."""
+        logger.info("Ingest loop started for %s", self.pipeline.id)
+        try:
+            while True:
+                if self._paused:
+                    await asyncio.sleep(self.tick_interval)
+                    continue
+                events = await self._source.read_batch(self.batch_size)
+                if events:
+                    await self._backpressure.put_batch(events)
+                else:
+                    await asyncio.sleep(self.tick_interval)
+        except asyncio.CancelledError:
+            logger.info("Ingest loop cancelled for %s", self.pipeline.id)
+        except Exception as e:
+            logger.error("Ingest loop error for %s: %s", self.pipeline.id, e, exc_info=True)
+
     # ── Main Loop ─────────────────────────────────────────────────
 
     async def _run_loop(self) -> None:
@@ -300,8 +357,8 @@ class StreamingEngine:
                     await asyncio.sleep(self.tick_interval)
                     continue
 
-                # 1. Read micro-batch from source
-                events = await self._source.read_batch(self.batch_size)
+                # 1. Read micro-batch from backpressure buffer
+                events = await self._backpressure.get_batch(self.batch_size)
 
                 if events:
                     # 2. Apply transforms

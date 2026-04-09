@@ -9,7 +9,7 @@ import csv
 import json
 import logging
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, List
 
 from pipeline.streaming.models import WindowState
@@ -53,7 +53,7 @@ class FileSink(BaseSink):
     async def _flush(self) -> None:
         if not self._buffer:
             return
-        stamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S_%f")
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S_%f")
         if self._format == "csv":
             path = os.path.join(self._output_dir, f"batch_{stamp}.csv")
             fieldnames = list(self._buffer[0].keys())

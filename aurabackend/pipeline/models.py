@@ -11,7 +11,7 @@ Every pipeline is a JSON-serialisable object that can be:
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
@@ -139,7 +139,7 @@ class Pipeline(BaseModel):
     steps: List[ProcessingStep] = Field(default_factory=list)
     sink: PipelineSink
     # Metadata
-    created_at: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
+    created_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     updated_at: Optional[str] = None
     status: PipelineStatus = PipelineStatus.DRAFT
     # Scheduling (optional)
@@ -158,7 +158,7 @@ class PipelineRun(BaseModel):
     run_id: str = Field(default_factory=lambda: f"run_{uuid.uuid4().hex[:8]}")
     pipeline_id: str
     status: PipelineStatus = PipelineStatus.RUNNING
-    started_at: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
+    started_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     finished_at: Optional[str] = None
     # Results
     rows_read: int = 0

@@ -12,7 +12,7 @@ Typed definitions for real-time streaming pipelines:
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
@@ -188,7 +188,7 @@ class StreamPipeline(BaseModel):
 
     # Metadata
     status: StreamPipelineStatus = StreamPipelineStatus.DRAFT
-    created_at: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
+    created_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     updated_at: Optional[str] = None
     tags: List[str] = Field(default_factory=list)
 
@@ -222,6 +222,7 @@ class StreamMetrics(BaseModel):
     closed_windows: int = 0
     last_checkpoint_at: Optional[str] = None
     uptime_seconds: float = 0.0
+    backpressure: Optional[Dict[str, Any]] = None
     errors: List[str] = Field(default_factory=list)
 
 
@@ -229,7 +230,7 @@ class CheckpointData(BaseModel):
     """Serialisable checkpoint for recovery."""
     pipeline_id: str
     checkpoint_id: str = Field(default_factory=lambda: uuid.uuid4().hex[:8])
-    timestamp: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
+    timestamp: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     watermark: float = 0.0
     window_states: List[WindowState] = Field(default_factory=list)
     source_offsets: Dict[str, Any] = Field(default_factory=dict)

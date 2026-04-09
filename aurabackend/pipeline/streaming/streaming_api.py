@@ -13,7 +13,7 @@ from __future__ import annotations
 import asyncio
 import uuid
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException, status
@@ -140,7 +140,7 @@ async def update_pipeline(pipeline_id: str, req: UpdateStreamPipelineRequest):
 
     for field, value in req.model_dump(exclude_none=True).items():
         setattr(pipe, field, value)
-    pipe.updated_at = datetime.utcnow().isoformat()
+    pipe.updated_at = datetime.now(timezone.utc).isoformat()
     return pipe.model_dump()
 
 
