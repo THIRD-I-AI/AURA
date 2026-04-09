@@ -23,11 +23,12 @@ from typing import Any, Dict, List, Optional
 import httpx
 
 from agents.base import AgentContext, AgentResult, AgentStatus, BaseAgent
+from shared.config import settings
 
 logger = logging.getLogger("agents.monitor")
 
-_UASR_URL = "http://localhost:8009"
-_GATEWAY_URL = "http://localhost:8000"
+_UASR_URL = settings.uasr_url
+_GATEWAY_URL = settings.api_gateway_url
 _TIMEOUT = 15.0
 
 
@@ -107,15 +108,16 @@ class MonitorAgent(BaseAgent):
     # ── Service checks ─────────────────────────────────────────────
 
     async def _check_services(self) -> List[Dict[str, Any]]:
+        host = "http://localhost"
         services = {
-            "api_gateway": "http://localhost:8000/health",
-            "code_generation": "http://localhost:8001/health",
-            "database_service": "http://localhost:8002/health",
-            "execution_sandbox": "http://localhost:8003/health",
-            "scheduler": "http://localhost:8004/health",
-            "insights": "http://localhost:8005/health",
-            "metadata_store": "http://localhost:8007/health",
-            "uasr": "http://localhost:8009/health",
+            "api_gateway":      f"{host}:{settings.api_gateway_port}/health",
+            "code_generation":  f"{host}:{settings.code_generation_port}/health",
+            "database_service": f"{host}:{settings.connectors_port}/health",
+            "execution_sandbox":f"{host}:{settings.execution_sandbox_port}/health",
+            "scheduler":        f"{host}:{settings.scheduler_port}/health",
+            "insights":         f"{host}:{settings.insights_port}/health",
+            "metadata_store":   f"{host}:{settings.metadata_store_port}/health",
+            "uasr":             f"{settings.uasr_url}/health",
         }
 
         alerts: List[Dict[str, Any]] = []

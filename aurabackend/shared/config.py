@@ -80,6 +80,7 @@ class AuraSettings(BaseSettings):
     insights_url: str = Field("http://localhost:8005", alias="AURA_INSIGHTS_URL")
     uasr_port: int = Field(8009, alias="UASR_SERVICE_PORT")
     uasr_url: str = Field("http://localhost:8009", alias="AURA_UASR_URL")
+    api_gateway_url: str = Field("http://localhost:8000", alias="AURA_GATEWAY_URL")
 
     # ── CORS ────────────────────────────────────────────────────────────
     cors_origins: List[str] = Field(
