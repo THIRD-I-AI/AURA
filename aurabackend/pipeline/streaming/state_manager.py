@@ -77,12 +77,15 @@ class StateManager:
             metrics_snapshot=metrics,
         )
 
-        # Write to disk
+        # Write to disk atomically: write to .tmp then rename so a crash
+        # mid-write never leaves a corrupt checkpoint file.
         filename = f"chk_{checkpoint.checkpoint_id}_{int(time.time())}.json"
         filepath = os.path.join(self.checkpoint_dir, filename)
+        tmp_path = filepath + ".tmp"
 
-        with open(filepath, "w", encoding="utf-8") as f:
+        with open(tmp_path, "w", encoding="utf-8") as f:
             json.dump(checkpoint.model_dump(), f, default=str)
+        os.replace(tmp_path, filepath)  # atomic on POSIX; best-effort on Windows
 
         self._last_checkpoint_time = time.time()
         logger.info(
