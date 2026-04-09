@@ -1,256 +1,97 @@
-/* ============================================================
-   Settings Page — AURA Design System
-   ============================================================ */
+/* Settings — Dark enterprise theme */
 
 .settings-page {
-  width: 100%;
-  min-height: 100%;
-}
-
-.settings-container {
-  max-width: 900px;
-  margin: 0 auto;
-}
-
-.settings-header {
-  margin-bottom: var(--space-8);
-}
-
-.settings-title {
-  font-size: var(--font-2xl);
-  font-weight: var(--weight-bold);
-  color: var(--text-primary);
-  margin: 0 0 var(--space-1) 0;
-}
-
-.settings-subtitle {
-  color: var(--text-secondary);
-  font-size: var(--font-sm);
-  margin: 0;
-}
-
-/* Grid */
-.settings-grid {
+  max-width: 800px;
   display: flex;
   flex-direction: column;
-  gap: var(--space-6);
+  gap: var(--space-5);
 }
 
-/* Section */
 .settings-section {
-  background: var(--bg-primary);
+  background: var(--bg-surface);
   border: 1px solid var(--border-default);
-  border-radius: var(--radius-xl);
-  padding: var(--space-6);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
 }
 
-.settings-section.settings-danger {
-  border-color: var(--color-error-200);
+.settings-section__header {
+  padding: var(--space-4) var(--space-5);
+  border-bottom: 1px solid var(--border-subtle);
 }
 
-.settings-section-title {
-  font-size: var(--font-lg);
+.settings-section__title {
+  font-size: var(--font-base);
   font-weight: var(--weight-semibold);
   color: var(--text-primary);
-  margin: 0 0 var(--space-1) 0;
-}
-
-.settings-section-desc {
-  color: var(--text-tertiary);
-  font-size: var(--font-sm);
-  margin: 0 0 var(--space-5) 0;
-}
-
-/* Fields */
-.settings-field {
-  margin-bottom: var(--space-5);
-}
-
-.settings-label {
-  display: block;
-  font-size: var(--font-sm);
-  font-weight: var(--weight-medium);
-  color: var(--text-primary);
-  margin-bottom: var(--space-2);
-}
-
-.settings-input-row {
-  display: flex;
-  gap: var(--space-3);
-}
-
-.settings-input {
-  flex: 1;
-  padding: var(--space-3) var(--space-4);
-  background: var(--bg-secondary);
-  border: 1px solid var(--border-default);
-  border-radius: var(--radius-md);
-  color: var(--text-primary);
-  font-size: var(--font-sm);
-  font-family: var(--font-mono);
-  transition: border-color var(--transition-fast);
-}
-
-.settings-input:focus {
-  outline: none;
-  border-color: var(--color-primary-400);
-  box-shadow: 0 0 0 3px rgba(15, 108, 189, 0.15);
-}
-
-/* Health Badge */
-.settings-health-badge {
-  margin-top: var(--space-3);
-  padding: var(--space-2) var(--space-4);
-  border-radius: var(--radius-md);
-  font-size: var(--font-sm);
-  font-weight: var(--weight-medium);
-}
-
-.settings-health-badge.healthy {
-  background: var(--color-success-50);
-  color: var(--color-success-700);
-  border: 1px solid var(--color-success-200);
-}
-
-.settings-health-badge.degraded {
-  background: var(--color-warning-50);
-  color: var(--color-warning-600);
-  border: 1px solid var(--color-warning-200);
-}
-
-.settings-health-badge.down {
-  background: var(--color-error-50);
-  color: var(--color-error-700);
-  border: 1px solid var(--color-error-200);
-}
-
-/* Buttons */
-.settings-actions {
-  display: flex;
-  justify-content: flex-end;
-}
-
-.settings-btn-primary {
-  padding: var(--space-3) var(--space-6);
-  background: var(--color-primary-500);
-  color: white;
-  border: none;
-  border-radius: var(--radius-md);
-  font-size: var(--font-sm);
-  font-weight: var(--weight-semibold);
-  cursor: pointer;
-  transition: all var(--transition-fast);
-}
-
-.settings-btn-primary:hover {
-  background: var(--color-primary-600);
-}
-
-.settings-btn-secondary {
-  padding: var(--space-3) var(--space-5);
-  background: var(--bg-tertiary);
-  color: var(--text-primary);
-  border: 1px solid var(--border-default);
-  border-radius: var(--radius-md);
-  font-size: var(--font-sm);
-  font-weight: var(--weight-medium);
-  cursor: pointer;
-  transition: all var(--transition-fast);
-  white-space: nowrap;
-}
-
-.settings-btn-secondary:hover {
-  background: var(--bg-secondary);
-  border-color: var(--color-primary-400);
-}
-
-.settings-btn-secondary:disabled {
-  opacity: 0.6;
-  cursor: not-allowed;
-}
-
-.settings-btn-danger {
-  padding: var(--space-2) var(--space-5);
-  background: var(--color-error-50);
-  color: var(--color-error-700);
-  border: 1px solid var(--color-error-200);
-  border-radius: var(--radius-md);
-  font-size: var(--font-sm);
-  font-weight: var(--weight-semibold);
-  cursor: pointer;
-  transition: all var(--transition-fast);
-  white-space: nowrap;
-}
-
-.settings-btn-danger:hover {
-  background: var(--color-error-500);
-  color: white;
-  border-color: var(--color-error-500);
-}
-
-/* Option Rows */
-.settings-option-row {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: var(--space-4) 0;
-  border-bottom: 1px solid var(--border-default);
-}
-
-.settings-option-row:last-child {
-  border-bottom: none;
-  padding-bottom: 0;
-}
-
-.settings-option-label {
-  font-size: var(--font-sm);
-  font-weight: var(--weight-medium);
-  color: var(--text-primary);
-  margin: 0 0 var(--space-1) 0;
-}
-
-.settings-option-hint {
-  font-size: var(--font-xs);
-  color: var(--text-tertiary);
   margin: 0;
 }
 
-.settings-option-value {
-  font-size: var(--font-sm);
-  font-weight: var(--weight-semibold);
-  color: var(--text-secondary);
-  background: var(--bg-tertiary);
-  padding: var(--space-1) var(--space-3);
-  border-radius: var(--radius-full);
-}
-
-/* Info Grid */
-.settings-info-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: var(--space-4);
-}
-
-.settings-info-item {
-  padding: var(--space-4);
-  background: var(--bg-secondary);
-  border-radius: var(--radius-lg);
-  border: 1px solid var(--border-default);
-}
-
-.settings-info-label {
-  display: block;
+.settings-section__desc {
   font-size: var(--font-xs);
   color: var(--text-tertiary);
-  font-weight: var(--weight-semibold);
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  margin-bottom: var(--space-1);
+  margin-top: 2px;
 }
 
-.settings-info-value {
-  display: block;
+.settings-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+  padding: var(--space-4) var(--space-5);
+  border-bottom: 1px solid var(--border-hairline);
+}
+.settings-row:last-child { border-bottom: none; }
+
+.settings-row__label {
   font-size: var(--font-sm);
   color: var(--text-primary);
   font-weight: var(--weight-medium);
 }
+
+.settings-row__hint {
+  font-size: var(--font-xs);
+  color: var(--text-tertiary);
+  margin-top: 2px;
+}
+
+.settings-row__control { flex-shrink: 0; }
+
+/* Health grid */
+.health-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: var(--space-3);
+  padding: var(--space-4) var(--space-5);
+}
+
+.health-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2-5);
+  padding: var(--space-3);
+  background: var(--bg-surface-2);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+}
+
+.health-item__name { font-size: var(--font-sm); color: var(--text-secondary); font-weight: 500; }
+
+.health-badge { font-size: 10px; font-weight: 700; padding: 2px 7px; border-radius: var(--radius-full); border: 1px solid; margin-left: auto; }
+.health-badge--healthy  { background: var(--green-dim);  color: #34d399; border-color: var(--green-border); }
+.health-badge--degraded { background: var(--yellow-dim); color: #fbbf24; border-color: var(--yellow-border); }
+.health-badge--down     { background: var(--red-dim);    color: #f87171; border-color: var(--red-border); }
+
+/* Info grid */
+.info-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-3);
+  padding: var(--space-4) var(--space-5);
+}
+.info-item__label { font-size: 11px; color: var(--text-tertiary); text-transform: uppercase; letter-spacing: 0.07em; font-weight: 600; margin-bottom: 3px; }
+.info-item__value { font-size: var(--font-sm); color: var(--text-secondary); font-family: var(--font-mono); }
+
+/* Danger zone */
+.danger-zone { border-color: var(--red-border); }
+.danger-zone .settings-section__header { background: var(--red-dim); border-bottom-color: var(--red-border); }
+.danger-zone .settings-section__title  { color: #f87171; }
