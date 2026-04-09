@@ -72,6 +72,7 @@ export interface DataSource {
 export interface DashboardStats {
   total_rows: number;
   active_sources: number;
+  file_sources?: number;
   queries_run: number;
   system_health: 'healthy' | 'degraded' | 'down';
   uptime_percentage?: number;
@@ -853,7 +854,7 @@ export const streamingService = {
   },
 
   /** Create a new streaming pipeline */
-  async create(pipeline: Partial<StreamPipelineDef>): Promise<StreamPipelineDef> {
+  async create(pipeline: Omit<StreamPipelineDef, 'id' | 'status' | 'created_at' | 'updated_at' | 'metrics'> | Partial<StreamPipelineDef>): Promise<StreamPipelineDef> {
     return client.post('/streaming/pipelines', pipeline);
   },
 
