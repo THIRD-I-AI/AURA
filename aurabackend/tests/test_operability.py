@@ -6,7 +6,7 @@ import sys
 BASE = "http://localhost:8000"
 RESULTS = []
 
-def test(name, fn):
+def _check(name, fn):
     try:
         status, detail = fn()
         ok = isinstance(status, int) and status < 400
@@ -36,46 +36,46 @@ for port, name in services:
     def check(p=port):
         r = httpx.get(f"http://localhost:{p}/health", timeout=5)
         return r.status_code, r.text[:60]
-    test(f"Health: {name} (:{port})", check)
+    _check(f"Health: {name} (:{port})", check)
 
 # === Section 2: Gateway API Endpoints ===
 print("\n--- 2. Gateway API Endpoints ---")
 
-test("GET /", lambda: (
+_check("GET /", lambda: (
     (r := httpx.get(f"{BASE}/", timeout=5)).status_code,
     r.json().get("message", "")[:60]
 ))
 
-def test_tools():
+def _check_tools():
     r = httpx.get(f"{BASE}/agent/tools", timeout=10)
     data = r.json()
     # Response is {"tools": [...]} dict
     tools = data.get("tools", data) if isinstance(data, dict) else data
     return r.status_code, f"{len(tools)} tools registered"
-test("GET /agent/tools", test_tools)
+_check("GET /agent/tools", _check_tools)
 
-test("GET /files", lambda: (
+_check("GET /files", lambda: (
     (r := httpx.get(f"{BASE}/files", timeout=5)).status_code,
     f"{len(r.json())} files found"
 ))
 
-def test_connectors():
+def _check_connectors():
     r = httpx.get(f"{BASE}/connectors/available", timeout=5)
     data = r.json()
     # Response is {"connectors": [...]} or a list
     connectors = data.get("connectors", data) if isinstance(data, dict) else data
     names = [c.get("name", c.get("type", "?")) for c in connectors]
     return r.status_code, ", ".join(names)
-test("GET /connectors/available", test_connectors)
+_check("GET /connectors/available", _check_connectors)
 
-test("POST /validate/query", lambda: (
+_check("POST /validate/query", lambda: (
     (r := httpx.post(f"{BASE}/validate/query",
         json={"query": "SELECT * FROM sales WHERE id=1", "dialect": "postgresql"},
         timeout=5)).status_code,
     str(r.json())[:60]
 ))
 
-test("POST /chat", lambda: (
+_check("POST /chat", lambda: (
     (r := httpx.post(f"{BASE}/chat",
         json={"message": "What tables do I have?", "session_id": "ops"},
         timeout=10)).status_code,
@@ -85,7 +85,7 @@ test("POST /chat", lambda: (
 # === Section 3: Agent Framework ===
 print("\n--- 3. Agent Framework ---")
 
-test("POST /agent/plan (Gemini AI)", lambda: (
+_check("POST /agent/plan (Gemini AI)", lambda: (
     (r := httpx.post(f"{BASE}/agent/plan",
         json={"prompt": "analyze sales data", "session_id": "ops"},
         timeout=30)).status_code,
@@ -95,21 +95,21 @@ test("POST /agent/plan (Gemini AI)", lambda: (
 # === Section 4: Direct Microservice Endpoints ===
 print("\n--- 4. Direct Microservice Endpoints ---")
 
-test("POST :8001/generate_code", lambda: (
+_check("POST :8001/generate_code", lambda: (
     (r := httpx.post("http://localhost:8001/generate_code",
         json={"step": "count rows in users table", "task": None, "chart_type": None},
         timeout=30)).status_code,
     str(r.json())[:60]
 ))
 
-def test_connectors_direct():
+def _check_connectors_direct():
     r = httpx.get("http://localhost:8002/connectors/available", timeout=5)
     data = r.json()
     connectors = data.get("connectors", data) if isinstance(data, dict) else data
     return r.status_code, f"{len(connectors)} connectors"
-test("GET :8002/connectors/available", test_connectors_direct)
+_check("GET :8002/connectors/available", _check_connectors_direct)
 
-test("POST :8003/execute_sql (no DB)", lambda: (
+_check("POST :8003/execute_sql (no DB)", lambda: (
     (r := httpx.post("http://localhost:8003/execute_sql",
         json={"job_id": "test-1", "sql": "SELECT 1", "connection_id": "default",
               "limit": 10, "approved": True},
@@ -117,19 +117,19 @@ test("POST :8003/execute_sql (no DB)", lambda: (
     str(r.json())[:60] if r.status_code < 500 else f"Expected 502 (no DB) -> {r.status_code}"
 ))
 
-test("POST :8004/jobs (scheduler)", lambda: (
+_check("POST :8004/jobs (scheduler)", lambda: (
     (r := httpx.get("http://localhost:8004/jobs", timeout=5)).status_code,
     str(r.json())[:60]
 ))
 
-test("POST :8005/analyze (insights)", lambda: (
+_check("POST :8005/analyze (insights)", lambda: (
     (r := httpx.post("http://localhost:8005/analyze",
         json={"query": "SELECT sum(revenue) FROM sales", "results": [{"revenue": 100}]},
         timeout=15)).status_code,
     str(r.json())[:60]
 ))
 
-test("GET :8006/health (orchestration)", lambda: (
+_check("GET :8006/health (orchestration)", lambda: (
     (r := httpx.get("http://localhost:8006/health", timeout=5)).status_code,
     r.text[:60]
 ))
@@ -137,19 +137,19 @@ test("GET :8006/health (orchestration)", lambda: (
 # === Section 5: Cross-Service Tool Calls (Agent -> Microservice) ===
 print("\n--- 5. Cross-Service Agent Tool Calls ---")
 
-test("Tool: list_uploaded_files", lambda: (
+_check("Tool: list_uploaded_files", lambda: (
     (r := httpx.get(f"{BASE}/files", timeout=5)).status_code,
     f"{len(r.json())} files (via gateway)"
 ))
 
-test("Tool: connectors/introspect", lambda: (
+_check("Tool: connectors/introspect", lambda: (
     (r := httpx.post("http://localhost:8002/introspect",
         json={"connector_type": "postgresql", "config": {}},
         timeout=10)).status_code,
     str(r.json())[:60]
 ))
 
-test("Tool: insights/recommend-indexes", lambda: (
+_check("Tool: insights/recommend-indexes", lambda: (
     (r := httpx.post("http://localhost:8005/recommend-indexes",
         json={"table": "sales", "query_patterns": ["SELECT * FROM sales"]},
         timeout=15)).status_code,
