@@ -3,13 +3,14 @@ AURA Integration Tests
 End-to-end testing of profiling, semantic modeling, and insights
 """
 
-import pytest
 import asyncio
-from typing import List, Dict, Any
-import tempfile
-import os
 import csv
 import json
+import os
+import tempfile
+from typing import Any, Dict, List
+
+import pytest
 
 # Test fixtures and utilities
 
@@ -57,27 +58,27 @@ def test_file_service_profiling():
         'salary': [50000.0, 60000.0, 70000.0],
     }
     df = pd.DataFrame(data)
-    
+
     with tempfile.NamedTemporaryFile(mode='w', suffix='.csv', delete=False) as f:
         df.to_csv(f, index=False)
         f.flush()
-        
+
         # Profile the file
         file_service = FileService()
         profile = file_service._profile_dataframe(df)
-        
+
         assert profile is not None
         assert 'columns' in profile
         assert profile['columns'] == 3
         assert 'rows' in profile
         assert profile['rows'] == 3
         assert 'columns_profile' in profile
-        
+
         # Check column profiles
         col_profile = profile['columns_profile']
         assert 'name' in col_profile
         assert col_profile['name']['non_null'] == 3
-        
+
         os.unlink(f.name)
 
 
@@ -86,8 +87,9 @@ def test_file_service_profiling():
 @pytest.mark.skip(reason="semantic_builder module not yet in codebase")
 def test_semantic_model_generation():
     """Test semantic model auto-generation"""
-    from semantic_builder import SemanticModelBuilder
     import uuid
+
+    from semantic_builder import SemanticModelBuilder
 
     # Create a sample profile
     profile = {
@@ -125,7 +127,7 @@ def test_semantic_model_generation():
     assert model is not None
     assert model.name == 'sales'
     assert len(model.fields) == 3
-    
+
     # Check field classification
     field_by_name = {f.name: f for f in model.fields}
     assert field_by_name['product_id'].field_type == 'dimension'
@@ -138,7 +140,7 @@ def test_semantic_model_generation():
 
 def test_sql_validator_safe_query():
     """Test validation of safe SQL"""
-    from safety import SQLSafetyValidator, QueryRiskLevel
+    from safety import QueryRiskLevel, SQLSafetyValidator
 
     validator = SQLSafetyValidator()
     query = "SELECT * FROM sales WHERE date >= '2024-01-01' LIMIT 100"
@@ -152,7 +154,7 @@ def test_sql_validator_safe_query():
 
 def test_sql_validator_dangerous_query():
     """Test validation catches dangerous queries"""
-    from safety import SQLSafetyValidator, QueryRiskLevel
+    from safety import QueryRiskLevel, SQLSafetyValidator
 
     validator = SQLSafetyValidator()
     query = "DELETE FROM sales WHERE 1=1; DROP TABLE users;"
@@ -166,7 +168,7 @@ def test_sql_validator_dangerous_query():
 
 def test_sql_validator_missing_limit():
     """Test warning for missing LIMIT"""
-    from safety import SQLSafetyValidator, QueryRiskLevel
+    from safety import QueryRiskLevel, SQLSafetyValidator
 
     validator = SQLSafetyValidator()
     query = "SELECT * FROM sales"
@@ -184,11 +186,11 @@ def test_sql_validator_dry_run_mode():
     from safety import SQLSafetyValidator
 
     validator = SQLSafetyValidator(dry_run_only=True)
-    
+
     # SELECT should pass
     result = validator.validate("SELECT * FROM sales LIMIT 10")
     assert result.is_valid
-    
+
     # INSERT should fail
     result = validator.validate("INSERT INTO sales VALUES (1, 'test', 100)")
     assert not result.is_valid
@@ -202,7 +204,7 @@ def test_insights_engine_analysis(test_data):
 
     engine = InsightsEngine()
     query = "SELECT * FROM sales"
-    
+
     analysis = engine.analyze(query, test_data)
 
     assert 'insights' in analysis
@@ -214,14 +216,14 @@ def test_insights_engine_analysis(test_data):
 
 def test_insights_chart_generation(test_data):
     """Test automatic chart generation"""
-    from insights import InsightsEngine, ChartType
+    from insights import ChartType, InsightsEngine
 
     engine = InsightsEngine()
     analysis = engine.analyze("SELECT * FROM sales", test_data)
 
     charts = analysis['charts']
     assert len(charts) > 0
-    
+
     # Check chart has required fields
     chart = charts[0]
     assert 'type' in chart
@@ -269,7 +271,7 @@ def test_alert_generator():
 @pytest.mark.asyncio
 async def test_postgresql_connector_interface():
     """Test PostgreSQL connector interface"""
-    from connectors import ConnectorConfig, SourceType, PostgreSQLConnector
+    from connectors import ConnectorConfig, PostgreSQLConnector, SourceType
 
     config = ConnectorConfig(
         source_type=SourceType.POSTGRESQL,
@@ -282,7 +284,7 @@ async def test_postgresql_connector_interface():
     )
 
     connector = PostgreSQLConnector(config)
-    
+
     # Verify interface
     assert hasattr(connector, 'connect')
     assert hasattr(connector, 'disconnect')
@@ -295,7 +297,7 @@ async def test_postgresql_connector_interface():
 @pytest.mark.asyncio
 async def test_mysql_connector_interface():
     """Test MySQL connector interface"""
-    from connectors import ConnectorConfig, SourceType, MySQLConnector
+    from connectors import ConnectorConfig, MySQLConnector, SourceType
     if MySQLConnector is None:
         pytest.skip("aiomysql not installed")
 
@@ -310,7 +312,7 @@ async def test_mysql_connector_interface():
     )
 
     connector = MySQLConnector(config)
-    
+
     # Verify interface
     assert hasattr(connector, 'connect')
     assert hasattr(connector, 'disconnect')
@@ -412,11 +414,11 @@ async def test_semantic_modeling_pipeline():
     # Verify model structure
     assert model.name == 'e_commerce_orders'
     assert len(model.fields) == 5
-    
+
     # Verify fields are classified correctly
     measures = [f for f in model.fields if f.field_type == 'measure']
     dimensions = [f for f in model.fields if f.field_type == 'dimension']
-    
+
     assert len(measures) > 0  # total_amount should be a measure
     assert len(dimensions) > 0  # customer_name, status should be dimensions
 

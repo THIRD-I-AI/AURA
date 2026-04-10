@@ -1,7 +1,8 @@
 """AURA Operability Test Suite - Tests all services and cross-service calls."""
-import httpx
-import time
 import sys
+import time
+
+import httpx
 
 BASE = "http://localhost:8000"
 RESULTS = []

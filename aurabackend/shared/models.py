@@ -4,6 +4,7 @@ from typing import Any, Optional
 
 from pydantic import BaseModel, Field
 
+
 class ChatRequest(BaseModel):
     session_id: str
     prompt: str

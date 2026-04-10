@@ -12,9 +12,8 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from orchestration_service.coordinator import TinyRecursiveConfig, TinyRecursiveCoordinator
 from shared.models import AgentResponse, ChatRequest, ValidationResult
-from orchestration_service.coordinator import TinyRecursiveCoordinator, TinyRecursiveConfig
-
 
 # ── Test doubles ─────────────────────────────────────────────────────────────
 

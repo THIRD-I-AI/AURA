@@ -8,6 +8,7 @@ Uses FastAPI TestClient for in-process testing (no running services needed).
 
 import os
 import sys
+
 import pytest
 
 # Ensure the aurabackend package is importable
@@ -20,6 +21,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 def client():
     """Create a FastAPI TestClient for the API gateway."""
     from fastapi.testclient import TestClient
+
     from api_gateway.main import app
     return TestClient(app)
 
