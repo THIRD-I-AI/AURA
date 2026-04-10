@@ -7,22 +7,21 @@ chat history management.
 
 import json
 import os
+import pathlib
 import re
 import time
 from typing import Any, Dict, List, Optional
 
 import duckdb
-import pathlib
-
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
-from shared.logging_config import get_logger
-from shared.data_utils import build_schema_context
 from agents.base import AgentContext
-from agents.specialists.intent_agent import IntentAgent
 from agents.executor import DAGExecutor
 from agents.planner import ExecutionPlan, TaskNode, TaskType
+from agents.specialists.intent_agent import IntentAgent
+from shared.data_utils import build_schema_context
+from shared.logging_config import get_logger
 
 logger = get_logger("aura.api_gateway.chat")
 

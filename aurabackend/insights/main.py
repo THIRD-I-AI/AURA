@@ -5,16 +5,16 @@ Auto-generates insights, charts, and narratives from query results
 
 import os
 import sys
-from typing import Dict, Any, List, Optional
+from typing import Any, Dict, List, Optional
 
 from fastapi import HTTPException, status
 from pydantic import BaseModel, Field
 
-# Add parent directory to path for imports
-
-from shared.service_factory import create_service
-from shared.logging_config import get_logger
 from insights.engine import InsightsEngine
+from shared.logging_config import get_logger
+
+# Add parent directory to path for imports
+from shared.service_factory import create_service
 
 logger = get_logger("aura.insights")
 
@@ -77,21 +77,21 @@ async def analyze_results(request: AnalyzeRequest):
     """Analyze query results and generate insights"""
     try:
         engine = InsightsEngine()
-        
+
         # Generate analysis
         analysis = engine.analyze(
             request.query,
             request.results,
             request.column_profiles,
         )
-        
+
         # Determine chart suggestions based on data
         chart_suggestions = _suggest_charts(
             columns=list(request.results[0].keys()) if request.results else [],
             data_sample=request.results[:10] if request.results else [],
             query=request.query,
         )
-        
+
         return AnalyzeResponse(
             insights=analysis.get("insights", []),
             chart_suggestions=chart_suggestions,
@@ -99,7 +99,7 @@ async def analyze_results(request: AnalyzeRequest):
             row_count=len(request.results),
             column_count=len(request.results[0].keys()) if request.results else 0,
         )
-        
+
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -116,9 +116,9 @@ async def suggest_charts(request: ChartSuggestionRequest):
             data_sample=request.data_sample,
             query=request.query,
         )
-        
+
         return ChartSuggestionResponse(suggestions=suggestions)
-        
+
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,

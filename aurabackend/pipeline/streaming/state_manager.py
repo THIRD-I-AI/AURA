@@ -10,6 +10,7 @@ Manages checkpoint persistence for streaming pipelines:
 from __future__ import annotations
 
 import json
+import logging
 import os
 import time
 from datetime import datetime
@@ -21,8 +22,6 @@ from pipeline.streaming.models import (
     StreamMetrics,
     WindowState,
 )
-
-import logging
 
 logger = logging.getLogger(__name__)
 

@@ -9,20 +9,20 @@ import os
 import threading
 import time
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import httpx
 from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel, Field
-from pathlib import Path
 
-from shared.logging_config import get_logger
+from connectors import BigQueryConnector, ConnectorConfig, MySQLConnector, PostgreSQLConnector, SourceType
+from insights import InsightsEngine
+from safety import SQLSafetyValidator
 from shared.cache import dashboard_cache, query_cache
 from shared.circuit_breaker import get_breaker
-from shared.streaming_manager import streaming_manager, TOPIC_QUERY
-from safety import SQLSafetyValidator
-from insights import InsightsEngine
-from connectors import ConnectorConfig, SourceType, PostgreSQLConnector, MySQLConnector, BigQueryConnector
+from shared.logging_config import get_logger
+from shared.streaming_manager import TOPIC_QUERY, streaming_manager
 
 logger = get_logger("aura.api_gateway.queries")
 
@@ -179,8 +179,10 @@ async def execute_for_chat(req: _ChatExecuteRequest):
 
     # No connection: execute against uploaded files via DuckDB
     try:
-        import duckdb
         import pathlib
+
+        import duckdb
+
         from shared.data_utils import build_schema_context
 
         base = pathlib.Path(__file__).resolve().parent.parent.parent
@@ -200,8 +202,8 @@ async def execute_for_chat(req: _ChatExecuteRequest):
 
         conclusion = None
         if records:
-            from agents.specialists.analysis_agent import AnalysisAgent
             from agents.base import AgentContext
+            from agents.specialists.analysis_agent import AnalysisAgent
             agent = AnalysisAgent()
             ctx = AgentContext(
                 user_prompt="Explain these executed SQL results conceptually.",
@@ -250,8 +252,8 @@ async def execute_query_with_insights(request: ExecuteQueryRequest):
 
         conclusion = None
         if results:
-            from agents.specialists.analysis_agent import AnalysisAgent
             from agents.base import AgentContext
+            from agents.specialists.analysis_agent import AnalysisAgent
             agent = AnalysisAgent()
             ctx = AgentContext(
                 user_prompt="Explain these results conceptually.",

@@ -5,7 +5,6 @@ import sys
 from typing import Any
 
 # Add parent directory to path
-
 from shared.llm_provider import get_llm
 from shared.secret_resolver import secret_resolver
 
@@ -57,7 +56,7 @@ class GeneratorAgent:
         # Extract table name and columns from context dynamically
         table_name = "data_table"  # default
         columns = []  # will be populated from context
-        
+
         try:
             lines = context.split("\n")
             # Try to parse context in multiple formats
@@ -123,7 +122,7 @@ class GeneratorAgent:
                             columns = [col.strip() for col in cols_str.split(",") if col.strip()]
         except Exception:
             pass  # Fall back to defaults if parsing fails
-        
+
         # Generate fallback query using actual schema
         prompt_lower = prompt.lower()
 

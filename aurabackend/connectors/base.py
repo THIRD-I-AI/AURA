@@ -2,11 +2,11 @@
 Base connector class for AURA data sources
 """
 
+import asyncio
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Dict, List, Optional, AsyncGenerator
-import asyncio
+from typing import Any, AsyncGenerator, Dict, List, Optional
 
 
 class SourceType(Enum):

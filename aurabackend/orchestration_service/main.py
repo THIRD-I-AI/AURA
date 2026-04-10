@@ -6,16 +6,16 @@ import sys
 
 from fastapi import HTTPException, status
 
-# Add parent directory to path
-
-from shared.service_factory import create_service
-from shared.config import settings
-from shared.logging_config import get_logger
-from shared.models import AgentResponse, ChatRequest
+from mcp_core import MCPServer, ToolDescriptor, ToolInvocation, ToolInvocationResult
 from orchestration_service.agents.critic_agent import CriticAgent
 from orchestration_service.agents.generator_agent import GeneratorAgent
 from orchestration_service.coordinator import TinyRecursiveConfig, TinyRecursiveCoordinator
-from mcp_core import MCPServer, ToolDescriptor, ToolInvocation, ToolInvocationResult
+from shared.config import settings
+from shared.logging_config import get_logger
+from shared.models import AgentResponse, ChatRequest
+
+# Add parent directory to path
+from shared.service_factory import create_service
 
 logger = get_logger("aura.orchestration")
 

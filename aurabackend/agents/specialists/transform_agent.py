@@ -13,7 +13,6 @@ from typing import Any, Dict, List, Optional
 from agents.base import AgentContext, AgentResult, BaseAgent, Severity
 from shared.llm_provider import get_llm
 
-
 _TRANSFORM_PROMPT = """\
 You are a senior data engineer.  Given the user's transformation request and the
 available schema, generate one or more SQL statements (PostgreSQL dialect) that

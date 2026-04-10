@@ -3,19 +3,16 @@ AURA Database Service
 RESTful API for database connections and schema management
 """
 
-from fastapi import FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-from typing import List, Dict, Any, Optional
-from pydantic import BaseModel, Field
-from datetime import datetime
 import os
 import uuid
+from datetime import datetime
+from typing import Any, Dict, List, Optional
 
-from .connection_manager import (
-    DatabaseConnection, 
-    DatabaseType, 
-    db_manager
-)
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, Field
+
+from .connection_manager import DatabaseConnection, DatabaseType, db_manager
 
 app = FastAPI(
     title="AURA Database Service",
@@ -154,10 +151,10 @@ async def create_connection(request: DatabaseConnectionRequest):
             connection_string=request.connection_string,
             metadata=request.metadata or {}
         )
-        
+
         connection_id = await db_manager.add_connection(connection)
         return {"connection_id": connection_id, "message": "Connection created successfully"}
-    
+
     except ConnectionError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except NotImplementedError as exc:
@@ -197,7 +194,7 @@ async def get_connection(connection_id: str):
         connection = await db_manager.get_connection(connection_id)
         if not connection:
             raise HTTPException(status_code=404, detail=CONNECTION_NOT_FOUND_MSG)
-        
+
         return DatabaseConnectionResponse(
             id=connection.id,
             name=connection.name,
@@ -224,7 +221,7 @@ async def delete_connection(connection_id: str):
         success = await db_manager.remove_connection(connection_id)
         if not success:
             raise HTTPException(status_code=404, detail=CONNECTION_NOT_FOUND_MSG)
-        
+
         return {"message": "Connection deleted successfully"}
     except HTTPException:
         raise
@@ -238,7 +235,7 @@ async def test_connection(connection_id: str) -> Dict[str, Any]:
         connection = await db_manager.get_connection(connection_id)
         if not connection:
             raise HTTPException(status_code=404, detail=CONNECTION_NOT_FOUND_MSG)
-        
+
         is_valid = await db_manager.test_connection(connection)
         return {
             "connection_id": connection_id,
@@ -259,7 +256,7 @@ async def get_schema(connection_id: str, refresh: bool = False):
         schema = await db_manager.get_database_schema(connection_id, refresh=refresh)
         if not schema:
             raise HTTPException(status_code=404, detail="Connection not found or schema unavailable")
-        
+
         return SchemaResponse(
             connection_id=schema.connection_id,
             schemas=schema.schemas,
@@ -302,13 +299,13 @@ async def execute_query(connection_id: str, request: QueryRequest):
     try:
         if request.connection_id != connection_id:
             raise HTTPException(status_code=400, detail="Connection ID mismatch")
-        
+
         result = await db_manager.execute_query(
             connection_id=connection_id,
             query=request.query,
             limit=request.limit
         )
-        
+
         return QueryResponse(
             columns=result["columns"],
             rows=result["rows"],

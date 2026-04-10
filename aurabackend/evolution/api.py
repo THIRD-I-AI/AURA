@@ -14,6 +14,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from metadata_store.db import get_session
+
 from .db import init_evolution_db
 from .engine import get_evolution_engine
 from .models import (
@@ -233,6 +234,7 @@ async def get_evolution_log(limit: int = 100, db: AsyncSession = Depends(get_db)
 async def feedback_summary(days: int = 7, db: AsyncSession = Depends(get_db)):
     """Aggregate feedback statistics for the past N days."""
     from datetime import timedelta, timezone
+
     from sqlalchemy import func
 
     since = __import__("datetime").datetime.now(timezone.utc) - timedelta(days=days)

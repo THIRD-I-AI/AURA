@@ -2,11 +2,13 @@
 BigQuery connector for AURA
 """
 
+import json
+from datetime import datetime
 from typing import Any, Dict, List, Optional
+
 from google.cloud import bigquery
 from google.oauth2 import service_account
-from datetime import datetime
-import json
+
 from .base import BaseConnector, ConnectorConfig
 
 
@@ -77,7 +79,7 @@ class BigQueryConnector(BaseConnector):
             dataset_id = self.config.database or ""
             table_id = f"{self.project_id}.{dataset_id}.{table_name}"
             table = self.client.get_table(table_id)
-            
+
             schema = {
                 "table_name": table_name,
                 "columns": [
@@ -106,10 +108,10 @@ class BigQueryConnector(BaseConnector):
         try:
             dataset_id = self.config.database or ""
             table_id = f"{self.project_id}.{dataset_id}.{table_name}"
-            
+
             query = f"SELECT * FROM `{table_id}` LIMIT {limit}"
             results = self.client.query(query).result()
-            
+
             rows = []
             for row in results:
                 rows.append(dict(row.items()))
@@ -127,9 +129,9 @@ class BigQueryConnector(BaseConnector):
             # Append LIMIT if not present
             if "LIMIT" not in query.upper():
                 query = f"{query} LIMIT {limit}"
-            
+
             results = self.client.query(query).result()
-            
+
             rows = []
             for row in results:
                 rows.append(dict(row.items()))
@@ -150,7 +152,7 @@ class BigQueryConnector(BaseConnector):
             # Get row count
             dataset_id = self.config.database or ""
             table_id = f"{self.project_id}.{dataset_id}.{table_name}"
-            
+
             count_query = f"SELECT COUNT(*) as cnt FROM `{table_id}`"
             count_result = self.client.query(count_query).result()
             row_count = next(count_result)[0]
@@ -160,10 +162,10 @@ class BigQueryConnector(BaseConnector):
             for col in schema.get("columns", []):
                 col_name = col["name"]
                 col_type = col["type"]
-                
+
                 # Extract values
                 col_values = [s.get(col_name) for s in samples if s.get(col_name) is not None]
-                
+
                 columns_profile[col_name] = {
                     "data_type": col_type,
                     "non_null": len(col_values),

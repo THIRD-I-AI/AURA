@@ -4,13 +4,13 @@ Auto-insights generation, anomaly detection, and alerting
 """
 
 from .engine import (
-    InsightsEngine,
-    AnomalyDetector,
     AlertGenerator,
-    Insight,
+    AnomalyDetector,
     ChartSpec,
-    InsightType,
     ChartType,
+    Insight,
+    InsightsEngine,
+    InsightType,
 )
 
 __all__ = [

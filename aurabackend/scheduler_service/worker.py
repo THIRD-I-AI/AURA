@@ -8,9 +8,9 @@ import logging
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Set
 
+from .executor import JobExecutor
 from .models import JobStatus, ScheduledJob
 from .repository import SchedulerRepository
-from .executor import JobExecutor
 
 logger = logging.getLogger(__name__)
 

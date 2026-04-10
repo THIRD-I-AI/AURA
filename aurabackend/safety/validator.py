@@ -4,9 +4,9 @@ Query validation, linting, and guardrails
 """
 
 import re
-from typing import Dict, List, Optional, Tuple, Any
-from enum import Enum
 from dataclasses import dataclass
+from enum import Enum
+from typing import Any, Dict, List, Optional, Tuple
 
 
 class QueryRiskLevel(Enum):
@@ -123,7 +123,7 @@ class SQLSafetyValidator:
         # Extract LIMIT clause
         limit_match = re.search(r"LIMIT\s+(\d+)", query_upper)
         row_count_estimate = self.max_rows
-        
+
         if limit_match:
             limit_val = int(limit_match.group(1))
             row_count_estimate = min(limit_val, self.max_rows)
@@ -144,7 +144,7 @@ class SQLSafetyValidator:
 
         # Check result set size risk
         if row_count_estimate > self.max_rows:
-            warnings.append(f"Large result set: may exceed memory limits")
+            warnings.append("Large result set: may exceed memory limits")
             if risk_level in (QueryRiskLevel.SAFE, QueryRiskLevel.LOW_RISK):
                 risk_level = QueryRiskLevel.MEDIUM_RISK
 
@@ -189,14 +189,14 @@ class SQLSafetyValidator:
         # Style checks
         if query != query.strip():
             suggestions.append("Extra whitespace in query")
-        
+
         if "\n" in query and not query_upper.count("\n") >= 2:
             suggestions.append("Consider formatting multi-line for readability")
 
         # Optimization checks
         if "SELECT *" in query_upper:
             suggestions.append("Use specific column names instead of SELECT *")
-        
+
         if "WHERE 1=1" in query_upper:
             suggestions.append("Remove WHERE 1=1 clause")
 

@@ -18,24 +18,23 @@ import time
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Type
 
 from agents.base import AgentContext, AgentResult, AgentStatus, BaseAgent, ProgressCallback
-from agents.planner import ExecutionPlan, TaskNode, TaskType
-from agents.tool_registry import ToolRegistry
 from agents.memory import AgentMemory
+from agents.planner import ExecutionPlan, TaskNode, TaskType
+from agents.specialists.analysis_agent import AnalysisAgent
+from agents.specialists.execution_agent import ExecutionAgent
 
 # Specialist imports
 from agents.specialists.ingestion_agent import IngestionAgent
-from agents.specialists.schema_architect_agent import SchemaArchitectAgent
-from agents.specialists.transform_agent import TransformAgent
-from agents.specialists.quality_agent import QualityAgent
-from agents.specialists.pipeline_agent import PipelineAgent
-from agents.specialists.optimization_agent import OptimizationAgent
-from agents.specialists.sql_generator_agent import SQLGeneratorAgent
-from agents.specialists.analysis_agent import AnalysisAgent
 from agents.specialists.intent_agent import IntentAgent
-from agents.specialists.execution_agent import ExecutionAgent
-from agents.specialists.visualization_agent import VisualizationAgent
 from agents.specialists.monitor_agent import MonitorAgent
-
+from agents.specialists.optimization_agent import OptimizationAgent
+from agents.specialists.pipeline_agent import PipelineAgent
+from agents.specialists.quality_agent import QualityAgent
+from agents.specialists.schema_architect_agent import SchemaArchitectAgent
+from agents.specialists.sql_generator_agent import SQLGeneratorAgent
+from agents.specialists.transform_agent import TransformAgent
+from agents.specialists.visualization_agent import VisualizationAgent
+from agents.tool_registry import ToolRegistry
 
 # ── Agent registry ────────────────────────────────────────────────────
 AGENT_MAP: Dict[str, Type[BaseAgent]] = {

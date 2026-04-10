@@ -25,23 +25,23 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from shared.service_factory import create_service
 from shared.logging_config import get_logger
+from shared.service_factory import create_service
 
-from .db import init_uasr_db, get_session
+from .db import get_session, init_uasr_db
 from .drift_detector import DriftDetector
-from .recovery_loop import RecoveryLoop, RecoveryLoopConfig
-from .semantic_gateway import SemanticGateway, ReferenceContextMatrix
 from .metrics import HealingMetricTracker, RecoveryEvent
 from .models import (
     BatchPayload,
-    DriftType,
-    DriftSeverity,
-    RecoveryStatus,
     DriftEvent,
-    RecoveryRecord,
+    DriftSeverity,
+    DriftType,
     HealingMetric,
+    RecoveryRecord,
+    RecoveryStatus,
 )
+from .recovery_loop import RecoveryLoop, RecoveryLoopConfig
+from .semantic_gateway import ReferenceContextMatrix, SemanticGateway
 
 logger = get_logger("uasr.service")
 

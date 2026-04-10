@@ -4,9 +4,9 @@ Query validation, linting, and cost control
 """
 
 from .validator import (
-    SQLSafetyValidator,
     QueryPlanner,
     QueryRiskLevel,
+    SQLSafetyValidator,
     ValidationResult,
 )
 

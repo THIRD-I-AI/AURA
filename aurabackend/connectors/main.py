@@ -5,23 +5,23 @@ Handles PostgreSQL, MySQL, BigQuery, and DuckDB connections
 
 import os
 import sys
-from typing import Dict, Any, List
+from typing import Any, Dict, List
 
 from fastapi import HTTPException, status
 from pydantic import BaseModel, Field
 
-# Add parent directory to path for imports
-
-from shared.service_factory import create_service
-from shared.logging_config import get_logger
 from connectors import (
-    ConnectorConfig,
-    SourceType,
-    PostgreSQLConnector,
-    MySQLConnector,
     BigQueryConnector,
+    ConnectorConfig,
     DuckDBConnector,
+    MySQLConnector,
+    PostgreSQLConnector,
+    SourceType,
 )
+from shared.logging_config import get_logger
+
+# Add parent directory to path for imports
+from shared.service_factory import create_service
 
 logger = get_logger("aura.connectors")
 
@@ -87,7 +87,7 @@ async def test_connector(request: ConnectorTestRequest):
     """Test a database connection"""
     try:
         connector_type = request.connector_type.lower()
-        
+
         connector_config = ConnectorConfig(
             source_type=SourceType(connector_type),
             name=f"test-{connector_type}",
@@ -113,7 +113,7 @@ async def test_connector(request: ConnectorTestRequest):
                 message="Failed to connect",
                 error="Connection test failed",
             )
-            
+
     except Exception as e:
         return ConnectorTestResponse(
             success=False,
@@ -127,7 +127,7 @@ async def list_tables(request: TableListRequest):
     """List tables from a connector"""
     try:
         connector_type = request.connector_type.lower()
-        
+
         connector_config = ConnectorConfig(
             source_type=SourceType(connector_type),
             name=f"list-{connector_type}",
@@ -147,7 +147,7 @@ async def list_tables(request: TableListRequest):
             tables=tables,
             total_count=len(tables),
         )
-        
+
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,

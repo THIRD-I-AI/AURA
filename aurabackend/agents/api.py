@@ -19,12 +19,12 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from agents.planner import PlannerAgent
-from agents.executor import DAGExecutor
-from agents.tool_registry import ToolRegistry
-from agents.memory import AgentMemory
-from agents.tools import register_all_tools, ingest_and_profile
 from agents.base import AgentContext, AgentStatus
+from agents.executor import DAGExecutor
+from agents.memory import AgentMemory
+from agents.planner import PlannerAgent
+from agents.tool_registry import ToolRegistry
+from agents.tools import ingest_and_profile, register_all_tools
 
 router = APIRouter(prefix="/agent", tags=["Agentic DE"])
 

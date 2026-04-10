@@ -23,7 +23,7 @@ from typing import Any, Dict, List, Optional
 
 import httpx
 
-from agents.tool_registry import ToolRegistry, Tool
+from agents.tool_registry import Tool, ToolRegistry
 
 # ── Service base URLs (match orchestrator.py) ─────────────────────────
 _GATEWAY    = os.getenv("AURA_GATEWAY_URL",    "http://localhost:8000")

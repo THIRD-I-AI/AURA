@@ -2,17 +2,15 @@ from __future__ import annotations
 
 import os
 import sys
-from typing import Any, Dict
-
 from contextlib import asynccontextmanager
-from typing import AsyncGenerator
+from typing import Any, AsyncGenerator, Dict
 
 from fastapi import Body, Depends, FastAPI, HTTPException
 
-
-from shared.service_factory import create_service
 from shared.config import settings
 from shared.logging_config import get_logger
+from shared.service_factory import create_service
+
 from .db import get_session, init_db
 from .models import User
 from .repository import MetadataRepository, get_repository

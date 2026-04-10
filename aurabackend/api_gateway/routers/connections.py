@@ -13,14 +13,14 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel, Field
 
-from shared.logging_config import get_logger
 from connectors import (
-    ConnectorConfig,
-    SourceType,
-    PostgreSQLConnector,
-    MySQLConnector,
     BigQueryConnector,
+    ConnectorConfig,
+    MySQLConnector,
+    PostgreSQLConnector,
+    SourceType,
 )
+from shared.logging_config import get_logger
 
 logger = get_logger("aura.api_gateway.connections")
 

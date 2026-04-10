@@ -12,10 +12,10 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import sys
 import textwrap
 from typing import Any, Dict, Optional
-
-import sys, os
 
 from agents.base import AgentContext, AgentResult, AgentStatus, BaseAgent, Severity
 from uasr.models import DiagnosisResult, DriftType, ShimResult

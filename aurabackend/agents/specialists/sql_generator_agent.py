@@ -14,7 +14,6 @@ from typing import Any, Dict, List, Optional
 from agents.base import AgentContext, AgentResult, BaseAgent, Severity
 from shared.llm_provider import get_llm
 
-
 _SQL_GEN_PROMPT = """\
 You are an expert SQL engineer.  Given the schema and the user's natural-
 language question, produce a single executable SQL query (PostgreSQL dialect).

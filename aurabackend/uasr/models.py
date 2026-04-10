@@ -5,19 +5,20 @@ Pydantic models for API contracts and SQLAlchemy models for persistence.
 """
 from __future__ import annotations
 
+import os
+
+# Re-use the metadata store's Base so all tables live in the same DB
+import sys
 import uuid
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
-from sqlalchemy import JSON, DateTime, Float, Integer, String, Text, Boolean
+from sqlalchemy import JSON, Boolean, DateTime, Float, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
-# Re-use the metadata store's Base so all tables live in the same DB
-import sys, os
 from metadata_store.db import Base
-
 
 # ────────────────────────────────────────────────────────────────────
 # Enums

@@ -15,8 +15,8 @@ Dynamic threshold ζ adapts based on historical variance of D_KL values.
 """
 from __future__ import annotations
 
-import math
 import logging
+import math
 import uuid
 from collections import Counter
 from datetime import datetime, timezone
