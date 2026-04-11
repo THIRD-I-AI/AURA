@@ -30,6 +30,7 @@ from shared.config import settings
 from shared.logging_config import get_logger, setup_logging
 from shared.middleware import (
     APIKeyMiddleware,
+    RateLimitMiddleware,
     RequestIDMiddleware,
     RequestLoggingMiddleware,
     register_exception_handlers,
@@ -108,13 +109,15 @@ def create_service(
         allow_methods=["*"],
         allow_headers=["*"],
     )
-    #  2. API Key auth  (opt-in — only when AURA_API_KEY is set)
+    #  2. Rate limiting  (always on — 100 req/min per IP)
+    app.add_middleware(RateLimitMiddleware, requests_per_window=100, window_seconds=60)
+    #  3. API Key auth  (opt-in — only when AURA_API_KEY is set)
     if settings.api_key:
         app.add_middleware(APIKeyMiddleware, api_key=settings.api_key)
         logger.info("API key authentication ENABLED for %s", name)
-    #  3. Request-ID  (sets request.state.request_id)
+    #  5. Request-ID  (sets request.state.request_id)
     app.add_middleware(RequestIDMiddleware)
-    #  4. Request logging  (uses request_id set above)
+    #  6. Request logging  (uses request_id set above)
     app.add_middleware(RequestLoggingMiddleware)
 
     # ── Exception handlers ──────────────────────────────────────────────

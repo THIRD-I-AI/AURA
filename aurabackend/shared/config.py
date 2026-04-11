@@ -95,6 +95,26 @@ class AuraSettings(BaseSettings):
             return [o.strip() for o in v.split(",") if o.strip()]
         return v
 
+    @field_validator("cors_origins", mode="after")
+    @classmethod
+    def _validate_cors_production(cls, v, info):
+        env = info.data.get("environment", "development")
+        if env.lower() == "production":
+            if "*" in v:
+                raise ValueError(
+                    "CORS wildcard '*' is not allowed in production. "
+                    "Set CORS_ALLOWED_ORIGINS to explicit origins."
+                )
+            for origin in v:
+                if origin.startswith("http://"):
+                    import warnings
+                    warnings.warn(
+                        f"Non-HTTPS CORS origin '{origin}' in production. "
+                        "Use HTTPS origins for production deployments.",
+                        stacklevel=2,
+                    )
+        return v
+
     # ── Security / Auth ─────────────────────────────────────────────────
     secret_key: str = Field("change-me-in-production", alias="SECRET_KEY")
 
