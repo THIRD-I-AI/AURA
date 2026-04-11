@@ -164,8 +164,6 @@ async def system_health():
 
     # Publish snapshot to the streaming manager so the LiveDashboard gets it
     try:
-        import asyncio
-
         from shared.streaming_manager import TOPIC_SYSTEM, streaming_manager
         asyncio.create_task(streaming_manager.publish(
             __import__("shared.streaming_manager", fromlist=["StreamEvent"]).StreamEvent(

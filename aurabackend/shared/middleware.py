@@ -15,6 +15,7 @@ from __future__ import annotations
 import hmac
 import time
 import uuid
+from collections import defaultdict
 from typing import Callable
 
 from fastapi import FastAPI, Request
@@ -113,6 +114,70 @@ class APIKeyMiddleware(BaseHTTPMiddleware):
         return await call_next(request)
 
 
+
+# ── Rate Limiting Middleware ────────────────────────────────────────────
+
+class RateLimitMiddleware(BaseHTTPMiddleware):
+    """In-memory sliding-window rate limiter.
+
+    Tracks requests per client IP within a rolling window. When the limit
+    is exceeded, returns 429 Too Many Requests.
+
+    Parameters
+    ----------
+    requests_per_window : int
+        Maximum requests allowed per window (default 100).
+    window_seconds : int
+        Sliding window duration in seconds (default 60).
+    """
+
+    def __init__(
+        self,
+        app,
+        requests_per_window: int = 100,
+        window_seconds: int = 60,
+    ) -> None:
+        super().__init__(app)
+        self._max_requests = requests_per_window
+        self._window = window_seconds
+        # {client_ip: [timestamp, ...]}
+        self._hits: dict[str, list[float]] = defaultdict(list)
+
+    def _client_ip(self, request: Request) -> str:
+        forwarded = request.headers.get("X-Forwarded-For")
+        if forwarded:
+            return forwarded.split(",")[0].strip()
+        return request.client.host if request.client else "unknown"
+
+    def _prune(self, timestamps: list[float], now: float) -> list[float]:
+        cutoff = now - self._window
+        return [t for t in timestamps if t > cutoff]
+
+    async def dispatch(self, request: Request, call_next: Callable):
+        if request.url.path in _PUBLIC_PATHS:
+            return await call_next(request)
+
+        now = time.time()
+        ip = self._client_ip(request)
+        self._hits[ip] = self._prune(self._hits[ip], now)
+
+        if len(self._hits[ip]) >= self._max_requests:
+            retry_after = int(self._window - (now - self._hits[ip][0])) + 1
+            logger.warning(
+                "Rate limit exceeded for %s on %s %s",
+                ip, request.method, request.url.path,
+            )
+            return JSONResponse(
+                status_code=429,
+                content={
+                    "error": "RATE_LIMITED",
+                    "message": f"Too many requests. Retry after {retry_after}s.",
+                },
+                headers={"Retry-After": str(retry_after)},
+            )
+
+        self._hits[ip].append(now)
+        return await call_next(request)
 
 
 # ── Exception Handlers ──────────────────────────────────────────────────

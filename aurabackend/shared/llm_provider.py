@@ -437,6 +437,48 @@ _cached_llm: Optional[LLMProvider] = None
 _cached_key: Optional[str] = None
 
 
+class _FallbackProvider(LLMProvider):
+    """Wraps multiple providers; automatically falls back on rate/size errors."""
+
+    provider_name = "fallback"
+
+    def __init__(self, primary: LLMProvider, providers: List[LLMProvider]) -> None:
+        super().__init__(model=primary.model)
+        self._primary = primary
+        self._providers = providers  # all available providers in priority order
+
+    def is_available(self) -> bool:
+        return self._primary.is_available()
+
+    def generate(self, prompt: Union[str, List[str]], **kwargs: Any) -> Optional[str]:
+        for provider in self._providers:
+            try:
+                result = provider.generate(prompt, **kwargs)
+                if result is not None:
+                    return result
+            except LLMRateLimitError:
+                logger.warning(
+                    "Provider %s hit rate/size limit, falling back to next provider…",
+                    provider.provider_name,
+                )
+                continue
+        return None
+
+    def generate_json(self, prompt: Union[str, List[str]], **kwargs: Any) -> Optional[Dict[str, Any]]:
+        for provider in self._providers:
+            try:
+                result = provider.generate_json(prompt, **kwargs)
+                if result is not None:
+                    return result
+            except LLMRateLimitError:
+                logger.warning(
+                    "Provider %s hit rate/size limit, falling back to next provider…",
+                    provider.provider_name,
+                )
+                continue
+        return None
+
+
 def get_llm(
     *,
     provider: Optional[str] = None,
@@ -471,7 +513,8 @@ def get_llm(
             return inst
         raise ValueError(f"Unknown LLM provider: {provider!r}. Available: {list(_PROVIDER_MAP)}")
 
-    # Auto-detect: try each in priority order
+    # Auto-detect: collect all available providers in priority order
+    available: List[LLMProvider] = []
     for name in _PROVIDER_ORDER:
         name = name.strip().lower()
         cls = _PROVIDER_MAP.get(name)
@@ -479,10 +522,21 @@ def get_llm(
             continue
         inst = cls(model=model, **kwargs)
         if inst.is_available():
-            logger.info("AURA LLM: auto-selected %s (model=%s)", inst.provider_name, inst.model)
-            _cached_llm = inst
-            _cached_key = cache_key
-            return inst
+            available.append(inst)
+
+    if available:
+        primary = available[0]
+        logger.info("AURA LLM: auto-selected %s (model=%s)", primary.provider_name, primary.model)
+        if len(available) > 1:
+            logger.info(
+                "AURA LLM: fallback chain: %s",
+                " → ".join(p.provider_name for p in available),
+            )
+        # Wrap in a fallback provider so rate-limit errors cascade to next
+        result_llm = _FallbackProvider(primary, available)
+        _cached_llm = result_llm
+        _cached_key = cache_key
+        return result_llm
 
     # Nothing available — return a no-op Ollama (will return None for all generates)
     logger.warning(
