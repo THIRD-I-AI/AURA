@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 from functools import lru_cache
-from typing import Any, Optional, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Optional
 
 if TYPE_CHECKING:  # pragma: no cover - typing helpers
     from azure.identity import DefaultAzureCredential as DefaultAzureCredentialType  # type: ignore

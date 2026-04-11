@@ -8,7 +8,7 @@ from __future__ import annotations
 import abc
 from typing import Any, Dict, List
 
-from pipeline.streaming.models import WindowState, StreamEvent
+from pipeline.streaming.models import StreamEvent, WindowState
 
 
 class BaseSink(abc.ABC):

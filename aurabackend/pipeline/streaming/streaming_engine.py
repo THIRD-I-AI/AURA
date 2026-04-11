@@ -23,6 +23,7 @@ import time
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional
 
+from pipeline.streaming.backpressure import BackpressureManager, BackpressureStrategy
 from pipeline.streaming.models import (
     LateDataPolicy,
     StreamEvent,
@@ -32,20 +33,19 @@ from pipeline.streaming.models import (
     TransformType,
     WindowConfig,
 )
-from pipeline.streaming.sources.base import BaseSource
-from pipeline.streaming.sources.simulated import SimulatedSource
-from pipeline.streaming.sources.file_watcher import FileWatcherSource
-from pipeline.streaming.sources.kafka_source import KafkaSource
+from pipeline.streaming.sinks.alert_sink import AlertSink
 from pipeline.streaming.sinks.base import BaseSink
-from pipeline.streaming.sinks.sse_sink import SSESink
 from pipeline.streaming.sinks.console_sink import ConsoleSink
 from pipeline.streaming.sinks.database_sink import DatabaseSink
 from pipeline.streaming.sinks.file_sink import FileSink
-from pipeline.streaming.sinks.alert_sink import AlertSink
 from pipeline.streaming.sinks.kafka_sink import KafkaSink
-from pipeline.streaming.window_processor import WindowProcessor
+from pipeline.streaming.sinks.sse_sink import SSESink
+from pipeline.streaming.sources.base import BaseSource
+from pipeline.streaming.sources.file_watcher import FileWatcherSource
+from pipeline.streaming.sources.kafka_source import KafkaSource
+from pipeline.streaming.sources.simulated import SimulatedSource
 from pipeline.streaming.state_manager import StateManager
-from pipeline.streaming.backpressure import BackpressureManager, BackpressureStrategy
+from pipeline.streaming.window_processor import WindowProcessor
 
 logger = logging.getLogger("aura.streaming.engine")
 

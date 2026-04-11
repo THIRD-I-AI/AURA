@@ -3,13 +3,13 @@ AURA Insights Engine
 Auto-generates insights, charts, and narratives from data
 """
 
+import json
 import math
 import statistics as _stats
-from typing import List, Dict, Any, Optional, Tuple
 from dataclasses import dataclass
-from enum import Enum
-import json
 from datetime import datetime
+from enum import Enum
+from typing import Any, Dict, List, Optional, Tuple
 
 
 class ChartType(Enum):

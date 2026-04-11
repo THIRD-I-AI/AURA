@@ -5,7 +5,6 @@ from typing import Any, Dict, List, Optional
 from agents.base import AgentContext, AgentResult, AgentStatus, BaseAgent
 from shared.llm_provider import get_llm
 
-
 # ---------------------------------------------------------------------------
 # Pure-Python statistical helpers (no pandas / numpy dependency)
 # ---------------------------------------------------------------------------
@@ -180,7 +179,7 @@ class AnalysisAgent(BaseAgent):
 
             result.add_step(
                 action="synthesize_conclusion",
-                input_summary=f"Sending statistical summary to LLM for narrative.",
+                input_summary="Sending statistical summary to LLM for narrative.",
             )
 
             # --- Step 2: LLM narrative ---

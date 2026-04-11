@@ -13,7 +13,6 @@ from typing import Any, Dict, List, Optional
 from agents.base import AgentContext, AgentResult, BaseAgent, Severity
 from shared.llm_provider import get_llm
 
-
 _OPTIMIZE_PROMPT = """\
 You are a database performance tuning expert.  Given the schema and query
 patterns, suggest concrete optimisations.

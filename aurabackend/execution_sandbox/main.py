@@ -7,12 +7,12 @@ from typing import Any, Dict, List
 import httpx
 from fastapi import HTTPException
 
-# Add parent directory to path
-
-from shared.service_factory import create_service
 from shared.config import settings
 from shared.logging_config import get_logger
 from shared.models import ExecutionJob, QueryResult
+
+# Add parent directory to path
+from shared.service_factory import create_service
 
 logger = get_logger("aura.execution_sandbox")
 

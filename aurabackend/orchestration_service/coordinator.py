@@ -6,8 +6,7 @@ from dataclasses import dataclass
 from typing import Optional, Protocol
 
 # Add parent directory to path
-
-from shared.models import ChatRequest, AgentResponse, ValidationResult
+from shared.models import AgentResponse, ChatRequest, ValidationResult
 
 
 @dataclass

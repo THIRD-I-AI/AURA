@@ -21,10 +21,10 @@ import asyncio
 import json
 import logging
 import uuid
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
-from sqlalchemy import select, func
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from metadata_store.db import get_session
@@ -253,8 +253,8 @@ class EvolutionEngine:
     async def _persist_hu_snapshot(self, db: AsyncSession, cycle_id: str) -> None:
         """Save a periodic Hᵤ snapshot to the HealingMetric table."""
         try:
-            from uasr.service import _tracker
             from uasr.models import HealingMetric
+            from uasr.service import _tracker
             report = _tracker.compute()
             now = datetime.now(timezone.utc)
             snapshot = HealingMetric(

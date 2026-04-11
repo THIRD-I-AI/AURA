@@ -4,18 +4,19 @@ Handles actual query execution, retry logic, and result storage
 """
 
 import asyncio
-import httpx
 import os
 import smtplib
 import ssl
+import traceback
+import uuid
 from datetime import datetime, timedelta, timezone
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
-from typing import Dict, Any, List, Optional
-import traceback
-import uuid
+from typing import Any, Dict, List, Optional
 
-from .models import JobStatus, ScheduledJob, JobExecution
+import httpx
+
+from .models import JobExecution, JobStatus, ScheduledJob
 from .repository import SchedulerRepository
 
 
@@ -140,14 +141,14 @@ class JobExecutor:
         self.database_service_url = database_service_url
         self.http_client = httpx.AsyncClient(timeout=300.0)
         self.notifications = NotificationService()
-    
+
     async def execute_job(
         self,
         job: ScheduledJob,
         triggered_by: str = "scheduler"
     ) -> JobExecution:
         """Execute a single job"""
-        
+
         # Create execution record
         execution = await self.repository.create_execution({
             "job_id": job.id,
@@ -155,9 +156,9 @@ class JobExecutor:
             "triggered_by": triggered_by,
             "retry_count": 0
         })
-        
+
         await self._log(execution.id, "INFO", f"Starting execution of job '{job.name}'")
-        
+
         try:
             # Update status to running
             await self.repository.update_execution(
@@ -167,17 +168,17 @@ class JobExecutor:
                     "started_at": datetime.now(timezone.utc)
                 }
             )
-            
+
             # Execute query via database service
             result = await self._execute_query(
                 connection_id=job.connection_id,
                 query=job.query,
                 timeout=job.timeout_seconds
             )
-            
+
             # Calculate duration
             duration = (datetime.now(timezone.utc) - execution.started_at).total_seconds() if execution.started_at else 0
-            
+
             # Update execution with results
             await self.repository.update_execution(
                 execution.id,
@@ -192,13 +193,13 @@ class JobExecutor:
                     }
                 }
             )
-            
+
             await self._log(
                 execution.id,
                 "INFO",
                 f"Job completed successfully. Rows: {result.get('row_count', 0)}, Duration: {duration:.2f}s"
             )
-            
+
             # Update job's last execution time
             await self.repository.update_job(
                 job.id,
@@ -207,21 +208,21 @@ class JobExecutor:
                     "next_execution_time": self._calculate_next_execution(job)
                 }
             )
-            
+
         except Exception as e:
             error_message = str(e)
             error_details = {
                 "type": type(e).__name__,
                 "traceback": traceback.format_exc()
             }
-            
+
             await self._log(
                 execution.id,
                 "ERROR",
                 f"Job execution failed: {error_message}",
                 error_details
             )
-            
+
             # Check if we should retry
             execution = await self.repository.get_execution(execution.id)
             if execution and execution.retry_count < job.max_retries:
@@ -236,20 +237,20 @@ class JobExecutor:
                         "error_details": error_details
                     }
                 )
-                
+
                 await self._log(
                     execution.id,
                     "INFO",
                     f"Scheduling retry {retry_count}/{job.max_retries} in {job.retry_delay_seconds}s"
                 )
-                
+
                 # Retry after delay
                 await asyncio.sleep(job.retry_delay_seconds)
                 return await self.execute_job(job, triggered_by)
             else:
                 # Max retries exceeded
                 duration = (datetime.now(timezone.utc) - execution.started_at).total_seconds() if execution.started_at else 0
-                
+
                 await self.repository.update_execution(
                     execution.id,
                     {
@@ -260,7 +261,7 @@ class JobExecutor:
                         "error_details": error_details
                     }
                 )
-                
+
                 # Send failure notifications (email, Slack, webhook)
                 try:
                     await self.notifications.notify_job_failure(
@@ -273,10 +274,10 @@ class JobExecutor:
                     )
                 except Exception as notify_err:
                     await self._log(execution.id, "WARNING", f"Notification failed: {notify_err}")
-        
+
         # Fetch and return final execution state
         return await self.repository.get_execution(execution.id)
-    
+
     async def _execute_query(
         self,
         connection_id: str,
@@ -284,9 +285,9 @@ class JobExecutor:
         timeout: int = 300
     ) -> Dict[str, Any]:
         """Execute query via database service"""
-        
+
         url = f"{self.database_service_url}/connections/{connection_id}/query"
-        
+
         try:
             response = await self.http_client.post(
                 url,
@@ -299,14 +300,14 @@ class JobExecutor:
             )
             response.raise_for_status()
             return response.json()
-            
+
         except httpx.HTTPStatusError as e:
             raise Exception(f"Database service returned error: {e.response.status_code} - {e.response.text}")
         except httpx.TimeoutException:
             raise Exception(f"Query execution timed out after {timeout}s")
         except Exception as e:
             raise Exception(f"Failed to execute query: {str(e)}")
-    
+
     async def _log(
         self,
         execution_id: str,
@@ -321,52 +322,52 @@ class JobExecutor:
             "message": message,
             "details": details
         })
-    
+
     def _calculate_next_execution(self, job: ScheduledJob) -> Optional[datetime]:
         """Calculate next execution time based on schedule"""
         now = datetime.now(timezone.utc)
-        
+
         if not job.is_active:
             return None
-        
+
         if job.schedule_type == "once":
             return None  # One-time job, no next execution
-        
+
         elif job.schedule_type == "hourly":
             return now + timedelta(hours=1)
-        
+
         elif job.schedule_type == "daily":
             # Execute at the same hour tomorrow
             config = job.schedule_config or {}
             hour = config.get("hour", 0)
             minute = config.get("minute", 0)
-            
+
             next_run = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
             if next_run <= now:
                 next_run += timedelta(days=1)
             return next_run
-        
+
         elif job.schedule_type == "weekly":
             # Execute on specific day of week
             config = job.schedule_config or {}
             day_of_week = config.get("day_of_week", 0)  # 0=Monday, 6=Sunday
             hour = config.get("hour", 0)
             minute = config.get("minute", 0)
-            
+
             next_run = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
             days_ahead = day_of_week - now.weekday()
             if days_ahead <= 0:
                 days_ahead += 7
             next_run += timedelta(days=days_ahead)
             return next_run
-        
+
         elif job.schedule_type == "monthly":
             # Execute on specific day of month
             config = job.schedule_config or {}
             day = config.get("day", 1)
             hour = config.get("hour", 0)
             minute = config.get("minute", 0)
-            
+
             next_run = now.replace(day=day, hour=hour, minute=minute, second=0, microsecond=0)
             if next_run <= now:
                 # Move to next month
@@ -375,11 +376,11 @@ class JobExecutor:
                 else:
                     next_run = next_run.replace(month=next_run.month + 1)
             return next_run
-        
+
         # For cron expressions, would need a cron parser library
         # For now, default to hourly
         return now + timedelta(hours=1)
-    
+
     async def close(self):
         """Cleanup resources"""
         await self.http_client.aclose()

@@ -12,6 +12,7 @@ Usage:
 
 from __future__ import annotations
 
+import hmac
 import time
 import uuid
 from typing import Callable
@@ -97,7 +98,7 @@ class APIKeyMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
 
         supplied = request.headers.get("X-API-Key", "")
-        if supplied != self._api_key:
+        if not hmac.compare_digest(supplied, self._api_key):
             logger.warning(
                 "API key rejected for %s %s (from %s)",
                 request.method,

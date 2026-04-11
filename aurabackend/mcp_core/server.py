@@ -8,9 +8,9 @@ from fastapi.security import APIKeyHeader
 from .message_models import (
     MCPHandshakeRequest,
     MCPHandshakeResponse,
+    ToolDescriptor,
     ToolInvocation,
     ToolInvocationResult,
-    ToolDescriptor,
 )
 
 API_KEY_HEADER = APIKeyHeader(name="x-mcp-api-key", auto_error=False)

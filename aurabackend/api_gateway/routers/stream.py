@@ -30,7 +30,7 @@ from typing import AsyncGenerator, Optional
 from fastapi import APIRouter, Header, Query, Request
 from fastapi.responses import StreamingResponse
 
-from shared.streaming_manager import streaming_manager, StreamEvent
+from shared.streaming_manager import StreamEvent, streaming_manager
 
 logger = logging.getLogger("aura.stream")
 

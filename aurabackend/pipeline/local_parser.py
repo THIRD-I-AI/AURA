@@ -25,20 +25,20 @@ Falls back gracefully when the prompt is too complex for pattern matching.
 """
 from __future__ import annotations
 
-import re
 import logging
+import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from pipeline.models import (
     Pipeline,
-    PipelineSource,
     PipelineSink,
-    ProcessingStep,
-    SourceType,
-    SinkType,
-    StepType,
+    PipelineSource,
     PipelineStatus,
+    ProcessingStep,
+    SinkType,
+    SourceType,
+    StepType,
 )
 
 logger = logging.getLogger("aura.pipeline.local_parser")
@@ -290,7 +290,7 @@ def _match_deduplicate(prompt: str, columns: List[str]) -> List[ProcessingStep]:
     mentioned = _find_columns_in_text(prompt, columns)
     return [ProcessingStep(
         type=StepType.DEDUPLICATE,
-        description=f"Remove duplicates" + (f" on {', '.join(mentioned)}" if mentioned else ""),
+        description="Remove duplicates" + (f" on {', '.join(mentioned)}" if mentioned else ""),
         config={"columns": mentioned},
     )]
 

@@ -2,26 +2,23 @@
 Scheduler Service - FastAPI REST API for managing scheduled jobs
 """
 
-import sys
 import os
+import sys
 from contextlib import asynccontextmanager
-from typing import AsyncGenerator
+from datetime import datetime
+from typing import Any, AsyncGenerator, Dict, List, Optional
 
 # Add parent directory to path for imports
-
 from fastapi import FastAPI, HTTPException, status
 from pydantic import BaseModel, Field
-from typing import Optional, List, Dict, Any
-from datetime import datetime
 
-from shared.service_factory import create_service
-from shared.config import settings
-from shared.logging_config import get_logger
+from scheduler_service.executor import JobExecutor
 from scheduler_service.models import JobStatus, ScheduleType
 from scheduler_service.repository import SchedulerRepository
-from scheduler_service.executor import JobExecutor
 from scheduler_service.worker import SchedulerWorker
-
+from shared.config import settings
+from shared.logging_config import get_logger
+from shared.service_factory import create_service
 
 logger = get_logger("aura.scheduler")
 
@@ -191,7 +188,7 @@ async def create_job(job: CreateJobRequest):
         # Calculate initial next execution time
         from .executor import JobExecutor as Exec
         exec_temp = Exec(repository)
-        
+
         # Create a temporary job object for calculation
         from .models import ScheduledJob
         temp_job = ScheduledJob(
@@ -201,16 +198,16 @@ async def create_job(job: CreateJobRequest):
             is_active=job.is_active
         )
         next_execution = exec_temp._calculate_next_execution(temp_job)
-        
+
         # Create job
         created_job = await repository.create_job({
             **job.dict(),
             "next_execution_time": next_execution
         })
-        
+
         logger.info(f"Created job: {created_job.name} (ID: {created_job.id})")
         return created_job
-        
+
     except Exception as e:
         logger.error(f"Failed to create job: {e}", exc_info=True)
         raise HTTPException(
@@ -265,28 +262,28 @@ async def update_job(job_id: str, updates: UpdateJobRequest):
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Job {job_id} not found"
             )
-        
+
         # Apply updates
         update_dict = {k: v for k, v in updates.dict().items() if v is not None}
-        
+
         # Recalculate next execution if schedule changed
         if any(k in update_dict for k in ["schedule_type", "schedule_config", "is_active"]):
             from .executor import JobExecutor as Exec
             exec_temp = Exec(repository)
-            
+
             # Merge updates with existing job
             merged_job = existing_job
             for key, value in update_dict.items():
                 setattr(merged_job, key, value)
-            
+
             next_execution = exec_temp._calculate_next_execution(merged_job)
             update_dict["next_execution_time"] = next_execution
-        
+
         updated_job = await repository.update_job(job_id, update_dict)
-        
+
         logger.info(f"Updated job: {job_id}")
         return updated_job
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -308,16 +305,16 @@ async def delete_job(job_id: str):
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Job {job_id} not found"
             )
-        
+
         success = await repository.delete_job(job_id)
         if not success:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="Failed to delete job"
             )
-        
+
         logger.info(f"Deleted job: {job_id}")
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -338,11 +335,11 @@ async def pause_job(job_id: str):
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Job {job_id} not found"
             )
-        
+
         updated_job = await repository.update_job(job_id, {"is_active": False})
         logger.info(f"Paused job: {job_id}")
         return updated_job
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -363,20 +360,20 @@ async def resume_job(job_id: str):
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Job {job_id} not found"
             )
-        
+
         # Recalculate next execution
         from .executor import JobExecutor as Exec
         exec_temp = Exec(repository)
         next_execution = exec_temp._calculate_next_execution(job)
-        
+
         updated_job = await repository.update_job(
             job_id,
             {"is_active": True, "next_execution_time": next_execution}
         )
-        
+
         logger.info(f"Resumed job: {job_id}")
         return updated_job
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -397,13 +394,13 @@ async def execute_job_now(job_id: str):
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Job {job_id} not found"
             )
-        
+
         # Execute job
         execution = await executor.execute_job(job, triggered_by="manual")
-        
+
         logger.info(f"Manually executed job: {job_id}")
         return execution
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -469,7 +466,7 @@ async def get_execution_logs(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Execution {execution_id} not found"
             )
-        
+
         logs = await repository.get_logs(execution_id, level)
         return logs
     except HTTPException:
@@ -495,13 +492,13 @@ async def trigger_job_execution(job_id: str):
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Job {job_id} not found"
             )
-        
+
         # Execute the job asynchronously using the global executor
         import asyncio
-        
+
         # Start execution in background task
         task = asyncio.create_task(executor.execute_job(job, triggered_by="manual"))
-        
+
         logger.info(f"Manually triggered job {job_id}")
         return {
             "message": "Job execution triggered",

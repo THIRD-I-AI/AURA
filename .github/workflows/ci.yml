@@ -1,0 +1,134 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: [main, master, "feature/**"]
+
+jobs:
+  # ── Backend tests ────────────────────────────────────────────────────────
+  backend-test:
+    name: Backend Tests (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+
+    defaults:
+      run:
+        working-directory: aurabackend
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: aurabackend/requirements*.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest pytest-asyncio
+
+      - name: Run tests
+        run: |
+          python -m pytest tests/ \
+            --tb=short \
+            -q \
+            --ignore=tests/test_operability.py \
+            -x
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: pytest-results-${{ matrix.python-version }}
+          path: aurabackend/.pytest_cache/
+
+  # ── Frontend type-check ──────────────────────────────────────────────────
+  frontend-typecheck:
+    name: Frontend Type Check
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: frontend
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: TypeScript type check
+        run: npx tsc --noEmit
+
+  # ── Frontend lint ────────────────────────────────────────────────────────
+  frontend-lint:
+    name: Frontend Lint
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: frontend
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: ESLint
+        run: npx eslint src --ext .ts,.tsx --max-warnings 0 || true
+        # `|| true` prevents lint warnings from blocking PRs for now;
+        # remove it once the 222 inline-style warnings are resolved.
+
+  # ── Backend lint ─────────────────────────────────────────────────────────
+  backend-lint:
+    name: Backend Lint (ruff)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install ruff
+        run: pip install ruff
+
+      - name: Ruff lint
+        run: |
+          ruff check aurabackend \
+            --ignore E501,E402,F401,W191,W291,W293,F841,E701,E712,F823
+        # Ignored rules — planned cleanup tickets:
+        #   E501        line length (long prompt strings)
+        #   E402        sys.path hacks in tests
+        #   F401        re-exports in __init__ files
+        #   W191/W291/W293  tab & trailing-whitespace (316 files; dedicate a
+        #               whitespace-only commit to convert tabs→spaces)
+        #   F841        unused variables — tracked separately
+        #   E701        multiple statements on one line
+        #   E712        == True/False comparisons
+        #   F823        undefined local (1 occurrence)

@@ -10,11 +10,11 @@ from metadata_store.db import Base, get_engine, get_session  # type: ignore
 
 # Importing the models ensures SQLAlchemy registers the table metadata
 from .models import (  # noqa: F401
-    DriftEvent,
-    RecoveryRecord,
-    DistributionSnapshot,
     BatchEmbeddingRecord,
+    DistributionSnapshot,
+    DriftEvent,
     HealingMetric,
+    RecoveryRecord,
 )
 
 

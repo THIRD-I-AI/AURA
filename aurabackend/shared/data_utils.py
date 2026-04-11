@@ -6,9 +6,9 @@ builds rich schema context for LLM, and detects cross-table relationships.
 """
 from __future__ import annotations
 
+import logging
 import os
 import re
-import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 

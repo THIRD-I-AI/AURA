@@ -6,12 +6,12 @@ from typing import Any, Dict
 
 from fastapi import HTTPException
 
-# Add parent directory to path
-
-from shared.service_factory import create_service
-from shared.logging_config import get_logger
 from shared.llm_provider import get_llm
+from shared.logging_config import get_logger
 from shared.models import PlanStep
+
+# Add parent directory to path
+from shared.service_factory import create_service
 
 logger = get_logger("aura.code_generation")
 

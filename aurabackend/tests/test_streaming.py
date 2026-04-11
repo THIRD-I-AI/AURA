@@ -532,7 +532,7 @@ class TestStreamingAPI:
 
     @pytest.fixture(autouse=True)
     def _clear_stores(self):
-        from pipeline.streaming.streaming_api import _pipelines, _engines
+        from pipeline.streaming.streaming_api import _engines, _pipelines
         _pipelines.clear()
         _engines.clear()
         yield
@@ -704,9 +704,8 @@ class TestStreamingEngine:
         loop.close()
 
     def test_engine_checkpoint_recovery(self):
-        from pipeline.streaming.streaming_engine import StreamingEngine
         from pipeline.streaming.state_manager import StateManager
-        import shutil
+        from pipeline.streaming.streaming_engine import StreamingEngine
 
         pipeline = self._make_engine_pipeline()
         engine = StreamingEngine(pipeline, batch_size=20, tick_interval=0.2)

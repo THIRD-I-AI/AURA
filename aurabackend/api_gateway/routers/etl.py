@@ -5,12 +5,12 @@ ETL pipeline endpoints: preview source, execute transforms, natural language,
 and file download.
 """
 
+import decimal
 import json
+import math
 import os
 import re
 import time
-import decimal
-import math
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -20,7 +20,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from shared.logging_config import get_logger
-from shared.streaming_manager import streaming_manager, TOPIC_ETL
+from shared.streaming_manager import TOPIC_ETL, streaming_manager
 
 logger = get_logger("aura.api_gateway.etl")
 
@@ -251,6 +251,7 @@ def _build_transform_sql(table: str, steps: List[ETLTransformStep], con=None) ->
 async def etl_preview_source(payload: Dict[str, Any]):
     """Preview the schema + first N rows of a source file."""
     import duckdb
+
     from shared.data_utils import smart_load_file
 
     source_file = payload.get("source_file", "")
@@ -298,6 +299,7 @@ async def etl_preview_source(payload: Dict[str, Any]):
 async def etl_execute(pipeline: ETLPipelineRequest):
     """Execute an ETL pipeline: load source → apply transforms → write destination."""
     import duckdb
+
     from shared.data_utils import smart_load_file
 
     logger.info("ETL execute: pipeline='%s' source='%s' transforms=%d preview_only=%s", pipeline.name, pipeline.source_file, len(pipeline.transforms), pipeline.preview_only)
@@ -406,6 +408,7 @@ async def etl_download(filename: str):
 async def etl_from_natural_language(req: ETLNaturalLanguageRequest):
     """Use LLM to build transform steps from a natural language instruction."""
     import duckdb
+
     from shared.data_utils import smart_load_file
     from shared.llm_provider import get_llm
 

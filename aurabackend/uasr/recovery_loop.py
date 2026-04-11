@@ -14,13 +14,16 @@ The loop supports configurable max iterations and automatic rollback.
 from __future__ import annotations
 
 import logging
+import os
+import sys
 import time
 import uuid
 from typing import Any, Callable, Dict, List, Optional
 
-from .drift_detector import DriftDetector
-from .reflector_agent import DiagnosticReflectorAgent
+from agents.base import AgentContext, AgentStatus
+
 from .actuator_agent import SynthesisActuatorAgent
+from .drift_detector import DriftDetector
 from .models import (
     BatchPayload,
     DriftDetectionResult,
@@ -29,10 +32,7 @@ from .models import (
     RecoveryStatus,
     ShimResult,
 )
-
-import sys, os
-
-from agents.base import AgentContext, AgentStatus
+from .reflector_agent import DiagnosticReflectorAgent
 
 logger = logging.getLogger("uasr.recovery_loop")
 

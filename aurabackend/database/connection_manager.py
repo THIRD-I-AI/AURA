@@ -3,18 +3,19 @@ AURA Database Connection Manager
 Enterprise-grade database connectivity with schema introspection
 """
 
-from typing import Dict, List, Any, Optional, cast
-from dataclasses import dataclass
-from enum import Enum
-from datetime import datetime
 import asyncio
 import uuid
+from dataclasses import dataclass
+from datetime import datetime
+from enum import Enum
+from typing import Any, Dict, List, Optional, cast
 
 from sqlalchemy import inspect, text
-from sqlalchemy.engine import Connection, URL
+from sqlalchemy.engine import URL, Connection
 from sqlalchemy.engine.reflection import Inspector
-from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
+
 
 # Database connection types
 class DatabaseType(Enum):
@@ -156,7 +157,7 @@ class DatabaseConnectionManager:
         self._initialize_engine(connection)
 
         return connection.id
-    
+
     async def test_connection(self, connection: DatabaseConnection) -> bool:
         """Test database connection"""
         temp_engine = self._create_engine(connection)
@@ -186,12 +187,12 @@ class DatabaseConnectionManager:
         """Get database connection by ID"""
         await asyncio.sleep(0)
         return self.connections.get(connection_id)
-    
+
     async def list_connections(self) -> List[DatabaseConnection]:
         """List all database connections"""
         await asyncio.sleep(0)
         return list(self.connections.values())
-    
+
     async def remove_connection(self, connection_id: str) -> bool:
         """Remove database connection"""
         connection = self.connections.pop(connection_id, None)
@@ -206,16 +207,16 @@ class DatabaseConnectionManager:
             await engine.dispose()
 
         return True
-    
+
     async def get_database_schema(self, connection_id: str, refresh: bool = False) -> Optional[DatabaseSchema]:
         """Get database schema with caching"""
         if not refresh and connection_id in self.schema_cache:
             return self.schema_cache[connection_id]
-        
+
         connection = await self.get_connection(connection_id)
         if not connection:
             return None
-        
+
         schema = await self._introspect_schema(connection)
         self.schema_cache[connection_id] = schema
         return schema

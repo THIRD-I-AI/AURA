@@ -5,16 +5,16 @@ Tests for the agentic DE framework: PlannerAgent fallback plans,
 ExecutionPlan dependency resolution, AgentResult, and DAGExecutor.
 """
 
+import asyncio
 import os
 import sys
+
 import pytest
-import asyncio
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from agents.base import AgentContext, AgentResult, AgentStatus, BaseAgent, Severity
-from agents.planner import PlannerAgent, ExecutionPlan, TaskNode, TaskType
-
+from agents.planner import ExecutionPlan, PlannerAgent, TaskNode, TaskType
 
 # ── AgentResult Tests ────────────────────────────────────────────────
 

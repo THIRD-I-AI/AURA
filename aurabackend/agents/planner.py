@@ -16,7 +16,6 @@ from enum import Enum
 from typing import Any, Dict, List, Optional
 
 # Add parent dir for imports
-
 from agents.base import (
     AgentContext,
     AgentResult,
@@ -26,7 +25,6 @@ from agents.base import (
 )
 from agents.memory import AgentMemory
 from shared.llm_provider import get_llm
-
 
 # ────────────────────────────────────────────────────────────────────
 # Plan data structures

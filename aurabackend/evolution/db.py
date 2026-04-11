@@ -4,10 +4,10 @@ from __future__ import annotations
 from metadata_store.db import Base, get_engine
 
 from .models import (  # noqa: F401 — registers table metadata
+    AgentFeedback,
     ExecutionPattern,
     ImprovementProposal,
     SystemEvolutionLog,
-    AgentFeedback,
 )
 
 

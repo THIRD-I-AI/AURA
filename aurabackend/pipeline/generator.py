@@ -22,17 +22,17 @@ import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from pipeline.local_parser import LocalPipelineParser
 from pipeline.models import (
     Pipeline,
-    PipelineSource,
     PipelineSink,
-    ProcessingStep,
-    SourceType,
-    SinkType,
-    StepType,
+    PipelineSource,
     PipelineStatus,
+    ProcessingStep,
+    SinkType,
+    SourceType,
+    StepType,
 )
-from pipeline.local_parser import LocalPipelineParser
 from shared.llm_provider import LLMRateLimitError
 
 logger = logging.getLogger("aura.pipeline.generator")
@@ -387,6 +387,7 @@ class PipelineGenerator:
         Returns {"columns": [{"name": ..., "type": ...}], "row_count": N, "sample_data": [...]}
         """
         import duckdb
+
         from shared.data_utils import smart_load_file
 
         file_path = os.path.join(UPLOAD_DIR, file_name)

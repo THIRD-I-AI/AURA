@@ -5,18 +5,18 @@ from typing import Any, AsyncGenerator, Dict, Iterable, List, Optional
 
 import numpy as np
 from sqlalchemy import select
-from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from .db import get_session
 from .models import (
+    DatasetProfile,
     DataSource,
     Document,
     DocumentEmbedding,
-    User,
-    DatasetProfile,
-    SemanticModel,
     SemanticField,
+    SemanticModel,
+    User,
 )
 
 

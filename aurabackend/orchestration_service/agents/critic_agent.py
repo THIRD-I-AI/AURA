@@ -4,7 +4,6 @@ import sys
 from typing import Any
 
 # Add parent directory to path
-
 from shared.llm_provider import get_llm
 from shared.models import ValidationResult
 from shared.secret_resolver import secret_resolver

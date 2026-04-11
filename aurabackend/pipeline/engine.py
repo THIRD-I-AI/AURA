@@ -10,22 +10,22 @@ Thread-safe: each execution gets its own DuckDB connection.
 """
 from __future__ import annotations
 
+import logging
 import os
 import re
 import time
-import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from pipeline.models import (
     Pipeline,
     PipelineRun,
-    PipelineSource,
     PipelineSink,
-    ProcessingStep,
+    PipelineSource,
     PipelineStatus,
-    SourceType,
+    ProcessingStep,
     SinkType,
+    SourceType,
     StepType,
 )
 
@@ -182,7 +182,8 @@ class PipelineEngine:
 
     async def _load_db_source(self, conn: Any, source: PipelineSource) -> str:
         """Load data from PostgreSQL/MySQL into DuckDB via connector."""
-        from connectors import ConnectorConfig, SourceType as CSourceType, PostgreSQLConnector, MySQLConnector
+        from connectors import ConnectorConfig, MySQLConnector, PostgreSQLConnector
+        from connectors import SourceType as CSourceType
 
         cfg = source.connection or {}
         src_type = CSourceType.POSTGRESQL if source.type == SourceType.POSTGRESQL else CSourceType.MYSQL
@@ -550,7 +551,8 @@ class PipelineEngine:
         self, conn: Any, final_table: str, sink: PipelineSink, run: PipelineRun
     ) -> None:
         """Write DuckDB table to PostgreSQL."""
-        from connectors import ConnectorConfig, SourceType as CSourceType, PostgreSQLConnector
+        from connectors import ConnectorConfig, PostgreSQLConnector
+        from connectors import SourceType as CSourceType
 
         cfg = sink.connection or {}
         table_name = sink.table or "pipeline_output"

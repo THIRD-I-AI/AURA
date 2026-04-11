@@ -2,9 +2,11 @@
 MySQL connector for AURA
 """
 
-from typing import Any, Dict, List, Optional
-import aiomysql
 from datetime import datetime
+from typing import Any, Dict, List, Optional
+
+import aiomysql
+
 from .base import BaseConnector, ConnectorConfig
 
 
@@ -79,7 +81,7 @@ class MySQLConnector(BaseConnector):
                         f"DESC {table_name}"
                     )
                     rows = await cur.fetchall()
-                    
+
                     schema = {
                         "table_name": table_name,
                         "columns": [
@@ -126,7 +128,7 @@ class MySQLConnector(BaseConnector):
                     # Append LIMIT if not present
                     if "LIMIT" not in query.upper():
                         query = f"{query} LIMIT {limit}"
-                    
+
                     await cur.execute(query)
                     rows = await cur.fetchall()
                     return rows or []
@@ -154,10 +156,10 @@ class MySQLConnector(BaseConnector):
             for col in schema.get("columns", []):
                 col_name = col["name"]
                 col_type = col["type"]
-                
+
                 # Extract numeric values
                 col_values = [s.get(col_name) for s in samples if s.get(col_name) is not None]
-                
+
                 columns_profile[col_name] = {
                     "data_type": col_type,
                     "non_null": len(col_values),

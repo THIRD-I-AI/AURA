@@ -1,13 +1,15 @@
 from typing import Any
+
 from agents.base import AgentContext, AgentResult, AgentStatus, BaseAgent
 from shared.llm_provider import get_llm
+
 
 class IntentAgent(BaseAgent):
     """
     Analyzes user input to determine if it requires a SQL query or if it is purely conversational.
     Used as an early exit gateway so the planner doesn't run full database analysis for greetings.
     """
-    
+
     name = "IntentAgent"
     description = "Classifies user intent as 'conversational' or 'sql'."
 
@@ -16,7 +18,7 @@ class IntentAgent(BaseAgent):
             llm = get_llm()
             # Stringify context lightly to avoid overly massive prompt if many tables
             schema_keys = list(ctx.schema_context.keys()) if ctx.schema_context else []
-            
+
             intent_prompt = f"""You are AURA, an intelligent data assistant. Analyze the user's message and determine if it requires executing a SQL query against the database, or if it is a general conversational message (like a greeting, thanking, asking for help, or asking about the metadata/columns available).
 
 Available Tables Context:

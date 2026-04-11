@@ -16,7 +16,7 @@ import json
 import logging
 from typing import Any, Dict
 
-from pipeline.streaming.models import WindowState, StreamEvent
+from pipeline.streaming.models import StreamEvent, WindowState
 from pipeline.streaming.sinks.base import BaseSink
 
 logger = logging.getLogger("aura.streaming.sink.kafka")

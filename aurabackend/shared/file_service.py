@@ -1,16 +1,16 @@
+import hashlib
+import json
+import mimetypes
 import os
 import uuid
-import hashlib
-import mimetypes
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional, Dict, List, Any
-import json
+from typing import Any, Dict, List, Optional
 
 import aiofiles
 import numpy as np
 import pandas as pd
-from fastapi import UploadFile, HTTPException
+from fastapi import HTTPException, UploadFile
 
 
 class FileService:

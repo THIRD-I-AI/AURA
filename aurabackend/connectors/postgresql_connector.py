@@ -2,11 +2,13 @@
 PostgreSQL connector for AURA
 """
 
-import os
-from typing import Any, Dict, List, Optional
-import asyncpg
 import json
+import os
 from datetime import datetime
+from typing import Any, Dict, List, Optional
+
+import asyncpg
+
 from .base import BaseConnector, ConnectorConfig
 
 
@@ -87,7 +89,7 @@ class PostgreSQLConnector(BaseConnector):
                     """,
                     table_name,
                 )
-                
+
                 schema = {
                     "table_name": table_name,
                     "columns": [
@@ -133,7 +135,7 @@ class PostgreSQLConnector(BaseConnector):
                 # Append LIMIT if not present
                 if "LIMIT" not in query.upper():
                     query = f"{query} LIMIT {limit}"
-                
+
                 rows = await conn.fetch(query)
                 return [dict(row) for row in rows]
         except Exception as e:
@@ -158,10 +160,10 @@ class PostgreSQLConnector(BaseConnector):
             for col in schema.get("columns", []):
                 col_name = col["name"]
                 col_type = col["type"]
-                
+
                 # Extract numeric values
                 col_values = [s.get(col_name) for s in samples if s.get(col_name) is not None]
-                
+
                 columns_profile[col_name] = {
                     "data_type": col_type,
                     "non_null": len(col_values),

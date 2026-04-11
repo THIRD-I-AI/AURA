@@ -9,27 +9,27 @@ import asyncio
 import math
 import os
 import sys
+
 import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from uasr.drift_detector import DriftDetector
+from uasr.metrics import HealingMetricTracker, RecoveryEvent
 from uasr.models import (
     BatchPayload,
     DriftDetectionResult,
-    DriftType,
     DriftSeverity,
+    DriftType,
     RecoveryStatus,
 )
-from uasr.drift_detector import DriftDetector
+from uasr.recovery_loop import RecoveryLoop, RecoveryLoopConfig
 from uasr.semantic_gateway import (
-    SemanticGateway,
     ReferenceContextMatrix,
+    SemanticGateway,
     batch_embedding,
     cosine_similarity,
 )
-from uasr.metrics import HealingMetricTracker, RecoveryEvent
-from uasr.recovery_loop import RecoveryLoop, RecoveryLoopConfig
-
 
 # ────────────────────────────────────────────────────────────────
 # Helpers

@@ -5,17 +5,17 @@ Cross-cutting infrastructure: config, logging, exceptions, middleware, service f
 """
 
 from shared.config import settings
-from shared.logging_config import get_logger, setup_logging
 from shared.exceptions import (
     AuraError,
-    ValidationError,
-    NotFoundError,
     AuthenticationError,
-    ForbiddenError,
     DatabaseError,
+    ForbiddenError,
     LLMError,
+    NotFoundError,
     ServiceUnavailableError,
+    ValidationError,
 )
+from shared.logging_config import get_logger, setup_logging
 from shared.service_factory import create_service
 
 __all__ = [

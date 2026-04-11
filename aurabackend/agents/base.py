@@ -7,13 +7,12 @@ An agent receives an AgentContext, calls tools, and returns an AgentResult.
 from __future__ import annotations
 
 import os
-import uuid
 import time
+import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Dict, List, Optional, Callable, Awaitable
-
+from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 # ────────────────────────────────────────────────────────────────────
 # Enums & value objects

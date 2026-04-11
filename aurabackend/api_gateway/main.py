@@ -13,8 +13,8 @@ from typing import AsyncGenerator
 
 import httpx
 
-from shared.service_factory import create_service
 from shared.logging_config import get_logger
+from shared.service_factory import create_service
 
 logger = get_logger("aura.api_gateway")
 
@@ -65,11 +65,11 @@ app = create_service(
 # ── Mount routers ──────────────────────────────────────────────────
 
 from api_gateway.routers.chat import router as chat_router
-from api_gateway.routers.files import router as files_router
 from api_gateway.routers.connections import router as connections_router
-from api_gateway.routers.queries import router as queries_router
 from api_gateway.routers.etl import router as etl_router
+from api_gateway.routers.files import router as files_router
 from api_gateway.routers.pipelines import router as pipelines_router
+from api_gateway.routers.queries import router as queries_router
 from api_gateway.routers.stream import router as stream_router
 
 app.include_router(chat_router)
@@ -164,8 +164,9 @@ async def system_health():
 
     # Publish snapshot to the streaming manager so the LiveDashboard gets it
     try:
-        from shared.streaming_manager import streaming_manager, TOPIC_SYSTEM
         import asyncio
+
+        from shared.streaming_manager import TOPIC_SYSTEM, streaming_manager
         asyncio.create_task(streaming_manager.publish(
             __import__("shared.streaming_manager", fromlist=["StreamEvent"]).StreamEvent(
                 topic=f"{TOPIC_SYSTEM}:health",
