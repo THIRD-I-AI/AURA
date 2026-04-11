@@ -5,7 +5,6 @@ Tests for Pipeline, PipelineSource, PipelineSink, ProcessingStep,
 PipelineRun, and all enum types.
 """
 
-import pytest
 
 from pipeline.models import (
     Pipeline,
@@ -18,7 +17,6 @@ from pipeline.models import (
     SourceType,
     StepType,
 )
-
 
 # ── Enum coverage ────────────────────────────────────────────────────────────
 

@@ -8,8 +8,7 @@ QueryPlanner (cost estimation).
 
 import pytest
 
-from safety.validator import QueryPlanner, QueryRiskLevel, SQLSafetyValidator, ValidationResult
-
+from safety.validator import QueryPlanner, QueryRiskLevel, SQLSafetyValidator
 
 # ── Validator basics ─────────────────────────────────────────────────────────
 
