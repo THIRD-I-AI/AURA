@@ -14,7 +14,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from shared.logging_config import get_logger
-from shared.streaming_manager import streaming_manager, StreamEvent, TOPIC_PIPELINE
+from shared.streaming_manager import TOPIC_PIPELINE, StreamEvent, streaming_manager
 
 logger = get_logger("aura.api_gateway.pipelines")
 

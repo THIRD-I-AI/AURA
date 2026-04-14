@@ -5,14 +5,13 @@ File upload, listing, profiling, deletion, and supported-formats endpoints.
 """
 
 import os
-import shutil
 import uuid
 from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, File, Header, HTTPException, UploadFile
 
 from shared.logging_config import get_logger
-from shared.streaming_manager import streaming_manager, TOPIC_UPLOAD
+from shared.streaming_manager import TOPIC_UPLOAD, streaming_manager
 
 logger = get_logger("aura.api_gateway.files")
 

@@ -25,7 +25,7 @@ from agents.memory import AgentMemory
 from agents.planner import PlannerAgent
 from agents.tool_registry import ToolRegistry
 from agents.tools import ingest_and_profile, register_all_tools
-from shared.streaming_manager import streaming_manager, TOPIC_AGENT, StreamEvent
+from shared.streaming_manager import TOPIC_AGENT, StreamEvent, streaming_manager
 
 router = APIRouter(prefix="/agent", tags=["Agentic DE"])
 
