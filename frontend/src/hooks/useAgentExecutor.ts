@@ -3,6 +3,7 @@
  * Supports: /agent/plan, /agent/execute, /agent/execute/stream (SSE)
  */
 import { useState, useCallback, useRef } from 'react';
+import { useSSE, type SSEEvent } from './useSSE';
 
 const API_BASE = localStorage.getItem('apiUrl') || 'http://localhost:8000';
 
@@ -84,8 +85,42 @@ export function useAgentExecutor(): [AgentExecutorState, AgentExecutorActions] {
   const [report, setReport] = useState<AgentReport | null>(null);
   const [progress, setProgress] = useState<AgentProgress[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [sessionId, setSessionId] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const phaseRef = useRef<AgentPhase>('idle');
+
+  // Subscribe to the universal SSE bus whenever a session is active.
+  useSSE({
+    topic: sessionId ? `agent:${sessionId}` : '',
+    enabled: !!sessionId,
+    onEvent: (ev: SSEEvent) => {
+      if (ev.type === 'progress') {
+        const p = ev.payload as { message?: string; agent?: string; percent?: number };
+        setProgress((prev) => [...prev, {
+          agent: p.agent || 'agent',
+          message: p.message || '',
+          progress: typeof p.percent === 'number' ? p.percent / 100 : 0,
+        }]);
+      } else if (ev.type === 'data') {
+        const p = ev.payload as { kind?: string; plan_id?: string; summary?: string; tasks?: AgentTask[] };
+        if (p.kind === 'plan' && p.plan_id) {
+          setPlan({ plan_id: p.plan_id, summary: p.summary || '', tasks: p.tasks || [] });
+        }
+      } else if (ev.type === 'complete') {
+        const p = ev.payload as { result?: AgentReport };
+        if (p.result) setReport(p.result);
+        phaseRef.current = 'done';
+        setPhase('done');
+        setSessionId(null);
+      } else if (ev.type === 'error') {
+        const p = ev.payload as { error?: string };
+        setError(p.error || 'Agent failed');
+        phaseRef.current = 'error';
+        setPhase('error');
+        setSessionId(null);
+      }
+    },
+  });
 
   // Keep phaseRef in sync with the state value
   const updatePhase = useCallback((next: AgentPhase) => {
@@ -99,6 +134,7 @@ export function useAgentExecutor(): [AgentExecutorState, AgentExecutorActions] {
     setReport(null);
     setProgress([]);
     setError(null);
+    setSessionId(null);
     abortRef.current?.abort();
     abortRef.current = null;
   }, [updatePhase]);
@@ -106,6 +142,7 @@ export function useAgentExecutor(): [AgentExecutorState, AgentExecutorActions] {
   const abort = useCallback(() => {
     abortRef.current?.abort();
     abortRef.current = null;
+    setSessionId(null);
     updatePhase('idle');
   }, [updatePhase]);
 
@@ -169,71 +206,24 @@ export function useAgentExecutor(): [AgentExecutorState, AgentExecutorActions] {
     }
   }, [reset, updatePhase]);
 
-  // ── Stream (SSE) ────────────────────────────────────────────────
+  // ── Stream (SSE via universal streaming_manager) ───────────────
   const stream = useCallback(async (prompt: string, opts?: AgentOpts): Promise<void> => {
     reset();
     updatePhase('streaming');
 
-    const controller = new AbortController();
-    abortRef.current = controller;
-
     try {
-      const res = await fetch(`${API_BASE}/agent/execute/stream`, {
+      const res = await fetch(`${API_BASE}/agent/execute/async`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(buildBody(prompt, opts)),
-        signal: controller.signal,
       });
-
-      if (!res.ok || !res.body) {
+      if (!res.ok) {
         const errBody = await res.json().catch(() => ({ detail: res.statusText }));
         throw new Error(errBody.detail || res.statusText);
       }
-
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = '';
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n');
-        buffer = lines.pop() ?? '';
-
-        for (const line of lines) {
-          if (!line.startsWith('data: ')) continue;
-          const json = line.slice(6).trim();
-          if (!json) continue;
-
-          try {
-            const event = JSON.parse(json);
-
-            if (event.error) {
-              setError(event.error);
-              updatePhase('error');
-              return;
-            }
-            if (event.done && event.report) {
-              setReport(event.report);
-              updatePhase('done');
-              return;
-            }
-            // Progress event
-            setProgress((prev) => [...prev, event as AgentProgress]);
-          } catch {
-            // skip malformed SSE
-          }
-        }
-      }
-
-      // Stream ended without explicit done — use ref to avoid stale closure
-      if (phaseRef.current !== 'done' && phaseRef.current !== 'error') {
-        updatePhase('done');
-      }
+      const { session_id } = await res.json();
+      setSessionId(session_id);
     } catch (err) {
-      if ((err as Error).name === 'AbortError') return;
       const msg = err instanceof Error ? err.message : String(err);
       setError(msg);
       updatePhase('error');

@@ -12,6 +12,7 @@ import {
   type PipelineListItem,
 } from '../services/api';
 import './PipelinesPanel.css';
+import PipelineMonitor, { type PipelineRunSummary } from '../components/PipelineMonitor';
 
 /* ================================================================
    Types
@@ -124,6 +125,7 @@ const PipelinesPanel: React.FC<PipelinesPanelProps> = () => {
   const [aiPipeline, setAiPipeline] = useState<PipelineDef | null>(null);
   const [aiRun, setAiRun] = useState<PipelineRunResult | null>(null);
   const [aiExecuting, setAiExecuting] = useState(false);
+  const [aiRunId, setAiRunId] = useState<string | null>(null);
   const [aiError, setAiError] = useState<string | null>(null);
 
   // ── Saved Pipelines State ──
@@ -346,27 +348,32 @@ const PipelinesPanel: React.FC<PipelinesPanelProps> = () => {
     }
   };
 
-  // ── AI Pipeline: Execute ──
+  // ── AI Pipeline: Execute (live SSE) ──
   const handleAiExecute = async (previewOnly: boolean) => {
     if (!aiPipeline) return;
     setAiExecuting(true);
     setAiError(null);
     setAiRun(null);
-    console.log('[AI Pipeline] Executing (preview=%s):', previewOnly, aiPipeline.name);
+    setAiRunId(null);
+    console.log('[AI Pipeline] Executing live (preview=%s):', previewOnly, aiPipeline.name);
     try {
-      const resp = await pipelineService.execute(aiPipeline, previewOnly);
-      console.log('[AI Pipeline] Execute response:', resp);
-      if (resp.status === 'success' && resp.run) {
-        setAiRun(resp.run);
+      const resp = await pipelineService.executeAsync(aiPipeline, previewOnly);
+      if (resp.status === 'success' && resp.run_id) {
+        setAiRunId(resp.run_id);
       } else {
-        setAiError(resp.error || 'Pipeline execution failed');
+        setAiError('Pipeline execution could not be started');
+        setAiExecuting(false);
       }
     } catch (e: any) {
       setAiError(e.message || 'Pipeline execution failed');
-    } finally {
       setAiExecuting(false);
     }
   };
+
+  const handleAiRunComplete = useCallback((summary: PipelineRunSummary) => {
+    setAiRun(summary as unknown as PipelineRunResult);
+    setAiExecuting(false);
+  }, []);
 
   // ── AI Pipeline: Save ──
   const handleAiSave = async () => {
@@ -672,6 +679,13 @@ const PipelinesPanel: React.FC<PipelinesPanelProps> = () => {
                 </button>
               </div>
             </>
+          )}
+
+          {/* ── Live pipeline run (SSE) ── */}
+          {aiRunId && (
+            <div style={{ marginTop: 'var(--space-4)' }}>
+              <PipelineMonitor runId={aiRunId} onComplete={handleAiRunComplete} />
+            </div>
           )}
 
           {/* ── AI Run Result ── */}

@@ -25,6 +25,7 @@ from agents.memory import AgentMemory
 from agents.planner import PlannerAgent
 from agents.tool_registry import ToolRegistry
 from agents.tools import ingest_and_profile, register_all_tools
+from shared.streaming_manager import streaming_manager, TOPIC_AGENT, StreamEvent
 
 router = APIRouter(prefix="/agent", tags=["Agentic DE"])
 
@@ -203,6 +204,102 @@ async def execute_prompt_stream(req: AgentExecuteRequest):
         yield f"data: {json.dumps({'done': True, 'report': report.to_dict()})}\n\n"
 
     return StreamingResponse(_generate(), media_type="text/event-stream")
+
+
+class AgentAsyncResponse(BaseModel):
+    session_id: str
+    topic: str
+
+
+@router.post("/execute/async", response_model=AgentAsyncResponse)
+async def execute_prompt_async(req: AgentExecuteRequest):
+    """Kick off plan + execute in the background.
+
+    Returns ``{session_id, topic}`` immediately. The caller subscribes to
+    ``GET /stream/agent:{session_id}`` to receive live progress/complete/error
+    events published through the universal streaming bus.
+    """
+    session_id = uuid.uuid4().hex
+
+    async def _run() -> None:
+        try:
+            await streaming_manager.publish_progress(
+                TOPIC_AGENT, session_id, "Enriching schema", 0.02,
+                extra={"stage": "schema"},
+            )
+            registry = _make_registry()
+            memory = AgentMemory()
+            schema = await _enrich_schema_from_files(req.files, req.schema_context)
+
+            async def _cb(message: str, agent: str, pct: float) -> None:
+                try:
+                    p = float(pct)
+                except (TypeError, ValueError):
+                    p = 0.0
+                await streaming_manager.publish_progress(
+                    TOPIC_AGENT, session_id, message, p,
+                    extra={"agent": agent},
+                )
+
+            await streaming_manager.publish_progress(
+                TOPIC_AGENT, session_id, "Planning", 0.05,
+                extra={"stage": "planning"},
+            )
+            planner = PlannerAgent()
+            planner.set_progress_callback(_cb)
+            ctx = AgentContext(
+                user_prompt=req.prompt,
+                task_description=req.prompt,
+                session_id=session_id,
+                files=req.files,
+                connection=req.connection or {},
+                schema_context=schema,
+                metadata={"execute": req.execute_sql},
+            )
+            plan_result = await planner.execute(ctx)
+            if plan_result.status != AgentStatus.SUCCESS or "plan" not in plan_result.artifacts:
+                await streaming_manager.publish_error(
+                    TOPIC_AGENT, session_id,
+                    plan_result.error or "Planning failed",
+                    code="PLANNING_FAILED",
+                )
+                return
+
+            plan = plan_result.artifacts["plan"]
+            await streaming_manager.publish(StreamEvent(
+                topic=f"{TOPIC_AGENT}:{session_id}",
+                event_type="data",
+                payload={
+                    "kind": "plan",
+                    "plan_id": plan.plan_id,
+                    "summary": plan.summary,
+                    "tasks": [t.to_dict() if hasattr(t, "to_dict") else _task_dict(t) for t in plan.tasks],
+                },
+            ))
+
+            executor = DAGExecutor(
+                tool_registry=registry, memory=memory, progress_cb=_cb,
+            )
+            report = await executor.execute(
+                plan=plan,
+                user_prompt=req.prompt,
+                connection=req.connection or {},
+                files=req.files,
+                schema_context=schema,
+            )
+            await streaming_manager.publish_complete(
+                TOPIC_AGENT, session_id, report.to_dict(),
+            )
+        except Exception as exc:  # pragma: no cover
+            await streaming_manager.publish_error(
+                TOPIC_AGENT, session_id, str(exc), code="AGENT_FAILED",
+            )
+
+    asyncio.create_task(_run())
+    return AgentAsyncResponse(
+        session_id=session_id,
+        topic=f"{TOPIC_AGENT}:{session_id}",
+    )
 
 
 @router.get("/tools")

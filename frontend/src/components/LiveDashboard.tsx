@@ -19,6 +19,7 @@ import { useSSE, type SSEEvent } from '../hooks/useSSE';
 import Card, { CardHeader, CardBody } from './ui/Card';
 import { ChartSkeleton } from './ui/Skeleton';
 import { useToast } from '../contexts/ToastContext';
+import UASRMetricsPanel from './UASRMetricsPanel';
 
 const MAX_HISTORY = 30;
 
@@ -296,6 +297,9 @@ export default function LiveDashboard() {
           )}
         </CardBody>
       </Card>
+
+      {/* ── UASR self-healing metrics ───────────────────────────── */}
+      <UASRMetricsPanel />
     </div>
   );
 }

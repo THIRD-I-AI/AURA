@@ -4,7 +4,9 @@ Pipelines Router
 AI-driven pipeline management, semantic models, and UASR proxy endpoints.
 """
 
+import asyncio
 import os
+import uuid
 from typing import Any, Dict, List, Optional
 
 import httpx
@@ -12,6 +14,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from shared.logging_config import get_logger
+from shared.streaming_manager import streaming_manager, StreamEvent, TOPIC_PIPELINE
 
 logger = get_logger("aura.api_gateway.pipelines")
 
@@ -135,6 +138,89 @@ async def pipeline_execute(req: PipelineExecuteRequest):
     except Exception as e:
         logger.error("[Pipeline] Execute failed: %s", e, exc_info=True)
         return {"status": "error", "error": str(e)}
+
+
+@router.post("/pipeline/execute/async")
+async def pipeline_execute_async(req: PipelineExecuteRequest):
+    """Kick off pipeline execution in the background and publish live progress.
+
+    Returns ``{run_id, topic}``. Subscribe to ``GET /stream/pipeline:{run_id}``
+    for plan + stage progress + final run result.
+    """
+    try:
+        pipeline = PipelineModel(**req.pipeline)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid pipeline: {e}")
+
+    run_id = uuid.uuid4().hex
+
+    async def _run() -> None:
+        topic = f"{TOPIC_PIPELINE}:{run_id}"
+        try:
+            steps_meta = [
+                {"id": getattr(s, "id", str(i)), "name": getattr(s, "name", getattr(s, "type", f"step_{i}")),
+                 "type": getattr(getattr(s, "type", ""), "value", str(getattr(s, "type", "")))}
+                for i, s in enumerate(pipeline.steps or [])
+            ]
+            await streaming_manager.publish(StreamEvent(
+                topic=topic, event_type="data",
+                payload={
+                    "kind": "plan",
+                    "pipeline_id": pipeline.id,
+                    "pipeline_name": pipeline.name,
+                    "source": pipeline.source.label() if hasattr(pipeline.source, "label") else str(pipeline.source),
+                    "sink": getattr(getattr(pipeline.sink, "type", ""), "value", ""),
+                    "steps": steps_meta,
+                },
+            ))
+
+            await streaming_manager.publish_progress(
+                TOPIC_PIPELINE, run_id, "Loading source", 0.10,
+                extra={"stage": "source"},
+            )
+            await streaming_manager.publish_progress(
+                TOPIC_PIPELINE, run_id, "Building transform SQL", 0.25,
+                extra={"stage": "build_sql"},
+            )
+
+            # Publish a "running" event per declared step (coarse — engine
+            # does not expose mid-run hooks, so these mark intent).
+            n = max(1, len(steps_meta))
+            for i, s in enumerate(steps_meta):
+                pct = 0.30 + 0.50 * ((i + 1) / (n + 1))
+                await streaming_manager.publish_progress(
+                    TOPIC_PIPELINE, run_id,
+                    f"Running step: {s['name']}", pct,
+                    extra={"stage": "transform", "step_id": s["id"], "step_index": i},
+                )
+
+            run = await _pipeline_engine.execute(
+                pipeline, preview_only=req.preview_only,
+            )
+
+            await streaming_manager.publish_progress(
+                TOPIC_PIPELINE, run_id,
+                "Sink complete" if not req.preview_only else "Preview ready",
+                0.95, extra={"stage": "sink"},
+            )
+
+            if run.status.value == "failed":
+                await streaming_manager.publish_error(
+                    TOPIC_PIPELINE, run_id,
+                    run.error or "Pipeline failed", code="PIPELINE_FAILED",
+                )
+                return
+
+            await streaming_manager.publish_complete(
+                TOPIC_PIPELINE, run_id, run.model_dump(),
+            )
+        except Exception as exc:
+            await streaming_manager.publish_error(
+                TOPIC_PIPELINE, run_id, str(exc), code="PIPELINE_FAILED",
+            )
+
+    asyncio.create_task(_run())
+    return {"status": "success", "run_id": run_id, "topic": f"{TOPIC_PIPELINE}:{run_id}"}
 
 
 @router.post("/pipeline/save")
