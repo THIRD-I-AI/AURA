@@ -62,7 +62,9 @@ def test_file_service_profiling():
     with tempfile.NamedTemporaryFile(mode='w', suffix='.csv', delete=False) as f:
         df.to_csv(f, index=False)
         f.flush()
+        tmp_name = f.name
 
+    try:
         # Profile the file
         file_service = FileService()
         profile = file_service._profile_dataframe(df)
@@ -78,8 +80,8 @@ def test_file_service_profiling():
         col_profile = profile['columns_profile']
         assert 'name' in col_profile
         assert col_profile['name']['non_null'] == 3
-
-        os.unlink(f.name)
+    finally:
+        os.unlink(tmp_name)
 
 
 # ==================== Test Semantic Builder ====================
