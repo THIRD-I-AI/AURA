@@ -1,0 +1,92 @@
+# ──────────────────────────────────────────────────────────────────────────
+# AURA Production Overrides
+# Usage: docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+# ──────────────────────────────────────────────────────────────────────────
+
+x-prod-common: &prod-common
+  restart: always
+  deploy:
+    resources:
+      limits:
+        cpus: "1.0"
+        memory: 512M
+      reservations:
+        cpus: "0.25"
+        memory: 128M
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+
+services:
+  # ── Frontend (nginx) ──────────────────────────────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "80:80"
+    depends_on:
+      api_gateway:
+        condition: service_healthy
+    <<: *prod-common
+
+  # ── Production overrides for backend services ─────────────────────────
+  api_gateway:
+    <<: *prod-common
+    command: uvicorn api_gateway.main:app --host 0.0.0.0 --port 8000 --workers 4
+    volumes: []  # no hot-reload mount in prod
+    environment:
+      - PYTHONPATH=/app
+      - ENVIRONMENT=production
+      - DEBUG=false
+      - LOG_LEVEL=warning
+      - ORCHESTRATION_SERVICE_URL=http://orchestration_service:8006/v1/orchestrations/query
+      - AURA_CODEGEN_URL=http://code_generation_service:8001
+      - AURA_CONNECTORS_URL=http://connector_service:8002
+      - AURA_SANDBOX_URL=http://execution_sandbox:8003
+      - AURA_SCHEDULER_URL=http://scheduler_service:8004
+      - AURA_INSIGHTS_URL=http://insights_service:8005
+
+  code_generation_service:
+    <<: *prod-common
+    command: uvicorn code_generation_service.main:code_gen_app --host 0.0.0.0 --port 8001 --workers 2
+    volumes: []
+
+  connector_service:
+    <<: *prod-common
+    command: uvicorn connectors.main:app --host 0.0.0.0 --port 8002 --workers 2
+    volumes: []
+
+  execution_sandbox:
+    <<: *prod-common
+    command: uvicorn execution_sandbox.main:execution_app --host 0.0.0.0 --port 8003 --workers 2
+    volumes:
+      - scheduler_data:/app/data
+
+  scheduler_service:
+    <<: *prod-common
+    command: uvicorn scheduler_service.main:scheduler_app --host 0.0.0.0 --port 8004 --workers 1
+    volumes:
+      - scheduler_data:/app/data
+
+  insights_service:
+    <<: *prod-common
+    command: uvicorn insights.main:app --host 0.0.0.0 --port 8005 --workers 2
+    volumes: []
+
+  orchestration_service:
+    <<: *prod-common
+    command: uvicorn orchestration_service.main:app --host 0.0.0.0 --port 8006 --workers 2
+    volumes: []
+
+  metadata_store:
+    <<: *prod-common
+    command: uvicorn metadata_store.main:metadata_app --host 0.0.0.0 --port 8007 --workers 1
+    volumes: []
+
+  uasr_service:
+    <<: *prod-common
+    command: uvicorn uasr.service:app --host 0.0.0.0 --port 8009 --workers 1
+    volumes: []
