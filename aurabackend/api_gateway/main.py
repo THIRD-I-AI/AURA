@@ -21,6 +21,31 @@ logger = get_logger("aura.api_gateway")
 
 # ── Lifespan: start/stop background services ──────────────────────
 
+_UASR_URL = os.getenv("AURA_UASR_URL", "http://localhost:8009")
+_UASR_POLL_INTERVAL = float(os.getenv("AURA_UASR_POLL_SECONDS", "5"))
+
+
+async def _uasr_metrics_poller(stop_event: asyncio.Event) -> None:
+    """Poll UASR metrics every few seconds and publish to ``uasr:metrics``."""
+    from shared.streaming_manager import StreamEvent, streaming_manager
+
+    topic = "uasr:metrics"
+    async with httpx.AsyncClient(timeout=5) as client:
+        while not stop_event.is_set():
+            try:
+                r = await client.get(f"{_UASR_URL}/uasr/metrics")
+                if r.status_code == 200:
+                    await streaming_manager.publish(StreamEvent(
+                        topic=topic, event_type="data", payload=r.json(),
+                    ))
+            except Exception as exc:
+                logger.debug("UASR metrics poll failed: %s", exc)
+            try:
+                await asyncio.wait_for(stop_event.wait(), timeout=_UASR_POLL_INTERVAL)
+            except asyncio.TimeoutError:
+                pass
+
+
 @asynccontextmanager
 async def _lifespan(app) -> AsyncGenerator[None, None]:
     # Initialise evolution DB tables
@@ -42,7 +67,19 @@ async def _lifespan(app) -> AsyncGenerator[None, None]:
     except Exception as exc:
         logger.warning("Could not start evolution engine: %s", exc)
 
+    # Start UASR metrics poller
+    uasr_stop = asyncio.Event()
+    uasr_task = asyncio.create_task(_uasr_metrics_poller(uasr_stop))
+    logger.info("UASR metrics poller started (interval=%ss)", _UASR_POLL_INTERVAL)
+
     yield  # ── application runs ──
+
+    # Stop UASR poller
+    uasr_stop.set()
+    try:
+        await asyncio.wait_for(uasr_task, timeout=2)
+    except (asyncio.TimeoutError, asyncio.CancelledError):
+        uasr_task.cancel()
 
     # Stop evolution engine gracefully
     try:

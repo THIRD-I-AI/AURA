@@ -6,6 +6,43 @@ import Alert from './ui/Alert';
 import Card, { CardBody, CardHeader } from './ui/Card';
 import Badge from './ui/Badge';
 import { uploadService, type UploadResponse } from '../services/api';
+import { useSSE, type SSEEvent } from '../hooks/useSSE';
+
+const generateUploadId = (): string => {
+  if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) {
+    return (crypto as { randomUUID: () => string }).randomUUID().replace(/-/g, '');
+  }
+  return Math.random().toString(36).slice(2) + Date.now().toString(36);
+};
+
+interface UploadProgressPayload {
+  stage?: string;
+  message?: string;
+  percent?: number;
+  bytes?: number;
+  total?: number;
+}
+
+/** Row-scoped SSE subscriber that pushes live progress into the parent queue. */
+const UploadProgressSubscriber: React.FC<{
+  uploadId: string;
+  enabled: boolean;
+  onProgress: (percent: number, stage?: string) => void;
+}> = ({ uploadId, enabled, onProgress }) => {
+  useSSE({
+    topic: `upload:${uploadId}`,
+    enabled,
+    onEvent: (ev: SSEEvent) => {
+      if (ev.type === 'progress') {
+        const p = ev.payload as UploadProgressPayload;
+        if (typeof p.percent === 'number') onProgress(p.percent, p.stage);
+      } else if (ev.type === 'complete') {
+        onProgress(100, 'complete');
+      }
+    },
+  });
+  return null;
+};
 
 interface FileUploadProps {
   onFileUploaded?: (response: UploadResponse) => void;
@@ -88,7 +125,9 @@ export const FileUpload: React.FC<FileUploadProps> = ({
 }) => {
   interface QueueItem {
     file: File;
+    uploadId: string;
     progress: number;
+    stage?: string;
     status: 'pending' | 'uploading' | 'completed' | 'error';
     response?: UploadResponse;
     error?: string;
@@ -197,14 +236,19 @@ export const FileUpload: React.FC<FileUploadProps> = ({
   const startBatchUpload = async (files: File[]) => {
     setIsUploading(true);
     setError(null);
-    const queue: QueueItem[] = files.map((file) => ({ file, progress: 0, status: 'pending' as const }));
+    const queue: QueueItem[] = files.map((file) => ({
+      file,
+      uploadId: generateUploadId(),
+      progress: 0,
+      status: 'pending' as const,
+    }));
     setUploadQueue(queue);
-    for (let i = 0; i < files.length; i++) await uploadSingleFile(files[i], i);
+    for (let i = 0; i < queue.length; i++) await uploadSingleFile(queue[i].file, i, queue[i].uploadId);
     setIsUploading(false);
     setBatchComplete(true);
   };
 
-  const uploadSingleFile = async (file: File, index: number) => {
+  const uploadSingleFile = async (file: File, index: number, uploadId: string) => {
     setUploadQueue((prev) => {
       const u = [...prev];
       u[index] = { ...u[index], status: 'uploading', progress: 0 };
@@ -213,17 +257,10 @@ export const FileUpload: React.FC<FileUploadProps> = ({
 
     try {
       const fileAnalysis = await analyzeFileContent(file);
-      const progressInterval = setInterval(() => {
-        setUploadQueue((prev) => {
-          const u = [...prev];
-          if (u[index].progress < 90) u[index] = { ...u[index], progress: u[index].progress + 10 };
-          return u;
-        });
-      }, 200);
 
       let response: UploadResponse;
       try {
-        response = await uploadService.uploadFile(file);
+        response = await uploadService.uploadFile(file, uploadId);
       } catch (uploadError) {
         console.warn('Backend upload failed, using analyzed data:', uploadError);
         const mockId = 'AURA-' + Math.random().toString(36).toUpperCase().substring(2, 6);
@@ -235,8 +272,6 @@ export const FileUpload: React.FC<FileUploadProps> = ({
           success: true,
         };
       }
-
-      clearInterval(progressInterval);
 
       const enrichedResponse = {
         ...response,
@@ -459,11 +494,34 @@ export const FileUpload: React.FC<FileUploadProps> = ({
                     {/* Status badge */}
                     <div style={{ flexShrink: 0 }}>
                       {item.status === 'pending'   && <Badge color="default">Pending</Badge>}
-                      {item.status === 'uploading' && <Badge color="blue">Uploading {item.progress}%</Badge>}
+                      {item.status === 'uploading' && (
+                        <Badge color="blue">
+                          {item.stage ? `${item.stage} ${item.progress}%` : `Uploading ${item.progress}%`}
+                        </Badge>
+                      )}
                       {item.status === 'completed' && <Badge color="green">Uploaded</Badge>}
                       {item.status === 'error'     && <Badge color="red">Failed</Badge>}
                     </div>
                   </div>
+
+                  {/* Live SSE progress subscriber (only active while uploading) */}
+                  <UploadProgressSubscriber
+                    uploadId={item.uploadId}
+                    enabled={item.status === 'uploading'}
+                    onProgress={(percent, stage) => {
+                      setUploadQueue((prev) => {
+                        const u = [...prev];
+                        if (u[index] && u[index].status === 'uploading') {
+                          u[index] = {
+                            ...u[index],
+                            progress: Math.max(u[index].progress, Math.round(percent)),
+                            stage,
+                          };
+                        }
+                        return u;
+                      });
+                    }}
+                  />
 
                   {/* Progress bar */}
                   {item.status === 'uploading' && (

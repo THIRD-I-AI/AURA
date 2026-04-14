@@ -247,18 +247,21 @@ class ApiClient {
    * Upload file with FormData
    * Simplified upload with hardcoded backend URL and no headers for proper multipart/form-data handling
    */
-  async uploadFile(file: File): Promise<any> {
+  async uploadFile(file: File, uploadId?: string): Promise<any> {
     const TARGET_URL = `${API_BASE_URL}/upload`;
     console.log("🚀 STARTING UPLOAD TO:", TARGET_URL);
-    
+
     const formData = new FormData();
-    formData.append('file', file); // Use 'file' as the key
-    
+    formData.append('file', file);
+
+    const headers: Record<string, string> = {};
+    if (uploadId) headers['X-Upload-Id'] = uploadId;
+
     try {
       const response = await fetch(TARGET_URL, {
         method: 'POST',
         body: formData,
-        // NO HEADERS defined here (Browser handles it)
+        headers,
       });
       
       console.log("✅ RESPONSE STATUS:", response.status);
@@ -468,8 +471,8 @@ export const executionService = {
  * Upload Service - File uploads (CSV, Excel, Parquet)
  */
 export const uploadService = {
-  async uploadFile(file: File): Promise<UploadResponse> {
-    return client.uploadFile(file);
+  async uploadFile(file: File, uploadId?: string): Promise<UploadResponse> {
+    return client.uploadFile(file, uploadId);
   },
 
   async getUploadedFiles(): Promise<Array<{ id: string; name: string; uploaded_at: string }>> {
@@ -689,6 +692,16 @@ export const pipelineService = {
   /** Execute a pipeline definition */
   async execute(pipeline: PipelineDef, previewOnly = false): Promise<PipelineExecuteResponse> {
     return client.post<PipelineExecuteResponse>('/pipeline/execute', {
+      pipeline,
+      preview_only: previewOnly,
+    });
+  },
+
+  /** Kick off execution in the background and get a run_id for SSE. */
+  async executeAsync(
+    pipeline: PipelineDef, previewOnly = false,
+  ): Promise<{ status: string; run_id: string; topic: string }> {
+    return client.post('/pipeline/execute/async', {
       pipeline,
       preview_only: previewOnly,
     });

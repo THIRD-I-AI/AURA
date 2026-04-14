@@ -5,12 +5,13 @@ File upload, listing, profiling, deletion, and supported-formats endpoints.
 """
 
 import os
-import shutil
-from typing import Any, Dict
+import uuid
+from typing import Any, Dict, Optional
 
-from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi import APIRouter, File, Header, HTTPException, UploadFile
 
 from shared.logging_config import get_logger
+from shared.streaming_manager import TOPIC_UPLOAD, streaming_manager
 
 logger = get_logger("aura.api_gateway.files")
 
@@ -59,32 +60,74 @@ def get_supported_formats() -> Dict[str, Any]:
 async def upload_universal(
     file: UploadFile = File(None),
     upload_file: UploadFile = File(None),
+    x_upload_id: Optional[str] = Header(None, alias="X-Upload-Id"),
 ):
-    """Universal file upload endpoint — accepts both 'file' and 'upload_file' parameter names."""
+    """Universal file upload endpoint — accepts both 'file' and 'upload_file' parameter names.
+
+    Publishes real-time progress to SSE topic ``upload:{upload_id}``. The client
+    may provide its own id via the ``X-Upload-Id`` header (recommended so it can
+    subscribe before POSTing); otherwise one is generated server-side.
+    """
     target_file = file or upload_file
 
     if not target_file:
         raise HTTPException(status_code=422, detail="No file sent. Ensure formData uses key 'file'")
 
-    logger.info("Receiving file: %s", target_file.filename)
+    upload_id = x_upload_id or uuid.uuid4().hex
+    logger.info("Receiving file: %s (upload_id=%s)", target_file.filename, upload_id)
 
     try:
+        await streaming_manager.publish_progress(
+            TOPIC_UPLOAD, upload_id,
+            f"Receiving {target_file.filename}", 0.05,
+            extra={"stage": "receiving", "filename": target_file.filename},
+        )
+
         upload_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "data", "uploads")
         os.makedirs(upload_dir, exist_ok=True)
 
         file_path = os.path.join(upload_dir, target_file.filename)
+        bytes_written = 0
         with open(file_path, "wb") as buffer:
-            shutil.copyfileobj(target_file.file, buffer)
+            while True:
+                chunk = await target_file.read(1024 * 256)  # 256 KB
+                if not chunk:
+                    break
+                buffer.write(chunk)
+                bytes_written += len(chunk)
+                total = getattr(target_file, "size", None) or 0
+                if total > 0:
+                    pct = min(0.85, 0.10 + 0.75 * (bytes_written / total))
+                    await streaming_manager.publish_progress(
+                        TOPIC_UPLOAD, upload_id,
+                        f"Streaming {bytes_written // 1024} KB",
+                        pct,
+                        extra={"stage": "streaming", "bytes": bytes_written, "total": total},
+                    )
 
-        logger.info("File saved to %s", file_path)
+        await streaming_manager.publish_progress(
+            TOPIC_UPLOAD, upload_id,
+            "Saved to disk", 0.90,
+            extra={"stage": "saved", "path": file_path, "bytes": bytes_written},
+        )
 
-        return {
+        logger.info("File saved to %s (%d bytes)", file_path, bytes_written)
+
+        result = {
+            "upload_id": upload_id,
             "filename": target_file.filename,
+            "bytes": bytes_written,
             "status": "success",
             "message": "File uploaded successfully",
         }
+
+        await streaming_manager.publish_complete(TOPIC_UPLOAD, upload_id, result)
+        return result
     except Exception as e:
         logger.error("Upload failed: %s", e)
+        await streaming_manager.publish_error(
+            TOPIC_UPLOAD, upload_id, str(e), code="UPLOAD_FAILED",
+        )
         raise HTTPException(status_code=500, detail=f"Server save failed: {str(e)}")
 
 
