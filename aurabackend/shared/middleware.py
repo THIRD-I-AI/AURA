@@ -136,10 +136,12 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         app,
         requests_per_window: int = 100,
         window_seconds: int = 60,
+        exempt_path_prefixes: tuple[str, ...] = ("/stream/",),
     ) -> None:
         super().__init__(app)
         self._max_requests = requests_per_window
         self._window = window_seconds
+        self._exempt_prefixes = exempt_path_prefixes
         # {client_ip: [timestamp, ...]}
         self._hits: dict[str, list[float]] = defaultdict(list)
 
@@ -154,7 +156,12 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         return [t for t in timestamps if t > cutoff]
 
     async def dispatch(self, request: Request, call_next: Callable):
-        if request.url.path in _PUBLIC_PATHS:
+        path = request.url.path
+        if path in _PUBLIC_PATHS:
+            return await call_next(request)
+        # Exempt long-lived SSE streams — they hold one connection open for
+        # minutes and would instantly exhaust a per-IP sliding window.
+        if any(path.startswith(p) for p in self._exempt_prefixes):
             return await call_next(request)
 
         now = time.time()

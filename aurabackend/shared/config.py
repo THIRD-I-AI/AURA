@@ -183,6 +183,11 @@ class AuraSettings(BaseSettings):
     # ── API Key Auth (opt-in) ───────────────────────────────────────────
     api_key: Optional[str] = Field(None, alias="AURA_API_KEY")
 
+    # ── Rate Limiting ───────────────────────────────────────────────────
+    rate_limit_enabled: bool = Field(True, alias="AURA_RATE_LIMIT_ENABLED")
+    rate_limit_requests: int = Field(100, alias="AURA_RATE_LIMIT_REQUESTS")
+    rate_limit_window_seconds: int = Field(60, alias="AURA_RATE_LIMIT_WINDOW_SECONDS")
+
     model_config = {
         "env_file": _locate_env_files(),
         "env_file_encoding": "utf-8",

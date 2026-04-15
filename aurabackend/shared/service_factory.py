@@ -109,8 +109,19 @@ def create_service(
         allow_methods=["*"],
         allow_headers=["*"],
     )
-    #  2. Rate limiting  (always on — 100 req/min per IP)
-    app.add_middleware(RateLimitMiddleware, requests_per_window=100, window_seconds=60)
+    #  2. Rate limiting  (env-driven; can be disabled via AURA_RATE_LIMIT_ENABLED=0)
+    if settings.rate_limit_enabled:
+        app.add_middleware(
+            RateLimitMiddleware,
+            requests_per_window=settings.rate_limit_requests,
+            window_seconds=settings.rate_limit_window_seconds,
+        )
+        logger.info(
+            "Rate limiting ENABLED for %s (%d req / %ds per IP)",
+            name, settings.rate_limit_requests, settings.rate_limit_window_seconds,
+        )
+    else:
+        logger.warning("Rate limiting DISABLED for %s (AURA_RATE_LIMIT_ENABLED=false)", name)
     #  3. API Key auth  (opt-in — only when AURA_API_KEY is set)
     if settings.api_key:
         app.add_middleware(APIKeyMiddleware, api_key=settings.api_key)
