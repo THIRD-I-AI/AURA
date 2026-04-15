@@ -13,8 +13,9 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
-from alembic import command
 from alembic.config import Config
+
+from alembic import command
 
 _BACKEND_ROOT = Path(__file__).resolve().parent.parent
 _ALEMBIC_INI = _BACKEND_ROOT / "alembic.ini"

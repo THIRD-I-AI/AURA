@@ -14,17 +14,18 @@ from __future__ import annotations
 import asyncio
 from logging.config import fileConfig
 
-from alembic import context
 from sqlalchemy import pool
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
+
+from alembic import context
+from evolution import models as _evolution_models  # noqa: F401
 
 # ── Register all AURA model metadata ──────────────────────────────
 # Importing these modules side-effects-registers their tables on
 # Base.metadata. Add new model modules here as they are introduced.
 from metadata_store import models as _metadata_models  # noqa: F401
 from metadata_store.db import DATABASE_URL, Base
-from evolution import models as _evolution_models  # noqa: F401
 from uasr import models as _uasr_models  # noqa: F401
 
 # Alembic Config object — values come from alembic.ini.
