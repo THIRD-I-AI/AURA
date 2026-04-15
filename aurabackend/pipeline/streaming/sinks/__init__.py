@@ -16,6 +16,7 @@ from pipeline.streaming.sinks.database_sink import DatabaseSink
 from pipeline.streaming.sinks.file_sink import FileSink
 from pipeline.streaming.sinks.kafka_sink import KafkaSink
 from pipeline.streaming.sinks.sse_sink import SSESink
+from pipeline.streaming.sinks.webhook_sink import WebhookSink
 
 __all__ = [
     "BaseSink",
@@ -25,4 +26,5 @@ __all__ = [
     "FileSink",
     "AlertSink",
     "KafkaSink",
+    "WebhookSink",
 ]

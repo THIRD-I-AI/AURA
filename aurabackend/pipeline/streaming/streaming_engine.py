@@ -40,10 +40,12 @@ from pipeline.streaming.sinks.database_sink import DatabaseSink
 from pipeline.streaming.sinks.file_sink import FileSink
 from pipeline.streaming.sinks.kafka_sink import KafkaSink
 from pipeline.streaming.sinks.sse_sink import SSESink
+from pipeline.streaming.sinks.webhook_sink import WebhookSink
 from pipeline.streaming.sources.base import BaseSource
 from pipeline.streaming.sources.file_watcher import FileWatcherSource
 from pipeline.streaming.sources.kafka_source import KafkaSource
 from pipeline.streaming.sources.simulated import SimulatedSource
+from pipeline.streaming.sources.websocket_source import WebSocketSource
 from pipeline.streaming.state_manager import StateManager
 from pipeline.streaming.window_processor import WindowProcessor
 
@@ -63,6 +65,8 @@ def _create_source(pipeline: StreamPipeline) -> BaseSource:
         return FileWatcherSource(cfg)
     if src.type.value == "kafka":
         return KafkaSource(cfg)
+    if src.type.value == "websocket":
+        return WebSocketSource(cfg)
     raise ValueError(f"Unsupported source type: {src.type}")
 
 
@@ -81,6 +85,8 @@ def _create_sink(sink_def) -> BaseSink:
         return AlertSink(cfg)
     if t == "kafka":
         return KafkaSink(cfg)
+    if t == "webhook":
+        return WebhookSink(cfg)
     raise ValueError(f"Unsupported sink type: {t}")
 
 

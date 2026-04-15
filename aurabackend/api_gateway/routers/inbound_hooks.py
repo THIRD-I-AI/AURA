@@ -141,6 +141,19 @@ async def fire_hook(slug: str, request: Request) -> Dict[str, Any]:
 
     inbound_hooks.record_fire(hook)
 
+    # Announce on the streaming bus so audits / outbound webhooks see the trigger.
+    try:
+        await streaming_manager.publish(StreamEvent(
+            topic=f"hooks:{hook.slug}",
+            event_type="complete",
+            payload={
+                "hook_id": hook.id, "slug": hook.slug, "kind": hook.kind,
+                "fire_count": hook.fire_count,
+            },
+        ))
+    except Exception:
+        pass
+
     if hook.kind == "pipeline":
         return await _fire_pipeline(hook.target, payload)
     elif hook.kind == "agent":
