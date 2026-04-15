@@ -48,15 +48,23 @@ async def _uasr_metrics_poller(stop_event: asyncio.Event) -> None:
 
 @asynccontextmanager
 async def _lifespan(app) -> AsyncGenerator[None, None]:
-    # Initialise evolution DB tables
+    # Run Alembic migrations to head — single source of truth for schema.
+    # Falls back to create_all() if Alembic fails (e.g. dev environments
+    # without the migration tree installed).
     try:
-        from evolution.db import init_evolution_db
-        from metadata_store.db import init_db
-        await init_db()
-        await init_evolution_db()
-        logger.info("Evolution DB tables initialised")
+        from shared.db_migrations import run_migrations_to_head
+        await run_migrations_to_head()
+        logger.info("Alembic migrations applied (head)")
     except Exception as exc:
-        logger.warning("Evolution DB init failed (non-fatal): %s", exc)
+        logger.warning("Alembic migrations failed, falling back to create_all: %s", exc)
+        try:
+            from evolution.db import init_evolution_db
+            from metadata_store.db import init_db
+            await init_db()
+            await init_evolution_db()
+            logger.info("DB tables initialised via create_all (fallback)")
+        except Exception as exc2:
+            logger.warning("DB init failed (non-fatal): %s", exc2)
 
     # Start the evolution engine background loop
     try:
