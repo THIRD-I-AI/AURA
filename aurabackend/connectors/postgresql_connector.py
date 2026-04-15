@@ -3,6 +3,7 @@ PostgreSQL connector for AURA
 """
 
 import json
+import logging
 import os
 from datetime import datetime
 from typing import Any, Dict, List, Optional
@@ -10,6 +11,8 @@ from typing import Any, Dict, List, Optional
 import asyncpg
 
 from .base import BaseConnector, ConnectorConfig
+
+logger = logging.getLogger("aura.connectors.postgresql")
 
 
 class PostgreSQLConnector(BaseConnector):
@@ -36,7 +39,7 @@ class PostgreSQLConnector(BaseConnector):
             self.metadata.last_sync = datetime.now().isoformat()
             return True
         except Exception as e:
-            print(f"PostgreSQL connection failed: {e}")
+            logger.warning("PostgreSQL connection failed: %s", e)
             return False
 
     async def disconnect(self) -> bool:
@@ -48,7 +51,7 @@ class PostgreSQLConnector(BaseConnector):
             self.metadata.connected = False
             return True
         except Exception as e:
-            print(f"Disconnect failed: {e}")
+            logger.warning("PostgreSQL disconnect failed: %s", e)
             return False
 
     async def list_tables(self) -> List[str]:
@@ -70,7 +73,7 @@ class PostgreSQLConnector(BaseConnector):
                 self.metadata.table_count = len(tables)
                 return tables
         except Exception as e:
-            print(f"Failed to list tables: {e}")
+            logger.warning("PostgreSQL list_tables failed: %s", e)
             return []
 
     async def get_table_schema(self, table_name: str) -> Dict[str, Any]:
@@ -103,7 +106,7 @@ class PostgreSQLConnector(BaseConnector):
                 }
                 return schema
         except Exception as e:
-            print(f"Failed to get schema: {e}")
+            logger.warning("PostgreSQL get_schema failed: %s", e)
             return {}
 
     async def sample_rows(
@@ -122,7 +125,7 @@ class PostgreSQLConnector(BaseConnector):
                 )
                 return [dict(row) for row in rows]
         except Exception as e:
-            print(f"Failed to sample rows: {e}")
+            logger.warning("PostgreSQL sample_rows failed: %s", e)
             return []
 
     async def execute_query(self, query: str, limit: int = 1000) -> List[Dict[str, Any]]:
@@ -139,7 +142,7 @@ class PostgreSQLConnector(BaseConnector):
                 rows = await conn.fetch(query)
                 return [dict(row) for row in rows]
         except Exception as e:
-            print(f"Query execution failed: {e}")
+            logger.warning("PostgreSQL query failed: %s", e)
             return []
 
     async def profile_table(self, table_name: str) -> Dict[str, Any]:
@@ -190,5 +193,5 @@ class PostgreSQLConnector(BaseConnector):
                 "columns_profile": columns_profile,
             }
         except Exception as e:
-            print(f"Profiling failed: {e}")
+            logger.warning("PostgreSQL profiling failed: %s", e)
             return {}

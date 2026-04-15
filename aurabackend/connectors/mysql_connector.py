@@ -2,12 +2,15 @@
 MySQL connector for AURA
 """
 
+import logging
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 import aiomysql
 
 from .base import BaseConnector, ConnectorConfig
+
+logger = logging.getLogger("aura.connectors.mysql")
 
 
 class MySQLConnector(BaseConnector):
@@ -34,7 +37,7 @@ class MySQLConnector(BaseConnector):
             self.metadata.last_sync = datetime.now().isoformat()
             return True
         except Exception as e:
-            print(f"MySQL connection failed: {e}")
+            logger.warning("MySQL connection failed: %s", e)
             return False
 
     async def disconnect(self) -> bool:
@@ -47,7 +50,7 @@ class MySQLConnector(BaseConnector):
             self.metadata.connected = False
             return True
         except Exception as e:
-            print(f"Disconnect failed: {e}")
+            logger.warning("MySQL disconnect failed: %s", e)
             return False
 
     async def list_tables(self) -> List[str]:
@@ -66,7 +69,7 @@ class MySQLConnector(BaseConnector):
                     self.metadata.table_count = len(tables)
                     return tables
         except Exception as e:
-            print(f"Failed to list tables: {e}")
+            logger.warning("MySQL list_tables failed: %s", e)
             return []
 
     async def get_table_schema(self, table_name: str) -> Dict[str, Any]:
@@ -95,7 +98,7 @@ class MySQLConnector(BaseConnector):
                     }
                     return schema
         except Exception as e:
-            print(f"Failed to get schema: {e}")
+            logger.warning("MySQL get_schema failed: %s", e)
             return {}
 
     async def sample_rows(
@@ -114,7 +117,7 @@ class MySQLConnector(BaseConnector):
                     rows = await cur.fetchall()
                     return rows or []
         except Exception as e:
-            print(f"Failed to sample rows: {e}")
+            logger.warning("MySQL sample_rows failed: %s", e)
             return []
 
     async def execute_query(self, query: str, limit: int = 1000) -> List[Dict[str, Any]]:
@@ -133,7 +136,7 @@ class MySQLConnector(BaseConnector):
                     rows = await cur.fetchall()
                     return rows or []
         except Exception as e:
-            print(f"Query execution failed: {e}")
+            logger.warning("MySQL query failed: %s", e)
             return []
 
     async def profile_table(self, table_name: str) -> Dict[str, Any]:
@@ -186,5 +189,5 @@ class MySQLConnector(BaseConnector):
                 "columns_profile": columns_profile,
             }
         except Exception as e:
-            print(f"Profiling failed: {e}")
+            logger.warning("MySQL profiling failed: %s", e)
             return {}

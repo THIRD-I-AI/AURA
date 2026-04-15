@@ -7,12 +7,15 @@ service and adds schema-aware context injection + validation.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 from typing import Any, Dict, List, Optional
 
 from agents.base import AgentContext, AgentResult, BaseAgent, Severity
 from shared.llm_provider import get_llm
+
+logger = logging.getLogger("aura.agents.sql_generator")
 
 _SQL_GEN_PROMPT = """\
 You are an expert SQL engineer.  Given the schema and the user's natural-
@@ -96,14 +99,13 @@ class SQLGeneratorAgent(BaseAgent):
         if self._llm.is_available():
             try:
                 prompt = _SQL_GEN_PROMPT.format(schema=schema, question=question)
-                print(f"=== [SQL GENERATOR PROMPT] ===\n{prompt}\n================================")
+                logger.debug("SQL generator prompt (len=%d)", len(prompt))
                 text = self._llm.generate(prompt)
-                print(f"=== [SQL GENERATOR OUTPUT] ===\n{text}\n================================")
+                logger.debug("SQL generator output (len=%d)", len(text) if text else 0)
                 if text:
                     return self._strip_fences(text)
             except Exception as e:
-                print(f"=== [SQL GENERATOR ERROR] ===\n{e}\n================================")
-                pass
+                logger.warning("SQL generator LLM error: %s", e)
 
         # Try code-gen microservice
         if self.tools:

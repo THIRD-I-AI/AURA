@@ -4,6 +4,7 @@ Handles actual query execution, retry logic, and result storage
 """
 
 import asyncio
+import logging
 import os
 import smtplib
 import ssl
@@ -18,6 +19,8 @@ import httpx
 
 from .models import JobExecution, JobStatus, ScheduledJob
 from .repository import SchedulerRepository
+
+logger = logging.getLogger("aura.scheduler.executor")
 
 
 class NotificationService:
@@ -83,7 +86,7 @@ class NotificationService:
             for r in results:
                 if isinstance(r, Exception):
                     # Log but never crash the scheduler
-                    print(f"[NotificationService] Warning: notification delivery failed: {r}")
+                    logger.warning("Notification delivery failed: %s", r)
 
     async def _send_email(self, subject: str, body: str) -> None:
         """Send an email alert using SMTP."""

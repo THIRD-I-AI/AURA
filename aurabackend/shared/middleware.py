@@ -23,7 +23,7 @@ from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from shared.exceptions import AuraError
-from shared.logging_config import get_logger
+from shared.logging_config import bind_request_id, get_logger, reset_request_id
 
 logger = get_logger("aura.middleware")
 
@@ -40,7 +40,11 @@ class RequestIDMiddleware(BaseHTTPMiddleware):
         request_id = request.headers.get("X-Request-ID", str(uuid.uuid4()))
         request.state.request_id = request_id
 
-        response = await call_next(request)
+        token = bind_request_id(request_id)
+        try:
+            response = await call_next(request)
+        finally:
+            reset_request_id(token)
         response.headers["X-Request-ID"] = request_id
         return response
 
