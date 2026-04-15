@@ -23,11 +23,14 @@ Usage
 from __future__ import annotations
 
 import json
+import logging
 import os
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
+
+logger = logging.getLogger("aura.shared.database_adapter")
 
 # ======================== Types ========================
 
@@ -179,7 +182,7 @@ class PostgresAdapter(DatabaseAdapter):
         try:
             import asyncpg  # type: ignore[import-untyped]
         except ImportError:
-            print("PostgresAdapter: asyncpg is not installed")
+            logger.warning("PostgresAdapter: asyncpg is not installed")
             return False
         try:
             self._pool = await asyncpg.create_pool(
@@ -197,7 +200,7 @@ class PostgresAdapter(DatabaseAdapter):
             await self._probe_extensions()
             return True
         except Exception as exc:
-            print(f"PostgresAdapter connect failed: {exc}")
+            logger.warning("PostgresAdapter connect failed: %s", exc)
             return False
 
     async def disconnect(self) -> bool:
@@ -393,7 +396,7 @@ class DuckDBAdapter(DatabaseAdapter):
         try:
             import duckdb  # type: ignore[import-untyped]
         except ImportError:
-            print("DuckDBAdapter: duckdb is not installed (pip install duckdb)")
+            logger.warning("DuckDBAdapter: duckdb is not installed (pip install duckdb)")
             return False
         try:
             path = self.config.db_path or ":memory:"
@@ -401,7 +404,7 @@ class DuckDBAdapter(DatabaseAdapter):
             self._connected = True
             return True
         except Exception as exc:
-            print(f"DuckDBAdapter connect failed: {exc}")
+            logger.warning("DuckDBAdapter connect failed: %s", exc)
             return False
 
     async def disconnect(self) -> bool:
@@ -433,7 +436,7 @@ class DuckDBAdapter(DatabaseAdapter):
             cols = [desc[0] for desc in result.description]
             return [dict(zip(cols, row)) for row in result.fetchmany(limit)]
         except Exception as exc:
-            print(f"DuckDB query failed: {exc}")
+            logger.warning("DuckDB query failed: %s", exc)
             return []
 
     async def execute_write(
@@ -448,7 +451,7 @@ class DuckDBAdapter(DatabaseAdapter):
                 self._conn.execute(query)
             return self._conn.execute("SELECT changes()").fetchone()[0]  # type: ignore
         except Exception as exc:
-            print(f"DuckDB write failed: {exc}")
+            logger.warning("DuckDB write failed: %s", exc)
             return 0
 
     async def list_tables(self) -> List[str]:

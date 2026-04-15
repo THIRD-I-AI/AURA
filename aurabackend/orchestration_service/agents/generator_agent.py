@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import logging
 import os
-import sys
 from typing import Any
 
-# Add parent directory to path
 from shared.llm_provider import get_llm
 from shared.secret_resolver import secret_resolver
+
+logger = logging.getLogger("aura.orchestration.generator")
 
 
 class GeneratorAgent:
@@ -38,16 +39,16 @@ class GeneratorAgent:
                 f"Please correct it based on this feedback:\n{rework_feedback}"
             )
 
-        print(f"=== [SQL GENERATOR PROMPT] ===\n{chr(10).join(prompt_parts)}\n================================")
+        logger.debug("Generator prompt parts=%d", len(prompt_parts))
 
         if self._llm.is_available():
             try:
                 raw = self._llm.generate(prompt_parts)
-                print(f"=== [SQL GENERATOR RESPONSE] ===\n{raw}\n================================")
+                logger.debug("Generator response (len=%d)", len(raw) if raw else 0)
                 if raw:
                     return raw.strip().replace("```sql", "").replace("```", "").strip()
             except Exception as exc:
-                print(f"GeneratorAgent: remote generation failed - {exc}")
+                logger.warning("GeneratorAgent remote generation failed: %s", exc)
 
         return self.fallback(prompt, context)
 

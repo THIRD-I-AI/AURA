@@ -102,12 +102,20 @@ def create_service(
 
     # ── Middleware (order matters — outermost first) ─────────────────────
     #  1. CORS  (outermost so preflight always gets headers)
+    # Explicit methods/headers when allow_credentials=True; wildcard + credentials
+    # is spec-violating and browsers silently drop such responses. Expose the
+    # request-id header so the frontend can surface it in error reports.
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origins,
         allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
+        allow_methods=["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS", "HEAD"],
+        allow_headers=[
+            "Authorization", "Content-Type", "X-API-Key", "X-Request-ID",
+            "X-AURA-Signature", "X-AURA-Event", "X-AURA-Delivery",
+            "Last-Event-ID", "Accept", "Origin",
+        ],
+        expose_headers=["X-Request-ID"],
     )
     #  2. Rate limiting  (env-driven; can be disabled via AURA_RATE_LIMIT_ENABLED=0)
     if settings.rate_limit_enabled:

@@ -4,6 +4,7 @@ Enterprise-grade database connectivity with schema introspection
 """
 
 import asyncio
+import logging
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
@@ -15,6 +16,8 @@ from sqlalchemy.engine import URL, Connection
 from sqlalchemy.engine.reflection import Inspector
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
+
+logger = logging.getLogger("aura.database.connection_manager")
 
 
 # Database connection types
@@ -164,7 +167,7 @@ class DatabaseConnectionManager:
         try:
             validation_query = self._get_validation_query(connection.type)
         except NotImplementedError as not_supported:
-            print(str(not_supported))
+            logger.warning("Validation query unsupported: %s", not_supported)
             await temp_engine.dispose()
             return False
 
@@ -173,7 +176,7 @@ class DatabaseConnectionManager:
                 await conn.execute(text(validation_query))
             return True
         except SQLAlchemyError as exc:
-            print(f"Connection test failed for {connection.name}: {exc}")
+            logger.warning("Connection test failed for %s: %s", connection.name, exc)
             return False
         finally:
             await temp_engine.dispose()

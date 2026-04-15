@@ -1,12 +1,13 @@
 import json
+import logging
 import os
-import sys
 from typing import Any
 
-# Add parent directory to path
 from shared.llm_provider import get_llm
 from shared.models import ValidationResult
 from shared.secret_resolver import secret_resolver
+
+logger = logging.getLogger("aura.orchestration.critic")
 
 
 class CriticAgent:
@@ -45,7 +46,7 @@ class CriticAgent:
                 if response_json:
                     return ValidationResult(**response_json)
             except Exception as exc:
-                print(f"CriticAgent: remote validation failed - {exc}")
+                logger.warning("CriticAgent remote validation failed: %s", exc)
 
         # If critic LLM is unavailable, do a basic syntactic check rather than
         # always rejecting.  This avoids 3 wasted retry loops when the generator

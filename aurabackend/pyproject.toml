@@ -89,6 +89,8 @@ include = [
 [tool.ruff]
 line-length = 120
 target-version = "py311"
+# Alembic autogenerates these — don't lint them.
+extend-exclude = ["alembic/versions"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "W"]

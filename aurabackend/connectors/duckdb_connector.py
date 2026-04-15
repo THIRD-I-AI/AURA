@@ -4,10 +4,13 @@ Queries CSV, Parquet, JSON, Excel files directly via SQL.
 """
 from __future__ import annotations
 
+import logging
 import os
 from typing import Any, Dict, List, Optional
 
 from .base import BaseConnector, ConnectorConfig
+
+logger = logging.getLogger("aura.connectors.duckdb")
 
 
 class DuckDBConnector(BaseConnector):
@@ -21,7 +24,7 @@ class DuckDBConnector(BaseConnector):
         try:
             import duckdb  # type: ignore[import-untyped]
         except ImportError:
-            print("DuckDBConnector: duckdb is not installed")
+            logger.warning("DuckDBConnector: duckdb is not installed")
             return False
         try:
             path = (
@@ -33,7 +36,7 @@ class DuckDBConnector(BaseConnector):
             self.metadata.connected = True
             return True
         except Exception as exc:
-            print(f"DuckDB connection failed: {exc}")
+            logger.warning("DuckDB connection failed: %s", exc)
             return False
 
     async def disconnect(self) -> bool:
@@ -53,7 +56,7 @@ class DuckDBConnector(BaseConnector):
             self.metadata.table_count = len(tables)
             return tables
         except Exception as exc:
-            print(f"DuckDB list_tables failed: {exc}")
+            logger.warning("DuckDB list_tables failed: %s", exc)
             return []
 
     async def get_table_schema(self, table_name: str) -> Dict[str, Any]:
@@ -75,7 +78,7 @@ class DuckDBConnector(BaseConnector):
                 ],
             }
         except Exception as exc:
-            print(f"DuckDB get_table_schema failed: {exc}")
+            logger.warning("DuckDB get_table_schema failed: %s", exc)
             return {}
 
     async def sample_rows(self, table_name: str, limit: int = 100) -> List[Dict[str, Any]]:
@@ -89,7 +92,7 @@ class DuckDBConnector(BaseConnector):
             cols = [desc[0] for desc in result.description]
             return [dict(zip(cols, row)) for row in result.fetchmany(limit)]
         except Exception as exc:
-            print(f"DuckDB query failed: {exc}")
+            logger.warning("DuckDB query failed: %s", exc)
             return []
 
     async def profile_table(self, table_name: str) -> Dict[str, Any]:
@@ -106,7 +109,7 @@ class DuckDBConnector(BaseConnector):
                 "columns_profile": {},
             }
         except Exception as exc:
-            print(f"DuckDB profile failed: {exc}")
+            logger.warning("DuckDB profile failed: %s", exc)
             return {}
 
     # ---- DuckDB-specific: direct file queries ----
@@ -131,5 +134,5 @@ class DuckDBConnector(BaseConnector):
             smart_load_file(self._conn, file_path, table_name, use_llm=True)
             return True
         except Exception as exc:
-            print(f"DuckDB register_file failed: {exc}")
+            logger.warning("DuckDB register_file failed: %s", exc)
             return False

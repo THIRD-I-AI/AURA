@@ -3,6 +3,7 @@ BigQuery connector for AURA
 """
 
 import json
+import logging
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
@@ -10,6 +11,8 @@ from google.cloud import bigquery
 from google.oauth2 import service_account
 
 from .base import BaseConnector, ConnectorConfig
+
+logger = logging.getLogger("aura.connectors.bigquery")
 
 
 class BigQueryConnector(BaseConnector):
@@ -40,7 +43,7 @@ class BigQueryConnector(BaseConnector):
             self.metadata.last_sync = datetime.now().isoformat()
             return True
         except Exception as e:
-            print(f"BigQuery connection failed: {e}")
+            logger.warning("BigQuery connection failed: %s", e)
             return False
 
     async def disconnect(self) -> bool:
@@ -52,7 +55,7 @@ class BigQueryConnector(BaseConnector):
             self.metadata.connected = False
             return True
         except Exception as e:
-            print(f"Disconnect failed: {e}")
+            logger.warning("BigQuery disconnect failed: %s", e)
             return False
 
     async def list_tables(self) -> List[str]:
@@ -67,7 +70,7 @@ class BigQueryConnector(BaseConnector):
             self.metadata.table_count = len(table_list)
             return table_list
         except Exception as e:
-            print(f"Failed to list tables: {e}")
+            logger.warning("BigQuery list_tables failed: %s", e)
             return []
 
     async def get_table_schema(self, table_name: str) -> Dict[str, Any]:
@@ -93,7 +96,7 @@ class BigQueryConnector(BaseConnector):
             }
             return schema
         except Exception as e:
-            print(f"Failed to get schema: {e}")
+            logger.warning("BigQuery get_schema failed: %s", e)
             return {}
 
     async def sample_rows(
@@ -117,7 +120,7 @@ class BigQueryConnector(BaseConnector):
                 rows.append(dict(row.items()))
             return rows
         except Exception as e:
-            print(f"Failed to sample rows: {e}")
+            logger.warning("BigQuery sample_rows failed: %s", e)
             return []
 
     async def execute_query(self, query: str, limit: int = 1000) -> List[Dict[str, Any]]:
@@ -137,7 +140,7 @@ class BigQueryConnector(BaseConnector):
                 rows.append(dict(row.items()))
             return rows
         except Exception as e:
-            print(f"Query execution failed: {e}")
+            logger.warning("BigQuery query failed: %s", e)
             return []
 
     async def profile_table(self, table_name: str) -> Dict[str, Any]:
@@ -192,5 +195,5 @@ class BigQueryConnector(BaseConnector):
                 "columns_profile": columns_profile,
             }
         except Exception as e:
-            print(f"Profiling failed: {e}")
+            logger.warning("BigQuery profiling failed: %s", e)
             return {}

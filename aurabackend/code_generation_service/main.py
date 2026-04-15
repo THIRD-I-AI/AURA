@@ -94,7 +94,7 @@ class CodeGenerationEngine:
 							"source": "llm",
 						}
 			except Exception as exc:  # pragma: no cover - remote failure path
-				print(f"CodeGenerationEngine: remote generation failed - {exc}")
+				logger.warning("CodeGenerationEngine remote generation failed: %s", exc)
 
 		return self._fallback(step)
 
