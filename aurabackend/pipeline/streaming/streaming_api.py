@@ -290,11 +290,16 @@ _SOURCE_SCHEMAS = {
     },
     "websocket": {
         "label": "WebSocket",
-        "description": "Connect to a WebSocket endpoint and receive events in real-time.",
-        "implemented": False,
+        "description": "Connect to a ws:// or wss:// endpoint and buffer inbound messages with auto-reconnect.",
+        "implemented": True,
         "fields": [
-            {"key": "url",     "label": "WebSocket URL", "type": "text", "default": "ws://localhost:8080/ws", "required": True},
-            {"key": "headers", "label": "Headers (JSON)", "type": "text", "default": "{}",                     "required": False},
+            {"key": "url",           "label": "WebSocket URL",     "type": "text",   "default": "ws://localhost:8080/ws", "required": True,  "help": "ws:// or wss:// endpoint"},
+            {"key": "headers",       "label": "Headers (JSON)",    "type": "text",   "default": "{}",                     "required": False, "help": "Optional headers as JSON (e.g. auth tokens)"},
+            {"key": "subprotocols",  "label": "Subprotocols (CSV)", "type": "text",  "default": "",                       "required": False, "help": "Optional comma-separated subprotocol list"},
+            {"key": "key_field",     "label": "Partition Key Field", "type": "text", "default": "",                       "required": False, "help": "Event data field used as partition key (optional)"},
+            {"key": "ping_interval", "label": "Ping Interval (s)", "type": "number", "default": 20,                       "required": False, "help": "Keepalive ping interval"},
+            {"key": "reconnect",     "label": "Auto-Reconnect",    "type": "select", "default": "true",                   "required": False, "options": ["true", "false"], "help": "Reconnect on drop with exponential backoff"},
+            {"key": "max_buffer",    "label": "Max Buffer",        "type": "number", "default": 10000,                    "required": False, "help": "Drop oldest once buffered messages exceed this"},
         ],
     },
 }
