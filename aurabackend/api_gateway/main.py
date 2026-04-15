@@ -122,6 +122,7 @@ from api_gateway.routers.etl import router as etl_router
 from api_gateway.routers.files import router as files_router
 from api_gateway.routers.pipelines import router as pipelines_router
 from api_gateway.routers.queries import router as queries_router
+from api_gateway.routers.inbound_hooks import router as inbound_hooks_router
 from api_gateway.routers.stream import router as stream_router
 from api_gateway.routers.webhooks import router as webhooks_router
 
@@ -133,6 +134,7 @@ app.include_router(etl_router)
 app.include_router(pipelines_router)
 app.include_router(stream_router)
 app.include_router(webhooks_router)
+app.include_router(inbound_hooks_router)
 
 # Agentic DE framework
 try:

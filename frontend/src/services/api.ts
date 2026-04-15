@@ -239,6 +239,13 @@ class ApiClient {
     });
   }
 
+  async patch<T>(endpoint: string, body?: unknown): Promise<T> {
+    return this.request<T>(endpoint, {
+      method: 'PATCH',
+      body: JSON.stringify(body),
+    });
+  }
+
   async delete<T>(endpoint: string): Promise<T> {
     return this.request<T>(endpoint, { method: 'DELETE' });
   }
@@ -736,6 +743,82 @@ export const pipelineService = {
   getDownloadUrl(filename: string): string {
     return `${API_BASE_URL}/pipeline/download/${encodeURIComponent(filename)}`;
   },
+};
+
+// =============================================================================
+// Webhooks (outbound + inbound) Types & Services
+// =============================================================================
+
+export interface OutboundWebhook {
+  id: string;
+  url: string;
+  events: string[];
+  active: boolean;
+  headers: Record<string, string>;
+  retries: number;
+  description: string;
+  created_at: string;
+  has_secret: boolean;
+}
+
+export interface WebhookDelivery {
+  id: string;
+  subscription_id: string;
+  event_type: string;
+  url: string;
+  status: 'success' | 'failed';
+  http_status: number | null;
+  attempts: number;
+  error: string | null;
+  timestamp: string;
+}
+
+export interface InboundHook {
+  id: string;
+  slug: string;
+  kind: 'pipeline' | 'agent';
+  target: string;
+  active: boolean;
+  description: string;
+  pass_payload_as: string | null;
+  last_fired_at: string | null;
+  fire_count: number;
+  created_at: string;
+  has_secret: boolean;
+}
+
+export const webhookService = {
+  list: () => client.get<{ status: string; webhooks: OutboundWebhook[] }>('/webhooks'),
+  create: (body: {
+    url: string; events: string[]; secret?: string;
+    headers?: Record<string, string>; retries?: number; description?: string;
+  }) => client.post<{ status: string; webhook: OutboundWebhook }>('/webhooks', body),
+  update: (id: string, body: Partial<{
+    url: string; events: string[]; secret: string;
+    headers: Record<string, string>; retries: number;
+    active: boolean; description: string;
+  }>) => client.patch<{ status: string; webhook: OutboundWebhook }>(`/webhooks/${id}`, body),
+  remove: (id: string) => client.delete<{ status: string }>(`/webhooks/${id}`),
+  test: (id: string) =>
+    client.post<{ status: string; delivery: WebhookDelivery }>(`/webhooks/${id}/test`, {}),
+  deliveries: () =>
+    client.get<{ status: string; deliveries: WebhookDelivery[] }>('/webhooks/deliveries'),
+  events: () => client.get<{ status: string; events: string[] }>('/webhooks/events'),
+};
+
+export const inboundHookService = {
+  list: () => client.get<{ status: string; hooks: InboundHook[] }>('/hooks'),
+  create: (body: {
+    slug: string; kind: 'pipeline' | 'agent'; target: string;
+    secret?: string; description?: string; pass_payload_as?: string;
+  }) => client.post<{ status: string; hook: InboundHook }>('/hooks', body),
+  update: (id: string, body: Partial<{
+    slug: string; kind: 'pipeline' | 'agent'; target: string;
+    secret: string; description: string;
+    pass_payload_as: string; active: boolean;
+  }>) => client.patch<{ status: string; hook: InboundHook }>(`/hooks/${id}`, body),
+  remove: (id: string) => client.delete<{ status: string }>(`/hooks/${id}`),
+  fireUrl: (slug: string) => `${API_BASE_URL}/hooks/fire/${encodeURIComponent(slug)}`,
 };
 
 // =============================================================================

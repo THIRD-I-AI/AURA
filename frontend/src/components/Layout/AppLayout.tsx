@@ -15,7 +15,8 @@ export type PageType =
   | 'settings'
   | 'agent'
   | 'pipelines'
-  | 'streaming';
+  | 'streaming'
+  | 'webhooks';
 
 interface AppLayoutProps {
   children: React.ReactNode;
@@ -32,6 +33,7 @@ const PAGE_META: Record<PageType, { title: string; subtitle: string }> = {
   agent:      { title: 'Agent',              subtitle: 'Agentic data engineering — one prompt does it all' },
   pipelines:  { title: 'ETL Pipelines',      subtitle: 'Build, run, and manage data transformation pipelines' },
   streaming:  { title: 'Streaming',          subtitle: 'Real-time data streaming with live metrics' },
+  webhooks:   { title: 'Webhooks',           subtitle: 'Outbound subscriptions & inbound HTTP triggers' },
 };
 
 const NAV_ITEMS = [
@@ -42,6 +44,7 @@ const NAV_ITEMS = [
   { id: 'agent',     label: 'Agent',     href: '#' },
   { id: 'pipelines', label: 'ETL Pipelines', href: '#' },
   { id: 'streaming', label: 'Streaming', href: '#' },
+  { id: 'webhooks',  label: 'Webhooks',  href: '#' },
 ];
 
 const AppLayout: React.FC<AppLayoutProps> = ({ children, currentPage, onPageChange }) => {
