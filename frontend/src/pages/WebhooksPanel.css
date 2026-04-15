@@ -1,0 +1,260 @@
+.webhooks {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 4px;
+  position: relative;
+}
+
+.webhooks__tabs {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  border-bottom: 1px solid var(--border, #232936);
+  padding-bottom: 8px;
+}
+.webhooks__tab {
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--text-muted, #8a93a5);
+  padding: 6px 14px;
+  border-radius: 6px 6px 0 0;
+  cursor: pointer;
+  font-size: 13px;
+}
+.webhooks__tab.is-active {
+  color: var(--text, #e6ebf3);
+  border-color: var(--border, #232936);
+  border-bottom-color: var(--bg, #0d1017);
+  background: var(--surface, #141822);
+}
+.webhooks__refresh {
+  margin-left: auto;
+  background: transparent;
+  border: 1px solid var(--border, #232936);
+  color: var(--text-muted, #8a93a5);
+  padding: 4px 10px;
+  border-radius: 6px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.webhooks__error {
+  background: rgba(255, 80, 80, 0.08);
+  border: 1px solid rgba(255, 80, 80, 0.4);
+  color: #ffb3b3;
+  padding: 8px 12px;
+  border-radius: 6px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 13px;
+}
+.webhooks__error button {
+  background: transparent;
+  border: 0;
+  color: inherit;
+  cursor: pointer;
+}
+
+.webhooks__card {
+  background: var(--surface, #141822);
+  border: 1px solid var(--border, #232936);
+  border-radius: 8px;
+  padding: 16px;
+}
+.webhooks__card h3 {
+  margin: 0 0 12px 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text, #e6ebf3);
+}
+
+.webhooks__form {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(220px, 1fr));
+  gap: 10px;
+}
+.webhooks__form label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--text-muted, #8a93a5);
+}
+.webhooks__form input,
+.webhooks__form select,
+.webhooks__form textarea {
+  background: var(--bg, #0d1017);
+  border: 1px solid var(--border, #232936);
+  border-radius: 6px;
+  padding: 6px 10px;
+  color: var(--text, #e6ebf3);
+  font-size: 13px;
+  font-family: inherit;
+}
+.webhooks__form textarea { resize: vertical; }
+.webhooks__form > button {
+  grid-column: 1 / -1;
+  justify-self: start;
+}
+
+.webhooks__events-grid {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  padding: 8px;
+  background: var(--bg, #0d1017);
+  border: 1px solid var(--border, #232936);
+  border-radius: 6px;
+}
+.webhooks__events-label {
+  width: 100%;
+  font-size: 12px;
+  color: var(--text-muted, #8a93a5);
+  margin-bottom: 4px;
+}
+.webhooks__event-chip {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  background: var(--surface, #141822);
+  border: 1px solid var(--border, #232936);
+  border-radius: 12px;
+  padding: 3px 10px;
+  color: var(--text, #e6ebf3);
+  cursor: pointer;
+}
+
+.webhooks__btn {
+  background: var(--surface, #141822);
+  border: 1px solid var(--border, #232936);
+  color: var(--text, #e6ebf3);
+  border-radius: 6px;
+  padding: 6px 12px;
+  font-size: 13px;
+  cursor: pointer;
+}
+.webhooks__btn--primary {
+  background: var(--accent, #5c8df6);
+  border-color: var(--accent, #5c8df6);
+  color: #fff;
+}
+.webhooks__btn--primary:disabled { opacity: 0.5; cursor: not-allowed; }
+.webhooks__btn--danger { color: #ff8989; border-color: rgba(255, 100, 100, 0.4); background: transparent; }
+
+.webhooks__empty {
+  font-size: 13px;
+  color: var(--text-muted, #8a93a5);
+  font-style: italic;
+}
+
+.webhooks__list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.webhooks__item {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px;
+  background: var(--bg, #0d1017);
+  border: 1px solid var(--border, #232936);
+  border-radius: 6px;
+}
+.webhooks__item.is-disabled { opacity: 0.55; }
+.webhooks__item-main { flex: 1; min-width: 0; }
+.webhooks__item-url {
+  font-family: var(--mono, monospace);
+  font-size: 13px;
+  color: var(--text, #e6ebf3);
+  word-break: break-all;
+}
+.webhooks__item-meta {
+  font-size: 12px;
+  color: var(--text-muted, #8a93a5);
+  margin-top: 4px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+.webhooks__item-events {
+  margin-top: 6px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.webhooks__event-tag {
+  background: var(--surface, #141822);
+  border: 1px solid var(--border, #232936);
+  border-radius: 10px;
+  padding: 2px 8px;
+  font-size: 11px;
+  color: var(--text-muted, #8a93a5);
+}
+.webhooks__item-actions {
+  display: flex;
+  gap: 4px;
+  align-items: flex-start;
+}
+.webhooks__item-actions button {
+  background: transparent;
+  border: 1px solid var(--border, #232936);
+  color: var(--text, #e6ebf3);
+  font-size: 12px;
+  padding: 4px 10px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.webhooks__pill {
+  display: inline-block;
+  font-size: 10px;
+  padding: 2px 7px;
+  border-radius: 10px;
+  margin-left: 4px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.webhooks__pill--ok   { background: rgba(80, 220, 130, 0.15); color: #6fe39d; }
+.webhooks__pill--off  { background: rgba(180, 180, 180, 0.15); color: #b0b8c4; }
+.webhooks__pill--fail { background: rgba(255, 80, 80, 0.18); color: #ff9494; }
+.webhooks__pill--kind { background: rgba(120, 140, 240, 0.18); color: #a3b4ff; margin-left: 0; }
+
+.webhooks__table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+.webhooks__table th,
+.webhooks__table td {
+  text-align: left;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border, #232936);
+  vertical-align: top;
+}
+.webhooks__table th {
+  color: var(--text-muted, #8a93a5);
+  font-weight: 500;
+}
+.webhooks__table tr.is-failed td { background: rgba(255, 80, 80, 0.04); }
+.webhooks__td-url { max-width: 320px; word-break: break-all; font-family: var(--mono, monospace); }
+
+.webhooks__toast {
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  padding: 10px 16px;
+  border-radius: 6px;
+  font-size: 13px;
+  color: #fff;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+  z-index: 9999;
+}
+.webhooks__toast--ok  { background: #2d7a4d; }
+.webhooks__toast--err { background: #a13a3a; }
