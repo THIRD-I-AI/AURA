@@ -194,8 +194,24 @@ async def pipeline_execute_async(req: PipelineExecuteRequest):
                     extra={"stage": "transform", "step_id": s["id"], "step_index": i},
                 )
 
+            async def _kafka_cb(consumed: int, lag: Optional[int]) -> None:
+                await streaming_manager.publish(StreamEvent(
+                    topic=f"{TOPIC_PIPELINE}:{run_id}",
+                    event_type="progress",
+                    payload={
+                        "message": f"Kafka consumed {consumed} rows"
+                                   + (f" (lag ~{lag})" if lag is not None else ""),
+                        "progress": 0.15,
+                        "stage": "source",
+                        "source_kind": "kafka",
+                        "consumed": consumed,
+                        "lag": lag,
+                    },
+                ))
+
             run = await _pipeline_engine.execute(
                 pipeline, preview_only=req.preview_only,
+                source_progress_cb=_kafka_cb,
             )
 
             await streaming_manager.publish_progress(

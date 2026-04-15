@@ -15,7 +15,7 @@ import os
 import re
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 
 from pipeline.models import (
     Pipeline,
@@ -81,6 +81,7 @@ class PipelineEngine:
         pipeline: Pipeline,
         preview_only: bool = False,
         preview_limit: int = 50,
+        source_progress_cb: Optional[Callable[[int, Optional[int]], Awaitable[None]]] = None,
     ) -> PipelineRun:
         """
         Run the full pipeline: Source → Process → Sink.
@@ -94,7 +95,7 @@ class PipelineEngine:
 
         try:
             # ── 1. LOAD SOURCE ────────────────────────────────────────
-            source_table = await self._load_source(conn, pipeline.source)
+            source_table = await self._load_source(conn, pipeline.source, source_progress_cb)
             logger.info(f"[Pipeline:{pipeline.id}] Source loaded as '{source_table}'")
 
             # Count source rows
@@ -153,7 +154,12 @@ class PipelineEngine:
 
     # ── Source Loading ────────────────────────────────────────────────
 
-    async def _load_source(self, conn: Any, source: PipelineSource) -> str:
+    async def _load_source(
+        self,
+        conn: Any,
+        source: PipelineSource,
+        progress_cb: Optional[Callable[[int, Optional[int]], Awaitable[None]]] = None,
+    ) -> str:
         """Load source data into DuckDB and return the table name."""
         if source.type == SourceType.FILE:
             return self._load_file_source(conn, source)
@@ -161,6 +167,8 @@ class PipelineEngine:
             return await self._load_db_source(conn, source)
         elif source.type == SourceType.DUCKDB:
             return self._load_duckdb_source(conn, source)
+        elif source.type == SourceType.KAFKA:
+            return await self._load_kafka_source(conn, source, progress_cb)
         else:
             raise ValueError(f"Unsupported source type: {source.type}")
 
@@ -223,6 +231,54 @@ class PipelineEngine:
             values = ", ".join(f"'{str(v).replace(chr(39), chr(39)+chr(39))}'" if v is not None else "NULL" for v in row.values())
             conn.execute(f"INSERT INTO {_q(table_name)} VALUES ({values})")
 
+        return table_name
+
+    async def _load_kafka_source(
+        self,
+        conn: Any,
+        source: PipelineSource,
+        progress_cb: Optional[Callable[[int, Optional[int]], Awaitable[None]]] = None,
+    ) -> str:
+        """Consume a bounded batch from a Kafka topic into DuckDB."""
+        from shared.kafka_client import consume_batch
+
+        cfg = source.connection or {}
+        rows = await consume_batch(cfg, progress_cb=progress_cb)
+        if not rows:
+            raise ValueError(
+                f"Kafka topic '{cfg.get('topic', '?')}' returned no messages "
+                f"within timeout_ms={cfg.get('timeout_ms', 5000)}"
+            )
+
+        # Union of keys across rows → stable column set
+        columns: List[str] = []
+        seen = set()
+        for r in rows:
+            for k in r.keys():
+                if k not in seen:
+                    seen.add(k)
+                    columns.append(k)
+
+        table_name = "source_data"
+        col_defs = ", ".join(f'"{_sanitize_id(c)}" VARCHAR' for c in columns)
+        conn.execute(f"CREATE TABLE {_q(table_name)} ({col_defs})")
+
+        placeholders = ", ".join(["?"] * len(columns))
+        insert_sql = f"INSERT INTO {_q(table_name)} VALUES ({placeholders})"
+        for r in rows:
+            values = []
+            for c in columns:
+                v = r.get(c)
+                if v is None:
+                    values.append(None)
+                elif isinstance(v, (dict, list)):
+                    import json as _json
+                    values.append(_json.dumps(v))
+                else:
+                    values.append(str(v))
+            conn.execute(insert_sql, values)
+
+        logger.info("[Pipeline] Kafka source loaded %d rows from %s", len(rows), cfg.get("topic"))
         return table_name
 
     def _load_duckdb_source(self, conn: Any, source: PipelineSource) -> str:

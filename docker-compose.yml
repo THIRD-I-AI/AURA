@@ -151,8 +151,40 @@ services:
       timeout: 10s
       retries: 3
 
+  # ── Port 9092 — Redpanda (Kafka-compatible broker for pipeline streaming) ──
+  redpanda:
+    image: redpandadata/redpanda:v24.1.8
+    command:
+      - redpanda
+      - start
+      - --overprovisioned
+      - --smp=1
+      - --memory=512M
+      - --reserve-memory=0M
+      - --node-id=0
+      - --check=false
+      - --kafka-addr=PLAINTEXT://0.0.0.0:29092,OUTSIDE://0.0.0.0:9092
+      - --advertise-kafka-addr=PLAINTEXT://redpanda:29092,OUTSIDE://localhost:9092
+      - --pandaproxy-addr=0.0.0.0:8082
+      - --advertise-pandaproxy-addr=localhost:8082
+    ports:
+      - "9092:9092"
+      - "29092:29092"
+      - "8082:8082"
+      - "9644:9644"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "rpk", "cluster", "health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    volumes:
+      - redpanda_data:/var/lib/redpanda/data
+
 volumes:
   scheduler_data:
+    driver: local
+  redpanda_data:
     driver: local
 
 networks:
