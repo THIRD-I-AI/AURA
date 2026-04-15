@@ -64,6 +64,7 @@ _KNOWN_EVENTS = [
     "upload.complete", "upload.failed",
     "uasr.drift", "uasr.recovered",
     "system.degraded",
+    "hook.fired",
 ]
 
 

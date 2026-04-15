@@ -10,6 +10,7 @@
  *      HTTP status, error).
  */
 import React, { useCallback, useEffect, useState } from 'react';
+import { useSSE } from '../hooks/useSSE';
 import {
   inboundHookService,
   pipelineService,
@@ -79,6 +80,21 @@ const WebhooksPanel: React.FC<WebhooksPanelProps> = () => {
       .then(r => setPipelines((r.pipelines || []).map(p => ({ id: p.id, name: p.name }))))
       .catch(() => undefined);
   }, [refresh]);
+
+  // Live-refresh deliveries via SSE — dispatcher publishes each DeliveryRecord
+  // to the 'webhooks:deliveries' topic after attempting a POST.
+  useSSE({
+    topic: 'webhooks:deliveries',
+    onEvent: (ev) => {
+      const rec = ev.payload as WebhookDelivery | undefined;
+      if (!rec || !rec.id) return;
+      setDeliveries(prev => {
+        if (prev.some(d => d.id === rec.id)) return prev;
+        const next = [...prev, rec];
+        return next.length > 200 ? next.slice(next.length - 200) : next;
+      });
+    },
+  });
 
   // ── Outbound CRUD ──
   const handleCreateOutbound = async () => {

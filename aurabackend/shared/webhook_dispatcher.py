@@ -128,6 +128,10 @@ def _classify(event: StreamEvent) -> Optional[str]:
             return "uasr.recovered"
         return None
 
+    # Inbound hook fired
+    if ns == "hooks" and et == "complete":
+        return "hook.fired"
+
     # System health degradation
     if ns == "system" and et == "data":
         overall = (event.payload or {}).get("overall")
@@ -345,6 +349,18 @@ class WebhookDispatcher:
                 "Webhook delivery failed sub=%s event=%s url=%s err=%s",
                 sub.id[:8], event_type, sub.url, last_err,
             )
+
+        # Publish delivery event so the frontend can live-refresh. Do not
+        # route this through _classify → no feedback loop into outbound
+        # webhook delivery.
+        try:
+            await streaming_manager.publish(StreamEvent(
+                topic="webhooks:deliveries",
+                event_type="data",
+                payload=record.__dict__,
+            ))
+        except Exception:
+            pass
 
     async def fire_test(self, sub_id: str, event_type: str = "test.ping") -> Optional[DeliveryRecord]:
         """Manually trigger a test delivery for a registered subscription."""
