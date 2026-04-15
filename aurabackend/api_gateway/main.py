@@ -72,6 +72,14 @@ async def _lifespan(app) -> AsyncGenerator[None, None]:
     uasr_task = asyncio.create_task(_uasr_metrics_poller(uasr_stop))
     logger.info("UASR metrics poller started (interval=%ss)", _UASR_POLL_INTERVAL)
 
+    # Start outbound webhook dispatcher
+    try:
+        from shared.webhook_dispatcher import webhook_dispatcher
+        await webhook_dispatcher.start()
+        logger.info("Webhook dispatcher started")
+    except Exception as exc:
+        logger.warning("Could not start webhook dispatcher: %s", exc)
+
     yield  # ── application runs ──
 
     # Stop UASR poller
@@ -80,6 +88,13 @@ async def _lifespan(app) -> AsyncGenerator[None, None]:
         await asyncio.wait_for(uasr_task, timeout=2)
     except (asyncio.TimeoutError, asyncio.CancelledError):
         uasr_task.cancel()
+
+    # Stop webhook dispatcher
+    try:
+        from shared.webhook_dispatcher import webhook_dispatcher
+        await webhook_dispatcher.stop()
+    except Exception:
+        pass
 
     # Stop evolution engine gracefully
     try:
@@ -108,6 +123,7 @@ from api_gateway.routers.files import router as files_router
 from api_gateway.routers.pipelines import router as pipelines_router
 from api_gateway.routers.queries import router as queries_router
 from api_gateway.routers.stream import router as stream_router
+from api_gateway.routers.webhooks import router as webhooks_router
 
 app.include_router(chat_router)
 app.include_router(files_router)
@@ -116,6 +132,7 @@ app.include_router(queries_router)
 app.include_router(etl_router)
 app.include_router(pipelines_router)
 app.include_router(stream_router)
+app.include_router(webhooks_router)
 
 # Agentic DE framework
 try:

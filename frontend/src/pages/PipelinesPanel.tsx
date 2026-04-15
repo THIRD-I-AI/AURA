@@ -128,6 +128,15 @@ const PipelinesPanel: React.FC<PipelinesPanelProps> = () => {
   const [aiRunId, setAiRunId] = useState<string | null>(null);
   const [aiError, setAiError] = useState<string | null>(null);
 
+  // ── Kafka source override ──
+  const [kafkaEnabled, setKafkaEnabled] = useState(false);
+  const [kafkaBootstrap, setKafkaBootstrap] = useState('localhost:9092');
+  const [kafkaTopic, setKafkaTopic] = useState('');
+  const [kafkaGroupId, setKafkaGroupId] = useState('');
+  const [kafkaMaxMessages, setKafkaMaxMessages] = useState(1000);
+  const [kafkaTimeoutMs, setKafkaTimeoutMs] = useState(5000);
+  const [kafkaFromBeginning, setKafkaFromBeginning] = useState(true);
+
   // ── Saved Pipelines State ──
   const [savedPipelines, setSavedPipelines] = useState<PipelineListItem[]>([]);
   const [savedLoading, setSavedLoading] = useState(false);
@@ -356,8 +365,34 @@ const PipelinesPanel: React.FC<PipelinesPanelProps> = () => {
     setAiRun(null);
     setAiRunId(null);
     console.log('[AI Pipeline] Executing live (preview=%s):', previewOnly, aiPipeline.name);
+
+    // Apply Kafka source override if enabled
+    let pipelineToRun = aiPipeline;
+    if (kafkaEnabled) {
+      if (!kafkaTopic.trim() || !kafkaBootstrap.trim()) {
+        setAiError('Kafka source requires bootstrap_servers and topic');
+        setAiExecuting(false);
+        return;
+      }
+      pipelineToRun = {
+        ...aiPipeline,
+        source: {
+          type: 'kafka',
+          connection: {
+            bootstrap_servers: kafkaBootstrap.trim(),
+            topic: kafkaTopic.trim(),
+            group_id: kafkaGroupId.trim() || undefined,
+            max_messages: kafkaMaxMessages,
+            timeout_ms: kafkaTimeoutMs,
+            from_beginning: kafkaFromBeginning,
+            format: 'json',
+          },
+        },
+      };
+    }
+
     try {
-      const resp = await pipelineService.executeAsync(aiPipeline, previewOnly);
+      const resp = await pipelineService.executeAsync(pipelineToRun, previewOnly);
       if (resp.status === 'success' && resp.run_id) {
         setAiRunId(resp.run_id);
       } else {
@@ -553,11 +588,20 @@ const PipelinesPanel: React.FC<PipelinesPanelProps> = () => {
                   className="etl-select ai-pipeline__source-select"
                   value={selectedSource}
                   onChange={e => setSelectedSource(e.target.value)}
+                  disabled={kafkaEnabled}
                 >
                   <option value="">Auto-detect source file</option>
                   {sourceFiles.map(f => <option key={f} value={f}>{f}</option>)}
                 </select>
               )}
+              <label className="ai-pipeline__kafka-toggle" style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13 }}>
+                <input
+                  type="checkbox"
+                  checked={kafkaEnabled}
+                  onChange={e => setKafkaEnabled(e.target.checked)}
+                />
+                Use Kafka source
+              </label>
               <button
                 className="etl-btn etl-btn--primary"
                 onClick={handleAiGenerate}
@@ -566,6 +610,78 @@ const PipelinesPanel: React.FC<PipelinesPanelProps> = () => {
                 {aiGenerating ? 'Generating…' : 'Generate Pipeline'}
               </button>
             </div>
+
+            {kafkaEnabled && (
+              <div
+                className="ai-pipeline__kafka-form"
+                style={{
+                  marginTop: 12,
+                  padding: 12,
+                  border: '1px solid var(--border, #2a2f3a)',
+                  borderRadius: 8,
+                  display: 'grid',
+                  gridTemplateColumns: 'repeat(2, minmax(180px, 1fr))',
+                  gap: 10,
+                }}
+              >
+                <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12 }}>
+                  Bootstrap servers
+                  <input
+                    className="etl-input"
+                    value={kafkaBootstrap}
+                    onChange={e => setKafkaBootstrap(e.target.value)}
+                    placeholder="localhost:9092"
+                  />
+                </label>
+                <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12 }}>
+                  Topic
+                  <input
+                    className="etl-input"
+                    value={kafkaTopic}
+                    onChange={e => setKafkaTopic(e.target.value)}
+                    placeholder="events"
+                  />
+                </label>
+                <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12 }}>
+                  Group ID (optional)
+                  <input
+                    className="etl-input"
+                    value={kafkaGroupId}
+                    onChange={e => setKafkaGroupId(e.target.value)}
+                    placeholder="aura-pipeline"
+                  />
+                </label>
+                <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12 }}>
+                  Max messages
+                  <input
+                    className="etl-input"
+                    type="number"
+                    min={1}
+                    value={kafkaMaxMessages}
+                    onChange={e => setKafkaMaxMessages(parseInt(e.target.value, 10) || 1000)}
+                  />
+                </label>
+                <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12 }}>
+                  Idle timeout (ms)
+                  <input
+                    className="etl-input"
+                    type="number"
+                    min={500}
+                    step={500}
+                    value={kafkaTimeoutMs}
+                    onChange={e => setKafkaTimeoutMs(parseInt(e.target.value, 10) || 5000)}
+                  />
+                </label>
+                <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12 }}>
+                  <input
+                    type="checkbox"
+                    checked={kafkaFromBeginning}
+                    onChange={e => setKafkaFromBeginning(e.target.checked)}
+                  />
+                  Read from beginning
+                </label>
+              </div>
+            )}
           </div>
 
           {aiError && (

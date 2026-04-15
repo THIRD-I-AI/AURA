@@ -28,6 +28,7 @@ class SourceType(str, Enum):
     MYSQL = "mysql"
     BIGQUERY = "bigquery"
     DUCKDB = "duckdb"           # existing DuckDB table / view
+    KAFKA = "kafka"             # consume N messages from a Kafka topic
 
 
 class SinkType(str, Enum):
@@ -83,6 +84,9 @@ class PipelineSource(BaseModel):
     def label(self) -> str:
         if self.type == SourceType.FILE:
             return self.file_name or "unknown_file"
+        if self.type == SourceType.KAFKA:
+            cfg = self.connection or {}
+            return f"kafka://{cfg.get('topic', 'unknown_topic')}"
         return f"{self.type.value}://{self.table or 'query'}"
 
 
