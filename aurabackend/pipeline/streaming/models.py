@@ -39,6 +39,7 @@ class StreamSinkType(str, Enum):
     KAFKA = "kafka"                      # emit to another Kafka topic
     ALERT = "alert"                      # trigger when condition is met
     CONSOLE = "console"                  # log to stdout (debugging)
+    WEBHOOK = "webhook"                  # POST closed windows to an HTTP endpoint
 
 
 class WindowType(str, Enum):

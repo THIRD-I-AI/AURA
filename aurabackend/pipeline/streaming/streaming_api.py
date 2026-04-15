@@ -277,13 +277,15 @@ _SOURCE_SCHEMAS = {
     },
     "kafka": {
         "label": "Kafka",
-        "description": "Consume from an Apache Kafka topic.",
-        "implemented": False,
+        "description": "Consume from an Apache Kafka topic (aiokafka).",
+        "implemented": True,
         "fields": [
-            {"key": "bootstrap_servers", "label": "Bootstrap Servers", "type": "text",   "default": "localhost:9092", "required": True},
-            {"key": "topic",             "label": "Topic",             "type": "text",   "default": "",               "required": True},
+            {"key": "bootstrap_servers", "label": "Bootstrap Servers", "type": "text",   "default": "localhost:9092", "required": True,  "help": "Comma-separated broker list"},
+            {"key": "topic",             "label": "Topic",             "type": "text",   "default": "",               "required": True,  "help": "Topic to consume from"},
             {"key": "group_id",          "label": "Consumer Group",    "type": "text",   "default": "aura-streaming", "required": False},
-            {"key": "auto_offset_reset", "label": "Offset Reset",     "type": "select", "default": "latest",         "required": False, "options": ["earliest", "latest"]},
+            {"key": "auto_offset_reset", "label": "Offset Reset",      "type": "select", "default": "latest",         "required": False, "options": ["earliest", "latest"]},
+            {"key": "key_field",         "label": "Partition Key Field", "type": "text", "default": "",               "required": False, "help": "Event data field used as the partition key (optional)"},
+            {"key": "max_poll_records",  "label": "Max Poll Records",  "type": "number", "default": 100,              "required": False, "help": "Upper bound on records returned per poll"},
         ],
     },
     "websocket": {
@@ -340,11 +342,26 @@ _SINK_SCHEMAS = {
     },
     "kafka": {
         "label": "Kafka (Produce)",
-        "description": "Emit window results to a Kafka topic.",
-        "implemented": False,
+        "description": "Emit each closed window as a JSON message to a Kafka topic.",
+        "implemented": True,
         "fields": [
-            {"key": "bootstrap_servers", "label": "Bootstrap Servers", "type": "text", "default": "localhost:9092", "required": True},
-            {"key": "topic",             "label": "Topic",             "type": "text", "default": "",               "required": True},
+            {"key": "bootstrap_servers", "label": "Bootstrap Servers", "type": "text",   "default": "localhost:9092", "required": True,  "help": "Comma-separated broker list"},
+            {"key": "topic",             "label": "Topic",             "type": "text",   "default": "",               "required": True},
+            {"key": "key_field",         "label": "Message Key Field", "type": "text",   "default": "",               "required": False, "help": "Aggregation field to use as Kafka key (optional)"},
+            {"key": "linger_ms",         "label": "Linger (ms)",       "type": "number", "default": 100,              "required": False, "help": "Batch linger time before producing"},
+            {"key": "acks",              "label": "Acks",              "type": "select", "default": "all",            "required": False, "options": ["all", "1", "0"]},
+        ],
+    },
+    "webhook": {
+        "label": "Webhook (HTTP POST)",
+        "description": "POST each closed window as JSON to a user-provided URL, optionally signed with HMAC-SHA256.",
+        "implemented": True,
+        "fields": [
+            {"key": "url",          "label": "Target URL",     "type": "text",   "default": "",     "required": True,  "help": "Endpoint receiving the JSON payload"},
+            {"key": "secret",       "label": "HMAC Secret",    "type": "text",   "default": "",     "required": False, "help": "If set, payload is signed with HMAC-SHA256 in X-AURA-Signature"},
+            {"key": "timeout_s",    "label": "Timeout (s)",    "type": "number", "default": 10,     "required": False},
+            {"key": "retries",      "label": "Retries",        "type": "number", "default": 2,      "required": False, "help": "Retry count per delivery (exponential backoff)"},
+            {"key": "include_late", "label": "Include Late Events", "type": "select", "default": "false", "required": False, "options": ["false", "true"], "help": "Also POST late events to the same URL"},
         ],
     },
 }

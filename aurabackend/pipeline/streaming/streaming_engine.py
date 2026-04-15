@@ -40,6 +40,7 @@ from pipeline.streaming.sinks.database_sink import DatabaseSink
 from pipeline.streaming.sinks.file_sink import FileSink
 from pipeline.streaming.sinks.kafka_sink import KafkaSink
 from pipeline.streaming.sinks.sse_sink import SSESink
+from pipeline.streaming.sinks.webhook_sink import WebhookSink
 from pipeline.streaming.sources.base import BaseSource
 from pipeline.streaming.sources.file_watcher import FileWatcherSource
 from pipeline.streaming.sources.kafka_source import KafkaSource
@@ -81,6 +82,8 @@ def _create_sink(sink_def) -> BaseSink:
         return AlertSink(cfg)
     if t == "kafka":
         return KafkaSink(cfg)
+    if t == "webhook":
+        return WebhookSink(cfg)
     raise ValueError(f"Unsupported sink type: {t}")
 
 
