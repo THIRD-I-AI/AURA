@@ -46,7 +46,7 @@ jobs:
             --cov=. \
             --cov-report=term-missing \
             --cov-report=xml:coverage.xml \
-            --cov-fail-under=40
+            --cov-fail-under=60
 
       - name: Upload coverage report
         if: always()
@@ -128,9 +128,7 @@ jobs:
         run: npm ci
 
       - name: ESLint
-        run: npx eslint src --ext .ts,.tsx --max-warnings 0 || true
-        # `|| true` prevents lint warnings from blocking PRs for now;
-        # remove it once the 222 inline-style warnings are resolved.
+        run: npx eslint src --max-warnings 0
 
   # ── Backend security scan ─────────────────────────────────────────────────
   backend-security:
