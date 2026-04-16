@@ -89,6 +89,25 @@ class LLMProvider(ABC):
         """Return True if the provider is configured and reachable."""
         ...
 
+    @staticmethod
+    def _build_messages(prompt: Union[str, List[str]]) -> List[Dict[str, str]]:
+        """Convert a prompt (string or list) to OpenAI-style messages.
+
+        - Single string → one user message.
+        - List → first element is system, rest are user messages.
+        """
+        if isinstance(prompt, list):
+            msgs: List[Dict[str, str]] = []
+            if prompt:
+                msgs.append({"role": "system", "content": prompt[0]})
+            for p in prompt[1:]:
+                msgs.append({"role": "user", "content": p})
+            # If only a system prompt was given, also add it as user
+            if len(msgs) == 1:
+                msgs.append({"role": "user", "content": prompt[0]})
+            return msgs
+        return [{"role": "user", "content": prompt}]
+
     def __repr__(self) -> str:
         return f"<{self.__class__.__name__} model={self.model!r}>"
 
@@ -166,20 +185,7 @@ class OllamaProvider(LLMProvider):
         if not model:
             return None
 
-        # Build the message(s)
-        if isinstance(prompt, list):
-            # Treat first as system, rest as user
-            system_msg = prompt[0] if prompt else ""
-            user_msg = "\n\n".join(prompt[1:]) if len(prompt) > 1 else ""
-            messages = []
-            if system_msg:
-                messages.append({"role": "system", "content": system_msg})
-            if user_msg:
-                messages.append({"role": "user", "content": user_msg})
-            else:
-                messages.append({"role": "user", "content": system_msg})
-        else:
-            messages = [{"role": "user", "content": prompt}]
+        messages = self._build_messages(prompt)
 
         try:
             import httpx
@@ -239,43 +245,29 @@ class GroqProvider(LLMProvider):
     def is_available(self) -> bool:
         return self._client is not None and self._api_key is not None
 
-    def generate(self, prompt: Union[str, List[str]], **kwargs: Any) -> Optional[str]:
-        if not self.is_available():
-            return None
-
-        # Build messages
-        if isinstance(prompt, list):
-            messages = [{"role": "system", "content": prompt[0]}]
-            for p in prompt[1:]:
-                messages.append({"role": "user", "content": p})
-        else:
-            messages = [{"role": "user", "content": prompt}]
-
-        temperature = kwargs.get("temperature", 0.2)
-        max_tokens = kwargs.get("max_tokens", _DEFAULT_MAX_TOKENS)
-
-        # Try native groq SDK first
-        if self._client != "httpx":
-            try:
-                response = self._client.chat.completions.create(
-                    model=self.model,
-                    messages=messages,
-                    temperature=temperature,
-                    max_tokens=max_tokens,
-                )
-                choice = response.choices[0] if response.choices else None
-                if choice and choice.message:
-                    return (choice.message.content or "").strip()
-            except Exception as exc:
-                exc_str = str(exc).lower()
-                if "rate" in exc_str or "too large" in exc_str or "413" in exc_str or "limit" in exc_str:
-                    raise LLMRateLimitError(f"Groq rate/size limit: {exc}") from exc
-                logger.warning("Groq SDK generation failed: %s", exc)
-                return None
-
-        # Fallback: raw httpx call (OpenAI-compatible API)
+    def _generate_via_sdk(self, messages: list, temperature: float, max_tokens: int) -> Optional[str]:
+        """Call the Groq Python SDK."""
         try:
-            import httpx
+            response = self._client.chat.completions.create(
+                model=self.model,
+                messages=messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+            )
+            choice = response.choices[0] if response.choices else None
+            if choice and choice.message:
+                return (choice.message.content or "").strip()
+        except Exception as exc:
+            exc_str = str(exc).lower()
+            if any(kw in exc_str for kw in ("rate", "too large", "413", "limit")):
+                raise LLMRateLimitError(f"Groq rate/size limit: {exc}") from exc
+            logger.warning("Groq SDK generation failed: %s", exc)
+        return None
+
+    def _generate_via_httpx(self, messages: list, temperature: float, max_tokens: int) -> Optional[str]:
+        """Fallback: raw httpx call to Groq's OpenAI-compatible API."""
+        import httpx
+        try:
             resp = httpx.post(
                 f"{self._base_url}/chat/completions",
                 headers={
@@ -291,8 +283,7 @@ class GroqProvider(LLMProvider):
                 timeout=float(os.getenv("AURA_LLM_TIMEOUT", "120")),
             )
             if resp.status_code == 200:
-                data = resp.json()
-                choices = data.get("choices", [])
+                choices = resp.json().get("choices", [])
                 if choices:
                     return (choices[0].get("message", {}).get("content", "") or "").strip()
             elif resp.status_code in (413, 429):
@@ -307,6 +298,21 @@ class GroqProvider(LLMProvider):
         except Exception as exc:
             logger.warning("Groq httpx generation failed: %s", exc)
         return None
+
+    def generate(self, prompt: Union[str, List[str]], **kwargs: Any) -> Optional[str]:
+        if not self.is_available():
+            return None
+
+        messages = self._build_messages(prompt)
+        temperature = kwargs.get("temperature", 0.2)
+        max_tokens = kwargs.get("max_tokens", _DEFAULT_MAX_TOKENS)
+
+        if self._client != "httpx":
+            result = self._generate_via_sdk(messages, temperature, max_tokens)
+            if result is not None:
+                return result
+
+        return self._generate_via_httpx(messages, temperature, max_tokens)
 
 
 # ────────────────────────────────────────────────────────────────────
@@ -397,13 +403,7 @@ class OpenAIProvider(LLMProvider):
         if not self._client:
             return None
         try:
-            if isinstance(prompt, list):
-                messages = [{"role": "system", "content": prompt[0]}]
-                for p in prompt[1:]:
-                    messages.append({"role": "user", "content": p})
-            else:
-                messages = [{"role": "user", "content": prompt}]
-
+            messages = self._build_messages(prompt)
             response = self._client.chat.completions.create(
                 model=self.model,
                 messages=messages,

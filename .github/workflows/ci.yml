@@ -46,7 +46,7 @@ jobs:
             --cov=. \
             --cov-report=term-missing \
             --cov-report=xml:coverage.xml \
-            --cov-fail-under=0
+            --cov-fail-under=40
 
       - name: Upload coverage report
         if: always()
@@ -160,11 +160,10 @@ jobs:
           bandit -r . \
             -x ./tests,./.venv,./alembic/versions \
             -s B101 \
-            --severity-level high || true
+            --severity-level high
         # -s B101: skip assert warnings (used in tests/dev)
-        # --severity-level high: only show high-severity for now
-        # || true: non-blocking until existing mediums are resolved
-        # JSON report has full findings for review
+        # --severity-level high: blocks CI on high-severity findings
+        # JSON report (all severities) is non-blocking for review
 
       - name: Upload bandit report
         if: always()

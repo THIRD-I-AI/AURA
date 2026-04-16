@@ -120,8 +120,15 @@ class AuraSettings(BaseSettings):
 
     @field_validator("secret_key", mode="after")
     @classmethod
-    def _warn_default_secret(cls, v):
+    def _warn_default_secret(cls, v, info):
         if v == "change-me-in-production":
+            env = info.data.get("environment", "development")
+            if env.lower() == "production":
+                raise ValueError(
+                    "SECRET_KEY must be set in production. "
+                    "The default 'change-me-in-production' value is not allowed. "
+                    "Set the SECRET_KEY environment variable to a secure random string."
+                )
             import warnings
             warnings.warn(
                 "SECRET_KEY is still the default value. "
