@@ -1,14 +1,26 @@
 """
 Auth Router — ``/auth``
 ========================
-Token issuance and current-user introspection.
+Token issuance, user registration, and current-user introspection.
+
+Supports two modes (controlled by ``AURA_AUTH_MODE``):
+
+- **open** (default): Issues a token for any ``user_id`` — for development
+  and testing.  No credential validation.
+- **password**: Requires ``email`` + ``password``.  Validates against the
+  ``users`` table using bcrypt hashes.
 """
 from __future__ import annotations
 
+import uuid
+
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
+from sqlalchemy import select
 
 from shared.auth import create_access_token, require_user
+from shared.config import settings
+from shared.exceptions import AuthenticationError, ConflictError, ValidationError
 from shared.logging_config import get_logger
 
 logger = get_logger("aura.router.auth")
@@ -19,15 +31,23 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 # ── Request / Response schemas ──────────────────────────────────────────
 
 class TokenRequest(BaseModel):
-    """Minimal login: user id + optional metadata.
+    """Login request.
 
-    In production this should validate credentials (password, OAuth code,
-    etc.).  For now it issues a token for the given ``user_id`` so the
-    rest of the JWT pipeline can be exercised end-to-end.
+    In **open** mode only ``user_id`` is required (email/password ignored).
+    In **password** mode ``email`` + ``password`` are required.
     """
-    user_id: str = Field(..., min_length=1)
+    user_id: str | None = None
     email: str | None = None
+    password: str | None = None
     name: str | None = None
+    role: str = "user"
+
+
+class RegisterRequest(BaseModel):
+    """Create a new user account (password mode)."""
+    email: str = Field(..., min_length=3)
+    password: str = Field(..., min_length=8)
+    name: str = Field(..., min_length=1)
     role: str = "user"
 
 
@@ -47,21 +67,101 @@ class UserInfo(BaseModel):
 
 @router.post("/token", response_model=TokenResponse)
 async def issue_token(body: TokenRequest):
-    """Issue a signed JWT for the given user.
+    """Issue a signed JWT.
 
-    **Note:** This is a development/demo endpoint.  In production, swap
-    the body for real credential validation (OAuth2 password flow, SSO
-    callback, etc.).
+    Behaviour depends on ``AURA_AUTH_MODE``:
+    - **open**: mints a token for any ``user_id`` (dev/demo).
+    - **password**: validates ``email`` + ``password`` against the DB.
     """
+    if settings.auth_mode == "password":
+        return await _issue_token_password(body)
+    return await _issue_token_open(body)
+
+
+async def _issue_token_open(body: TokenRequest) -> TokenResponse:
+    """Open mode — no credential validation."""
+    if not body.user_id:
+        raise ValidationError("user_id is required in open auth mode")
+
+    logger.info("Token issued (open mode) for user_id=%s", body.user_id)
     claims = {"sub": body.user_id, "role": body.role}
     if body.email:
         claims["email"] = body.email
     if body.name:
         claims["name"] = body.name
+    return TokenResponse(access_token=create_access_token(claims))
 
-    token = create_access_token(claims)
-    logger.info("Token issued for user_id=%s role=%s", body.user_id, body.role)
-    return TokenResponse(access_token=token)
+
+async def _issue_token_password(body: TokenRequest) -> TokenResponse:
+    """Password mode — validate credentials against DB."""
+    if not body.email or not body.password:
+        raise ValidationError("email and password are required in password auth mode")
+
+    from metadata_store.db import get_session_factory
+    from metadata_store.models import User
+    from shared.password import verify_password
+
+    session_factory = get_session_factory()
+    async with session_factory() as session:
+        result = await session.execute(
+            select(User).where(User.email == body.email)
+        )
+        user = result.scalar_one_or_none()
+
+    if user is None or not user.password_hash:
+        raise AuthenticationError("Invalid credentials")
+
+    if not verify_password(body.password, user.password_hash):
+        raise AuthenticationError("Invalid credentials")
+
+    claims = {
+        "sub": user.id,
+        "email": user.email,
+        "name": user.name,
+        "role": user.role or "user",
+    }
+    logger.info("Token issued (password mode) for email=%s", body.email)
+    return TokenResponse(access_token=create_access_token(claims))
+
+
+@router.post("/register", response_model=UserInfo, status_code=201)
+async def register_user(body: RegisterRequest):
+    """Create a new user with a hashed password.
+
+    In production (``auth_mode=password``), this endpoint should be
+    protected with ``require_role("admin")``.  In development it is open.
+    """
+    from metadata_store.db import get_session_factory
+    from metadata_store.models import User
+    from shared.password import hash_password
+
+    session_factory = get_session_factory()
+    async with session_factory() as session:
+        # Check for existing email
+        result = await session.execute(
+            select(User).where(User.email == body.email)
+        )
+        if result.scalar_one_or_none() is not None:
+            raise ConflictError(f"User with email '{body.email}' already exists")
+
+        user = User(
+            id=str(uuid.uuid4()),
+            name=body.name,
+            email=body.email,
+            password_hash=hash_password(body.password),
+            role=body.role,
+        )
+        session.add(user)
+        await session.commit()
+        await session.refresh(user)
+
+    logger.info("User registered: email=%s id=%s", user.email, user.id)
+    return UserInfo(
+        sub=user.id,
+        email=user.email,
+        name=user.name,
+        role=user.role,
+    )
 
 
 @router.get("/me", response_model=UserInfo)

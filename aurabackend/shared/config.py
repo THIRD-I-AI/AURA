@@ -116,6 +116,7 @@ class AuraSettings(BaseSettings):
         return v
 
     # ── Security / Auth ─────────────────────────────────────────────────
+    auth_mode: str = Field("open", alias="AURA_AUTH_MODE")
     secret_key: str = Field("change-me-in-production", alias="SECRET_KEY")
 
     @field_validator("secret_key", mode="after")
@@ -195,6 +196,7 @@ class AuraSettings(BaseSettings):
     rate_limit_enabled: bool = Field(True, alias="AURA_RATE_LIMIT_ENABLED")
     rate_limit_requests: int = Field(100, alias="AURA_RATE_LIMIT_REQUESTS")
     rate_limit_window_seconds: int = Field(60, alias="AURA_RATE_LIMIT_WINDOW_SECONDS")
+    redis_url: Optional[str] = Field(None, alias="AURA_REDIS_URL")
 
     model_config = {
         "env_file": _locate_env_files(),

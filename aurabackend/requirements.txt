@@ -36,8 +36,12 @@ groq>=0.9,<1.0
 
 # Security
 PyJWT>=2.8,<3.0
+bcrypt>=4.0,<6.0
 azure-identity>=1.16,<2.0
 azure-keyvault-secrets>=4.8,<5.0
+
+# Redis (optional — rate limiter, caching)
+redis[hiredis]>=5.0,<6.0
 
 # Testing
 pytest>=8.0,<9.0

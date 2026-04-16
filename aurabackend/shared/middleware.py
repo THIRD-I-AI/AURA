@@ -15,7 +15,6 @@ from __future__ import annotations
 import hmac
 import time
 import uuid
-from collections import defaultdict
 from typing import Callable
 
 from fastapi import FastAPI, Request
@@ -76,7 +75,10 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
 # ── API Key Authentication Middleware ────────────────────────────────
 
 # Paths that never require authentication
-_PUBLIC_PATHS = {"/health", "/healthz", "/ready", "/docs", "/openapi.json", "/redoc"}
+_PUBLIC_PATHS = {
+    "/health", "/healthz", "/ready", "/docs", "/openapi.json", "/redoc",
+    "/api/v1/auth/token", "/api/v1/auth/register",
+}
 
 
 class APIKeyMiddleware(BaseHTTPMiddleware):
@@ -161,10 +163,10 @@ class JWTAuthMiddleware(BaseHTTPMiddleware):
 # ── Rate Limiting Middleware ────────────────────────────────────────────
 
 class RateLimitMiddleware(BaseHTTPMiddleware):
-    """In-memory sliding-window rate limiter.
+    """Sliding-window rate limiter with pluggable backend.
 
-    Tracks requests per client IP within a rolling window. When the limit
-    is exceeded, returns 429 Too Many Requests.
+    Delegates to a ``RateLimitBackend`` (in-memory or Redis).
+    When no backend is provided, falls back to in-memory.
 
     Parameters
     ----------
@@ -172,6 +174,8 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         Maximum requests allowed per window (default 100).
     window_seconds : int
         Sliding window duration in seconds (default 60).
+    backend : RateLimitBackend | None
+        Storage backend.  ``None`` = auto-create ``InMemoryBackend``.
     """
 
     def __init__(
@@ -180,23 +184,23 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         requests_per_window: int = 100,
         window_seconds: int = 60,
         exempt_path_prefixes: tuple[str, ...] = ("/stream/",),
+        backend=None,
     ) -> None:
         super().__init__(app)
         self._max_requests = requests_per_window
         self._window = window_seconds
         self._exempt_prefixes = exempt_path_prefixes
-        # {client_ip: [timestamp, ...]}
-        self._hits: dict[str, list[float]] = defaultdict(list)
+
+        if backend is None:
+            from shared.rate_limit import InMemoryBackend
+            backend = InMemoryBackend()
+        self._backend = backend
 
     def _client_ip(self, request: Request) -> str:
         forwarded = request.headers.get("X-Forwarded-For")
         if forwarded:
             return forwarded.split(",")[0].strip()
         return request.client.host if request.client else "unknown"
-
-    def _prune(self, timestamps: list[float], now: float) -> list[float]:
-        cutoff = now - self._window
-        return [t for t in timestamps if t > cutoff]
 
     async def dispatch(self, request: Request, call_next: Callable):
         path = request.url.path
@@ -207,12 +211,12 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         if any(path.startswith(p) for p in self._exempt_prefixes):
             return await call_next(request)
 
-        now = time.time()
         ip = self._client_ip(request)
-        self._hits[ip] = self._prune(self._hits[ip], now)
+        allowed, retry_after = await self._backend.check_and_record(
+            ip, self._max_requests, self._window,
+        )
 
-        if len(self._hits[ip]) >= self._max_requests:
-            retry_after = int(self._window - (now - self._hits[ip][0])) + 1
+        if not allowed:
             logger.warning(
                 "Rate limit exceeded for %s on %s %s",
                 ip, request.method, request.url.path,
@@ -226,7 +230,6 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
                 headers={"Retry-After": str(retry_after)},
             )
 
-        self._hits[ip].append(now)
         return await call_next(request)
 
 
