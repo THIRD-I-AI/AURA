@@ -120,10 +120,13 @@ def create_service(
     )
     #  2. Rate limiting  (env-driven; can be disabled via AURA_RATE_LIMIT_ENABLED=0)
     if settings.rate_limit_enabled:
+        from shared.rate_limit import get_rate_limit_backend
+        rl_backend = get_rate_limit_backend()
         app.add_middleware(
             RateLimitMiddleware,
             requests_per_window=settings.rate_limit_requests,
             window_seconds=settings.rate_limit_window_seconds,
+            backend=rl_backend,
         )
         logger.info(
             "Rate limiting ENABLED for %s (%d req / %ds per IP)",
