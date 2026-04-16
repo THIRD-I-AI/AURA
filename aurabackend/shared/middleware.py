@@ -119,6 +119,45 @@ class APIKeyMiddleware(BaseHTTPMiddleware):
 
 
 
+# ── JWT Authentication Middleware ──────────────────────────────────────
+
+class JWTAuthMiddleware(BaseHTTPMiddleware):
+    """Opt-in Bearer-token gate.
+
+    When enabled, every request (except public paths and OPTIONS) must
+    include a valid ``Authorization: Bearer <jwt>`` header.  The decoded
+    payload is stashed on ``request.state.user`` for downstream handlers.
+    """
+
+    async def dispatch(self, request: Request, call_next: Callable):
+        if request.url.path in _PUBLIC_PATHS or request.method == "OPTIONS":
+            return await call_next(request)
+
+        auth_header = request.headers.get("Authorization", "")
+        if not auth_header.startswith("Bearer "):
+            return JSONResponse(
+                status_code=401,
+                content={"error": "AUTHENTICATION_REQUIRED", "message": "Bearer token required"},
+            )
+
+        token = auth_header[7:]  # strip "Bearer "
+        try:
+            from shared.auth import decode_access_token
+            payload = decode_access_token(token)
+        except Exception as exc:
+            logger.warning(
+                "JWT rejected for %s %s: %s",
+                request.method, request.url.path, exc,
+            )
+            return JSONResponse(
+                status_code=401,
+                content={"error": "AUTHENTICATION_REQUIRED", "message": str(exc)},
+            )
+
+        request.state.user = payload
+        return await call_next(request)
+
+
 # ── Rate Limiting Middleware ────────────────────────────────────────────
 
 class RateLimitMiddleware(BaseHTTPMiddleware):

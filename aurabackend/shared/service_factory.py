@@ -30,6 +30,7 @@ from shared.config import settings
 from shared.logging_config import get_logger, setup_logging
 from shared.middleware import (
     APIKeyMiddleware,
+    JWTAuthMiddleware,
     RateLimitMiddleware,
     RequestIDMiddleware,
     RequestLoggingMiddleware,
@@ -130,7 +131,11 @@ def create_service(
         )
     else:
         logger.warning("Rate limiting DISABLED for %s (AURA_RATE_LIMIT_ENABLED=false)", name)
-    #  3. API Key auth  (opt-in — only when AURA_API_KEY is set)
+    #  3. JWT auth  (opt-in — AURA_JWT_ENABLED=true)
+    if settings.jwt_enabled:
+        app.add_middleware(JWTAuthMiddleware)
+        logger.info("JWT authentication ENABLED for %s", name)
+    #  4. API Key auth  (opt-in — only when AURA_API_KEY is set)
     if settings.api_key:
         app.add_middleware(APIKeyMiddleware, api_key=settings.api_key)
         logger.info("API key authentication ENABLED for %s", name)

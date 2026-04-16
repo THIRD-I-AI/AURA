@@ -80,6 +80,31 @@ jobs:
       - name: TypeScript type check
         run: npx tsc --noEmit
 
+  # ── Frontend tests ───────────────────────────────────────────────────────
+  frontend-test:
+    name: Frontend Tests (Vitest)
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: frontend
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run Vitest
+        run: npx vitest run --reporter=verbose
+
   # ── Frontend lint ────────────────────────────────────────────────────────
   frontend-lint:
     name: Frontend Lint

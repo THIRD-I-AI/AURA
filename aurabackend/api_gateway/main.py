@@ -124,6 +124,7 @@ app = create_service(
 
 # ── Mount routers ──────────────────────────────────────────────────
 
+from api_gateway.routers.auth import router as auth_router
 from api_gateway.routers.chat import router as chat_router
 from api_gateway.routers.connections import router as connections_router
 from api_gateway.routers.etl import router as etl_router
@@ -134,6 +135,7 @@ from api_gateway.routers.queries import router as queries_router
 from api_gateway.routers.stream import router as stream_router
 from api_gateway.routers.webhooks import router as webhooks_router
 
+app.include_router(auth_router)
 app.include_router(chat_router)
 app.include_router(files_router)
 app.include_router(connections_router)

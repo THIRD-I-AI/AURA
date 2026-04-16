@@ -131,6 +131,7 @@ class AuraSettings(BaseSettings):
         return v
     jwt_algorithm: str = Field("HS256", alias="ALGORITHM")
     access_token_expire_minutes: int = Field(30, alias="ACCESS_TOKEN_EXPIRE_MINUTES")
+    jwt_enabled: bool = Field(False, alias="AURA_JWT_ENABLED")
     mcp_api_key: Optional[str] = Field(None, alias="MCP_API_KEY")
 
     # ── Primary Database (Connector / Sandbox default) ──────────────────
