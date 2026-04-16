@@ -34,22 +34,26 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          pip install pytest pytest-asyncio
+          pip install pytest pytest-asyncio pytest-cov
 
-      - name: Run tests
+      - name: Run tests with coverage
         run: |
           python -m pytest tests/ \
             --tb=short \
             -q \
             --ignore=tests/test_operability.py \
-            -x
+            -x \
+            --cov=. \
+            --cov-report=term-missing \
+            --cov-report=xml:coverage.xml \
+            --cov-fail-under=0
 
-      - name: Upload test results
+      - name: Upload coverage report
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: pytest-results-${{ matrix.python-version }}
-          path: aurabackend/.pytest_cache/
+          name: coverage-${{ matrix.python-version }}
+          path: aurabackend/coverage.xml
 
   # ── Frontend type-check ──────────────────────────────────────────────────
   frontend-typecheck:
@@ -102,6 +106,47 @@ jobs:
         run: npx eslint src --ext .ts,.tsx --max-warnings 0 || true
         # `|| true` prevents lint warnings from blocking PRs for now;
         # remove it once the 222 inline-style warnings are resolved.
+
+  # ── Backend security scan ─────────────────────────────────────────────────
+  backend-security:
+    name: Security Scan (bandit)
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: aurabackend
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install bandit
+        run: pip install bandit[toml]
+
+      - name: Run bandit
+        run: |
+          bandit -r . \
+            -x ./tests,./.venv,./alembic/versions \
+            -s B101 \
+            -f json -o bandit-report.json || true
+          bandit -r . \
+            -x ./tests,./.venv,./alembic/versions \
+            -s B101 \
+            --severity-level high || true
+        # -s B101: skip assert warnings (used in tests/dev)
+        # --severity-level high: only show high-severity for now
+        # || true: non-blocking until existing mediums are resolved
+        # JSON report has full findings for review
+
+      - name: Upload bandit report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: bandit-report
+          path: aurabackend/bandit-report.json
 
   # ── Backend lint ─────────────────────────────────────────────────────────
   backend-lint:
