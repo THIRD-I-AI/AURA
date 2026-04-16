@@ -17,11 +17,9 @@ from __future__ import annotations
 import csv
 import json
 import os
-import shutil
 import sys
-import tempfile
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, List, Optional, Union
 from unittest.mock import patch
 
 import pytest
@@ -29,7 +27,6 @@ import pytest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from shared.llm_provider import LLMProvider
-
 
 # ── Deterministic Mock LLM ──────────────────────────────────────────
 
@@ -121,6 +118,7 @@ def mock_llm():
 def client(upload_dir, mock_llm):
     """FastAPI TestClient with mock LLM and real upload data."""
     from fastapi.testclient import TestClient
+
     from api_gateway.main import app
     return TestClient(app)
 
