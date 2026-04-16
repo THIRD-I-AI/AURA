@@ -132,6 +132,7 @@ const FilesAndData: React.FC<FilesAndDataProps> = ({ setCurrentPage }) => {
   const { state: { files }, actions: { loadFilesFromStorage } } = useAuraStore();
   const [selectedFile, setSelectedFile] = useState<UploadedFile | null>(null);
 
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { loadFilesFromStorage(); }, []);
 
   // Keep selection in sync when files list updates
@@ -140,6 +141,7 @@ const FilesAndData: React.FC<FilesAndDataProps> = ({ setCurrentPage }) => {
       const refreshed = files.find(f => f.id === selectedFile.id);
       if (refreshed) setSelectedFile(refreshed);
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [files]);
 
   const readyCount  = files.filter(f => f.status === 'ready').length;

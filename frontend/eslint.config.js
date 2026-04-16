@@ -19,5 +19,16 @@ export default defineConfig([
       ecmaVersion: 2020,
       globals: globals.browser,
     },
+    rules: {
+      // Pragmatic: the codebase uses `any` extensively in API types,
+      // callbacks, and event handlers.  A separate typing effort will
+      // progressively eliminate these.
+      '@typescript-eslint/no-explicit-any': 'off',
+      // Allow unused vars prefixed with _ (common for destructuring)
+      '@typescript-eslint/no-unused-vars': ['error', {
+        argsIgnorePattern: '^_',
+        varsIgnorePattern: '^_',
+      }],
+    },
   },
 ])

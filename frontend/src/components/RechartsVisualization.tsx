@@ -219,7 +219,7 @@ const RechartsVisualization: React.FC<RechartsVisualizationProps> = ({
           </ResponsiveContainer>
         );
 
-      case 'pie':
+      case 'pie': {
         const pieData = data.map((item, idx) => ({
           name: String(item[structure.xAxis] || `Item ${idx + 1}`),
           value: Number(item[structure.yAxis[0]] || 1),
@@ -261,6 +261,7 @@ const RechartsVisualization: React.FC<RechartsVisualizationProps> = ({
             </PieChart>
           </ResponsiveContainer>
         );
+      }
 
       case 'bar':
       default:

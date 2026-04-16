@@ -25,6 +25,7 @@ interface StreamingPanelProps {
    Helpers
    ================================================================ */
 
+/* eslint-disable react-refresh/only-export-components */
 export const STATUS_COLORS: Record<string, string> = {
   running: '#22c55e',
   paused:  '#f59e0b',

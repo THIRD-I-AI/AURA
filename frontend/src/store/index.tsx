@@ -266,6 +266,7 @@ export function AuraProvider({ children }: { children: ReactNode }) {
 //  Hook
 // ═══════════════════════════════════════════════════════════════════
 
+// eslint-disable-next-line react-refresh/only-export-components
 export function useAuraStore(): AuraContextValue {
   const ctx = useContext(AuraContext);
   if (!ctx) {

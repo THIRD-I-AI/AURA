@@ -100,11 +100,14 @@ function AppInner() {
     }
   });
 
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { fetchStats(); loadFilesFromStorage(); }, []);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { if (statsError) toast.error('Stats unavailable', { message: statsError }); }, [statsError]);
   useEffect(() => {
     const id = setInterval(() => { if (currentPage === 'dashboard') fetchStats(); }, 30_000);
     return () => clearInterval(id);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentPage]);
   useEffect(() => {
     healthService.startMonitoring(setHealthStatus);

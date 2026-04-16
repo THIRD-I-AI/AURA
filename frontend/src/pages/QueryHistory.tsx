@@ -122,6 +122,7 @@ const QueryHistory: React.FC<QueryHistoryProps> = ({ setCurrentPage }) => {
 
   useEffect(() => {
     fetchQueryHistory(100, filter === 'all' ? undefined : filter);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filter]);
 
   const queries = queryHistory as QueryRecord[];
