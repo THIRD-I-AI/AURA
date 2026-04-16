@@ -159,10 +159,12 @@ function parseUploadsFromStorage(): UploadedFile[] {
   }
 }
 
-const API_BASE = () =>
-  localStorage.getItem('apiUrl') ||
-  import.meta.env.VITE_API_URL ||
-  'http://localhost:8000';
+const API_BASE = () => {
+  const raw = localStorage.getItem('apiUrl') ||
+    import.meta.env.VITE_API_URL ||
+    'http://localhost:8000';
+  return `${raw.replace(/\/+$/, '')}/api/v1`;
+};
 
 // ═══════════════════════════════════════════════════════════════════
 //  Context + Provider

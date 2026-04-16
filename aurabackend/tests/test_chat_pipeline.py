@@ -14,6 +14,8 @@ import pytest
 # Ensure the aurabackend package is importable
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+V1 = "/api/v1"
+
 
 # ── Fixture: TestClient ─────────────────────────────────────────────
 
@@ -50,7 +52,7 @@ def test_root_returns_message(client):
 
 def test_dashboard_stats(client):
     """GET /dashboard/stats should return metrics."""
-    resp = client.get("/dashboard/stats")
+    resp = client.get(f"{V1}/dashboard/stats")
     assert resp.status_code == 200
     data = resp.json()
     assert "total_rows" in data
@@ -63,7 +65,7 @@ def test_dashboard_stats(client):
 
 def test_list_connections(client):
     """GET /connections should return a list."""
-    resp = client.get("/connections")
+    resp = client.get(f"{V1}/connections")
     assert resp.status_code == 200
     data = resp.json()
     assert data["success"] is True
@@ -73,7 +75,7 @@ def test_list_connections(client):
 def test_create_and_delete_connection(client):
     """POST /connections creates, DELETE removes."""
     # Create
-    resp = client.post("/connections", json={
+    resp = client.post(f"{V1}/connections", json={
         "name": "test-pg",
         "type": "postgresql",
         "host": "localhost",
@@ -87,7 +89,7 @@ def test_create_and_delete_connection(client):
     conn_id = data["connection"]["id"]
 
     # Delete
-    resp = client.delete(f"/connections/{conn_id}")
+    resp = client.delete(f"{V1}/connections/{conn_id}")
     assert resp.status_code == 200
     assert resp.json()["success"] is True
 
@@ -96,7 +98,7 @@ def test_create_and_delete_connection(client):
 
 def test_available_connectors(client):
     """GET /connectors/available lists supported connectors."""
-    resp = client.get("/connectors/available")
+    resp = client.get(f"{V1}/connectors/available")
     assert resp.status_code == 200
     data = resp.json()
     assert "connectors" in data
@@ -107,7 +109,7 @@ def test_available_connectors(client):
 
 def test_query_history(client):
     """GET /query-history should return a list."""
-    resp = client.get("/query-history")
+    resp = client.get(f"{V1}/query-history")
     assert resp.status_code == 200
     data = resp.json()
     assert data["success"] is True
@@ -116,14 +118,14 @@ def test_query_history(client):
 
 def test_save_and_retrieve_query_history(client):
     """POST then GET query history."""
-    client.post("/query-history", json={
+    client.post(f"{V1}/query-history", json={
         "prompt": "test prompt",
         "sql": "SELECT 1",
         "status": "success",
         "rows": 1,
         "executionTime": 10,
     })
-    resp = client.get("/query-history")
+    resp = client.get(f"{V1}/query-history")
     data = resp.json()
     assert data["total"] >= 1
     assert data["queries"][0]["prompt"] == "test prompt"
@@ -134,11 +136,11 @@ def test_save_and_retrieve_query_history(client):
 def test_chat_history_roundtrip(client):
     """POST then GET chat history for a session."""
     session = "test-session-123"
-    client.post(f"/chat/history/{session}", json={
+    client.post(f"{V1}/chat/history/{session}", json={
         "type": "user",
         "content": "Hello AURA",
     })
-    resp = client.get(f"/chat/history/{session}")
+    resp = client.get(f"{V1}/chat/history/{session}")
     assert resp.status_code == 200
     messages = resp.json()
     assert isinstance(messages, list)
@@ -150,7 +152,7 @@ def test_chat_history_roundtrip(client):
 
 def test_supported_file_formats(client):
     """GET /files/supported-formats should list formats."""
-    resp = client.get("/files/supported-formats")
+    resp = client.get(f"{V1}/files/supported-formats")
     assert resp.status_code == 200
     data = resp.json()
     assert "csv" in data["supported_formats"]
@@ -161,14 +163,14 @@ def test_supported_file_formats(client):
 
 def test_approve_job(client):
     """POST /jobs/{id}/approve should work."""
-    resp = client.post("/jobs/fake-job-123/approve")
+    resp = client.post(f"{V1}/jobs/fake-job-123/approve")
     assert resp.status_code == 200
     assert resp.json()["status"] == "approved"
 
 
 def test_cancel_job(client):
     """POST /jobs/{id}/cancel should work."""
-    resp = client.post("/jobs/fake-job-123/cancel")
+    resp = client.post(f"{V1}/jobs/fake-job-123/cancel")
     assert resp.status_code == 200
     assert resp.json()["status"] == "cancelled"
 
@@ -177,7 +179,7 @@ def test_cancel_job(client):
 
 def test_validate_safe_query(client):
     """POST /validate/query with a safe query."""
-    resp = client.post("/validate/query", json={
+    resp = client.post(f"{V1}/validate/query", json={
         "query": "SELECT * FROM users LIMIT 10",
     })
     assert resp.status_code == 200

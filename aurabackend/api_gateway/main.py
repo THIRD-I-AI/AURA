@@ -122,7 +122,11 @@ app = create_service(
 )
 
 
-# ── Mount routers ──────────────────────────────────────────────────
+# ── Mount routers under /api/v1 ────────────────────────────────────
+# All domain routers are versioned. Infrastructure endpoints (/health,
+# /system/*, /) stay at root so load balancers and probes don't break.
+
+_API_V1 = "/api/v1"
 
 from api_gateway.routers.auth import router as auth_router
 from api_gateway.routers.chat import router as chat_router
@@ -135,36 +139,36 @@ from api_gateway.routers.queries import router as queries_router
 from api_gateway.routers.stream import router as stream_router
 from api_gateway.routers.webhooks import router as webhooks_router
 
-app.include_router(auth_router)
-app.include_router(chat_router)
-app.include_router(files_router)
-app.include_router(connections_router)
-app.include_router(queries_router)
-app.include_router(etl_router)
-app.include_router(pipelines_router)
-app.include_router(stream_router)
-app.include_router(webhooks_router)
-app.include_router(inbound_hooks_router)
+app.include_router(auth_router, prefix=_API_V1)
+app.include_router(chat_router, prefix=_API_V1)
+app.include_router(files_router, prefix=_API_V1)
+app.include_router(connections_router, prefix=_API_V1)
+app.include_router(queries_router, prefix=_API_V1)
+app.include_router(etl_router, prefix=_API_V1)
+app.include_router(pipelines_router, prefix=_API_V1)
+app.include_router(stream_router, prefix=_API_V1)
+app.include_router(webhooks_router, prefix=_API_V1)
+app.include_router(inbound_hooks_router, prefix=_API_V1)
 
 # Agentic DE framework
 try:
     from agents.api import router as agent_router
-    app.include_router(agent_router)
+    app.include_router(agent_router, prefix=_API_V1)
 except ImportError:
     logger.info("Agent framework not available — skipping")
 
 # Streaming pipeline engine
 try:
     from pipeline.streaming.streaming_api import router as streaming_router
-    app.include_router(streaming_router)
+    app.include_router(streaming_router, prefix=_API_V1)
 except ImportError:
     logger.info("Streaming engine not available — skipping")
 
 # Evolution engine API
 try:
     from evolution.api import router as evolution_router
-    app.include_router(evolution_router)
-    logger.info("Evolution engine API mounted at /evolution")
+    app.include_router(evolution_router, prefix=_API_V1)
+    logger.info("Evolution engine API mounted at %s/evolution", _API_V1)
 except ImportError as exc:
     logger.warning("Evolution API not available: %s", exc)
 

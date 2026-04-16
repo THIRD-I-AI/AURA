@@ -123,6 +123,8 @@ def client(upload_dir, mock_llm):
     return TestClient(app)
 
 
+V1 = "/api/v1"
+
 # ── Tests ───────────────────────────────────────────────────────────
 
 class TestE2EChatPipeline:
@@ -130,7 +132,7 @@ class TestE2EChatPipeline:
 
     def test_chat_golden_path(self, client):
         """Happy path: question about uploaded data returns SQL + results."""
-        resp = client.post("/chat", json={
+        resp = client.post(f"{V1}/chat", json={
             "message": "What is the total revenue by product?",
             "auto_execute": True,
         })
@@ -160,7 +162,7 @@ class TestE2EChatPipeline:
 
     def test_chat_returns_columns_and_rows(self, client):
         """Verify the response shape has both columnar and row data."""
-        resp = client.post("/chat", json={
+        resp = client.post(f"{V1}/chat", json={
             "message": "Show me revenue by product",
         })
         data = resp.json()
@@ -184,12 +186,12 @@ class TestE2EChatPipeline:
 
     def test_chat_empty_message_returns_400(self, client):
         """Empty message should be rejected."""
-        resp = client.post("/chat", json={"message": ""})
+        resp = client.post(f"{V1}/chat", json={"message": ""})
         assert resp.status_code == 400
 
     def test_chat_with_session_id(self, client):
         """Session ID should be reflected in the response."""
-        resp = client.post("/chat", json={
+        resp = client.post(f"{V1}/chat", json={
             "message": "total revenue",
             "session_id": "e2e-test-session-42",
         })
@@ -199,12 +201,12 @@ class TestE2EChatPipeline:
     def test_query_tracked_in_history(self, client):
         """After a successful chat, the query should appear in history."""
         # Execute a chat
-        client.post("/chat", json={
+        client.post(f"{V1}/chat", json={
             "message": "revenue by product",
         })
 
         # Check query history
-        resp = client.get("/query-history")
+        resp = client.get(f"{V1}/query-history")
         assert resp.status_code == 200
         data = resp.json()
         assert data["total"] >= 1
@@ -214,7 +216,7 @@ class TestE2EChatPipeline:
 
     def test_metadata_includes_timestamp(self, client):
         """Response metadata should include a timestamp."""
-        resp = client.post("/chat", json={"message": "show products"})
+        resp = client.post(f"{V1}/chat", json={"message": "show products"})
         data = resp.json()
         assert "metadata" in data
         assert "timestamp" in data["metadata"]
@@ -228,7 +230,7 @@ class TestE2EAuthIntegration:
     def test_token_roundtrip(self, client):
         """Issue a token then use it on /auth/me."""
         # Get a token
-        resp = client.post("/auth/token", json={
+        resp = client.post(f"{V1}/auth/token", json={
             "user_id": "e2e-user",
             "email": "e2e@test.com",
             "role": "admin",
@@ -237,7 +239,7 @@ class TestE2EAuthIntegration:
         token = resp.json()["access_token"]
 
         # Use it
-        resp = client.get("/auth/me", headers={
+        resp = client.get(f"{V1}/auth/me", headers={
             "Authorization": f"Bearer {token}",
         })
         assert resp.status_code == 200
@@ -248,7 +250,7 @@ class TestE2EAuthIntegration:
 
     def test_invalid_token_rejected(self, client):
         """A garbage token should get 401."""
-        resp = client.get("/auth/me", headers={
+        resp = client.get(f"{V1}/auth/me", headers={
             "Authorization": "Bearer not-a-real-token",
         })
         assert resp.status_code == 401

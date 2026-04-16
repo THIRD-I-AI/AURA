@@ -5,7 +5,8 @@
 import { useState, useCallback, useRef } from 'react';
 import { useSSE, type SSEEvent } from './useSSE';
 
-const API_BASE = localStorage.getItem('apiUrl') || 'http://localhost:8000';
+const _RAW = localStorage.getItem('apiUrl') || 'http://localhost:8000';
+const API_BASE = `${_RAW.replace(/\/+$/, '')}/api/v1`;
 
 // ── Types ────────────────────────────────────────────────────────────
 

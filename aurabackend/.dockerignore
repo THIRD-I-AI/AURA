@@ -147,6 +147,10 @@ docker-compose*.yml
 .git
 .gitignore
 
+# Tests & dev artifacts
+tests/
+openapi.json
+
 # Other
 *.tmp
 *.temp

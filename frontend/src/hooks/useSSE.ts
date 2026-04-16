@@ -10,7 +10,8 @@
  */
 import { useState, useEffect, useRef, useCallback } from 'react';
 
-const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+const _RAW = (import.meta.env.VITE_API_URL || 'http://localhost:8000') as string;
+const API_BASE = `${_RAW.replace(/\/+$/, '')}/api/v1`;
 
 export interface SSEEvent<T = unknown> {
   id: string;
