@@ -15,7 +15,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from shared.rate_limit import InMemoryBackend, RedisBackend
 
-
 # ── RedisBackend (mocked) ─────────────────────────────────────────────
 
 class TestRedisBackend:
@@ -84,6 +83,7 @@ class TestRedisBackend:
 class TestGetRateLimitBackendRedis:
     def test_returns_redis_backend_when_url_set(self, monkeypatch):
         from unittest.mock import patch
+
         from shared.config import settings
         monkeypatch.setattr(settings, "redis_url", "redis://localhost:6379")
 
@@ -95,6 +95,7 @@ class TestGetRateLimitBackendRedis:
 
     def test_falls_back_on_redis_error(self, monkeypatch):
         from unittest.mock import patch
+
         from shared.config import settings
         monkeypatch.setattr(settings, "redis_url", "redis://bad-host:6379")
 

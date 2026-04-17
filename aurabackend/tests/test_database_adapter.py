@@ -25,7 +25,6 @@ from shared.database_adapter import (
     get_adapter,
 )
 
-
 # ── Helpers ────────────────────────────────────────────────────────
 
 def _clear_cache():

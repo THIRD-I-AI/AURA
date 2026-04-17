@@ -23,7 +23,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from shared.file_service import FileService
 
-
 # ── Helpers ────────────────────────────────────────────────────────
 
 def _make_upload(filename: str, content_type: str, size: int = 100) -> MagicMock:

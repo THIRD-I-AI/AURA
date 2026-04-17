@@ -15,7 +15,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from shared.kafka_client import _parse_message
 
-
 # ── _parse_message ────────────────────────────────────────────────
 
 class TestParseMessage:
@@ -69,11 +68,18 @@ class TestParseMessage:
 class TestConsumeBatchValidation:
     @pytest.mark.asyncio
     async def test_missing_aiokafka_raises_runtime_error(self):
-        """If aiokafka is not installed, RuntimeError should be raised."""
-        from shared.kafka_client import consume_batch
-        # aiokafka is not installed in this env, so any call raises RuntimeError
-        with pytest.raises(RuntimeError, match="aiokafka is not installed"):
-            await consume_batch({"bootstrap_servers": "x", "topic": "t"})
+        """If aiokafka is not importable, RuntimeError should be raised."""
+        import importlib
+        from unittest.mock import patch
+
+        # Hide aiokafka so the lazy import inside consume_batch fails
+        with patch.dict("sys.modules", {"aiokafka": None, "aiokafka.errors": None}):
+            import shared.kafka_client as kmod
+            importlib.reload(kmod)
+            with pytest.raises(RuntimeError, match="aiokafka is not installed"):
+                await kmod.consume_batch({"bootstrap_servers": "x", "topic": "t"})
+            # Restore module
+            importlib.reload(kmod)
 
     @pytest.mark.asyncio
     async def test_missing_bootstrap_with_mock(self):
@@ -87,6 +93,7 @@ class TestConsumeBatchValidation:
         }):
             # Re-import to pick up the mock
             import importlib
+
             import shared.kafka_client as kmod
             importlib.reload(kmod)
             with pytest.raises(ValueError, match="bootstrap_servers"):
@@ -103,6 +110,7 @@ class TestConsumeBatchValidation:
             "aiokafka.errors": mock_errors,
         }):
             import importlib
+
             import shared.kafka_client as kmod
             importlib.reload(kmod)
             with pytest.raises(ValueError, match="topic"):

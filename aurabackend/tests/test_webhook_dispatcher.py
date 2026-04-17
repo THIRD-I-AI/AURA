@@ -19,7 +19,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from shared.streaming_manager import StreamEvent
 
-
 # ── Import targets after sys.path fix ─────────────────────────────
 
 # We need to patch _load before WebhookDispatcher.__init__ reads from disk

@@ -17,6 +17,7 @@ import pytest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from shared.llm_provider import (
+    _PROVIDER_MAP,
     GeminiProvider,
     GroqProvider,
     LLMProvider,
@@ -24,11 +25,9 @@ from shared.llm_provider import (
     OllamaProvider,
     OpenAIProvider,
     _FallbackProvider,
-    _PROVIDER_MAP,
     available_providers,
     get_llm,
 )
-
 
 # ── Helpers ────────────────────────────────────────────────────────
 

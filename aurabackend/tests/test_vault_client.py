@@ -16,7 +16,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from shared.database_adapter import AdapterConfig, BackendType, DatabaseAdapter, DuckDBAdapter, _adapter_cache
 
-
 # ── Helpers ────────────────────────────────────────────────────────
 
 def _mock_adapter() -> MagicMock:

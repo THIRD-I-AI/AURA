@@ -14,7 +14,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from shared.password import hash_password, verify_password
 
-
 # ── Password hashing ───────────────────────────────────────────────────
 
 class TestPasswordHashing:
@@ -61,6 +60,7 @@ def password_client(monkeypatch, tmp_path):
 
     # Create tables using a temporary sync engine (avoids event-loop mismatch)
     from sqlalchemy import create_engine
+
     from metadata_store.models import Base
     sync_engine = create_engine(f"sqlite:///{db_path}")
     Base.metadata.create_all(sync_engine)
@@ -73,6 +73,7 @@ def password_client(monkeypatch, tmp_path):
     db_mod.DATABASE_URL = f"sqlite+aiosqlite:///{db_path}"
 
     from fastapi.testclient import TestClient
+
     from api_gateway.main import app
     return TestClient(app)
 
