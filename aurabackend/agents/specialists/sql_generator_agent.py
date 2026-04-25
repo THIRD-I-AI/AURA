@@ -61,7 +61,15 @@ class SQLGeneratorAgent(BaseAgent):
     async def _run(self, ctx: AgentContext, result: AgentResult) -> AgentResult:
         await self._report("Generating SQL…", 10)
 
-        schema_text = json.dumps(ctx.schema_context, indent=2) if ctx.schema_context else "{}"
+        # Prefer the pre-formatted context_text (compact, LLM-tuned: types
+        # inline, 3 sample rows, no JSON quoting). Fall back to a plain
+        # json.dumps only if it's missing — that path is much heavier
+        # because it serialises every table's full sample_data + the
+        # context_text itself, easily blowing the token budget.
+        if ctx.schema_context:
+            schema_text = ctx.schema_context.get("context_text") or json.dumps(ctx.schema_context, indent=2)
+        else:
+            schema_text = "{}"
         sql, gen_error = await self._generate_sql(ctx.task_description, schema_text)
 
         if not sql:
