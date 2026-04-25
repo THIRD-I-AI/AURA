@@ -17,7 +17,6 @@ import statistics
 from datetime import date, datetime
 from typing import Any, Dict, List, Optional
 
-
 # ---------------------------------------------------------------------------
 # Numeric helpers (moved from analysis_agent.py — re-exported there for
 # backward compatibility)

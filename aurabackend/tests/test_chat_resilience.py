@@ -25,7 +25,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from shared.llm_provider import LLMProvider
 
-
 # ─────────────────────────────────────────────────────────────────────
 # Mock LLMs (one happy, one always-fail)
 # ─────────────────────────────────────────────────────────────────────
@@ -103,6 +102,7 @@ def happy_client(upload_dir):
         p.start()
     try:
         from fastapi.testclient import TestClient
+
         from api_gateway.main import app
         yield TestClient(app)
     finally:
@@ -118,6 +118,7 @@ def failing_client(upload_dir):
         p.start()
     try:
         from fastapi.testclient import TestClient
+
         from api_gateway.main import app
         yield TestClient(app)
     finally:

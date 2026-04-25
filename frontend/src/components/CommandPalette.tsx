@@ -38,7 +38,6 @@ const fuzzyScore = (haystack: string, needle: string): number => {
   if (h === n) return 100;
   if (h.startsWith(n)) return 80;
   if (h.includes(n)) return 60;
-  let i = 0;
   let last = -1;
   let runs = 0;
   for (const ch of n) {
@@ -46,7 +45,6 @@ const fuzzyScore = (haystack: string, needle: string): number => {
     if (idx === -1) return 0;
     if (idx === last + 1) runs += 1;
     last = idx;
-    i += 1;
   }
   return Math.max(1, 30 + runs * 2 - (h.length - n.length) / 4);
 };

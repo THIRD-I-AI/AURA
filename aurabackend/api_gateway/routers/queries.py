@@ -7,6 +7,7 @@ dashboard stats, and job control endpoints.
 
 import asyncio
 import os
+import secrets
 import threading
 import time
 from datetime import datetime
@@ -14,7 +15,6 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import httpx
-import secrets
 from fastapi import APIRouter, HTTPException, Request, status
 from pydantic import BaseModel, Field
 

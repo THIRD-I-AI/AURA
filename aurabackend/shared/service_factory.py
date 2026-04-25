@@ -30,7 +30,6 @@ from fastapi.responses import JSONResponse
 
 from shared.config import settings
 from shared.logging_config import get_logger, setup_logging
-from shared.observability import init_metrics, init_sentry
 from shared.middleware import (
     APIKeyMiddleware,
     JWTAuthMiddleware,
@@ -39,6 +38,7 @@ from shared.middleware import (
     RequestLoggingMiddleware,
     register_exception_handlers,
 )
+from shared.observability import init_metrics, init_sentry
 
 logger = get_logger("aura.factory")
 

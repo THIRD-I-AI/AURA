@@ -187,7 +187,7 @@ const RechartsVisualization: React.FC<RechartsVisualizationProps> = ({
   let chartType: ChartType;
   let xAxis: string | null;
   let yAxis: string[];
-  let resolvedTitle = title || chartSpec?.title;
+  const resolvedTitle = title || chartSpec?.title;
 
   if (chartSpec && chartSpec.type) {
     chartType = chartSpec.type;

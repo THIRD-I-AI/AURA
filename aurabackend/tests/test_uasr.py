@@ -343,9 +343,7 @@ class TestRecoveryLoopIntegration:
 
         batch = _make_batch("src1", BASELINE_COLS, BASELINE_ROWS)
 
-        result = asyncio.get_event_loop().run_until_complete(
-            loop.run(drift, batch)
-        )
+        result = asyncio.run(loop.run(drift, batch))
         # Result should be either DEPLOYED or FAILED depending on agent availability
         assert result.status in (
             RecoveryStatus.DEPLOYED,

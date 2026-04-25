@@ -1,5 +1,5 @@
 import { render, screen } from '@testing-library/react';
-import { describe, expect, it, vi, beforeAll } from 'vitest';
+import { describe, expect, it, beforeAll } from 'vitest';
 
 import RechartsVisualization from '../RechartsVisualization';
 

@@ -24,7 +24,6 @@ from connectors.registry import (
     unregister_connector,
 )
 
-
 # ── Spec serialization ────────────────────────────────────────────────────────
 
 def test_connector_spec_to_dict_includes_legacy_config_required():
