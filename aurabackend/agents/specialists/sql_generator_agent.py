@@ -61,13 +61,18 @@ class SQLGeneratorAgent(BaseAgent):
     async def _run(self, ctx: AgentContext, result: AgentResult) -> AgentResult:
         await self._report("Generating SQL…", 10)
 
-        # Prefer the pre-formatted context_text (compact, LLM-tuned: types
-        # inline, 3 sample rows, no JSON quoting). Fall back to a plain
-        # json.dumps only if it's missing — that path is much heavier
-        # because it serialises every table's full sample_data + the
-        # context_text itself, easily blowing the token budget.
+        # Prefer a pre-formatted text view of the schema if the caller
+        # provided one — both `context_text` (build_schema_context output)
+        # and `rich_context` (chat router's wrapper) are LLM-tuned plain
+        # text, much cheaper than json.dumps on the full dict (which
+        # duplicates sample_data + the context_text field itself and
+        # easily overflows AURA_MAX_TOKENS_PER_REQUEST).
         if ctx.schema_context:
-            schema_text = ctx.schema_context.get("context_text") or json.dumps(ctx.schema_context, indent=2)
+            text_view = (
+                ctx.schema_context.get("context_text")
+                or ctx.schema_context.get("rich_context")
+            )
+            schema_text = text_view or json.dumps(ctx.schema_context, indent=2)
         else:
             schema_text = "{}"
         sql, gen_error = await self._generate_sql(ctx.task_description, schema_text)
