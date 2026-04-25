@@ -1,0 +1,21 @@
+{{- if .Values.persistence.enabled -}}
+{{- $svcName := .Values.persistence.service -}}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "aura.fullname" . }}-{{ $svcName | replace "_" "-" }}-data
+  labels:
+    {{- include "aura.labels" . | nindent 4 }}
+    app.kubernetes.io/component: {{ $svcName }}
+spec:
+  accessModes:
+    {{- range .Values.persistence.accessModes }}
+    - {{ . }}
+    {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.persistence.size | quote }}
+  {{- if .Values.persistence.storageClass }}
+  storageClassName: {{ .Values.persistence.storageClass | quote }}
+  {{- end }}
+{{- end }}

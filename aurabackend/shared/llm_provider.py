@@ -479,6 +479,75 @@ class _FallbackProvider(LLMProvider):
         return None
 
 
+class _CachedProvider(LLMProvider):
+    """Wraps an inner provider with content-addressable response caching and
+    a token-budget guardrail. Bypasses the cache when the caller asks for
+    high-temperature output (creativity beats deduplication)."""
+
+    provider_name = "cached"
+
+    def __init__(self, inner: LLMProvider) -> None:
+        super().__init__(model=inner.model)
+        self._inner = inner
+
+    def is_available(self) -> bool:
+        return self._inner.is_available()
+
+    def _check_budget(self, prompt: Union[str, List[str]]) -> None:
+        from shared.llm_cache import MAX_TOKENS_PER_REQUEST, estimate_request_tokens
+        tokens = estimate_request_tokens(prompt)
+        if tokens > MAX_TOKENS_PER_REQUEST:
+            raise LLMRateLimitError(
+                f"Prompt exceeds AURA_MAX_TOKENS_PER_REQUEST "
+                f"({tokens} > {MAX_TOKENS_PER_REQUEST}). Trim context and retry."
+            )
+
+    def _record_tokens(self, prompt: Union[str, List[str]], result: Optional[str], cached: bool) -> None:
+        """Best-effort token bookkeeping for cost dashboards. Never raises."""
+        try:
+            from shared.llm_cache import estimate_request_tokens, estimate_tokens
+            from shared.observability import LLM_TOKENS
+            provider = getattr(self._inner, "provider_name", "unknown")
+            # _FallbackProvider wraps multiple — attribute the record to its
+            # primary's name when possible.
+            inner_primary = getattr(self._inner, "_primary", None)
+            if inner_primary is not None:
+                provider = getattr(inner_primary, "provider_name", provider)
+            model = self._inner.model or ""
+            prompt_tokens = estimate_request_tokens(prompt)
+            output_tokens = estimate_tokens(result or "")
+            LLM_TOKENS.labels(provider=provider, model=model, kind="prompt").inc(prompt_tokens)
+            LLM_TOKENS.labels(provider=provider, model=model, kind="completion").inc(output_tokens)
+            if cached:
+                LLM_TOKENS.labels(provider=provider, model=model, kind="cached_completion").inc(output_tokens)
+        except Exception:
+            pass
+
+    def generate(self, prompt: Union[str, List[str]], **kwargs: Any) -> Optional[str]:
+        from shared.llm_cache import cache_key, is_cacheable_temperature, response_cache
+        self._check_budget(prompt)
+        if not is_cacheable_temperature(kwargs):
+            result = self._inner.generate(prompt, **kwargs)
+            self._record_tokens(prompt, result, cached=False)
+            return result
+        key = cache_key(
+            getattr(self._inner, "provider_name", "unknown"),
+            self._inner.model or "",
+            prompt,
+            kwargs,
+        )
+        hit = response_cache.get(key)
+        if hit is not None:
+            logger.debug("LLM cache hit (%s)", key[:16])
+            self._record_tokens(prompt, hit, cached=True)
+            return hit
+        result = self._inner.generate(prompt, **kwargs)
+        if result:
+            response_cache.set(key, result)
+        self._record_tokens(prompt, result, cached=False)
+        return result
+
+
 def get_llm(
     *,
     provider: Optional[str] = None,
@@ -507,7 +576,7 @@ def get_llm(
     if provider:
         cls = _PROVIDER_MAP.get(provider.lower())
         if cls:
-            inst = cls(model=model, **kwargs)
+            inst = _CachedProvider(cls(model=model, **kwargs))
             _cached_llm = inst
             _cached_key = cache_key
             return inst
@@ -530,10 +599,11 @@ def get_llm(
         if len(available) > 1:
             logger.info(
                 "AURA LLM: fallback chain: %s",
-                " → ".join(p.provider_name for p in available),
+                " -> ".join(p.provider_name for p in available),
             )
-        # Wrap in a fallback provider so rate-limit errors cascade to next
-        result_llm = _FallbackProvider(primary, available)
+        # Wrap in a fallback provider so rate-limit errors cascade to next,
+        # then in a cached provider so identical prompts skip the wire.
+        result_llm = _CachedProvider(_FallbackProvider(primary, available))
         _cached_llm = result_llm
         _cached_key = cache_key
         return result_llm
@@ -545,7 +615,7 @@ def get_llm(
         "or set GEMINI_API_KEY / OPENAI_API_KEY.",
         _PROVIDER_ORDER,
     )
-    fallback = OllamaProvider(model=model)
+    fallback = _CachedProvider(OllamaProvider(model=model))
     _cached_llm = fallback
     _cached_key = cache_key
     return fallback

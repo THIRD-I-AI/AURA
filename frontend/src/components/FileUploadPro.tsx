@@ -258,20 +258,7 @@ export const FileUpload: React.FC<FileUploadProps> = ({
     try {
       const fileAnalysis = await analyzeFileContent(file);
 
-      let response: UploadResponse;
-      try {
-        response = await uploadService.uploadFile(file, uploadId);
-      } catch (uploadError) {
-        console.warn('Backend upload failed, using analyzed data:', uploadError);
-        const mockId = 'AURA-' + Math.random().toString(36).toUpperCase().substring(2, 6);
-        response = {
-          file_id: mockId,
-          filename: file.name,
-          rows: Math.max(1, Math.floor(file.size / 1024 * 12)),
-          columns: fileAnalysis.columns.length > 0 ? fileAnalysis.columns : Array.from({ length: 5 }, (_, i) => `Column ${i + 1}`),
-          success: true,
-        };
-      }
+      const response: UploadResponse = await uploadService.uploadFile(file, uploadId);
 
       const enrichedResponse = {
         ...response,
@@ -364,11 +351,20 @@ export const FileUpload: React.FC<FileUploadProps> = ({
           <>
             {/* ── Drop Zone ── */}
             <div
+              role="button"
+              tabIndex={0}
+              aria-label={`Upload data file. Drag and drop, or press Enter to browse. Accepts ${acceptedFormats.join(', ')}, max 100 MB.`}
               onDragEnter={handleDrag}
               onDragLeave={handleDrag}
               onDragOver={handleDrag}
               onDrop={handleDrop}
               onClick={() => fileInputRef.current?.click()}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault();
+                  fileInputRef.current?.click();
+                }
+              }}
               style={{
                 padding: 'var(--space-12)',
                 border: `2px dashed ${dragActive ? 'var(--accent)' : 'var(--border-default)'}`,

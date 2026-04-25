@@ -49,7 +49,7 @@ class WebhookSink(BaseSink):
     async def start(self) -> None:
         self._client = httpx.AsyncClient(timeout=self._timeout)
         self._running = True
-        logger.info("Webhook sink started → %s", self._url)
+        logger.info("Webhook sink started -> %s", self._url)
 
     async def stop(self) -> None:
         self._running = False

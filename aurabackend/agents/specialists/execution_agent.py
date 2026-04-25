@@ -1,8 +1,10 @@
+import asyncio
 import datetime
 import decimal
-from typing import Any
+from typing import Any, cast
 
 from agents.base import AgentContext, AgentResult, AgentStatus, BaseAgent
+from agents.params import ExecutionAgentParams
 
 
 class ExecutionAgent(BaseAgent):
@@ -33,7 +35,8 @@ class ExecutionAgent(BaseAgent):
         if sql.startswith("```sql"):
             sql = sql.replace("```sql", "").replace("```", "").strip()
 
-        con = ctx.metadata.get("duckdb_con")
+        params = cast(ExecutionAgentParams, ctx.metadata or {})
+        con = params.get("duckdb_con")
         if not con or not sql:
             result.status = AgentStatus.FAILED
             result.error = "No database connection or SQL provided by upstream agents."
@@ -42,9 +45,12 @@ class ExecutionAgent(BaseAgent):
         try:
             result.add_step(action="execute_sql", input_summary=f"Executing Query: {sql[:150]}...")
 
-            db_result = con.execute(sql)
-            columns = [desc[0] for desc in db_result.description]
-            rows = db_result.fetchall()
+            def _run_sql() -> tuple[list[str], list[tuple]]:
+                cur = con.execute(sql)
+                cols = [desc[0] for desc in cur.description]
+                return cols, cur.fetchall()
+
+            columns, rows = await asyncio.to_thread(_run_sql)
             records = [{col: self._serialize_value(val) for col, val in zip(columns, row)} for row in rows]
 
             result.status = AgentStatus.SUCCESS

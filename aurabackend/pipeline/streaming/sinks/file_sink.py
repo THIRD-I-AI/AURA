@@ -68,5 +68,5 @@ class FileSink(BaseSink):
             with open(path, "w", encoding="utf-8") as f:
                 json.dump(self._buffer, f, indent=2, default=str)
 
-        logger.info("File sink: flushed %d rows → %s", len(self._buffer), path)
+        logger.info("File sink: flushed %d rows -> %s", len(self._buffer), path)
         self._buffer.clear()

@@ -8,9 +8,35 @@
 // =============================================================================
 
 const _RAW_BASE = localStorage.getItem('apiUrl') || import.meta.env.VITE_API_URL || 'http://localhost:8000';
-const API_BASE_URL = `${_RAW_BASE.replace(/\/+$/, '')}/api/v1`; // All domain endpoints are versioned
+const ROOT_BASE_URL = _RAW_BASE.replace(/\/+$/, '');              // For non-versioned endpoints (e.g. /health)
+const API_BASE_URL = `${ROOT_BASE_URL}/api/v1`;                   // All domain endpoints are versioned
 const REQUEST_TIMEOUT = 300000; // 300 seconds (5 minutes) to allow massive agent queries
 const HEALTH_CHECK_INTERVAL = Number(import.meta.env.VITE_HEALTH_CHECK_INTERVAL) || 10000; // 10 seconds for faster detection
+
+// Workspace scoping is header-driven. The selected workspace ID persists
+// across reloads via localStorage and is injected into every request.
+export const DEFAULT_WORKSPACE_ID = 'default';
+const WORKSPACE_STORAGE_KEY = 'aura.workspaceId';
+let _currentWorkspaceId: string =
+  (typeof localStorage !== 'undefined' && localStorage.getItem(WORKSPACE_STORAGE_KEY)) || DEFAULT_WORKSPACE_ID;
+const _workspaceListeners = new Set<(id: string) => void>();
+
+export function getCurrentWorkspaceId(): string {
+  return _currentWorkspaceId;
+}
+
+export function setCurrentWorkspaceId(id: string): void {
+  const next = (id || '').trim() || DEFAULT_WORKSPACE_ID;
+  if (next === _currentWorkspaceId) return;
+  _currentWorkspaceId = next;
+  try { localStorage.setItem(WORKSPACE_STORAGE_KEY, next); } catch { /* storage full / blocked */ }
+  _workspaceListeners.forEach((cb) => cb(next));
+}
+
+export function subscribeWorkspace(cb: (id: string) => void): () => void {
+  _workspaceListeners.add(cb);
+  return () => { _workspaceListeners.delete(cb); };
+}
 
 // =============================================================================
 // Type Definitions
@@ -56,6 +82,7 @@ export interface ExecutionResult {
   error?: string;
   chart_spec?: Record<string, any>;
   conclusion?: string;
+  sql_explanation?: string;
 }
 
 export interface DataSource {
@@ -137,14 +164,20 @@ class ApiClient {
     const timeoutId = setTimeout(() => controller.abort(), this.timeout);
 
     try {
+      // Inject X-Workspace-Id on every call except the public share endpoint
+      // (which is intentionally unscoped — the token itself is the auth).
+      const isPublic = endpoint.startsWith('/public/');
+      const workspaceHeader = !isPublic ? { 'X-Workspace-Id': _currentWorkspaceId } : {};
+
       const response = await fetch(url, {
         ...options,
         // Let browser set Content-Type automatically for FormData
         // Only set application/json for JSON payloads
         headers: {
-          ...(options.body && typeof options.body === 'string' 
-            ? { 'Content-Type': 'application/json' } 
+          ...(options.body && typeof options.body === 'string'
+            ? { 'Content-Type': 'application/json' }
             : {}),
+          ...workspaceHeader,
           ...options.headers,
         },
         signal: controller.signal,
@@ -252,39 +285,24 @@ class ApiClient {
   }
 
   /**
-   * Upload file with FormData
-   * Simplified upload with hardcoded backend URL and no headers for proper multipart/form-data handling
+   * Upload file with FormData. Optional X-Upload-Id header lets the client
+   * subscribe to SSE progress before posting.
+   *
+   * Routes through `request<T>` so the upload inherits the configured
+   * timeout, ApiError normalization, and abort handling.
    */
   async uploadFile(file: File, uploadId?: string): Promise<any> {
-    const TARGET_URL = `${API_BASE_URL}/upload`;
-    console.log("🚀 STARTING UPLOAD TO:", TARGET_URL);
-
     const formData = new FormData();
     formData.append('file', file);
 
     const headers: Record<string, string> = {};
     if (uploadId) headers['X-Upload-Id'] = uploadId;
 
-    try {
-      const response = await fetch(TARGET_URL, {
-        method: 'POST',
-        body: formData,
-        headers,
-      });
-      
-      console.log("✅ RESPONSE STATUS:", response.status);
-      
-      if (!response.ok) {
-        const text = await response.text();
-        console.error("❌ UPLOAD FAILED:", text);
-        throw new Error(`Upload failed: ${response.status} ${text}`);
-      }
-      
-      return response.json();
-    } catch (error) {
-      console.error("🔥 NETWORK ERROR:", error);
-      throw error;
-    }
+    return this.request('/upload', {
+      method: 'POST',
+      body: formData,
+      headers,
+    });
   }
 
   /**
@@ -292,8 +310,13 @@ class ApiClient {
    */
   async checkHealth(): Promise<HealthStatus> {
     try {
-      const response = await this.get<HealthStatus>('/health');
-      return response;
+      // Health endpoint lives at the root, not under /api/v1
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 5000);
+      const response = await fetch(`${ROOT_BASE_URL}/health`, { signal: controller.signal });
+      clearTimeout(timeoutId);
+      if (!response.ok) throw new Error(response.statusText);
+      return await response.json();
     } catch {
       // Service unreachable — report as down
       return {
@@ -381,6 +404,38 @@ export const chatService = {
 };
 
 /**
+ * Connector registry types — mirror aurabackend/connectors/registry.py.
+ * The registry is the single source of truth: new connectors register at
+ * import time and the UI renders them generically off these specs.
+ */
+export type ConnectorFieldType = 'string' | 'secret' | 'number' | 'boolean' | 'textarea';
+export type ConnectorKind = 'relational' | 'warehouse' | 'embedded' | 'stream';
+
+export interface ConnectorField {
+  key: string;
+  label: string;
+  type: ConnectorFieldType;
+  required: boolean;
+  default?: unknown;
+  placeholder?: string | null;
+  help?: string | null;
+}
+
+export interface ConnectorSpec {
+  id: string;
+  name: string;
+  description: string;
+  kind: ConnectorKind;
+  icon: string;
+  capabilities: string[];
+  fields: ConnectorField[];
+  available: boolean;
+  unavailable_reason?: string | null;
+  docs_url?: string | null;
+  config_required?: string[];
+}
+
+/**
  * Connector Service - Database connections management
  */
 export const connectorService = {
@@ -411,6 +466,13 @@ export const connectorService = {
     } catch {
       return ['postgresql', 'mysql', 'bigquery'];
     }
+  },
+
+  async registry(includeUnavailable = true): Promise<ConnectorSpec[]> {
+    const data = await client.get<{ success: boolean; count: number; connectors: ConnectorSpec[] }>(
+      `/connectors/registry?include_unavailable=${includeUnavailable}`,
+    );
+    return data.connectors;
   },
 
   async getSchema(connectionId: string): Promise<Record<string, string[]>> {
@@ -476,6 +538,250 @@ export const executionService = {
 };
 
 /**
+ * Saved Queries (library) — list / create / rename + star / delete
+ */
+export interface SavedQuerySchedule {
+  interval: 'hourly' | 'daily' | 'weekly';
+  hour: number;
+  minute: number;
+  day_of_week?: number | null;
+  enabled: boolean;
+}
+
+export interface SavedQuery {
+  id: string;
+  name: string;
+  sql: string;
+  prompt?: string | null;
+  starred: boolean;
+  created_at: string;
+  updated_at: string;
+  schedule?: SavedQuerySchedule | null;
+  next_run_at?: string | null;
+  last_run_at?: string | null;
+}
+
+export interface SavedQueryRun {
+  id: string;
+  started_at: string;
+  completed_at: string;
+  status: 'success' | 'failed';
+  row_count: number;
+  execution_time_ms: number;
+  error?: string | null;
+}
+
+export const savedQueryService = {
+  async list(): Promise<SavedQuery[]> {
+    const resp = await client.get<{ success: boolean; queries: SavedQuery[]; total: number }>('/saved-queries');
+    return resp.queries ?? [];
+  },
+  async create(payload: { name: string; sql: string; prompt?: string; starred?: boolean }): Promise<SavedQuery> {
+    const resp = await client.post<{ success: boolean; query: SavedQuery }>('/saved-queries', payload);
+    return resp.query;
+  },
+  async update(id: string, patch: { name?: string; starred?: boolean }): Promise<SavedQuery> {
+    const resp = await client.patch<{ success: boolean; query: SavedQuery }>(`/saved-queries/${encodeURIComponent(id)}`, patch);
+    return resp.query;
+  },
+  async remove(id: string): Promise<void> {
+    await client.delete<{ success: boolean; id: string }>(`/saved-queries/${encodeURIComponent(id)}`);
+  },
+  async setSchedule(id: string, schedule: SavedQuerySchedule): Promise<SavedQuery> {
+    const resp = await client.put<{ success: boolean; query: SavedQuery }>(
+      `/saved-queries/${encodeURIComponent(id)}/schedule`,
+      schedule,
+    );
+    return resp.query;
+  },
+  async clearSchedule(id: string): Promise<SavedQuery> {
+    const resp = await client.delete<{ success: boolean; query: SavedQuery }>(
+      `/saved-queries/${encodeURIComponent(id)}/schedule`,
+    );
+    return resp.query;
+  },
+  async listRuns(id: string, limit = 20): Promise<SavedQueryRun[]> {
+    const resp = await client.get<{ success: boolean; runs: SavedQueryRun[] }>(
+      `/saved-queries/${encodeURIComponent(id)}/runs?limit=${limit}`,
+    );
+    return resp.runs ?? [];
+  },
+  async share(id: string): Promise<{ token: string; query_id: string }> {
+    const resp = await client.post<{ success: boolean; token: string; query_id: string }>(
+      `/saved-queries/${encodeURIComponent(id)}/share`,
+    );
+    return { token: resp.token, query_id: resp.query_id };
+  },
+  async unshare(id: string): Promise<number> {
+    const resp = await client.delete<{ success: boolean; revoked: number }>(
+      `/saved-queries/${encodeURIComponent(id)}/share`,
+    );
+    return resp.revoked ?? 0;
+  },
+  async getShared(token: string): Promise<SavedQuery> {
+    const resp = await client.get<{ success: boolean; query: SavedQuery }>(
+      `/public/saved-queries/${encodeURIComponent(token)}`,
+    );
+    return resp.query;
+  },
+  /** Builds the absolute URL that a recipient can open. */
+  shareUrl(token: string): string {
+    const origin = typeof window !== 'undefined' ? window.location.origin : '';
+    return `${origin}/shared/query/${encodeURIComponent(token)}`;
+  },
+};
+
+/**
+ * Workspaces — lightweight tenancy layer. The selected workspace is
+ * injected as ``X-Workspace-Id`` on every request via the ApiClient.
+ */
+export interface Workspace {
+  id: string;
+  name: string;
+  description?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export const workspaceService = {
+  async list(): Promise<Workspace[]> {
+    const resp = await client.get<{ success: boolean; workspaces: Workspace[] }>('/workspaces');
+    return resp.workspaces ?? [];
+  },
+  async create(payload: { name: string; description?: string }): Promise<Workspace> {
+    const resp = await client.post<{ success: boolean; workspace: Workspace }>('/workspaces', payload);
+    return resp.workspace;
+  },
+  async update(id: string, patch: { name?: string; description?: string }): Promise<Workspace> {
+    const resp = await client.patch<{ success: boolean; workspace: Workspace }>(
+      `/workspaces/${encodeURIComponent(id)}`,
+      patch,
+    );
+    return resp.workspace;
+  },
+  async remove(id: string): Promise<void> {
+    await client.delete<{ success: boolean; id: string }>(`/workspaces/${encodeURIComponent(id)}`);
+  },
+};
+
+/**
+ * Dashboards — composed of tiles that reference saved queries.
+ */
+export interface DashboardTile {
+  id: string;
+  saved_query_id: string;
+  title?: string | null;
+  chart_type: 'table' | 'bar' | 'line' | 'pie' | 'kpi' | string;
+}
+
+export interface Dashboard {
+  id: string;
+  name: string;
+  description?: string | null;
+  tiles: DashboardTile[];
+  created_at: string;
+  updated_at: string;
+}
+
+export interface DashboardTileInput {
+  saved_query_id: string;
+  title?: string;
+  chart_type?: string;
+}
+
+export interface RenderedTile {
+  tile_id: string;
+  saved_query_id: string;
+  title?: string | null;
+  chart_type: string;
+  status: 'success' | 'error' | 'missing';
+  columns: string[];
+  rows: Array<Array<unknown>>;
+  row_count: number;
+  execution_time_ms: number;
+  error?: string | null;
+}
+
+export interface DashboardRender {
+  success: boolean;
+  dashboard_id: string;
+  rendered_at: string;
+  tiles: RenderedTile[];
+}
+
+export const dashboardService = {
+  async list(): Promise<Dashboard[]> {
+    const resp = await client.get<{ success: boolean; dashboards: Dashboard[] }>('/dashboards');
+    return resp.dashboards ?? [];
+  },
+  async get(id: string): Promise<Dashboard> {
+    const resp = await client.get<{ success: boolean; dashboard: Dashboard }>(`/dashboards/${encodeURIComponent(id)}`);
+    return resp.dashboard;
+  },
+  async create(payload: { name: string; description?: string; tiles?: DashboardTileInput[] }): Promise<Dashboard> {
+    const resp = await client.post<{ success: boolean; dashboard: Dashboard }>('/dashboards', payload);
+    return resp.dashboard;
+  },
+  async update(id: string, patch: { name?: string; description?: string; tiles?: DashboardTileInput[] }): Promise<Dashboard> {
+    const resp = await client.patch<{ success: boolean; dashboard: Dashboard }>(`/dashboards/${encodeURIComponent(id)}`, patch);
+    return resp.dashboard;
+  },
+  async remove(id: string): Promise<void> {
+    await client.delete<{ success: boolean; id: string }>(`/dashboards/${encodeURIComponent(id)}`);
+  },
+  async render(id: string): Promise<DashboardRender> {
+    return client.post<DashboardRender>(`/dashboards/${encodeURIComponent(id)}/render`);
+  },
+};
+
+/**
+ * Data lineage — walks saved queries via sqlglot on the backend,
+ * returns a 3-layer graph (tables → saved queries → dashboards).
+ */
+export interface LineageNode {
+  id: string;
+  type: 'table' | 'saved_query' | 'dashboard';
+  label: string;
+  metadata: Record<string, any>;
+}
+export interface LineageEdge {
+  id: string;
+  source: string;
+  target: string;
+}
+export interface LineageGraph {
+  success: boolean;
+  nodes: LineageNode[];
+  edges: LineageEdge[];
+  summary: { tables: number; queries: number; dashboards: number; edges: number };
+}
+export const lineageService = {
+  async get(): Promise<LineageGraph> {
+    return client.get<LineageGraph>('/lineage');
+  },
+};
+
+/**
+ * LLM cost / token usage — reads in-process Prometheus counter snapshot.
+ */
+export interface LlmTokenRow {
+  provider: string;
+  model: string;
+  kind: string;
+  tokens: number;
+}
+export interface LlmTokenBreakdown {
+  available: boolean;
+  rows: LlmTokenRow[];
+  totals: { prompt: number; completion: number; cached_completion: number };
+}
+export const costService = {
+  async breakdown(): Promise<LlmTokenBreakdown> {
+    return client.get<LlmTokenBreakdown>('/llm-stats');
+  },
+};
+
+/**
  * Upload Service - File uploads (CSV, Excel, Parquet)
  */
 export const uploadService = {
@@ -483,9 +789,10 @@ export const uploadService = {
     return client.uploadFile(file, uploadId);
   },
 
-  async getUploadedFiles(): Promise<Array<{ id: string; name: string; uploaded_at: string }>> {
+  async getUploadedFiles(): Promise<Array<{ filename: string; size: number; modified: string }>> {
     try {
-      return await client.get<Array<{ id: string; name: string; uploaded_at: string }>>('/files');
+      const resp = await client.get<{ status: string; files?: Array<{ filename: string; size: number; modified: string }> }>('/files');
+      return resp.files || [];
     } catch {
       return [];
     }

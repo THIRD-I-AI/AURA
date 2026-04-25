@@ -6,6 +6,7 @@ An agent receives an AgentContext, calls tools, and returns an AgentResult.
 """
 from __future__ import annotations
 
+import asyncio
 import os
 import time
 import uuid
@@ -130,15 +131,39 @@ class BaseAgent(ABC):
     Abstract base for every AURA agent.
 
     Subclasses implement `_run()`.  The public `execute()` wraps it
-    with timing, error handling, and progress reporting.
+    with timing, error handling, retry, and progress reporting.
+
+    Class attributes for subclasses to override:
+        llm_model_env:  env var name whose value (if set) overrides the
+                        default LLM model. Lets each agent prefer a
+                        cheaper/stronger model without re-importing get_llm.
+        retry_on_failure: when True, ``execute`` re-runs ``_run`` up to
+                        ``retry_attempts`` times with exponential backoff.
+                        Opt-in because most agents are deterministic and
+                        retrying just hides bugs.
     """
 
     name: str = "BaseAgent"
     description: str = ""
 
+    # Cross-cutting knobs (override in subclasses)
+    llm_model_env: Optional[str] = None
+    retry_on_failure: bool = False
+    retry_attempts: int = 3
+    retry_initial_delay_seconds: float = 0.5
+
     def __init__(self, tool_registry: Any = None) -> None:
         self.tools = tool_registry          # ToolRegistry instance
         self._progress_cb: Optional[ProgressCallback] = None
+
+        # Single shared LLM handle per agent instance. get_llm() already
+        # caches by (provider, model), so subclasses that share a model
+        # share the same wrapper and benefit from the response cache.
+        from shared.llm_provider import get_llm  # late import to avoid cycles
+        model = os.getenv(self.llm_model_env, "") if self.llm_model_env else ""
+        self.llm = get_llm(model=model)
+        # Backward-compat alias for older agents that still reference _llm
+        self._llm = self.llm
 
     def set_progress_callback(self, cb: ProgressCallback) -> None:
         self._progress_cb = cb
@@ -149,14 +174,50 @@ class BaseAgent(ABC):
 
     # ── public entry-point ──────────────────────────────────────────
 
+    async def _run_with_retry(self, ctx: AgentContext, result: AgentResult) -> AgentResult:
+        if not self.retry_on_failure:
+            return await self._run(ctx, result)
+
+        last_exc: Optional[BaseException] = None
+        delay = self.retry_initial_delay_seconds
+        for attempt in range(1, self.retry_attempts + 1):
+            try:
+                return await self._run(ctx, result)
+            except (asyncio.CancelledError, asyncio.TimeoutError):
+                raise
+            except Exception as exc:
+                last_exc = exc
+                if attempt >= self.retry_attempts:
+                    raise
+                await self._report(
+                    f"{self.name} attempt {attempt} failed ({exc}); retrying in {delay:.1f}s",
+                )
+                await asyncio.sleep(delay)
+                delay *= 2
+        # Unreachable but keeps type-checkers happy
+        raise last_exc if last_exc else RuntimeError("retry loop exited unexpectedly")
+
     async def execute(self, ctx: AgentContext) -> AgentResult:
         start = time.time()
         result = AgentResult(status=AgentStatus.RUNNING)
         try:
             await self._report(f"Starting {self.name}…")
-            result = await self._run(ctx, result)
+            result = await asyncio.wait_for(
+                self._run_with_retry(ctx, result),
+                timeout=ctx.timeout_seconds,
+            )
             if result.status == AgentStatus.RUNNING:
                 result.status = AgentStatus.SUCCESS
+        except asyncio.TimeoutError:
+            result.status = AgentStatus.FAILED
+            result.error = (
+                f"{self.name} exceeded its {ctx.timeout_seconds}s timeout"
+            )
+            result.add_step(
+                action="agent_timeout",
+                output_summary=result.error,
+                severity=Severity.ERROR,
+            )
         except Exception as exc:
             result.status = AgentStatus.FAILED
             result.error = str(exc)
@@ -166,7 +227,13 @@ class BaseAgent(ABC):
                 severity=Severity.ERROR,
             )
         finally:
-            result.duration_ms = (time.time() - start) * 1000
+            duration_s = time.time() - start
+            result.duration_ms = duration_s * 1000
+            try:
+                from shared.observability import AGENT_DURATION  # late import to avoid cycle
+                AGENT_DURATION.labels(agent=self.name).observe(duration_s)
+            except Exception:
+                pass
             await self._report(
                 f"{'✓' if result.succeeded else '✗'} {self.name} "
                 f"({result.duration_ms:.0f} ms)",

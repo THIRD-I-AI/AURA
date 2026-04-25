@@ -381,7 +381,9 @@ class TestGetLlm:
         _reset_cache()
         with patch("shared.llm_provider._setting", return_value=None):
             p = get_llm(provider="ollama", model="test-model", force_new=True)
-        assert isinstance(p, OllamaProvider)
+        # get_llm wraps every provider in a caching layer; unwrap to assert type
+        inner = getattr(p, "_inner", p)
+        assert isinstance(inner, OllamaProvider)
         assert p.model == "test-model"
 
     def test_invalid_provider(self):

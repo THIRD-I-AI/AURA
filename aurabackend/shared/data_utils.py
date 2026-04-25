@@ -6,13 +6,19 @@ builds rich schema context for LLM, and detects cross-table relationships.
 """
 from __future__ import annotations
 
+import asyncio
+import hashlib
 import logging
 import os
 import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from shared.cache import schema_cache
+
 logger = logging.getLogger("aura.data_utils")
+
+SCHEMA_CACHE_PREFIX = "schema:ctx:"
 
 UPLOAD_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "uploads")
 
@@ -487,3 +493,157 @@ def _serialize(val: Any) -> Any:
     if isinstance(val, (int, float, bool, str)):
         return val
     return str(val)
+
+
+# ─── Cached Schema Context ──────────────────────────────────────────────────
+
+_READ_FN_BY_EXT = {
+    ".csv": "read_csv_auto",
+    ".parquet": "read_parquet",
+    ".json": "read_json_auto",
+}
+
+
+def _signature_for_upload_dirs(upload_dirs: List[Path]) -> str:
+    """Stable fingerprint over (path, mtime_ns, size) of every data file.
+
+    Empty string when no files are present (signals callers to skip cache
+    entirely instead of caching an empty result keyed on nothing).
+    """
+    parts: List[str] = []
+    for upload_dir in upload_dirs:
+        if not upload_dir.exists():
+            continue
+        for data_file in sorted(upload_dir.iterdir()):
+            if data_file.suffix.lower() not in _READ_FN_BY_EXT:
+                continue
+            try:
+                stat = data_file.stat()
+            except OSError:
+                continue
+            parts.append(
+                f"{data_file.resolve().as_posix()}|{stat.st_mtime_ns}|{stat.st_size}"
+            )
+    if not parts:
+        return ""
+    return hashlib.sha256("\n".join(parts).encode("utf-8")).hexdigest()[:32]
+
+
+def _replay_tables(conn: Any, loaders: List[Dict[str, Any]]) -> None:
+    """Re-create cached tables on a fresh DuckDB connection."""
+    for loader in loaders:
+        file_path = loader["file_path"]
+        if not Path(file_path).exists():
+            continue
+        file_path_str = file_path.replace("\\", "/")
+        table_name = loader["table_name"]
+        read_fn = loader["read_fn"]
+        try:
+            conn.execute(
+                f'CREATE OR REPLACE TABLE "{table_name}" AS '
+                f"SELECT * FROM {read_fn}('{file_path_str}')"
+            )
+            for old, new in loader.get("renames", []):
+                if old != new:
+                    conn.execute(
+                        f'ALTER TABLE "{table_name}" RENAME COLUMN "{old}" TO "{new}"'
+                    )
+        except Exception as e:
+            logger.warning("Cache replay failed for %s: %s", table_name, e)
+
+
+def _build_schema_context_with_recipe(
+    conn: Any,
+    upload_dirs: List[Path],
+    use_llm: bool,
+) -> Dict[str, Any]:
+    """Same as build_schema_context but also returns a per-table loader recipe
+    that can re-create the tables on a fresh DuckDB connection later."""
+    tables: Dict[str, Dict] = {}
+    loaders: List[Dict[str, Any]] = []
+
+    for upload_dir in upload_dirs:
+        if not upload_dir.exists():
+            continue
+        for data_file in sorted(upload_dir.iterdir()):
+            ext = data_file.suffix.lower()
+            read_fn = _READ_FN_BY_EXT.get(ext)
+            if not read_fn:
+                continue
+            table_name = re.sub(r"[^A-Za-z0-9_]", "_", data_file.stem)
+            try:
+                info = smart_load_file(conn, str(data_file), table_name, use_llm=use_llm)
+                tables[table_name] = info
+
+                renames: List[Tuple[str, str]] = []
+                if info.get("headers_inferred"):
+                    file_path_str = str(data_file).replace("\\", "/")
+                    sniff = conn.execute(
+                        f"DESCRIBE SELECT * FROM {read_fn}('{file_path_str}')"
+                    ).fetchall()
+                    original_cols = [r[0] for r in sniff]
+                    final_cols = [c["name"] for c in info["columns"]]
+                    if len(original_cols) == len(final_cols):
+                        renames = list(zip(original_cols, final_cols))
+
+                loaders.append({
+                    "table_name": table_name,
+                    "file_path": str(data_file),
+                    "read_fn": read_fn,
+                    "renames": renames,
+                })
+            except Exception as e:
+                logger.warning("Failed to load %s: %s", data_file.name, e)
+
+    relationships = detect_relationships(conn, tables)
+    context_text = _format_context_for_llm(tables, relationships)
+    return {
+        "tables": tables,
+        "relationships": relationships,
+        "context_text": context_text,
+        "_loaders": loaders,
+    }
+
+
+async def build_schema_context_cached(
+    conn: Any,
+    upload_dirs: List[Path],
+    use_llm: bool = True,
+) -> Dict[str, Any]:
+    """Cached + non-blocking variant of build_schema_context.
+
+    Cache hit: replays the loader recipe on the fresh DuckDB ``conn`` and
+    returns the cached schema dict.  Cache miss: runs the full discovery
+    in a worker thread (LLM header inference + O(N²) relationship probes
+    do not block the event loop) and stores the result.
+    """
+    sig = _signature_for_upload_dirs(upload_dirs)
+    if not sig:
+        return {"tables": {}, "relationships": [], "context_text": ""}
+
+    cache_key = f"{SCHEMA_CACHE_PREFIX}{sig}"
+    cached = await schema_cache.get(cache_key)
+    if cached:
+        await asyncio.to_thread(_replay_tables, conn, cached["loaders"])
+        return {
+            "tables": cached["tables"],
+            "relationships": cached["relationships"],
+            "context_text": cached["context_text"],
+        }
+
+    result = await asyncio.to_thread(
+        _build_schema_context_with_recipe, conn, upload_dirs, use_llm
+    )
+    loaders = result.pop("_loaders")
+    await schema_cache.set(cache_key, {
+        "tables": result["tables"],
+        "relationships": result["relationships"],
+        "context_text": result["context_text"],
+        "loaders": loaders,
+    })
+    return result
+
+
+async def invalidate_schema_cache() -> None:
+    """Drop every cached schema context. Call after any uploaded-file change."""
+    await schema_cache.clear_prefix(SCHEMA_CACHE_PREFIX)

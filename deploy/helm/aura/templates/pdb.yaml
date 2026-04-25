@@ -1,0 +1,39 @@
+{{- $root := . -}}
+{{- if .Values.podDisruptionBudget.enabled -}}
+{{- range $svcName, $svc := .Values.backendServices }}
+{{- if gt (int ($svc.replicas | default 1)) 1 }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "aura.fullname" $root }}-{{ $svcName | replace "_" "-" }}
+  labels:
+    {{- include "aura.labels" $root | nindent 4 }}
+    app.kubernetes.io/component: {{ $svcName }}
+spec:
+  minAvailable: {{ $root.Values.podDisruptionBudget.minAvailable }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "aura.name" $root }}
+      app.kubernetes.io/instance: {{ $root.Release.Name }}
+      app.kubernetes.io/component: {{ $svcName }}
+{{- end }}
+{{- end }}
+{{- if and $root.Values.frontend.enabled (gt (int $root.Values.frontend.replicas) 1) }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "aura.fullname" $root }}-frontend
+  labels:
+    {{- include "aura.labels" $root | nindent 4 }}
+    app.kubernetes.io/component: frontend
+spec:
+  minAvailable: {{ $root.Values.podDisruptionBudget.minAvailable }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "aura.name" $root }}
+      app.kubernetes.io/instance: {{ $root.Release.Name }}
+      app.kubernetes.io/component: frontend
+{{- end }}
+{{- end }}

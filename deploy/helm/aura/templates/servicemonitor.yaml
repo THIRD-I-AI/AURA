@@ -1,0 +1,35 @@
+{{- if .Values.serviceMonitor.enabled -}}
+{{- $root := . -}}
+{{- range $svcName, $svc := .Values.backendServices }}
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "aura.fullname" $root }}-{{ $svcName | replace "_" "-" }}
+  labels:
+    {{- include "aura.labels" $root | nindent 4 }}
+    app.kubernetes.io/component: {{ $svcName }}
+    {{- with $root.Values.serviceMonitor.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "aura.name" $root }}
+      app.kubernetes.io/instance: {{ $root.Release.Name }}
+      app.kubernetes.io/component: {{ $svcName }}
+  endpoints:
+    - port: http
+      path: {{ $root.Values.serviceMonitor.path | quote }}
+      interval: {{ $root.Values.serviceMonitor.interval | quote }}
+      scrapeTimeout: {{ $root.Values.serviceMonitor.scrapeTimeout | quote }}
+      {{- with $root.Values.serviceMonitor.relabelings }}
+      relabelings:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $root.Values.serviceMonitor.metricRelabelings }}
+      metricRelabelings:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}
+{{- end }}

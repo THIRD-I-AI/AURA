@@ -7,11 +7,12 @@ strategy, materialized view suggestions, and EXPLAIN plan interpretation.
 from __future__ import annotations
 
 import json
-import os
+import logging
 from typing import Any, Dict, List, Optional
 
 from agents.base import AgentContext, AgentResult, BaseAgent, Severity
-from shared.llm_provider import get_llm
+
+logger = logging.getLogger("aura.agents.optimization")
 
 _OPTIMIZE_PROMPT = """\
 You are a database performance tuning expert.  Given the schema and query
@@ -44,10 +45,7 @@ Return ONLY valid JSON (no markdown):
 class OptimizationAgent(BaseAgent):
     name = "OptimizationAgent"
     description = "Analyses and optimises database performance."
-
-    def __init__(self, tool_registry: Any = None) -> None:
-        super().__init__(tool_registry)
-        self._llm = get_llm(model=os.getenv("OPTIMIZE_MODEL", ""))
+    llm_model_env = "OPTIMIZE_MODEL"
 
     async def _run(self, ctx: AgentContext, result: AgentResult) -> AgentResult:
         await self._report("Analysing schema for optimisation opportunities…", 10)
@@ -115,7 +113,7 @@ class OptimizationAgent(BaseAgent):
                 if isinstance(parsed, dict):
                     return parsed
             except Exception:
-                pass
+                logger.exception("LLM optimization recommendation parse failed; using heuristic fallback")
 
         return self._fallback_recommendations(request)
 

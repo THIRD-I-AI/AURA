@@ -5,6 +5,9 @@ vi.mock('../../services/api', () => ({
   healthService: {
     checkHealth: vi.fn().mockResolvedValue({ status: 'healthy', services: {} }),
   },
+  connectorService: {
+    registry: vi.fn().mockResolvedValue([]),
+  },
 }));
 
 import Settings from '../Settings';

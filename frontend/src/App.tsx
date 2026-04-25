@@ -1,10 +1,11 @@
-import { useState, useEffect, lazy, Suspense } from 'react';
+import { useState, useEffect, lazy, Suspense, memo } from 'react';
 import './styles/design-system.css';
 import './styles/components.css';
 import './components/Layout/AppLayout.css';
 import AppLayout, { type PageType } from './components/Layout/AppLayout';
 import ChatInterface from './components/ChatInterface';
 import FileUpload from './components/FileUploadPro';
+import CommandPalette from './components/CommandPalette';
 import Card, { CardHeader, CardBody } from './components/ui/Card';
 import Button from './components/ui/Button';
 import ErrorBoundary from './components/ui/ErrorBoundary';
@@ -17,6 +18,10 @@ import { AuraProvider, useAuraStore } from './store';
 
 const FilesAndData   = lazy(() => import('./pages/FilesAndData'));
 const QueryHistory   = lazy(() => import('./pages/QueryHistory'));
+const Library        = lazy(() => import('./pages/Library'));
+const Dashboards     = lazy(() => import('./pages/Dashboards'));
+const Lineage        = lazy(() => import('./pages/Lineage'));
+const Cost           = lazy(() => import('./pages/Cost'));
 const Settings       = lazy(() => import('./pages/Settings'));
 const AgentPanel     = lazy(() => import('./pages/AgentPanel'));
 const PipelinesPanel = lazy(() => import('./pages/PipelinesPanel'));
@@ -24,16 +29,16 @@ const StreamingPanel = lazy(() => import('./pages/StreamingPanel'));
 const WebhooksPanel  = lazy(() => import('./pages/WebhooksPanel'));
 const LiveDashboard  = lazy(() => import('./components/LiveDashboard'));
 
-function PageFallback() {
+const PageFallback = memo(function PageFallback() {
   return (
     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 'var(--space-16)', color: 'var(--text-tertiary)', fontSize: 'var(--font-sm)' }}>
       Loading…
     </div>
   );
-}
+});
 
 /* ── KPI card ─────────────────────────────────────────────────────── */
-function KPICard({
+const KPICard = memo(function KPICard({
   label,
   value,
   hint,
@@ -82,7 +87,7 @@ function KPICard({
       <div style={{ height: 2, background: accentColor, borderRadius: 1, opacity: 0.6, marginTop: 'var(--space-1)' }} />
     </div>
   );
-}
+});
 
 /* ── Main App inner ───────────────────────────────────────────────── */
 function AppInner() {
@@ -121,6 +126,10 @@ function AppInner() {
       case 'files':     return <Suspense fallback={<PageFallback />}><FilesAndData   setCurrentPage={setCurrentPage} /></Suspense>;
       case 'chat':      return <ChatInterface />;
       case 'queries':   return <Suspense fallback={<PageFallback />}><QueryHistory   setCurrentPage={setCurrentPage} /></Suspense>;
+      case 'library':   return <Suspense fallback={<PageFallback />}><Library        setCurrentPage={setCurrentPage} /></Suspense>;
+      case 'dashboards':return <Suspense fallback={<PageFallback />}><Dashboards /></Suspense>;
+      case 'lineage':   return <Suspense fallback={<PageFallback />}><Lineage /></Suspense>;
+      case 'cost':      return <Suspense fallback={<PageFallback />}><Cost /></Suspense>;
       case 'settings':  return <Suspense fallback={<PageFallback />}><Settings       setCurrentPage={setCurrentPage} /></Suspense>;
       case 'agent':     return <Suspense fallback={<PageFallback />}><AgentPanel     setCurrentPage={setCurrentPage} /></Suspense>;
       case 'pipelines': return <Suspense fallback={<PageFallback />}><PipelinesPanel setCurrentPage={setCurrentPage} /></Suspense>;
@@ -257,6 +266,7 @@ function AppInner() {
     <AppLayout currentPage={currentPage} onPageChange={setCurrentPage}>
       {renderPage()}
       <ToastContainer />
+      <CommandPalette onNavigate={setCurrentPage} />
     </AppLayout>
   );
 }

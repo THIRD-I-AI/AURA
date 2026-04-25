@@ -137,22 +137,32 @@ export default function LiveDashboard() {
           {
             label: 'Services healthy',
             value: latestHealth ? `${latestHealth.healthyServices}/${latestHealth.totalServices}` : '–/–',
-            color: healthPct >= 80 ? 'var(--color-success-600)' : healthPct >= 50 ? 'var(--color-warning-600)' : 'var(--color-error-600)',
+            color: latestHealth === null ? 'var(--text-secondary)'
+              : healthPct >= 80 ? 'var(--color-success-600)'
+              : healthPct >= 50 ? 'var(--color-warning-600)'
+              : latestHealth.healthyServices > 0 ? 'var(--color-warning-600)'
+              : 'var(--color-error-600)',
+            subtitle: latestHealth && latestHealth.healthyServices > 0 && healthPct < 50
+              ? 'Dev mode — start more services'
+              : undefined,
           },
           {
             label: 'Hᵤ score',
             value: huPct != null ? `${huPct}%` : 'N/A',
             color: 'var(--color-primary-600)',
+            subtitle: huPct == null ? 'UASR service not running' : undefined,
           },
           {
             label: 'Live alerts',
             value: String(alertCount),
             color: alertCount > 0 ? 'var(--color-warning-600)' : 'var(--text-secondary)',
+            subtitle: undefined as string | undefined,
           },
           {
             label: 'SSE stream',
             value: 'Live',
             color: 'var(--color-success-600)',
+            subtitle: undefined as string | undefined,
           },
         ].map((kpi) => (
           <div
@@ -170,6 +180,11 @@ export default function LiveDashboard() {
             <div style={{ fontSize: 'var(--font-xl)', fontWeight: 'var(--weight-semibold)', color: kpi.color }}>
               {kpi.value}
             </div>
+            {kpi.subtitle && (
+              <div style={{ fontSize: '10px', color: 'var(--text-tertiary)', marginTop: '2px' }}>
+                {kpi.subtitle}
+              </div>
+            )}
             <div
               style={{
                 width: '6px', height: '6px', borderRadius: '50%',

@@ -125,7 +125,7 @@ class CircuitBreaker:
             if time.monotonic() - self._opened_at >= self._cfg.open_timeout_seconds:
                 self._state = CircuitState.HALF_OPEN
                 self._success_count = 0
-                logger.info("Circuit '%s' → HALF_OPEN (probe window)", self._name)
+                logger.info("Circuit '%s' -> HALF_OPEN (probe window)", self._name)
         return self._state
 
     def _on_success(self) -> None:
@@ -135,7 +135,7 @@ class CircuitBreaker:
             if self._success_count >= self._cfg.success_threshold:
                 self._state = CircuitState.CLOSED
                 self._opened_at = None
-                logger.info("Circuit '%s' → CLOSED (recovered)", self._name)
+                logger.info("Circuit '%s' -> CLOSED (recovered)", self._name)
         # Already CLOSED — stay closed
 
     def _on_failure(self, exc: Exception) -> None:

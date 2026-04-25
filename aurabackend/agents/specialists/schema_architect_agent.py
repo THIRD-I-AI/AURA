@@ -5,9 +5,12 @@ Handles: schema inspection, table creation, ALTER statements, index recommendati
 """
 from __future__ import annotations
 
+import logging
 from typing import Any, Dict, List
 
 from agents.base import AgentContext, AgentResult, BaseAgent, Severity
+
+logger = logging.getLogger("aura.agents.schema_architect")
 
 
 class SchemaArchitectAgent(BaseAgent):
@@ -59,8 +62,13 @@ class SchemaArchitectAgent(BaseAgent):
                     tables=tables_discovered,
                 )
                 index_recs = recs if isinstance(recs, list) else []
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.exception("recommend_indexes tool call failed")
+                result.add_step(
+                    action="recommend_indexes",
+                    output_summary=f"Tool failed: {exc}",
+                    severity=Severity.WARNING,
+                )
 
         result.output = {
             "tables_discovered": len(tables_discovered),

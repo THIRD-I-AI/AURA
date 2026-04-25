@@ -1,0 +1,194 @@
+# Default values for AURA. Override per-environment in your own values.yaml.
+
+# ── Image ──────────────────────────────────────────────────────────────────
+# All 9 backend services share the same image, just with different uvicorn
+# commands. Frontend is a separate static-served image.
+image:
+  backend:
+    repository: aura/backend
+    tag: ""           # defaults to .Chart.AppVersion
+    pullPolicy: IfNotPresent
+  frontend:
+    repository: aura/frontend
+    tag: ""
+    pullPolicy: IfNotPresent
+imagePullSecrets: []
+
+# ── Cluster-wide env shared by every backend pod ───────────────────────────
+# Override or extend in your values overlay.
+env:
+  AURA_LOG_FORMAT: json
+  AURA_METRICS_ENABLED: "true"
+  AURA_AGENT_TIMEOUT: "120"
+  PYTHONUNBUFFERED: "1"
+
+# Secret values are read from a Kubernetes Secret you create out-of-band
+# (e.g. via sops, sealed-secrets, or an external-secrets operator). The
+# chart references it by name; do NOT bake credentials into values.yaml.
+envSecretName: aura-secrets
+
+# ── Backend services ───────────────────────────────────────────────────────
+# Each entry produces one Deployment + one ClusterIP Service. The container
+# command is "uvicorn <module>:<app> --host 0.0.0.0 --port <port> --workers <workers>".
+backendServices:
+  api_gateway:
+    module: api_gateway.main:app
+    port: 8000
+    workers: 4
+    replicas: 2
+    resources:
+      requests: { cpu: "200m", memory: "512Mi" }
+      limits:   { cpu: "1",    memory: "1Gi" }
+  code_generation_service:
+    module: code_generation_service.main:code_gen_app
+    port: 8001
+    workers: 2
+    replicas: 1
+  connector_service:
+    module: connectors.main:app
+    port: 8002
+    workers: 2
+    replicas: 1
+  execution_sandbox:
+    module: execution_sandbox.main:execution_app
+    port: 8003
+    workers: 2
+    replicas: 1
+  scheduler_service:
+    module: scheduler_service.main:scheduler_app
+    port: 8004
+    workers: 1
+    replicas: 1
+  insights_service:
+    module: insights.main:app
+    port: 8005
+    workers: 2
+    replicas: 1
+  orchestration_service:
+    module: orchestration_service.main:app
+    port: 8006
+    workers: 2
+    replicas: 1
+  metadata_store:
+    module: metadata_store.main:metadata_app
+    port: 8007
+    workers: 1
+    replicas: 1
+  uasr_service:
+    module: uasr.service:app
+    port: 8009
+    workers: 1
+    replicas: 1
+
+# Default resources applied to any backend service that doesn't set its own.
+defaultBackendResources:
+  requests: { cpu: "100m", memory: "256Mi" }
+  limits:   { cpu: "500m", memory: "512Mi" }
+
+# ── Frontend ───────────────────────────────────────────────────────────────
+frontend:
+  enabled: true
+  replicas: 2
+  port: 80
+  resources:
+    requests: { cpu: "50m",  memory: "64Mi" }
+    limits:   { cpu: "200m", memory: "128Mi" }
+
+# ── Ingress (off by default — enable + tune in your overlay) ───────────────
+ingress:
+  enabled: false
+  className: ""
+  host: aura.example.com
+  annotations: {}
+  tls:
+    enabled: false
+    secretName: aura-tls
+
+# ── Service account ────────────────────────────────────────────────────────
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+# ── Pod security ───────────────────────────────────────────────────────────
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  fsGroup: 1000
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop: [ALL]
+  readOnlyRootFilesystem: false
+
+# ── Autoscaling ────────────────────────────────────────────────────────────
+# When enabled, a HorizontalPodAutoscaler is rendered for each backend
+# service (and optionally the frontend) using the targets below. Per-service
+# overrides can be supplied via `backendServices.<name>.autoscaling`.
+autoscaling:
+  enabled: false
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+  # Optional — set to a number to also scale on memory.
+  targetMemoryUtilizationPercentage: null
+  frontend:
+    enabled: false
+    minReplicas: 2
+    maxReplicas: 6
+    targetCPUUtilizationPercentage: 70
+
+# ── Pod disruption budgets ─────────────────────────────────────────────────
+# A PDB is rendered for any service whose replica count is > 1, keeping at
+# least `minAvailable` pods up during voluntary disruptions (node drains,
+# rolling upgrades).
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+# ── Persistence ────────────────────────────────────────────────────────────
+# When enabled, a PersistentVolumeClaim is created for the metadata_store
+# service and mounted at `mountPath`. Use this only if you're running an
+# embedded SQLite/DuckDB inside metadata_store; for production prefer an
+# external Postgres referenced via DATABASE_URL in `envSecretName`.
+persistence:
+  enabled: false
+  storageClass: ""        # "" = cluster default
+  accessModes: [ReadWriteOnce]
+  size: 5Gi
+  mountPath: /data
+  # Service to mount the volume into. Must be a key in `backendServices`.
+  service: metadata_store
+
+# ── Prometheus Operator ServiceMonitors ────────────────────────────────────
+# When the Prometheus Operator is installed, enabling this renders one
+# ServiceMonitor per backend service that scrapes its `/metrics` endpoint.
+# Requires the AURA_METRICS_ENABLED env to be true (already set above) and
+# `prometheus-fastapi-instrumentator` initialised in `service_factory.py`.
+serviceMonitor:
+  enabled: false
+  # Selector labels Prometheus uses to discover the ServiceMonitor. Match the
+  # `serviceMonitorSelector` on your Prometheus CR (often `release: prometheus`).
+  labels: {}
+  interval: 30s
+  scrapeTimeout: 10s
+  path: /metrics
+  # Optional — drop or rewrite labels before ingestion.
+  metricRelabelings: []
+  relabelings: []
+
+# ── Network policies ───────────────────────────────────────────────────────
+# Deny-all ingress baseline + the minimum allow rules AURA needs to work
+# inside the cluster. Designed for clusters where a CNI enforces
+# NetworkPolicy (Calico, Cilium, etc.).
+networkPolicy:
+  enabled: false
+  # Allow traffic from these namespace selectors into the api_gateway. The
+  # default opens it to anything in the same namespace + a sibling
+  # `monitoring` ns scraping /metrics.
+  ingressNamespaces:
+    - matchLabels:
+        kubernetes.io/metadata.name: monitoring
+  # Allow egress to anywhere by default (LLM providers, Postgres, etc.).
+  # Tighten in your overlay when you know your dependency endpoints.
+  allowAllEgress: true

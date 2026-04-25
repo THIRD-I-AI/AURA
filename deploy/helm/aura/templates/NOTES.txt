@@ -1,0 +1,24 @@
+AURA {{ .Chart.AppVersion }} installed as release {{ .Release.Name }}.
+
+Backend services deployed:
+{{- range $name, $svc := .Values.backendServices }}
+  - {{ $name }} (port {{ $svc.port }}, {{ $svc.replicas | default 1 }} replica/s)
+{{- end }}
+{{- if .Values.frontend.enabled }}
+Frontend: {{ .Values.frontend.replicas }} replica/s on port {{ .Values.frontend.port }}
+{{- end }}
+
+Next steps:
+1. Create the secret with provider keys before traffic flows:
+     kubectl create secret generic {{ .Values.envSecretName }} \
+       --from-literal=GROQ_API_KEY=... \
+       --from-literal=GEMINI_API_KEY=... \
+       -n {{ .Release.Namespace }}
+
+{{- if .Values.ingress.enabled }}
+2. Reach AURA at: http{{ if .Values.ingress.tls.enabled }}s{{ end }}://{{ .Values.ingress.host }}
+{{- else }}
+2. Port-forward the gateway to test locally:
+     kubectl port-forward svc/{{ include "aura.fullname" . }}-api-gateway 8000:{{ (index .Values.backendServices "api_gateway").port }} \
+       -n {{ .Release.Namespace }}
+{{- end }}

@@ -7,6 +7,21 @@ import App from './App.tsx'
 import { ErrorBoundary } from './components/ui/ErrorBoundary'
 import { ThemeProvider } from './contexts/ThemeContext'
 
+// Sentry: opt-in via VITE_SENTRY_DSN. Dynamic import keeps the SDK out of
+// the main bundle when no DSN is configured.
+const SENTRY_DSN = import.meta.env.VITE_SENTRY_DSN as string | undefined;
+if (SENTRY_DSN) {
+  import('@sentry/react').then((Sentry) => {
+    Sentry.init({
+      dsn: SENTRY_DSN,
+      environment: (import.meta.env.VITE_SENTRY_ENV as string) || import.meta.env.MODE,
+      tracesSampleRate: Number(import.meta.env.VITE_SENTRY_TRACES_RATE ?? '0'),
+    });
+  }).catch((err) => {
+    console.warn('[sentry] failed to initialize:', err);
+  });
+}
+
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <ErrorBoundary

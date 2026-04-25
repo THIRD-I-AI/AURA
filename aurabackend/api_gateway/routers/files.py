@@ -10,6 +10,7 @@ from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, File, Header, HTTPException, UploadFile
 
+from shared.data_utils import invalidate_schema_cache
 from shared.logging_config import get_logger
 from shared.streaming_manager import TOPIC_UPLOAD, streaming_manager
 
@@ -121,6 +122,7 @@ async def upload_universal(
             "message": "File uploaded successfully",
         }
 
+        await invalidate_schema_cache()
         await streaming_manager.publish_complete(TOPIC_UPLOAD, upload_id, result)
         return result
     except Exception as e:
@@ -194,6 +196,7 @@ async def delete_file(file_id: str) -> Dict[str, Any]:
     try:
         success = file_service.delete_file(file_id)
         if success:
+            await invalidate_schema_cache()
             return {"status": "success", "message": "File deleted successfully"}
         else:
             raise HTTPException(status_code=404, detail="File not found or deletion failed")

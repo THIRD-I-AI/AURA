@@ -1,0 +1,39 @@
+{{- $root := . -}}
+{{- if .Values.autoscaling.enabled -}}
+{{- range $svcName, $svc := .Values.backendServices }}
+{{- $hpa := $svc.autoscaling | default $root.Values.autoscaling -}}
+{{- if $hpa.enabled | default true }}
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "aura.fullname" $root }}-{{ $svcName | replace "_" "-" }}
+  labels:
+    {{- include "aura.labels" $root | nindent 4 }}
+    app.kubernetes.io/component: {{ $svcName }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "aura.fullname" $root }}-{{ $svcName | replace "_" "-" }}
+  minReplicas: {{ $hpa.minReplicas | default $root.Values.autoscaling.minReplicas }}
+  maxReplicas: {{ $hpa.maxReplicas | default $root.Values.autoscaling.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ $hpa.targetCPUUtilizationPercentage | default $root.Values.autoscaling.targetCPUUtilizationPercentage }}
+    {{- $mem := $hpa.targetMemoryUtilizationPercentage | default $root.Values.autoscaling.targetMemoryUtilizationPercentage }}
+    {{- if $mem }}
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: {{ $mem }}
+    {{- end }}
+{{- end }}
+{{- end }}
+{{- end }}

@@ -9,7 +9,6 @@ This is the "brain" of the agentic DE system.
 from __future__ import annotations
 
 import json
-import os
 import sys
 from dataclasses import dataclass, field
 from enum import Enum
@@ -24,7 +23,6 @@ from agents.base import (
     Severity,
 )
 from agents.memory import AgentMemory
-from shared.llm_provider import get_llm
 
 # ────────────────────────────────────────────────────────────────────
 # Plan data structures
@@ -168,11 +166,11 @@ class PlannerAgent(BaseAgent):
 
     name = "PlannerAgent"
     description = "Decomposes a user prompt into an execution plan of DE tasks."
+    llm_model_env = "PLANNER_MODEL"
 
     def __init__(self, tool_registry: Any = None, memory: Optional[AgentMemory] = None) -> None:
         super().__init__(tool_registry)
         self.memory = memory or AgentMemory()
-        self._llm = get_llm(model=os.getenv("PLANNER_MODEL", ""))
 
     # ── core logic ──────────────────────────────────────────────────
 

@@ -1,0 +1,15 @@
+apiVersion: v2
+name: aura
+description: AURA Data Analyst Agent — multi-service FastAPI + React platform
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+maintainers:
+  - name: AURA team
+keywords:
+  - data
+  - analytics
+  - llm
+  - fastapi
+sources:
+  - https://github.com/your-org/Data-Analyst-Agent

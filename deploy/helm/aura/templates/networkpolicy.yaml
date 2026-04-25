@@ -1,0 +1,98 @@
+{{- if .Values.networkPolicy.enabled -}}
+# Default-deny ingress for every AURA pod. Specific allow rules below
+# punch holes for the traffic AURA actually needs.
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "aura.fullname" . }}-deny-all
+  labels:
+    {{- include "aura.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "aura.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  policyTypes:
+    - Ingress
+{{- if not .Values.networkPolicy.allowAllEgress }}
+    - Egress
+{{- end }}
+---
+# Frontend → api_gateway and same-namespace clients → api_gateway, plus
+# any external scrapers (monitoring ns) hitting /metrics.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "aura.fullname" . }}-allow-gateway
+  labels:
+    {{- include "aura.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "aura.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: api_gateway
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: {{ include "aura.name" . }}
+              app.kubernetes.io/instance: {{ .Release.Name }}
+              app.kubernetes.io/component: frontend
+        {{- range .Values.networkPolicy.ingressNamespaces }}
+        - namespaceSelector:
+            {{- toYaml . | nindent 12 }}
+        {{- end }}
+      ports:
+        - protocol: TCP
+          port: {{ (index .Values.backendServices "api_gateway").port }}
+---
+# api_gateway → all internal backend services on their respective ports.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "aura.fullname" . }}-allow-internal
+  labels:
+    {{- include "aura.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app.kubernetes.io/name
+        operator: In
+        values: [{{ include "aura.name" . }}]
+      - key: app.kubernetes.io/component
+        operator: NotIn
+        values: [api_gateway, frontend]
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: {{ include "aura.name" . }}
+              app.kubernetes.io/instance: {{ .Release.Name }}
+              app.kubernetes.io/component: api_gateway
+{{- if .Values.networkPolicy.allowAllEgress }}
+---
+# Permit all egress (LLM providers, external Postgres, etc.). Tighten in
+# overlays once dependency endpoints are known.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "aura.fullname" . }}-allow-egress
+  labels:
+    {{- include "aura.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "aura.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  policyTypes:
+    - Egress
+  egress:
+    - {}
+{{- end }}
+{{- end }}

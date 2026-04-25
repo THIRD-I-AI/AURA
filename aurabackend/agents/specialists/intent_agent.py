@@ -1,7 +1,6 @@
 from typing import Any
 
 from agents.base import AgentContext, AgentResult, AgentStatus, BaseAgent
-from shared.llm_provider import get_llm
 
 
 class IntentAgent(BaseAgent):
@@ -15,7 +14,6 @@ class IntentAgent(BaseAgent):
 
     async def _run(self, ctx: AgentContext, result: AgentResult) -> AgentResult:
         try:
-            llm = get_llm()
             # Stringify context lightly to avoid overly massive prompt if many tables
             schema_keys = list(ctx.schema_context.keys()) if ctx.schema_context else []
 
@@ -30,7 +28,7 @@ Respond STRICTLY with a JSON object in this format (no markdown code blocks, jus
 {{"intent": "sql" or "conversation", "message": "If conversation, put your helpful natural language response here. If sql, leave blank."}}
 """
             result.add_step(action="classify_intent", input_summary=f"User prompt: {ctx.user_prompt}")
-            classifier_result = llm.generate_json(intent_prompt)
+            classifier_result = self.llm.generate_json(intent_prompt)
             result.output = classifier_result or {"intent": "sql"}
             result.status = AgentStatus.SUCCESS
             result.add_step(action="intent_classified", output_summary=result.output.get("intent", "sql"))

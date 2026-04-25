@@ -1,0 +1,22 @@
+{{- $root := . -}}
+{{- range $svcName, $svc := .Values.backendServices }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "aura.fullname" $root }}-{{ $svcName | replace "_" "-" }}
+  labels:
+    {{- include "aura.labels" $root | nindent 4 }}
+    app.kubernetes.io/component: {{ $svcName }}
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: {{ $svc.port }}
+      targetPort: http
+      protocol: TCP
+  selector:
+    app.kubernetes.io/name: {{ include "aura.name" $root }}
+    app.kubernetes.io/instance: {{ $root.Release.Name }}
+    app.kubernetes.io/component: {{ $svcName }}
+{{- end }}

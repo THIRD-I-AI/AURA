@@ -34,6 +34,10 @@ websockets>=12.0,<14.0
 google-generativeai>=0.7,<1.0
 groq>=0.9,<1.0
 
+# SQL parser (used by SQLGeneratorAgent._sanitise to block destructive DDL/DML
+# even when wrapped in comments or multi-statement payloads)
+sqlglot>=25.0,<31.0
+
 # Security
 PyJWT>=2.8,<3.0
 bcrypt>=4.0,<6.0
@@ -50,6 +54,12 @@ pytest-cov>=5.0,<6.0
 
 # Security scanning
 bandit[toml]>=1.7,<2.0
+
+# Observability
+prometheus-fastapi-instrumentator>=7.0,<8.0
+prometheus-client>=0.20,<1.0  # transitive, pinned for stable Counter/Histogram API
+# Sentry (no-op when AURA_SENTRY_DSN unset)
+sentry-sdk[fastapi]>=2.0,<3.0
 
 # Enterprise connectors (uncomment as needed)
 # pyodbc>=5.1,<6.0

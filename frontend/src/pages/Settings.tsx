@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { type PageType } from '../components/Layout/AppLayout';
 import { healthService, type HealthStatus } from '../services/api';
+import ConnectorCatalog from '../components/ConnectorCatalog';
 import './Settings.css';
 
 interface SettingsProps {
@@ -301,6 +302,18 @@ const Settings: React.FC<SettingsProps> = () => {
             <p className="info-item__label">Design</p>
             <p className="info-item__value">Dark-first enterprise · Inter + JetBrains Mono</p>
           </div>
+        </div>
+      </section>
+
+      {/* ── Connector Catalog ───────────────────────────────────── */}
+      <section className="settings-section">
+        <SectionHeader
+          icon={<LinkIcon />}
+          title="Connector Catalog"
+          desc="Data sources AURA can talk to. Greyed-out entries are missing their driver."
+        />
+        <div style={{ padding: 'var(--space-3) 0' }}>
+          <ConnectorCatalog />
         </div>
       </section>
 

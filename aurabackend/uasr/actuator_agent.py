@@ -15,9 +15,10 @@ import logging
 import os
 import sys
 import textwrap
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, cast
 
 from agents.base import AgentContext, AgentResult, AgentStatus, BaseAgent, Severity
+from agents.params import ActuatorAgentParams
 from uasr.models import DiagnosisResult, DriftType, ShimResult
 
 logger = logging.getLogger("uasr.actuator")
@@ -38,9 +39,10 @@ class SynthesisActuatorAgent(BaseAgent):
     async def _run(self, ctx: AgentContext, result: AgentResult) -> AgentResult:
         await self._report("Generating recovery shim…", 10)
 
-        diagnosis_data = ctx.metadata.get("diagnosis")
-        drift_data = ctx.metadata.get("drift_result", {})
-        recovery_id = ctx.metadata.get("recovery_id", ctx.run_id)
+        params = cast(ActuatorAgentParams, ctx.metadata or {})
+        diagnosis_data = params.get("diagnosis")
+        drift_data = params.get("drift_result", {})
+        recovery_id = params.get("recovery_id", ctx.run_id)
 
         if isinstance(diagnosis_data, dict):
             diagnosis = DiagnosisResult(**diagnosis_data)
@@ -51,8 +53,8 @@ class SynthesisActuatorAgent(BaseAgent):
             result.error = "No diagnosis provided in metadata"
             return result
 
-        drift_type = ctx.metadata.get("drift_type", "unknown")
-        drift_vector = ctx.metadata.get("drift_vector", {})
+        drift_type = params.get("drift_type", "unknown")
+        drift_vector = params.get("drift_vector", {})
 
         await self._report(f"Drift type: {drift_type}, generating shim…", 30)
 

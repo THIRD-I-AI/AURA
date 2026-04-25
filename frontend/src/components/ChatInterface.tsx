@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useCallback, memo } from 'react';
 import '../styles/design-system.css';
 import '../styles/components.css';
 import Button from './ui/Button';
@@ -7,6 +7,8 @@ import {
   chatService,
   executionService,
   analyticsService,
+  uploadService,
+  savedQueryService,
   type QueryResponse,
   type ExecutionResult,
 } from '../services/api';
@@ -22,6 +24,7 @@ interface Message {
     jobId?: string;
     executionResult?: ExecutionResult;
     userQuery?: string;
+    sqlExplanation?: string;
   };
 }
 
@@ -80,6 +83,8 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
   ]);
   const [input, setInput] = useState('');
   const [isProcessing, setIsProcessing] = useState(false);
+  const [activeFile, setActiveFile] = useState<{ name: string; columns?: string[] } | null>(null);
+  const [fileVerified, setFileVerified] = useState<'pending' | 'present' | 'missing'>('pending');
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -88,6 +93,30 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
   }, [messages]);
 
   useEffect(() => {
+    // Library page → "Open in chat" handoff: surface the saved SQL as an
+    // editable SQL message the user can immediately Run.
+    try {
+      const queued = sessionStorage.getItem('aura.library.openQuery');
+      if (queued) {
+        sessionStorage.removeItem('aura.library.openQuery');
+        const parsed = JSON.parse(queued) as { id?: string; name?: string; sql?: string; prompt?: string | null };
+        if (parsed?.sql) {
+          const userQuery = parsed.prompt || `Reopened: ${parsed.name ?? 'saved query'}`;
+          setMessages((prev) => [
+            ...prev,
+            { id: 'library-' + Date.now(), type: 'system', content: `Loaded saved query "${parsed.name ?? 'Untitled'}" — click Run to execute.`, timestamp: new Date() },
+            {
+              id: 'library-sql-' + Date.now(),
+              type: 'sql',
+              content: parsed.sql,
+              timestamp: new Date(),
+              metadata: { query: parsed.sql, userQuery, jobId: `lib_${parsed.id ?? Date.now()}` },
+            },
+          ]);
+        }
+      }
+    } catch { /* sessionStorage may be blocked */ }
+
     const rerun = localStorage.getItem('rerunQuery');
     if (rerun) { localStorage.removeItem('rerunQuery'); setInput(rerun); }
     const dataset = localStorage.getItem('active_dataset');
@@ -95,12 +124,28 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
       try {
         const ds = JSON.parse(dataset);
         localStorage.removeItem('active_dataset');
-        setInput(`Analyze the ${ds.name} dataset — show me summary statistics and key insights`);
+        setActiveFile({ name: ds.name, columns: ds.columnNames || [] });
+        setFileVerified('pending');
+        // Verify the file actually exists on the backend before auto-submit
+        uploadService.getUploadedFiles().then((serverFiles) => {
+          const present = serverFiles.some(f => f.filename === ds.name);
+          setFileVerified(present ? 'present' : 'missing');
+          if (present) {
+            const prompt = `Analyze the ${ds.name} dataset — show me summary statistics and key insights`;
+            setInput(prompt);
+            setTimeout(() => {
+              setInput(prev => {
+                if (prev === prompt) inputRef.current?.form?.requestSubmit();
+                return prev;
+              });
+            }, 300);
+          }
+        }).catch(() => setFileVerified('missing'));
       } catch { /* ignore */ }
     }
   }, []);
 
-  const saveToQueryHistory = (prompt: string, sql: string, status: 'success' | 'error', rows: number, executionTime: number) => {
+  const saveToQueryHistory = useCallback((prompt: string, sql: string, status: 'success' | 'error', rows: number, executionTime: number) => {
     const record = { id: `q_${Date.now()}`, prompt, sql, status, rows, executionTime, timestamp: new Date().toISOString() };
     analyticsService.saveQueryRecord(record).catch(() => {});
     try {
@@ -108,7 +153,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
       existing.unshift(record);
       localStorage.setItem('queryHistory', JSON.stringify(existing.slice(0, 50)));
     } catch { /* ignore */ }
-  };
+  }, []);
 
   const handleSendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -123,7 +168,11 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
     setMessages((prev) => [...prev, { id: loadingId, type: 'assistant', content: 'Analyzing and generating SQL…', timestamp: new Date(), loading: true }]);
 
     try {
-      const response: QueryResponse = await chatService.sendMessage(userInput, { sessionId });
+      const response: QueryResponse = await chatService.sendMessage(userInput, {
+        sessionId,
+        uploadedFile: activeFile?.name,
+        columns: activeFile?.columns,
+      });
       setMessages((prev) => prev.filter((m) => m.id !== loadingId));
 
       if (response.status === 'Conversational') {
@@ -131,7 +180,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
       } else if (response.status === 'Success' || response.status === 'Fallback') {
         setMessages((prev) => [...prev, {
           id: Date.now().toString(), type: 'sql', content: response.final_query || '-- No query generated',
-          timestamp: new Date(), metadata: { query: response.final_query, jobId: response.job_id, userQuery: userInput },
+          timestamp: new Date(), metadata: { query: response.final_query, jobId: response.job_id, userQuery: userInput, sqlExplanation: response.execution_result?.sql_explanation },
         }]);
         const execResult = response.execution_result;
         if (execResult?.success && (execResult.data?.length ?? 0) > 0) {
@@ -157,7 +206,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
     }
   };
 
-  const handleExecuteQuery = async (query: string, jobId?: string, userQuery?: string) => {
+  const handleExecuteQuery = useCallback(async (query: string, jobId?: string, userQuery?: string) => {
     setIsProcessing(true);
     const loadingId = 'exec-loading-' + Date.now();
     setMessages((prev) => [...prev, { id: loadingId, type: 'assistant', content: 'Executing…', timestamp: new Date(), loading: true }]);
@@ -177,7 +226,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
     } finally {
       setIsProcessing(false);
     }
-  };
+  }, [saveToQueryHistory]);
 
   const isEmpty = messages.length === 1 && messages[0].type === 'system';
 
@@ -213,10 +262,12 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
                 I generate SQL, execute it, and visualize results in one step.
               </p>
             </div>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 'var(--space-2)', width: '100%', maxWidth: 360 }}>
+            <div role="listbox" aria-label="Suggested questions" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 'var(--space-2)', width: '100%', maxWidth: 360 }}>
               {SUGGESTIONS.map((s) => (
                 <button
                   key={s}
+                  role="option"
+                  aria-selected={false}
                   onClick={() => { setInput(s); inputRef.current?.focus(); }}
                   style={{ padding: 'var(--space-2-5) var(--space-3)', background: 'var(--bg-surface-2)', border: '1px solid var(--border-default)', borderRadius: 'var(--radius-md)', color: 'var(--text-secondary)', fontSize: 'var(--font-xs)', cursor: 'pointer', textAlign: 'left', transition: 'all var(--dur-fast)', fontFamily: 'var(--font-sans)', lineHeight: 1.4 }}
                   onMouseEnter={e => { (e.currentTarget as HTMLButtonElement).style.borderColor = 'var(--accent-border)'; (e.currentTarget as HTMLButtonElement).style.color = '#93c5fd'; }}
@@ -237,6 +288,45 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
 
       {/* ── Input ───────────────────────────────────────────── */}
       <div style={{ padding: 'var(--space-3) var(--space-4)', borderTop: '1px solid var(--border-subtle)', flexShrink: 0 }}>
+        {activeFile && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-1)', marginBottom: 'var(--space-2)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}>
+              <span style={{
+                fontSize: 11,
+                color: fileVerified === 'missing' ? 'var(--color-error-600)' : 'var(--text-tertiary)',
+                padding: '2px 8px',
+                background: 'var(--bg-surface-2)',
+                borderRadius: 'var(--radius-sm)',
+                border: `1px solid ${fileVerified === 'missing' ? 'var(--color-error-600)' : 'var(--border-subtle)'}`,
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 4,
+              }}>
+                <span style={{
+                  width: 5, height: 5, borderRadius: '50%',
+                  background: fileVerified === 'missing'
+                    ? 'var(--color-error-600)'
+                    : fileVerified === 'pending'
+                      ? 'var(--color-warning-600)'
+                      : 'var(--color-success-500)',
+                }} />
+                {activeFile.name}
+              </span>
+              <button
+                onClick={() => { setActiveFile(null); setFileVerified('pending'); }}
+                style={{ background: 'none', border: 'none', color: 'var(--text-disabled)', cursor: 'pointer', fontSize: 14, padding: 0, lineHeight: 1 }}
+                title="Clear file context"
+              >
+                &times;
+              </button>
+            </div>
+            {fileVerified === 'missing' && (
+              <span style={{ fontSize: 11, color: 'var(--color-error-600)' }}>
+                This file isn't on the server. Re-upload it from the Files page before analyzing.
+              </span>
+            )}
+          </div>
+        )}
         <form onSubmit={handleSendMessage} style={{ display: 'flex', gap: 'var(--space-2)', alignItems: 'center' }}>
           <input
             ref={inputRef}
@@ -244,6 +334,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
             value={input}
             onChange={(e) => setInput(e.target.value)}
             placeholder="Ask about your data…"
+            aria-label="Ask about your data"
             disabled={isProcessing}
             style={{
               flex: 1,
@@ -273,11 +364,113 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
   );
 };
 
+/* ── Export bar ──────────────────────────────────────────────────── */
+const escapeCsvCell = (v: unknown): string => {
+  const s = v === null || v === undefined ? '' : typeof v === 'object' ? JSON.stringify(v) : String(v);
+  return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+};
+
+const downloadBlob = (filename: string, mime: string, body: string) => {
+  const blob = new Blob([body], { type: mime });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+};
+
+const SaveQueryButton: React.FC<{ sql: string; prompt?: string }> = ({ sql, prompt }) => {
+  const [state, setState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
+
+  const onClick = useCallback(async () => {
+    if (state === 'saving') return;
+    const defaultName = (prompt && prompt.trim().slice(0, 60)) || `Query ${new Date().toLocaleString()}`;
+    const name = window.prompt('Save this query as:', defaultName);
+    if (!name || !name.trim()) return;
+    setState('saving');
+    try {
+      await savedQueryService.create({ name: name.trim(), sql, prompt });
+      setState('saved');
+      setTimeout(() => setState('idle'), 1500);
+    } catch {
+      setState('error');
+      setTimeout(() => setState('idle'), 2000);
+    }
+  }, [sql, prompt, state]);
+
+  const label = state === 'saving' ? 'Saving…' : state === 'saved' ? 'Saved!' : state === 'error' ? 'Failed' : 'Save query';
+  return (
+    <button
+      onClick={onClick}
+      disabled={state === 'saving'}
+      style={{
+        padding: '4px 10px',
+        fontSize: 11,
+        fontWeight: 500,
+        background: 'var(--bg-surface-2)',
+        color: state === 'error' ? 'var(--red, #f87171)' : 'var(--text-secondary)',
+        border: '1px solid var(--border-default)',
+        borderRadius: 'var(--radius-sm)',
+        cursor: state === 'saving' ? 'wait' : 'pointer',
+        fontFamily: 'var(--font-sans)',
+      }}
+    >
+      {label}
+    </button>
+  );
+};
+
+const ExportBar: React.FC<{ data: Array<Record<string, unknown>>; columns: string[] }> = ({ data, columns }) => {
+  const [copied, setCopied] = useState(false);
+
+  const toCsv = useCallback((): string => {
+    const header = columns.map(escapeCsvCell).join(',');
+    const rows = data.map((r) => columns.map((c) => escapeCsvCell(r[c])).join(','));
+    return [header, ...rows].join('\n');
+  }, [data, columns]);
+
+  const ts = () => new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+
+  const onCopy = useCallback(async () => {
+    try {
+      await navigator.clipboard.writeText(JSON.stringify(data, null, 2));
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch { /* clipboard blocked */ }
+  }, [data]);
+
+  const btn = (label: string, onClick: () => void) => (
+    <button
+      onClick={onClick}
+      style={{
+        padding: '4px 10px', fontSize: 11, fontWeight: 500,
+        background: 'var(--bg-surface-2)', color: 'var(--text-secondary)',
+        border: '1px solid var(--border-default)', borderRadius: 'var(--radius-sm)',
+        cursor: 'pointer', fontFamily: 'var(--font-sans)',
+      }}
+    >
+      {label}
+    </button>
+  );
+
+  return (
+    <div role="toolbar" aria-label="Export results" style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+      <span style={{ fontSize: 11, color: 'var(--text-tertiary)', marginRight: 2 }}>Export:</span>
+      {btn('CSV', () => downloadBlob(`aura-results-${ts()}.csv`, 'text/csv;charset=utf-8', toCsv()))}
+      {btn('JSON', () => downloadBlob(`aura-results-${ts()}.json`, 'application/json', JSON.stringify(data, null, 2)))}
+      {btn(copied ? 'Copied!' : 'Copy', onCopy)}
+    </div>
+  );
+};
+
 /* ── Message Bubble ───────────────────────────────────────────────── */
 const MessageBubble: React.FC<{
   message: Message;
   onExecuteQuery?: (query: string, jobId?: string, userQuery?: string) => void;
-}> = ({ message, onExecuteQuery }) => {
+}> = memo(({ message, onExecuteQuery }) => {
   const [copied, setCopied] = useState(false);
 
   const copySQL = (code: string) => {
@@ -295,7 +488,10 @@ const MessageBubble: React.FC<{
           </svg>
           GENERATED SQL
         </div>
-        <div style={{ position: 'relative', background: 'var(--bg-sunken)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-md)', overflow: 'hidden' }}>
+        <div
+          style={{ position: 'relative', background: 'var(--bg-sunken)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-md)', overflow: 'hidden' }}
+          title={message.metadata?.sqlExplanation || undefined}
+        >
           <pre style={{ margin: 0, padding: 'var(--space-4)', fontFamily: 'var(--font-mono)', fontSize: 12, color: '#a5b4fc', lineHeight: 1.7, overflowX: 'auto', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
             {message.content}
           </pre>
@@ -309,7 +505,13 @@ const MessageBubble: React.FC<{
             {copied ? 'Copied' : 'Copy'}
           </button>
         </div>
-        <div style={{ marginTop: 8 }}>
+        {message.metadata?.sqlExplanation && (
+          <div style={{ marginTop: 6, fontSize: 11, color: 'var(--text-tertiary)', lineHeight: 1.5, fontStyle: 'italic' }}>
+            <span style={{ fontWeight: 600, fontStyle: 'normal', marginRight: 4 }}>What this does:</span>
+            {message.metadata.sqlExplanation}
+          </div>
+        )}
+        <div style={{ marginTop: 8, display: 'flex', gap: 8, alignItems: 'center' }}>
           <Button
             variant="secondary"
             size="sm"
@@ -318,6 +520,7 @@ const MessageBubble: React.FC<{
           >
             Run Query
           </Button>
+          <SaveQueryButton sql={message.metadata!.query!} prompt={message.metadata?.userQuery} />
         </div>
       </div>
     );
@@ -349,8 +552,13 @@ const MessageBubble: React.FC<{
         {/* Chart */}
         {showChart && (
           <div style={{ borderRadius: 'var(--radius-md)', overflow: 'hidden' }}>
-            <RechartsVisualization data={result.data!} type="auto" userQuery={message.metadata?.userQuery} height={300} />
+            <RechartsVisualization data={result.data!} type="auto" userQuery={message.metadata?.userQuery} chartSpec={result.chart_spec} height={300} />
           </div>
+        )}
+
+        {/* Export bar */}
+        {result.data && result.data.length > 0 && (
+          <ExportBar data={result.data} columns={result.columns ?? Object.keys(result.data[0])} />
         )}
 
         {/* Table */}
@@ -423,6 +631,7 @@ const MessageBubble: React.FC<{
       )}
     </div>
   );
-};
+});
+MessageBubble.displayName = 'MessageBubble';
 
 export default ChatInterface;

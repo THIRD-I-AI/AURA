@@ -1,0 +1,87 @@
+{{- $root := . -}}
+{{- range $svcName, $svc := .Values.backendServices }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "aura.fullname" $root }}-{{ $svcName | replace "_" "-" }}
+  labels:
+    {{- include "aura.labels" $root | nindent 4 }}
+    app.kubernetes.io/component: {{ $svcName }}
+spec:
+  replicas: {{ $svc.replicas | default 1 }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "aura.name" $root }}
+      app.kubernetes.io/instance: {{ $root.Release.Name }}
+      app.kubernetes.io/component: {{ $svcName }}
+  template:
+    metadata:
+      labels:
+        {{- include "aura.labels" $root | nindent 8 }}
+        app.kubernetes.io/component: {{ $svcName }}
+    spec:
+      serviceAccountName: {{ include "aura.serviceAccountName" $root }}
+      {{- with $root.Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml $root.Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: {{ $svcName | replace "_" "-" }}
+          image: {{ include "aura.backendImage" $root }}
+          imagePullPolicy: {{ $root.Values.image.backend.pullPolicy }}
+          securityContext:
+            {{- toYaml $root.Values.containerSecurityContext | nindent 12 }}
+          command: ["uvicorn"]
+          args:
+            - {{ $svc.module | quote }}
+            - "--host"
+            - "0.0.0.0"
+            - "--port"
+            - {{ $svc.port | quote }}
+            - "--workers"
+            - {{ $svc.workers | default 1 | quote }}
+          ports:
+            - name: http
+              containerPort: {{ $svc.port }}
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: {{ include "aura.fullname" $root }}-env
+            {{- if $root.Values.envSecretName }}
+            - secretRef:
+                name: {{ $root.Values.envSecretName }}
+                optional: true
+            {{- end }}
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 5
+          resources:
+            {{- toYaml ($svc.resources | default $root.Values.defaultBackendResources) | nindent 12 }}
+          {{- if and $root.Values.persistence.enabled (eq $svcName $root.Values.persistence.service) }}
+          volumeMounts:
+            - name: data
+              mountPath: {{ $root.Values.persistence.mountPath | quote }}
+          {{- end }}
+      {{- if and $root.Values.persistence.enabled (eq $svcName $root.Values.persistence.service) }}
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ include "aura.fullname" $root }}-{{ $svcName | replace "_" "-" }}-data
+      {{- end }}
+{{- end }}

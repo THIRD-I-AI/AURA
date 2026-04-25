@@ -6,12 +6,13 @@ from contextlib import asynccontextmanager
 from typing import Any, AsyncGenerator, Dict
 
 from fastapi import Body, Depends, FastAPI, HTTPException
+from sqlalchemy import text
 
 from shared.config import settings
 from shared.logging_config import get_logger
 from shared.service_factory import create_service
 
-from .db import get_session, init_db
+from .db import get_engine, get_session, init_db
 from .models import User
 from .repository import MetadataRepository, get_repository
 
@@ -31,10 +32,21 @@ async def _lifespan(_: FastAPI) -> AsyncGenerator[None, None]:
 	logger.info("Shutting down Metadata Store")
 
 
+async def _check_db() -> str | None:
+	"""SELECT 1 against the metadata DB. Returns None on success."""
+	try:
+		async with get_engine().connect() as conn:
+			await conn.execute(text("SELECT 1"))
+		return None
+	except Exception as exc:  # noqa: BLE001 — surface message to /health caller
+		return f"db unreachable: {type(exc).__name__}"
+
+
 metadata_app = create_service(
 	name="Metadata Store",
 	service_tag="metadata_store",
 	lifespan=_lifespan,
+	health_checks={"db": _check_db},
 )
 
 

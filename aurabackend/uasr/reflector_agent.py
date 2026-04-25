@@ -16,9 +16,10 @@ import json
 import logging
 import os
 import sys
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, cast
 
 from agents.base import AgentContext, AgentResult, AgentStatus, BaseAgent, Severity
+from agents.params import ReflectorAgentParams
 from uasr.models import DiagnosisResult, DriftDetectionResult, DriftType
 
 logger = logging.getLogger("uasr.reflector")
@@ -39,8 +40,9 @@ class DiagnosticReflectorAgent(BaseAgent):
     async def _run(self, ctx: AgentContext, result: AgentResult) -> AgentResult:
         await self._report("Analyzing drift event…", 10)
 
-        drift_data = ctx.metadata.get("drift_result", {})
-        error_logs = ctx.metadata.get("error_logs", [])
+        params = cast(ReflectorAgentParams, ctx.metadata or {})
+        drift_data = params.get("drift_result", {})
+        error_logs = params.get("error_logs", [])
 
         if isinstance(drift_data, dict):
             drift = DriftDetectionResult(**drift_data)
@@ -120,7 +122,7 @@ class DiagnosticReflectorAgent(BaseAgent):
             diagnosis.root_cause = "Column type change detected in upstream source"
             diagnosis.hypothesis = (
                 f"Columns changed types: "
-                f"{', '.join(f'{c}: {old_types.get(c)}→{new_types.get(c)}' for c in drift.affected_columns)}"
+                f"{', '.join(f'{c}: {old_types.get(c)}->{new_types.get(c)}' for c in drift.affected_columns)}"
             )
             diagnosis.suggested_action = (
                 "Generate a CAST shim to convert new types back to expected types, "

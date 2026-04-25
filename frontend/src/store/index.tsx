@@ -27,6 +27,8 @@ import {
 } from 'react';
 import {
   analyticsService,
+  connectorService,
+  uploadService,
   type DashboardStats,
   type HealthStatus,
 } from '../services/api';
@@ -159,12 +161,32 @@ function parseUploadsFromStorage(): UploadedFile[] {
   }
 }
 
-const API_BASE = () => {
-  const raw = localStorage.getItem('apiUrl') ||
-    import.meta.env.VITE_API_URL ||
-    'http://localhost:8000';
-  return `${raw.replace(/\/+$/, '')}/api/v1`;
-};
+/**
+ * Reconcile backend file list (source of truth) with localStorage metadata
+ * (rows / column names from upload response). Backend-only files appear with
+ * basic info; localStorage-only files are dropped (they were never uploaded).
+ */
+function reconcileFiles(
+  serverFiles: Array<{ filename: string; size: number; modified: string }>,
+  localFiles: UploadedFile[],
+): UploadedFile[] {
+  const localByName = new Map(localFiles.map(f => [f.name, f]));
+  return serverFiles.map(sf => {
+    const local = localByName.get(sf.filename);
+    return {
+      id: local?.id || sf.filename,
+      name: sf.filename,
+      sizeBytes: sf.size,
+      rows: local?.rows ?? 0,
+      columns: local?.columns ?? 0,
+      columnNames: local?.columnNames ?? [],
+      uploadedAt: sf.modified,
+      status: 'ready' as const,
+      file: local?.file,
+      response: local?.response,
+    };
+  });
+}
 
 // ═══════════════════════════════════════════════════════════════════
 //  Context + Provider
@@ -173,7 +195,7 @@ const API_BASE = () => {
 interface AuraActions {
   setHealth: (h: HealthStatus) => void;
   fetchStats: () => Promise<void>;
-  loadFilesFromStorage: () => void;
+  loadFilesFromStorage: () => Promise<void>;
   addFile: (file: UploadedFile) => void;
   fetchConnections: () => Promise<void>;
   fetchQueryHistory: (limit?: number, statusFilter?: string) => Promise<void>;
@@ -206,8 +228,16 @@ export function AuraProvider({ children }: { children: ReactNode }) {
     }
   }, [state.statsLoading]);
 
-  const loadFilesFromStorage = useCallback(() => {
-    dispatch({ type: 'SET_FILES', payload: parseUploadsFromStorage() });
+  const loadFilesFromStorage = useCallback(async () => {
+    const localFiles = parseUploadsFromStorage();
+    try {
+      const serverFiles = await uploadService.getUploadedFiles();
+      const reconciled = reconcileFiles(serverFiles, localFiles);
+      dispatch({ type: 'SET_FILES', payload: reconciled });
+    } catch {
+      // Backend unreachable — show localStorage files but flag as 'uploaded' (unverified)
+      dispatch({ type: 'SET_FILES', payload: localFiles.map(f => ({ ...f, status: 'uploaded' as const })) });
+    }
   }, []);
 
   const addFile = useCallback((file: UploadedFile) => {
@@ -218,13 +248,11 @@ export function AuraProvider({ children }: { children: ReactNode }) {
     if (state.connectionsLoading) return;
     dispatch({ type: 'CONNECTIONS_LOADING' });
     try {
-      const resp = await fetch(`${API_BASE()}/connections`);
-      const data = await resp.json();
-      if (data.success) {
-        dispatch({ type: 'CONNECTIONS_LOADED', payload: data.connections });
-      } else {
-        dispatch({ type: 'CONNECTIONS_LOADED', payload: [] });
-      }
+      const data = await connectorService.listSources();
+      dispatch({
+        type: 'CONNECTIONS_LOADED',
+        payload: data?.success ? data.connections : [],
+      });
     } catch {
       dispatch({ type: 'CONNECTIONS_LOADED', payload: [] });
     }

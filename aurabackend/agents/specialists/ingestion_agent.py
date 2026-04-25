@@ -5,9 +5,13 @@ Handles: file uploads, DB source connections, data profiling, initial load.
 """
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+import logging
+from typing import Any, Dict, List, Optional, cast
 
 from agents.base import AgentContext, AgentResult, BaseAgent, Severity
+from agents.params import IngestionAgentParams
+
+logger = logging.getLogger("aura.agents.ingestion")
 
 
 class IngestionAgent(BaseAgent):
@@ -15,7 +19,8 @@ class IngestionAgent(BaseAgent):
     description = "Ingests files and database sources. Profiles and registers data."
 
     async def _run(self, ctx: AgentContext, result: AgentResult) -> AgentResult:
-        files = ctx.metadata.get("files", ctx.files)
+        params = cast(IngestionAgentParams, ctx.metadata or {})
+        files = params.get("files", ctx.files)
 
         if not files and not ctx.connection:
             result.add_step(
@@ -29,8 +34,13 @@ class IngestionAgent(BaseAgent):
                     existing = await self.tools.call("list_uploaded_files")
                     if existing:
                         files = existing
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.exception("list_uploaded_files tool call failed")
+                    result.add_step(
+                        action="list_uploaded_files",
+                        output_summary=f"Tool failed: {exc}",
+                        severity=Severity.WARNING,
+                    )
 
         ingested: List[Dict[str, Any]] = []
 

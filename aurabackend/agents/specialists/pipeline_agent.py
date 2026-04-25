@@ -8,12 +8,13 @@ steps, dependencies, and cron schedules.
 from __future__ import annotations
 
 import json
-import os
+import logging
 import uuid
 from typing import Any, Dict, List, Optional
 
 from agents.base import AgentContext, AgentResult, BaseAgent, Severity
-from shared.llm_provider import get_llm
+
+logger = logging.getLogger("aura.agents.pipeline")
 
 _PIPELINE_PROMPT = """\
 You are a data pipeline architect.  Given the user's request, generate a
@@ -53,10 +54,7 @@ Return ONLY valid JSON with this structure (no markdown):
 class PipelineAgent(BaseAgent):
     name = "PipelineAgent"
     description = "Builds and schedules ETL/ELT pipelines."
-
-    def __init__(self, tool_registry: Any = None) -> None:
-        super().__init__(tool_registry)
-        self._llm = get_llm(model=os.getenv("PIPELINE_MODEL", ""))
+    llm_model_env = "PIPELINE_MODEL"
 
     async def _run(self, ctx: AgentContext, result: AgentResult) -> AgentResult:
         await self._report("Designing pipeline…", 10)
@@ -131,7 +129,7 @@ class PipelineAgent(BaseAgent):
                 if isinstance(parsed, dict) and "steps" in parsed:
                     return parsed
             except Exception:
-                pass
+                logger.exception("LLM pipeline plan parse failed; using heuristic fallback")
 
         return self._fallback_pipeline(ctx)
 

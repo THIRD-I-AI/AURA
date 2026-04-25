@@ -245,13 +245,22 @@
   display: grid;
   grid-template-columns: 1fr 400px;
   gap: var(--space-4);
-  align-items: start;
+  height: clamp(500px, 70vh, 800px);
+}
+.dashboard-grid--workspace > * {
+  min-height: 0;
+  min-width: 0;
+  height: 100%;
 }
 
 /* ── Responsive ──────────────────────────────────────────────────── */
 @media (max-width: 1280px) {
   .dashboard-grid--kpis { grid-template-columns: repeat(2, 1fr); }
-  .dashboard-grid--workspace { grid-template-columns: 1fr; }
+  .dashboard-grid--workspace {
+    grid-template-columns: 1fr;
+    height: auto;
+    grid-auto-rows: minmax(500px, auto);
+  }
 }
 @media (max-width: 1024px) {
   .app-shell__sidebar { width: var(--sidebar-width-collapsed); min-width: var(--sidebar-width-collapsed); }

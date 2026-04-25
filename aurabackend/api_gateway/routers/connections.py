@@ -19,6 +19,8 @@ from connectors import (
     MySQLConnector,
     PostgreSQLConnector,
     SourceType,
+    available_connectors,
+    get_connector,
 )
 from shared.logging_config import get_logger
 
@@ -73,32 +75,23 @@ class ProfileTableRequest(BaseModel):
 # ── Connector discovery endpoints ────────────────────────────────────
 
 @router.get("/connectors/available")
-async def list_available_connectors():
-    """List available data connectors."""
+async def list_available_connectors(include_unavailable: bool = True):
+    """List connectors via the central registry. Set
+    ``?include_unavailable=false`` to hide types whose driver isn't installed."""
+    specs = available_connectors(include_unavailable=include_unavailable)
+    return {"connectors": [s.to_dict() for s in specs]}
+
+
+@router.get("/connectors/registry")
+async def connectors_registry(include_unavailable: bool = True):
+    """Full registry payload — same shape as ``/connectors/available`` but
+    explicit about being the registry endpoint, for clients that want to
+    drive a generic catalog UI off it."""
+    specs = available_connectors(include_unavailable=include_unavailable)
     return {
-        "connectors": [
-            {
-                "id": "postgresql",
-                "name": "PostgreSQL",
-                "description": "PostgreSQL database connector",
-                "icon": "🐘",
-                "config_required": ["host", "port", "username", "password", "database"],
-            },
-            {
-                "id": "mysql",
-                "name": "MySQL",
-                "description": "MySQL database connector",
-                "icon": "🐬",
-                "config_required": ["host", "port", "username", "password", "database"],
-            },
-            {
-                "id": "bigquery",
-                "name": "Google BigQuery",
-                "description": "BigQuery data warehouse connector",
-                "icon": "☁️",
-                "config_required": ["credentials_json", "database"],
-            },
-        ]
+        "success": True,
+        "count": len(specs),
+        "connectors": [s.to_dict() for s in specs],
     }
 
 
@@ -179,7 +172,30 @@ async def get_connections():
 
 @router.post("/connections")
 async def create_connection(req: ConnectionCreateRequest):
-    """Register a new data source connection."""
+    """Register a new data source connection.
+
+    The connector ``type`` is validated against the registry — unknown or
+    driver-missing types are rejected at create-time rather than failing
+    confusingly later when the user clicks Test."""
+    spec = get_connector(req.type)
+    if spec is None:
+        valid = [s.id for s in available_connectors(include_unavailable=True)]
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "error": f"Unknown connector type '{req.type}'.",
+                "valid_types": valid,
+            },
+        )
+    if not spec.available:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "error": f"Connector '{req.type}' is registered but unavailable.",
+                "reason": spec.unavailable_reason or "driver not installed",
+            },
+        )
+
     conn_id = str(_uuid.uuid4())[:12]
     now = datetime.now().isoformat()
     conn = {

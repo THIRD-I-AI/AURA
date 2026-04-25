@@ -4,6 +4,11 @@
  * Connects to GET /stream/{topic}, handles reconnection with exponential
  * backoff, and tracks Last-Event-ID for missed-event replay on reconnect.
  *
+ * Connections are pooled by topic via a module-level manager: multiple
+ * components subscribing to the same topic share one EventSource and
+ * each receives the same event stream. The connection is closed when
+ * the last subscriber unmounts.
+ *
  * Usage:
  *   const { lastEvent, connected, error } = useSSE({ topic: 'system:health' });
  *   const { lastEvent } = useSSE({ topic: `query:${jobId}`, enabled: !!jobId });
@@ -47,6 +52,193 @@ export interface UseSSEReturn {
   reconnect: () => void;
 }
 
+// ─────────────────────────────────────────────────────────────────
+// Module-level connection pool: one EventSource per topic
+// ─────────────────────────────────────────────────────────────────
+
+interface PoolSubscriber {
+  onEvent?: (e: SSEEvent) => void;
+  onConnect?: () => void;
+  onError?: (e: Event) => void;
+  setConnected: (v: boolean) => void;
+  setError: (v: boolean) => void;
+  setRetryCount: (n: number) => void;
+  setLastEvent: (e: SSEEvent) => void;
+}
+
+interface PoolEntry {
+  es: EventSource | null;
+  subscribers: Set<PoolSubscriber>;
+  lastEventId: string | null;
+  backoff: number;
+  retryCount: number;
+  retryTimer: ReturnType<typeof setTimeout> | null;
+  initialBackoff: number;
+  maxBackoff: number;
+  maxRetries: number;
+  connected: boolean;
+}
+
+const pool = new Map<string, PoolEntry>();
+
+function openConnection(topic: string, entry: PoolEntry) {
+  if (entry.es) {
+    entry.es.close();
+    entry.es = null;
+  }
+
+  const url = new URL(`${API_BASE}/stream/${encodeURIComponent(topic)}`);
+  if (entry.lastEventId) url.searchParams.set('last_event_id', entry.lastEventId);
+
+  const es = new EventSource(url.toString());
+  entry.es = es;
+
+  es.onopen = () => {
+    entry.backoff = entry.initialBackoff;
+    entry.retryCount = 0;
+    entry.connected = true;
+    entry.subscribers.forEach((s) => {
+      s.setConnected(true);
+      s.setError(false);
+      s.setRetryCount(0);
+      s.onConnect?.();
+    });
+  };
+
+  const dispatch = (sseEvent: SSEEvent) => {
+    if (sseEvent.id) entry.lastEventId = sseEvent.id;
+    entry.subscribers.forEach((s) => {
+      s.setLastEvent(sseEvent);
+      s.onEvent?.(sseEvent);
+    });
+  };
+
+  const eventTypes = ['progress', 'complete', 'error', 'data', 'heartbeat'];
+  eventTypes.forEach((evType) => {
+    es.addEventListener(evType, (e: MessageEvent) => {
+      try {
+        const raw = JSON.parse(e.data);
+        dispatch({
+          id: e.lastEventId || '',
+          type: evType,
+          topic: raw.topic ?? topic,
+          payload: raw.payload ?? raw,
+          timestamp: raw.timestamp ?? new Date().toISOString(),
+        });
+      } catch {
+        // ignore parse errors (heartbeats / comments)
+      }
+    });
+  });
+
+  es.onmessage = (e: MessageEvent) => {
+    try {
+      const raw = JSON.parse(e.data);
+      dispatch({
+        id: e.lastEventId || '',
+        type: raw.type ?? 'data',
+        topic: raw.topic ?? topic,
+        payload: raw.payload ?? raw,
+        timestamp: raw.timestamp ?? new Date().toISOString(),
+      });
+    } catch {
+      // ignore
+    }
+  };
+
+  es.onerror = (e: Event) => {
+    es.close();
+    entry.es = null;
+    entry.connected = false;
+    entry.subscribers.forEach((s) => s.setConnected(false));
+
+    if (entry.retryCount >= entry.maxRetries) {
+      entry.subscribers.forEach((s) => {
+        s.setError(true);
+        s.onError?.(e);
+      });
+      return;
+    }
+
+    const delay = Math.min(entry.backoff, entry.maxBackoff);
+    entry.backoff = Math.min(entry.backoff * 2, entry.maxBackoff);
+    entry.retryCount += 1;
+    entry.subscribers.forEach((s) => s.setRetryCount(entry.retryCount));
+
+    entry.retryTimer = setTimeout(() => {
+      if (entry.subscribers.size > 0) openConnection(topic, entry);
+    }, delay);
+  };
+}
+
+function subscribe(topic: string, sub: PoolSubscriber, opts: {
+  initialBackoff: number;
+  maxBackoff: number;
+  maxRetries: number;
+}): () => void {
+  let entry = pool.get(topic);
+  if (!entry) {
+    entry = {
+      es: null,
+      subscribers: new Set(),
+      lastEventId: null,
+      backoff: opts.initialBackoff,
+      retryCount: 0,
+      retryTimer: null,
+      initialBackoff: opts.initialBackoff,
+      maxBackoff: opts.maxBackoff,
+      maxRetries: opts.maxRetries,
+      connected: false,
+    };
+    pool.set(topic, entry);
+  }
+  entry.subscribers.add(sub);
+
+  // First subscriber opens the connection; later ones inherit current state.
+  if (!entry.es && entry.subscribers.size === 1) {
+    openConnection(topic, entry);
+  } else if (entry.connected) {
+    sub.setConnected(true);
+  }
+
+  return () => {
+    const e = pool.get(topic);
+    if (!e) return;
+    e.subscribers.delete(sub);
+    if (e.subscribers.size === 0) {
+      if (e.retryTimer) {
+        clearTimeout(e.retryTimer);
+        e.retryTimer = null;
+      }
+      if (e.es) {
+        e.es.close();
+        e.es = null;
+      }
+      pool.delete(topic);
+    }
+  };
+}
+
+function reconnectTopic(topic: string) {
+  const entry = pool.get(topic);
+  if (!entry) return;
+  if (entry.retryTimer) {
+    clearTimeout(entry.retryTimer);
+    entry.retryTimer = null;
+  }
+  entry.retryCount = 0;
+  entry.backoff = entry.initialBackoff;
+  entry.subscribers.forEach((s) => {
+    s.setError(false);
+    s.setRetryCount(0);
+  });
+  openConnection(topic, entry);
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Hook
+// ─────────────────────────────────────────────────────────────────
+
 export function useSSE({
   topic,
   enabled = true,
@@ -62,136 +254,46 @@ export function useSSE({
   const [error, setError] = useState(false);
   const [retryCount, setRetryCount] = useState(0);
 
-  const esRef = useRef<EventSource | null>(null);
-  const backoffRef = useRef(initialBackoff);
-  const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const lastEventIdRef = useRef<string | null>(null);
-  const retryCountRef = useRef(0);
-  const mountedRef = useRef(true);
+  // Keep callbacks in a ref so the subscribe effect doesn't re-run on every render.
+  const cbRef = useRef({ onEvent, onConnect, onError });
+  cbRef.current = { onEvent, onConnect, onError };
 
-  const disconnect = useCallback(() => {
-    if (retryTimerRef.current) {
-      clearTimeout(retryTimerRef.current);
-      retryTimerRef.current = null;
-    }
-    if (esRef.current) {
-      esRef.current.close();
-      esRef.current = null;
-    }
-    if (mountedRef.current) {
-      setConnected(false);
-    }
-  }, []);
-
-  const connect = useCallback(() => {
-    if (!mountedRef.current || !enabled) return;
-
-    // Clean up any existing connection
-    if (esRef.current) {
-      esRef.current.close();
-      esRef.current = null;
-    }
-
-    const url = new URL(`${API_BASE}/stream/${encodeURIComponent(topic)}`);
-    if (lastEventIdRef.current) {
-      url.searchParams.set('last_event_id', lastEventIdRef.current);
-    }
-
-    const es = new EventSource(url.toString());
-    esRef.current = es;
-
-    es.onopen = () => {
-      if (!mountedRef.current) return;
-      backoffRef.current = initialBackoff;
-      retryCountRef.current = 0;
-      setConnected(true);
-      setError(false);
-      setRetryCount(0);
-      onConnect?.();
-    };
-
-    // Handle typed events (progress, complete, error, data)
-    const eventTypes = ['progress', 'complete', 'error', 'data', 'heartbeat'];
-    eventTypes.forEach((evType) => {
-      es.addEventListener(evType, (e: MessageEvent) => {
-        if (!mountedRef.current) return;
-        try {
-          const raw = JSON.parse(e.data);
-          const sseEvent: SSEEvent = {
-            id: e.lastEventId || '',
-            type: evType,
-            topic: raw.topic ?? topic,
-            payload: raw.payload ?? raw,
-            timestamp: raw.timestamp ?? new Date().toISOString(),
-          };
-          if (e.lastEventId) lastEventIdRef.current = e.lastEventId;
-          setLastEvent(sseEvent);
-          onEvent?.(sseEvent);
-        } catch {
-          // Ignore parse errors for heartbeats / comments
-        }
-      });
-    });
-
-    // Fallback: unnamed messages
-    es.onmessage = (e: MessageEvent) => {
-      if (!mountedRef.current) return;
-      try {
-        const raw = JSON.parse(e.data);
-        const sseEvent: SSEEvent = {
-          id: e.lastEventId || '',
-          type: raw.type ?? 'data',
-          topic: raw.topic ?? topic,
-          payload: raw.payload ?? raw,
-          timestamp: raw.timestamp ?? new Date().toISOString(),
-        };
-        if (e.lastEventId) lastEventIdRef.current = e.lastEventId;
-        setLastEvent(sseEvent);
-        onEvent?.(sseEvent);
-      } catch {
-        // ignore
-      }
-    };
-
-    es.onerror = (e: Event) => {
-      if (!mountedRef.current) return;
-      es.close();
-      esRef.current = null;
-      setConnected(false);
-
-      if (retryCountRef.current >= maxRetries) {
-        setError(true);
-        onError?.(e);
-        return;
-      }
-
-      const delay = Math.min(backoffRef.current, maxBackoff);
-      backoffRef.current = Math.min(backoffRef.current * 2, maxBackoff);
-      retryCountRef.current += 1;
-      setRetryCount(retryCountRef.current);
-
-      retryTimerRef.current = setTimeout(() => {
-        if (mountedRef.current) connect();
-      }, delay);
-    };
-  }, [topic, enabled, initialBackoff, maxBackoff, maxRetries, onConnect, onError, onEvent]);
-
-  const reconnect = useCallback(() => {
-    retryCountRef.current = 0;
-    backoffRef.current = initialBackoff;
-    setError(false);
-    setRetryCount(0);
-    connect();
-  }, [connect, initialBackoff]);
+  const unsubscribeRef = useRef<(() => void) | null>(null);
 
   useEffect(() => {
-    mountedRef.current = true;
-    if (enabled) connect();
-    return () => {
-      mountedRef.current = false;
-      disconnect();
+    if (!enabled) {
+      setConnected(false);
+      return;
+    }
+
+    const sub: PoolSubscriber = {
+      onEvent: (e) => cbRef.current.onEvent?.(e),
+      onConnect: () => cbRef.current.onConnect?.(),
+      onError: (e) => cbRef.current.onError?.(e),
+      setConnected,
+      setError,
+      setRetryCount,
+      setLastEvent,
     };
-  }, [topic, enabled]); // eslint-disable-line react-hooks/exhaustive-deps
+
+    const unsub = subscribe(topic, sub, { initialBackoff, maxBackoff, maxRetries });
+    unsubscribeRef.current = unsub;
+
+    return () => {
+      unsub();
+      unsubscribeRef.current = null;
+    };
+  }, [topic, enabled, initialBackoff, maxBackoff, maxRetries]);
+
+  const disconnect = useCallback(() => {
+    unsubscribeRef.current?.();
+    unsubscribeRef.current = null;
+    setConnected(false);
+  }, []);
+
+  const reconnect = useCallback(() => {
+    reconnectTopic(topic);
+  }, [topic]);
 
   return { lastEvent, connected, error, retryCount, disconnect, reconnect };
 }

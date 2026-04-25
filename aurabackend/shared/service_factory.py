@@ -20,14 +20,17 @@ Usage:
 
 from __future__ import annotations
 
+import asyncio
 from contextlib import asynccontextmanager
-from typing import Any, AsyncGenerator, Callable, Optional
+from typing import Any, AsyncGenerator, Awaitable, Callable, Mapping, Optional
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from shared.config import settings
 from shared.logging_config import get_logger, setup_logging
+from shared.observability import init_metrics, init_sentry
 from shared.middleware import (
     APIKeyMiddleware,
     JWTAuthMiddleware,
@@ -40,6 +43,10 @@ from shared.middleware import (
 logger = get_logger("aura.factory")
 
 
+HealthCheck = Callable[[], Awaitable[Optional[str]]]
+"""A health probe — returns ``None`` when healthy, or a short error string."""
+
+
 def create_service(
     *,
     name: str,
@@ -47,6 +54,8 @@ def create_service(
     version: str = "2.0.0",
     description: str | None = None,
     lifespan: Optional[Callable[..., Any]] = None,
+    health_checks: Optional[Mapping[str, HealthCheck]] = None,
+    health_check_timeout: float = 2.0,
 ) -> FastAPI:
     """
     Build a fully-configured FastAPI application.
@@ -84,6 +93,10 @@ def create_service(
         log_file=settings.log_file,
     )
 
+    # Init Sentry before app creation so errors during startup are captured.
+    # No-op when AURA_SENTRY_DSN is unset.
+    init_sentry(service_tag=service_tag)
+
     # ── Wrap user-supplied lifespan if needed ────────────────────────────
     @asynccontextmanager
     async def _default_lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
@@ -114,6 +127,7 @@ def create_service(
         allow_headers=[
             "Authorization", "Content-Type", "X-API-Key", "X-Request-ID",
             "X-AURA-Signature", "X-AURA-Event", "X-AURA-Delivery",
+            "X-Upload-Id", "X-Workspace-Id",
             "Last-Event-ID", "Accept", "Origin",
         ],
         expose_headers=["X-Request-ID"],
@@ -150,15 +164,41 @@ def create_service(
     # ── Exception handlers ──────────────────────────────────────────────
     register_exception_handlers(app)
 
+    # ── Prometheus /metrics  (no-op when dep missing or disabled) ───────
+    init_metrics(app, service_tag=service_tag)
+
     # ── Standard health endpoint ────────────────────────────────────────
+    # When `health_checks` is provided, each probe runs in parallel with a
+    # bounded timeout. The endpoint returns 503 if any probe fails or times out.
+    checks = dict(health_checks or {})
+
+    async def _run_probe(probe: HealthCheck) -> Optional[str]:
+        try:
+            return await asyncio.wait_for(probe(), timeout=health_check_timeout)
+        except asyncio.TimeoutError:
+            return f"timeout after {health_check_timeout}s"
+        except Exception as exc:  # noqa: BLE001 — surface message, never crash /health
+            return f"{type(exc).__name__}: {exc}"
+
     @app.get("/health")
     async def health():
-        return {
+        base = {
             "status": "healthy",
             "service": service_tag,
             "version": version,
             "environment": settings.environment,
         }
+        if not checks:
+            return base
+        results = await asyncio.gather(*(_run_probe(p) for p in checks.values()))
+        details = dict(zip(checks.keys(), results))
+        unhealthy = {k: v for k, v in details.items() if v is not None}
+        if unhealthy:
+            return JSONResponse(
+                status_code=503,
+                content={**base, "status": "degraded", "checks": details},
+            )
+        return {**base, "checks": {k: "ok" for k in checks}}
 
     logger.info(
         "AURA %s service created (CORS origins=%s)", name, settings.cors_origins,

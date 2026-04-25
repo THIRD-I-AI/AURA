@@ -12,6 +12,10 @@ export type PageType =
   | 'chat'
   | 'files'
   | 'queries'
+  | 'library'
+  | 'dashboards'
+  | 'lineage'
+  | 'cost'
   | 'settings'
   | 'agent'
   | 'pipelines'
@@ -29,6 +33,10 @@ const PAGE_META: Record<PageType, { title: string; subtitle: string }> = {
   chat:       { title: 'Chat',               subtitle: 'Ask questions about your data' },
   files:      { title: 'Files & Data',       subtitle: 'Manage uploaded files and data sources' },
   queries:    { title: 'Query History',      subtitle: 'View and replay previous SQL runs' },
+  library:    { title: 'Library',            subtitle: 'Saved queries — star, rename, and reopen in chat' },
+  dashboards: { title: 'Dashboards',         subtitle: 'Compose saved queries into reusable, refreshable views' },
+  lineage:    { title: 'Lineage',            subtitle: 'Tables → queries → dashboards dependency graph' },
+  cost:       { title: 'LLM Cost',           subtitle: 'Token usage by provider, model, and kind' },
   settings:   { title: 'Settings',           subtitle: 'Preferences and configuration' },
   agent:      { title: 'Agent',              subtitle: 'Agentic data engineering — one prompt does it all' },
   pipelines:  { title: 'ETL Pipelines',      subtitle: 'Build, run, and manage data transformation pipelines' },
@@ -41,6 +49,10 @@ const NAV_ITEMS = [
   { id: 'chat',      label: 'Chat',      href: '#' },
   { id: 'files',     label: 'Files & Data', href: '#' },
   { id: 'queries',   label: 'Query History', href: '#' },
+  { id: 'library',   label: 'Library',   href: '#' },
+  { id: 'dashboards',label: 'Dashboards', href: '#' },
+  { id: 'lineage',   label: 'Lineage',   href: '#' },
+  { id: 'cost',      label: 'LLM Cost',  href: '#' },
   { id: 'agent',     label: 'Agent',     href: '#' },
   { id: 'pipelines', label: 'ETL Pipelines', href: '#' },
   { id: 'streaming', label: 'Streaming', href: '#' },

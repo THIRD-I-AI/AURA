@@ -1,7 +1,7 @@
 # ──────────────────────────────────────────────────────────────────────────
 # AURA Platform — Developer Shortcuts
 # ──────────────────────────────────────────────────────────────────────────
-.PHONY: help up down build logs test lint fmt clean frontend
+.PHONY: help up down build logs test lint fmt clean frontend dev dev-backend types
 
 help: ## Show available targets
 	@grep -E '^[a-zA-Z_-]+:.*##' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*##"}; {printf "  \033[36m%-15s\033[0m %s\n", $$1, $$2}'
@@ -33,6 +33,16 @@ restart-%: ## Restart a specific service (e.g., make restart-api_gateway)
 	docker compose restart $*
 
 # ── Backend ────────────────────────────────────────────────────────────────
+
+dev: ## Start backend (POSIX) + frontend dev server in parallel
+	cd aurabackend && bash start_all.sh
+	cd frontend && npm run dev
+
+dev-backend: ## Start backend services only (POSIX)
+	cd aurabackend && bash start_all.sh
+
+types: ## Regenerate frontend types from backend OpenAPI
+	cd frontend && npm run generate:api
 
 test: ## Run backend test suite
 	cd aurabackend && python -m pytest tests/ --tb=short -q --ignore=tests/test_operability.py -x

@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import './Header.css';
 import './AppLayout.css';
+import WorkspacePicker from '../WorkspacePicker';
 
 interface HeaderProps {
   title: string;
@@ -98,8 +99,10 @@ export const Header: React.FC<HeaderProps> = ({
           </div>
         )}
 
-        {/* Right: status + notifications + actions + avatar */}
+        {/* Right: workspace + status + notifications + actions + avatar */}
         <div className="app-header__right">
+          <WorkspacePicker />
+
           <div className="app-header__status-badge">
             <span
               className={`status-dot ${isOnline ? 'status-dot--live' : 'status-dot--offline'}`}

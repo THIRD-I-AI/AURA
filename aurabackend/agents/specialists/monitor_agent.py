@@ -18,11 +18,12 @@ import asyncio
 import logging
 import time
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, cast
 
 import httpx
 
 from agents.base import AgentContext, AgentResult, AgentStatus, BaseAgent
+from agents.params import MonitorAgentParams
 from shared.config import settings
 
 logger = logging.getLogger("agents.monitor")
@@ -50,7 +51,7 @@ class MonitorAgent(BaseAgent):
     )
 
     async def _run(self, ctx: AgentContext, result: AgentResult) -> AgentResult:
-        meta = ctx.metadata or {}
+        meta = cast(MonitorAgentParams, ctx.metadata or {})
         thresholds = meta.get("thresholds", {})
         alerts: List[Dict[str, Any]] = []
 

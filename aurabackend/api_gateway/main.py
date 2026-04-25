@@ -88,6 +88,14 @@ async def _lifespan(app) -> AsyncGenerator[None, None]:
     except Exception as exc:
         logger.warning("Could not start webhook dispatcher: %s", exc)
 
+    # Start saved-query in-process scheduler
+    try:
+        from api_gateway.routers.queries import start_saved_query_scheduler
+        await start_saved_query_scheduler()
+        logger.info("Saved-query scheduler started")
+    except Exception as exc:
+        logger.warning("Could not start saved-query scheduler: %s", exc)
+
     yield  # ── application runs ──
 
     # Stop UASR poller
@@ -101,6 +109,13 @@ async def _lifespan(app) -> AsyncGenerator[None, None]:
     try:
         from shared.webhook_dispatcher import webhook_dispatcher
         await webhook_dispatcher.stop()
+    except Exception:
+        pass
+
+    # Stop saved-query scheduler
+    try:
+        from api_gateway.routers.queries import stop_saved_query_scheduler
+        await stop_saved_query_scheduler()
     except Exception:
         pass
 
@@ -130,25 +145,36 @@ _API_V1 = "/api/v1"
 
 from api_gateway.routers.auth import router as auth_router
 from api_gateway.routers.chat import router as chat_router
+from api_gateway.routers.collab import router as collab_router
 from api_gateway.routers.connections import router as connections_router
+from api_gateway.routers.dashboards import router as dashboards_router
 from api_gateway.routers.etl import router as etl_router
 from api_gateway.routers.files import router as files_router
 from api_gateway.routers.inbound_hooks import router as inbound_hooks_router
+from api_gateway.routers.lineage import router as lineage_router
 from api_gateway.routers.pipelines import router as pipelines_router
 from api_gateway.routers.queries import router as queries_router
 from api_gateway.routers.stream import router as stream_router
 from api_gateway.routers.webhooks import router as webhooks_router
+from api_gateway.routers.workspaces import router as workspaces_router
 
 app.include_router(auth_router, prefix=_API_V1)
+app.include_router(workspaces_router, prefix=_API_V1)
 app.include_router(chat_router, prefix=_API_V1)
 app.include_router(files_router, prefix=_API_V1)
 app.include_router(connections_router, prefix=_API_V1)
 app.include_router(queries_router, prefix=_API_V1)
+app.include_router(dashboards_router, prefix=_API_V1)
+app.include_router(lineage_router, prefix=_API_V1)
 app.include_router(etl_router, prefix=_API_V1)
 app.include_router(pipelines_router, prefix=_API_V1)
 app.include_router(stream_router, prefix=_API_V1)
 app.include_router(webhooks_router, prefix=_API_V1)
 app.include_router(inbound_hooks_router, prefix=_API_V1)
+# Collab WS sits at the root, not /api/v1/, because browsers cannot send
+# auth headers on WebSocket handshakes — keeping it off the JWT-guarded
+# prefix avoids the accidental block that the auth middleware would do.
+app.include_router(collab_router)
 
 # Agentic DE framework
 try:
@@ -191,9 +217,13 @@ async def system_health():
     """
     Poll every microservice and return a unified health report.
     Also fetches the latest Hᵤ healing score from UASR.
+
+    The API gateway itself always counts as healthy (it's serving this
+    request). If no optional services respond, the endpoint still
+    returns a useful result for the dashboard.
     """
-    results: dict = {}
-    async with httpx.AsyncClient(timeout=5.0) as client:
+    results: dict = {"api_gateway": {"status": "healthy"}}
+    async with httpx.AsyncClient(timeout=2.0) as client:
         responses = await asyncio.gather(
             *[client.get(url) for url in _SERVICES.values()],
             return_exceptions=True,
@@ -210,7 +240,7 @@ async def system_health():
     # Healing coefficient
     hu_score = None
     try:
-        async with httpx.AsyncClient(timeout=3.0) as client:
+        async with httpx.AsyncClient(timeout=2.0) as client:
             r = await client.get("http://localhost:8009/uasr/metrics")
             if r.status_code == 200:
                 hu_score = r.json().get("hu_score")

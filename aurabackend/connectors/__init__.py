@@ -22,6 +22,14 @@ try:
 except ImportError:
     BigQueryConnector = None  # type: ignore[assignment,misc]
 
+from .registry import (  # noqa: E402  — must be imported after the connector classes above
+    ConnectorField,
+    ConnectorSpec,
+    available_connectors,
+    get_connector,
+    register_connector,
+)
+
 __all__ = [
     "BaseConnector",
     "ConnectorConfig",
@@ -31,4 +39,10 @@ __all__ = [
     "PostgreSQLConnector",
     "MySQLConnector",
     "BigQueryConnector",
+    # Registry
+    "ConnectorField",
+    "ConnectorSpec",
+    "available_connectors",
+    "get_connector",
+    "register_connector",
 ]

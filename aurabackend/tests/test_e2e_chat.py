@@ -104,14 +104,16 @@ def upload_dir():
 
 @pytest.fixture()
 def mock_llm():
-    """Patch ``get_llm`` globally so every agent gets the mock."""
+    """Patch ``get_llm`` globally so every agent gets the mock.
+
+    After Sprint 2, BaseAgent.__init__ imports `get_llm` lazily from
+    `shared.llm_provider`, so a single patch at the source covers every
+    agent constructed during the test.
+    """
     llm = _MockLLM(table_name="_e2e_test_sales")
     with patch("shared.llm_provider.get_llm", return_value=llm), \
          patch("shared.llm_provider._cached_llm", llm):
-        # Also patch at the import sites so already-imported references pick it up
-        with patch("agents.specialists.intent_agent.get_llm", return_value=llm), \
-             patch("agents.specialists.sql_generator_agent.get_llm", return_value=llm):
-            yield llm
+        yield llm
 
 
 @pytest.fixture()

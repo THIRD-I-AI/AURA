@@ -7,11 +7,12 @@ pivots, type casting, deduplication, and derived column creation.
 from __future__ import annotations
 
 import json
-import os
+import logging
 from typing import Any, Dict, List, Optional
 
 from agents.base import AgentContext, AgentResult, BaseAgent, Severity
-from shared.llm_provider import get_llm
+
+logger = logging.getLogger("aura.agents.transform")
 
 _TRANSFORM_PROMPT = """\
 You are a senior data engineer.  Given the user's transformation request and the
@@ -40,10 +41,7 @@ EXAMPLE OUTPUT:
 class TransformAgent(BaseAgent):
     name = "TransformAgent"
     description = "Applies SQL-based data transformations."
-
-    def __init__(self, tool_registry: Any = None) -> None:
-        super().__init__(tool_registry)
-        self._llm = get_llm(model=os.getenv("TRANSFORM_MODEL", ""))
+    llm_model_env = "TRANSFORM_MODEL"
 
     async def _run(self, ctx: AgentContext, result: AgentResult) -> AgentResult:
         await self._report("Planning transformations…", 10)
@@ -106,7 +104,7 @@ class TransformAgent(BaseAgent):
                 if isinstance(parsed, list):
                     return [s for s in parsed if isinstance(s, str)]
             except Exception:
-                pass
+                logger.exception("LLM transform plan parse failed; using heuristic fallback")
 
         # Fallback: return generic transforms based on keywords
         return self._fallback_transforms(request)

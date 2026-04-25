@@ -17,6 +17,7 @@ from connectors import (
     MySQLConnector,
     PostgreSQLConnector,
     SourceType,
+    available_connectors,
 )
 from shared.logging_config import get_logger
 
@@ -156,39 +157,23 @@ async def list_tables(request: TableListRequest):
 
 
 @app.get("/connectors/available")
-async def list_available_connectors():
-    """List available connector types"""
+async def list_available_connectors(include_unavailable: bool = True):
+    """List connectors via the central registry. Set
+    ``?include_unavailable=false`` to hide types whose driver isn't installed."""
+    specs = available_connectors(include_unavailable=include_unavailable)
+    return {"connectors": [s.to_dict() for s in specs]}
+
+
+@app.get("/connectors/registry")
+async def connectors_registry(include_unavailable: bool = True):
+    """Full registry payload including UI field schemas — same shape as the
+    gateway's /connectors/registry, so either endpoint can drive a generic
+    catalog UI."""
+    specs = available_connectors(include_unavailable=include_unavailable)
     return {
-        "connectors": [
-            {
-                "id": "postgresql",
-                "name": "PostgreSQL",
-                "description": "PostgreSQL database (+ pgvector, PostGIS)",
-                "icon": "🐘",
-                "capabilities": ["sql", "vector", "spatial"],
-            },
-            {
-                "id": "mysql",
-                "name": "MySQL",
-                "description": "MySQL database",
-                "icon": "🐬",
-                "capabilities": ["sql"],
-            },
-            {
-                "id": "bigquery",
-                "name": "Google BigQuery",
-                "description": "BigQuery data warehouse",
-                "icon": "☁️",
-                "capabilities": ["sql"],
-            },
-            {
-                "id": "duckdb",
-                "name": "DuckDB",
-                "description": "Fast local analytics — query CSV/Parquet/JSON directly",
-                "icon": "🦆",
-                "capabilities": ["sql", "file_query"],
-            },
-        ]
+        "success": True,
+        "count": len(specs),
+        "connectors": [s.to_dict() for s in specs],
     }
 
 
