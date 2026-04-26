@@ -26,8 +26,32 @@ if (Test-Path $envFile) {
 $env:PYTHONPATH = $BACKEND
 
 if ($Kill) {
-    Write-Host "[cleanup] Killing existing python processes..." -ForegroundColor Yellow
-    Stop-Process -Name "python" -Force -ErrorAction SilentlyContinue
+    # Only kill AURA-launched python processes — a blanket
+    # Stop-Process -Name python would also take out chroma-mcp,
+    # claude-mem, and any unrelated python the user has running.
+    # Strategy: match launchers by the project path in their command
+    # line, then sweep their multiprocessing-fork worker children.
+    Write-Host "[cleanup] Killing AURA backend python processes..." -ForegroundColor Yellow
+    $projectMatch = [regex]::Escape($ROOT)
+    $allPython = Get-CimInstance Win32_Process -Filter "Name='python.exe'"
+    $launchers = $allPython | Where-Object { $_.CommandLine -and $_.CommandLine -match $projectMatch }
+    $launcherPids = @($launchers | ForEach-Object { $_.ProcessId })
+    $workerPids = @()
+    if ($launcherPids.Count -gt 0) {
+        $workers = $allPython | Where-Object {
+            $_.CommandLine -and
+            $_.CommandLine -match 'multiprocessing\.spawn' -and
+            $launcherPids -contains $_.ParentProcessId
+        }
+        $workerPids = @($workers | ForEach-Object { $_.ProcessId })
+    }
+    $allPids = @($launcherPids + $workerPids) | Select-Object -Unique
+    if ($allPids.Count -gt 0) {
+        Write-Host ("[cleanup] Stopping {0} processes (launchers={1}, workers={2})" -f $allPids.Count, $launcherPids.Count, $workerPids.Count) -ForegroundColor Yellow
+        $allPids | ForEach-Object { Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue }
+    } else {
+        Write-Host "[cleanup] No AURA python processes found." -ForegroundColor DarkGray
+    }
     Start-Sleep -Seconds 2
 }
 
