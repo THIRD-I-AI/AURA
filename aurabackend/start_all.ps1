@@ -25,34 +25,41 @@ if (Test-Path $envFile) {
 
 $env:PYTHONPATH = $BACKEND
 
-if ($Kill) {
-    # Only kill AURA-launched python processes — a blanket
-    # Stop-Process -Name python would also take out chroma-mcp,
-    # claude-mem, and any unrelated python the user has running.
-    # Strategy: match launchers by the project path in their command
-    # line, then sweep their multiprocessing-fork worker children.
-    Write-Host "[cleanup] Killing AURA backend python processes..." -ForegroundColor Yellow
-    $projectMatch = [regex]::Escape($ROOT)
-    $allPython = Get-CimInstance Win32_Process -Filter "Name='python.exe'"
-    $launchers = $allPython | Where-Object { $_.CommandLine -and $_.CommandLine -match $projectMatch }
-    $launcherPids = @($launchers | ForEach-Object { $_.ProcessId })
-    $workerPids = @()
-    if ($launcherPids.Count -gt 0) {
-        $workers = $allPython | Where-Object {
-            $_.CommandLine -and
-            $_.CommandLine -match 'multiprocessing\.spawn' -and
-            $launcherPids -contains $_.ParentProcessId
-        }
-        $workerPids = @($workers | ForEach-Object { $_.ProcessId })
+# Always sweep stale AURA backends before starting — running this
+# script twice (or alongside another launcher) leaves duplicate
+# uvicorn instances racing for the same ports and the SQLite write
+# lock on metadata.db, which deadlocks the alembic migration in the
+# api_gateway lifespan. Idempotent cleanup makes the script safe to
+# re-run. Only matches python processes whose command line includes
+# the project root, so chroma-mcp / claude-mem / unrelated python
+# is left alone.
+$projectMatch = [regex]::Escape($ROOT)
+$allPython = Get-CimInstance Win32_Process -Filter "Name='python.exe'"
+$launchers = $allPython | Where-Object { $_.CommandLine -and $_.CommandLine -match $projectMatch }
+$launcherPids = @($launchers | ForEach-Object { $_.ProcessId })
+$workerPids = @()
+if ($launcherPids.Count -gt 0) {
+    $workers = $allPython | Where-Object {
+        $_.CommandLine -and
+        $_.CommandLine -match 'multiprocessing\.spawn' -and
+        $launcherPids -contains $_.ParentProcessId
     }
-    $allPids = @($launcherPids + $workerPids) | Select-Object -Unique
-    if ($allPids.Count -gt 0) {
-        Write-Host ("[cleanup] Stopping {0} processes (launchers={1}, workers={2})" -f $allPids.Count, $launcherPids.Count, $workerPids.Count) -ForegroundColor Yellow
-        $allPids | ForEach-Object { Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue }
-    } else {
-        Write-Host "[cleanup] No AURA python processes found." -ForegroundColor DarkGray
-    }
+    $workerPids = @($workers | ForEach-Object { $_.ProcessId })
+}
+$allPids = @($launcherPids + $workerPids) | Select-Object -Unique
+if ($allPids.Count -gt 0) {
+    Write-Host ("[cleanup] Replacing {0} stale AURA python processes (launchers={1}, workers={2})" -f $allPids.Count, $launcherPids.Count, $workerPids.Count) -ForegroundColor Yellow
+    $allPids | ForEach-Object { Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue }
     Start-Sleep -Seconds 2
+} elseif ($Kill) {
+    Write-Host "[cleanup] No AURA python processes found." -ForegroundColor DarkGray
+}
+
+if ($Kill) {
+    # --Kill = exit after cleanup, do not relaunch. Useful for
+    # `start_all.ps1 --Kill` as a pure shutdown command.
+    Write-Host "[cleanup] --Kill specified; not starting services." -ForegroundColor Yellow
+    return
 }
 
 $services = @(
