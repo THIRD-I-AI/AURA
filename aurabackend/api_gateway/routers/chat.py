@@ -132,16 +132,47 @@ async def chat_endpoint(request: ChatRequest) -> ChatResponse:
 
     con = duckdb.connect(":memory:")
     schema_result = await build_schema_context_cached(con, upload_dirs, use_llm=True)
-    table_schemas = {
-        name: [c["name"] for c in info["columns"]]
-        for name, info in schema_result["tables"].items()
-    }
+    all_tables = schema_result["tables"]
 
-    # Use the rich context string (includes types, samples, relationships)
-    if table_schemas:
-        schema_context = schema_result["context_text"]
+    # ── Focus the schema context on a single table if the user clearly
+    # asked about one. Without this, a directory with many uploads
+    # (e.g. a 70-col World Bank CSV next to a multi-GB metadata file)
+    # would push the prompt over AURA_MAX_TOKENS_PER_REQUEST. Priority:
+    # explicit uploaded_file from the request, then any table name
+    # mentioned in the message itself.
+    focus_name: Optional[str] = None
+    if request.uploaded_file:
+        stem = pathlib.PurePath(request.uploaded_file).stem
+        candidate = re.sub(r"[^A-Za-z0-9_]", "_", stem)
+        if candidate in all_tables:
+            focus_name = candidate
+    if focus_name is None:
+        # Longest-first so a shorter name that's a substring of a longer
+        # one doesn't shadow the user's actual reference.
+        for tname in sorted(all_tables, key=len, reverse=True):
+            if tname and tname in message:
+                focus_name = tname
+                break
+
+    if focus_name:
+        from shared.data_utils import _format_context_for_llm
+        focused_tables = {focus_name: all_tables[focus_name]}
+        focused_rels = [
+            r for r in schema_result["relationships"]
+            if r.get("from_table") == focus_name or r.get("to_table") == focus_name
+        ]
+        schema_context = _format_context_for_llm(focused_tables, focused_rels)
+        table_schemas = {focus_name: [c["name"] for c in all_tables[focus_name]["columns"]]}
+        logger.info("chat: focused schema context on table %s (of %d available)", focus_name, len(all_tables))
     else:
-        schema_context = "No tables available. User needs to upload a file first."
+        table_schemas = {
+            name: [c["name"] for c in info["columns"]]
+            for name, info in all_tables.items()
+        }
+        if table_schemas:
+            schema_context = schema_result["context_text"]
+        else:
+            schema_context = "No tables available. User needs to upload a file first."
 
     # Merge with any explicit context from the request
     full_context = schema_context
