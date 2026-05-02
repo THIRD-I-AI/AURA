@@ -17,8 +17,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from agents.base import AgentContext
-from agents.executor import DAGExecutor
-from agents.planner import ExecutionPlan, TaskNode, TaskType
+from agents.langgraph_orchestrator import run_orchestrator
 from agents.specialists.intent_agent import IntentAgent
 from shared.data_utils import build_schema_context_cached
 from shared.logging_config import get_logger
@@ -212,55 +211,49 @@ async def chat_endpoint(request: ChatRequest) -> ChatResponse:
             available_tables=list(table_schemas.keys()),
         )
 
-    # 2. Build explicit execution plan for SQL queries
-    plan = ExecutionPlan(
-        plan_id=session_id,
-        user_prompt=message,
-        summary="Unified SQL Pipeline",
-        tasks=[
-            TaskNode(id="t1", task_type=TaskType.GENERATE_SQL, description=f"Generate SQL to answer: {message}", agent_name="SQLGeneratorAgent", depends_on=[]),
-            TaskNode(id="t2", task_type=TaskType.EXECUTE_SQL, description="Execute Query", agent_name="ExecutionAgent", depends_on=["t1"], parameters={"duckdb_con": con}),
-            TaskNode(id="t3", task_type=TaskType.TRANSFORM, description="Suggest Chart", agent_name="VisualizationAgent", depends_on=["t2"]),
-            TaskNode(id="t4", task_type=TaskType.TRANSFORM, description="Analyze Output", agent_name="AnalysisAgent", depends_on=["t1", "t2", "t3"]),
-        ],
-    )
-
-    # 3. Execute the DAG!
-    executor = DAGExecutor()
-    executor.progress_cb = console_cb
-
-    report = await executor.execute(
-        plan,
-        user_prompt=message,
+    # 2. Run the canonical NL→SQL→Execute→Visualize→Analyze path through
+    #    the LangGraph orchestrator. ``skip_planner=True`` because chat
+    #    has already chosen the path; the planner is only useful when
+    #    the agent flow is open-ended (e.g. /agent/execute).
+    state = await run_orchestrator(
+        message,
+        session_id=session_id,
         schema_context={"tables": table_schemas, "rich_context": full_context},
+        skip_planner=True,
+        duckdb_con=con,
     )
 
-    # Extract results from plan execution
-    generated_sql: Optional[str] = None
-    error_message = report.summary if not report.success else None
+    # 3. Map typed orchestrator state back into the ChatResponse shape.
+    generated_sql: Optional[str] = state.sql.sql if state.sql else None
     execution_result = ExecutionResult()
+    error_message: Optional[str] = None
 
-    for task_id, task_result in report.task_results.items():
-        if not task_result.succeeded and task_id == "t1":
-            error_message = f"SQL Generation failed: {task_result.error}"
-        if not task_result.succeeded and task_id == "t2":
-            execution_result.error = f"Execution failed: {task_result.error}"
+    if state.errors:
+        # Surface the FIRST blocking error — downstream errors are usually
+        # cascade effects of the first failure (sql gen → execution).
+        first = state.errors[0]
+        if first.node == "sql_gen":
+            error_message = f"SQL Generation failed: {first.message}"
+        elif first.node == "execution":
+            execution_result.error = f"Execution failed: {first.message}"
+        else:
+            error_message = f"{first.node} failed: {first.message}"
 
-        task_output = task_result.output
-        if task_output.get("sql"):
-            generated_sql = task_output["sql"]
-        if task_output.get("explanation"):
-            execution_result.sql_explanation = task_output["explanation"]
-        if "records" in task_output:
-            execution_result.success = True
-            execution_result.data = task_output["records"]
-            execution_result.columns = task_output["columns"]
-            execution_result.rows = task_output["rows"]
-            execution_result.row_count = len(task_output["records"])
-        if "chart_spec" in task_output:
-            execution_result.chart_spec = task_output["chart_spec"]
-        if "conclusion" in task_output:
-            execution_result.conclusion = task_output["conclusion"]
+    if state.sql and state.sql.explanation:
+        execution_result.sql_explanation = state.sql.explanation
+
+    if state.execution and state.execution.row_count > 0:
+        execution_result.success = True
+        execution_result.data = state.execution.records
+        execution_result.columns = state.execution.columns
+        execution_result.rows = state.execution.rows
+        execution_result.row_count = state.execution.row_count
+
+    if state.visualization and state.visualization.chart:
+        execution_result.chart_spec = state.visualization.chart.model_dump()
+
+    if state.analysis and state.analysis.conclusion:
+        execution_result.conclusion = state.analysis.conclusion
 
     con.close()
     elapsed_ms = (time.time() - t0) * 1000

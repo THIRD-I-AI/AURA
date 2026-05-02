@@ -15,6 +15,7 @@ Runs on port 8009 and exposes:
 """
 from __future__ import annotations
 
+import os
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -30,6 +31,7 @@ from shared.service_factory import create_service
 
 from .db import get_session, init_uasr_db
 from .drift_detector import DriftDetector
+from .mapek_worker import MAPEKConfig, MAPEKWorker
 from .metrics import HealingMetricTracker, RecoveryEvent
 from .models import (
     BatchPayload,
@@ -47,19 +49,12 @@ logger = get_logger("uasr.service")
 
 
 # ────────────────────────────────────────────────────────────────────
-# Lifespan — DB init
-# ────────────────────────────────────────────────────────────────────
-
-@asynccontextmanager
-async def _lifespan(_):
-    await init_uasr_db()
-    logger.info("UASR database tables initialised")
-    yield
-
-
-# ────────────────────────────────────────────────────────────────────
 # Service-level singletons
 # ────────────────────────────────────────────────────────────────────
+# Declared above the lifespan so the MAPE-K worker can share the same
+# detector / recovery_loop / tracker instances the HTTP endpoints use —
+# otherwise drift events seen via Kafka wouldn't show up in /uasr/metrics
+# and shims deployed via either path wouldn't apply to the other.
 
 _detector = DriftDetector()
 _matrix = ReferenceContextMatrix()
@@ -69,6 +64,55 @@ _loop = RecoveryLoop(
     detector=_detector,
     config=RecoveryLoopConfig(max_iterations=3, auto_deploy=True),
 )
+
+# Set on lifespan startup when UASR_MAPEK_ENABLED=true. Held at module
+# scope so /uasr/mapek/status and shutdown can reach it.
+_mapek_worker: Optional[MAPEKWorker] = None
+
+
+# ────────────────────────────────────────────────────────────────────
+# Lifespan — DB init + MAPE-K worker (opt-in)
+# ────────────────────────────────────────────────────────────────────
+
+@asynccontextmanager
+async def _lifespan(_):
+    global _mapek_worker
+    await init_uasr_db()
+    logger.info("UASR database tables initialised")
+
+    # MAPE-K worker is opt-in because it requires a reachable Kafka
+    # cluster — turning it on by default would break every dev box that
+    # runs the UASR service for its HTTP API only.
+    if os.getenv("UASR_MAPEK_ENABLED", "false").lower() == "true":
+        try:
+            _mapek_worker = MAPEKWorker(
+                MAPEKConfig(),
+                detector=_detector,
+                recovery_loop=_loop,
+                metrics=_tracker,
+            )
+            await _mapek_worker.start()
+            logger.info(
+                "MAPE-K worker started (topic=%s, group=%s)",
+                _mapek_worker._cfg.topic,
+                _mapek_worker._cfg.group_id,
+            )
+        except Exception as exc:
+            # A Kafka outage at startup must not crash the rest of the
+            # service. Log the failure and leave _mapek_worker=None so
+            # /uasr/mapek/status reports the disabled state honestly.
+            logger.error("MAPE-K worker failed to start: %s", exc)
+            _mapek_worker = None
+
+    try:
+        yield
+    finally:
+        if _mapek_worker is not None:
+            try:
+                await _mapek_worker.stop()
+                logger.info("MAPE-K worker stopped cleanly")
+            except Exception as exc:
+                logger.warning("MAPE-K worker shutdown raised: %s", exc)
 
 # ────────────────────────────────────────────────────────────────────
 # FastAPI application
@@ -457,3 +501,50 @@ async def list_sources(db: AsyncSession = Depends(get_db)):
         ],
         "count": len(all_sources),
     }
+
+
+@app.get("/uasr/mapek/status")
+async def mapek_status() -> Dict[str, Any]:
+    """Surface whether the Kafka-fed MAPE-K self-healing loop is running.
+
+    Returns ``running=False`` (with the reason) when ``UASR_MAPEK_ENABLED``
+    is unset, when aiokafka isn't installed, or when the broker was
+    unreachable at startup. Operators rely on this to confirm the worker
+    actually came up after a deploy — service ``/health`` only proves the
+    HTTP layer is alive, not that the background consumer is.
+    """
+    if _mapek_worker is None:
+        if os.getenv("UASR_MAPEK_ENABLED", "false").lower() != "true":
+            return {"running": False, "reason": "UASR_MAPEK_ENABLED not set"}
+        return {"running": False, "reason": "worker failed to start (see service logs)"}
+    cfg = _mapek_worker._cfg
+    return {
+        "running": _mapek_worker._running,
+        "paused": _mapek_worker.is_paused,
+        "config": {
+            "topic": cfg.topic,
+            "group_id": cfg.group_id,
+            "source_id": cfg.source_id,
+            "table": cfg.table_name,
+            "duckdb_path": cfg.duckdb_path,
+            "batch_size": cfg.batch_size,
+            "batch_window_seconds": cfg.batch_window_seconds,
+            "pause_on_severity": cfg.pause_on_severity.value,
+        },
+    }
+
+
+@app.post("/uasr/mapek/resume")
+async def mapek_resume() -> Dict[str, Any]:
+    """Manual unpause after operator-triaged drift recovery.
+
+    When a recovery loop fails (e.g. shim validation never converges) the
+    worker stays paused — offsets preserved — so a human can inspect
+    the drift event and explicitly resume.
+    """
+    if _mapek_worker is None:
+        raise HTTPException(status_code=409, detail="MAPE-K worker is not running")
+    if not _mapek_worker.is_paused:
+        return {"resumed": False, "reason": "worker was not paused"}
+    _mapek_worker.resume()
+    return {"resumed": True}

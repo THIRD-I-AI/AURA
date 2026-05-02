@@ -1,0 +1,56 @@
+{{- if and .Values.audit.enabled .Values.audit.s3Shipper.enabled -}}
+# TRAIGA WORM shipper — embedded as a ConfigMap so the chart doesn't
+# need a custom image. The amazon/aws-cli sidecar runs this script in a
+# loop. The pod-local audit volume is mounted *read-only* into the
+# sidecar so a compromised shipper cannot tamper with the chain on
+# disk; the integrity guarantee for the local copy is the SHA-256
+# chain itself (see shared/audit_log.py::verify_chain).
+#
+# Object Lock semantics: the bucket MUST be created with versioning ON
+# and Object Lock enabled in COMPLIANCE mode with a default retention.
+# This script does NOT pass --object-lock-* flags per upload — the
+# bucket-level default applies to every PutObject, which is the AWS
+# recommended pattern (operator manages retention policy once at the
+# bucket; the shipper just uploads).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "aura.fullname" . }}-audit-shipper
+  labels:
+    {{- include "aura.labels" . | nindent 4 }}
+    app.kubernetes.io/component: audit-shipper
+data:
+  ship.sh: |
+    #!/usr/bin/env sh
+    set -eu
+
+    : "${AUDIT_DIR:?AUDIT_DIR must be set}"
+    : "${BUCKET:?BUCKET must be set}"
+    PREFIX="${PREFIX:-aura/audit}"
+    INTERVAL="${INTERVAL:-60}"
+    REGION_ARG=""
+    if [ -n "${AWS_REGION:-}" ]; then
+      REGION_ARG="--region ${AWS_REGION}"
+    fi
+
+    echo "audit-shipper: streaming ${AUDIT_DIR} -> s3://${BUCKET}/${PREFIX}/ every ${INTERVAL}s"
+    echo "audit-shipper: bucket must have Object Lock COMPLIANCE default retention configured externally"
+
+    while :; do
+      # --size-only: only re-upload when the file size changed (the audit
+      #   log is strictly append-only so size is a reliable change marker).
+      # --no-progress: keep stdout terse — sidecar logs go to the same
+      #   pod log stream as the app.
+      # Object Lock retention is bucket-default; per-upload flags omitted.
+      if ! aws s3 sync ${REGION_ARG} \
+            "${AUDIT_DIR}" "s3://${BUCKET}/${PREFIX}/" \
+            --exclude "*" --include "audit-*.jsonl" \
+            --size-only --no-progress 2>&1; then
+        # Don't exit on transient S3 errors — the next iteration will
+        # retry. A persistent failure shows up as flat byte counts in
+        # CloudWatch, which the operator's S3 monitoring should alert on.
+        echo "audit-shipper: sync failed, retrying after ${INTERVAL}s"
+      fi
+      sleep "${INTERVAL}"
+    done
+{{- end }}

@@ -32,6 +32,7 @@ from shared.config import settings
 from shared.logging_config import get_logger, setup_logging
 from shared.middleware import (
     APIKeyMiddleware,
+    AuditLogMiddleware,
     JWTAuthMiddleware,
     RateLimitMiddleware,
     RequestIDMiddleware,
@@ -160,6 +161,10 @@ def create_service(
     app.add_middleware(RequestIDMiddleware)
     #  6. Request logging  (uses request_id set above)
     app.add_middleware(RequestLoggingMiddleware)
+    #  7. TRAIGA audit log  (no-op unless AURA_AUDIT_ENABLED=true)
+    #     Records every non-health request to the immutable hash-chained
+    #     JSONL on the audit PVC mounted by the Helm chart.
+    app.add_middleware(AuditLogMiddleware)
 
     # ── Exception handlers ──────────────────────────────────────────────
     register_exception_handlers(app)

@@ -119,7 +119,12 @@ containerSecurityContext:
   allowPrivilegeEscalation: false
   capabilities:
     drop: [ALL]
-  readOnlyRootFilesystem: false
+  # TRAIGA: container root FS is read-only. Writable paths the runtime
+  # legitimately needs (/tmp, ~/.cache, audit log, optional /data) are
+  # provided as explicit volume mounts in backend-deployments.yaml.
+  readOnlyRootFilesystem: true
+  seccompProfile:
+    type: RuntimeDefault
 
 # ── Autoscaling ────────────────────────────────────────────────────────────
 # When enabled, a HorizontalPodAutoscaler is rendered for each backend
@@ -189,6 +194,74 @@ networkPolicy:
   ingressNamespaces:
     - matchLabels:
         kubernetes.io/metadata.name: monitoring
-  # Allow egress to anywhere by default (LLM providers, Postgres, etc.).
-  # Tighten in your overlay when you know your dependency endpoints.
+  # Permissive egress — leave true for dev only. TRAIGA prod deployments
+  # set this to false and supply egressAllowedCIDRs.
   allowAllEgress: true
+  # Zero-trust egress allowlist (used when allowAllEgress=false). One
+  # entry per external dependency. Use precise CIDRs — never 0.0.0.0/0.
+  egressAllowedCIDRs: []
+  # Example overlay:
+  # egressAllowedCIDRs:
+  #   - cidr: 35.247.0.0/16        # Groq / Gemini frontends
+  #   - cidr: 10.50.0.0/24         # managed CockroachDB cluster
+  #   - cidr: 35.0.0.0/8           # Sentry ingest
+  #     except: [35.10.0.0/16]     # carve out anything you don't trust
+
+# ── TRAIGA compliance ──────────────────────────────────────────────────
+# Texas Responsible AI Governance Act — see shared/audit_log.py for the
+# hash-chained JSONL format the application emits to the audit volume.
+traiga:
+  # When true, the chart renders a Namespace with PodSecurityAdmission
+  # `restricted` enforcement labels. Skip this if you let your platform
+  # team own the namespace.
+  createNamespace: false
+
+audit:
+  enabled: false                   # flip to true in any TRAIGA-scope env
+  size: 50Gi
+  storageClass: ""                 # WORM-backed StorageClass strongly recommended
+  accessModes: [ReadWriteOnce]
+  mountPath: /var/log/aura/audit
+  # Echoed into the env so shared/audit_log.py picks them up. Leave
+  # AURA_AUDIT_ENABLED=true here when audit.enabled is true.
+  env:
+    AURA_AUDIT_ENABLED: "true"
+    AURA_AUDIT_DIR: /var/log/aura/audit
+    AURA_AUDIT_MAX_FIELD_BYTES: "16384"
+
+  # TRAIGA WORM shipper — runs alongside every backend pod, streams the
+  # hash-chained audit log to S3 Object Lock (bucket-default COMPLIANCE
+  # retention). Read-only mount of the audit PVC so a compromised
+  # shipper container cannot tamper with the local chain.
+  #
+  # Bucket must be pre-created with versioning ON and Object Lock
+  # enabled in COMPLIANCE mode. The chart does NOT provision the bucket
+  # — that's a one-time platform-team operation:
+  #
+  #   aws s3api create-bucket --bucket aura-audit-prod --region us-east-1 \
+  #       --object-lock-enabled-for-bucket
+  #   aws s3api put-object-lock-configuration --bucket aura-audit-prod \
+  #       --object-lock-configuration '{"ObjectLockEnabled":"Enabled",
+  #         "Rule":{"DefaultRetention":{"Mode":"COMPLIANCE","Days":2555}}}'
+  s3Shipper:
+    enabled: false
+    image: amazon/aws-cli:2.15.0
+    bucket: ""                     # required when enabled, e.g. aura-audit-prod
+    region: us-east-1
+    prefix: aura/audit
+    intervalSeconds: 60
+    # Secret holding AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY (or use
+    # IRSA on EKS — set to empty and rely on the serviceAccount IAM role).
+    credentialsSecret: ""
+
+  # Continuous chain-integrity verifier. CronJob runs verify_chain over
+  # every audit-*.jsonl on the PVC; non-zero exit on any mismatch is
+  # surfaced as a Kubernetes Job failure event. Optional webhook posts
+  # a summary to Alertmanager / Slack on top.
+  verifier:
+    enabled: false
+    schedule: "*/30 * * * *"        # every 30 minutes
+    backoffLimit: 0
+    historyLimit: 3
+    failedHistoryLimit: 5
+    alertWebhook: ""                # e.g. https://hooks.slack.com/services/...

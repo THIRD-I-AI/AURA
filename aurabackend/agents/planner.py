@@ -193,7 +193,17 @@ class PlannerAgent(BaseAgent):
         memory_text = self.memory.as_text(last_n=20)
         schema_context = json.dumps(ctx.schema_context) if ctx.schema_context else "No schema loaded yet."
 
+        # BATS: when a budget tracker is bound to this run, prepend its
+        # directive so the planner can actively shorten the DAG ("Prefer a
+        # minimal plan…") rather than committing to a full ingest+transform
+        # +quality_check chain it can't afford to execute.
+        budget_directive = ""
+        budget_status = ctx.metadata.get("budget_status")
+        if budget_status is not None:
+            budget_directive = budget_status.directive() + "\n\n"
+
         user_message = (
+            f"{budget_directive}"
             f"USER REQUEST: {ctx.user_prompt}\n\n"
             f"AVAILABLE SCHEMA:\n{schema_context}\n\n"
             f"FILES: {', '.join(ctx.files) if ctx.files else 'None'}\n\n"

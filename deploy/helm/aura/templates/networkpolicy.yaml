@@ -77,8 +77,8 @@ spec:
               app.kubernetes.io/component: api_gateway
 {{- if .Values.networkPolicy.allowAllEgress }}
 ---
-# Permit all egress (LLM providers, external Postgres, etc.). Tighten in
-# overlays once dependency endpoints are known.
+# Permissive egress — kept for dev clusters only. TRAIGA deployments must
+# leave allowAllEgress=false and rely on the zero-trust allowlist below.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -95,4 +95,64 @@ spec:
   egress:
     - {}
 {{- end }}
+{{- if not .Values.networkPolicy.allowAllEgress }}
+---
+# TRAIGA zero-trust egress: deny all by default, then explicitly allow
+# only DNS, in-cluster pod-to-pod traffic, and the operator-supplied
+# LLM/datastore CIDRs from values.yaml. Anything not on this list is
+# blackholed by the CNI — no exfiltration path.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "aura.fullname" . }}-zero-trust-egress
+  labels:
+    {{- include "aura.labels" . | nindent 4 }}
+    aura.compliance/traiga: "v1"
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "aura.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  policyTypes:
+    - Egress
+  egress:
+    # 1. Cluster DNS — required for service discovery.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # 2. AURA → AURA in-cluster (so api_gateway can reach the 9 internal services).
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: {{ include "aura.name" . }}
+              app.kubernetes.io/instance: {{ .Release.Name }}
+    {{- with .Values.networkPolicy.egressAllowedCIDRs }}
+    # 3. External allowlist — LLM provider IPs, managed Postgres / Cockroach,
+    #    Sentry ingest, etc. Ranges supplied by the operator per environment.
+    - to:
+        {{- range . }}
+        - ipBlock:
+            cidr: {{ .cidr }}
+            {{- if .except }}
+            except:
+              {{- range .except }}
+              - {{ . }}
+              {{- end }}
+            {{- end }}
+        {{- end }}
+      ports:
+        - protocol: TCP
+          port: 443
+    {{- end }}
 {{- end }}
+{{- end }}
+{{- /* outer networkPolicy.enabled gate */ -}}

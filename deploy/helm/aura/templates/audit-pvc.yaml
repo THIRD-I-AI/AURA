@@ -1,0 +1,25 @@
+{{- if .Values.audit.enabled -}}
+# TRAIGA: append-only audit volume. The application writes hash-chained
+# JSONL via shared/audit_log.py; this PVC only holds the bytes. For
+# physical immutability, point the StorageClass at a WORM backend (S3
+# Object Lock, Azure Immutable Blob, GCS Bucket Lock) — the chart sets
+# only the access mode + size; the cluster admin owns the storage class.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "aura.fullname" . }}-audit
+  labels:
+    {{- include "aura.labels" . | nindent 4 }}
+    app.kubernetes.io/component: audit
+spec:
+  accessModes:
+    {{- range .Values.audit.accessModes }}
+    - {{ . }}
+    {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.audit.size | quote }}
+  {{- if .Values.audit.storageClass }}
+  storageClassName: {{ .Values.audit.storageClass | quote }}
+  {{- end }}
+{{- end }}

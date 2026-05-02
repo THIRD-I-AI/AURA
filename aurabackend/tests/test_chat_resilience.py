@@ -12,59 +12,15 @@ from __future__ import annotations
 
 import asyncio
 import csv
-import json
 import os
 import sys
 from pathlib import Path
-from typing import Any, List, Optional, Union
-from unittest.mock import patch
 
 import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from shared.llm_provider import LLMProvider
-
-# ─────────────────────────────────────────────────────────────────────
-# Mock LLMs (one happy, one always-fail)
-# ─────────────────────────────────────────────────────────────────────
-
-class _HappyMockLLM(LLMProvider):
-    provider_name = "mock-happy"
-
-    def __init__(self, table_name: str = "_resilience_test_sales") -> None:
-        super().__init__(model="mock-v1")
-        self._table = table_name
-
-    def is_available(self) -> bool:
-        return True
-
-    def generate(self, prompt: Union[str, List[str]], **_: Any) -> Optional[str]:
-        text = prompt if isinstance(prompt, str) else "\n".join(prompt)
-        low = text.lower()
-        if "intent" in low and "conversation" in low:
-            return json.dumps({"intent": "sql", "message": ""})
-        if "chart" in low or "visual" in low:
-            return json.dumps({"chart_type": "bar", "x_axis": "Product", "y_axis": "total_revenue"})
-        if "analy" in low or "insight" in low:
-            return json.dumps({"conclusion": "ok", "confidence": 0.9})
-        if "select" in low or "sql" in low or "query" in low:
-            return f"SELECT Product, SUM(Revenue) AS total_revenue FROM {self._table} GROUP BY Product"
-        return json.dumps({"result": "ok"})
-
-
-class _AlwaysFailLLM(LLMProvider):
-    provider_name = "mock-fail"
-
-    def __init__(self) -> None:
-        super().__init__(model="mock-fail")
-
-    def is_available(self) -> bool:
-        return False
-
-    def generate(self, *_: Any, **__: Any) -> Optional[str]:
-        raise RuntimeError("simulated provider outage")
-
+from tests._mock_llm import chat_happy_path, chat_unavailable, install_mock
 
 # ─────────────────────────────────────────────────────────────────────
 # Fixtures
@@ -85,45 +41,22 @@ def upload_dir():
     csv_path.unlink(missing_ok=True)
 
 
-def _patch_llm(mock: LLMProvider):
-    # After Sprint 2, BaseAgent imports get_llm lazily from shared.llm_provider,
-    # so a single source-level patch covers every agent.
-    return [
-        patch("shared.llm_provider.get_llm", return_value=mock),
-        patch("shared.llm_provider._cached_llm", mock),
-    ]
+@pytest.fixture()
+def happy_client(upload_dir, monkeypatch):
+    install_mock(monkeypatch, chat_happy_path(table_name="_resilience_test_sales"))
+    from fastapi.testclient import TestClient
+
+    from api_gateway.main import app
+    yield TestClient(app)
 
 
 @pytest.fixture()
-def happy_client(upload_dir):
-    mock = _HappyMockLLM()
-    patches = _patch_llm(mock)
-    for p in patches:
-        p.start()
-    try:
-        from fastapi.testclient import TestClient
+def failing_client(upload_dir, monkeypatch):
+    install_mock(monkeypatch, chat_unavailable())
+    from fastapi.testclient import TestClient
 
-        from api_gateway.main import app
-        yield TestClient(app)
-    finally:
-        for p in patches:
-            p.stop()
-
-
-@pytest.fixture()
-def failing_client(upload_dir):
-    mock = _AlwaysFailLLM()
-    patches = _patch_llm(mock)
-    for p in patches:
-        p.start()
-    try:
-        from fastapi.testclient import TestClient
-
-        from api_gateway.main import app
-        yield TestClient(app)
-    finally:
-        for p in patches:
-            p.stop()
+    from api_gateway.main import app
+    yield TestClient(app)
 
 
 V1 = "/api/v1"
@@ -158,17 +91,29 @@ def test_chat_concurrent_requests_no_corruption(happy_client):
 # LLM provider down
 # ─────────────────────────────────────────────────────────────────────
 
-def test_chat_llm_provider_down_returns_clean_error(failing_client):
-    """When every LLM call raises, /chat must return 200 with Error status —
-    not a 500 with a stack trace leaking provider internals."""
+def test_chat_llm_provider_down_returns_clean_response(failing_client):
+    """When the LLM provider is unavailable, /chat must respond cleanly —
+    no 500, no stack trace leaking. Either the orchestrator's heuristic
+    fallback paths produce a usable answer (Success — IntentAgent +
+    SQLGenerator both have non-LLM heuristic codepaths), or the run
+    surfaces a clean Error status with no traceback in the payload.
+
+    The contract is "no crash + no internal-state leak", not a
+    specific status string — the LangGraph migration legitimately
+    changed this path from hard-fail to graceful degradation.
+    """
+    import json as _json
     resp = failing_client.post(f"{V1}/chat", json={"message": "anything"})
-    # Pipeline should respond (not crash with 500), and surface Error status.
-    assert resp.status_code == 200
+    assert resp.status_code == 200, "must not crash with 500"
+
     data = resp.json()
-    assert data["status"] in ("Error", "Conversational")
-    # No internal exception text should leak into the user-facing message.
-    payload = json.dumps(data).lower()
-    assert "traceback" not in payload
+    assert data["status"] in ("Success", "Error", "Conversational"), (
+        f"unexpected status {data['status']}"
+    )
+    # Internal exception text must never reach the user.
+    payload = _json.dumps(data).lower()
+    for leak in ("traceback", "exception", "stack trace", "<class '"):
+        assert leak not in payload, f"internal leak {leak!r} surfaced in response"
 
 
 # ─────────────────────────────────────────────────────────────────────

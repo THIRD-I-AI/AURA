@@ -1,82 +1,33 @@
 """
 AURA End-to-End Chat Pipeline Test
 ====================================
-Exercises the full golden path:
+Exercises the full golden path through the **LangGraph orchestrator**:
 
-    POST /chat  →  IntentAgent  →  SQLGeneratorAgent  →  ExecutionAgent
-                                                       →  VisualizationAgent
-                                                       →  AnalysisAgent
-                                 →  DuckDB execution   →  JSON response
+    POST /chat  →  IntentAgent (early-exit gate)
+                →  run_orchestrator(skip_planner=True)
+                     ├─ sql_run (SQLGeneratorAgent)
+                     ├─ exec_run (ExecutionAgent → DuckDB)
+                     ├─ viz_run (VisualizationAgent)
+                     └─ analysis_run (AnalysisAgent)
+                →  ChatResponse
 
-Uses a deterministic mock LLM so the test is fast, offline, and reproducible.
-A temporary CSV file is placed in the upload directory so `build_schema_context`
-discovers real tables in DuckDB.
+Uses ``UnifiedMockLLM`` (tests/_mock_llm.py) so every test in the suite
+shares the same provider-side instrumentation contract — the mock
+populates ``_last_usage`` exactly like real Groq/Gemini calls do, so
+the BATS / Audit / Prometheus observer chain is always exercised.
 """
 from __future__ import annotations
 
 import csv
-import json
 import os
 import sys
 from pathlib import Path
-from typing import Any, List, Optional, Union
-from unittest.mock import patch
 
 import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from shared.llm_provider import LLMProvider
-
-# ── Deterministic Mock LLM ──────────────────────────────────────────
-
-class _MockLLM(LLMProvider):
-    """Returns canned responses keyed on prompt content.
-
-    - Intent classification → always returns ``{"intent": "sql"}``
-    - SQL generation → returns ``SELECT * FROM <table> LIMIT 10``
-    - Anything else → returns a generic JSON blob
-    """
-
-    provider_name = "mock"
-
-    def __init__(self, table_name: str = "sales") -> None:
-        super().__init__(model="mock-v1")
-        self._table = table_name
-
-    def is_available(self) -> bool:
-        return True
-
-    def generate(self, prompt: Union[str, List[str]], **kwargs: Any) -> Optional[str]:
-        text = prompt if isinstance(prompt, str) else "\n".join(prompt)
-
-        # Intent agent
-        if "intent" in text.lower() and "conversation" in text.lower():
-            return json.dumps({"intent": "sql", "message": ""})
-
-        # SQL generator
-        if "sql" in text.lower() or "select" in text.lower() or "query" in text.lower():
-            return f"SELECT Product, SUM(Revenue) as total_revenue FROM {self._table} GROUP BY Product"
-
-        # Visualization agent
-        if "chart" in text.lower() or "visual" in text.lower():
-            return json.dumps({
-                "chart_type": "bar",
-                "x_axis": "Product",
-                "y_axis": "total_revenue",
-                "title": "Revenue by Product",
-            })
-
-        # Analysis agent
-        if "analy" in text.lower() or "insight" in text.lower():
-            return json.dumps({
-                "conclusion": "Widget B generates the most revenue.",
-                "confidence": 0.95,
-            })
-
-        # Default
-        return json.dumps({"result": "ok"})
-
+from tests._mock_llm import UnifiedMockLLM, chat_happy_path, install_mock
 
 # ── Fixtures ────────────────────────────────────────────────────────
 
@@ -103,17 +54,12 @@ def upload_dir():
 
 
 @pytest.fixture()
-def mock_llm():
-    """Patch ``get_llm`` globally so every agent gets the mock.
-
-    After Sprint 2, BaseAgent.__init__ imports `get_llm` lazily from
-    `shared.llm_provider`, so a single patch at the source covers every
-    agent constructed during the test.
-    """
-    llm = _MockLLM(table_name="_e2e_test_sales")
-    with patch("shared.llm_provider.get_llm", return_value=llm), \
-         patch("shared.llm_provider._cached_llm", llm):
-        yield llm
+def mock_llm(monkeypatch):
+    """Install the unified mock so every BaseAgent.execute call resolves
+    through the same instrumentation rails real providers use."""
+    llm = chat_happy_path(table_name="_e2e_test_sales")
+    install_mock(monkeypatch, llm)
+    yield llm
 
 
 @pytest.fixture()
@@ -224,6 +170,100 @@ class TestE2EChatPipeline:
         assert "timestamp" in data["metadata"]
         assert "tables_loaded" in data["metadata"]
         assert data["metadata"]["tables_loaded"] >= 1
+
+
+class TestChatRoutesThroughLangGraph:
+    """Lock in that the chat router uses the unified LangGraph orchestrator
+    path (Step 1 of the enterprise refactor) and that BaseAgent.execute is
+    the single LLM entry point. Static and runtime assertions both — the
+    static assertion catches a misguided revert; the runtime assertion
+    catches a regression where the orchestrator silently falls back."""
+
+    def test_chat_router_imports_run_orchestrator_not_dag_executor(self):
+        """Chat router must use run_orchestrator from langgraph_orchestrator,
+        and must NOT import the legacy DAGExecutor."""
+        import api_gateway.routers.chat as chat_module
+        from agents.langgraph_orchestrator import run_orchestrator
+
+        assert chat_module.run_orchestrator is run_orchestrator, (
+            "chat router's run_orchestrator is not the LangGraph one — "
+            "the migration may have been reverted"
+        )
+        assert not hasattr(chat_module, "DAGExecutor"), (
+            "chat router still references the legacy DAGExecutor — "
+            "tech debt cleanup incomplete"
+        )
+
+    def test_chat_call_drives_run_orchestrator(self, client, mock_llm, monkeypatch):
+        """Spy on run_orchestrator to confirm a /chat call actually invokes
+        it with skip_planner=True (chat's signature for the canonical
+        explicit-plan path). This is the runtime counterpart to the static
+        import check above."""
+        import api_gateway.routers.chat as chat_module
+
+        seen_args: list = []
+        original = chat_module.run_orchestrator
+
+        async def _spy(*args, **kwargs):
+            seen_args.append({"args": args, "kwargs": dict(kwargs)})
+            return await original(*args, **kwargs)
+
+        monkeypatch.setattr(chat_module, "run_orchestrator", _spy)
+
+        resp = client.post(f"{V1}/chat", json={"message": "revenue by product"})
+        assert resp.status_code == 200, resp.text
+
+        assert len(seen_args) == 1, (
+            f"expected exactly one run_orchestrator call, saw {len(seen_args)}"
+        )
+        kwargs = seen_args[0]["kwargs"]
+        assert kwargs.get("skip_planner") is True, (
+            "chat router must pass skip_planner=True (it builds the canonical path "
+            f"itself, the planner is for open-ended agent flows). Got: {kwargs}"
+        )
+        assert kwargs.get("duckdb_con") is not None, (
+            "chat router must inject duckdb_con so the orchestrator's exec_run "
+            f"node can execute SQL. Got: {kwargs}"
+        )
+
+    def test_mock_populates_provider_usage_contextvar(self, client, mock_llm):
+        """The unified mock must populate _last_usage like a real provider —
+        otherwise the BATS / Audit / Prometheus observer chain falls back
+        to estimation and the test suite no longer covers the production
+        instrumentation path."""
+        from shared.llm_provider import _OBSERVERS
+
+        captured = []
+
+        class _Spy:
+            def on_call(self, ctx):
+                captured.append({
+                    "usage_source": ctx.usage_source,
+                    "finish_reason": ctx.finish_reason,
+                    "provider": ctx.provider,
+                })
+
+        spy = _Spy()
+        _OBSERVERS.append(spy)
+        try:
+            resp = client.post(f"{V1}/chat", json={"message": "revenue by product"})
+            assert resp.status_code == 200, resp.text
+        finally:
+            _OBSERVERS.remove(spy)
+
+        assert captured, "no LLM calls were observed — orchestrator never invoked an agent"
+        # Every captured call must look like a real-provider call —
+        # usage_source="provider_reported" with a valid finish_reason.
+        # If even one falls back to "estimated" the unified mock is
+        # bypassing the production observer contract.
+        bad = [c for c in captured if c["usage_source"] != "provider_reported"]
+        assert not bad, (
+            f"{len(bad)} mock call(s) bypassed the provider-usage contextvar — "
+            f"the unified mock is broken: {bad[:3]}"
+        )
+        assert all(c["finish_reason"] == "stop" for c in captured), (
+            f"unexpected finish_reason on mock call: {captured}"
+        )
 
 
 class TestE2EAuthIntegration:

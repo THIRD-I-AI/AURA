@@ -34,6 +34,24 @@ websockets>=12.0,<14.0
 google-generativeai>=0.7,<1.0
 groq>=0.9,<1.0
 
+# Agent orchestration — LangGraph state-machine for the canonical
+# Planner → SQLGen → Execution → Viz path. Pydantic-validated state
+# transitions are the type-safety layer (see agents/schemas.py).
+langgraph>=0.2,<0.4
+
+# Model Context Protocol — stdio + SSE server in mcp_servers/ exposes
+# DuckDB analytics + the distributed metadata layer (CockroachDB /
+# YugabyteDB / Postgres) so agents can pull schema slices on demand
+# instead of stuffing whole catalogues into prompts.
+mcp[cli]>=1.2,<2.0
+
+# Causal discovery deps moved to requirements-causal.txt — dowhy pulls in
+# scipy + scikit-learn + statsmodels, which every other service would
+# otherwise pay the install cost for. The causal_service Dockerfile and
+# CI eval gate install both base + causal extras; everything else
+# installs base only and the causal_service module degrades gracefully
+# (correlation fallback) when dowhy isn't importable.
+
 # SQL parser (used by SQLGeneratorAgent._sanitise to block destructive DDL/DML
 # even when wrapped in comments or multi-statement payloads)
 sqlglot>=25.0,<31.0

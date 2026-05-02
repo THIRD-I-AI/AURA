@@ -123,6 +123,20 @@ async def upload_universal(
         }
 
         await invalidate_schema_cache()
+
+        # Structured schema indexer — populates `schema_columns` so the
+        # MCP server's metadata.search_columns / describe_table tools can
+        # answer with exact (source, table, column, dtype) rows instead
+        # of LIKE-grepping a free-text body. Backgrounded and best-effort:
+        # never delays the upload response, never fails it.
+        try:
+            import asyncio as _asyncio
+
+            from shared.schema_indexer import index_uploaded_file
+            _asyncio.create_task(index_uploaded_file(file_path))
+        except Exception as _idx_exc:
+            logger.warning("schema_indexer dispatch failed (non-fatal): %s", _idx_exc)
+
         await streaming_manager.publish_complete(TOPIC_UPLOAD, upload_id, result)
         return result
     except Exception as e:

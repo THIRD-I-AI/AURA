@@ -200,6 +200,31 @@ class BaseAgent(ABC):
     async def execute(self, ctx: AgentContext) -> AgentResult:
         start = time.time()
         result = AgentResult(status=AgentStatus.RUNNING)
+
+        # BATS: short-circuit before doing any work if the session pool is
+        # already drained, and expose the live snapshot to subclasses via
+        # ctx.metadata so prompt-building code can splice the directive in.
+        from shared.budget import (
+            BudgetExhaustedError,
+            consume_tool_call_from_current,
+            current_budget,
+        )
+        tracker = current_budget()
+        if tracker is not None:
+            ctx.metadata["budget_status"] = tracker.snapshot()
+            try:
+                tracker.assert_not_exhausted()
+            except BudgetExhaustedError as exc:
+                result.status = AgentStatus.FAILED
+                result.error = str(exc)
+                result.add_step(
+                    action="budget_exhausted",
+                    output_summary=str(exc),
+                    severity=Severity.WARNING,
+                )
+                result.duration_ms = (time.time() - start) * 1000
+                return result
+
         try:
             await self._report(f"Starting {self.name}…")
             result = await asyncio.wait_for(
@@ -232,6 +257,14 @@ class BaseAgent(ABC):
             try:
                 from shared.observability import AGENT_DURATION  # late import to avoid cycle
                 AGENT_DURATION.labels(agent=self.name).observe(duration_s)
+            except Exception:
+                pass
+            # BATS: count this agent invocation as one tool-call against the
+            # session pool. Done in finally so failed/timeout agents still
+            # bill — the orchestrator's "single-path" search shouldn't get
+            # free retries by failing.
+            try:
+                consume_tool_call_from_current(1)
             except Exception:
                 pass
             await self._report(

@@ -1,0 +1,17 @@
+{{- if .Values.traiga.createNamespace -}}
+# TRAIGA: Pod Security Admission `restricted` profile enforced at the
+# namespace boundary so any future workload also inherits the kernel-level
+# isolation guarantees (no host PID/IPC, drop ALL caps, runAsNonRoot, etc.)
+# rather than relying on per-Deployment securityContext discipline.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ .Release.Namespace }}
+  labels:
+    {{- include "aura.labels" . | nindent 4 }}
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted
+    aura.compliance/traiga: "v1"
+{{- end }}

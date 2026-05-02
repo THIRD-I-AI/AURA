@@ -72,6 +72,40 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
         return response
 
 
+class AuditLogMiddleware(BaseHTTPMiddleware):
+    """TRAIGA: append every request to the immutable audit log.
+
+    Health/metrics paths are skipped — they're noise and would dwarf the
+    real prompt records, defeating retention math. Authentication paths
+    (token issue/exchange) are kept since TRAIGA wants identity events.
+    """
+
+    _SKIP = {"/health", "/healthz", "/ready", "/metrics"}
+
+    async def dispatch(self, request: Request, call_next: Callable):
+        response = await call_next(request)
+        if request.url.path in self._SKIP:
+            return response
+        try:
+            from shared.audit_log import AUDIT_ENABLED, audit_request
+            if AUDIT_ENABLED:
+                user = ""
+                # JWTAuthMiddleware stashes the decoded principal here
+                principal = getattr(request.state, "principal", None)
+                if isinstance(principal, dict):
+                    user = principal.get("sub", "") or principal.get("email", "")
+                audit_request(
+                    method=request.method,
+                    path=request.url.path,
+                    status=response.status_code,
+                    request_id=getattr(request.state, "request_id", ""),
+                    user=user,
+                )
+        except Exception as exc:
+            logger.warning("audit middleware failed (non-fatal): %s", exc)
+        return response
+
+
 # ── API Key Authentication Middleware ────────────────────────────────
 
 # Paths that never require authentication

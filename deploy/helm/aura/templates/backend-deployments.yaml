@@ -73,15 +73,97 @@ spec:
             failureThreshold: 5
           resources:
             {{- toYaml ($svc.resources | default $root.Values.defaultBackendResources) | nindent 12 }}
-          {{- if and $root.Values.persistence.enabled (eq $svcName $root.Values.persistence.service) }}
           volumeMounts:
+            # readOnlyRootFilesystem requires us to provide explicit writable
+            # mounts for paths the runtime + uvicorn legitimately touch.
+            # Audit is the only DURABLE writable mount (PVC); everything
+            # else is in-memory or ephemeral emptyDir, so a compromised
+            # app pod cannot leak persistent state outside the audit dir.
+            - name: tmp
+              mountPath: /tmp
+            - name: cache
+              mountPath: /home/aura/.cache
+            {{- if and $root.Values.persistence.enabled (eq $svcName $root.Values.persistence.service) }}
             - name: data
               mountPath: {{ $root.Values.persistence.mountPath | quote }}
-          {{- end }}
-      {{- if and $root.Values.persistence.enabled (eq $svcName $root.Values.persistence.service) }}
+            {{- end }}
+            {{- if $root.Values.audit.enabled }}
+            - name: audit
+              mountPath: {{ $root.Values.audit.mountPath | quote }}
+            {{- end }}
+        {{- if and $root.Values.audit.enabled $root.Values.audit.s3Shipper.enabled }}
+        # TRAIGA WORM shipper sidecar — streams the local hash-chained
+        # audit log to S3 Object Lock (bucket-default COMPLIANCE
+        # retention). Audit volume is mounted READ-ONLY here so a
+        # compromised shipper cannot tamper with the local copy.
+        - name: audit-shipper
+          image: {{ $root.Values.audit.s3Shipper.image | quote }}
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/sh", "/opt/shipper/ship.sh"]
+          env:
+            - name: AUDIT_DIR
+              value: {{ $root.Values.audit.mountPath | quote }}
+            - name: BUCKET
+              value: {{ $root.Values.audit.s3Shipper.bucket | quote }}
+            - name: PREFIX
+              value: {{ printf "%s/%s" ($root.Values.audit.s3Shipper.prefix | default "aura/audit") $svcName | quote }}
+            - name: INTERVAL
+              value: {{ $root.Values.audit.s3Shipper.intervalSeconds | default 60 | quote }}
+            - name: AWS_REGION
+              value: {{ $root.Values.audit.s3Shipper.region | quote }}
+          envFrom:
+            {{- if $root.Values.audit.s3Shipper.credentialsSecret }}
+            - secretRef:
+                name: {{ $root.Values.audit.s3Shipper.credentialsSecret }}
+            {{- end }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 1000
+            capabilities:
+              drop: [ALL]
+            seccompProfile:
+              type: RuntimeDefault
+          volumeMounts:
+            - name: audit
+              mountPath: {{ $root.Values.audit.mountPath | quote }}
+              readOnly: true
+            - name: shipper-script
+              mountPath: /opt/shipper
+              readOnly: true
+            - name: shipper-tmp
+              mountPath: /tmp
+          resources:
+            requests: { cpu: "20m", memory: "64Mi" }
+            limits:   { cpu: "200m", memory: "128Mi" }
+        {{- end }}
       volumes:
+        - name: tmp
+          emptyDir:
+            medium: Memory
+            sizeLimit: 64Mi
+        - name: cache
+          emptyDir:
+            sizeLimit: 128Mi
+        {{- if and $root.Values.persistence.enabled (eq $svcName $root.Values.persistence.service) }}
         - name: data
           persistentVolumeClaim:
             claimName: {{ include "aura.fullname" $root }}-{{ $svcName | replace "_" "-" }}-data
-      {{- end }}
+        {{- end }}
+        {{- if $root.Values.audit.enabled }}
+        - name: audit
+          persistentVolumeClaim:
+            claimName: {{ include "aura.fullname" $root }}-audit
+        {{- end }}
+        {{- if and $root.Values.audit.enabled $root.Values.audit.s3Shipper.enabled }}
+        - name: shipper-script
+          configMap:
+            name: {{ include "aura.fullname" $root }}-audit-shipper
+            defaultMode: 0o755
+        - name: shipper-tmp
+          emptyDir:
+            medium: Memory
+            sizeLimit: 16Mi
+        {{- end }}
 {{- end }}

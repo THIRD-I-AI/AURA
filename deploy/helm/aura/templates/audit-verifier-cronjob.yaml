@@ -1,0 +1,108 @@
+{{- if and .Values.audit.enabled .Values.audit.verifier.enabled -}}
+# TRAIGA continuous-verification CronJob.
+#
+# Runs shared.audit_log.verify_chain over every audit-*.jsonl file on
+# the audit PVC. A hash-chain mismatch (record_hash or prev_hash) exits
+# non-zero, which Kubernetes records as a Job failure — the operator's
+# alert pipeline (Alertmanager / Sentry / Slack via OptionalWebhook)
+# fires off the resulting Event.
+#
+# Schedule defaults to every 30 minutes; tune in the overlay. Concurrent
+# runs are forbidden so an in-progress verification can't race a slow
+# cluster.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ include "aura.fullname" . }}-audit-verifier
+  labels:
+    {{- include "aura.labels" . | nindent 4 }}
+    app.kubernetes.io/component: audit-verifier
+    aura.compliance/traiga: "v1"
+spec:
+  schedule: {{ .Values.audit.verifier.schedule | quote }}
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: {{ .Values.audit.verifier.historyLimit | default 3 }}
+  failedJobsHistoryLimit: {{ .Values.audit.verifier.failedHistoryLimit | default 5 }}
+  jobTemplate:
+    spec:
+      backoffLimit: {{ .Values.audit.verifier.backoffLimit | default 0 }}
+      template:
+        metadata:
+          labels:
+            {{- include "aura.labels" . | nindent 12 }}
+            app.kubernetes.io/component: audit-verifier
+        spec:
+          serviceAccountName: {{ include "aura.serviceAccountName" . }}
+          restartPolicy: Never
+          securityContext:
+            {{- toYaml .Values.podSecurityContext | nindent 12 }}
+          containers:
+            - name: verifier
+              image: {{ include "aura.backendImage" . }}
+              imagePullPolicy: {{ .Values.image.backend.pullPolicy }}
+              securityContext:
+                {{- toYaml .Values.containerSecurityContext | nindent 16 }}
+              env:
+                - name: AURA_AUDIT_DIR
+                  value: {{ .Values.audit.mountPath | quote }}
+                {{- with .Values.audit.verifier.alertWebhook }}
+                - name: AUDIT_ALERT_WEBHOOK
+                  value: {{ . | quote }}
+                {{- end }}
+              command: ["python", "-c"]
+              args:
+                - |
+                  import json, os, sys, urllib.request
+                  from pathlib import Path
+                  from shared.audit_log import verify_chain
+
+                  audit_dir = Path(os.environ.get("AURA_AUDIT_DIR", "/var/log/aura/audit"))
+                  files = sorted(audit_dir.glob("audit-*.jsonl"))
+                  if not files:
+                      print(f"verifier: no audit files yet under {audit_dir} — exit 0")
+                      sys.exit(0)
+
+                  failures = []
+                  for f in files:
+                      report = verify_chain(f)
+                      if not report["ok"]:
+                          failures.append({"file": f.name, "details": report["failures"][:5]})
+                          print(f"FAIL {f.name}: {len(report['failures'])} chain mismatch(es)")
+                      else:
+                          print(f"ok   {f.name}: {report['lines']} lines")
+
+                  if failures:
+                      payload = {"text": f"AURA audit chain mismatch: {failures}"}
+                      hook = os.environ.get("AUDIT_ALERT_WEBHOOK", "").strip()
+                      if hook:
+                          try:
+                              req = urllib.request.Request(
+                                  hook,
+                                  data=json.dumps(payload).encode("utf-8"),
+                                  headers={"Content-Type": "application/json"},
+                              )
+                              urllib.request.urlopen(req, timeout=10).read()
+                              print(f"verifier: alert posted to webhook")
+                          except Exception as exc:
+                              print(f"verifier: alert webhook failed: {exc}")
+                      sys.exit(1)
+                  print(f"verifier: {len(files)} file(s) verified clean")
+              volumeMounts:
+                - name: tmp
+                  mountPath: /tmp
+                - name: audit
+                  mountPath: {{ .Values.audit.mountPath | quote }}
+                  readOnly: true
+              resources:
+                requests: { cpu: "50m", memory: "128Mi" }
+                limits:   { cpu: "500m", memory: "512Mi" }
+          volumes:
+            - name: tmp
+              emptyDir:
+                medium: Memory
+                sizeLimit: 32Mi
+            - name: audit
+              persistentVolumeClaim:
+                claimName: {{ include "aura.fullname" . }}-audit
+                readOnly: true
+{{- end }}

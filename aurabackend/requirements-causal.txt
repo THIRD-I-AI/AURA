@@ -1,0 +1,26 @@
+# Causal discovery extras — installed only by the causal_service pod and
+# anything that needs gcm.attribute_anomalies / robust partial correlation.
+#
+#   pip install -r requirements.txt
+#   pip install -r requirements-causal.txt
+#
+# Why these aren't in base:
+#   * dowhy transitively pulls scipy + scikit-learn + statsmodels (~150MB
+#     of C extensions). Every other AURA pod (api_gateway, scheduler,
+#     uasr, etc.) was paying that install cost for code none of them ever
+#     called.
+#   * pingouin + statsmodels are needed for the robust partial-correlation
+#     fallback (Moore-Penrose pseudoinverse handles collinearity among
+#     control variables that the prior np.linalg.lstsq path silently
+#     produced garbage for) and for the ADF stationarity guardrail.
+
+# DoWhy graphical causal models — primary engine for
+# gcm.attribute_anomalies in causal_service/discovery.py
+dowhy>=0.11,<0.13
+networkx>=3.0,<4.0
+
+# Robust partial correlation (collinearity-aware) + ADF stationarity test
+# for the causal_service guardrail that refuses attribution when training
+# data spans a regime change.
+pingouin>=0.5.4,<1.0
+statsmodels>=0.14,<1.0

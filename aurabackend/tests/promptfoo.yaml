@@ -1,0 +1,69 @@
+# Promptfoo eval config — complementary to test_e2e_eval_gate.py
+#
+# The pytest gate runs in CI against an in-process FastAPI app with a mock
+# LLM. This Promptfoo config runs against a *live* AURA stack and is meant
+# for ad-hoc regression checks before a release ("does the real Groq /
+# Gemini provider still answer the wide-schema question correctly?").
+#
+# Run it locally once the stack is up:
+#     promptfoo eval -c tests/promptfoo.yaml
+#
+# Requires the wide_sales_fact CSV to already be present in data/uploads/.
+
+description: AURA chat gate — wide schema + token budget + latency SLA
+
+providers:
+  - id: aura-chat-http
+    config:
+      url: ${AURA_BASE_URL:-http://localhost:8000}/api/v1/chat
+      method: POST
+      headers:
+        Content-Type: application/json
+      body:
+        message: "{{question}}"
+        auto_execute: true
+      transformResponse: 'json.execution_result.sql_query || json.message'
+
+prompts:
+  - "{{question}}"
+
+tests:
+  - description: Wide schema, region rollup
+    vars:
+      question: "What is the total revenue by region?"
+    assert:
+      # Layer 1 — schema sanity
+      - type: is-json
+        weight: 1
+      # Layer 2 — latency SLA
+      - type: latency
+        threshold: 60000   # ms
+      # Layer 5 — safety (no destructive SQL surfaces)
+      - type: not-contains-any
+        value: ["DROP TABLE", "DROP DATABASE", "DELETE FROM", "TRUNCATE "]
+      # Layer 6 — semantic relevance
+      - type: contains-any
+        value: ["region", "revenue", "total"]
+      # Layer 3 — prompt size sanity (best-effort token estimate via length)
+      # Promptfoo can't see internal prompts; this caps the *response* size
+      # which strongly correlates with prompt blow-ups in practice.
+      - type: javascript
+        value: |
+          output.length < 10000
+
+defaultTest:
+  options:
+    cache: false   # eval gates measure cold-path behaviour
+
+# ── Notes on the pytest companion ────────────────────────────────────
+#
+# This YAML is for ad-hoc release-time smokes against a deployed AURA
+# stack. The contractual gate is the pytest variant
+# tests/test_e2e_eval_gate_real.py (run by the eval-gate-real CI job),
+# which is stricter — it asserts on provider-reported token counts and
+# finish_reason="stop", neither of which Promptfoo can introspect from
+# the outside.
+#
+# Promptfoo lives here as a complementary tool an SRE can run after a
+# deploy to verify the live HTTP contract without spinning up a Python
+# environment. Failure modes the two tests catch don't fully overlap.
