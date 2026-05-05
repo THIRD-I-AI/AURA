@@ -335,6 +335,34 @@ def build_server() -> "FastMCP":
                     row["sample_values"] = []
         return rows
 
+    # ── Counterfactual Audit Engine ───────────────────────────────────
+
+    @server.tool(
+        description=(
+            "Submit a counterfactual estimation job ('what would Y have "
+            "been if X had been different?'). Returns {job_id}; poll "
+            "counterfactual_get to retrieve the artifact when ready. The "
+            "artifact includes 4 estimator runs, 4 refutation tests, an "
+            "adversarial critic's challenges, a confidence label, and a "
+            "TRAIGA hash-sealed audit reference."
+        )
+    )
+    async def counterfactual_run(query: Dict[str, Any]) -> Dict[str, Any]:
+        from counterfactual_service.main import submit_job
+        from counterfactual_service.schemas import CounterfactualQuery
+        return await submit_job(CounterfactualQuery(**query))
+
+    @server.tool(
+        description=(
+            "Fetch the status (and full artifact, if ready) for a "
+            "counterfactual job by job_id. State is one of: queued, "
+            "running, succeeded, failed."
+        )
+    )
+    async def counterfactual_get(job_id: str) -> Dict[str, Any]:
+        from counterfactual_service.main import get_job
+        return await get_job(job_id)
+
     # ── Resources (read-only context endpoints) ───────────────────────
 
     @server.resource("aura://duckdb/tables", description="DuckDB table catalogue (machine-readable).")

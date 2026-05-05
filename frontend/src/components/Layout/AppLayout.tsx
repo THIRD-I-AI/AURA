@@ -20,7 +20,8 @@ export type PageType =
   | 'agent'
   | 'pipelines'
   | 'streaming'
-  | 'webhooks';
+  | 'webhooks'
+  | 'counterfactual';
 
 interface AppLayoutProps {
   children: React.ReactNode;
@@ -42,6 +43,7 @@ const PAGE_META: Record<PageType, { title: string; subtitle: string }> = {
   pipelines:  { title: 'ETL Pipelines',      subtitle: 'Build, run, and manage data transformation pipelines' },
   streaming:  { title: 'Streaming',          subtitle: 'Real-time data streaming with live metrics' },
   webhooks:   { title: 'Webhooks',           subtitle: 'Outbound subscriptions & inbound HTTP triggers' },
+  counterfactual: { title: 'Counterfactual',     subtitle: "What would have happened if X had been different — causal estimate, refutation tests, adversarial review, hash-sealed audit" },
 };
 
 const NAV_ITEMS = [
@@ -57,6 +59,7 @@ const NAV_ITEMS = [
   { id: 'pipelines', label: 'ETL Pipelines', href: '#' },
   { id: 'streaming', label: 'Streaming', href: '#' },
   { id: 'webhooks',  label: 'Webhooks',  href: '#' },
+  { id: 'counterfactual', label: 'Counterfactual', href: '#' },
 ];
 
 const AppLayout: React.FC<AppLayoutProps> = ({ children, currentPage, onPageChange }) => {

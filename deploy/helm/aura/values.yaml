@@ -79,6 +79,19 @@ backendServices:
     port: 8009
     workers: 1
     replicas: 1
+  counterfactual_service:
+    # Sprint 8: hash-sealed counterfactual estimation. Pinned to one
+    # replica because v1 keeps job state in process memory; Sprint 9
+    # introduces a Postgres-backed job table and unlocks horizontal
+    # scaling. Larger memory cap accommodates DoWhy PSM/IPW matched
+    # datasets — see spec §7 risk #4.
+    module: counterfactual_service.main:app
+    port: 8012
+    workers: 1
+    replicas: 1
+    resources:
+      requests: { cpu: "500m", memory: "512Mi" }
+      limits:   { cpu: "2",    memory: "4Gi" }
 
 # Default resources applied to any backend service that doesn't set its own.
 defaultBackendResources:

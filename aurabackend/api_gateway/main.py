@@ -147,6 +147,7 @@ from api_gateway.routers.auth import router as auth_router
 from api_gateway.routers.chat import router as chat_router
 from api_gateway.routers.collab import router as collab_router
 from api_gateway.routers.connections import router as connections_router
+from api_gateway.routers.counterfactual import router as counterfactual_router
 from api_gateway.routers.dashboards import router as dashboards_router
 from api_gateway.routers.etl import router as etl_router
 from api_gateway.routers.files import router as files_router
@@ -171,6 +172,7 @@ app.include_router(pipelines_router, prefix=_API_V1)
 app.include_router(stream_router, prefix=_API_V1)
 app.include_router(webhooks_router, prefix=_API_V1)
 app.include_router(inbound_hooks_router, prefix=_API_V1)
+app.include_router(counterfactual_router, prefix=_API_V1)
 # Collab WS sits at the root, not /api/v1/, because browsers cannot send
 # auth headers on WebSocket handshakes — keeping it off the JWT-guarded
 # prefix avoids the accidental block that the auth middleware would do.
