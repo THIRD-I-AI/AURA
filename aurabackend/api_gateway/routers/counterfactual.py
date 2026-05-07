@@ -12,15 +12,28 @@ from __future__ import annotations
 from typing import Any, Dict
 
 from fastapi import APIRouter
+from fastapi.responses import Response
 
 from counterfactual_service.main import (
+    get_artifact as _svc_get_artifact,
+)
+from counterfactual_service.main import (
+    get_artifact_pdf as _svc_get_artifact_pdf,
+)
+from counterfactual_service.main import (
     get_job as _svc_get,
+)
+from counterfactual_service.main import (
+    get_public_key as _svc_get_public_key,
 )
 from counterfactual_service.main import (
     info as _svc_info,
 )
 from counterfactual_service.main import (
     submit_job as _svc_submit,
+)
+from counterfactual_service.main import (
+    verify_artifact as _svc_verify_artifact,
 )
 from counterfactual_service.schemas import CounterfactualQuery
 
@@ -40,3 +53,25 @@ async def status(job_id: str) -> Dict[str, Any]:
 @router.get("/info")
 async def info() -> Dict[str, Any]:
     return await _svc_info()
+
+
+# ── Sprint 9 — Auditor view ───────────────────────────────────────────
+
+@router.get("/artifacts/{record_hash}")
+async def replay_artifact(record_hash: str) -> Dict[str, Any]:
+    return await _svc_get_artifact(record_hash)
+
+
+@router.get("/artifacts/{record_hash}/report.pdf")
+async def report_pdf(record_hash: str) -> Response:
+    return await _svc_get_artifact_pdf(record_hash)
+
+
+@router.get("/artifacts/{record_hash}/verify")
+async def verify_artifact(record_hash: str) -> Dict[str, Any]:
+    return await _svc_verify_artifact(record_hash)
+
+
+@router.get("/public-key")
+async def public_key() -> Dict[str, Any]:
+    return await _svc_get_public_key()

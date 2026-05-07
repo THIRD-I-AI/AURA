@@ -109,6 +109,12 @@ class CounterfactualArtifact(BaseModel):
     dataset_fingerprint: str
     audit_record_hash: Optional[str] = None
     regenerated_critic: bool = False
+    # Sprint 9: ED25519 signature over the canonical-JSON payload
+    # (audit_record_hash + signature + rendered are excluded from the
+    # signed bytes — they're metadata, not content).
+    signature_b64: Optional[str] = None
+    signature_status: Literal["signed", "unsigned"] = "unsigned"
+    signing_key_source: Optional[str] = None
     rendered: Dict[str, Any] = Field(default_factory=dict)
     warnings: List[str] = Field(default_factory=list)
     created_at: Optional[datetime] = None

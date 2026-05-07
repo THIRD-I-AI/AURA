@@ -1,9 +1,11 @@
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useMemo, useState } from 'react';
 import CounterfactualCard, {
   type CounterfactualOperatorView,
 } from '../components/CounterfactualCard';
 
-const SAMPLE_QUERY = {
+type Audience = 'operator' | 'auditor' | 'analyst';
+
+const BASE_QUERY = {
   question: "What would Q3 revenue have been if we hadn't raised prices in May?",
   treatment: { column: 'price_change_may', actual: 0.08, counterfactual: 0.0 },
   outcome:   { column: 'monthly_revenue', agg: 'sum', window: ['2025-07-01', '2025-09-30'] },
@@ -15,21 +17,44 @@ const SAMPLE_QUERY = {
     ],
   },
   dataset: { source_id: 'uploaded_file:sales_2025.csv' },
-  audience: 'operator',
+};
+
+const AUDIENCE_BLURB: Record<Audience, string> = {
+  operator: 'Chat card with confidence badge + top challenges. Default for everyday use.',
+  auditor:  'Full estimator + refutation tables + every challenge + signed PDF download.',
+  analyst:  'Operator view + raw artifact JSON for programmatic drill-down.',
 };
 
 
 const Counterfactual: React.FC = () => {
-  const [queryText, setQueryText] = useState(JSON.stringify(SAMPLE_QUERY, null, 2));
+  const [audience, setAudience] = useState<Audience>('operator');
+  const [queryText, setQueryText] = useState(
+    JSON.stringify({ ...BASE_QUERY, audience: 'operator' }, null, 2),
+  );
   const [artifact, setArtifact] = useState<CounterfactualOperatorView | null>(null);
+  const [recordHash, setRecordHash] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
   const [progress, setProgress] = useState<string>('');
+
+  // Re-emit the textarea body when the user picks a new audience tier
+  const onAudienceChange = useCallback((next: Audience) => {
+    setAudience(next);
+    try {
+      const parsed = JSON.parse(queryText);
+      parsed.audience = next;
+      setQueryText(JSON.stringify(parsed, null, 2));
+    } catch {
+      // textarea has user edits that didn't parse; leave it alone, just
+      // remember the radio selection.
+    }
+  }, [queryText]);
 
   const submit = useCallback(async () => {
     setRunning(true);
     setError(null);
     setArtifact(null);
+    setRecordHash(null);
     setProgress('Submitting…');
 
     try {
@@ -44,13 +69,13 @@ const Counterfactual: React.FC = () => {
       const { job_id } = await submitResp.json();
       setProgress(`Job ${job_id} submitted, awaiting estimators…`);
 
-      // Poll. Engine takes ~10-30s on real data.
       for (let i = 0; i < 120; i++) {
         await new Promise(res => setTimeout(res, 1000));
         const statusResp = await fetch(`/api/v1/counterfactual/jobs/${job_id}`);
         const status = await statusResp.json();
         if (status.state === 'succeeded') {
           setArtifact(status.artifact.rendered as CounterfactualOperatorView);
+          setRecordHash(status.artifact.audit_record_hash ?? null);
           setProgress('Completed.');
           return;
         }
@@ -68,6 +93,19 @@ const Counterfactual: React.FC = () => {
     }
   }, [queryText]);
 
+  const pdfUrl = useMemo(
+    () => recordHash ? `/api/v1/counterfactual/artifacts/${recordHash}/report.pdf` : null,
+    [recordHash],
+  );
+  const replayUrl = useMemo(
+    () => recordHash ? `/api/v1/counterfactual/artifacts/${recordHash}` : null,
+    [recordHash],
+  );
+  const verifyUrl = useMemo(
+    () => recordHash ? `/api/v1/counterfactual/artifacts/${recordHash}/verify` : null,
+    [recordHash],
+  );
+
   return (
     <div style={{ padding: 24, maxWidth: 980, margin: '0 auto', display: 'flex', flexDirection: 'column', gap: 16 }}>
       <div>
@@ -79,6 +117,49 @@ const Counterfactual: React.FC = () => {
           much they agreed.
         </p>
       </div>
+
+      <fieldset
+        style={{
+          border: '1px solid var(--border, #1e293b)',
+          borderRadius: 6,
+          padding: '8px 12px 12px',
+          margin: 0,
+        }}
+      >
+        <legend style={{ fontSize: 12, color: 'var(--text-secondary, #94a3b8)', padding: '0 6px' }}>
+          Audience
+        </legend>
+        <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap' }}>
+          {(['operator', 'auditor', 'analyst'] as const).map(a => (
+            <label
+              key={a}
+              data-testid={`audience-${a}`}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 8,
+                fontSize: 13,
+                color: 'var(--text-primary, #f1f5f9)',
+                cursor: 'pointer',
+              }}
+            >
+              <input
+                type="radio"
+                name="audience"
+                value={a}
+                checked={audience === a}
+                onChange={() => onAudienceChange(a)}
+              />
+              <div>
+                <div style={{ fontWeight: 500 }}>{a}</div>
+                <div style={{ fontSize: 11, color: 'var(--text-secondary, #94a3b8)' }}>
+                  {AUDIENCE_BLURB[a]}
+                </div>
+              </div>
+            </label>
+          ))}
+        </div>
+      </fieldset>
 
       <textarea
         data-testid="counterfactual-query-input"
@@ -141,6 +222,56 @@ const Counterfactual: React.FC = () => {
       )}
 
       {artifact && <CounterfactualCard artifact={artifact} />}
+
+      {recordHash && (
+        <div
+          data-testid="auditor-actions"
+          style={{
+            display: 'flex',
+            gap: 12,
+            flexWrap: 'wrap',
+            fontSize: 13,
+            padding: 12,
+            border: '1px solid var(--border, #1e293b)',
+            borderRadius: 6,
+            background: 'var(--card-bg, rgba(15, 23, 42, 0.5))',
+          }}
+        >
+          {pdfUrl && (
+            <a
+              href={pdfUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              data-testid="download-pdf"
+              style={{ color: 'var(--accent, #38bdf8)', textDecoration: 'underline' }}
+            >
+              ↓ Download PDF report
+            </a>
+          )}
+          {replayUrl && (
+            <a
+              href={replayUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              data-testid="open-replay-json"
+              style={{ color: 'var(--accent, #38bdf8)', textDecoration: 'underline' }}
+            >
+              ⤴ Open persisted artifact (JSON)
+            </a>
+          )}
+          {verifyUrl && (
+            <a
+              href={verifyUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              data-testid="verify-signature"
+              style={{ color: 'var(--accent, #38bdf8)', textDecoration: 'underline' }}
+            >
+              ✓ Verify ED25519 signature
+            </a>
+          )}
+        </div>
+      )}
     </div>
   );
 };

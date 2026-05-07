@@ -24,6 +24,7 @@ from typing import Any, Dict, List, Literal, Optional
 
 import pandas as pd
 
+from . import critic_cache, persistence, signing
 from .canonical import canonical_dumps, sha256_canonical
 from .schemas import (
     AdversarialChallenge,
@@ -383,13 +384,32 @@ async def _run_critic(
     dag: dict,
     treatment: InterventionSpec,
     outcome: OutcomeSpec,
-) -> List[AdversarialChallenge]:
-    # Late import — agents subsystem owns ContextVar-bound budget tracking
-    # and we don't want to drag the whole world in at module import time.
+    *,
+    request_hash: str,
+) -> tuple[List[AdversarialChallenge], bool]:
+    """Run the adversarial critic, with replay-determinism caching.
+
+    Returns ``(challenges, regenerated)`` where ``regenerated`` is True
+    if the critic re-ran (cache miss). Replay flows through cache hits
+    so the artifact byte-rehashes identically.
+    """
+    # Identify the model so the cache key is sensitive to provider drift.
+    # Agent-side late import avoids dragging shared.budget into module
+    # init.
     from agents.base import AgentContext
     from agents.specialists.adversarial_critic_agent import AdversarialCriticAgent
 
     agent = AdversarialCriticAgent()
+    model_id = getattr(agent.llm, "model", "") or ""
+    model_version = getattr(agent.llm, "model_version", "") or "v1"
+
+    cache_k = critic_cache.cache_key(
+        request_hash=request_hash, model_id=str(model_id), model_version=str(model_version),
+    )
+    cached = critic_cache.get(cache_k)
+    if cached is not None:
+        return [AdversarialChallenge(**c) for c in cached], False
+
     ctx = AgentContext(
         user_prompt="critique counterfactual",
         task_description="Find missing confounders, identifiability failures, and "
@@ -404,26 +424,78 @@ async def _run_critic(
     )
     res = await agent.execute(ctx)
     raw = res.output.get("challenges", []) if res.succeeded else []
-    return [AdversarialChallenge(**c) for c in raw]
+
+    # Persist into the cache so future replays hit it. This is a
+    # best-effort write; a cache miss next time is recoverable as long
+    # as the engine re-runs and the new bytes match.
+    try:
+        critic_cache.put(cache_k, raw)
+    except Exception as exc:  # pragma: no cover
+        logger.warning("Critic cache write failed (non-fatal): %s", exc)
+
+    return [AdversarialChallenge(**c) for c in raw], True
+
+
+_HASH_EXCLUDE_FIELDS = {
+    "audit_record_hash",
+    "rendered",
+    "signature_b64",
+    "signature_status",
+    "signing_key_source",
+    # record_id is uuid-random and uncorrelated with the inputs — exclude
+    # so two jobs with identical inputs produce the same artifact_hash
+    # regardless of the random ID assigned at submission time.
+    "record_id",
+    # regenerated_critic is *metadata about how the answer was produced*
+    # (cache hit vs miss), not part of the answer itself. Excluding it
+    # means the artifact hash is byte-stable across replay regardless of
+    # whether the critic-cache survived since the original sealing.
+    "regenerated_critic",
+}
+
+
+def _request_hash(query: CounterfactualQuery, dataset_fingerprint: str) -> str:
+    """Stable hash of the user-controllable inputs.
+
+    Used as the cache key for the critic and as the seed-derivation
+    base. Must NOT depend on record_id, audit_record_hash, or anything
+    populated downstream by the engine.
+    """
+    return sha256_canonical({
+        "query": query.model_dump(mode="json"),
+        "dataset_fingerprint": dataset_fingerprint,
+    })
 
 
 async def run_job(query: CounterfactualQuery, df: pd.DataFrame) -> CounterfactualArtifact:
-    """Full engine: estimate → refute → critique → score → seal.
+    """Full engine: estimate → refute → critique (cached) → score → sign → persist → seal.
 
-    Returns the artifact with ``audit_record_hash`` populated. Caller is
-    responsible for renderer dispatch (engine is renderer-agnostic).
+    Returns the artifact with ``audit_record_hash`` and (when signing is
+    available) ``signature_b64`` populated. Caller is responsible for
+    renderer dispatch (engine is renderer-agnostic).
     """
+    # Defensive copy — DoWhy's PSM and IPW estimators mutate the input
+    # DataFrame (attach propensity scores, weights, matched-pair labels),
+    # which would change dataset_fingerprint on a subsequent run with the
+    # same logical input.
+    df = df.copy()
+    fingerprint = _dataset_fingerprint(df)
+    req_hash = _request_hash(query, fingerprint)
+
     estimates = await run_estimators(df, query.treatment, query.outcome, query.dag.model_dump())
     refutations = await run_refuters(df, query.treatment, query.outcome, query.dag.model_dump())
+    challenges_unsorted, regenerated = await _run_critic(
+        estimates, refutations, query.dag.model_dump(),
+        query.treatment, query.outcome,
+        request_hash=req_hash,
+    )
     challenges = sorted(
-        await _run_critic(estimates, refutations, query.dag.model_dump(),
-                          query.treatment, query.outcome),
+        challenges_unsorted,
         key=lambda c: (c.severity, hashlib.sha1(c.text.encode("utf-8")).hexdigest()),
     )
 
     record_id = f"ca_{uuid.uuid4().hex[:12]}"
-    fingerprint = _dataset_fingerprint(df)
-    schema_version = "v1"   # Sprint 9: derive from current alembic head
+    schema_version = "v1"   # Sprint 10: derive from current alembic head
 
     artifact = CounterfactualArtifact(
         record_id=record_id,
@@ -434,13 +506,38 @@ async def run_job(query: CounterfactualQuery, df: pd.DataFrame) -> Counterfactua
         confidence=score_confidence(estimates, refutations, challenges),
         schema_version=schema_version,
         dataset_fingerprint=fingerprint,
+        regenerated_critic=regenerated,
     )
 
-    # Compute artifact_hash over the artifact MINUS audit + render fields
-    payload = artifact.model_dump(mode="json", exclude={"audit_record_hash", "rendered"})
+    # Compute artifact_hash over the artifact MINUS audit/render/signature
+    # fields. record_id is also excluded so byte-stable replay is possible
+    # regardless of which ca_<uuid> the original submission was assigned.
+    payload = artifact.model_dump(mode="json", exclude=_HASH_EXCLUDE_FIELDS)
     artifact_hash = sha256_canonical(payload)
+    artifact.audit_record_hash = artifact_hash
 
-    # Seal in TRAIGA audit log (best-effort; engine never blocks on audit)
+    # Sign the canonical bytes of the (still-hash-stable) payload. The
+    # signed bytes are exactly what sha256_canonical hashed, so a verifier
+    # can independently reconstruct what was signed.
+    sig_b64 = signing.sign_bytes(canonical_dumps(payload).encode("utf-8"))
+    if sig_b64 is not None:
+        artifact.signature_b64 = sig_b64
+        artifact.signature_status = "signed"
+        artifact.signing_key_source = signing.signing_key_source()
+    else:
+        artifact.signature_status = "unsigned"
+
+    # Persist the full artifact (with audit_record_hash + signature) so
+    # replay returns byte-identical content.
+    try:
+        full_persistable = artifact.model_dump(mode="json")
+        persistence.write_artifact(artifact_hash, full_persistable)
+        if sig_b64 is not None:
+            persistence.write_signature(artifact_hash, sig_b64)
+    except Exception as exc:  # pragma: no cover
+        logger.warning("Artifact persistence failed (non-fatal): %s", exc)
+
+    # Seal in TRAIGA audit log (best-effort; engine never blocks on audit).
     try:
         from shared.audit_log import AUDIT_ENABLED  # type: ignore
         if AUDIT_ENABLED:
@@ -454,10 +551,11 @@ async def run_job(query: CounterfactualQuery, df: pd.DataFrame) -> Counterfactua
                     "artifact_hash": artifact_hash,
                     "schema_version": schema_version,
                     "dataset_fingerprint": fingerprint,
+                    "signature_status": artifact.signature_status,
+                    "regenerated_critic": regenerated,
                 },
             )
     except Exception as exc:  # pragma: no cover
         logger.warning("Audit seal failed (non-fatal): %s", exc)
 
-    artifact.audit_record_hash = artifact_hash
     return artifact
