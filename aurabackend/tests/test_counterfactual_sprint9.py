@@ -371,9 +371,12 @@ def test_pdf_renderer_produces_pdf_bytes():
     assert len(pdf) > 1000  # smoke: a one-pager is at least a couple KB
 
 
-def test_pdf_endpoint_503_when_renderer_unavailable(monkeypatch, tmp_path):
+def test_pdf_endpoint_501_when_renderer_unavailable(monkeypatch, tmp_path):
     """If reportlab isn't installed in a deployment, the PDF endpoint
-    returns 503 rather than crashing the engine."""
+    returns 501 (Not Implemented) rather than 503. 501 signals the
+    feature is *deterministically* unavailable in this deployment;
+    SDK clients use that to skip retries (whereas 503 means transient
+    'service temporarily unavailable, please back off and retry')."""
     monkeypatch.setattr(pdf_renderer, "_REPORTLAB_AVAILABLE", False)
     monkeypatch.setattr(pdf_renderer, "pdf_available", lambda: False)
     monkeypatch.setenv("AURA_ARTIFACT_DIR", str(tmp_path))
@@ -387,5 +390,5 @@ def test_pdf_endpoint_503_when_renderer_unavailable(monkeypatch, tmp_path):
     from counterfactual_service.main import app
     with TestClient(app) as client:
         r = client.get("/counterfactual/artifacts/" + "a" * 64 + "/report.pdf")
-        assert r.status_code == 503
+        assert r.status_code == 501
         assert "reportlab" in r.text

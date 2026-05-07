@@ -165,15 +165,20 @@ async def get_artifact(record_hash: str) -> Dict[str, Any]:
 async def get_artifact_pdf(record_hash: str) -> Response:
     """Auditor-grade printable report.
 
-    Returns 503 if the deployment lacks reportlab so the caller knows
-    *why* the PDF isn't available rather than getting a generic 500."""
+    Returns 501 (Not Implemented) when the deployment lacks reportlab.
+    501 — not 503 — because the absence is *deterministic* per
+    deployment: it's not a transient outage that the caller should
+    retry, it's a feature this engine doesn't implement. SDK clients
+    treat 501 as a definitive ``ServiceUnavailableError`` and skip
+    retry, while 503 retains its conventional "service temporarily
+    unavailable, please back off and retry" semantics elsewhere."""
     art = persistence.read_artifact(record_hash)
     if art is None:
         raise HTTPException(404, f"artifact {record_hash} not found")
     pdf_bytes = pdf_renderer.render_pdf(art)
     if pdf_bytes is None:
         raise HTTPException(
-            503,
+            501,
             "PDF renderer unavailable — install reportlab "
             "(pip install -r requirements-causal.txt) to enable.",
         )
@@ -236,5 +241,6 @@ async def get_public_key() -> Dict[str, Any]:
     """Return the current ED25519 public key (PEM)."""
     pem = signing.public_key_pem()
     if pem is None:
-        raise HTTPException(503, "signing unavailable — cryptography not installed")
+        # 501 — feature unavailable in this deployment, not transient.
+        raise HTTPException(501, "signing unavailable — cryptography not installed")
     return {"public_key_pem": pem, "key_source": signing.signing_key_source()}
