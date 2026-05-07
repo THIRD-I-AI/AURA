@@ -489,9 +489,17 @@ async def run_job(query: CounterfactualQuery, df: pd.DataFrame) -> Counterfactua
         query.treatment, query.outcome,
         request_hash=req_hash,
     )
+    # SHA-1 is only used as a stable, deterministic tie-breaker on the
+    # challenge text — purely so two artifacts with identical (severity,
+    # text) lists sort identically across runs. ``usedforsecurity=False``
+    # signals to security scanners (bandit) that this is not a
+    # cryptographic use and silences the B324 warning.
     challenges = sorted(
         challenges_unsorted,
-        key=lambda c: (c.severity, hashlib.sha1(c.text.encode("utf-8")).hexdigest()),
+        key=lambda c: (
+            c.severity,
+            hashlib.sha1(c.text.encode("utf-8"), usedforsecurity=False).hexdigest(),
+        ),
     )
 
     record_id = f"ca_{uuid.uuid4().hex[:12]}"
