@@ -19,7 +19,6 @@ import re
 
 import pytest
 
-
 # ── causal_service ────────────────────────────────────────────────────
 
 def test_causal_service_info_endpoint():
@@ -274,8 +273,11 @@ def test_mapek_worker_config_and_construction():
     assert cfg.source_id == "smoke-source"
     worker = MAPEKWorker(cfg)
     assert worker is not None
-    # Worker has at least one of these private/public methods that drive
-    # the MAPE-K cycle. Existence is enough to exercise __init__ +
-    # class-level wiring.
-    assert any(callable(getattr(worker, attr, None))
-               for attr in ("run", "_run_loop", "tick", "_tick"))
+    # Worker exposes the public lifecycle pair (start/stop) plus the
+    # internal MAPE-K loop body. Confirm all three are present and
+    # callable — that's enough to exercise __init__ + class-level wiring
+    # without driving any real Kafka/DuckDB I/O.
+    for attr in ("start", "stop", "_run_forever"):
+        assert callable(getattr(worker, attr, None)), (
+            f"MAPEKWorker missing expected method {attr!r}"
+        )
