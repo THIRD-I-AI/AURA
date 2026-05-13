@@ -2,17 +2,19 @@
 Counterfactual Audit Engine — eval-gate layers.
 
 Extends the existing 8-layer eval-gate (``test_e2e_eval_gate.py``) with
-two new contractual layers:
+three new contractual layers:
 
 * **Layer 9 — causal correctness.** Engine recovers a known synthetic
   treatment effect within a mean-absolute-error bound on a fully-
   specified DAG.
+* **Layer 10 — re-execution byte-identity.** Two engine runs with
+  identical query + dataset produce identical ``audit_record_hash``.
+  Sprint 11 upgrade — previously this layer asserted only replay-via-
+  persistence byte-identity; now it asserts true re-execution
+  determinism via seed-from-request_hash + sequential fan-out.
 * **Layer 11 — adversarial detection.** Confounded synthetic data + a
   DAG that omits the confounder → critic emits ≥ 1 high-severity
   challenge AND the engine's confidence label is not "high".
-
-Layer 10 (artifact reproducibility / replay) lands in Sprint 9 with the
-critic-cache.
 
 Each layer is a standalone pytest. CI runs them inside the existing
 ``eval-gate`` job after backend-test passes.
@@ -85,6 +87,61 @@ async def test_layer9_engine_recovers_synthetic_effect_within_mae(monkeypatch, t
     # The fingerprint and audit hash must be populated for a sealed artifact.
     assert artifact.dataset_fingerprint and len(artifact.dataset_fingerprint) == 64
     assert artifact.audit_record_hash and len(artifact.audit_record_hash) == 64
+
+
+# ── Layer 10: re-execution byte-identity ──────────────────────────────
+
+@pytest.mark.asyncio
+async def test_layer10_two_engine_runs_produce_identical_hash(monkeypatch, tmp_path):
+    """Sprint 11 contract: re-running the engine on the same logical
+    input — same query, same dataset, same critic-cache state — must
+    produce a byte-identical artifact_hash.
+
+    This relies on (a) seed-from-request_hash threading into DoWhy,
+    (b) sequential estimator/refuter fan-out so the seeds aren't
+    trampled by concurrent threads, and (c) the critic-cache
+    pinning the LLM critique. Layer 9 covers correctness; this
+    layer covers reproducibility."""
+    install_mock(monkeypatch, UnifiedMockLLM(default_response='{"challenges": []}'))
+    monkeypatch.setenv("AURA_AUDIT_DIR", str(tmp_path / "audit"))
+    monkeypatch.setenv("AURA_ARTIFACT_DIR", str(tmp_path / "art"))
+    monkeypatch.setenv("AURA_CRITIC_CACHE_DIR", str(tmp_path / "cc"))
+
+    df = synthetic_dataset(n=300, seed=0xdeadbeef)
+    query = CounterfactualQuery(
+        question="layer10",
+        treatment=InterventionSpec(column="treatment", actual=1.0, counterfactual=0.0),
+        outcome=OutcomeSpec(column="outcome", agg="sum", window=("2025-01-01", "2025-12-31")),
+        dag=DAGSpec(edges=synthetic_dag_full()["edges"]),
+        dataset=DatasetRef(source_id="layer10"),
+    )
+
+    art_a = await run_job(query, df=df)
+    art_b = await run_job(query, df=df)
+
+    # Dataset fingerprint pinned by defensive copy
+    assert art_a.dataset_fingerprint == art_b.dataset_fingerprint, (
+        "Layer 10 FAIL: dataset_fingerprint drifted across runs"
+    )
+
+    # Each estimator's point + CI bounds match to canonical-JSON precision.
+    est_a = sorted([
+        (e.method, round(e.point, 6), round(e.ci_lower, 6), round(e.ci_upper, 6))
+        for e in art_a.estimates if e.error is None
+    ])
+    est_b = sorted([
+        (e.method, round(e.point, 6), round(e.ci_lower, 6), round(e.ci_upper, 6))
+        for e in art_b.estimates if e.error is None
+    ])
+    assert est_a == est_b, (
+        f"Layer 10 FAIL: estimator outputs drifted across runs\n  a={est_a}\n  b={est_b}"
+    )
+
+    # Final byte-identity: two runs → same audit_record_hash.
+    assert art_a.audit_record_hash == art_b.audit_record_hash, (
+        f"Layer 10 FAIL: audit_record_hash drifted across runs\n"
+        f"  a={art_a.audit_record_hash}\n  b={art_b.audit_record_hash}"
+    )
 
 
 # ── Layer 11: adversarial detection ───────────────────────────────────

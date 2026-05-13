@@ -62,7 +62,11 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
         if request.url.path not in ("/health", "/healthz", "/ready"):
             request_id = getattr(request.state, "request_id", "-")
             logger.info(
-                "%s %s → %s (%.1f ms) [%s]",
+                # ASCII arrow only — Windows local runs default stdout to
+                # cp1252 which can't encode → and turns request logging
+                # into a UnicodeEncodeError per request. Linux CI is
+                # UTF-8 either way.
+                "%s %s -> %s (%.1f ms) [%s]",
                 request.method,
                 request.url.path,
                 response.status_code,

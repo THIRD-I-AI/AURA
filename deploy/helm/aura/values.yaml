@@ -79,6 +79,27 @@ backendServices:
     port: 8009
     workers: 1
     replicas: 1
+  causal_service:
+    # Sprint 7: DoWhy-based root-cause attribution. Heavy deps live in
+    # requirements-causal.txt — same image base as counterfactual_service.
+    module: causal_service.main:app
+    port: 8010
+    workers: 1
+    replicas: 1
+    resources:
+      requests: { cpu: "300m", memory: "512Mi" }
+      limits:   { cpu: "1.5",  memory: "2Gi" }
+  dar_service:
+    # Sprint 7: Data-Agnostic Researcher daemon. Spec § DAR — autonomous
+    # background insight loop. Pinned to 1 replica because the daemon
+    # owns global "next-tick" state in process memory.
+    module: dar_service.main:app
+    port: 8011
+    workers: 1
+    replicas: 1
+    resources:
+      requests: { cpu: "200m", memory: "384Mi" }
+      limits:   { cpu: "1",    memory: "1Gi" }
   counterfactual_service:
     # Sprint 8: hash-sealed counterfactual estimation. Pinned to one
     # replica because v1 keeps job state in process memory; Sprint 9

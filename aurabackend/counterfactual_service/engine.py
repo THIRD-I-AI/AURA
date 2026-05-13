@@ -115,6 +115,40 @@ _DOWHY_REFUTER_METHODS: Dict[RefuterName, str] = {
 }
 
 
+# ── Sprint 11: deterministic seeding ─────────────────────────────────
+
+def _seed_for(request_hash: str, name: str) -> int:
+    """Derive a stable 32-bit numpy seed from ``(request_hash, name)``.
+
+    Same query (same request_hash) + same method/refuter name → same
+    seed → same DoWhy random draws → byte-identical artifact_hash on
+    re-execution.
+
+    32-bit because numpy's seed is a uint32; the upper bits are masked
+    off the sha256 prefix.
+    """
+    h = hashlib.sha256(f"{request_hash}|{name}".encode("utf-8")).digest()
+    return int.from_bytes(h[:4], "big")
+
+
+def _seed_numpy(seed: int) -> None:
+    """Pre-seed numpy's *global* RNG.
+
+    DoWhy / scikit-learn use ``numpy.random`` directly in many paths
+    (bootstrap CI, train/test split, propensity-score sampling) without
+    accepting a ``random_state`` parameter. Seeding the global generator
+    immediately before each call is the only way to pin those uses.
+
+    This is **only safe under sequential execution** — concurrent threads
+    would trample each other's seed. ``run_estimators`` and
+    ``run_refuters`` therefore default to ``concurrent=False`` for
+    determinism. Callers that explicitly want concurrent fan-out
+    (sacrificing reproducibility) can opt in.
+    """
+    import numpy as np
+    np.random.seed(seed)
+
+
 # ── Causal-model construction ─────────────────────────────────────────
 
 def _build_causal_model(
@@ -144,11 +178,19 @@ def _run_one_estimator(
     treatment: InterventionSpec,
     outcome: OutcomeSpec,
     dag: dict,
+    seed: int = 0,
 ) -> CounterfactualEstimate:
     t0 = time.time()
     try:
+        # Pin the global numpy RNG immediately before DoWhy touches it.
+        # Bootstrap CI + propensity-score fitting both use np.random
+        # internally, so this is the only universal handle.
+        _seed_numpy(seed)
         model = _build_causal_model(df, treatment, outcome, dag)
         identified = model.identify_effect(proceed_when_unidentifiable=True)
+        # Re-seed *between* identify and estimate — identify_effect can
+        # consume RNG entropy on some DAGs.
+        _seed_numpy(seed)
         est = model.estimate_effect(
             identified,
             method_name=_DOWHY_ESTIMATOR_METHODS[method_key],
@@ -205,21 +247,36 @@ async def run_estimators(
     dag: dict,
     methods: Optional[List[EstimatorMethod]] = None,
     timeout_s: float = 30.0,
+    *,
+    request_hash: str = "",
+    concurrent: bool = False,
 ) -> List[CounterfactualEstimate]:
-    """Fan-out estimator runs in a thread pool with per-step timeout.
+    """Run each estimator with a deterministic seed and per-step timeout.
 
     Always returns one ``CounterfactualEstimate`` per requested method;
     failures and timeouts are surfaced via the ``error`` field rather
     than raising. Output is sorted by method name for hash-stable
     artifacts.
+
+    ``concurrent=False`` (the default) runs estimators **sequentially**
+    so the per-method numpy seed isn't trampled by interleaved threads.
+    This is the only way to make the artifact byte-stable across
+    re-runs (eval-gate Layer 10). ``concurrent=True`` reverts to the
+    legacy thread-pool fan-out — faster but not reproducible. The
+    operator-tier UI with a single chat session uses sequential; only
+    callers that have explicitly accepted non-determinism (currently
+    none) should opt into concurrent.
     """
     chosen: List[EstimatorMethod] = methods or list(_DOWHY_ESTIMATOR_METHODS.keys())
     loop = asyncio.get_event_loop()
 
     async def _one(m: EstimatorMethod) -> CounterfactualEstimate:
+        seed = _seed_for(request_hash, m)
         try:
             return await asyncio.wait_for(
-                loop.run_in_executor(None, _run_one_estimator, m, df, treatment, outcome, dag),
+                loop.run_in_executor(
+                    None, _run_one_estimator, m, df, treatment, outcome, dag, seed,
+                ),
                 timeout_s,
             )
         except asyncio.TimeoutError:
@@ -229,7 +286,10 @@ async def run_estimators(
                 error=f"timeout after {timeout_s}s",
             )
 
-    results = await asyncio.gather(*(_one(m) for m in chosen))
+    if concurrent:
+        results = await asyncio.gather(*(_one(m) for m in chosen))
+    else:
+        results = [await _one(m) for m in chosen]
     return sorted(results, key=lambda e: e.method)
 
 
@@ -256,14 +316,30 @@ def _run_one_refuter(
     model: Any,
     identified: Any,
     baseline_estimate: Any,
+    seed: int = 0,
 ) -> RefutationResult:
     t0 = time.time()
     try:
-        result = model.refute_estimate(
-            identified,
-            baseline_estimate,
-            method_name=_DOWHY_REFUTER_METHODS[refuter_key],
-        )
+        # Refuters explicitly use random sampling (placebo treatment,
+        # data subset, random common cause). Pin numpy global state
+        # before calling and pass random_seed where DoWhy supports it.
+        _seed_numpy(seed)
+        try:
+            result = model.refute_estimate(
+                identified,
+                baseline_estimate,
+                method_name=_DOWHY_REFUTER_METHODS[refuter_key],
+                random_seed=seed,
+            )
+        except TypeError:
+            # Some DoWhy versions don't accept ``random_seed`` on
+            # ``refute_estimate``; the numpy seed above still pins the
+            # randomness for those installs.
+            result = model.refute_estimate(
+                identified,
+                baseline_estimate,
+                method_name=_DOWHY_REFUTER_METHODS[refuter_key],
+            )
         new_value: Optional[float] = None
         new_attr = getattr(result, "new_effect", None)
         if new_attr is not None:
@@ -310,11 +386,15 @@ async def run_refuters(
     dag: dict,
     refuters: Optional[List[RefuterName]] = None,
     timeout_s: float = 30.0,
+    *,
+    request_hash: str = "",
+    concurrent: bool = False,
 ) -> List[RefutationResult]:
-    """Fan-out refuter runs against a single baseline estimate.
+    """Run each refuter with a deterministic seed and per-step timeout.
 
-    Always returns one ``RefutationResult`` per requested refuter; sorted
-    by refuter name for hash stability.
+    Default ``concurrent=False`` runs refuters sequentially so the
+    per-refuter numpy seed isn't trampled by thread interleaving — the
+    artifact_hash is then byte-stable across re-runs.
     """
     chosen: List[RefuterName] = refuters or list(_DOWHY_REFUTER_METHODS.keys())
     if not _DOWHY_AVAILABLE:
@@ -324,6 +404,9 @@ async def run_refuters(
         ]
 
     try:
+        # Baseline estimate — also pinned. Bootstrap CI here would
+        # otherwise leak entropy that downstream refuters consume.
+        _seed_numpy(_seed_for(request_hash, "_baseline"))
         model = _build_causal_model(df, treatment, outcome, dag)
         identified = model.identify_effect(proceed_when_unidentifiable=True)
         baseline = model.estimate_effect(
@@ -341,9 +424,12 @@ async def run_refuters(
     loop = asyncio.get_event_loop()
 
     async def _one(r: RefuterName) -> RefutationResult:
+        seed = _seed_for(request_hash, r)
         try:
             return await asyncio.wait_for(
-                loop.run_in_executor(None, _run_one_refuter, r, model, identified, baseline),
+                loop.run_in_executor(
+                    None, _run_one_refuter, r, model, identified, baseline, seed,
+                ),
                 timeout_s,
             )
         except asyncio.TimeoutError:
@@ -353,7 +439,10 @@ async def run_refuters(
                 error=f"timeout after {timeout_s}s",
             )
 
-    results = await asyncio.gather(*(_one(r) for r in chosen))
+    if concurrent:
+        results = await asyncio.gather(*(_one(r) for r in chosen))
+    else:
+        results = [await _one(r) for r in chosen]
     return sorted(results, key=lambda r: r.refuter)
 
 
@@ -436,21 +525,27 @@ async def _run_critic(
     return [AdversarialChallenge(**c) for c in raw], True
 
 
-_HASH_EXCLUDE_FIELDS = {
-    "audit_record_hash",
-    "rendered",
-    "signature_b64",
-    "signature_status",
-    "signing_key_source",
+_HASH_EXCLUDE_FIELDS: Dict[str, Any] = {
+    "audit_record_hash": True,
+    "rendered": True,
+    "signature_b64": True,
+    "signature_status": True,
+    "signing_key_source": True,
     # record_id is uuid-random and uncorrelated with the inputs — exclude
     # so two jobs with identical inputs produce the same artifact_hash
     # regardless of the random ID assigned at submission time.
-    "record_id",
+    "record_id": True,
     # regenerated_critic is *metadata about how the answer was produced*
     # (cache hit vs miss), not part of the answer itself. Excluding it
     # means the artifact hash is byte-stable across replay regardless of
     # whether the critic-cache survived since the original sealing.
-    "regenerated_critic",
+    "regenerated_critic": True,
+    # elapsed_ms is wallclock per-step timing — pure metadata, drifts
+    # every run. Strip from every estimate and every refutation so the
+    # re-execution Layer 10 contract holds. Pydantic v2 ``__all__`` key
+    # applies the exclude to every list element.
+    "estimates":   {"__all__": {"elapsed_ms"}},
+    "refutations": {"__all__": {"elapsed_ms"}},
 }
 
 
@@ -482,8 +577,14 @@ async def run_job(query: CounterfactualQuery, df: pd.DataFrame) -> Counterfactua
     fingerprint = _dataset_fingerprint(df)
     req_hash = _request_hash(query, fingerprint)
 
-    estimates = await run_estimators(df, query.treatment, query.outcome, query.dag.model_dump())
-    refutations = await run_refuters(df, query.treatment, query.outcome, query.dag.model_dump())
+    estimates = await run_estimators(
+        df, query.treatment, query.outcome, query.dag.model_dump(),
+        request_hash=req_hash,
+    )
+    refutations = await run_refuters(
+        df, query.treatment, query.outcome, query.dag.model_dump(),
+        request_hash=req_hash,
+    )
     challenges_unsorted, regenerated = await _run_critic(
         estimates, refutations, query.dag.model_dump(),
         query.treatment, query.outcome,
