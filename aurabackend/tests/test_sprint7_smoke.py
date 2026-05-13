@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any
 
 import pytest
 
@@ -158,7 +157,12 @@ def test_collab_yprotocol_sync_update_roundtrip():
 
 def test_collab_manager_attach_detach():
     """Attach an in-memory peer to a room, list, then detach — exercises
-    the relay registry."""
+    the relay registry. Gated on pycrdt because collab.agent_peer imports
+    ``from pycrdt import Doc, Text`` at module top — pycrdt is an
+    optional dep for the realtime-collab feature and is not part of the
+    base CI image. The yprotocol byte tests above stay unaffected since
+    they only touch ``collab.yprotocol``."""
+    pytest.importorskip("pycrdt", reason="pycrdt is an optional dep for collab features")
     import asyncio
 
     from collab import manager
