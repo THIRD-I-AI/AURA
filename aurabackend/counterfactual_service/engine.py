@@ -736,6 +736,88 @@ async def run_refuters(
     return sorted(results, key=lambda r: r.refuter)
 
 
+# ── Sprint 14: deterministic propensity warning ───────────────────────
+
+# Same numbers [[feedback_propensity_calibration]] uses for "extreme"
+# propensities — keeping them as module-level constants so the engine
+# diagnostic and the development guideline stay in lock-step. If you
+# tune these here, update the memory file too.
+_PROPENSITY_EXTREME_LOW = 0.05
+_PROPENSITY_EXTREME_HIGH = 0.95
+_PROPENSITY_EXTREME_FRACTION = 0.10
+
+
+def _propensity_warning_challenges(
+    estimates: List[CounterfactualEstimate],
+) -> List[AdversarialChallenge]:
+    """Inspect each estimate's propensity_diagnostics and emit at most
+    one high-severity challenge per estimator that looks IPW-fragile.
+
+    Two trigger conditions, OR'd together:
+      1. ``n_extreme / n_total > 0.10`` — at least 10% of rows had
+         propensity scores in the IPW-fragile region [<0.05, >0.95]
+         where the doubly-robust correction (T - e) / [e(1-e)] blows
+         up.
+      2. ``min(p05, 1 - p95) < 0.05`` — the bulk of the distribution
+         already lives near the boundary; even rows that don't make
+         the n_extreme count are contributing to a fragile estimate.
+
+    Threshold copies are documented in feedback_propensity_calibration.
+
+    Deterministic: same diagnostics → same challenge text. The text
+    is the SAME across all estimators with the same diagnostic shape
+    so the sort+hash is stable across runs.
+    """
+    out: List[AdversarialChallenge] = []
+    for est in estimates:
+        diag = est.propensity_diagnostics
+        if diag is None or diag.n_total <= 0:
+            continue
+        frac_extreme = diag.n_extreme / diag.n_total
+        p05 = diag.quantiles.get("p05")
+        p95 = diag.quantiles.get("p95")
+        boundary_distance = None
+        if p05 is not None and p95 is not None:
+            boundary_distance = min(p05, 1.0 - p95)
+
+        bad_fraction = frac_extreme > _PROPENSITY_EXTREME_FRACTION
+        bad_distribution = (
+            boundary_distance is not None
+            and boundary_distance < _PROPENSITY_EXTREME_LOW
+        )
+        if not (bad_fraction or bad_distribution):
+            continue
+
+        # The text is intentionally identifying (mentions method +
+        # specific numbers) so an auditor scanning challenges can
+        # tell which estimator + how bad. Numbers are formatted to a
+        # fixed precision so canonical-JSON byte stability holds
+        # across re-runs that share the same diagnostics.
+        text = (
+            f"Estimator '{est.method}' had IPW-fragile propensity "
+            f"diagnostics: {diag.n_extreme}/{diag.n_total} rows "
+            f"({frac_extreme:.1%}) outside "
+            f"[{_PROPENSITY_EXTREME_LOW:.2f}, "
+            f"{_PROPENSITY_EXTREME_HIGH:.2f}]; "
+            f"distribution p05={diag.quantiles.get('p05', 0):.3f}, "
+            f"p95={diag.quantiles.get('p95', 0):.3f}. "
+            f"Treat CI width as a floor, not a ceiling."
+        )
+        out.append(
+            AdversarialChallenge(
+                text=text,
+                severity="high",
+                suggested_check=(
+                    "Re-fit the propensity nuisance with a calibrated "
+                    "classifier (LogisticRegression with L2, or "
+                    "CalibratedClassifierCV) and verify that "
+                    "(n_extreme / n_total) drops below 10%."
+                ),
+            )
+        )
+    return out
+
+
 # ── End-to-end orchestration ──────────────────────────────────────────
 
 def _dataset_fingerprint(df: pd.DataFrame) -> str:
@@ -909,6 +991,17 @@ async def run_job(query: CounterfactualQuery, df: pd.DataFrame) -> Counterfactua
         estimates, refutations, query.dag.model_dump(),
         query.treatment, query.outcome,
         request_hash=req_hash,
+    )
+    # Sprint 14: deterministic propensity check. If any estimator surfaced
+    # cross-fitted propensity diagnostics that look IPW-fragile, append a
+    # high-severity challenge BEFORE the sort+hash so it's part of the
+    # audit basis. This is non-LLM and non-cached — pure function of the
+    # already-computed diagnostics — so it can't drift across replay and
+    # doesn't depend on the critic-cache survival. See
+    # [[feedback_propensity_calibration]] for the 0.05 / 0.95 / 10%
+    # threshold rationale.
+    challenges_unsorted.extend(
+        _propensity_warning_challenges(estimates),
     )
     # SHA-1 is only used as a stable, deterministic tie-breaker on the
     # challenge text — purely so two artifacts with identical (severity,
