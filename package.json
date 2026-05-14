@@ -2,7 +2,8 @@
   "name": "aura-platform",
   "private": true,
   "scripts": {
-    "dev": "cd frontend && npx vite",
+    "dev": "make dev",
+    "dev:backend": "make dev-backend",
     "dev:frontend": "cd frontend && npx vite",
     "build": "cd frontend && npm run build",
     "lint": "cd frontend && npm run lint",

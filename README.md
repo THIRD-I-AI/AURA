@@ -110,6 +110,12 @@ OLLAMA_HOST=http://localhost:11434  # Local (no key needed)
 
 ### 3. Run All Services
 
+**Single command from repo root (Linux/macOS):**
+
+```bash
+npm run dev               # Starts backend microservices + frontend dev server
+```
+
 **PowerShell (Windows):**
 
 ```powershell
