@@ -220,6 +220,67 @@ def report(ctx: click.Context, record_hash: str, output: Optional[Path]) -> None
     click.echo(f"PDF written to {output} ({len(data):,} bytes)")
 
 
+@cli.command(name="bulk-replay")
+@click.option(
+    "-f", "--hashes-file",
+    type=click.Path(exists=True, dir_okay=False, readable=True, path_type=Path),
+    help="File with one hash per line (lines starting with # are skipped).",
+)
+@click.argument("hashes", nargs=-1)
+@click.option("--json", "as_json", is_flag=True,
+              help="Emit one NDJSON record per line (machine-readable).")
+@click.pass_context
+def bulk_replay(
+    ctx: click.Context,
+    hashes_file: Optional[Path],
+    hashes: tuple,
+    as_json: bool,
+) -> None:
+    """Stream verify results for many artifacts at once.
+
+    Hashes may be supplied as positional arguments OR from a file via
+    ``--hashes-file``. The two sources are combined; duplicates are
+    deduplicated server-side. Exit code 0 if ALL hashes verify; exit
+    code 5 (the same code single-shot ``verify`` uses for verify-failed)
+    if ANY hash returned a non-ok status — useful for CI gates that
+    sweep the audit chain.
+    """
+    collected: list[str] = list(hashes)
+    if hashes_file is not None:
+        for line in hashes_file.read_text().splitlines():
+            line = line.strip()
+            if line and not line.startswith("#"):
+                collected.append(line)
+    if not collected:
+        click.echo("No hashes supplied (pass positional args or --hashes-file).", err=True)
+        sys.exit(1)
+
+    any_bad = False
+    with _make_client(**ctx.obj) as c:
+        for row in c.bulk_replay(collected):
+            if row.get("status") != "ok":
+                any_bad = True
+            if as_json:
+                click.echo(json.dumps(row))
+            else:
+                status = row.get("status", "?")
+                rh = row.get("record_hash", "?")
+                short = rh[:16] + ("…" if len(rh) > 16 else "")
+                if status == "ok":
+                    click.echo(f"OK            {short}")
+                elif status == "not_found":
+                    click.echo(f"NOT_FOUND     {short}", err=True)
+                elif status == "unsigned":
+                    click.echo(f"UNSIGNED      {short}", err=True)
+                elif status == "verify_failed":
+                    click.echo(f"VERIFY_FAILED {short}", err=True)
+                else:
+                    reason = row.get("reason", "")
+                    click.echo(f"ERROR         {short}  {reason}", err=True)
+    if any_bad:
+        sys.exit(5)
+
+
 def main() -> None:
     """Module entry-point — used by tests + python -m aura_counterfactual.cli."""
     cli(prog_name="aura-counterfactual", obj={})

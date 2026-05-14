@@ -63,6 +63,30 @@ RefuterName = Literal["random_common_cause", "placebo", "data_subset", "sensitiv
 Severity = Literal["low", "medium", "high"]
 
 
+class PropensityDiagnostics(BaseModel):
+    """Cross-fitted propensity score distribution for one estimator.
+
+    Sprint 13: surfaces the propensity scores the estimator computed so
+    auditors can flag IPW-fragile regions. Propensities near 0 or 1
+    blow up the doubly-robust correction term ``(T - e) / [e(1-e)]``
+    and silently produce noisy effect estimates. Capturing the
+    distribution lets the auditor say "this DR estimate is trustworthy"
+    or "this DR estimate had 12% of rows with e>0.95, treat the CI
+    width as a floor not a ceiling."
+
+    Quantile keys are deliberately string-typed (``"p05"`` etc.) so
+    canonical JSON sort order is stable across sprints — float keys
+    would round-trip through Pydantic's dict serialiser in undefined
+    order.
+    """
+    quantiles: Dict[str, float]
+    min: float
+    max: float
+    mean: float
+    n_extreme: int          # rows where e < 0.05 or e > 0.95
+    n_total: int            # total rows scored
+
+
 class CounterfactualEstimate(BaseModel):
     method: EstimatorMethod
     point: float
@@ -71,6 +95,12 @@ class CounterfactualEstimate(BaseModel):
     n_samples: int
     elapsed_ms: float = 0.0
     error: Optional[str] = None
+    # Sprint 13: optional for backward compat with persisted artifacts.
+    # Only DR-style methods (currently double_ml when econml is
+    # available) populate this; DoWhy-routed estimators leave it None.
+    # The field IS in the artifact hash basis so propensity drift
+    # surfaces as a hash change — that's the contract auditors get.
+    propensity_diagnostics: Optional[PropensityDiagnostics] = None
 
 
 class RefutationResult(BaseModel):

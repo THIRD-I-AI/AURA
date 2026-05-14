@@ -157,3 +157,92 @@ def test_public_key_command():
     res = _invoke(["public-key"])
     assert res.exit_code == 0
     assert "BEGIN PUBLIC KEY" in res.output
+
+
+# ── Sprint 13: bulk-replay command ───────────────────────────────────
+
+@respx.mock
+def test_bulk_replay_all_ok_exit_zero():
+    """Two hashes, both ok → exit 0 and human-readable lines."""
+    ndjson = (
+        '{"record_hash": "aaa", "status": "ok"}\n'
+        '{"record_hash": "bbb", "status": "ok"}\n'
+    )
+    respx.post(f"{BASE}/api/v1/counterfactual/replay/bulk").mock(
+        return_value=httpx.Response(
+            200, text=ndjson,
+            headers={"content-type": "application/x-ndjson"},
+        ),
+    )
+    res = _invoke(["bulk-replay", "aaa", "bbb"])
+    assert res.exit_code == 0, res.output
+    assert "OK" in res.output
+    assert "aaa" in res.output
+    assert "bbb" in res.output
+
+
+@respx.mock
+def test_bulk_replay_any_bad_exit_five():
+    """One ok + one verify_failed → exit 5 (same code as single verify)."""
+    ndjson = (
+        '{"record_hash": "aaa", "status": "ok"}\n'
+        '{"record_hash": "bbb", "status": "verify_failed", "signature_status": "signed"}\n'
+    )
+    respx.post(f"{BASE}/api/v1/counterfactual/replay/bulk").mock(
+        return_value=httpx.Response(
+            200, text=ndjson,
+            headers={"content-type": "application/x-ndjson"},
+        ),
+    )
+    res = _invoke(["bulk-replay", "aaa", "bbb"])
+    assert res.exit_code == 5, res.output
+
+
+@respx.mock
+def test_bulk_replay_no_hashes_exit_one():
+    """No positional args and no --hashes-file → exit 1 with clear error."""
+    res = _invoke(["bulk-replay"])
+    assert res.exit_code == 1
+    assert "No hashes supplied" in res.output
+
+
+@respx.mock
+def test_bulk_replay_reads_hashes_file(tmp_path):
+    """--hashes-file reads one hash per line, skipping comments + blanks."""
+    hf = tmp_path / "hashes.txt"
+    hf.write_text("# comment\naaa\n\nbbb\n")
+    ndjson = (
+        '{"record_hash": "aaa", "status": "ok"}\n'
+        '{"record_hash": "bbb", "status": "ok"}\n'
+    )
+    respx.post(f"{BASE}/api/v1/counterfactual/replay/bulk").mock(
+        return_value=httpx.Response(
+            200, text=ndjson,
+            headers={"content-type": "application/x-ndjson"},
+        ),
+    )
+    res = _invoke(["bulk-replay", "--hashes-file", str(hf)])
+    assert res.exit_code == 0, res.output
+    assert "aaa" in res.output
+    assert "bbb" in res.output
+
+
+@respx.mock
+def test_bulk_replay_json_output_emits_ndjson():
+    """--json passes through each NDJSON row verbatim — useful for
+    `aura-counterfactual bulk-replay --json | jq` shell pipelines."""
+    ndjson = (
+        '{"record_hash": "aaa", "status": "ok"}\n'
+        '{"record_hash": "bbb", "status": "not_found"}\n'
+    )
+    respx.post(f"{BASE}/api/v1/counterfactual/replay/bulk").mock(
+        return_value=httpx.Response(
+            200, text=ndjson,
+            headers={"content-type": "application/x-ndjson"},
+        ),
+    )
+    res = _invoke(["bulk-replay", "aaa", "bbb", "--json"])
+    assert res.exit_code == 5   # bbb is not_found → exit 5
+    lines = [line for line in res.output.splitlines() if line.strip()]
+    parsed = [json.loads(line) for line in lines]
+    assert [p["record_hash"] for p in parsed] == ["aaa", "bbb"]

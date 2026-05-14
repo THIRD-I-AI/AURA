@@ -266,3 +266,66 @@ async def test_async_client_replay(sample_artifact):
     async with AsyncClient(base_url=BASE) as c:
         art = await c.replay(record_hash)
     assert art.audit_record_hash == record_hash
+
+
+# ── Sprint 13: bulk_replay ────────────────────────────────────────────
+
+@respx.mock
+def test_bulk_replay_streams_ndjson_rows():
+    """The sync iterator yields one dict per NDJSON line in order."""
+    ndjson = (
+        '{"record_hash": "aaa", "status": "ok"}\n'
+        '{"record_hash": "bbb", "status": "not_found"}\n'
+        '{"record_hash": "ccc", "status": "verify_failed"}\n'
+    )
+    respx.post(f"{BASE}/api/v1/counterfactual/replay/bulk").mock(
+        return_value=httpx.Response(
+            200, text=ndjson,
+            headers={"content-type": "application/x-ndjson"},
+        ),
+    )
+    with Client(base_url=BASE) as c:
+        rows = list(c.bulk_replay(["aaa", "bbb", "ccc"]))
+    assert [r["record_hash"] for r in rows] == ["aaa", "bbb", "ccc"]
+    assert [r["status"] for r in rows] == ["ok", "not_found", "verify_failed"]
+
+
+@respx.mock
+def test_bulk_replay_empty_iterable_yields_nothing():
+    """An empty input must NOT hit the network — the iterator returns
+    immediately. respx would raise on an unexpected request."""
+    with Client(base_url=BASE) as c:
+        rows = list(c.bulk_replay([]))
+    assert rows == []
+
+
+@respx.mock
+def test_bulk_replay_propagates_http_errors():
+    """A 5xx from the engine must raise EngineError, not silently
+    return an empty iterator."""
+    respx.post(f"{BASE}/api/v1/counterfactual/replay/bulk").mock(
+        return_value=httpx.Response(500, text="boom"),
+    )
+    with Client(base_url=BASE) as c, pytest.raises(EngineError):
+        list(c.bulk_replay(["aaa"]))
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_async_client_bulk_replay_streams_ndjson_rows():
+    """Async iterator mirrors the sync contract on the same NDJSON
+    stream so FastAPI / async-notebook callers can consume results
+    without blocking the event loop."""
+    ndjson = (
+        '{"record_hash": "aaa", "status": "ok"}\n'
+        '{"record_hash": "bbb", "status": "unsigned"}\n'
+    )
+    respx.post(f"{BASE}/api/v1/counterfactual/replay/bulk").mock(
+        return_value=httpx.Response(
+            200, text=ndjson,
+            headers={"content-type": "application/x-ndjson"},
+        ),
+    )
+    async with AsyncClient(base_url=BASE) as c:
+        rows = [row async for row in c.bulk_replay(["aaa", "bbb"])]
+    assert [r["status"] for r in rows] == ["ok", "unsigned"]

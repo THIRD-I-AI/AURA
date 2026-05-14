@@ -100,9 +100,16 @@ jobs:
         run: |
           python -m pytest tests/test_e2e_eval_gate.py -v --tb=short
 
-      - name: Run counterfactual eval gate (Layers 9-11)
+      - name: Run counterfactual subsystem tests (all dowhy-gated files)
+        # Glob every tests/test_counterfactual_*.py file so any new
+        # dowhy/econml-gated test (Sprint 9 sign/verify round-trip,
+        # Sprint 11/12 eval-gate layers, future sprints) runs here
+        # instead of silently skipping in the backend-test lane that
+        # doesn't install requirements-causal.txt. Sprint 13 caught the
+        # broken verify endpoint precisely because the Sprint 9
+        # round-trip test had been silently skipping in CI for months.
         run: |
-          python -m pytest tests/test_counterfactual_eval_gate.py -v --tb=short
+          python -m pytest tests/test_counterfactual_*.py -v --tb=short
 
   # ── E2E evaluation gate — real LLM ───────────────────────────────────────
   # Same 8 layers, but hits Groq/Gemini for real. Tests the production rail

@@ -34,6 +34,7 @@ from .schemas import (
     EstimatorMethod,
     InterventionSpec,
     OutcomeSpec,
+    PropensityDiagnostics,
     RefutationResult,
     RefuterName,
     Severity,
@@ -134,6 +135,80 @@ _DOWHY_REFUTER_METHODS: Dict[RefuterName, str] = {
 
 
 # ── Sprint 12: EconML DR-Learner direct path ─────────────────────────
+
+def _compute_propensity_diagnostics(
+    *,
+    X: Any,
+    W: Optional[Any],
+    T_bin: Any,
+    cv_folds: int,
+    seed: int,
+) -> Optional[PropensityDiagnostics]:
+    """Cross-fit a propensity model and return quantile diagnostics.
+
+    Mirrors the propensity nuisance DR-Learner runs internally — same
+    LogisticRegression class, same per-fold seeding, same StratifiedKFold
+    splitter — but returns the out-of-fold predictions directly so we
+    can summarise the distribution. EconML doesn't expose the cross-
+    fitted propensities through a stable attribute (the internal name
+    has shifted between releases), so re-cross-fitting is the most
+    durable way to capture them.
+
+    Returns None on any failure — propensity diagnostics are
+    *advisory*, not load-bearing, and the artifact must still seal
+    even if this side-channel cross-fit fails.
+    """
+    try:
+        import numpy as np
+        from sklearn.linear_model import LogisticRegression
+        from sklearn.model_selection import StratifiedKFold, cross_val_predict
+
+        # Feature matrix mirrors the propensity nuisance input: X and W
+        # concatenated. When W is None or aliased to X (the with-DAG
+        # branch), pass X alone to avoid duplicating columns.
+        prop_features = (
+            np.hstack([X, W]) if W is not None and W is not X else X
+        )
+        splitter = StratifiedKFold(
+            n_splits=cv_folds, shuffle=True, random_state=seed,
+        )
+        proba = cross_val_predict(
+            LogisticRegression(
+                solver="lbfgs", max_iter=200, random_state=seed,
+            ),
+            X=prop_features,
+            y=T_bin,
+            cv=splitter,
+            method="predict_proba",
+        )
+        # Column 1 = P(T=1); cross_val_predict guarantees rows in
+        # original order so quantile stats are over the training set.
+        e = proba[:, 1]
+        q = np.quantile(e, [0.05, 0.25, 0.50, 0.75, 0.95])
+        return PropensityDiagnostics(
+            quantiles={
+                "p05": float(q[0]),
+                "p25": float(q[1]),
+                "p50": float(q[2]),
+                "p75": float(q[3]),
+                "p95": float(q[4]),
+            },
+            min=float(e.min()),
+            max=float(e.max()),
+            mean=float(e.mean()),
+            # An "extreme" propensity is one in the IPW-fragile region
+            # below 0.05 or above 0.95. The threshold is the same one
+            # used in [[feedback_propensity_calibration]] for catching
+            # uncalibrated propensity models, kept consistent here so
+            # the auditor diagnostic and the development guideline
+            # speak the same number.
+            n_extreme=int(((e < 0.05) | (e > 0.95)).sum()),
+            n_total=int(len(e)),
+        )
+    except Exception as exc:
+        logger.warning("Propensity diagnostics capture failed: %s", exc)
+        return None
+
 
 def _run_one_econml_dr_learner(
     df: pd.DataFrame,
@@ -260,6 +335,20 @@ def _run_one_econml_dr_learner(
         lo_arr, hi_arr = est.effect_interval(X, T0=0, T1=1, alpha=0.05)
         ci_lower = float(np.mean(lo_arr))
         ci_upper = float(np.mean(hi_arr))
+
+        # Sprint 13: capture cross-fitted propensity diagnostics so the
+        # auditor can see the distribution of e(X) the estimator used.
+        # We refit the propensity model under the same splitter + same
+        # random_state DR-Learner uses internally — equivalent to
+        # reading DR's own fold-wise propensity predictions but more
+        # robust to EconML's internal attribute naming, which has
+        # shifted between releases. The overhead is one extra logistic
+        # regression cross-fit (sub-100ms on n=1000) and the result
+        # round-trips through the artifact hash so propensity drift
+        # surfaces as a hash change to anyone replaying the audit.
+        propensity_diag = _compute_propensity_diagnostics(
+            X=X, W=W, T_bin=T_bin, cv_folds=cv_folds, seed=seed,
+        )
         # Surface a NaN result as a structured failure rather than
         # letting it propagate into the artifact. NaN can come from an
         # underdetermined final-stage covariance or from extreme
@@ -284,6 +373,7 @@ def _run_one_econml_dr_learner(
             ci_upper=ci_upper,
             n_samples=n,
             elapsed_ms=(time.time() - t0) * 1000,
+            propensity_diagnostics=propensity_diag,
         )
     except Exception as exc:
         logger.warning("DR-Learner (econml) failed: %s", exc)
@@ -737,6 +827,36 @@ _HASH_EXCLUDE_FIELDS: Dict[str, Any] = {
 }
 
 
+def strip_for_hashing(artifact: Any) -> Dict[str, Any]:
+    """Return the payload dict used for both signing AND verification.
+
+    Single source of truth so the sign-time bytes (engine.run_job) and
+    the verify-time bytes (main.verify_artifact) can never drift out of
+    sync. Accepts either a Pydantic ``CounterfactualArtifact`` instance
+    or a dict (read back from persistence) and applies the exclude spec
+    through ``model_dump`` so nested rules like
+    ``{"estimates": {"__all__": {"elapsed_ms"}}}`` are honoured uniformly.
+
+    The bug this prevents: Sprint 11 added the nested exclude for
+    per-element elapsed_ms. The engine sign path used model_dump
+    correctly; the verify path used a flat dict-comprehension that
+    only stripped top-level keys. Result was verified=False on every
+    Sprint 11+ signed artifact because the reconstructed payload still
+    had elapsed_ms inside each estimate/refutation, so the canonical
+    bytes diverged from what had actually been signed.
+    """
+    if isinstance(artifact, CounterfactualArtifact):
+        return artifact.model_dump(mode="json", exclude=_HASH_EXCLUDE_FIELDS)
+    # dict path: re-parse through Pydantic so the exclude spec applies
+    # with the same nested semantics. Extra fields are dropped, missing
+    # ones fail closed — that's deliberate, we want a structural mismatch
+    # to surface as ValidationError rather than silently produce bytes
+    # that differ from what was signed.
+    return CounterfactualArtifact.model_validate(artifact).model_dump(
+        mode="json", exclude=_HASH_EXCLUDE_FIELDS,
+    )
+
+
 def _request_hash(query: CounterfactualQuery, dataset_fingerprint: str) -> str:
     """Stable hash of the user-controllable inputs.
 
@@ -809,7 +929,9 @@ async def run_job(query: CounterfactualQuery, df: pd.DataFrame) -> Counterfactua
     # Compute artifact_hash over the artifact MINUS audit/render/signature
     # fields. record_id is also excluded so byte-stable replay is possible
     # regardless of which ca_<uuid> the original submission was assigned.
-    payload = artifact.model_dump(mode="json", exclude=_HASH_EXCLUDE_FIELDS)
+    # Goes through strip_for_hashing so verify_artifact builds identical
+    # bytes — Sprint 13 fix for the verify-vs-sign drift.
+    payload = strip_for_hashing(artifact)
     artifact_hash = sha256_canonical(payload)
     artifact.audit_record_hash = artifact_hash
 

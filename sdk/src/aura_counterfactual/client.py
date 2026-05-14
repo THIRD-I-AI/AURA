@@ -21,9 +21,10 @@ Design notes:
 """
 from __future__ import annotations
 
+import json
 import time
 from dataclasses import dataclass
-from typing import Any, Dict, Optional, Union
+from typing import Any, AsyncIterator, Dict, Iterable, Iterator, List, Optional, Union
 
 import httpx
 
@@ -267,6 +268,47 @@ class Client:
         )
         return resp.content
 
+    def bulk_replay(self, hashes: Iterable[str]) -> Iterator[Dict[str, Any]]:
+        """Stream verify results for a batch of artifact hashes.
+
+        Yields one dict per hash, in submission order, as the engine
+        finishes verifying each one. Per-hash failure modes
+        (``not_found``, ``unsigned``, ``verify_failed``, ``error``)
+        come back in the ``status`` field; the iterator never raises
+        for individual failures. Network or HTTP-level failures still
+        raise ``EngineError``.
+
+        The endpoint streams NDJSON and the client streams the parse,
+        so the auditor's caller can start consuming results before the
+        last hash has been verified and memory stays O(1) regardless
+        of batch size.
+
+        ::
+
+            for row in c.bulk_replay(["abc...", "def..."]):
+                print(row["record_hash"], row["status"])
+        """
+        hash_list = list(hashes)
+        if not hash_list:
+            return
+        with self._http.stream(
+            "POST",
+            self._url("/counterfactual/replay/bulk"),
+            json={"hashes": hash_list},
+        ) as resp:
+            if not resp.is_success:
+                # httpx needs the streaming body read before .text is
+                # available inside the context manager; otherwise the
+                # error path raises StreamConsumed instead of our
+                # structured EngineError.
+                resp.read()
+            self._raise_for_status(resp)
+            for line in resp.iter_lines():
+                line = line.strip()
+                if not line:
+                    continue
+                yield json.loads(line)
+
 
 # ── Async client (mirror of the sync surface) ─────────────────────────
 
@@ -391,3 +433,31 @@ class AsyncClient:
             raw=True,
         )
         return resp.content
+
+    async def bulk_replay(
+        self, hashes: Iterable[str],
+    ) -> AsyncIterator[Dict[str, Any]]:
+        """Async streaming variant of ``Client.bulk_replay``.
+
+        Same NDJSON contract from the server side; the async generator
+        lets a FastAPI / async-notebook caller process results as they
+        land without blocking the event loop.
+        """
+        hash_list = list(hashes)
+        if not hash_list:
+            return
+        async with self._http.stream(
+            "POST",
+            self._url("/counterfactual/replay/bulk"),
+            json={"hashes": hash_list},
+        ) as resp:
+            if not resp.is_success:
+                # Body needs to be drained before httpx will let us
+                # read .text inside the stream context manager.
+                await resp.aread()
+            Client._raise_for_status(resp)
+            async for line in resp.aiter_lines():
+                line = line.strip()
+                if not line:
+                    continue
+                yield json.loads(line)

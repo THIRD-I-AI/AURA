@@ -62,6 +62,25 @@ RefuterName = Literal["random_common_cause", "placebo", "data_subset", "sensitiv
 Severity = Literal["low", "medium", "high"]
 
 
+class PropensityDiagnostics(BaseModel):
+    """Cross-fitted propensity score distribution for one estimator.
+
+    Vendored from counterfactual_service.schemas.PropensityDiagnostics.
+    Populated by DR-style estimators only (currently ``double_ml`` when
+    the engine has econml installed); other methods leave it None.
+    Auditors look at ``n_extreme / n_total`` and the ``p05`` / ``p95``
+    quantiles to judge how IPW-fragile the estimate is — large
+    n_extreme means the doubly-robust correction had near-divide-by-
+    zero rows and the CI width should be treated as a floor.
+    """
+    quantiles: Dict[str, float]
+    min: float
+    max: float
+    mean: float
+    n_extreme: int
+    n_total: int
+
+
 class CounterfactualEstimate(BaseModel):
     method: EstimatorMethod
     point: float
@@ -70,6 +89,10 @@ class CounterfactualEstimate(BaseModel):
     n_samples: int
     elapsed_ms: float = 0.0
     error: Optional[str] = None
+    # Sprint 13: optional + forward-compat. Older artifacts persisted
+    # before S13 don't have this field; ConfigDict(extra="ignore") on
+    # the artifact handles any future field additions the same way.
+    propensity_diagnostics: Optional[PropensityDiagnostics] = None
 
 
 class RefutationResult(BaseModel):
