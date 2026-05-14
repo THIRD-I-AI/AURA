@@ -676,10 +676,15 @@ async def run_refuters(
     """
     chosen: List[RefuterName] = refuters or list(_DOWHY_REFUTER_METHODS.keys())
     if not _DOWHY_AVAILABLE:
-        return [
-            RefutationResult(refuter=r, passed=False, error="dowhy not installed")
-            for r in chosen
-        ]
+        # Sorted to match the happy-path return so callers can rely on
+        # a single ordering invariant — alphabetical by refuter name.
+        return sorted(
+            [
+                RefutationResult(refuter=r, passed=False, error="dowhy not installed")
+                for r in chosen
+            ],
+            key=lambda r: r.refuter,
+        )
 
     try:
         # Baseline estimate — also pinned. Bootstrap CI here would
@@ -693,11 +698,18 @@ async def run_refuters(
         )
     except Exception as exc:
         logger.warning("Baseline for refuters failed: %s", exc)
-        return [
-            RefutationResult(refuter=r, passed=False,
-                             error=f"baseline failed: {type(exc).__name__}: {exc}")
-            for r in chosen
-        ]
+        # Same alphabetical ordering as the happy path — when CI catches
+        # a DoWhy/networkx breakage the test_run_refuters_run_on_synthetic
+        # assertion on sort order must still hold, otherwise the failure
+        # mode reads as "two bugs" when it's really one.
+        return sorted(
+            [
+                RefutationResult(refuter=r, passed=False,
+                                 error=f"baseline failed: {type(exc).__name__}: {exc}")
+                for r in chosen
+            ],
+            key=lambda r: r.refuter,
+        )
 
     loop = asyncio.get_event_loop()
 

@@ -15,8 +15,15 @@
 #     produced garbage for) and for the ADF stationarity guardrail.
 
 # DoWhy graphical causal models — primary engine for
-# gcm.attribute_anomalies in causal_service/discovery.py
-dowhy>=0.11,<0.13
+# gcm.attribute_anomalies in causal_service/discovery.py.
+# Sprint 13 bumped the floor to 0.13 — older DoWhy used
+# ``networkx.algorithms.d_separated`` which was removed in
+# networkx 3.x, so any combination of (dowhy<0.13, networkx>=3.x)
+# crashes on the first DoWhy model build. The de-skipped eval-gate
+# caught this on the original CI run; bumping to 0.13 keeps the
+# networkx range we have without forcing every other AURA pod onto
+# a narrower one.
+dowhy>=0.13,<0.16
 networkx>=3.0,<4.0
 
 # Robust partial correlation (collinearity-aware) + ADF stationarity test
