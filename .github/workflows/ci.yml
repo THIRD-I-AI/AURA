@@ -84,6 +84,12 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
+          # Sprint 12: counterfactual eval gate (Layers 9-11) requires the
+          # full causal stack — dowhy for estimator fan-out, econml for the
+          # double_ml DR-Learner. Without these the layers silently
+          # pytest.skipif() out and the gate becomes false-green. Install
+          # the same way the causal_service pod does in prod.
+          pip install -r requirements-causal.txt
           pip install pytest pytest-asyncio
 
       - name: Run 8-layer eval gate (mock LLM)
@@ -93,6 +99,10 @@ jobs:
           AURA_EVAL_GATE_COLUMNS: "75"
         run: |
           python -m pytest tests/test_e2e_eval_gate.py -v --tb=short
+
+      - name: Run counterfactual eval gate (Layers 9-11)
+        run: |
+          python -m pytest tests/test_counterfactual_eval_gate.py -v --tb=short
 
   # ── E2E evaluation gate — real LLM ───────────────────────────────────────
   # Same 8 layers, but hits Groq/Gemini for real. Tests the production rail
