@@ -142,11 +142,26 @@ def _operator(art: CounterfactualArtifact) -> Dict[str, Any]:
     ci_lo = min((e.ci_lower for e in valid), default=0.0)
     ci_hi = max((e.ci_upper for e in valid), default=0.0)
     top_challenges = [c.model_dump() for c in art.challenges[:2]]
+    # Sprint 16: aggregate ci_method across valid estimators so the
+    # operator card can show the strongest contract in force. The
+    # priority is "conformal > asymptotic" — conformal is the
+    # distribution-free finite-sample guarantee, asymptotic is the
+    # large-sample-under-correctly-specified-nuisance guarantee. If
+    # any DR estimator ran with conformal calibration AND succeeded,
+    # the conformal contract is what the operator sees.
+    methods_seen = {e.ci_method for e in valid}
+    if "conformal" in methods_seen and len(methods_seen) > 1:
+        ci_method_overall = "mixed"
+    elif methods_seen == {"conformal"}:
+        ci_method_overall = "conformal"
+    else:
+        ci_method_overall = "asymptotic"
     out: Dict[str, Any] = {
         "record_id": art.record_id,
         "headline": _headline(art),
         "point_estimate": point,
         "ci": [ci_lo, ci_hi],
+        "ci_method": ci_method_overall,
         "confidence": art.confidence,
         "top_challenges": top_challenges,
         "audit_record_hash": art.audit_record_hash,

@@ -233,4 +233,32 @@ describe('CounterfactualCard', () => {
     );
     expect(screen.getByTestId('cate-heterogeneity').textContent).toBe('homogeneous');
   });
+
+  // ── Sprint 16: ci_method badge ──────────────────────────────────
+
+  it('does not render the ci_method badge when ci_method is absent', () => {
+    render(<CounterfactualCard artifact={baseFixture} />);
+    expect(screen.queryByTestId('ci-method-badge')).not.toBeInTheDocument();
+  });
+
+  it('renders the asymptotic ci_method badge when ci_method=asymptotic', () => {
+    render(
+      <CounterfactualCard artifact={{ ...baseFixture, ci_method: 'asymptotic' }} />,
+    );
+    expect(screen.getByTestId('ci-method-badge').textContent).toBe('asymptotic');
+  });
+
+  it('renders the conformal ci_method badge when ci_method=conformal', () => {
+    render(
+      <CounterfactualCard artifact={{ ...baseFixture, ci_method: 'conformal' }} />,
+    );
+    expect(screen.getByTestId('ci-method-badge').textContent).toBe('conformal');
+  });
+
+  it('renders the mixed ci_method badge when ci_method=mixed', () => {
+    render(
+      <CounterfactualCard artifact={{ ...baseFixture, ci_method: 'mixed' }} />,
+    );
+    expect(screen.getByTestId('ci-method-badge').textContent).toBe('mixed');
+  });
 });

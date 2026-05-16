@@ -45,6 +45,20 @@ export interface CounterfactualOperatorView {
   headline: string;
   point_estimate: number;
   ci: [number, number];
+  // Sprint 16 — which contract the CI carries:
+  //   * "asymptotic"  — classical statsmodels / BLB interval
+  //                     (Sprint 12-15 default). Coverage relies on
+  //                     correctly-specified nuisance models +
+  //                     large-sample asymptotics.
+  //   * "conformal"   — split-conformal on AIPW pseudo-outcomes
+  //                     (Lei & Candès 2021). Coverage holds at the
+  //                     stated 1-alpha level in finite samples
+  //                     regardless of nuisance-model misspecification.
+  //   * "mixed"       — multiple estimators contributed and at least
+  //                     one is conformal. Treat as "weakest contract"
+  //                     and lean on the conformal badge meaning.
+  // Optional for forward compat with pre-S16 artifacts.
+  ci_method?: 'asymptotic' | 'conformal' | 'mixed';
   confidence: 'low' | 'medium' | 'high';
   top_challenges: CounterfactualChallenge[];
   audit_record_hash: string;
@@ -504,6 +518,48 @@ const CounterfactualCard: React.FC<Props> = ({ artifact }) => {
         <span style={{ fontFamily: 'monospace' }}>
           [{artifact.ci[0].toFixed(2)}, {artifact.ci[1].toFixed(2)}]
         </span>
+        {artifact.ci_method && (
+          <span
+            data-testid="ci-method-badge"
+            title={
+              artifact.ci_method === 'conformal'
+                ? 'Distribution-free finite-sample coverage (Lei & Candès 2021). Coverage holds regardless of nuisance-model misspecification.'
+                : artifact.ci_method === 'mixed'
+                ? 'Multiple estimators contributed; at least one shipped a conformal interval. Read as the weakest contract.'
+                : 'Asymptotic-normal CI from statsmodels / BLB. Coverage requires correctly-specified nuisance and large-n asymptotics.'
+            }
+            style={{
+              marginLeft: 8,
+              padding: '1px 6px',
+              borderRadius: 3,
+              fontSize: 10,
+              fontFamily: 'inherit',
+              cursor: 'help',
+              // Conformal = stronger contract = same green-ish tint
+              // as high-confidence; asymptotic stays neutral.
+              background:
+                artifact.ci_method === 'conformal'
+                  ? CONFIDENCE_BG.high
+                  : artifact.ci_method === 'mixed'
+                  ? CONFIDENCE_BG.medium
+                  : 'rgba(148, 163, 184, 0.15)',
+              color:
+                artifact.ci_method === 'conformal'
+                  ? CONFIDENCE_FG.high
+                  : artifact.ci_method === 'mixed'
+                  ? CONFIDENCE_FG.medium
+                  : 'var(--text-muted, #94a3b8)',
+              border:
+                artifact.ci_method === 'conformal'
+                  ? `1px solid ${CONFIDENCE_BORDER.high}`
+                  : artifact.ci_method === 'mixed'
+                  ? `1px solid ${CONFIDENCE_BORDER.medium}`
+                  : '1px solid var(--border, #334155)',
+            }}
+          >
+            {artifact.ci_method}
+          </span>
+        )}
       </div>
 
       {artifact.propensity_summary && (

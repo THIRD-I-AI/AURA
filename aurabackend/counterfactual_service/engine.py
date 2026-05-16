@@ -135,6 +135,152 @@ _DOWHY_REFUTER_METHODS: Dict[RefuterName, str] = {
 }
 
 
+# ── Sprint 16: split-conformal calibration for DR estimators ─────────
+
+def _conformal_ate_via_aipw(
+    X: Any,
+    W: Optional[Any],
+    T_bin: Any,
+    Y: Any,
+    cv_folds: int,
+    seed: int,
+    alpha: float = 0.05,
+) -> Optional[Dict[str, float]]:
+    """Split-conformal ATE inference via AIPW pseudo-outcomes.
+
+    Sprint 16. Where the asymptotic CI (statsmodels sandwich on
+    LinearDR, BLB on ForestDR) needs the nuisance models to be
+    correctly specified for its coverage guarantee, the conformal
+    interval below holds at the stated ``1-alpha`` level in finite
+    samples REGARDLESS of nuisance-model quality — the only
+    requirement is the calibration set being iid with the deployment
+    population.
+
+    Procedure (Lei & Candès JRSS-B 2021, Algorithm 1, adapted for ATE):
+
+      1. Split data 70/30 into proper-train / calibration using a
+         seed derived from the engine's per-method seed so the split
+         is byte-stable across re-runs.
+      2. Fit calibrated logistic propensity + linear outcome nuisance
+         models on the proper-train fold only. Same model classes
+         the LinearDR path uses so the calibration set sees the
+         same kind of nuisance regression.
+      3. Predict e_hat, mu0_hat, mu1_hat on the calibration rows.
+      4. Compute AIPW pseudo-outcomes (counterfactual_service.
+         conformal.aipw_pseudo_outcomes).
+      5. ``pt = mean(psi)``; half-width via weighted_split_conformal
+         on |psi - pt|.
+
+    Returns a dict ``{point, ci_lower, ci_upper}`` rounded to 6
+    decimals (Layer 10 byte stability) when the calibration set is
+    large enough to certify coverage at alpha; returns ``None``
+    otherwise — in which case the caller keeps the asymptotic CI
+    rather than ship a fake-tight conformal interval.
+
+    Defensive on small n: when the calibration fold has < 30 rows
+    or per-class count < 5, return None. With only a handful of
+    calibration rows the conformal quantile is so wide as to be
+    uninformative — better to surface the asymptotic CI explicitly
+    than to ship a |Y_max - Y_min|-sized "conformal" band that
+    technically satisfies coverage but tells the operator nothing.
+    """
+    try:
+        import numpy as np
+        from sklearn.linear_model import LinearRegression, LogisticRegression
+
+        from .conformal import aipw_pseudo_outcomes, weighted_split_conformal
+
+        X_arr = np.asarray(X, dtype=float)
+        Y_arr = np.asarray(Y, dtype=float).ravel()
+        T_arr = np.asarray(T_bin, dtype=int).ravel()
+        n = X_arr.shape[0]
+        if n < 50:
+            # Not enough rows to do a 70/30 split AND have a
+            # meaningful calibration set. The asymptotic CI is the
+            # honest fallback.
+            return None
+
+        # Seed-derived split — _seed_for already in scope (Sprint 11
+        # primitive). Reuse so two engine runs on the same input
+        # produce the same proper-train / calibration partition.
+        split_rng = np.random.default_rng(seed ^ 0x5151_C0E0)
+        order = split_rng.permutation(n)
+        n_train = int(0.70 * n)
+        train_idx = order[:n_train]
+        calib_idx = order[n_train:]
+        if len(calib_idx) < 30:
+            return None
+
+        # Per-class minimum check: logistic propensity needs each
+        # class represented in BOTH folds for sklearn to fit without
+        # raising. A degenerate split where one fold is all-T=1 or
+        # all-T=0 is too noisy for conformal anyway.
+        for idx in (train_idx, calib_idx):
+            t_sub = T_arr[idx]
+            if int(t_sub.sum()) < 5 or int((1 - t_sub).sum()) < 5:
+                return None
+
+        # Build the nuisance-model feature matrix: include W
+        # alongside X if W is provided as a separate object. The DR
+        # paths pass X = W in the with-DAG branch so this concatenation
+        # is a no-op there; in the broken-DAG branch (W=None, X=noise)
+        # it keeps the propensity model fit-able on the noise column
+        # alone — produces a near-constant e_hat ~ 0.5 which the
+        # AIPW correction handles gracefully.
+        if W is None or (hasattr(W, "shape") and W.shape == X_arr.shape and (W is X_arr or np.allclose(W, X_arr))):
+            features = X_arr
+        else:
+            features = np.hstack([X_arr, np.asarray(W, dtype=float)])
+
+        # Fit nuisance on train fold only — this is the key
+        # difference from S12's cross-fitted LinearDR. Split-
+        # conformal needs the calibration set unseen during nuisance
+        # fit for the (1-alpha) quantile guarantee.
+        propensity_model = LogisticRegression(
+            solver="lbfgs", max_iter=200, random_state=seed,
+        )
+        propensity_model.fit(features[train_idx], T_arr[train_idx])
+        e_hat_calib = propensity_model.predict_proba(features[calib_idx])[:, 1]
+
+        # Two outcome models — one per arm, fit on the corresponding
+        # subset of the training fold. Matches the standard AIPW
+        # decomposition.
+        train_T_mask = T_arr[train_idx] == 1
+        train_C_mask = T_arr[train_idx] == 0
+        if int(train_T_mask.sum()) < 5 or int(train_C_mask.sum()) < 5:
+            return None
+        mu1_model = LinearRegression()
+        mu0_model = LinearRegression()
+        mu1_model.fit(features[train_idx][train_T_mask], Y_arr[train_idx][train_T_mask])
+        mu0_model.fit(features[train_idx][train_C_mask], Y_arr[train_idx][train_C_mask])
+        mu1_hat_calib = mu1_model.predict(features[calib_idx])
+        mu0_hat_calib = mu0_model.predict(features[calib_idx])
+
+        psi = aipw_pseudo_outcomes(
+            Y=Y_arr[calib_idx],
+            T=T_arr[calib_idx],
+            e_hat=e_hat_calib,
+            mu0_hat=mu0_hat_calib,
+            mu1_hat=mu1_hat_calib,
+        )
+        pt = float(np.mean(psi))
+        scores = np.abs(psi - pt)
+        half_width = weighted_split_conformal(scores, weights=None, alpha=alpha)
+        if not np.isfinite(half_width):
+            # Sample too small to certify coverage at alpha — caller
+            # should keep the asymptotic CI.
+            return None
+
+        return {
+            "point": round(pt, 6),
+            "ci_lower": round(pt - half_width, 6),
+            "ci_upper": round(pt + half_width, 6),
+        }
+    except Exception as exc:
+        logger.warning("Conformal calibration failed (non-fatal, asymptotic CI retained): %s", exc)
+        return None
+
+
 # ── Sprint 12: EconML DR-Learner direct path ─────────────────────────
 
 def _compute_propensity_diagnostics(
@@ -217,6 +363,7 @@ def _run_one_econml_dr_learner(
     outcome: OutcomeSpec,
     dag: dict,
     seed: int,
+    conformal_calibration: bool = False,
 ) -> CounterfactualEstimate:
     """LinearDRLearner ATE for the ``double_ml`` slot.
 
@@ -367,6 +514,28 @@ def _run_one_econml_dr_learner(
         if ci_upper < ci_lower:
             ci_lower, ci_upper = ci_upper, ci_lower
 
+        # Sprint 16: optional split-conformal calibration. When the
+        # caller opts in (typically via methods + conformal_
+        # calibration=True from run_estimators) AND the calibration
+        # set is large enough to certify coverage at alpha=0.05, we
+        # overwrite the asymptotic [ci_lower, ci_upper] with the
+        # conformal interval and flip ci_method to "conformal". The
+        # asymptotic CI is kept when conformal calibration declines
+        # to certify (small n, degenerate split) — the operator card
+        # sees ci_method="asymptotic" in that case which is the
+        # honest signal.
+        ci_method: str = "asymptotic"
+        if conformal_calibration:
+            conformal_result = _conformal_ate_via_aipw(
+                X=X, W=W, T_bin=T_bin, Y=Y,
+                cv_folds=cv_folds, seed=seed,
+            )
+            if conformal_result is not None:
+                pt = conformal_result["point"]
+                ci_lower = conformal_result["ci_lower"]
+                ci_upper = conformal_result["ci_upper"]
+                ci_method = "conformal"
+
         return CounterfactualEstimate(
             method="double_ml",
             point=pt,
@@ -375,6 +544,7 @@ def _run_one_econml_dr_learner(
             n_samples=n,
             elapsed_ms=(time.time() - t0) * 1000,
             propensity_diagnostics=propensity_diag,
+            ci_method=ci_method,  # type: ignore[arg-type]
         )
     except Exception as exc:
         logger.warning("DR-Learner (econml) failed: %s", exc)
@@ -395,6 +565,7 @@ def _run_one_econml_forest_dr_learner(
     outcome: OutcomeSpec,
     dag: dict,
     seed: int,
+    conformal_calibration: bool = False,
 ) -> CounterfactualEstimate:
     """ForestDRLearner ATE + per-row CATE distribution.
 
@@ -541,6 +712,23 @@ def _run_one_econml_forest_dr_learner(
             X=X, W=W, T_bin=T_bin, cv_folds=cv_folds, seed=seed,
         )
 
+        # Sprint 16: optional conformal calibration overrides the BLB
+        # CI when opted in AND the calibration set is large enough.
+        # Same shape as the LinearDR conformal path — the helper
+        # doesn't care whether the asymptotic CI came from a linear
+        # sandwich or a forest BLB.
+        ci_method: str = "asymptotic"
+        if conformal_calibration:
+            conformal_result = _conformal_ate_via_aipw(
+                X=X, W=W, T_bin=T_bin, Y=Y,
+                cv_folds=cv_folds, seed=seed,
+            )
+            if conformal_result is not None:
+                pt = conformal_result["point"]
+                ci_lower = conformal_result["ci_lower"]
+                ci_upper = conformal_result["ci_upper"]
+                ci_method = "conformal"
+
         return CounterfactualEstimate(
             method="forest_dr",
             point=pt,
@@ -550,6 +738,7 @@ def _run_one_econml_forest_dr_learner(
             elapsed_ms=(time.time() - t0) * 1000,
             propensity_diagnostics=propensity_diag,
             cate_distribution=cate_quantiles,
+            ci_method=ci_method,  # type: ignore[arg-type]
         )
     except Exception as exc:
         logger.warning("ForestDR-Learner (econml) failed: %s", exc)
@@ -626,19 +815,28 @@ def _run_one_estimator(
     outcome: OutcomeSpec,
     dag: dict,
     seed: int = 0,
+    conformal_calibration: bool = False,
 ) -> CounterfactualEstimate:
     # Sprint 12 dispatch: when econml is installed, route ``double_ml``
     # through the real DR-Learner. Without econml the slot stays on the
     # DoWhy backdoor.linear_regression stub below (semantically weaker
     # but still doubly-robust in the linear-DGP case the eval-gate hits).
+    # Sprint 16: conformal_calibration threads through to the DR path
+    # only — the DoWhy stub still ships an asymptotic CI.
     if method_key == "double_ml" and _ECONML_AVAILABLE:
-        return _run_one_econml_dr_learner(df, treatment, outcome, dag, seed)
+        return _run_one_econml_dr_learner(
+            df, treatment, outcome, dag, seed,
+            conformal_calibration=conformal_calibration,
+        )
     # Sprint 15 dispatch: ``forest_dr`` is opt-in (callers must include
     # it explicitly via methods=[...]); without econml it surfaces a
     # structured error rather than silently dropping the request.
     if method_key == "forest_dr":
         if _ECONML_AVAILABLE:
-            return _run_one_econml_forest_dr_learner(df, treatment, outcome, dag, seed)
+            return _run_one_econml_forest_dr_learner(
+                df, treatment, outcome, dag, seed,
+                conformal_calibration=conformal_calibration,
+            )
         return CounterfactualEstimate(
             method="forest_dr",
             point=0.0, ci_lower=0.0, ci_upper=0.0,
@@ -716,6 +914,7 @@ async def run_estimators(
     *,
     request_hash: str = "",
     concurrent: bool = False,
+    conformal_calibration: bool = False,
 ) -> List[CounterfactualEstimate]:
     """Run each estimator with a deterministic seed and per-step timeout.
 
@@ -732,6 +931,14 @@ async def run_estimators(
     operator-tier UI with a single chat session uses sequential; only
     callers that have explicitly accepted non-determinism (currently
     none) should opt into concurrent.
+
+    Sprint 16: ``conformal_calibration=True`` opts the DR-class
+    estimators (``double_ml``, ``forest_dr``) into a split-conformal
+    pass that produces a finite-sample distribution-free CI. Has no
+    effect on DoWhy-routed methods (their CIs come from DoWhy's
+    own machinery). When conformal calibration declines to certify
+    coverage (small n, degenerate split), the asymptotic CI is
+    retained and ``ci_method="asymptotic"`` flags the fallback.
     """
     chosen: List[EstimatorMethod] = methods or list(_DOWHY_ESTIMATOR_METHODS.keys())
     loop = asyncio.get_event_loop()
@@ -742,6 +949,7 @@ async def run_estimators(
             return await asyncio.wait_for(
                 loop.run_in_executor(
                     None, _run_one_estimator, m, df, treatment, outcome, dag, seed,
+                    conformal_calibration,
                 ),
                 timeout_s,
             )

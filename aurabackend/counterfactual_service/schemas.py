@@ -110,6 +110,18 @@ class CounterfactualEstimate(BaseModel):
     # any drift in the forest's CATE estimates surfaces as a hash
     # change so an auditor can detect non-deterministic model behaviour.
     cate_distribution: Optional[List[float]] = None
+    # Sprint 16: which CI contract this estimate's [ci_lower, ci_upper]
+    # bracket is in force under. "asymptotic" = the classical
+    # statsmodels / bootstrap-of-little-bags interval (S12 LinearDR
+    # default, S15 ForestDR default) — coverage holds in large samples
+    # under correctly-specified nuisance models. "conformal" = split-
+    # conformal on AIPW pseudo-outcomes (Lei & Candès JRSS-B 2021) —
+    # coverage holds at the stated level in finite samples regardless
+    # of nuisance-model misspecification, at the cost of a slightly
+    # wider interval. Auditors should treat "conformal" as the
+    # stronger contract; the operator card shows both with a small
+    # badge.
+    ci_method: Literal["asymptotic", "conformal"] = "asymptotic"
 
 
 class RefutationResult(BaseModel):

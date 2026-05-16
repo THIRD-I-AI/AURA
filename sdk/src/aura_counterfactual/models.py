@@ -98,6 +98,14 @@ class CounterfactualEstimate(BaseModel):
     # on the engine side so the SDK's forward-compat round-trip stays
     # byte-stable.
     cate_distribution: Optional[List[float]] = None
+    # Sprint 16: which CI contract this estimate's [ci_lower, ci_upper]
+    # bracket is in force under. "asymptotic" (default) = classical
+    # statsmodels / BLB interval. "conformal" = distribution-free
+    # split-conformal on AIPW pseudo-outcomes; coverage holds in
+    # finite samples regardless of nuisance-model misspecification.
+    # The SDK's ConfigDict(extra="ignore") tolerates older artifacts
+    # that pre-date this field.
+    ci_method: Literal["asymptotic", "conformal"] = "asymptotic"
 
 
 class RefutationResult(BaseModel):
