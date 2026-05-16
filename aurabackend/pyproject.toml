@@ -105,6 +105,15 @@ testpaths = ["tests"]
 # tracked in the post-sprint cleanup ticket. Omitting them here keeps the
 # 60% CI gate honest: it enforces no regression on already-tested code
 # instead of being diluted by 0%-covered new entry points.
+#
+# Sprint 15+: numbered counterfactual test files are also omitted because
+# their bodies are gated on `pytest.mark.skipif(not dowhy_available())`
+# and the backend-test CI lane doesn't install requirements-causal.txt.
+# Those tests DO run in the eval-gate lane (which globs
+# tests/test_counterfactual_*.py and installs the full causal stack);
+# omitting them here just keeps the backend-test coverage numerator
+# honest — skipped tests would otherwise count as 0%-covered code and
+# drag the average below the 60% gate.
 omit = [
     "causal_service/*",
     "dar_service/*",
@@ -113,6 +122,7 @@ omit = [
     "agents/specialists/dar_research_agent.py",
     "uasr/mapek_worker.py",
     "alembic/*",
+    "tests/test_counterfactual_*.py",
 ]
 
 [tool.bandit]
