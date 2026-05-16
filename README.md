@@ -2,440 +2,453 @@
 
 # AURA
 
-### Autonomous Universal Research Analyst
+### Auditable Causal Analytics Platform
 
-**Enterprise-grade AI data analysis platform with multi-agent orchestration, universal database connectivity, streaming pipelines, and self-healing infrastructure.**
+**A deterministic, cryptographically-signed causal counterfactual engine wrapped in a 12-microservice analytics stack with self-healing data ingestion, multi-agent SQL generation, and a Yjs-collaborative front end.**
 
 [![CI](https://github.com/THIRD-I-AI/AURA/actions/workflows/ci.yml/badge.svg)](https://github.com/THIRD-I-AI/AURA/actions/workflows/ci.yml)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-3776AB?logo=python&logoColor=white)](https://www.python.org/downloads/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.9-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
-[![FastAPI](https://img.shields.io/badge/FastAPI-0.115-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com)
-[![React](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=black)](https://react.dev)
+[![Coverage](https://img.shields.io/badge/backend-%E2%89%A560%25-brightgreen)]()
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-[Getting Started](#-getting-started) · [Architecture](#-architecture) · [Features](#-features) · [Agents](#-agent-framework) · [API Reference](#-api-reference)
+[Thesis](#thesis) · [Architecture](#architecture) · [Getting Started](#getting-started) · [Audit Engine](#audit-engine) · [Roadmap](#roadmap-s15s20) · [References](#references)
 
 </div>
 
 ---
 
-## Overview
+## Thesis
 
-AURA is a microservices-based data analytics platform where 12 specialist AI agents collaborate to transform natural language questions into SQL queries, execute them securely, generate visualizations, and continuously improve through a self-healing feedback loop. It supports 13+ database types, real-time streaming pipelines, cron-based scheduling, and ships with a dark-themed React frontend.
+Most analytics platforms answer **descriptive** questions ("what happened?"). The current frontier of AI-driven analytics adds **predictive** ("what will happen?") and **diagnostic** ("why did it happen?") capability — but the produced answers are not *auditable* in the regulatory sense. An auditor reading a model's output six months after the fact cannot verify (a) that the answer would replay byte-identically given the same input, (b) that the cryptographic chain attesting to it is intact, or (c) that the statistical guarantees behind the confidence interval hold in their finite-sample regime.
 
-```
-┌────────────────────────────────────────────────────────────────────┐
-│                     AURA PLATFORM OVERVIEW                         │
-├────────────────────────────────────────────────────────────────────┤
-│                                                                    │
-│   User ──► React SPA ──► API Gateway (8000)                       │
-│                              │                                     │
-│              ┌───────────────┼───────────────────┐                 │
-│              ▼               ▼                   ▼                 │
-│   ┌──────────────┐  ┌──────────────┐  ┌──────────────────┐        │
-│   │  12 Specialist│  │  Connectors  │  │  Orchestration   │        │
-│   │   AI Agents  │  │  (13+ DBs)   │  │  (DAG Executor)  │        │
-│   └──────┬───────┘  └──────────────┘  └──────────────────┘        │
-│          │                                                         │
-│          ▼                                                         │
-│   Code Gen ──► Sandbox ──► Insights ──► Visualization              │
-│                                                                    │
-│   Scheduler ◄──► Streaming Pipelines ◄──► UASR (Self-Healing)     │
-│                                                                    │
-└────────────────────────────────────────────────────────────────────┘
-```
+AURA is built around a **causal counterfactual audit engine** that produces answers carrying all three properties simultaneously:
+
+1. **Deterministic re-execution** — the same `(query, dataset)` pair produces a byte-identical `audit_record_hash` across runs, on different hardware, after any duration. (Sprint 11.)
+2. **Cryptographic chain** — every artifact is ED25519-signed against canonical-JSON bytes produced by a shared `strip_for_hashing(artifact)` helper used by both the sign-time and verify-time paths. The verify path cannot drift from sign. (Sprint 13.)
+3. **Calibration-aware honesty** — when the doubly-robust estimator's cross-fitted propensity distribution looks IPW-fragile, the engine emits a deterministic high-severity challenge that ships in the hash basis and surfaces in the operator UI as a red badge. (Sprint 14.)
+
+The rest of the platform — multi-agent SQL generation, streaming pipelines, MAPE-K self-healing — exists to feed the audit engine clean, well-typed inputs and to surface its outputs to three audience tiers (operator, auditor, analyst).
 
 ---
 
-## Key Highlights
+## Architecture
 
-| | |
-|---|---|
-| **Multi-Agent AI** | 12 specialist agents with DAG-based task execution and automatic LLM fallback (Groq → Gemini → Ollama → OpenAI) |
-| **Universal Connectivity** | PostgreSQL, MySQL, SQLite, BigQuery, Snowflake, Redshift, MongoDB, ClickHouse, Cassandra, Databricks, DuckDB, Oracle, SQL Server |
-| **Self-Healing (UASR)** | Drift detection, automatic recovery, semantic gating, rollback — all running autonomously |
-| **Streaming Pipelines** | Real-time data pipelines with Kafka, backpressure handling, and stateful windowing |
-| **SQL Safety** | Injection prevention, forbidden keyword blocking, complexity estimation, auto-LIMIT injection |
-| **Evolution Engine** | Background improvement loop that analyzes failures, generates proposals via LLM, validates in sandbox, and auto-deploys |
+Twelve independent FastAPI services, communicating via JSON/HTTP. The frontend connects only through the API Gateway; every service runs on its own uvicorn process.
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                          USER (Browser / SDK / curl)                    │
+└────────────────────────────────┬────────────────────────────────────────┘
+                                 │
+                ┌────────────────▼─────────────────┐
+                │   Frontend (React 19 + Vite)     │  http://localhost:5173
+                └────────────────┬─────────────────┘
+                                 │
+                ┌────────────────▼─────────────────┐
+                │   API Gateway   (8000, 108 routes)│  ◀── JWT auth, rate-limit,
+                └────────────────┬─────────────────┘      collab WebSocket relay
+                                 │
+        ┌────────────────────────┼────────────────────────────┬───────────────┐
+        │                        │                            │               │
+┌───────▼──────┐ ┌──────▼──────┐ ┌▼──────────┐ ┌──────▼──────┐ ┌──────▼──────┐
+│ Code-Gen     │ │Orchestration│ │ Insights  │ │  Execution  │ │ Metadata    │
+│   (8001)     │ │  TinyRecur. │ │  (8005)   │ │  Sandbox    │ │  Store      │
+│   LLM→SQL    │ │  Gen/Critic │ │ analytics │ │  (8003)     │ │  (8007)     │
+└──────────────┘ │   (8006)    │ └───────────┘ │ safety val. │ │ pg/sqlite   │
+                 └─────────────┘                └─────────────┘ └─────────────┘
+        │                        │                            │               │
+        ▼                        ▼                            ▼               ▼
+┌──────────────┐ ┌─────────────┐ ┌───────────┐ ┌─────────────┐ ┌─────────────┐
+│ Connectors   │ │ Scheduler   │ │ UASR      │ │  Causal     │ │     DAR     │
+│   (8002)     │ │   (8004)    │ │ MAPE-K    │ │   (8010)    │ │   (8011)    │
+│ PG/MySQL/    │ │ cron jobs   │ │  (8009)   │ │ DoWhy GCM   │ │ auto-research│
+│ BQ/DuckDB    │ │             │ │ self-heal │ │ root-cause  │ │ daemon       │
+└──────────────┘ └─────────────┘ └───────────┘ └─────────────┘ └──────────────┘
+                                                       │
+                                                       ▼
+                                            ┌─────────────────────┐
+                                            │  Counterfactual     │
+                                            │  Audit Engine (8012)│
+                                            │                     │
+                                            │  estimators (4) ×   │
+                                            │  refuters (4) ×     │
+                                            │  adversarial critic │
+                                            │  + ED25519 signing  │
+                                            └─────────────────────┘
+```
+
+Cross-cutting infrastructure: **TRAIGA** append-only JSONL audit log with SHA-256 hash chain; **BATS** per-session token budget bound to `contextvars`; **BAVT** budget-aware value-tree routing; **Aura Vault** for connector secrets; **streaming_manager** in-process pub/sub bus; **outbound webhook dispatcher** with HMAC signatures.
 
 ---
 
-## 🚀 Getting Started
+## Getting Started
 
 ### Prerequisites
 
-- **Python** 3.11+
-- **Node.js** 18+
-- **Git**
-- At least one LLM API key (Groq, Gemini, OpenAI) or local Ollama
+- Python 3.11+ (3.12 for the eval-gate to run end-to-end)
+- Node 18+
+- (Optional) Docker for containerised runs
+- At least one LLM provider key — Groq, Gemini, OpenAI — OR a local Ollama at `http://localhost:11434`
 
-### 1. Clone & Install
+### Install
 
 ```bash
 git clone https://github.com/THIRD-I-AI/AURA.git
 cd AURA
-```
 
-**Backend:**
-
-```bash
+# Backend (base — most services)
 cd aurabackend
 python -m venv .venv
-# Windows: .venv\Scripts\activate | Linux/Mac: source .venv/bin/activate
+.venv\Scripts\activate    # Windows
+# source .venv/bin/activate   # macOS / Linux
 pip install -r requirements.txt
-```
 
-**Frontend:**
+# Backend (causal stack — required for counterfactual_service + causal_service)
+pip install -r requirements-causal.txt        # adds dowhy>=0.13, econml>=0.15, reportlab, statsmodels
 
-```bash
-cd frontend
+# Frontend
+cd ../frontend
 npm install
+
+# SDK (optional)
+cd ../sdk
+pip install -e .
 ```
 
-### 2. Configure Environment
+### Configure
 
 ```bash
 cp aurabackend/.env.example aurabackend/.env
 ```
 
-Add your LLM provider key(s):
-
-```env
-# At least one required — AURA auto-detects and chains them with fallback
-GROQ_API_KEY=your_key          # Fastest inference (free tier)
-GEMINI_API_KEY=your_key        # Google Gemini
-OPENAI_API_KEY=your_key        # OpenAI
-OLLAMA_HOST=http://localhost:11434  # Local (no key needed)
+Required (one):
+```
+GROQ_API_KEY=...           # fastest free-tier
+GEMINI_API_KEY=...
+OPENAI_API_KEY=...
+OLLAMA_HOST=http://localhost:11434
 ```
 
-### 3. Run All Services
+Recommended for the audit engine:
+```
+AURA_SIGNING_PRIVATE_KEY_HEX=<64-hex-chars>   # else key is auto-generated per process
+AURA_AUDIT_DIR=/var/log/aura/audit
+AURA_ARTIFACT_DIR=/var/lib/aura/artifacts
+AURA_CRITIC_CACHE_DIR=/var/cache/aura/critic
+```
 
-**PowerShell (Windows):**
+### Run
 
+PowerShell (Windows):
 ```powershell
 cd aurabackend
-.\start_all.ps1          # Starts all 9 backend services
+.\start_all.ps1          # 9 services in named windows
+# Then in a new terminal — Sprint 8+ counterfactual engine (not in start_all)
+$env:PYTHONPATH = (Get-Location).Path
+$env:AURA_SIGNING_PRIVATE_KEY_HEX = ("01" * 32)
+python -m uvicorn counterfactual_service.main:app --port 8012 --reload
 ```
 
-**Frontend (separate terminal):**
+POSIX:
+```bash
+cd aurabackend
+bash start_all.sh
+python -m uvicorn counterfactual_service.main:app --port 8012 --reload &
+```
 
+Frontend (separate terminal):
 ```bash
 cd frontend
-npm run dev               # Vite dev server → http://localhost:5173
+npm run dev          # http://localhost:5173
 ```
 
-### 4. Docker (Production)
+### Verify
 
 ```bash
-docker-compose up -d      # All services + health checks
-docker ps                 # Verify container health
+# Backend health
+for p in 8000 8001 8002 8003 8004 8005 8006 8007 8009 8012 ; do
+  curl -s http://localhost:$p/health | jq -r '"\(.service): \(.status)"'
+done
+
+# Counterfactual engine capability check
+curl -s http://localhost:8012/counterfactual/info | jq
+
+# Full counterfactual subsystem self-test (requires requirements-causal.txt)
+cd aurabackend
+python -m pytest tests/test_counterfactual_*.py -v --tb=short
+```
+
+Frontend self-test:
+```bash
+cd frontend
+npm test            # 113 Vitest tests including CounterfactualCard
+npx tsc --noEmit    # strict mode
 ```
 
 ---
 
-## 🏗 Architecture
+## Audit Engine
 
-AURA runs as **9 independent microservices**, each on its own port, communicating via REST/JSON. The frontend connects exclusively through the API Gateway.
+The engine at `aurabackend/counterfactual_service/` produces a single canonical artifact per query, then renders it for three audiences from the same persisted bytes.
 
-| Port | Service | Description |
-|------|---------|-------------|
-| `5173` | **Frontend** | React 19 + TypeScript SPA (Vite) |
-| `8000` | **API Gateway** | Central router — all client traffic enters here |
-| `8001` | **Code Generation** | LLM-powered SQL/code generation from natural language |
-| `8002` | **Connectors** | Universal database connectivity + Aura Vault hybrid storage |
-| `8003` | **Execution Sandbox** | Secure SQL execution with serialization & error handling |
-| `8004` | **Scheduler** | Cron-based job scheduling with retry & multi-channel alerts |
-| `8005` | **Insights** | Auto-generated insights, anomaly detection, chart specs |
-| `8006` | **Orchestration** | Agent coordination via TinyRecursive pattern (generator + critic) |
-| `8007` | **Metadata Store** | Schema, execution history, embeddings persistence |
-| `8009` | **UASR** | Self-healing layer — drift detection, recovery, rollback |
+### Query lifecycle
 
-### Tech Stack
+1. **Submit** — `POST /counterfactual/jobs` with `CounterfactualQuery` (treatment, outcome, DAG edges, dataset reference, audience).
+2. **Fan out** — engine runs 4 estimators concurrently:
+   - `linear_regression` — DoWhy backdoor adjustment with classical OLS
+   - `ipw` — propensity-score weighting
+   - `psm` — propensity-score matching
+   - `double_ml` — **EconML LinearDRLearner** with `LogisticRegression(L2)` propensity + `LinearRegression` outcome, cross-fitted with seed-from-`request_hash` for byte-identical replay (Sprints 11–12)
+3. **Refute** — 4 refuters: placebo treatment, random common cause, data-subset robustness, unobserved-confounder sensitivity (Cinelli–Hazlett style).
+4. **Adversarial critique** — `AdversarialCriticAgent` (LLM, cached) emits structured challenges; the engine deterministically appends an `IPW-fragile propensity` challenge when the DR-Learner's cross-fitted propensity distribution puts > 10% of rows in `[<0.05, >0.95]` (Sprint 14).
+5. **Confidence score** — pure function `0.5·refute_pass + 0.4·CI_overlap − 0.3·n_high_severity`.
+6. **Seal** — canonical-JSON bytes via `strip_for_hashing(artifact)`, SHA-256 → `audit_record_hash`, ED25519 signature, persist to disk + TRAIGA audit log.
+7. **Render** — three audience views: `operator` (chat card + propensity bar + sensitivity band), `auditor` (full estimates + refutations + signature status + PDF report via reportlab), `analyst` (raw artifact for the Python SDK).
 
-**Backend:** Python 3.11+ · FastAPI · SQLAlchemy 2.0 · Pydantic 2.7 · Pandas · aiokafka · pytest
+### Replay & verification
 
-**Frontend:** React 19 · TypeScript 5.9 · Vite · Recharts · Plotly.js · Chart.js
+- `GET /counterfactual/artifacts/{hash}` — byte-identical replay.
+- `GET /counterfactual/artifacts/{hash}/verify` — ED25519 signature check against `strip_for_hashing(persisted_dict)`. **Sprint 13 fix:** sign and verify both go through the same helper so they cannot drift on Pydantic exclude-spec changes.
+- `POST /counterfactual/replay/bulk` — auditor batch endpoint, NDJSON streaming, server-side dedup, 256-hash cap. SDK `Client.bulk_replay(hashes)` consumes the stream as an iterator.
 
-**Databases:** PostgreSQL · MySQL · SQLite · DuckDB · BigQuery · Snowflake · Redshift · MongoDB · ClickHouse · Cassandra · Databricks · Oracle · SQL Server
+### Statistical guarantees (today)
 
-**LLM Providers:** Groq (Llama 3.3 70B) · Google Gemini 2.5 Flash · OpenAI GPT-4o-mini · Ollama (local)
+| Estimator | Bias guarantee | CI guarantee |
+|-----------|----------------|--------------|
+| `linear_regression` | Unbiased if confounders fully observed | Asymptotic normal |
+| `ipw` | Consistent if propensity correctly specified | Asymptotic normal (bootstrap option) |
+| `psm` | Consistent if propensity correctly specified | Bootstrap |
+| `double_ml` (LinearDRLearner) | **Doubly-robust:** consistent if EITHER propensity OR outcome correctly specified | Asymptotic normal via statsmodels |
 
-**Infrastructure:** Docker Compose · GitHub Actions CI · MCP Protocol
+Statistical-guarantee deepening (S16: Conformal CIs, S17: TMLE asymptotic efficiency) is on the roadmap below.
+
+### Determinism contract
+
+The eval-gate's Layer 10 is the contractual definition. Two engine invocations on the same `(CounterfactualQuery, DataFrame)` pair, on the same hardware, must produce identical `audit_record_hash`. This requires:
+
+- Per-method numpy seed derived from `sha256(request_hash + method)[:4]`.
+- Sequential estimator + refuter fan-out (concurrent fan-out trampling numpy global RNG).
+- `_HASH_EXCLUDE_FIELDS` strips wallclock fields (`elapsed_ms`) and per-run identifiers (`record_id`, `audit_record_hash`, signatures) from the hash basis via Pydantic nested exclude semantics.
+
+Re-execution byte-identity is currently enforced on **Linux** in CI's eval-gate (mock) job; **Windows** local runs are byte-identical in our experience but not under contract.
 
 ---
 
-## ✨ Features
+## Operator & SDK quickstart
 
-### Natural Language to SQL
+### Submit a counterfactual job (curl)
 
-Ask questions in plain English. AURA's agent pipeline classifies your intent, generates validated SQL, executes it in a sandboxed environment, and returns results with auto-generated visualizations.
+```bash
+curl -X POST http://localhost:8012/counterfactual/jobs \
+  -H "Content-Type: application/json" \
+  -d '{
+    "question": "What if treatment had been zero?",
+    "treatment": {"column": "treatment", "actual": 1.0, "counterfactual": 0.0},
+    "outcome":   {"column": "outcome", "agg": "sum",
+                   "window": ["2025-01-01","2025-12-31"]},
+    "dag":       {"edges": [["seasonality","outcome"],
+                             ["seasonality","treatment"],
+                             ["treatment","outcome"]]},
+    "dataset":   {"source_id": "uploaded_file:my.csv"},
+    "audience":  "operator"
+  }'
+```
 
-### 12 Specialist Agents
+### Python SDK
 
-Every query passes through a DAG of specialist agents, each responsible for one stage of the pipeline:
+```python
+from aura_counterfactual import Client
 
-| Agent | Role |
-|-------|------|
-| **IntentAgent** | Classifies input as SQL query or conversation — fast-path gateway |
-| **IngestionAgent** | File uploads, DB connections, data profiling |
-| **SchemaArchitectAgent** | Schema inspection, table creation, index recommendations |
-| **SQLGeneratorAgent** | Natural language → SQL with schema awareness and EXPLAIN validation |
-| **ExecutionAgent** | Secure SQL execution with result serialization |
-| **TransformAgent** | Joins, aggregations, window functions, deduplication |
-| **QualityAgent** | Null rates, uniqueness, range checks, regex, custom SQL validation |
-| **AnalysisAgent** | Statistical analysis, outlier detection (pure Python, no pandas) |
-| **OptimizationAgent** | Query tuning — indexes, partitioning, materialized views |
-| **VisualizationAgent** | Optimal chart type selection, Recharts JSON spec generation |
-| **PipelineAgent** | ETL/ELT pipeline building and scheduler integration |
-| **MonitorAgent** | Pipeline health, data quality monitoring, UASR trigger |
+with Client(base_url="http://localhost:8012", prefix="") as c:
+    info = c.info()
+    print(info.estimators)         # ['linear_regression','ipw','psm','double_ml']
 
-### LLM Fallback Chain
+    artifact = c.run({...})         # blocks to completion
+    print(artifact.confidence)      # 'low' | 'medium' | 'high'
 
-AURA automatically detects all configured LLM providers and chains them with cascading fallback. If Groq hits a rate limit or payload size error, the request transparently retries on Gemini, then Ollama, then OpenAI — no user intervention required.
+    # Replay later
+    again = c.replay(artifact.audit_record_hash)
+
+    # Verify the signature
+    v = c.verify(artifact.audit_record_hash)
+    assert v.verified
+
+    # Batch verify many
+    for row in c.bulk_replay([h1, h2, h3]):
+        print(row["record_hash"], row["status"])    # ok / not_found / verify_failed
+```
+
+### Jupyter
+
+The SDK's `CounterfactualArtifact` has a rich `_repr_html_` — paste a `replay(hash)` into a notebook cell and you get the confidence badge, estimator table, challenges, and provenance footer rendered inline.
+
+### CLI
+
+```bash
+aura-counterfactual info
+aura-counterfactual replay 0xabc...
+aura-counterfactual verify 0xabc...
+aura-counterfactual bulk-replay --hashes-file ./audit_sweep.txt
+aura-counterfactual report 0xabc... -o ./audit.pdf
+```
+
+Exit codes are structured for CI gating: `0=ok`, `2=job_failed`, `3=timeout`, `4=not_found`, `5=verify_failed`, `6=feature_unavailable`.
+
+---
+
+## Other capabilities
+
+### Multi-agent SQL generation
+
+`agents/specialists/sql_generator_agent.py` wraps the Code Generation service with sqlglot-validated emission. `agents/langgraph_orchestrator.py` runs a fixed `plan → sql → execute → visualize` StateGraph; `agents/executor.py` runs arbitrary planner-emitted DAGs. The Orchestration service's `TinyRecursiveCoordinator` adds a generator/critic loop on top.
+
+### Multi-LLM fallback
+
+`shared/llm_provider.py` auto-detects every configured provider and chains them: **Groq → Gemini → Ollama → OpenAI**. The fallback fires on rate-limit, payload-size, and connection errors transparently. Each provider's tokens-per-call and tool-call counts are tracked in `shared/llm_token_usage.py` and surfaced on the LLM Cost page.
+
+### Universal data connectivity
+
+`connectors/` ships working drivers for **PostgreSQL, MySQL, BigQuery, DuckDB** with a unified `ConnectorConfig` shape. The Aura Vault layer in `shared/vault_client.py` stores credentials encrypted at rest and serves them on-demand to the Execution Sandbox.
+
+### Self-healing pipelines (UASR)
+
+`uasr/mapek_worker.py` implements the five MAPE-K phases as worker methods. The worker polls Kafka, batches into Parquet, atomically loads into DuckDB, and runs the `DriftDetector` + `RecoveryLoop`. When drift is detected, the consumer is gated on an `asyncio.Event` (no offset loss) while the recovery loop deploys a shim; on resume, future batches pass through `loop.apply_shims` before re-checking drift.
+
+### Streaming pipelines
+
+`pipeline/engine.py` is a DuckDB-backed transform engine that consumes from multiple source types (Kafka, file watchers, CDC, WebSockets, simulated) and writes to multiple sinks. Stateful windowing (tumbling / sliding / session). Backpressure-aware.
+
+### Scheduler
+
+`scheduler_service/` schedules cron + interval jobs with retry, dependency chains (`depends_on`), and multi-channel notifications (SMTP, Slack webhook, generic webhook). Jobs persist in the metadata store with a worker process that polls due jobs.
+
+### Real-time collaboration
+
+`collab/agent_peer.py` makes server-side AURA agents into Yjs CRDT peers that participate in the same y-websocket protocol as browser clients. The agent's phase (`idle | thinking | composing`) surfaces in the same cursor/presence UI humans use for each other. No frontend change required.
+
+### Auditability everywhere
+
+`shared/audit_log.py` (TRAIGA) writes every prompt/response that crosses the LLM boundary to an append-only JSONL file with a SHA-256 hash chain; a verifier can replay the chain to detect any inserted, removed, or edited line. Daily rotation, intended for WORM-backed PVC for hardware-level immutability. Roadmap S19 replaces the linear chain with a Merkle tree + Signed Tree Head for cross-org inclusion proofs.
+
+### Budget control
+
+`shared/budget.py` (BATS) is a per-session token + tool-call pool bound to `contextvars`. Every BaseAgent execution receives a fresh `BudgetStatus` snapshot. At 70% consumption, the pivot signal flips and the Planner prefers narrower task graphs. `shared/bavt.py` (BAVT) hardens the pivot: when remaining budget can't cover an optional node's projected cost, the orchestrator drops the node and emits a structured `skipped: BAVT pivot` record.
+
+---
+
+## Frontend
+
+13 lazy-loaded pages via the App's `currentPage` switch. Strict TypeScript, Vite dev server, 113 Vitest tests, type-check clean.
+
+| Page | What it does |
+|------|--------------|
+| Dashboard | System health, recent activity, query stats |
+| Chat | NL→SQL chat with agent presence and live result rendering |
+| Files & Data | File upload + connector catalog + table profiling |
+| Query History | Searchable archive of prior queries |
+| Library | Saved queries + dashboards |
+| Dashboards | Multi-chart dashboard composer |
+| Lineage | Data lineage graph |
+| LLM Cost | Per-provider token usage + per-day cost roll-up |
+| Agent | Direct agent invocation with input/output inspection |
+| ETL Pipelines | Pipeline definition + monitoring |
+| Streaming | Live streaming pipeline status |
+| Webhooks | Inbound + outbound webhook configuration |
+| **Counterfactual** | The Sprint 8–14 wedge — operator chat card with propensity bar, sensitivity band, confidence badge, "see the debate" toggle |
+
+---
+
+## Roadmap (S15–S20)
+
+Each upcoming sprint is anchored to a specific methodological paper, not just a feature bucket.
+
+| Sprint | Title | Anchor paper(s) | Ships |
+|--------|-------|-----------------|-------|
+| **S15** | ForestDRLearner + Heterogeneous-Effect Surfacing | Wager & Athey (2018); Athey, Tibshirani & Wager (2019) | Non-parametric DR estimator + CATE histogram + Eval-Gate Layer 12 |
+| **S16** | Conformal CATE Intervals | Lei & Candès (2021); Alaa et al. (NeurIPS 2023) | Distribution-free finite-sample CIs replacing the asymptotic statsmodels sandwich |
+| **S17** | TMLE with Cross-Validated Targeting | van der Laan & Rose (2011); Zheng & van der Laan (2011) | Asymptotically efficient estimator slot + auto-challenge on estimator-class disagreement |
+| **S18** | E-Value Sensitivity + Tipping-Point | VanderWeele & Ding (Annals 2017); Cinelli & Hazlett (JRSS-B 2020) | Per-estimate E-value and robustness-value; auditor PDF section |
+| **S19** | Verifiable Audit Log via Merkle Commitments | RFC 6962 Certificate Transparency; Cobbe, Veale & Singh (FAccT '23) | Merkle tree per-UTC-day; Signed Tree Head endpoint; SDK inclusion proof verifier; Helm CronJob with S3 Object Lock |
+| **S20** | Causal-RL Self-Healing (UASR Upgrade) | Kallus & Uehara (JMLR 2020); Murphy (JRSS-B 2003); Bareinboim et al. (NeurIPS '15) | UASR's RecoveryLoop becomes an off-policy DR evaluator; shim deployments produce audit-engine artifacts |
+
+After S20, the counterfactual machinery built across S8–S18 is no longer a single feature — it's the runtime mechanism the rest of the platform uses to reason about its own self-healing decisions, with the same statistical guarantees, the same audit chain, and the same byte-identical replay contract.
+
+---
+
+## Repository layout
 
 ```
-Groq (fast) ──► Gemini ──► Ollama (local) ──► OpenAI
-     ↓ on error     ↓ on error     ↓ on error
+aurabackend/
+  api_gateway/         # 8000 — front door (14 routers)
+  code_generation_service/   # 8001
+  connectors/                # 8002 — PG, MySQL, BQ, DuckDB
+  execution_sandbox/         # 8003
+  scheduler_service/         # 8004
+  insights/                  # 8005
+  orchestration_service/     # 8006 — generator/critic TinyRecursive
+  metadata_store/            # 8007
+  uasr/                      # 8009 — MAPE-K self-healing
+  causal_service/            # 8010 — DoWhy GCM root-cause
+  dar_service/               # 8011 — autonomous research daemon
+  counterfactual_service/    # 8012 — audit engine (S8–S14)
+  agents/specialists/        # 15 BaseAgent subclasses
+  agents/langgraph_orchestrator.py
+  collab/                    # Yjs server-side peers
+  evolution/                 # self-improvement loop
+  knowledge_base/
+  mcp_core/                  # MCP protocol primitives
+  mcp_servers/aura_mcp_server.py
+  pipeline/                  # ETL engine (DuckDB)
+  safety/validator.py        # SQLSafetyValidator
+  shared/                    # cross-cutting infra
+  tests/                     # 736+ backend tests
+frontend/
+  src/pages/           # 13 lazy-loaded pages
+  src/components/      # 30+ components, CounterfactualCard.tsx is S14
+sdk/
+  src/aura_counterfactual/
+  tests/               # 48 SDK tests
+deploy/
+  helm/aura/
+docs/
 ```
 
-### UASR — Self-Healing Layer
+---
 
-**Universal Agentic Semantic Recovery** monitors data quality in real time:
+## References
 
-- **Drift Detection** — IQR-based statistical analysis identifies schema and value drift
-- **Automatic Recovery** — Actuator agent generates and deploys correction shims
-- **Semantic Gating** — Embedding-based similarity checks against reference baselines
-- **Rollback** — One-call rollback of deployed shims if recovery makes things worse
-- **Observability** — Full metrics dashboard: healing events, recovery success rates, drift history
+Selected methods that already ship in production (S8–S14):
 
-### Streaming Pipelines
+- **Doubly-Robust Estimation:** Robins, J. M., Rotnitzky, A., & Zhao, L. P. (1994). *Estimation of regression coefficients when some regressors are not always observed.* JASA 89.
+- **DR-Learner / Cross-Fitting:** Chernozhukov et al. (2018). *Double/debiased machine learning for treatment and structural parameters.* Econometrics Journal 21(1).
+- **DoWhy Identification:** Sharma, A. & Kiciman, E. (2020). *DoWhy: An End-to-End Library for Causal Inference.* arXiv:2011.04216.
+- **Propensity Calibration:** Niculescu-Mizil & Caruana (2005). *Predicting Good Probabilities With Supervised Learning.* ICML.
+- **Canonical JSON (RFC 8785):** Erdtman, S. (2020). *JSON Canonicalization Scheme.* — for byte-identical hash basis.
+- **ED25519:** Bernstein et al. (2012). *High-speed high-security signatures.* — for artifact signing.
 
-Real-time data processing powered by Kafka:
-
-- Configurable sources and sinks
-- Backpressure handling
-- Stateful windowing (tumbling, sliding, session)
-- Pipeline DSL generation from natural language
-
-### Scheduler Service
-
-Automate recurring analysis with cron-based scheduling:
-
-- Retry logic with exponential backoff
-- Job dependency chains (`depends_on`)
-- Multi-channel notifications: Email (SMTP), Slack webhooks, generic webhooks
-- Failure actions: `notify`, `retry`, `skip_dependents`
-
-### SQL Safety & Validation
-
-Every query passes through `SQLSafetyValidator` before execution:
-
-- Blocks `DROP`, `DELETE`, `TRUNCATE`, `ALTER`, `INSERT`, `UPDATE`, `EXEC`
-- Detects SQL injection patterns (UNION exploits, `xp_`/`sp_` stored procedures)
-- Performance warnings for `SELECT *`, leading wildcards, complex JOINs
-- Auto-injects `LIMIT` clauses for result set protection
-- Supports dry-run mode via `EXPLAIN` or `LIMIT 0`
-
-### Evolution Engine
-
-A background improvement loop that makes AURA smarter over time:
-
-1. Analyzes failure patterns and slow executions
-2. Generates improvement proposals via LLM
-3. Validates proposals in a sandboxed environment
-4. Auto-deploys when confidence ≥ 0.75
-5. Full audit trail via `SystemEvolutionLog`
-
-### Insights Engine
-
-Automatic insight generation from query results:
-
-- **Insight Types:** Trend, Anomaly, Comparison, Distribution, Correlation, Outlier
-- **Chart Types:** Table, Line, Bar, Scatter, Pie, Histogram, Box, Heatmap
-- Statistical analysis (mean, median, std, quartiles, IQR outlier detection)
-- Correlation detection across columns
-- Chart spec generation compatible with Recharts and Plotly
-
-### Frontend
-
-Dark-first design system inspired by Linear, Vercel, Grafana, and Datadog:
-
-- **5 Modes:** Chat, Database, Visualization, Strategic, Pipelines
-- **Design Tokens:** 51+ CSS custom properties, 8 status colors, 9 font sizes, 4 shadow levels
-- **Typography:** Inter (UI) + JetBrains Mono (code)
-- **Components:** Chat interface, file upload, live dashboard, streaming panel, agent panel, query history, settings
-- **Charts:** Recharts, Plotly.js, Chart.js — auto-selected based on data shape
+Forthcoming (S15–S20) — see Roadmap table above.
 
 ---
 
-## 🗄 Database Connectivity
+## Contributing
 
-Connect to any of the supported databases through the Connectors Service or the Aura Vault hybrid storage layer:
-
-| Category | Databases |
-|----------|-----------|
-| **SQL** | PostgreSQL, MySQL, SQLite, DuckDB |
-| **Cloud Warehouses** | BigQuery, Snowflake, Redshift |
-| **NoSQL** | MongoDB, Cassandra |
-| **Analytics** | ClickHouse, Databricks |
-| **Enterprise** | Oracle, SQL Server |
-
-**Aura Vault** provides a hybrid multimodal storage backend (PostgreSQL or DuckDB) for AURA's internal data — schemas, execution history, and metadata.
-
----
-
-## 📡 API Reference
-
-All services expose interactive Swagger docs at `/docs` when running.
-
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/health` | GET | Health check (all services) |
-| `/v1/chat` | POST | Natural language query → results |
-| `/v1/connect` | POST | Establish database connection |
-| `/v1/execute` | POST | Execute SQL in sandbox |
-| `/v1/pipelines` | GET/POST | Pipeline CRUD |
-| `/v1/schedule` | POST | Schedule a recurring job |
-| `/uasr/ingest` | POST | Submit micro-batch for drift detection |
-| `/uasr/drift/status` | GET | List drift events |
-| `/uasr/metrics` | GET | Healing observability dashboard |
-| `/uasr/rollback` | POST | Rollback deployed shims |
-
-Full API docs: `http://localhost:8000/docs` (API Gateway)
-
----
-
-## 🧪 Testing
+Pull requests welcome. Before pushing:
 
 ```bash
 cd aurabackend
+python -m ruff check . --ignore E501,E402,F401,W191,W291,W293,F841,E701,E712,F823
+python -m pytest tests/ --tb=short
 
-# Run all tests
-pytest tests/ --tb=short -q
-
-# Run specific test suites
-pytest tests/test_safety.py       # SQL injection prevention
-pytest tests/test_agents.py       # Agent framework
-pytest tests/test_uasr.py         # Self-healing layer
-pytest tests/test_streaming.py    # Streaming pipelines
-pytest tests/test_pipeline.py     # Pipeline engine
+cd ../frontend
+npm test
+npx tsc --noEmit
 ```
 
-**CI/CD** runs on every push and PR via GitHub Actions:
-
-| Job | What it checks |
-|-----|---------------|
-| **Backend Tests** | pytest across Python 3.11 & 3.12 |
-| **Frontend Typecheck** | `tsc --noEmit` |
-| **Frontend Lint** | ESLint |
-| **Backend Lint** | Ruff |
-
----
-
-## ⚙️ Configuration
-
-### Environment Variables
-
-<details>
-<summary>Click to expand full environment variable reference</summary>
-
-**LLM Providers:**
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `GROQ_API_KEY` | — | Groq API key |
-| `GROQ_MODEL` | `llama-3.3-70b-versatile` | Groq model |
-| `GEMINI_API_KEY` | — | Google Gemini key |
-| `GEMINI_MODEL` | `gemini-2.5-flash` | Gemini model |
-| `OPENAI_API_KEY` | — | OpenAI key |
-| `OPENAI_MODEL` | `gpt-4o-mini` | OpenAI model |
-| `OLLAMA_HOST` | `http://localhost:11434` | Ollama server |
-
-**Services:**
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `API_GATEWAY_PORT` | `8000` | API Gateway port |
-| `CODE_GENERATION_SERVICE_PORT` | `8001` | Code Gen port |
-| `CORS_ALLOWED_ORIGINS` | `http://localhost:5173` | CORS whitelist |
-| `DATABASE_URL` | `sqlite:///./aura.db` | Default database |
-| `EXECUTION_TIMEOUT_SECONDS` | `15` | Query timeout |
-| `SCHEDULER_CHECK_INTERVAL` | `60` | Scheduler poll (seconds) |
-
-**Alerts:**
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `SMTP_HOST` | — | Email server host |
-| `SLACK_WEBHOOK_URL` | — | Slack notifications |
-| `ALERT_WEBHOOK_URL` | — | Generic webhook |
-
-**Security:**
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `SECRET_KEY` | — | JWT signing key |
-| `ALGORITHM` | `HS256` | JWT algorithm |
-| `ACCESS_TOKEN_EXPIRE_MINUTES` | `30` | Token expiry |
-
-</details>
-
----
-
-## 📁 Project Structure
-
-```
-AURA/
-├── frontend/                    # React 19 + TypeScript SPA
-│   ├── src/
-│   │   ├── components/          # UI components (Chat, Upload, Charts, Layout)
-│   │   ├── pages/               # App pages (Agent, Pipelines, Streaming, Settings)
-│   │   └── App.tsx              # Root with theme provider & routing
-│   └── vite.config.ts
-│
-├── aurabackend/                 # Python microservices
-│   ├── agents/                  # 12 specialist agents + base classes
-│   │   └── specialists/         # Individual agent implementations
-│   ├── api_gateway/             # Central API router (port 8000)
-│   ├── code_generation_service/ # LLM-powered code gen (port 8001)
-│   ├── connectors/              # Database connectors (port 8002)
-│   ├── execution_sandbox/       # Secure SQL execution (port 8003)
-│   ├── scheduler_service/       # Cron scheduler (port 8004)
-│   ├── insights/                # Auto-insights engine (port 8005)
-│   ├── orchestration_service/   # Agent orchestration (port 8006)
-│   ├── metadata_store/          # Schema & history persistence (port 8007)
-│   ├── uasr/                    # Self-healing layer (port 8009)
-│   ├── pipeline/                # Streaming pipeline engine
-│   ├── mcp_core/                # Model Context Protocol server
-│   ├── safety/                  # SQL validation & injection prevention
-│   ├── shared/                  # Config, LLM provider, middleware, utils
-│   └── tests/                   # pytest test suites
-│
-├── docker-compose.yml           # Production container orchestration
-├── ARCHITECTURE.md              # Detailed architecture diagrams
-└── .github/workflows/ci.yml    # CI pipeline
-```
-
----
-
-## 🤝 Contributing
-
-1. Fork the repository
-2. Create a feature branch: `git checkout -b feature/your-feature`
-3. Make changes and add tests
-4. Ensure CI passes: `pytest tests/ --tb=short -q`
-5. Submit a pull request
+The CI workflow at `.github/workflows/ci.yml` enforces all of the above plus the eval-gate (mock + real LLM). The eval-gate globs `tests/test_counterfactual_*.py` so any new test file with a `pytest.mark.skipif(not dowhy_available())` marker automatically enrols — *do not* put dowhy-gated tests in `backend-test`, they will silently skip.
 
 ---
 
 ## License
 
-MIT License. See [LICENSE](LICENSE) for details.
-
----
-
-<div align="center">
-
-Built by [THIRD-I-AI](https://github.com/THIRD-I-AI)
-
-</div>
+MIT — see [LICENSE](LICENSE).
