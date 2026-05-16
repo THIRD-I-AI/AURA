@@ -2,9 +2,9 @@
 
 # AURA
 
-### Auditable Causal Analytics Platform
+### Auditable Causal Analytics Platform for Global Enterprise
 
-**A deterministic, cryptographically-signed causal counterfactual engine wrapped in a 12-microservice analytics stack with self-healing data ingestion, multi-agent SQL generation, and a Yjs-collaborative front end.**
+**A microservices platform that lets autonomous AI agents operate over mission-critical data systems — with cryptographically-signed audit chains, deterministic re-execution, distribution-free statistical guarantees, and self-healing pipelines that survive upstream drift.**
 
 [![CI](https://github.com/THIRD-I-AI/AURA/actions/workflows/ci.yml/badge.svg)](https://github.com/THIRD-I-AI/AURA/actions/workflows/ci.yml)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-3776AB?logo=python&logoColor=white)](https://www.python.org/downloads/)
@@ -12,29 +12,78 @@
 [![Coverage](https://img.shields.io/badge/backend-%E2%89%A560%25-brightgreen)]()
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-[Thesis](#thesis) · [Architecture](#architecture) · [Getting Started](#getting-started) · [Audit Engine](#audit-engine) · [Roadmap](#roadmap-s15s20) · [References](#references)
+[Enterprise Solution](#enterprise-scale-solution) · [Architecture](#architecture) · [Getting Started](#getting-started) · [Audit Engine](#audit-engine) · [Roadmap](#roadmap-s17s21) · [Enterprise Deployment Guide](./ENTERPRISE.md)
 
 </div>
 
 ---
 
-## Thesis
+## Why AURA Exists
 
-Most analytics platforms answer **descriptive** questions ("what happened?"). The current frontier of AI-driven analytics adds **predictive** ("what will happen?") and **diagnostic** ("why did it happen?") capability — but the produced answers are not *auditable* in the regulatory sense. An auditor reading a model's output six months after the fact cannot verify (a) that the answer would replay byte-identically given the same input, (b) that the cryptographic chain attesting to it is intact, or (c) that the statistical guarantees behind the confidence interval hold in their finite-sample regime.
+Traditional "AI agent platforms" treat AI as a synchronous chat wrapper. That model fails under the throughput, safety, reliability, and governance demands of global mission-critical data systems for four predictable reasons:
 
-AURA is built around a **causal counterfactual audit engine** that produces answers carrying all three properties simultaneously:
+1. **Their pipelines are brittle to upstream drift** — one rename and the corporate metrics go stale until on-call triages.
+2. **Their data fabric forces silo duplication** — SQL stores, vector stores, spatial telemetry each get their own pipeline.
+3. **Their LLM calls are unauditable** — regulators can't reconstruct which AI decision touched which record.
+4. **Their concurrency model deadlocks on long-running work** — heavy queries freeze the chat thread.
 
-1. **Deterministic re-execution** — the same `(query, dataset)` pair produces a byte-identical `audit_record_hash` across runs, on different hardware, after any duration. (Sprint 11.)
-2. **Cryptographic chain** — every artifact is ED25519-signed against canonical-JSON bytes produced by a shared `strip_for_hashing(artifact)` helper used by both the sign-time and verify-time paths. The verify path cannot drift from sign. (Sprint 13.)
-3. **Calibration-aware honesty** — when the doubly-robust estimator's cross-fitted propensity distribution looks IPW-fragile, the engine emits a deterministic high-severity challenge that ships in the hash basis and surfaces in the operator UI as a red badge. (Sprint 14.)
+AURA is architected for the production shape that defeats those wrappers. It solves five distinct global-scale industry challenges through five engineered subsystems — each independently deployable, observable, and auditable.
 
-The rest of the platform — multi-agent SQL generation, streaming pipelines, MAPE-K self-healing — exists to feed the audit engine clean, well-typed inputs and to surface its outputs to three audience tiers (operator, auditor, analyst).
+---
+
+## Enterprise-Scale Solution
+
+### 1. Autonomous Runtime Self-Healing (UASR)
+
+**The global industry problem.** Modern enterprises lose billions in operational velocity to schema and semantic data drift. When an upstream data model modifies an identifier or introduces a syntax edge case (an unquoted ampersand, a regional date format, an unexpected unicode codepoint), downstream cloud-scale pipelines crash automatically, breaking corporate metrics and requiring manual on-call engineer triage.
+
+**AURA's response.** The **Universal Agentic Semantic Recovery (UASR)** module introduces an automated, closed-loop **MAPE-K** (Monitor-Analyze-Plan-Execute-Knowledge) recovery runtime. A continuous metrics poller captures the degradation vector and streams it; specialist agents dynamically reason through a fix, rewrite the execution query, patch the transaction state, and keep the global data engine online without human intervention.
+
+> Implementation: `aurabackend/uasr/mapek_worker.py`. Five-phase worker, Kafka-fed, DuckDB-sinked. Shim deployment is reversible via `POST /uasr/rollback`. Pause-without-offset-loss via `asyncio.Event`-gated polling.
+
+### 2. Unified Multi-Modal Data Fabric
+
+**The global industry problem.** Multi-national companies are drowning in heterogeneous data ecosystems. They are forced to duplicate cloud infrastructure spend by running separate standalone silos for relational tables (SQL), high-dimensional AI model arrays (embeddings), vector spaces, and multi-dimensional tracking metrics (4D virtual-reality spatial telemetry).
+
+**AURA's response.** A **Unified Multi-Modal Fabric** mediated by a decoupled **Connector Service** maps every specialised data adapter into a single cognitive abstraction layer. One multi-agent prompt executes database lookups, vector cosine similarities, and spatial transformations concurrently against the same query plan. Heavy multi-modal transformation and deep-learning matrix execution are containerised inside a protected **Execution Sandbox** — failures inside the sandbox cannot crash the API gateway or block other tenants.
+
+> Implementation: `aurabackend/connectors/` (PostgreSQL, MySQL, BigQuery, DuckDB shipping today; vector + spatial connectors land in Sprint 17). Sandbox at `aurabackend/execution_sandbox/`. Credential storage in `aurabackend/shared/vault_client.py` (Aura Vault).
+
+### 3. Mitigating Nondeterministic LLM Execution Risk
+
+**The global industry problem.** Global financial, medical, and technology institutions refuse to grant autonomous AI agents direct write or execution access to live production databases out of fear of hallucinations, data loss, and un-auditable query routing.
+
+**AURA's response.** AURA embeds deterministic safety fences into the microservice fabric. Every agent-generated request passes through an immutable **TRAIGA AuditLog** middleware that logs cryptographically secure, hash-chained records directly onto isolated network volumes (compliant with the Texas Responsible AI Governance Act traceability standard). Context visibility is preserved across geo-distributed nodes by dynamically binding and injecting an **`X-Request-ID`** token into intercepting middleware layers, enabling real-time global observability.
+
+The counterfactual audit engine layered on top adds **ED25519-signed artifacts**, **byte-identical re-execution** (Sprint 11 Layer 10), **shared sign/verify payload helper** so the verify path can't drift from sign (Sprint 13), and **distribution-free conformal CIs** so coverage holds in finite samples regardless of nuisance-model misspecification (Sprint 16 Layer 13).
+
+> Implementation: `aurabackend/shared/audit_log.py` (TRAIGA chain), `aurabackend/shared/middleware.py` (request-ID injection), `aurabackend/counterfactual_service/` (audit engine + signing).
+
+### 4. Overcoming Blocking Bottlenecks and Concurrent Task Deadlocks
+
+**The global industry problem.** Traditional workflow platforms execute multi-agent instructions synchronously inside the network transaction loop. If a query requests heavy long-running data cleaning or machine-learning model operations, the thread blocks, socket timeouts cascade, and systemic freezing follows under enterprise workloads.
+
+**AURA's response.** By decoupling ingestion and transformation tasks into a background **Scheduler Service**, AURA ensures the core network gateway remains entirely non-blocking. The orchestrator dynamically resolves unstructured multi-agent task descriptions through a custom topological-sorting algorithm (`_resolve_execution_order`) that maps complex parent-dependency layers into parallel execution **"waves"**, using bounded `asyncio.Semaphore` to prevent resource contention or deadlocks, while streaming real-time task state via **Server-Sent Events (SSE)**.
+
+> Implementation: `aurabackend/scheduler_service/` (cron + interval + dependency-graph jobs), `aurabackend/agents/executor.py::_resolve_execution_order` (parallel-wave Kahn's algorithm), `aurabackend/shared/streaming_manager.py` (pub/sub bus), `aurabackend/api_gateway/routers/stream.py` (SSE endpoint).
+
+### 5. Suppressing Software Sprawl via a Standardised Chassis
+
+**The global industry problem.** As microservice architectures expand globally across distributed teams, services fall victim to extreme tech debt. Different groups roll out independent error handlers, irregular CORS properties, and fragmented security configurations — exposing the system to vulnerabilities through inconsistency and code duplication.
+
+**AURA's response.** AURA introduces architectural discipline via its centralised **Service Factory** (`create_service()`). Every distinct domain microservice instantiates through this core module. Any service deployed instantly inherits sliding-window IP rate limiting, uniform JWT bearer authentication, Prometheus telemetry hooks, request-ID middleware, and global exception-to-JSON routing schemas out of the box — drastically maximising developer scaling velocity and making per-service security review unnecessary.
+
+> Implementation: `aurabackend/shared/service_factory.py::create_service`. Every one of the 12 microservices in this repo instantiates through this single call.
+
+---
+
+For deep-dive enterprise material — compliance posture, sizing guidance, deployment topology, FAQ — see **[ENTERPRISE.md](./ENTERPRISE.md)**.
 
 ---
 
 ## Architecture
 
-Twelve independent FastAPI services, communicating via JSON/HTTP. The frontend connects only through the API Gateway; every service runs on its own uvicorn process.
+Twelve independent FastAPI services, each on its own port, communicating via JSON/HTTP. The frontend connects only through the API Gateway; every service runs on its own uvicorn process.
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
@@ -71,14 +120,15 @@ Twelve independent FastAPI services, communicating via JSON/HTTP. The frontend c
                                             │  Counterfactual     │
                                             │  Audit Engine (8012)│
                                             │                     │
-                                            │  estimators (4) ×   │
-                                            │  refuters (4) ×     │
+                                            │  5 estimators ×     │
+                                            │  4 refuters ×       │
                                             │  adversarial critic │
                                             │  + ED25519 signing  │
+                                            │  + conformal CI     │
                                             └─────────────────────┘
 ```
 
-Cross-cutting infrastructure: **TRAIGA** append-only JSONL audit log with SHA-256 hash chain; **BATS** per-session token budget bound to `contextvars`; **BAVT** budget-aware value-tree routing; **Aura Vault** for connector secrets; **streaming_manager** in-process pub/sub bus; **outbound webhook dispatcher** with HMAC signatures.
+**Cross-cutting infrastructure:** TRAIGA append-only audit log; BATS per-session token budget; BAVT budget-aware value-tree routing; Aura Vault for connector secrets; streaming_manager in-process pub/sub bus; outbound webhook dispatcher with HMAC signatures; Service Factory standardising every microservice.
 
 ---
 
@@ -182,7 +232,7 @@ python -m pytest tests/test_counterfactual_*.py -v --tb=short
 Frontend self-test:
 ```bash
 cd frontend
-npm test            # 113 Vitest tests including CounterfactualCard
+npm test            # 121 Vitest tests including CounterfactualCard
 npx tsc --noEmit    # strict mode
 ```
 
@@ -195,16 +245,17 @@ The engine at `aurabackend/counterfactual_service/` produces a single canonical 
 ### Query lifecycle
 
 1. **Submit** — `POST /counterfactual/jobs` with `CounterfactualQuery` (treatment, outcome, DAG edges, dataset reference, audience).
-2. **Fan out** — engine runs 4 estimators concurrently:
+2. **Fan out** — engine runs the default 4 estimators concurrently, with `forest_dr` available as an opt-in fifth:
    - `linear_regression` — DoWhy backdoor adjustment with classical OLS
    - `ipw` — propensity-score weighting
    - `psm` — propensity-score matching
-   - `double_ml` — **EconML LinearDRLearner** with `LogisticRegression(L2)` propensity + `LinearRegression` outcome, cross-fitted with seed-from-`request_hash` for byte-identical replay (Sprints 11–12)
-3. **Refute** — 4 refuters: placebo treatment, random common cause, data-subset robustness, unobserved-confounder sensitivity (Cinelli–Hazlett style).
+   - `double_ml` — **EconML LinearDRLearner** with `LogisticRegression(L2)` propensity + `LinearRegression` outcome, cross-fitted with seed-from-`request_hash` for byte-identical replay (Sprints 11-12)
+   - `forest_dr` *(opt-in via `methods=[..., "forest_dr"]`)* — **EconML ForestDRLearner** (Wager-Athey honest forest) with CalibratedClassifierCV propensity, per-row CATE quantiles surfaced as heterogeneity visualisation (Sprint 15)
+3. **Refute** — 4 refuters: placebo treatment, random common cause, data-subset robustness, unobserved-confounder sensitivity (Cinelli-Hazlett style).
 4. **Adversarial critique** — `AdversarialCriticAgent` (LLM, cached) emits structured challenges; the engine deterministically appends an `IPW-fragile propensity` challenge when the DR-Learner's cross-fitted propensity distribution puts > 10% of rows in `[<0.05, >0.95]` (Sprint 14).
 5. **Confidence score** — pure function `0.5·refute_pass + 0.4·CI_overlap − 0.3·n_high_severity`.
 6. **Seal** — canonical-JSON bytes via `strip_for_hashing(artifact)`, SHA-256 → `audit_record_hash`, ED25519 signature, persist to disk + TRAIGA audit log.
-7. **Render** — three audience views: `operator` (chat card + propensity bar + sensitivity band), `auditor` (full estimates + refutations + signature status + PDF report via reportlab), `analyst` (raw artifact for the Python SDK).
+7. **Render** — three audience views: `operator` (chat card + propensity bar + sensitivity band + CATE histogram), `auditor` (full estimates + refutations + signature status + PDF report via reportlab), `analyst` (raw artifact for the Python SDK).
 
 ### Replay & verification
 
@@ -212,16 +263,17 @@ The engine at `aurabackend/counterfactual_service/` produces a single canonical 
 - `GET /counterfactual/artifacts/{hash}/verify` — ED25519 signature check against `strip_for_hashing(persisted_dict)`. **Sprint 13 fix:** sign and verify both go through the same helper so they cannot drift on Pydantic exclude-spec changes.
 - `POST /counterfactual/replay/bulk` — auditor batch endpoint, NDJSON streaming, server-side dedup, 256-hash cap. SDK `Client.bulk_replay(hashes)` consumes the stream as an iterator.
 
-### Statistical guarantees (today)
+### Statistical guarantees
 
-| Estimator | Bias guarantee | CI guarantee |
-|-----------|----------------|--------------|
-| `linear_regression` | Unbiased if confounders fully observed | Asymptotic normal |
-| `ipw` | Consistent if propensity correctly specified | Asymptotic normal (bootstrap option) |
-| `psm` | Consistent if propensity correctly specified | Bootstrap |
-| `double_ml` (LinearDRLearner) | **Doubly-robust:** consistent if EITHER propensity OR outcome correctly specified | Asymptotic normal via statsmodels |
+| Estimator | Bias guarantee | CI guarantee | Conformal CI option |
+|---|---|---|---|
+| `linear_regression` | Unbiased if confounders fully observed | Asymptotic normal | — |
+| `ipw` | Consistent if propensity correctly specified | Asymptotic normal (bootstrap option) | — |
+| `psm` | Consistent if propensity correctly specified | Bootstrap | — |
+| `double_ml` (LinearDR) | **Doubly-robust:** consistent if EITHER propensity OR outcome correctly specified | Asymptotic normal via statsmodels | **Yes** (Sprint 16, opt-in) |
+| `forest_dr` (ForestDR) | Doubly-robust + non-parametric CATE recovery | Bootstrap-of-Little-Bags | **Yes** (Sprint 16, opt-in) |
 
-Statistical-guarantee deepening (S16: Conformal CIs, S17: TMLE asymptotic efficiency) is on the roadmap below.
+**Sprint 16 conformal-CI mode** (Lei & Candès JRSS-B 2021): pass `conformal_calibration=True` to `run_estimators`. The DR estimator does an additional split-conformal pass on AIPW pseudo-outcomes and returns a **finite-sample distribution-free** CI whose coverage holds at the stated `1-α` level regardless of nuisance-model misspecification. Operator card shows a green `conformal` badge next to the CI bracket.
 
 ### Determinism contract
 
@@ -230,8 +282,9 @@ The eval-gate's Layer 10 is the contractual definition. Two engine invocations o
 - Per-method numpy seed derived from `sha256(request_hash + method)[:4]`.
 - Sequential estimator + refuter fan-out (concurrent fan-out trampling numpy global RNG).
 - `_HASH_EXCLUDE_FIELDS` strips wallclock fields (`elapsed_ms`) and per-run identifiers (`record_id`, `audit_record_hash`, signatures) from the hash basis via Pydantic nested exclude semantics.
+- Sprint 15+ adds `cate_distribution` rounded to 6 decimals; Sprint 16 adds `ci_method`. Both ship in the hash basis.
 
-Re-execution byte-identity is currently enforced on **Linux** in CI's eval-gate (mock) job; **Windows** local runs are byte-identical in our experience but not under contract.
+Re-execution byte-identity is enforced on **Linux** in CI's eval-gate (mock) job and exercised by Sprint 13's `tests/test_counterfactual_*.py` glob — every Sprint 11+ change must keep Layer 10 green.
 
 ---
 
@@ -297,49 +350,9 @@ Exit codes are structured for CI gating: `0=ok`, `2=job_failed`, `3=timeout`, `4
 
 ---
 
-## Other capabilities
-
-### Multi-agent SQL generation
-
-`agents/specialists/sql_generator_agent.py` wraps the Code Generation service with sqlglot-validated emission. `agents/langgraph_orchestrator.py` runs a fixed `plan → sql → execute → visualize` StateGraph; `agents/executor.py` runs arbitrary planner-emitted DAGs. The Orchestration service's `TinyRecursiveCoordinator` adds a generator/critic loop on top.
-
-### Multi-LLM fallback
-
-`shared/llm_provider.py` auto-detects every configured provider and chains them: **Groq → Gemini → Ollama → OpenAI**. The fallback fires on rate-limit, payload-size, and connection errors transparently. Each provider's tokens-per-call and tool-call counts are tracked in `shared/llm_token_usage.py` and surfaced on the LLM Cost page.
-
-### Universal data connectivity
-
-`connectors/` ships working drivers for **PostgreSQL, MySQL, BigQuery, DuckDB** with a unified `ConnectorConfig` shape. The Aura Vault layer in `shared/vault_client.py` stores credentials encrypted at rest and serves them on-demand to the Execution Sandbox.
-
-### Self-healing pipelines (UASR)
-
-`uasr/mapek_worker.py` implements the five MAPE-K phases as worker methods. The worker polls Kafka, batches into Parquet, atomically loads into DuckDB, and runs the `DriftDetector` + `RecoveryLoop`. When drift is detected, the consumer is gated on an `asyncio.Event` (no offset loss) while the recovery loop deploys a shim; on resume, future batches pass through `loop.apply_shims` before re-checking drift.
-
-### Streaming pipelines
-
-`pipeline/engine.py` is a DuckDB-backed transform engine that consumes from multiple source types (Kafka, file watchers, CDC, WebSockets, simulated) and writes to multiple sinks. Stateful windowing (tumbling / sliding / session). Backpressure-aware.
-
-### Scheduler
-
-`scheduler_service/` schedules cron + interval jobs with retry, dependency chains (`depends_on`), and multi-channel notifications (SMTP, Slack webhook, generic webhook). Jobs persist in the metadata store with a worker process that polls due jobs.
-
-### Real-time collaboration
-
-`collab/agent_peer.py` makes server-side AURA agents into Yjs CRDT peers that participate in the same y-websocket protocol as browser clients. The agent's phase (`idle | thinking | composing`) surfaces in the same cursor/presence UI humans use for each other. No frontend change required.
-
-### Auditability everywhere
-
-`shared/audit_log.py` (TRAIGA) writes every prompt/response that crosses the LLM boundary to an append-only JSONL file with a SHA-256 hash chain; a verifier can replay the chain to detect any inserted, removed, or edited line. Daily rotation, intended for WORM-backed PVC for hardware-level immutability. Roadmap S19 replaces the linear chain with a Merkle tree + Signed Tree Head for cross-org inclusion proofs.
-
-### Budget control
-
-`shared/budget.py` (BATS) is a per-session token + tool-call pool bound to `contextvars`. Every BaseAgent execution receives a fresh `BudgetStatus` snapshot. At 70% consumption, the pivot signal flips and the Planner prefers narrower task graphs. `shared/bavt.py` (BAVT) hardens the pivot: when remaining budget can't cover an optional node's projected cost, the orchestrator drops the node and emits a structured `skipped: BAVT pivot` record.
-
----
-
 ## Frontend
 
-13 lazy-loaded pages via the App's `currentPage` switch. Strict TypeScript, Vite dev server, 113 Vitest tests, type-check clean.
+13 lazy-loaded pages via the App's `currentPage` switch. Strict TypeScript, Vite dev server, 121 Vitest tests, type-check clean.
 
 | Page | What it does |
 |------|--------------|
@@ -355,24 +368,25 @@ Exit codes are structured for CI gating: `0=ok`, `2=job_failed`, `3=timeout`, `4
 | ETL Pipelines | Pipeline definition + monitoring |
 | Streaming | Live streaming pipeline status |
 | Webhooks | Inbound + outbound webhook configuration |
-| **Counterfactual** | The Sprint 8–14 wedge — operator chat card with propensity bar, sensitivity band, confidence badge, "see the debate" toggle |
+| **Counterfactual** | The Sprint 8-16 wedge — operator chat card with propensity bar, sensitivity band, CATE histogram, conformal-CI badge, confidence badge, "see the debate" toggle |
 
 ---
 
-## Roadmap (S15–S20)
+## Roadmap (S17-S21)
 
-Each upcoming sprint is anchored to a specific methodological paper, not just a feature bucket.
+The S17-S21 sequence is reorganised around the five enterprise pillars. Each sprint produces (a) a shippable feature, (b) one new eval-gate Layer, (c) a memory file documenting the non-obvious decisions, and (d) a CI-verified bundle commit.
 
-| Sprint | Title | Anchor paper(s) | Ships |
-|--------|-------|-----------------|-------|
-| **S15** | ForestDRLearner + Heterogeneous-Effect Surfacing | Wager & Athey (2018); Athey, Tibshirani & Wager (2019) | Non-parametric DR estimator + CATE histogram + Eval-Gate Layer 12 |
-| **S16** | Conformal CATE Intervals | Lei & Candès (2021); Alaa et al. (NeurIPS 2023) | Distribution-free finite-sample CIs replacing the asymptotic statsmodels sandwich |
-| **S17** | TMLE with Cross-Validated Targeting | van der Laan & Rose (2011); Zheng & van der Laan (2011) | Asymptotically efficient estimator slot + auto-challenge on estimator-class disagreement |
-| **S18** | E-Value Sensitivity + Tipping-Point | VanderWeele & Ding (Annals 2017); Cinelli & Hazlett (JRSS-B 2020) | Per-estimate E-value and robustness-value; auditor PDF section |
-| **S19** | Verifiable Audit Log via Merkle Commitments | RFC 6962 Certificate Transparency; Cobbe, Veale & Singh (FAccT '23) | Merkle tree per-UTC-day; Signed Tree Head endpoint; SDK inclusion proof verifier; Helm CronJob with S3 Object Lock |
-| **S20** | Causal-RL Self-Healing (UASR Upgrade) | Kallus & Uehara (JMLR 2020); Murphy (JRSS-B 2003); Bareinboim et al. (NeurIPS '15) | UASR's RecoveryLoop becomes an off-policy DR evaluator; shim deployments produce audit-engine artifacts |
+| Sprint | Pillar | Title | Anchor |
+|--------|--------|-------|--------|
+| **S17** | Pillar 2 | Multi-Modal Fabric: Vector + Spatial Connectors | FAISS / pgvector / geopandas |
+| **S18** | Pillar 1 | Causal-RL Self-Healing: UASR meets the Audit Engine | Kallus & Uehara JMLR 2020; Murphy JRSS-B 2003 |
+| **S19** | Pillar 3 | TRAIGA Federation: Merkle Audit Log + Signed Tree Head | RFC 6962 Certificate Transparency; Cobbe et al FAccT '23 |
+| **S20** | Pillar 4 | Scheduler v2: Distributed Multi-Region Execution | Postgres `LISTEN/NOTIFY` work-queue pattern |
+| **S21** | Pillar 5 | Service Factory v2: Auto-generated Typed SDK Clients | OpenAPI Generator + Pydantic v2 codegen |
+| **S22** | Analytic depth | TMLE with Cross-Validated Targeting | van der Laan & Rose 2011 |
+| **S23** | Analytic depth | E-Value Sensitivity + Tipping-Point | VanderWeele-Ding 2017; Cinelli-Hazlett 2020 |
 
-After S20, the counterfactual machinery built across S8–S18 is no longer a single feature — it's the runtime mechanism the rest of the platform uses to reason about its own self-healing decisions, with the same statistical guarantees, the same audit chain, and the same byte-identical replay contract.
+After S21, the five enterprise pillars are deepened. The platform stops adding new audience-facing capability and starts compounding the analytical depth and operational rigour of the existing surfaces.
 
 ---
 
@@ -391,7 +405,7 @@ aurabackend/
   uasr/                      # 8009 — MAPE-K self-healing
   causal_service/            # 8010 — DoWhy GCM root-cause
   dar_service/               # 8011 — autonomous research daemon
-  counterfactual_service/    # 8012 — audit engine (S8–S14)
+  counterfactual_service/    # 8012 — audit engine (S8-S16)
   agents/specialists/        # 15 BaseAgent subclasses
   agents/langgraph_orchestrator.py
   collab/                    # Yjs server-side peers
@@ -402,32 +416,38 @@ aurabackend/
   pipeline/                  # ETL engine (DuckDB)
   safety/validator.py        # SQLSafetyValidator
   shared/                    # cross-cutting infra
-  tests/                     # 736+ backend tests
+  tests/                     # 800+ backend tests
 frontend/
   src/pages/           # 13 lazy-loaded pages
-  src/components/      # 30+ components, CounterfactualCard.tsx is S14
+  src/components/      # 30+ components, CounterfactualCard.tsx is S14/S15/S16
 sdk/
   src/aura_counterfactual/
   tests/               # 48 SDK tests
 deploy/
   helm/aura/
 docs/
+ENTERPRISE.md         # Deep-dive deployment guide for procurement / SRE
 ```
 
 ---
 
 ## References
 
-Selected methods that already ship in production (S8–S14):
+Methods that already ship in production (Sprints 8-16):
 
-- **Doubly-Robust Estimation:** Robins, J. M., Rotnitzky, A., & Zhao, L. P. (1994). *Estimation of regression coefficients when some regressors are not always observed.* JASA 89.
-- **DR-Learner / Cross-Fitting:** Chernozhukov et al. (2018). *Double/debiased machine learning for treatment and structural parameters.* Econometrics Journal 21(1).
-- **DoWhy Identification:** Sharma, A. & Kiciman, E. (2020). *DoWhy: An End-to-End Library for Causal Inference.* arXiv:2011.04216.
-- **Propensity Calibration:** Niculescu-Mizil & Caruana (2005). *Predicting Good Probabilities With Supervised Learning.* ICML.
-- **Canonical JSON (RFC 8785):** Erdtman, S. (2020). *JSON Canonicalization Scheme.* — for byte-identical hash basis.
-- **ED25519:** Bernstein et al. (2012). *High-speed high-security signatures.* — for artifact signing.
+- **Doubly-Robust Estimation:** Robins, Rotnitzky & Zhao (1994). JASA 89.
+- **DR-Learner / Cross-Fitting:** Chernozhukov et al. (2018). Econometrics Journal 21(1).
+- **Generalized Random Forests:** Athey, Tibshirani & Wager (2019). Annals of Statistics 47(2). [Sprint 15]
+- **Heterogeneous Treatment Effects via Random Forests:** Wager & Athey (2018). JASA 113(523). [Sprint 15]
+- **Conformal Inference of Counterfactuals:** Lei & Candès (2021). JRSS-B 83(5). [Sprint 16]
+- **Conformal Prediction Under Covariate Shift:** Tibshirani, Barber, Candès & Ramdas (2019). NeurIPS 32. [Sprint 16 helper]
+- **Propensity Calibration:** Niculescu-Mizil & Caruana (2005). ICML.
+- **DoWhy Identification:** Sharma & Kiciman (2020). arXiv:2011.04216.
+- **Canonical JSON (RFC 8785):** Erdtman (2020) — for byte-identical hash basis.
+- **ED25519:** Bernstein et al. (2012) — for artifact signing.
+- **TRAIGA Standard:** Texas Responsible AI Governance Act — informs the AuditLog design (`shared/audit_log.py`).
 
-Forthcoming (S15–S20) — see Roadmap table above.
+Forthcoming methods (Sprints 17-23) — see the Roadmap table above and `ENTERPRISE.md` for the deepening per pillar.
 
 ---
 
