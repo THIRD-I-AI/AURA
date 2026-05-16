@@ -30,6 +30,16 @@ export interface SensitivityBand {
   perturbations: SensitivityPerturbation[];
 }
 
+export interface CATEDistributionSummary {
+  method: string;                              // e.g. 'forest_dr'
+  quantiles: number[];                         // 10 evenly-spaced quantiles, p05..p95
+  point: number;                               // ATE = mean of per-row CATEs
+  ci_lower: number;
+  ci_upper: number;
+  idr: number;                                 // inter-decile spread = quantiles[9] - quantiles[0]
+  heterogeneity: 'low' | 'moderate' | 'high';  // bucketed from |idr| / |point|
+}
+
 export interface CounterfactualOperatorView {
   record_id: string;
   headline: string;
@@ -42,6 +52,10 @@ export interface CounterfactualOperatorView {
   // pre-date the propensity work still render cleanly.
   propensity_summary?: PropensitySummary;
   sensitivity_band?: SensitivityBand;
+  // Sprint 15 addition — only populated when ForestDR ran (non-
+  // parametric CATE) and surfaces heterogeneity the linear stage
+  // can't express.
+  cate_distribution_summary?: CATEDistributionSummary;
 }
 
 const CONFIDENCE_BG: Record<string, string> = {
@@ -84,6 +98,31 @@ const FRAGILITY_LABEL: Record<string, string> = {
   red:    'IPW-fragile',
   amber:  'check propensity',
   ok:     'propensity ok',
+};
+
+// Heterogeneity (S15) reuses the same trustworthiness palette:
+// `high` reads as "the population is meaningfully split" — same red
+// vocabulary the operator already knows for fragility and low
+// confidence. `low` reads as "one number is enough" — green.
+const HETEROGENEITY_BG: Record<string, string> = {
+  high:     CONFIDENCE_BG.low,
+  moderate: CONFIDENCE_BG.medium,
+  low:      CONFIDENCE_BG.high,
+};
+const HETEROGENEITY_FG: Record<string, string> = {
+  high:     CONFIDENCE_FG.low,
+  moderate: CONFIDENCE_FG.medium,
+  low:      CONFIDENCE_FG.high,
+};
+const HETEROGENEITY_BORDER: Record<string, string> = {
+  high:     CONFIDENCE_BORDER.low,
+  moderate: CONFIDENCE_BORDER.medium,
+  low:      CONFIDENCE_BORDER.high,
+};
+const HETEROGENEITY_LABEL: Record<string, string> = {
+  high:     'heterogeneous',
+  moderate: 'some heterogeneity',
+  low:      'homogeneous',
 };
 
 // ── Sprint 14 — propensity quantile bar ──────────────────────────────
@@ -283,6 +322,143 @@ const SensitivityBlock: React.FC<{
   );
 };
 
+// ── Sprint 15 — CATE distribution histogram ──────────────────────────
+//
+// Renders the per-row CATE distribution from a Forest-DR estimator as
+// a 10-bar histogram, one bar per decile, with a baseline marker at
+// the population mean (the ATE). When the inter-decile spread is much
+// larger than the point, the heterogeneity badge goes red — that's
+// the operator's signal that summarising the effect as one number is
+// hiding a meaningfully split population.
+
+const CATEDistributionBlock: React.FC<{
+  summary: CATEDistributionSummary;
+}> = ({ summary }) => {
+  // Domain: the 10 quantiles tell us the range; pad slightly so the
+  // edge bars don't sit flush against the container edges.
+  const minQ = summary.quantiles[0];
+  const maxQ = summary.quantiles[summary.quantiles.length - 1];
+  const domainLo = Math.min(minQ, summary.point, 0);
+  const domainHi = Math.max(maxQ, summary.point, 0);
+  const span = Math.max(domainHi - domainLo, 1e-9);
+  const meanPct = ((summary.point - domainLo) / span) * 100;
+  const zeroPct = ((0 - domainLo) / span) * 100;
+
+  const fg = HETEROGENEITY_FG[summary.heterogeneity];
+  const border = HETEROGENEITY_BORDER[summary.heterogeneity];
+
+  // Each bar represents the CATE value at one decile. We render the
+  // bars side-by-side so the eye reads them as a CDF/histogram hybrid.
+  const barWidthPct = 100 / summary.quantiles.length;
+
+  return (
+    <div data-testid="cate-distribution-block" style={{ marginTop: 10 }}>
+      <div
+        style={{
+          fontSize: 12,
+          color: 'var(--text-secondary, #cbd5e1)',
+          display: 'flex',
+          gap: 8,
+          alignItems: 'center',
+        }}
+      >
+        <span style={{ minWidth: 92 }}>CATE ({summary.method})</span>
+        <span
+          data-testid="cate-heterogeneity"
+          style={{
+            padding: '1px 6px',
+            borderRadius: 3,
+            fontSize: 10,
+            background: HETEROGENEITY_BG[summary.heterogeneity],
+            color: fg,
+            border: `1px solid ${border}`,
+          }}
+        >
+          {HETEROGENEITY_LABEL[summary.heterogeneity]}
+        </span>
+        <span style={{ fontFamily: 'monospace', opacity: 0.8 }}>
+          spread {summary.idr.toFixed(2)}
+        </span>
+      </div>
+      <div
+        style={{
+          marginTop: 4,
+          position: 'relative',
+          height: 36,
+          background: 'rgba(148, 163, 184, 0.1)',
+          borderRadius: 4,
+          overflow: 'hidden',
+        }}
+      >
+        {/* Zero reference line — when CATE crosses zero in either
+            direction, this is the visual anchor for "no effect" */}
+        {zeroPct >= 0 && zeroPct <= 100 && (
+          <div
+            data-testid="cate-zero-line"
+            style={{
+              position: 'absolute',
+              left: `calc(${zeroPct}% - 1px)`,
+              top: 0, bottom: 0, width: 2,
+              background: 'var(--text-muted, #64748b)',
+              opacity: 0.6,
+            }}
+          />
+        )}
+        {/* Per-decile bars laid out as a histogram. Each bar's height
+            scales with the inverse rank — wider bars near the bulk of
+            the distribution. (For 10 quantiles the bar heights are
+            uniform; the visual is dominated by the horizontal
+            position which carries the CATE value.) */}
+        {summary.quantiles.map((q, i) => {
+          const pct = ((q - domainLo) / span) * 100;
+          return (
+            <div
+              key={i}
+              data-testid={`cate-bar-${i}`}
+              title={`p${(5 + i * 10).toString().padStart(2, '0')}: CATE=${q.toFixed(3)}`}
+              style={{
+                position: 'absolute',
+                left: `calc(${pct}% - ${barWidthPct / 4}%)`,
+                width: `${barWidthPct / 2}%`,
+                top: 6,
+                bottom: 6,
+                background: fg,
+                opacity: 0.85,
+                borderRadius: 2,
+              }}
+            />
+          );
+        })}
+        {/* ATE marker */}
+        <div
+          data-testid="cate-mean"
+          style={{
+            position: 'absolute',
+            left: `calc(${meanPct}% - 1px)`,
+            top: 0, bottom: 0,
+            width: 2,
+            background: 'var(--text-primary, #f1f5f9)',
+          }}
+        />
+      </div>
+      <div
+        style={{
+          display: 'flex',
+          justifyContent: 'space-between',
+          fontSize: 10,
+          color: 'var(--text-muted, #64748b)',
+          fontFamily: 'monospace',
+          marginTop: 2,
+        }}
+      >
+        <span>{domainLo.toFixed(2)}</span>
+        <span>ATE = {summary.point.toFixed(2)}</span>
+        <span>{domainHi.toFixed(2)}</span>
+      </div>
+    </div>
+  );
+};
+
 interface Props {
   artifact: CounterfactualOperatorView;
 }
@@ -336,6 +512,10 @@ const CounterfactualCard: React.FC<Props> = ({ artifact }) => {
 
       {artifact.sensitivity_band && (
         <SensitivityBlock band={artifact.sensitivity_band} ci={artifact.ci} />
+      )}
+
+      {artifact.cate_distribution_summary && (
+        <CATEDistributionBlock summary={artifact.cate_distribution_summary} />
       )}
 
       <button

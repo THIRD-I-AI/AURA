@@ -64,10 +64,11 @@ def dowhy_available() -> bool:
 # fitted nuisance models keep the asymptotic guarantees while shrinking
 # the finite-sample bias the linear-regression stub had on small n.
 try:
-    from econml.dr import LinearDRLearner  # type: ignore
+    from econml.dr import ForestDRLearner, LinearDRLearner  # type: ignore
     _ECONML_AVAILABLE = True
 except ImportError:  # pragma: no cover
     LinearDRLearner = None  # type: ignore[assignment]
+    ForestDRLearner = None  # type: ignore[assignment]
     _ECONML_AVAILABLE = False
 
 
@@ -386,6 +387,181 @@ def _run_one_econml_dr_learner(
         )
 
 
+# ── Sprint 15: EconML ForestDRLearner — non-parametric CATE ──────────
+
+def _run_one_econml_forest_dr_learner(
+    df: pd.DataFrame,
+    treatment: InterventionSpec,
+    outcome: OutcomeSpec,
+    dag: dict,
+    seed: int,
+) -> CounterfactualEstimate:
+    """ForestDRLearner ATE + per-row CATE distribution.
+
+    Sprint 15. Where ``LinearDRLearner`` (the ``double_ml`` slot) fits
+    a linear final stage and assumes the CATE function is well-
+    approximated by a hyperplane in X, ``ForestDRLearner`` swaps that
+    final stage for a Subsampled Honest Forest regressor — a Wager &
+    Athey (2018) / GRF (Athey, Tibshirani & Wager 2019)-style estimator
+    that produces a non-parametric CATE function and a per-row CATE
+    vector. We capture that vector as 10 quantiles in
+    ``cate_distribution`` (rounded to 6 decimals so the canonical-JSON
+    bytes are stable across re-runs).
+
+    Determinism: same seed pattern as the LinearDR path. The forest's
+    bootstrap-of-little-bags inference samples a lot of np.random
+    state; ``_seed_numpy(seed)`` + ``random_state=seed`` everywhere
+    keeps it pinned. ``n_jobs=1`` (the default) keeps sklearn single-
+    threaded — parallelism would interleave the BLB iterations and
+    break Layer 10 byte-identity. ``n_estimators=50`` (default is 100)
+    keeps total runtime reasonable on the eval-gate n=300..600 range.
+
+    Propensity calibration: ``CalibratedClassifierCV`` wrapping a
+    ``GradientBoostingClassifier`` — non-linear nuisance is the whole
+    point of Forest paths, but uncalibrated boosted-tree probabilities
+    land near 0/1 the same way RF does (see
+    [[feedback_propensity_calibration]]). Isotonic calibration via CV
+    keeps the IPW correction stable. ``cv=3`` on both the calibrator
+    and the DR's cross-fit keeps the same fold count throughout.
+
+    Routed only when ``_ECONML_AVAILABLE``; called only when the caller
+    explicitly opts in via ``methods=["forest_dr", ...]``. Opt-in
+    rather than default-fan-out because (a) it adds ~3-5 seconds per
+    job, (b) older Layer 9/Layer 11 eval-gate assertions count exactly
+    four estimators, and (c) the linear DR path is the right default
+    when the DGP is linear-in-X — only switch when the operator wants
+    heterogeneity visibility.
+    """
+    t0 = time.time()
+    try:
+        import numpy as np
+        from sklearn.calibration import CalibratedClassifierCV
+        from sklearn.ensemble import GradientBoostingClassifier, GradientBoostingRegressor
+
+        _seed_numpy(seed)
+
+        T_bin = (df[treatment.column] == treatment.actual).astype(int).to_numpy()
+        if T_bin.sum() == 0 or T_bin.sum() == len(T_bin):
+            raise ValueError(
+                "Treatment column has no variation under the binarisation "
+                f"T = (col == {treatment.actual}); cannot fit ForestDR-Learner"
+            )
+        Y = df[outcome.column].to_numpy(dtype=float)
+
+        treatment_parents = sorted({
+            src for src, dst in dag.get("edges", [])
+            if dst == treatment.column
+            and src != outcome.column
+            and src in df.columns
+        })
+
+        n = len(df)
+        if treatment_parents:
+            X = df[treatment_parents].to_numpy(dtype=float)
+            W = X
+        else:
+            X = np.random.default_rng(seed).standard_normal((n, 1))
+            W = None
+
+        # Cross-fit folds bounded by per-class count, same logic as
+        # the LinearDR path so the two estimators see comparable
+        # bias-variance trade-offs on small eval-gate datasets.
+        per_class = min(int(T_bin.sum()), int((1 - T_bin).sum()))
+        cv_folds = max(2, min(3, per_class // 2)) if per_class >= 4 else 2
+
+        # Calibrated GBC for propensity: GBC handles non-linearity that
+        # plain LogisticRegression would miss, CalibratedClassifierCV
+        # rescues the predict_proba distribution back from the 0/1
+        # boundary.
+        propensity_model = CalibratedClassifierCV(
+            GradientBoostingClassifier(
+                n_estimators=50, max_depth=3, random_state=seed,
+            ),
+            method="isotonic",
+            cv=cv_folds,
+        )
+        outcome_model = GradientBoostingRegressor(
+            n_estimators=50, max_depth=3, random_state=seed,
+        )
+
+        est = ForestDRLearner(
+            model_propensity=propensity_model,
+            model_regression=outcome_model,
+            # n_estimators must be divisible by ForestDRLearner's
+            # default subforest_size=4 (the BLB sub-forest count).
+            # 48 is the closest "small enough for the eval-gate" number
+            # that satisfies n_estimators % 4 == 0.
+            n_estimators=48,
+            min_samples_leaf=max(10, n // 30),
+            cv=cv_folds,
+            random_state=seed,
+        )
+        est.fit(Y=Y, T=T_bin, X=X, W=W)
+
+        # Per-row CATE — the whole point of the forest stage. ATE is
+        # the population mean of CATEs; the distribution captures
+        # heterogeneity the linear stage averages out.
+        cates = est.effect(X, T0=0, T1=1)
+        pt = float(np.mean(cates))
+        # 10 evenly-spaced quantiles, 0.05..0.95 inclusive, at 6
+        # decimals for canonical-JSON byte stability.
+        q_pts = np.linspace(0.05, 0.95, 10)
+        cate_quantiles = [
+            round(float(q), 6)
+            for q in np.quantile(cates, q_pts)
+        ]
+
+        # Forest CI via Bootstrap-of-Little-Bags. effect_interval works
+        # without re-fitting because ForestDRLearner builds the BLB
+        # samples during fit() when inference='blb' (the default).
+        try:
+            lo_arr, hi_arr = est.effect_interval(X, T0=0, T1=1, alpha=0.05)
+            ci_lower = float(np.mean(lo_arr))
+            ci_upper = float(np.mean(hi_arr))
+        except Exception as ci_exc:  # pragma: no cover
+            # Some EconML versions / inference modes fall back to no
+            # CI when BLB can't be computed; surface a sentinel rather
+            # than crash the estimate altogether.
+            logger.warning("ForestDR CI computation failed: %s", ci_exc)
+            ci_lower = pt
+            ci_upper = pt
+        if ci_upper < ci_lower:
+            ci_lower, ci_upper = ci_upper, ci_lower
+
+        if not (np.isfinite(pt) and np.isfinite(ci_lower) and np.isfinite(ci_upper)):
+            raise ValueError(
+                f"ForestDR-Learner produced non-finite output "
+                f"(point={pt}, ci=[{ci_lower}, {ci_upper}])"
+            )
+
+        # Reuse the LinearDR's propensity-diagnostics capture helper
+        # for parity — operator card propensity bar works the same way
+        # for both DR estimators.
+        propensity_diag = _compute_propensity_diagnostics(
+            X=X, W=W, T_bin=T_bin, cv_folds=cv_folds, seed=seed,
+        )
+
+        return CounterfactualEstimate(
+            method="forest_dr",
+            point=pt,
+            ci_lower=ci_lower,
+            ci_upper=ci_upper,
+            n_samples=n,
+            elapsed_ms=(time.time() - t0) * 1000,
+            propensity_diagnostics=propensity_diag,
+            cate_distribution=cate_quantiles,
+        )
+    except Exception as exc:
+        logger.warning("ForestDR-Learner (econml) failed: %s", exc)
+        return CounterfactualEstimate(
+            method="forest_dr",
+            point=0.0, ci_lower=0.0, ci_upper=0.0,
+            n_samples=len(df),
+            elapsed_ms=(time.time() - t0) * 1000,
+            error=f"{type(exc).__name__}: {exc}",
+        )
+
+
 # ── Sprint 11: deterministic seeding ─────────────────────────────────
 
 def _seed_for(request_hash: str, name: str) -> int:
@@ -457,6 +633,18 @@ def _run_one_estimator(
     # but still doubly-robust in the linear-DGP case the eval-gate hits).
     if method_key == "double_ml" and _ECONML_AVAILABLE:
         return _run_one_econml_dr_learner(df, treatment, outcome, dag, seed)
+    # Sprint 15 dispatch: ``forest_dr`` is opt-in (callers must include
+    # it explicitly via methods=[...]); without econml it surfaces a
+    # structured error rather than silently dropping the request.
+    if method_key == "forest_dr":
+        if _ECONML_AVAILABLE:
+            return _run_one_econml_forest_dr_learner(df, treatment, outcome, dag, seed)
+        return CounterfactualEstimate(
+            method="forest_dr",
+            point=0.0, ci_lower=0.0, ci_upper=0.0,
+            n_samples=len(df), elapsed_ms=0.0,
+            error="econml not installed — forest_dr unavailable",
+        )
 
     t0 = time.time()
     try:

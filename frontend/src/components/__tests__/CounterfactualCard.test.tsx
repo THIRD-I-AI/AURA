@@ -158,4 +158,79 @@ describe('CounterfactualCard', () => {
     expect(screen.getByText(/baseline -1\.50/)).toBeInTheDocument();
     expect(screen.getByText(/4 refuters/)).toBeInTheDocument();
   });
+
+  // ── Sprint 15: CATE distribution block ──────────────────────────
+
+  it('does not render the CATE block when distribution summary is absent', () => {
+    render(<CounterfactualCard artifact={baseFixture} />);
+    expect(screen.queryByTestId('cate-distribution-block')).not.toBeInTheDocument();
+  });
+
+  it('renders the CATE block with one bar per decile + heterogeneity badge', () => {
+    render(
+      <CounterfactualCard
+        artifact={{
+          ...baseFixture,
+          cate_distribution_summary: {
+            method: 'forest_dr',
+            quantiles: [0.4, 0.5, 0.7, 0.9, 1.2, 1.6, 2.0, 2.2, 2.4, 2.6],
+            point: 1.5,
+            ci_lower: 1.2,
+            ci_upper: 1.8,
+            idr: 2.2,
+            heterogeneity: 'high',
+          },
+        }}
+      />,
+    );
+    expect(screen.getByTestId('cate-distribution-block')).toBeInTheDocument();
+    expect(screen.getByTestId('cate-heterogeneity').textContent).toBe('heterogeneous');
+    expect(screen.getByTestId('cate-mean')).toBeInTheDocument();
+    // 10 quantile bars by construction
+    for (let i = 0; i < 10; i++) {
+      expect(screen.getByTestId(`cate-bar-${i}`)).toBeInTheDocument();
+    }
+    expect(screen.getByText(/spread 2\.20/)).toBeInTheDocument();
+    expect(screen.getByText(/ATE = 1\.50/)).toBeInTheDocument();
+  });
+
+  it('shows the zero reference line when CATE quantiles straddle zero', () => {
+    render(
+      <CounterfactualCard
+        artifact={{
+          ...baseFixture,
+          cate_distribution_summary: {
+            method: 'forest_dr',
+            quantiles: [-0.5, -0.3, -0.1, 0.0, 0.2, 0.4, 0.6, 0.8, 1.0, 1.2],
+            point: 0.3,
+            ci_lower: 0.1,
+            ci_upper: 0.5,
+            idr: 1.7,
+            heterogeneity: 'high',
+          },
+        }}
+      />,
+    );
+    expect(screen.getByTestId('cate-zero-line')).toBeInTheDocument();
+  });
+
+  it('renders the heterogeneity badge as homogeneous when low', () => {
+    render(
+      <CounterfactualCard
+        artifact={{
+          ...baseFixture,
+          cate_distribution_summary: {
+            method: 'forest_dr',
+            quantiles: [1.4, 1.45, 1.48, 1.49, 1.50, 1.51, 1.52, 1.55, 1.58, 1.60],
+            point: 1.5,
+            ci_lower: 1.45,
+            ci_upper: 1.55,
+            idr: 0.2,
+            heterogeneity: 'low',
+          },
+        }}
+      />,
+    );
+    expect(screen.getByTestId('cate-heterogeneity').textContent).toBe('homogeneous');
+  });
 });

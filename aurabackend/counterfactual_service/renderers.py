@@ -59,6 +59,56 @@ def _propensity_summary(art: CounterfactualArtifact) -> Dict[str, Any] | None:
     }
 
 
+def _cate_distribution_summary(art: CounterfactualArtifact) -> Dict[str, Any] | None:
+    """Sprint 15: extract per-row CATE quantiles from any estimator
+    that ran the non-parametric ForestDR path. Returns None when no
+    estimator surfaced ``cate_distribution`` (LinearDR / DoWhy paths
+    populate only a scalar point + CI, no heterogeneity vector).
+
+    The heterogeneity flag uses the inter-decile spread ratio:
+
+      * ``low``       — IDR / |point| ≤ 1.0 (relatively homogeneous;
+                        the population behaves like one group)
+      * ``moderate``  — IDR / |point| in (1.0, 2.0] (some heterogeneity
+                        worth surfacing but not pathological)
+      * ``high``      — IDR / |point| > 2.0 (population subgroups have
+                        meaningfully different treatment responses —
+                        the ATE is an average of distinct effects)
+
+    The auditor / operator reading this should treat ``high`` as a
+    signal that one-number-summarising the effect is misleading;
+    drilling into the X-subgroup level is the right next step.
+    """
+    src = next(
+        (e for e in art.estimates
+         if e.cate_distribution is not None and e.error is None),
+        None,
+    )
+    if src is None or not src.cate_distribution:
+        return None
+    quantiles = list(src.cate_distribution)
+    # Inter-decile spread = p95 - p05 (first and last of the 10 stored
+    # quantiles by construction in the engine).
+    idr = quantiles[-1] - quantiles[0]
+    point = src.point
+    ratio = abs(idr) / max(abs(point), 1e-9)
+    if ratio > 2.0:
+        heterogeneity = "high"
+    elif ratio > 1.0:
+        heterogeneity = "moderate"
+    else:
+        heterogeneity = "low"
+    return {
+        "method": src.method,
+        "quantiles": quantiles,
+        "point": point,
+        "ci_lower": src.ci_lower,
+        "ci_upper": src.ci_upper,
+        "idr": idr,
+        "heterogeneity": heterogeneity,
+    }
+
+
 def _sensitivity_band(art: CounterfactualArtifact) -> Dict[str, Any] | None:
     """Sprint 14: collapse the refutation outputs into a per-refuter
     perturbation summary the operator card can render as a horizontal
@@ -108,6 +158,10 @@ def _operator(art: CounterfactualArtifact) -> Dict[str, Any]:
     sens = _sensitivity_band(art)
     if sens is not None:
         out["sensitivity_band"] = sens
+    # Sprint 15 addition — only present when ForestDRLearner ran.
+    cate = _cate_distribution_summary(art)
+    if cate is not None:
+        out["cate_distribution_summary"] = cate
     return out
 
 

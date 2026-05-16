@@ -58,7 +58,7 @@ class CounterfactualQuery(BaseModel):
 
 # ── Engine outputs ────────────────────────────────────────────────────
 
-EstimatorMethod = Literal["linear_regression", "ipw", "psm", "double_ml"]
+EstimatorMethod = Literal["linear_regression", "ipw", "psm", "double_ml", "forest_dr"]
 RefuterName = Literal["random_common_cause", "placebo", "data_subset", "sensitivity"]
 Severity = Literal["low", "medium", "high"]
 
@@ -101,6 +101,15 @@ class CounterfactualEstimate(BaseModel):
     # The field IS in the artifact hash basis so propensity drift
     # surfaces as a hash change — that's the contract auditors get.
     propensity_diagnostics: Optional[PropensityDiagnostics] = None
+    # Sprint 15: per-row CATE distribution as 10 evenly-spaced quantiles
+    # (p05..p95 inclusive at 10 percentile steps). Populated only by
+    # ForestDRLearner — the only estimator whose final stage actually
+    # gives heterogeneous CATEs across rows. Values are rounded to 6
+    # decimals so the canonical-JSON bytes are stable across re-runs
+    # and Layer 10 byte-identity holds. The field IS in the hash basis;
+    # any drift in the forest's CATE estimates surfaces as a hash
+    # change so an auditor can detect non-deterministic model behaviour.
+    cate_distribution: Optional[List[float]] = None
 
 
 class RefutationResult(BaseModel):

@@ -57,7 +57,7 @@ class CounterfactualQuery(BaseModel):
 
 # ── Engine outputs ────────────────────────────────────────────────────
 
-EstimatorMethod = Literal["linear_regression", "ipw", "psm", "double_ml"]
+EstimatorMethod = Literal["linear_regression", "ipw", "psm", "double_ml", "forest_dr"]
 RefuterName = Literal["random_common_cause", "placebo", "data_subset", "sensitivity"]
 Severity = Literal["low", "medium", "high"]
 
@@ -93,6 +93,11 @@ class CounterfactualEstimate(BaseModel):
     # before S13 don't have this field; ConfigDict(extra="ignore") on
     # the artifact handles any future field additions the same way.
     propensity_diagnostics: Optional[PropensityDiagnostics] = None
+    # Sprint 15: per-row CATE distribution as 10 quantiles (p05..p95).
+    # Populated only by ForestDRLearner. Values rounded to 6 decimals
+    # on the engine side so the SDK's forward-compat round-trip stays
+    # byte-stable.
+    cate_distribution: Optional[List[float]] = None
 
 
 class RefutationResult(BaseModel):
