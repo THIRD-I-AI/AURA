@@ -127,13 +127,13 @@ omit = [
     # `pytest.importorskip("faiss")` and faiss-cpu lives in
     # requirements-multimodal.txt (not requirements.txt). On the
     # backend-test CI lane the entire test body skips and coverage
-    # counts the 100+ lines as 0%-covered, dragging total below the
-    # 60% gate (59.62% on the S17 push). The connector itself
-    # (`connectors/faiss_connector.py`) defers `import faiss` until
-    # `connect()` so importing the module is cheap and tested via
-    # `test_connector_registry.py` — only the integration test file
-    # needs omission.
+    # counts the 100+ lines as 0%-covered. Omit both the test file
+    # AND the connector module itself (its methods can only execute
+    # when faiss is installed; lines count as uncovered otherwise).
+    # Same pattern as agents/specialists/dar_research_agent.py
+    # (DAR requires the LLM stack, not in base backend-test).
     "tests/test_connectors_faiss.py",
+    "connectors/faiss_connector.py",
 ]
 
 [tool.bandit]
