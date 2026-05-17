@@ -121,11 +121,12 @@ def _seed_builtins() -> None:
         from connectors import (
             BigQueryConnector,
             DuckDBConnector,
+            FAISSConnector,
             MySQLConnector,
             PostgreSQLConnector,
         )
     except ImportError:  # pragma: no cover — defensive
-        BigQueryConnector = DuckDBConnector = MySQLConnector = PostgreSQLConnector = None  # type: ignore
+        BigQueryConnector = DuckDBConnector = MySQLConnector = PostgreSQLConnector = FAISSConnector = None  # type: ignore
 
     register_connector(ConnectorSpec(
         id="postgresql",
@@ -176,6 +177,64 @@ def _seed_builtins() -> None:
             ConnectorField("database", "DB file (or :memory:)", "string", default=":memory:"),
         ],
         available=DuckDBConnector is not None,
+    ))
+    # Sprint 17 — Multi-Modal Fabric (Pillar 2). DuckDB-spatial is the
+    # same connector class with the spatial extension auto-loaded; we
+    # expose it as a separate spec entry so users can pick it from the
+    # UI without remembering to set extra_params.
+    register_connector(ConnectorSpec(
+        id="duckdb_spatial",
+        name="DuckDB (spatial)",
+        description=(
+            "DuckDB with the spatial extension preloaded. "
+            "Supports ST_* PostGIS-style functions and R-tree spatial joins "
+            "without needing a Postgres server."
+        ),
+        kind="embedded",
+        icon="🗺️",
+        capabilities=["sql", "file_query", "spatial"],
+        fields=[
+            ConnectorField("database", "DB file (or :memory:)", "string", default=":memory:"),
+        ],
+        available=DuckDBConnector is not None,
+        unavailable_reason=(
+            None if DuckDBConnector
+            else "duckdb driver not installed"
+        ),
+    ))
+    register_connector(ConnectorSpec(
+        id="faiss",
+        name="FAISS (vector)",
+        description=(
+            "In-process FAISS vector index — zero external server required. "
+            "Cosine / L2 / HNSW search over arbitrary embeddings with a "
+            "sidecar metadata frame for relational joins."
+        ),
+        kind="embedded",
+        icon="🧭",
+        capabilities=["vector"],
+        fields=[
+            ConnectorField(
+                "database", "Persistence path (blank = in-memory)", "string",
+                help=(
+                    "If set, the index + metadata are persisted to this path "
+                    "on every add_vectors call. Blank = ephemeral."
+                ),
+            ),
+            ConnectorField(
+                "dimension", "Embedding dimension", "number", default=384,
+                help="Must match the model that produced the vectors.",
+            ),
+            ConnectorField(
+                "index_type", "Index type", "string", default="flat_ip",
+                help="flat_ip (cosine, exact), l2 (Euclidean), hnsw (approx).",
+            ),
+        ],
+        available=FAISSConnector is not None,
+        unavailable_reason=(
+            None if FAISSConnector
+            else "faiss-cpu not installed (pip install -r requirements-multimodal.txt)"
+        ),
     ))
 
 

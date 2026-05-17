@@ -1,0 +1,23 @@
+# Multi-Modal Fabric extras — Sprint 17 (Pillar 2).
+#
+#   pip install -r requirements.txt
+#   pip install -r requirements-multimodal.txt
+#
+# Why these aren't in base:
+#   * faiss-cpu is ~80MB compiled — services that don't do vector
+#     similarity (api_gateway, scheduler, evolution, etc.) shouldn't
+#     pay the install cost. The connectors microservice and the
+#     execution_sandbox are the two pods that load this.
+#   * DuckDB's spatial extension is downloaded on first INSTALL and
+#     adds ~5MB of compiled GEOS bindings. We don't pin the extension
+#     version here; the connector loads "spatial" from DuckDB's
+#     extension server at first use.
+
+# FAISS — in-process vector similarity (Johnson, Douze & Jegou 2019).
+# faiss-cpu is the wheel-distributed CPU build; for GPU use the
+# matching faiss-gpu wheel out-of-band.
+faiss-cpu>=1.7,<2.0
+
+# numpy + pandas are already in requirements.txt; pinning here for
+# clarity that the FAISS connector relies on the same versions.
+# (intentionally not duplicating to avoid solver conflicts)

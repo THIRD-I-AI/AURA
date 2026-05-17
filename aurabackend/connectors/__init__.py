@@ -22,6 +22,15 @@ try:
 except ImportError:
     BigQueryConnector = None  # type: ignore[assignment,misc]
 
+# Sprint 17 — Multi-Modal Fabric (Pillar 2). FAISS is optional; the
+# connector itself defers faiss import to connect() but we still wrap
+# in try/except so a totally broken file (e.g., a syntax error from a
+# bad merge) doesn't take down the rest of the connectors module.
+try:
+    from .faiss_connector import FAISSConnector
+except ImportError:
+    FAISSConnector = None  # type: ignore[assignment,misc]
+
 from .registry import (  # noqa: E402  — must be imported after the connector classes above
     ConnectorField,
     ConnectorSpec,
@@ -39,6 +48,7 @@ __all__ = [
     "PostgreSQLConnector",
     "MySQLConnector",
     "BigQueryConnector",
+    "FAISSConnector",
     # Registry
     "ConnectorField",
     "ConnectorSpec",

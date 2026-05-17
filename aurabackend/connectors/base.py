@@ -18,6 +18,13 @@ class SourceType(Enum):
     SNOWFLAKE = "snowflake"
     MONGODB = "mongodb"
     DUCKDB = "duckdb"
+    # Sprint 17 — Multi-Modal Fabric (Pillar 2). FAISS is a first-class
+    # vector store separate from pgvector (already accessible through
+    # PostgreSQL). DUCKDB_SPATIAL is just DuckDB with the spatial
+    # extension auto-loaded; users register it explicitly when they
+    # want PostGIS-like queries without a Postgres dependency.
+    FAISS = "faiss"
+    DUCKDB_SPATIAL = "duckdb_spatial"
 
 
 @dataclass
@@ -132,6 +139,66 @@ class BaseConnector(ABC):
             return len(tables) >= 0
         except Exception:
             return False
+
+    # ── Sprint 17: Multi-Modal Fabric optional capabilities ─────────
+    #
+    # The default implementations raise NotImplementedError so a
+    # relational connector that doesn't support these operations
+    # fails closed rather than silently returning empty results.
+    # Connectors that DO support multi-modal ops (FAISS for vectors,
+    # DuckDB-spatial for spatial, the existing Postgres adapter for
+    # pgvector + PostGIS) override the corresponding method.
+
+    def capabilities(self) -> Dict[str, bool]:
+        """Report which multi-modal operations this connector supports.
+
+        Default: ``sql`` only — everything else is opt-in. The service
+        layer (``connectors/main.py``) inspects this dict before
+        dispatching to ``vector_search()`` or ``spatial_query()`` so a
+        request to a non-supporting connector returns 501 rather than
+        500.
+
+        Keys follow the same vocabulary as the ConnectorSpec
+        ``capabilities`` list in ``registry.py``: ``sql``, ``vector``,
+        ``spatial``, ``file_query``, ``time_series``.
+        """
+        return {"sql": True, "vector": False, "spatial": False}
+
+    async def vector_search(
+        self,
+        table: str,
+        embedding: List[float],
+        *,
+        column: str = "embedding",
+        limit: int = 10,
+        metric: str = "cosine",
+    ) -> List[Dict[str, Any]]:
+        """k-nearest-neighbours over a vector column.
+
+        Default raises ``NotImplementedError``. FAISS / Postgres-pgvector
+        / vendored vector connectors override. Returns rows with a
+        ``_distance`` (or ``_similarity``) field added; sort order is
+        nearest-first.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} does not implement vector_search"
+        )
+
+    async def spatial_query(
+        self,
+        query: str,
+        params: Optional[List[Any]] = None,
+    ) -> List[Dict[str, Any]]:
+        """Spatial query (PostGIS / DuckDB-spatial dialect).
+
+        Default raises ``NotImplementedError``. DuckDB-spatial and
+        Postgres+PostGIS connectors override. The query string is
+        passed verbatim — the connector is responsible for any
+        parameterisation.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} does not implement spatial_query"
+        )
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary representation"""

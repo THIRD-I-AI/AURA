@@ -14,11 +14,20 @@ logger = logging.getLogger("aura.connectors.duckdb")
 
 
 class DuckDBConnector(BaseConnector):
-    """In-process analytical database — no server needed."""
+    """In-process analytical database — no server needed.
+
+    Sprint 17: optionally loads the DuckDB ``spatial`` extension when
+    the connector config requests it. Spatial enablement is opt-in
+    because the extension adds ~5MB of compiled GEOS bindings and
+    fails-closed when the install can't reach the DuckDB extension
+    server (offline / air-gapped deployments). When enabled, the
+    connector reports ``spatial=True`` in capabilities() and accepts
+    PostGIS-style queries via spatial_query()."""
 
     def __init__(self, config: ConnectorConfig) -> None:
         super().__init__(config)
         self._conn: Any = None
+        self._spatial_loaded: bool = False
 
     async def connect(self) -> bool:
         try:
@@ -34,9 +43,42 @@ class DuckDBConnector(BaseConnector):
             self._conn = duckdb.connect(str(path))
             self._is_connected = True
             self.metadata.connected = True
+            # Sprint 17: opt-in spatial extension. Triggered either by
+            # the SourceType.DUCKDB_SPATIAL enum entry or by an explicit
+            # extra_params={"enable_spatial": True} on a plain
+            # SourceType.DUCKDB connector. Failures are non-fatal —
+            # the SQL surface still works without spatial.
+            extra = self.config.extra_params or {}
+            wants_spatial = (
+                self.config.source_type.value == "duckdb_spatial"
+                or bool(extra.get("enable_spatial", False))
+            )
+            if wants_spatial:
+                self._spatial_loaded = self._try_load_spatial()
+                if not self._spatial_loaded:
+                    logger.warning(
+                        "DuckDBConnector: spatial extension requested but "
+                        "could not be loaded (offline install? missing "
+                        "extension server?). SQL surface still works."
+                    )
             return True
         except Exception as exc:
             logger.warning("DuckDB connection failed: %s", exc)
+            return False
+
+    def _try_load_spatial(self) -> bool:
+        """Install + load the DuckDB spatial extension. Returns True on
+        success, False on any failure (no exception leaks out — the SQL
+        surface is unaffected). Wrapped in two stages because INSTALL
+        may be a no-op if the extension is already on disk."""
+        if self._conn is None:
+            return False
+        try:
+            self._conn.execute("INSTALL spatial")
+            self._conn.execute("LOAD spatial")
+            return True
+        except Exception as exc:
+            logger.warning("DuckDB spatial load failed: %s", exc)
             return False
 
     async def disconnect(self) -> bool:
@@ -136,3 +178,39 @@ class DuckDBConnector(BaseConnector):
         except Exception as exc:
             logger.warning("DuckDB register_file failed: %s", exc)
             return False
+
+    # ── Sprint 17: Multi-Modal Fabric capabilities ─────────────────
+
+    def capabilities(self) -> Dict[str, bool]:
+        """DuckDB always supports SQL + file_query; spatial reports
+        ``True`` only when the extension successfully loaded during
+        connect(). The service-side dispatch in connectors/main.py
+        reads this dict before routing to spatial_query()."""
+        return {
+            "sql": True,
+            "vector": False,
+            "spatial": self._spatial_loaded,
+            "file_query": True,
+        }
+
+    async def spatial_query(
+        self,
+        query: str,
+        params: Optional[List[Any]] = None,
+    ) -> List[Dict[str, Any]]:
+        """Execute a DuckDB-spatial query (ST_* functions, GeoJSON
+        ingest, R-tree spatial joins). Requires the spatial extension
+        loaded — raises NotImplementedError otherwise so the caller
+        gets a 501 instead of an opaque SQL parse error.
+
+        The query string is passed verbatim. DuckDB-spatial supports
+        most PostGIS function names (``ST_Distance``, ``ST_Within``,
+        ``ST_Buffer``, etc.) so portable spatial queries written for
+        Postgres+PostGIS usually run unchanged here."""
+        if not self._spatial_loaded:
+            raise NotImplementedError(
+                "DuckDB spatial extension not loaded. Configure the "
+                "connector with extra_params={'enable_spatial': True} "
+                "or use SourceType.DUCKDB_SPATIAL."
+            )
+        return await self.execute_query(query, limit=10_000)
