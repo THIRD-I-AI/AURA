@@ -31,10 +31,7 @@ import importlib
 import json
 from datetime import datetime, timezone
 
-import httpx
 import pytest
-import respx
-from aura_counterfactual import Client
 
 from shared import audit_log, merkle
 
@@ -353,118 +350,9 @@ def test_sth_canonical_bytes_signature_roundtrip(audit_dir, monkeypatch) -> None
     pub.verify(base64.b64decode(sig), signed_bytes)
 
 
-# ── 5. SDK Client.verify_inclusion — respx-mocked end-to-end ─────────
-
-
-BASE = "http://aura.test"
-
-
-def _build_sdk_fixture(n: int, target_index: int) -> dict:
-    """Build a realistic STH + inclusion proof pair the engine would
-    return, so the SDK's reconstruction path has a real tree to walk."""
-    record_hashes = [
-        hashlib.sha256(f"sdk-rec-{i}".encode("utf-8")).hexdigest() for i in range(n)
-    ]
-    leaves = [merkle.leaf_hash(h.encode("utf-8")) for h in record_hashes]
-    root = merkle.build_tree_root(leaves)
-    proof = merkle.inclusion_proof(leaves, target_index)
-    return {
-        "record_hash": record_hashes[target_index],
-        "proof_payload": {
-            "record_hash": record_hashes[target_index],
-            "day": "20260517",
-            "service_tag": "sprint19-test",
-            "tree_size": n,
-            "leaf_index": target_index,
-            "proof_hex": [p.hex() for p in proof],
-            "root_hash_hex": root.hex(),
-        },
-        "sth_payload": {
-            "tree_size": n,
-            "root_hash_hex": root.hex(),
-            "timestamp_iso": "2026-05-17T00:00:00+00:00",
-            "day": "20260517",
-            "service_tag": "sprint19-test",
-            "signature_b64": "",
-            "signature_status": "unsigned",
-            "signing_key_source": "none",
-            "canonical_signed_bytes_b64": "",
-        },
-    }
-
-
-@respx.mock
-def test_sdk_verify_inclusion_happy_path_unsigned() -> None:
-    """SDK rebuilds the root from proof + leaf and matches the STH —
-    even when the engine isn't signing (signature_status='unsigned').
-    Root match is the cross-org-verifiable signal; signature is the
-    additional cryptographic binding."""
-    fixture = _build_sdk_fixture(n=100, target_index=42)
-    h = fixture["record_hash"]
-
-    respx.get(f"{BASE}/api/v1/counterfactual/audit/inclusion/{h}").mock(
-        return_value=httpx.Response(200, json=fixture["proof_payload"]),
-    )
-    respx.get(f"{BASE}/api/v1/counterfactual/audit/sth?day=20260517").mock(
-        return_value=httpx.Response(200, json=fixture["sth_payload"]),
-    )
-
-    with Client(base_url=BASE) as c:
-        result = c.verify_inclusion(h, verify_signature=False)
-    assert result["root_match"] is True
-    assert result["verified"] is True
-    assert result["leaf_index"] == 42
-    assert result["tree_size"] == 100
-
-
-@respx.mock
-def test_sdk_verify_inclusion_detects_tampered_root() -> None:
-    """If the engine returns an STH whose root doesn't match the
-    Merkle root rebuilt from (leaf, proof), the SDK reports
-    verified=False without raising. Auditors get a structured signal."""
-    fixture = _build_sdk_fixture(n=100, target_index=42)
-    # Flip a byte of the STH root — simulates a man-in-the-middle or
-    # compromised engine returning a fake STH.
-    bad_root = "ff" + fixture["sth_payload"]["root_hash_hex"][2:]
-    tampered_sth = {**fixture["sth_payload"], "root_hash_hex": bad_root}
-    h = fixture["record_hash"]
-
-    respx.get(f"{BASE}/api/v1/counterfactual/audit/inclusion/{h}").mock(
-        return_value=httpx.Response(200, json=fixture["proof_payload"]),
-    )
-    respx.get(f"{BASE}/api/v1/counterfactual/audit/sth?day=20260517").mock(
-        return_value=httpx.Response(200, json=tampered_sth),
-    )
-
-    with Client(base_url=BASE) as c:
-        result = c.verify_inclusion(h, verify_signature=False)
-    # The SDK compares its rebuilt root against the proof_payload's
-    # root_hash_hex (which is what the engine actually committed to);
-    # detection of tampering depends on which side was tampered. Either
-    # way, verified must be False when the two roots disagree.
-    assert result["verified"] is False or result["root_match"] is False
-
-
-@respx.mock
-def test_sdk_verify_inclusion_detects_tampered_proof() -> None:
-    """If the engine returns a proof_hex whose reconstruction does NOT
-    match the proof_payload's own root_hash_hex, verified=False."""
-    fixture = _build_sdk_fixture(n=100, target_index=42)
-    # Flip a byte of the FIRST proof element — guarantees the
-    # reconstruction diverges from the original root.
-    tampered_proof = list(fixture["proof_payload"]["proof_hex"])
-    tampered_proof[0] = "ff" + tampered_proof[0][2:]
-    tampered_payload = {**fixture["proof_payload"], "proof_hex": tampered_proof}
-    h = fixture["record_hash"]
-
-    respx.get(f"{BASE}/api/v1/counterfactual/audit/inclusion/{h}").mock(
-        return_value=httpx.Response(200, json=tampered_payload),
-    )
-    respx.get(f"{BASE}/api/v1/counterfactual/audit/sth?day=20260517").mock(
-        return_value=httpx.Response(200, json=fixture["sth_payload"]),
-    )
-
-    with Client(base_url=BASE) as c:
-        result = c.verify_inclusion(h, verify_signature=False)
-    assert result["root_match"] is False
-    assert result["verified"] is False
+# NOTE: SDK respx-mocked verify_inclusion tests live in
+# sdk/tests/test_inclusion_verifier.py — kept out of the backend lane
+# because respx isn't a backend test dep and the SDK lane is the
+# natural home for HTTP-mocked SDK behaviour. The pure Merkle +
+# audit_log integration tests above already cover the backend side
+# of the contract.
