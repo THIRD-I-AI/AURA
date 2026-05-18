@@ -42,7 +42,7 @@ import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger("aura.shared.audit_log")
 
@@ -216,3 +216,144 @@ def verify_chain(path: Path) -> Dict[str, Any]:
                 failures.append({"line": line_no, "error": "prev_hash mismatch"})
             prev = rec.get("record_hash", "")
     return {"path": str(path), "lines": line_no, "failures": failures, "ok": not failures}
+
+
+# ── Sprint 19 — TRAIGA Federation: Merkle audit log helpers ──────────
+#
+# The existing per-record SHA-256 chain stays untouched on the hot
+# append path (every audit_request / audit_prompt / audit_event call
+# still flushes a single line + the chain digest). The Merkle tree
+# is computed on demand from the day's JSONL — typically once per
+# STH publication, not per append — so the hot path overhead stays
+# at zero. The Merkle root over a day's record hashes is the
+# cryptographic anchor that two organisations can independently
+# verify: an auditor at org B holding only (record_hash, proof, STH)
+# can confirm record inclusion in AURA's audit chain at org A
+# without trusting either party.
+
+
+def _audit_path_for_day(day: str, service_tag: Optional[str] = None) -> Path:
+    """Resolve the daily JSONL path for a given UTC day and service.
+
+    Defaults to ``AUDIT_SERVICE_TAG`` (whatever service is asking).
+    Auditors / sidecar verifiers pass an explicit ``service_tag`` to
+    inspect another service's log.
+    """
+    tag = service_tag or AUDIT_SERVICE_TAG
+    return AUDIT_DIR / f"audit-{tag}-{day}.jsonl"
+
+
+def read_day_record_hashes(day: str, service_tag: Optional[str] = None) -> List[str]:
+    """Return the ordered list of ``record_hash`` values for a day.
+
+    Skips blank lines + malformed records (returning what's intact —
+    a tampered line that fails JSON parse should NOT block the rest
+    of the day's records from being indexed). Caller can detect
+    tampering by comparing this list's length against the chain
+    walk in ``verify_chain``.
+    """
+    path = _audit_path_for_day(day, service_tag)
+    if not path.exists():
+        return []
+    hashes: List[str] = []
+    try:
+        with path.open("rb") as fh:
+            for raw in fh:
+                if not raw.strip():
+                    continue
+                try:
+                    rec = json.loads(raw)
+                except json.JSONDecodeError:
+                    continue
+                h = rec.get("record_hash")
+                if isinstance(h, str) and h:
+                    hashes.append(h)
+    except OSError as exc:
+        logger.warning("read_day_record_hashes failed for %s: %s", path, exc)
+    return hashes
+
+
+def daily_merkle_root(day: str, service_tag: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    """Compute today's Merkle Tree Hash over the day's record hashes.
+
+    Returns ``{tree_size, root_hash_hex, day, service_tag}`` or
+    ``None`` when the day's file doesn't exist / is empty. The
+    root is the cryptographic commitment an STH publication
+    references.
+
+    Each record_hash from the JSONL is treated as the SHA-256 of
+    the line's stable fields (already produced by ``_AuditWriter``).
+    We re-hash it through ``merkle.leaf_hash`` to apply RFC 6962's
+    leaf prefix (0x00) before constructing the tree — this is
+    REQUIRED to prevent second-preimage attacks where an attacker
+    finds two record_hash values whose concatenation collides with
+    a third record_hash.
+    """
+    from .merkle import build_tree_root, leaf_hash
+
+    hashes = read_day_record_hashes(day, service_tag)
+    if not hashes:
+        return None
+    leaves = [leaf_hash(h.encode("utf-8")) for h in hashes]
+    root = build_tree_root(leaves)
+    return {
+        "day": day,
+        "service_tag": service_tag or AUDIT_SERVICE_TAG,
+        "tree_size": len(hashes),
+        "root_hash_hex": root.hex(),
+    }
+
+
+def inclusion_proof_for_record(
+    record_hash: str,
+    day: Optional[str] = None,
+    service_tag: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    """Build a Merkle inclusion proof for ``record_hash`` in its day's
+    tree.
+
+    When ``day`` is None the helper searches today's file first, then
+    walks backward through the last 30 daily files looking for the
+    record. Returns ``None`` if the record isn't found in that window
+    — caller falls back to a 404 on the HTTP surface.
+
+    Returns ``{day, service_tag, tree_size, leaf_index, proof_hex,
+    root_hash_hex}`` on success. ``proof_hex`` is a list of 64-char
+    hex-encoded sibling hashes ordered from leaf-level to root-level
+    (the order ``merkle.verify_inclusion`` consumes them).
+    """
+    from .merkle import build_tree_root, inclusion_proof, leaf_hash
+
+    candidate_days: List[str] = []
+    if day is not None:
+        candidate_days.append(day)
+    else:
+        now = datetime.now(timezone.utc)
+        for offset in range(0, 30):
+            d = (now - _days(offset)).strftime("%Y%m%d")
+            candidate_days.append(d)
+
+    for d in candidate_days:
+        hashes = read_day_record_hashes(d, service_tag)
+        if record_hash not in hashes:
+            continue
+        idx = hashes.index(record_hash)
+        leaves = [leaf_hash(h.encode("utf-8")) for h in hashes]
+        proof = inclusion_proof(leaves, idx)
+        root = build_tree_root(leaves)
+        return {
+            "day": d,
+            "service_tag": service_tag or AUDIT_SERVICE_TAG,
+            "tree_size": len(hashes),
+            "leaf_index": idx,
+            "proof_hex": [p.hex() for p in proof],
+            "root_hash_hex": root.hex(),
+        }
+    return None
+
+
+def _days(n: int):
+    """Tiny helper — `timedelta(days=n)`. Inlined here to keep the
+    audit_log module's import list narrow."""
+    from datetime import timedelta
+    return timedelta(days=n)

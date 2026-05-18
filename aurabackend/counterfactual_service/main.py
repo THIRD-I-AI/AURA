@@ -15,7 +15,7 @@ import json
 import logging
 import pathlib
 import uuid
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 import pandas as pd
 from fastapi import HTTPException
@@ -365,3 +365,160 @@ async def replay_bulk(req: BulkReplayRequest) -> StreamingResponse:
             yield json.dumps(result) + "\n"
 
     return StreamingResponse(_stream(), media_type="application/x-ndjson")
+
+
+# ── Sprint 19 — TRAIGA Federation: Merkle audit log endpoints ────────
+#
+# Two new endpoints let an external auditor verify any audit record's
+# inclusion in AURA's chain WITHOUT trusting the engine. Walkthrough:
+#
+#   1. Auditor knows ``record_hash`` (e.g., from a prior replay call).
+#   2. Auditor calls GET /counterfactual/audit/inclusion/{record_hash}
+#      → receives {leaf_index, proof_hex, tree_size, root_hash_hex, day}.
+#   3. Auditor calls GET /counterfactual/audit/sth?day=<day>
+#      → receives {tree_size, root_hash_hex, timestamp_iso,
+#                  signature_b64, signing_key_source}.
+#   4. Auditor verifies signature against the engine's public ED25519
+#      key (already exposed via GET /counterfactual/public-key).
+#   5. Auditor rebuilds the root from (record_hash, proof) using the
+#      RFC 6962 verify_inclusion algorithm in shared/merkle.py.
+#   6. Auditor compares the rebuilt root to the STH's root_hash_hex.
+#      Match → inclusion proven; mismatch → tampering detected.
+#
+# The auditor only needs Python's hashlib + ED25519 verification +
+# the published STH + the inclusion proof — no AURA-specific tooling,
+# no Postgres connection, no live engine. This is the cross-org
+# verifiability contract from RFC 6962 § 2.1 applied to TRAIGA records.
+
+
+class STHResponse(BaseModel):
+    """Signed Tree Head for a UTC day of audit records.
+
+    RFC 6962 § 3.5 STH shape, simplified for the JSON wire surface:
+    no separate ``sha256_root_hash`` field (we hex-encode in
+    ``root_hash_hex``); ``timestamp`` is RFC 3339 not POSIX ms; no
+    log_id (single-log deployment). Verifiers reconstruct the
+    canonical signed bytes via the documented stable-field
+    concatenation below.
+    """
+    tree_size: int = Field(..., ge=0)
+    root_hash_hex: str
+    timestamp_iso: str
+    day: str
+    service_tag: str
+    signature_b64: Optional[str] = None
+    signature_status: Literal["signed", "unsigned"] = "unsigned"
+    signing_key_source: Optional[str] = None
+    canonical_signed_bytes_b64: Optional[str] = None
+
+
+def _canonical_sth_bytes(
+    tree_size: int, root_hash_hex: str, timestamp_iso: str,
+    day: str, service_tag: str,
+) -> bytes:
+    """The exact bytes that get signed. Auditors reconstruct these
+    independently to verify the signature.
+
+    Format: a single canonical-JSON object with sorted keys + no
+    whitespace. Mirrors the Sprint 13 ``strip_for_hashing`` design
+    where the byte-identity of the signed payload is part of the
+    contract — any field reordering breaks signature verification."""
+    import json as _json
+    return _json.dumps(
+        {
+            "day": day,
+            "root_hash_hex": root_hash_hex,
+            "service_tag": service_tag,
+            "timestamp_iso": timestamp_iso,
+            "tree_size": tree_size,
+        },
+        sort_keys=True, separators=(",", ":"),
+    ).encode("utf-8")
+
+
+@app.get("/counterfactual/audit/sth", response_model=STHResponse)
+async def get_sth(day: Optional[str] = None) -> STHResponse:
+    """Return the Signed Tree Head for a UTC day of audit records.
+
+    When ``day`` is omitted, defaults to today's UTC date. Day
+    format is YYYYMMDD (matches the audit log's daily rotation
+    filename convention).
+
+    Returns 404 when the day has no audit records (the
+    daily_merkle_root helper returns None). Returns 200 with
+    ``signature_status="unsigned"`` when the deployment lacks
+    ED25519 signing — the root_hash is still correct, just not
+    cryptographically attestable.
+    """
+    import datetime as _dt
+
+    from shared.audit_log import daily_merkle_root
+
+    target_day = day or _dt.datetime.now(_dt.timezone.utc).strftime("%Y%m%d")
+    merkle_info = daily_merkle_root(target_day)
+    if merkle_info is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"no audit records for day={target_day}",
+        )
+
+    timestamp_iso = _dt.datetime.now(_dt.timezone.utc).isoformat()
+    canonical = _canonical_sth_bytes(
+        tree_size=merkle_info["tree_size"],
+        root_hash_hex=merkle_info["root_hash_hex"],
+        timestamp_iso=timestamp_iso,
+        day=merkle_info["day"],
+        service_tag=merkle_info["service_tag"],
+    )
+    sig_b64 = signing.sign_bytes(canonical)
+    import base64 as _b64
+    return STHResponse(
+        tree_size=merkle_info["tree_size"],
+        root_hash_hex=merkle_info["root_hash_hex"],
+        timestamp_iso=timestamp_iso,
+        day=merkle_info["day"],
+        service_tag=merkle_info["service_tag"],
+        signature_b64=sig_b64,
+        signature_status="signed" if sig_b64 else "unsigned",
+        signing_key_source=signing.signing_key_source() if sig_b64 else None,
+        canonical_signed_bytes_b64=_b64.b64encode(canonical).decode("ascii"),
+    )
+
+
+class InclusionProofResponse(BaseModel):
+    record_hash: str
+    day: str
+    service_tag: str
+    tree_size: int
+    leaf_index: int
+    proof_hex: List[str]
+    root_hash_hex: str
+
+
+@app.get(
+    "/counterfactual/audit/inclusion/{record_hash}",
+    response_model=InclusionProofResponse,
+)
+async def get_inclusion_proof(
+    record_hash: str,
+    day: Optional[str] = None,
+) -> InclusionProofResponse:
+    """Return the RFC 6962 Merkle inclusion proof for a single audit
+    record. Auditor uses this + the day's STH to verify the record
+    was sealed at time T without trusting the engine.
+
+    ``day`` parameter optionally narrows the search to one day's
+    bucket. When omitted, the helper walks the last 30 days. Records
+    older than 30 days require an explicit ``day=YYYYMMDD`` query."""
+    from shared.audit_log import inclusion_proof_for_record
+
+    proof_info = inclusion_proof_for_record(record_hash, day=day)
+    if proof_info is None:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                f"record_hash {record_hash} not found in the last 30 days "
+                f"of audit log; pass ?day=YYYYMMDD to search older buckets"
+            ),
+        )
+    return InclusionProofResponse(record_hash=record_hash, **proof_info)
