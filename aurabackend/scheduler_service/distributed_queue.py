@@ -406,11 +406,19 @@ class DistributedQueue:
                 f"must be < 7900. Use job_id reference for large payloads."
             )
         async with self._engine.begin() as conn:
-            # NOTIFY uses literal SQL; channel is validated above so
-            # safe to inline. Payload uses parameter binding.
+            # Use the pg_notify(text, text) FUNCTION form, not the
+            # NOTIFY utility statement. The bare statement is a
+            # Postgres parser-level construct that does NOT support
+            # parameter binding — `NOTIFY chan, $1` fails with
+            # "syntax error at or near $1". pg_notify is a regular
+            # function, so SQLAlchemy text() bound params work, and
+            # the channel can also be bound (no identifier issue
+            # since pg_notify takes channel as a TEXT arg, not an
+            # identifier). _validate_channel above still applies as
+            # belt-and-braces in case pg_notify ever changes semantics.
             await conn.execute(
-                text(f"NOTIFY {channel}, :payload"),
-                {"payload": encoded},
+                text("SELECT pg_notify(:channel, :payload)"),
+                {"channel": channel, "payload": encoded},
             )
 
     async def listen(
