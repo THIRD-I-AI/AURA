@@ -353,6 +353,7 @@ def _emit_init_module(schema_names: List[str], package_name: str) -> str:
         "",
         "from .client import (",
         "    APIError,",
+        "    AsyncClient,",
         "    Client,",
         "    NotFoundError,",
         "    RetryPolicy,",
@@ -368,7 +369,7 @@ def _emit_init_module(schema_names: List[str], package_name: str) -> str:
     lines.append("__all__ = [")
     # Client + exceptions first.
     for sym in (
-        "APIError", "Client", "NotFoundError", "RetryPolicy",
+        "APIError", "AsyncClient", "Client", "NotFoundError", "RetryPolicy",
         "ServiceUnavailableError", "UnauthorizedError",
     ):
         lines.append(f'    "{sym}",')
@@ -440,8 +441,9 @@ def _emit_one_operation(
     path: str,
     operation: Dict[str, Any],
     components: Dict[str, Any],
+    is_async: bool = False,
 ) -> str:
-    """Render one operation as a sync method on the Client class.
+    """Render one operation as a sync OR async method on Client/AsyncClient.
 
     Argument order convention:
         1. Path parameters (positional, required)
@@ -450,7 +452,10 @@ def _emit_one_operation(
 
     The method body uses the private ``_request`` helper which
     dispatches to httpx with retry policy for GETs and structured
-    error translation for any 4xx/5xx.
+    error translation for any 4xx/5xx. The sync emitter calls
+    ``self._request(...)`` directly; the async emitter calls
+    ``await self._request(...)`` — the helper itself is sync-vs-async
+    on the owning class.
     """
     summary = operation.get("summary", "").strip()
     params: List[Dict[str, Any]] = operation.get("parameters", []) or []
@@ -498,8 +503,10 @@ def _emit_one_operation(
     )
     return_type, return_model = _python_type_for_response(success_schema, components)
 
-    # Build the method source.
-    sig = f"    def {method_name}({', '.join(args)}) -> {return_type}:"
+    # Build the method source. Async methods are `async def` and
+    # `await` the dispatch helper; everything else is identical.
+    def_kw = "async def" if is_async else "def"
+    sig = f"    {def_kw} {method_name}({', '.join(args)}) -> {return_type}:"
     lines: List[str] = [sig]
 
     # Docstring with summary if present.
@@ -538,9 +545,11 @@ def _emit_one_operation(
     else:
         lines.append("        json_body = None")
 
-    # Dispatch to httpx.
+    # Dispatch to httpx. Async variant awaits the dispatch helper;
+    # sync variant calls it directly.
+    await_kw = "await " if is_async else ""
     lines.append(
-        f'        response = self._request("{http_method.upper()}", url, params=params, json=json_body)'
+        f'        response = {await_kw}self._request("{http_method.upper()}", url, params=params, json=json_body)'
     )
 
     # Return: parse via model or raw dict.
@@ -782,14 +791,112 @@ def _emit_client_module(
         "",
     ]
 
-    # Emit operations in sorted order.
+    # Emit sync operations in sorted order.
     body_lines: List[str] = []
     for method_name, http_method, path, operation in method_specs:
         body_lines.append(_emit_one_operation(
             method_name, http_method, path, operation, components,
+            is_async=False,
         ))
 
-    return "\n".join(header) + "\n" + "\n".join(body_lines)
+    # ── AsyncClient — async mirror of Client (Sprint 21c) ─────────────
+    async_section: List[str] = [
+        "",
+        "# ── AsyncClient — async mirror of Client ──────────────────────────────",
+        "",
+        "class AsyncClient:",
+        f'    """Auto-generated async HTTP client for ``{package_name}``.',
+        "",
+        "    Mirror of ``Client`` with full asyncio support. Same operation",
+        "    surface, same argument conventions, same retry policy + typed",
+        "    exception hierarchy — every method is an ``async def`` that",
+        "    awaits a single httpx request. Use ``async with`` for context-",
+        "    managed lifecycle. Suitable for FastAPI route handlers and",
+        "    async-notebook environments.",
+        '    """',
+        "",
+        "    def __init__(",
+        "        self,",
+        '        base_url: str = "http://localhost:8000",',
+        "        *,",
+        '        prefix: str = "",',
+        "        api_key: Optional[str] = None,",
+        "        timeout: Union[float, httpx.Timeout] = 30.0,",
+        "        retry: Optional[RetryPolicy] = None,",
+        "        client: Optional[httpx.AsyncClient] = None,",
+        "    ) -> None:",
+        '        self._base_url = base_url.rstrip("/")',
+        '        self._prefix = prefix.rstrip("/") if prefix else ""',
+        "        self._retry = retry or RetryPolicy()",
+        '        headers = {"Accept": "application/json"}',
+        "        if api_key:",
+        '            headers["Authorization"] = f"Bearer {api_key}"',
+        "        self._owns_client = client is None",
+        "        self._http = client or httpx.AsyncClient(timeout=timeout, headers=headers)",
+        "        if not self._owns_client:",
+        "            for k, v in headers.items():",
+        "                self._http.headers.setdefault(k, v)",
+        "",
+        '    async def __aenter__(self) -> "AsyncClient":',
+        "        return self",
+        "",
+        "    async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> None:",
+        "        if self._owns_client:",
+        "            await self._http.aclose()",
+        "",
+        "    def _url(self, path: str) -> str:",
+        '        return f"{self._base_url}{self._prefix}{path}"',
+        "",
+        "    async def _request(",
+        "        self, method: str, path: str, *,",
+        "        params: Optional[Dict[str, Any]] = None,",
+        "        json: Any = None,",
+        "    ) -> Any:",
+        '        """Async dispatch with the same retry contract as Client._request.',
+        "",
+        "        Idempotent GETs retry on transient (429/503) status codes",
+        "        using ``asyncio.sleep`` between attempts. POSTs/PUTs/DELETEs",
+        "        never retry — the caller may have produced visible side",
+        "        effects already.",
+        '        """',
+        "        import asyncio",
+        "        attempts = self._retry.max_attempts if method == \"GET\" else 1",
+        "        delay = self._retry.initial_delay_s",
+        "        last_resp: Optional[httpx.Response] = None",
+        "        for attempt in range(attempts):",
+        "            resp = await self._http.request(",
+        "                method, self._url(path), params=params, json=json,",
+        "            )",
+        "            if (",
+        "                method == \"GET\"",
+        "                and resp.status_code in self._retry.retryable_statuses",
+        "                and attempt < attempts - 1",
+        "            ):",
+        "                last_resp = resp",
+        "                await asyncio.sleep(delay)",
+        "                delay *= self._retry.backoff_factor",
+        "                continue",
+        "            return Client._handle_response(resp)",
+        "        assert last_resp is not None",
+        "        return Client._handle_response(last_resp)",
+        "",
+        "    # ── Operation methods (async mirrors of Client) ──────────────────",
+        "",
+    ]
+
+    async_body: List[str] = []
+    for method_name, http_method, path, operation in method_specs:
+        async_body.append(_emit_one_operation(
+            method_name, http_method, path, operation, components,
+            is_async=True,
+        ))
+
+    return (
+        "\n".join(header) + "\n"
+        + "\n".join(body_lines)
+        + "\n".join(async_section) + "\n"
+        + "\n".join(async_body)
+    )
 
 
 def _emit_readme(

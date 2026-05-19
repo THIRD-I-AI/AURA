@@ -1017,3 +1017,929 @@ class Client:
         response = self._request("POST", url, params=params, json=json_body)
         from .models import ValidateQueryResponse
         return ValidateQueryResponse.model_validate(response)
+
+# ── AsyncClient — async mirror of Client ──────────────────────────────
+
+class AsyncClient:
+    """Auto-generated async HTTP client for ``aura_gateway_client``.
+
+    Mirror of ``Client`` with full asyncio support. Same operation
+    surface, same argument conventions, same retry policy + typed
+    exception hierarchy — every method is an ``async def`` that
+    awaits a single httpx request. Use ``async with`` for context-
+    managed lifecycle. Suitable for FastAPI route handlers and
+    async-notebook environments.
+    """
+
+    def __init__(
+        self,
+        base_url: str = "http://localhost:8000",
+        *,
+        prefix: str = "",
+        api_key: Optional[str] = None,
+        timeout: Union[float, httpx.Timeout] = 30.0,
+        retry: Optional[RetryPolicy] = None,
+        client: Optional[httpx.AsyncClient] = None,
+    ) -> None:
+        self._base_url = base_url.rstrip("/")
+        self._prefix = prefix.rstrip("/") if prefix else ""
+        self._retry = retry or RetryPolicy()
+        headers = {"Accept": "application/json"}
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+        self._owns_client = client is None
+        self._http = client or httpx.AsyncClient(timeout=timeout, headers=headers)
+        if not self._owns_client:
+            for k, v in headers.items():
+                self._http.headers.setdefault(k, v)
+
+    async def __aenter__(self) -> "AsyncClient":
+        return self
+
+    async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
+        if self._owns_client:
+            await self._http.aclose()
+
+    def _url(self, path: str) -> str:
+        return f"{self._base_url}{self._prefix}{path}"
+
+    async def _request(
+        self, method: str, path: str, *,
+        params: Optional[Dict[str, Any]] = None,
+        json: Any = None,
+    ) -> Any:
+        """Async dispatch with the same retry contract as Client._request.
+
+        Idempotent GETs retry on transient (429/503) status codes
+        using ``asyncio.sleep`` between attempts. POSTs/PUTs/DELETEs
+        never retry — the caller may have produced visible side
+        effects already.
+        """
+        import asyncio
+        attempts = self._retry.max_attempts if method == "GET" else 1
+        delay = self._retry.initial_delay_s
+        last_resp: Optional[httpx.Response] = None
+        for attempt in range(attempts):
+            resp = await self._http.request(
+                method, self._url(path), params=params, json=json,
+            )
+            if (
+                method == "GET"
+                and resp.status_code in self._retry.retryable_statuses
+                and attempt < attempts - 1
+            ):
+                last_resp = resp
+                await asyncio.sleep(delay)
+                delay *= self._retry.backoff_factor
+                continue
+            return Client._handle_response(resp)
+        assert last_resp is not None
+        return Client._handle_response(last_resp)
+
+    # ── Operation methods (async mirrors of Client) ──────────────────
+
+    async def analyze_results(self, body: "Body_analyze_results_api_v1_analyze_results_post", query: Optional[str] = None) -> Dict[str, Any]:
+        """Analyze Results"""
+        url = "/api/v1/analyze/results"
+        params = {
+            "query": query,
+        }
+        params = {k: v for k, v in params.items() if v is not None}
+        json_body = body.model_dump(mode='json') if hasattr(body, 'model_dump') else body
+        response = await self._request("POST", url, params=params, json=json_body)
+        return response
+
+    async def approve_job(self, job_id: str) -> Dict[str, Any]:
+        """Approve Job"""
+        url = f"/api/v1/jobs/{job_id}/approve".format(job_id=job_id)
+        params = None
+        json_body = None
+        response = await self._request("POST", url, params=params, json=json_body)
+        return response
+
+    async def auto_generate_model_from_file(self, file_id: str) -> Dict[str, Any]:
+        """Auto Generate Model From File"""
+        url = f"/api/v1/semantic/models/from-file/{file_id}".format(file_id=file_id)
+        params = None
+        json_body = None
+        response = await self._request("POST", url, params=params, json=json_body)
+        return response
+
+    async def cancel_job(self, job_id: str) -> Dict[str, Any]:
+        """Cancel Job"""
+        url = f"/api/v1/jobs/{job_id}/cancel".format(job_id=job_id)
+        params = None
+        json_body = None
+        response = await self._request("POST", url, params=params, json=json_body)
+        return response
+
+    async def chat_endpoint(self, body: "ChatRequest") -> Dict[str, Any]:
+        """Chat Endpoint"""
+        url = "/api/v1/chat"
+        params = None
+        json_body = body.model_dump(mode='json') if hasattr(body, 'model_dump') else body
+        response = await self._request("POST", url, params=params, json=json_body)
+        return response
+
+    async def create_connection(self, body: "ConnectionCreateRequest") -> Dict[str, Any]:
+        """Create Connection"""
+        url = "/api/v1/connections"
+        params = None
+        json_body = body.model_dump(mode='json') if hasattr(body, 'model_dump') else body
+        response = await self._request("POST", url, params=params, json=json_body)
+        return response
+
+    async def create_hook(self, body: "HookCreateRequest") -> Dict[str, Any]:
+        """Create Hook"""
+        url = "/api/v1/hooks"
+        params = None
+        json_body = body.model_dump(mode='json') if hasattr(body, 'model_dump') else body
+        response = await self._request("POST", url, params=params, json=json_body)
+        return response
+
+    async def create_pipeline(self, body: "CreateStreamPipelineRequest") -> Dict[str, Any]:
+        """Create a new streaming pipeline"""
+        url = "/api/v1/streaming/pipelines"
+        params = None
+        json_body = body.model_dump(mode='json') if hasattr(body, 'model_dump') else body
+        response = await self._request("POST", url, params=params, json=json_body)
+        return response
+
+    async def create_plan(self, body: "AgentExecuteRequest") -> "AgentPlanResponse":
+        """Create Plan"""
+        url = "/api/v1/agent/plan"
+        params = None
+        json_body = body.model_dump(mode='json') if hasattr(body, 'model_dump') else body
+        response = await self._request("POST", url, params=params, json=json_body)
+        from .models import AgentPlanResponse
+        return AgentPlanResponse.model_validate(response)
+
+    async def create_webhook(self, body: "WebhookCreateRequest") -> Dict[str, Any]:
+        """Create Webhook"""
+        url = "/api/v1/webhooks"
+        params = None
+        json_body = body.model_dump(mode='json') if hasattr(body, 'model_dump') else body
+        response = await self._request("POST", url, params=params, json=json_body)
+        return response
+
+    async def current_user(self) -> "UserInfo":
+        """Current User"""
+        url = "/api/v1/auth/me"
+        params = None
+        json_body = None
+        response = await self._request("GET", url, params=params, json=json_body)
+        from .models import UserInfo
+        return UserInfo.model_validate(response)
+
+    async def delete_connection(self, connection_id: str) -> Dict[str, Any]:
+        """Delete Connection"""
+        url = f"/api/v1/connections/{connection_id}".format(connection_id=connection_id)
+        params = None
+        json_body = None
+        response = await self._request("DELETE", url, params=params, json=json_body)
+        return response
+
+    async def delete_file(self, file_id: str) -> Dict[str, Any]:
+        """Delete File"""
+        url = f"/api/v1/files/{file_id}".format(file_id=file_id)
+        params = None
+        json_body = None
+        response = await self._request("DELETE", url, params=params, json=json_body)
+        return response
+
+    async def delete_hook(self, hook_id: str) -> Dict[str, Any]:
+        """Delete Hook"""
+        url = f"/api/v1/hooks/{hook_id}".format(hook_id=hook_id)
+        params = None
+        json_body = None
+        response = await self._request("DELETE", url, params=params, json=json_body)
+        return response
+
+    async def delete_pipeline(self, pipeline_id: str) -> Dict[str, Any]:
+        """Delete a pipeline (must be stopped)"""
+        url = f"/api/v1/streaming/pipelines/{pipeline_id}".format(pipeline_id=pipeline_id)
+        params = None
+        json_body = None
+        response = await self._request("DELETE", url, params=params, json=json_body)
+        return response
+
+    async def delete_webhook(self, sub_id: str) -> Dict[str, Any]:
+        """Delete Webhook"""
+        url = f"/api/v1/webhooks/{sub_id}".format(sub_id=sub_id)
+        params = None
+        json_body = None
+        response = await self._request("DELETE", url, params=params, json=json_body)
+        return response
+
+    async def etl_download(self, filename: str) -> Dict[str, Any]:
+        """Etl Download"""
+        url = f"/api/v1/etl/download/{filename}".format(filename=filename)
+        params = None
+        json_body = None
+        response = await self._request("GET", url, params=params, json=json_body)
+        return response
+
+    async def etl_execute(self, body: "ETLPipelineRequest") -> Dict[str, Any]:
+        """Etl Execute"""
+        url = "/api/v1/etl/execute"
+        params = None
+        json_body = body.model_dump(mode='json') if hasattr(body, 'model_dump') else body
+        response = await self._request("POST", url, params=params, json=json_body)
+        return response
+
+    async def etl_from_natural_language(self, body: "ETLNaturalLanguageRequest") -> Dict[str, Any]:
+        """Etl From Natural Language"""
+        url = "/api/v1/etl/natural-language"
+        params = None
+        json_body = body.model_dump(mode='json') if hasattr(body, 'model_dump') else body
+        response = await self._request("POST", url, params=params, json=json_body)
+        return response
+
+    async def etl_preview_source(self, body: Dict[str, Any]) -> Dict[str, Any]:
+        """Etl Preview Source"""
+        url = "/api/v1/etl/preview-source"
+        params = None
+        json_body = body
+        response = await self._request("POST", url, params=params, json=json_body)
+        return response
+
+    async def evolution_status(self) -> Dict[str, Any]:
+        """Evolution Status"""
+        url = "/api/v1/evolution/status"
+        params = None
+        json_body = None
+        response = await self._request("GET", url, params=params, json=json_body)
+        return response
+
+    async def evolution_summary_system_evolution(self) -> Dict[str, Any]:
+        """Evolution Summary"""
+        url = "/system/evolution"
+        params = None
+        json_body = None
+        response = await self._request("GET", url, params=params, json=json_body)
+        return response
+
+    async def execute_for_chat(self, body: "_ChatExecuteRequest") -> Dict[str, Any]:
+        """Execute For Chat"""
+        url = "/api/v1/execute"
+        params = None
+        json_body = body.model_dump(mode='json') if hasattr(body, 'model_dump') else body
+        response = await self._request("POST", url, params=params, json=json_body)
+        return response
+
+    async def execute_prompt(self, body: "AgentExecuteRequest") -> "AgentExecuteResponse":
+        """Execute Prompt"""
+        url = "/api/v1/agent/execute"
+        params = None
+        json_body = body.model_dump(mode='json') if hasattr(body, 'model_dump') else body
+        response = await self._request("POST", url, params=params, json=json_body)
+        from .models import AgentExecuteResponse
+        return AgentExecuteResponse.model_validate(response)
+
+    async def execute_prompt_async(self, body: "AgentExecuteRequest") -> "AgentAsyncResponse":
+        """Execute Prompt Async"""
+        url = "/api/v1/agent/execute/async"
+        params = None
+        json_body = body.model_dump(mode='json') if hasattr(body, 'model_dump') else body
+        response = await self._request("POST", url, params=params, json=json_body)
+        from .models import AgentAsyncResponse
+        return AgentAsyncResponse.model_validate(response)
+
+    async def execute_prompt_stream(self, body: "AgentExecuteRequest") -> Dict[str, Any]:
+        """Execute Prompt Stream"""
+        url = "/api/v1/agent/execute/stream"
+        params = None
+        json_body = body.model_dump(mode='json') if hasattr(body, 'model_dump') else body
+        response = await self._request("POST", url, params=params, json=json_body)
+        return response
+
+    async def execute_query_with_insights(self, body: "ExecuteQueryRequest") -> "ExecuteQueryResponse":
+        """Execute Query With Insights"""
+        url = "/api/v1/execute/query"
+        params = None
+        json_body = body.model_dump(mode='json') if hasattr(body, 'model_dump') else body
+        response = await self._request("POST", url, params=params, json=json_body)
+        from .models import ExecuteQueryResponse
+        return ExecuteQueryResponse.model_validate(response)
+
+    async def feedback_summary(self, days: Optional[int] = None) -> Dict[str, Any]:
+        """Feedback Summary"""
+        url = "/api/v1/evolution/feedback/summary"
+        params = {
+            "days": days,
+        }
+        params = {k: v for k, v in params.items() if v is not None}
+        json_body = None
+        response = await self._request("GET", url, params=params, json=json_body)
+        return response
+
+    async def fire_hook(self, slug: str) -> Dict[str, Any]:
+        """Fire Hook"""
+        url = f"/api/v1/hooks/fire/{slug}".format(slug=slug)
+        params = None
+        json_body = None
+        response = await self._request("POST", url, params=params, json=json_body)
+        return response
+
+    async def generate_query_proxy(self, body: "QueryRequest") -> Dict[str, Any]:
+        """Generate Query Proxy"""
+        url = "/api/v1/generate_query"
+        params = None
+        json_body = body.model_dump(mode='json') if hasattr(body, 'model_dump') else body
+        response = await self._request("POST", url, params=params, json=json_body)
+        return response
+
+    async def get_chat_history(self, session_id: str) -> Dict[str, Any]:
+        """Get Chat History"""
+        url = f"/api/v1/chat/history/{session_id}".format(session_id=session_id)
+        params = None
+        json_body = None
+        response = await self._request("GET", url, params=params, json=json_body)
+        return response
+
+    async def get_connection_schema(self, connection_id: str) -> Dict[str, Any]:
+        """Get Connection Schema"""
+        url = f"/api/v1/connections/{connection_id}/schema".format(connection_id=connection_id)
+        params = None
+        json_body = None
+        response = await self._request("GET", url, params=params, json=json_body)
+        return response
+
+    async def get_connections(self) -> Dict[str, Any]:
+        """Get Connections"""
+        url = "/api/v1/connections"
+        params = None
+        json_body = None
+        response = await self._request("GET", url, params=params, json=json_body)
+        return response
+
+    async def get_dashboard_stats(self) -> Dict[str, Any]:
+        """Get Dashboard Stats"""
+        url = "/api/v1/dashboard/stats"
+        params = None
+        json_body = None
+        response = await self._request("GET", url, params=params, json=json_body)
+        return response
+
+    async def get_evolution_log(self, limit: Optional[int] = None) -> Dict[str, Any]:
+        """Get Evolution Log"""
+        url = "/api/v1/evolution/log"
+        params = {
+            "limit": limit,
+        }
+        params = {k: v for k, v in params.items() if v is not None}
+        json_body = None
+        response = await self._request("GET", url, params=params, json=json_body)
+        return response
+
+    async def get_file_info(self, file_id: str) -> Dict[str, Any]:
+        """Get File Info"""
+        url = f"/api/v1/files/{file_id}".format(file_id=file_id)
+        params = None
+        json_body = None
+        response = await self._request("GET", url, params=params, json=json_body)
+        return response
+
+    async def get_file_profile(self, file_id: str) -> Dict[str, Any]:
+        """Get File Profile"""
+        url = f"/api/v1/files/{file_id}/profile".format(file_id=file_id)
+        params = None
+        json_body = None
+        response = await self._request("GET", url, params=params, json=json_body)
+        return response
+
+    async def get_hook(self, hook_id: str) -> Dict[str, Any]:
+        """Get Hook"""
+        url = f"/api/v1/hooks/{hook_id}".format(hook_id=hook_id)
+        params = None
+        json_body = None
+        response = await self._request("GET", url, params=params, json=json_body)
+        return response
+
+    async def get_metrics(self, pipeline_id: str) -> Dict[str, Any]:
+        """Get current metrics"""
+        url = f"/api/v1/streaming/pipelines/{pipeline_id}/metrics".format(pipeline_id=pipeline_id)
+        params = None
+        json_body = None
+        response = await self._request("GET", url, params=params, json=json_body)
+        return response
+
+    async def get_pipeline(self, pipeline_id: str) -> Dict[str, Any]:
+        """Get pipeline details + metrics"""
+        url = f"/api/v1/streaming/pipelines/{pipeline_id}".format(pipeline_id=pipeline_id)
+        params = None
+        json_body = None
+        response = await self._request("GET", url, params=params, json=json_body)
+        return response
+
+    async def get_proposal(self, proposal_id: str) -> Dict[str, Any]:
+        """Get Proposal"""
+        url = f"/api/v1/evolution/proposals/{proposal_id}".format(proposal_id=proposal_id)
+        params = None
+        json_body = None
+        response = await self._request("GET", url, params=params, json=json_body)
+        return response
+
+    async def get_query_history(self, limit: Optional[int] = None, status_filter: Optional[str] = None) -> Dict[str, Any]:
+        """Get Query History"""
+        url = "/api/v1/query-history"
+        params = {
+            "limit": limit,
+            "status_filter": status_filter,
+        }
+        params = {k: v for k, v in params.items() if v is not None}
+        json_body = None
+        response = await self._request("GET", url, params=params, json=json_body)
+        return response
+
+    async def get_schemas(self) -> Dict[str, Any]:
+        """Get available source/sink/window/transform schemas for dynamic forms"""
+        url = "/api/v1/streaming/schemas"
+        params = None
+        json_body = None
+        response = await self._request("GET", url, params=params, json=json_body)
+        return response
+
+    async def get_semantic_model(self, model_id: str) -> Dict[str, Any]:
+        """Get Semantic Model"""
+        url = f"/api/v1/semantic/models/{model_id}".format(model_id=model_id)
+        params = None
+        json_body = None
+        response = await self._request("GET", url, params=params, json=json_body)
+        return response
+
+    async def get_supported_formats(self) -> Dict[str, Any]:
+        """Get Supported Formats"""
+        url = "/api/v1/files/supported-formats"
+        params = None
+        json_body = None
+        response = await self._request("GET", url, params=params, json=json_body)
+        return response
+
+    async def get_webhook(self, sub_id: str) -> Dict[str, Any]:
+        """Get Webhook"""
+        url = f"/api/v1/webhooks/{sub_id}".format(sub_id=sub_id)
+        params = None
+        json_body = None
+        response = await self._request("GET", url, params=params, json=json_body)
+        return response
+
+    async def health(self) -> Dict[str, Any]:
+        """Health"""
+        url = "/health"
+        params = None
+        json_body = None
+        response = await self._request("GET", url, params=params, json=json_body)
+        return response
+
+    async def issue_token(self, body: "TokenRequest") -> "TokenResponse":
+        """Issue Token"""
+        url = "/api/v1/auth/token"
+        params = None
+        json_body = body.model_dump(mode='json') if hasattr(body, 'model_dump') else body
+        response = await self._request("POST", url, params=params, json=json_body)
+        from .models import TokenResponse
+        return TokenResponse.model_validate(response)
+
+    async def lint_query(self, query: Optional[str] = None) -> Dict[str, Any]:
+        """Lint Query"""
+        url = "/api/v1/lint/query"
+        params = {
+            "query": query,
+        }
+        params = {k: v for k, v in params.items() if v is not None}
+        json_body = None
+        response = await self._request("POST", url, params=params, json=json_body)
+        return response
+
+    async def list_available_connectors(self) -> Dict[str, Any]:
+        """List Available Connectors"""
+        url = "/api/v1/connectors/available"
+        params = None
+        json_body = None
+        response = await self._request("GET", url, params=params, json=json_body)
+        return response
+
+    async def list_connector_tables(self, connector_type: str, body: Dict[str, Any]) -> "ConnectorTableListResponse":
+        """List Connector Tables"""
+        url = f"/api/v1/connectors/{connector_type}/tables".format(connector_type=connector_type)
+        params = None
+        json_body = body
+        response = await self._request("POST", url, params=params, json=json_body)
+        from .models import ConnectorTableListResponse
+        return ConnectorTableListResponse.model_validate(response)
+
+    async def list_deliveries(self) -> Dict[str, Any]:
+        """List Deliveries"""
+        url = "/api/v1/webhooks/deliveries"
+        params = None
+        json_body = None
+        response = await self._request("GET", url, params=params, json=json_body)
+        return response
+
+    async def list_files(self) -> Dict[str, Any]:
+        """List Files"""
+        url = "/api/v1/files"
+        params = None
+        json_body = None
+        response = await self._request("GET", url, params=params, json=json_body)
+        return response
+
+    async def list_hooks(self) -> Dict[str, Any]:
+        """List Hooks"""
+        url = "/api/v1/hooks"
+        params = None
+        json_body = None
+        response = await self._request("GET", url, params=params, json=json_body)
+        return response
+
+    async def list_known_events(self) -> Dict[str, Any]:
+        """List Known Events"""
+        url = "/api/v1/webhooks/events"
+        params = None
+        json_body = None
+        response = await self._request("GET", url, params=params, json=json_body)
+        return response
+
+    async def list_patterns(self, pattern_type: Optional[str] = None, limit: Optional[int] = None) -> Dict[str, Any]:
+        """List Patterns"""
+        url = "/api/v1/evolution/patterns"
+        params = {
+            "pattern_type": pattern_type,
+            "limit": limit,
+        }
+        params = {k: v for k, v in params.items() if v is not None}
+        json_body = None
+        response = await self._request("GET", url, params=params, json=json_body)
+        return response
+
+    async def list_pipelines(self) -> Dict[str, Any]:
+        """List all streaming pipelines"""
+        url = "/api/v1/streaming/pipelines"
+        params = None
+        json_body = None
+        response = await self._request("GET", url, params=params, json=json_body)
+        return response
+
+    async def list_proposals(self, status: Optional[str] = None, limit: Optional[int] = None) -> Dict[str, Any]:
+        """List Proposals"""
+        url = "/api/v1/evolution/proposals"
+        params = {
+            "status": status,
+            "limit": limit,
+        }
+        params = {k: v for k, v in params.items() if v is not None}
+        json_body = None
+        response = await self._request("GET", url, params=params, json=json_body)
+        return response
+
+    async def list_semantic_models(self) -> Dict[str, Any]:
+        """List Semantic Models"""
+        url = "/api/v1/semantic/models"
+        params = None
+        json_body = None
+        response = await self._request("GET", url, params=params, json=json_body)
+        return response
+
+    async def list_stream_topics(self) -> Dict[str, Any]:
+        """List Stream Topics"""
+        url = "/api/v1/stream"
+        params = None
+        json_body = None
+        response = await self._request("GET", url, params=params, json=json_body)
+        return response
+
+    async def list_templates(self) -> Dict[str, Any]:
+        """Get streaming pipeline templates"""
+        url = "/api/v1/streaming/templates"
+        params = None
+        json_body = None
+        response = await self._request("GET", url, params=params, json=json_body)
+        return response
+
+    async def list_tools(self) -> Dict[str, Any]:
+        """List Tools"""
+        url = "/api/v1/agent/tools"
+        params = None
+        json_body = None
+        response = await self._request("GET", url, params=params, json=json_body)
+        return response
+
+    async def list_webhooks(self) -> Dict[str, Any]:
+        """List Webhooks"""
+        url = "/api/v1/webhooks"
+        params = None
+        json_body = None
+        response = await self._request("GET", url, params=params, json=json_body)
+        return response
+
+    async def pause_pipeline(self, pipeline_id: str) -> Dict[str, Any]:
+        """Pause the pipeline"""
+        url = f"/api/v1/streaming/pipelines/{pipeline_id}/pause".format(pipeline_id=pipeline_id)
+        params = None
+        json_body = None
+        response = await self._request("POST", url, params=params, json=json_body)
+        return response
+
+    async def pipeline_delete(self, pipeline_id: str) -> Dict[str, Any]:
+        """Pipeline Delete"""
+        url = f"/api/v1/pipeline/{pipeline_id}".format(pipeline_id=pipeline_id)
+        params = None
+        json_body = None
+        response = await self._request("DELETE", url, params=params, json=json_body)
+        return response
+
+    async def pipeline_download(self, filename: str) -> Dict[str, Any]:
+        """Pipeline Download"""
+        url = f"/api/v1/pipeline/download/{filename}".format(filename=filename)
+        params = None
+        json_body = None
+        response = await self._request("GET", url, params=params, json=json_body)
+        return response
+
+    async def pipeline_execute(self, body: "PipelineExecuteRequest") -> Dict[str, Any]:
+        """Pipeline Execute"""
+        url = "/api/v1/pipeline/execute"
+        params = None
+        json_body = body.model_dump(mode='json') if hasattr(body, 'model_dump') else body
+        response = await self._request("POST", url, params=params, json=json_body)
+        return response
+
+    async def pipeline_execute_async(self, body: "PipelineExecuteRequest") -> Dict[str, Any]:
+        """Pipeline Execute Async"""
+        url = "/api/v1/pipeline/execute/async"
+        params = None
+        json_body = body.model_dump(mode='json') if hasattr(body, 'model_dump') else body
+        response = await self._request("POST", url, params=params, json=json_body)
+        return response
+
+    async def pipeline_file_schema(self, file_name: str) -> Dict[str, Any]:
+        """Pipeline File Schema"""
+        url = f"/api/v1/pipeline/schema/{file_name}".format(file_name=file_name)
+        params = None
+        json_body = None
+        response = await self._request("GET", url, params=params, json=json_body)
+        return response
+
+    async def pipeline_generate(self, body: "PipelineGenerateRequest") -> Dict[str, Any]:
+        """Pipeline Generate"""
+        url = "/api/v1/pipeline/generate"
+        params = None
+        json_body = body.model_dump(mode='json') if hasattr(body, 'model_dump') else body
+        response = await self._request("POST", url, params=params, json=json_body)
+        return response
+
+    async def pipeline_get(self, pipeline_id: str) -> Dict[str, Any]:
+        """Pipeline Get"""
+        url = f"/api/v1/pipeline/{pipeline_id}".format(pipeline_id=pipeline_id)
+        params = None
+        json_body = None
+        response = await self._request("GET", url, params=params, json=json_body)
+        return response
+
+    async def pipeline_list(self) -> Dict[str, Any]:
+        """Pipeline List"""
+        url = "/api/v1/pipeline/list"
+        params = None
+        json_body = None
+        response = await self._request("GET", url, params=params, json=json_body)
+        return response
+
+    async def pipeline_save(self, body: "PipelineSaveRequest") -> Dict[str, Any]:
+        """Pipeline Save"""
+        url = "/api/v1/pipeline/save"
+        params = None
+        json_body = body.model_dump(mode='json') if hasattr(body, 'model_dump') else body
+        response = await self._request("POST", url, params=params, json=json_body)
+        return response
+
+    async def profile_table(self, connector_type: str, body: "ProfileTableRequest") -> Dict[str, Any]:
+        """Profile Table"""
+        url = f"/api/v1/connectors/{connector_type}/profile".format(connector_type=connector_type)
+        params = None
+        json_body = body.model_dump(mode='json') if hasattr(body, 'model_dump') else body
+        response = await self._request("POST", url, params=params, json=json_body)
+        return response
+
+    async def resume_pipeline(self, pipeline_id: str) -> Dict[str, Any]:
+        """Resume a paused pipeline"""
+        url = f"/api/v1/streaming/pipelines/{pipeline_id}/resume".format(pipeline_id=pipeline_id)
+        params = None
+        json_body = None
+        response = await self._request("POST", url, params=params, json=json_body)
+        return response
+
+    async def root_(self) -> Dict[str, Any]:
+        """Root"""
+        url = "/"
+        params = None
+        json_body = None
+        response = await self._request("GET", url, params=params, json=json_body)
+        return response
+
+    async def save_chat_message(self, session_id: str, body: Dict[str, Any]) -> Dict[str, Any]:
+        """Save Chat Message"""
+        url = f"/api/v1/chat/history/{session_id}".format(session_id=session_id)
+        params = None
+        json_body = body
+        response = await self._request("POST", url, params=params, json=json_body)
+        return response
+
+    async def save_query_history(self, body: Dict[str, Any]) -> Dict[str, Any]:
+        """Save Query History"""
+        url = "/api/v1/query-history"
+        params = None
+        json_body = body
+        response = await self._request("POST", url, params=params, json=json_body)
+        return response
+
+    async def search_patterns(self, body: "PatternSearchRequest") -> Dict[str, Any]:
+        """Search Patterns"""
+        url = "/api/v1/evolution/patterns/search"
+        params = None
+        json_body = body.model_dump(mode='json') if hasattr(body, 'model_dump') else body
+        response = await self._request("POST", url, params=params, json=json_body)
+        return response
+
+    async def start_pipeline(self, pipeline_id: str) -> Dict[str, Any]:
+        """Start the pipeline"""
+        url = f"/api/v1/streaming/pipelines/{pipeline_id}/start".format(pipeline_id=pipeline_id)
+        params = None
+        json_body = None
+        response = await self._request("POST", url, params=params, json=json_body)
+        return response
+
+    async def stop_pipeline(self, pipeline_id: str) -> Dict[str, Any]:
+        """Stop the pipeline"""
+        url = f"/api/v1/streaming/pipelines/{pipeline_id}/stop".format(pipeline_id=pipeline_id)
+        params = None
+        json_body = None
+        response = await self._request("POST", url, params=params, json=json_body)
+        return response
+
+    async def stream_events(self, pipeline_id: str) -> Dict[str, Any]:
+        """SSE stream of metrics + window events"""
+        url = f"/api/v1/streaming/pipelines/{pipeline_id}/stream".format(pipeline_id=pipeline_id)
+        params = None
+        json_body = None
+        response = await self._request("GET", url, params=params, json=json_body)
+        return response
+
+    async def stream_topic(self, topic: str, replay: Optional[bool] = None) -> Dict[str, Any]:
+        """Stream Topic"""
+        url = f"/api/v1/stream/{topic}".format(topic=topic)
+        params = {
+            "replay": replay,
+        }
+        params = {k: v for k, v in params.items() if v is not None}
+        json_body = None
+        response = await self._request("GET", url, params=params, json=json_body)
+        return response
+
+    async def submit_feedback(self, body: "FeedbackRequest") -> Dict[str, Any]:
+        """Submit Feedback"""
+        url = "/api/v1/evolution/feedback"
+        params = None
+        json_body = body.model_dump(mode='json') if hasattr(body, 'model_dump') else body
+        response = await self._request("POST", url, params=params, json=json_body)
+        return response
+
+    async def system_health_system_health(self) -> Dict[str, Any]:
+        """System Health"""
+        url = "/system/health"
+        params = None
+        json_body = None
+        response = await self._request("GET", url, params=params, json=json_body)
+        return response
+
+    async def test_connection_by_id(self, connection_id: str) -> Dict[str, Any]:
+        """Test Connection By Id"""
+        url = f"/api/v1/connections/{connection_id}/test".format(connection_id=connection_id)
+        params = None
+        json_body = None
+        response = await self._request("POST", url, params=params, json=json_body)
+        return response
+
+    async def test_connector(self, connector_type: str, body: Dict[str, Any]) -> Dict[str, Any]:
+        """Test Connector"""
+        url = f"/api/v1/connectors/{connector_type}/test".format(connector_type=connector_type)
+        params = None
+        json_body = body
+        response = await self._request("POST", url, params=params, json=json_body)
+        return response
+
+    async def test_database_connection(self, db_type: str) -> Dict[str, Any]:
+        """Test Database Connection"""
+        url = f"/api/v1/databases/test/{db_type}".format(db_type=db_type)
+        params = None
+        json_body = None
+        response = await self._request("GET", url, params=params, json=json_body)
+        return response
+
+    async def test_webhook(self, sub_id: str) -> Dict[str, Any]:
+        """Test Webhook"""
+        url = f"/api/v1/webhooks/{sub_id}/test".format(sub_id=sub_id)
+        params = None
+        json_body = None
+        response = await self._request("POST", url, params=params, json=json_body)
+        return response
+
+    async def trigger_cycle(self) -> Dict[str, Any]:
+        """Trigger Cycle"""
+        url = "/api/v1/evolution/cycle"
+        params = None
+        json_body = None
+        response = await self._request("POST", url, params=params, json=json_body)
+        return response
+
+    async def uasr_baseline(self, body: Dict[str, Any]) -> Dict[str, Any]:
+        """Uasr Baseline"""
+        url = "/api/v1/uasr/baseline"
+        params = None
+        json_body = body
+        response = await self._request("POST", url, params=params, json=json_body)
+        return response
+
+    async def uasr_drift_status(self, source_id: Optional[str] = None) -> Dict[str, Any]:
+        """Uasr Drift Status"""
+        url = "/api/v1/uasr/drift/status"
+        params = {
+            "source_id": source_id,
+        }
+        params = {k: v for k, v in params.items() if v is not None}
+        json_body = None
+        response = await self._request("GET", url, params=params, json=json_body)
+        return response
+
+    async def uasr_ingest(self, body: Dict[str, Any]) -> Dict[str, Any]:
+        """Uasr Ingest"""
+        url = "/api/v1/uasr/ingest"
+        params = None
+        json_body = body
+        response = await self._request("POST", url, params=params, json=json_body)
+        return response
+
+    async def uasr_metrics(self) -> Dict[str, Any]:
+        """Uasr Metrics"""
+        url = "/api/v1/uasr/metrics"
+        params = None
+        json_body = None
+        response = await self._request("GET", url, params=params, json=json_body)
+        return response
+
+    async def update_hook(self, hook_id: str, body: "HookUpdateRequest") -> Dict[str, Any]:
+        """Update Hook"""
+        url = f"/api/v1/hooks/{hook_id}".format(hook_id=hook_id)
+        params = None
+        json_body = body.model_dump(mode='json') if hasattr(body, 'model_dump') else body
+        response = await self._request("PATCH", url, params=params, json=json_body)
+        return response
+
+    async def update_pipeline(self, pipeline_id: str, body: "UpdateStreamPipelineRequest") -> Dict[str, Any]:
+        """Update a pipeline (must be stopped/draft)"""
+        url = f"/api/v1/streaming/pipelines/{pipeline_id}".format(pipeline_id=pipeline_id)
+        params = None
+        json_body = body.model_dump(mode='json') if hasattr(body, 'model_dump') else body
+        response = await self._request("PUT", url, params=params, json=json_body)
+        return response
+
+    async def update_proposal(self, proposal_id: str, body: "ProposalUpdateRequest") -> Dict[str, Any]:
+        """Update Proposal"""
+        url = f"/api/v1/evolution/proposals/{proposal_id}".format(proposal_id=proposal_id)
+        params = None
+        json_body = body.model_dump(mode='json') if hasattr(body, 'model_dump') else body
+        response = await self._request("PATCH", url, params=params, json=json_body)
+        return response
+
+    async def update_webhook(self, sub_id: str, body: "WebhookUpdateRequest") -> Dict[str, Any]:
+        """Update Webhook"""
+        url = f"/api/v1/webhooks/{sub_id}".format(sub_id=sub_id)
+        params = None
+        json_body = body.model_dump(mode='json') if hasattr(body, 'model_dump') else body
+        response = await self._request("PATCH", url, params=params, json=json_body)
+        return response
+
+    async def upload_universal(self, body: Dict[str, Any]) -> Dict[str, Any]:
+        """Upload Universal"""
+        url = "/api/v1/upload"
+        params = None
+        json_body = body
+        response = await self._request("POST", url, params=params, json=json_body)
+        return response
+
+    async def upsert_semantic_model(self, body: "SemanticModelPayload") -> Dict[str, Any]:
+        """Upsert Semantic Model"""
+        url = "/api/v1/semantic/models"
+        params = None
+        json_body = body.model_dump(mode='json') if hasattr(body, 'model_dump') else body
+        response = await self._request("POST", url, params=params, json=json_body)
+        return response
+
+    async def validate_query(self, body: "ValidateQueryRequest") -> "ValidateQueryResponse":
+        """Validate Query"""
+        url = "/api/v1/validate/query"
+        params = None
+        json_body = body.model_dump(mode='json') if hasattr(body, 'model_dump') else body
+        response = await self._request("POST", url, params=params, json=json_body)
+        from .models import ValidateQueryResponse
+        return ValidateQueryResponse.model_validate(response)

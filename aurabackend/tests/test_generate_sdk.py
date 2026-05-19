@@ -563,6 +563,99 @@ def test_generated_client_byte_identical_across_runs(tmp_path: Path) -> None:
     assert files1["client.py"] == files2["client.py"]
 
 
+# ── Sprint 21c: AsyncClient emission ──────────────────────────────────
+
+
+def test_emit_operation_async_def_prefix() -> None:
+    """is_async=True emits `async def` instead of `def` and uses
+    `await self._request(...)`. Argument list + return type are
+    identical to the sync version — pure mechanical translation."""
+    op = {
+        "parameters": [
+            {"name": "job_id", "in": "path", "schema": {"type": "string"}},
+        ],
+        "responses": {"200": {"content": {"application/json": {"schema": {}}}}},
+    }
+    sync_src = _emit_one_operation("get_job", "get", "/jobs/{job_id}", op, {})
+    async_src = _emit_one_operation(
+        "get_job", "get", "/jobs/{job_id}", op, {}, is_async=True,
+    )
+    assert "    async def get_job(" in async_src
+    assert "    def get_job(" in sync_src and "    async def get_job" not in sync_src
+    assert "await self._request" in async_src
+    assert "await self._request" not in sync_src
+
+
+def test_async_client_emitted_in_generated_module(tmp_path: Path) -> None:
+    """The generated client.py must contain BOTH Client and AsyncClient
+    classes. Consumers should be able to pick either based on their
+    runtime (sync script vs async FastAPI / Jupyter)."""
+    files = generate(
+        openapi_path=REAL_OPENAPI,
+        output_dir=tmp_path,
+        package_name="aura_test_client",
+        service_tag="aura-test",
+    )
+    src = files["client.py"]
+    assert "class Client:" in src
+    assert "class AsyncClient:" in src
+    # AsyncClient uses async/await context manager.
+    assert "async def __aenter__" in src
+    assert "async def __aexit__" in src
+    assert "await self._http.aclose()" in src
+
+
+def test_async_client_methods_use_await_self_request(tmp_path: Path) -> None:
+    """Every AsyncClient operation method must `await` the dispatch
+    helper. A bare `self._request(...)` in an async method would
+    return a coroutine instead of the parsed response."""
+    files = generate(
+        openapi_path=REAL_OPENAPI,
+        output_dir=tmp_path,
+        package_name="aura_test_client",
+        service_tag="aura-test",
+    )
+    src = files["client.py"]
+    # Find the AsyncClient section (everything after the class header).
+    async_section = src.split("class AsyncClient:", 1)[1]
+    # Every operation method in AsyncClient must use `await self._request`.
+    sync_calls_in_async_section = async_section.count("\n        response = self._request(")
+    assert sync_calls_in_async_section == 0, (
+        f"AsyncClient has {sync_calls_in_async_section} non-awaited _request calls"
+    )
+
+
+def test_async_client_section_byte_identical_across_runs(tmp_path: Path) -> None:
+    """AsyncClient byte-stability — same drift contract as Client + models."""
+    files1 = generate(
+        openapi_path=REAL_OPENAPI,
+        output_dir=tmp_path / "a",
+        package_name="aura_test_client",
+        service_tag="aura-test",
+    )
+    files2 = generate(
+        openapi_path=REAL_OPENAPI,
+        output_dir=tmp_path / "b",
+        package_name="aura_test_client",
+        service_tag="aura-test",
+    )
+    assert files1["client.py"] == files2["client.py"]
+
+
+def test_init_exports_both_client_and_async_client(tmp_path: Path) -> None:
+    """__init__.py re-exports BOTH Client and AsyncClient so consumers
+    can `from aura_gateway_client import AsyncClient`."""
+    files = generate(
+        openapi_path=REAL_OPENAPI,
+        output_dir=tmp_path,
+        package_name="aura_test_client",
+        service_tag="aura-test",
+    )
+    init_src = files["__init__.py"]
+    assert "Client," in init_src
+    assert "AsyncClient," in init_src
+
+
 def test_generated_init_module_exports_client_class(tmp_path: Path) -> None:
     """The package __init__.py must surface Client + exceptions so
     consumers can `from aura_gateway_client import Client`."""

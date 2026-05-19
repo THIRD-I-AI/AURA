@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from .client import (
     APIError,
+    AsyncClient,
     Client,
     NotFoundError,
     RetryPolicy,
@@ -68,6 +69,7 @@ from .models import (
 
 __all__ = [
     "APIError",
+    "AsyncClient",
     "Client",
     "NotFoundError",
     "RetryPolicy",
