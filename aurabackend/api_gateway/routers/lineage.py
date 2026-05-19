@@ -58,16 +58,18 @@ async def get_lineage(request: Request):
 
     Edges always point "downstream": table → query → dashboard.
     """
+    # Sprint P-1: saved queries pulled from the gateway persistence
+    # layer via an indexed workspace filter; dashboards still
+    # in-memory (out of scope for this sprint).
+    from api_gateway import persistence
     from api_gateway.routers.dashboards import _dashboards_lock, _dashboards_store
-    from api_gateway.routers.queries import _saved_queries_lock, _saved_queries_store
 
     wsid = current_workspace_id(request)
 
     def _in_ws(r: Dict[str, Any]) -> bool:
         return (r.get("workspace_id") or DEFAULT_WORKSPACE_ID) == wsid
 
-    with _saved_queries_lock:
-        saved_queries = [r for r in _saved_queries_store if _in_ws(r)]
+    saved_queries = await persistence.list_saved_queries(wsid)
     with _dashboards_lock:
         dashboards = [r for r in _dashboards_store if _in_ws(r)]
 

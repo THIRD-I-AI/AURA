@@ -32,10 +32,12 @@ logger = get_logger("aura.api_gateway.queries")
 router = APIRouter(tags=["Queries"])
 
 
-# ── In-memory stores ────────────────────────────────────────────────
-
-_query_history_lock = threading.Lock()
-_query_history_store: List[Dict[str, Any]] = []  # newest-first
+# ── State stores ─────────────────────────────────────────────────────
+#
+# Sprint P-1 migrated query_history + saved_queries + share_tokens to
+# Postgres-backed SQLAlchemy (see api_gateway/persistence.py). The
+# remaining in-memory stores below are NOT in scope for P-1; they
+# stay in-process for now and will be migrated in a follow-up sprint.
 
 _dashboard_counters_lock = threading.Lock()
 _dashboard_counters: Dict[str, int] = {"total_rows": 0, "queries_run": 0}
@@ -43,12 +45,17 @@ _dashboard_counters: Dict[str, int] = {"total_rows": 0, "queries_run": 0}
 _jobs_lock = threading.Lock()
 _jobs_store: Dict[str, Dict[str, Any]] = {}
 
-# ── Saved queries (library) — in-memory, newest-first ─────────────────
-_saved_queries_lock = threading.Lock()
-_saved_queries_store: List[Dict[str, Any]] = []
+# Cross-router shims: dashboards.py and lineage.py used to import
+# ``_saved_queries_store`` + ``_saved_queries_lock`` directly. They
+# now call ``persistence.list_saved_queries(...)`` instead — the
+# legacy attribute names below are kept as no-op aliases (an empty
+# list + a re-entrant Lock) so any straggling imports don't blow up
+# at startup. NEW code MUST use the persistence module directly.
+import threading as _threading_compat
 
-# ── Share tokens for saved queries — maps token -> saved_query_id ─────
-_share_tokens_lock = threading.Lock()
+_saved_queries_lock = _threading_compat.Lock()
+_saved_queries_store: List[Dict[str, Any]] = []
+_share_tokens_lock = _threading_compat.Lock()
 _share_tokens_store: Dict[str, str] = {}
 
 # ── Saved-query schedule run history — keyed by saved-query id ────────
@@ -65,8 +72,15 @@ _SCHEDULER_INTERVAL_SEC = 30
 from api_gateway.routers.connections import _connections_lock, _connections_store
 
 
-def track_query(prompt: str, sql: str, q_status: str, rows: int, execution_time_ms: float):
-    """Record a query execution — called by chat router too."""
+async def track_query(prompt: str, sql: str, q_status: str, rows: int, execution_time_ms: float):
+    """Record a query execution — called by chat router too.
+
+    Sprint P-1: persists to the gateway's SQLAlchemy ``gateway_query_history``
+    table (capped at 200 globally) so history survives a process restart
+    and is shared across replicas. Dashboard counters stay in-process
+    for now (a separate Sprint P-2 will migrate them when they actually
+    need to scale)."""
+    from api_gateway import persistence
     record = {
         "id": f"q_{int(datetime.now().timestamp() * 1000)}",
         "prompt": prompt,
@@ -76,10 +90,12 @@ def track_query(prompt: str, sql: str, q_status: str, rows: int, execution_time_
         "executionTime": round(execution_time_ms, 1),
         "timestamp": datetime.now().isoformat(),
     }
-    with _query_history_lock:
-        _query_history_store.insert(0, record)
-        if len(_query_history_store) > 200:
-            del _query_history_store[200:]
+    try:
+        await persistence.insert_query_history(record)
+    except Exception as exc:
+        # Tracking is best-effort — never break the calling endpoint
+        # because the history table is briefly unavailable.
+        logger.warning("track_query persist failed (non-fatal): %s", exc)
     with _dashboard_counters_lock:
         _dashboard_counters["queries_run"] += 1
         if q_status == "success":
@@ -355,12 +371,13 @@ async def analyze_results(query: str, results: List[Dict[str, Any]], column_prof
 
 @router.get("/query-history")
 async def get_query_history(limit: int = 50, status_filter: Optional[str] = None):
-    """Get server-side query history."""
-    with _query_history_lock:
-        records = list(_query_history_store)
-    if status_filter and status_filter != "all":
-        records = [r for r in records if r.get("status") == status_filter]
-    return {"success": True, "queries": records[:limit], "total": len(records)}
+    """Get server-side query history. Sprint P-1: persisted in
+    SQLAlchemy, indexed newest-first on ``created_ts``."""
+    from api_gateway import persistence
+    records = await persistence.list_query_history(
+        limit=limit, status_filter=status_filter,
+    )
+    return {"success": True, "queries": records, "total": len(records)}
 
 
 # ── Saved-query (library) models ─────────────────────────────────────
@@ -385,17 +402,22 @@ def _in_workspace(record: Dict[str, Any], wsid: str) -> bool:
 
 @router.get("/saved-queries")
 async def list_saved_queries(request: Request):
-    """Return saved queries for the caller's workspace, starred first then newest-first."""
+    """Return saved queries for the caller's workspace, starred first
+    then newest-first. Sprint P-1: backed by SQLAlchemy with a
+    composite index on (workspace_id, starred DESC, created_ts DESC) —
+    the ORDER BY is satisfied by the index, no in-memory sort needed."""
+    from api_gateway import persistence
     wsid = current_workspace_id(request)
-    with _saved_queries_lock:
-        records = [r for r in _saved_queries_store if _in_workspace(r, wsid)]
-    records.sort(key=lambda r: (0 if r.get("starred") else 1, -float(r.get("created_ts", 0))))
+    records = await persistence.list_saved_queries(wsid)
     return {"success": True, "queries": records, "total": len(records)}
 
 
 @router.post("/saved-queries")
 async def create_saved_query(payload: SavedQueryCreate, request: Request):
-    """Create a saved query in the caller's workspace."""
+    """Create a saved query in the caller's workspace. Sprint P-1:
+    inserts into ``gateway_saved_queries`` and evicts beyond the
+    500-per-workspace cap inside the same transaction."""
+    from api_gateway import persistence
     name = payload.name.strip()
     sql = payload.sql.strip()
     if not name:
@@ -415,52 +437,40 @@ async def create_saved_query(payload: SavedQueryCreate, request: Request):
         "created_ts": ts.timestamp(),
         "updated_at": ts.isoformat(),
     }
-    with _saved_queries_lock:
-        _saved_queries_store.insert(0, record)
-        if len(_saved_queries_store) > 500:
-            del _saved_queries_store[500:]
-    return {"success": True, "query": record}
+    saved = await persistence.insert_saved_query(record)
+    return {"success": True, "query": saved}
 
 
 @router.patch("/saved-queries/{query_id}")
 async def update_saved_query(query_id: str, payload: SavedQueryUpdate, request: Request):
     """Rename or toggle star on a saved query in the caller's workspace."""
+    from api_gateway import persistence
     wsid = current_workspace_id(request)
-    with _saved_queries_lock:
-        record = next(
-            (r for r in _saved_queries_store if r["id"] == query_id and _in_workspace(r, wsid)),
-            None,
-        )
-        if record is None:
-            raise HTTPException(status_code=404, detail="Saved query not found")
-        if payload.name is not None:
-            new_name = payload.name.strip()
-            if not new_name:
-                raise HTTPException(status_code=400, detail="name cannot be empty")
-            record["name"] = new_name
-        if payload.starred is not None:
-            record["starred"] = bool(payload.starred)
-        record["updated_at"] = datetime.now().isoformat()
-    return {"success": True, "query": record}
+    fields: Dict[str, Any] = {}
+    if payload.name is not None:
+        new_name = payload.name.strip()
+        if not new_name:
+            raise HTTPException(status_code=400, detail="name cannot be empty")
+        fields["name"] = new_name
+    if payload.starred is not None:
+        fields["starred"] = bool(payload.starred)
+    fields["updated_at"] = datetime.now().isoformat()
+    updated = await persistence.update_saved_query(query_id, wsid, fields)
+    if updated is None:
+        raise HTTPException(status_code=404, detail="Saved query not found")
+    return {"success": True, "query": updated}
 
 
 @router.delete("/saved-queries/{query_id}")
 async def delete_saved_query(query_id: str, request: Request):
-    """Delete a saved query from the caller's workspace."""
+    """Delete a saved query from the caller's workspace. The repository
+    cascades token revocation inside the same transaction — O(log n)
+    via the saved_query_id index instead of the legacy O(n) dict scan."""
+    from api_gateway import persistence
     wsid = current_workspace_id(request)
-    with _saved_queries_lock:
-        before = len(_saved_queries_store)
-        _saved_queries_store[:] = [
-            r for r in _saved_queries_store
-            if not (r["id"] == query_id and _in_workspace(r, wsid))
-        ]
-        if len(_saved_queries_store) == before:
-            raise HTTPException(status_code=404, detail="Saved query not found")
-    # Also revoke any share tokens pointing at this query.
-    with _share_tokens_lock:
-        for tok, qid in list(_share_tokens_store.items()):
-            if qid == query_id:
-                del _share_tokens_store[tok]
+    deleted = await persistence.delete_saved_query(query_id, wsid)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Saved query not found")
     return {"success": True, "id": query_id}
 
 
@@ -468,40 +478,26 @@ async def delete_saved_query(query_id: str, request: Request):
 
 @router.post("/saved-queries/{query_id}/share")
 async def create_share_link(query_id: str, request: Request):
-    """Mint (or re-mint) a share token for a saved query. Returns an
-    opaque URL-safe token; the public endpoint is
-    ``GET /public/saved-queries/{token}`` and requires no workspace header."""
+    """Mint (or re-mint) a share token for a saved query. Idempotent —
+    the repository returns the existing token if one already exists
+    for this query_id (via the saved_query_id index, not an O(n) scan)."""
+    from api_gateway import persistence
     wsid = current_workspace_id(request)
-    with _saved_queries_lock:
-        exists = any(r["id"] == query_id and _in_workspace(r, wsid) for r in _saved_queries_store)
-    if not exists:
+    if await persistence.get_saved_query(query_id, workspace_id=wsid) is None:
         raise HTTPException(status_code=404, detail="Saved query not found")
-
-    with _share_tokens_lock:
-        # Re-use an existing token for idempotency.
-        existing = next((tok for tok, qid in _share_tokens_store.items() if qid == query_id), None)
-        if existing is not None:
-            token = existing
-        else:
-            token = secrets.token_urlsafe(24)
-            _share_tokens_store[token] = query_id
+    token = await persistence.get_or_create_share_token(query_id)
     return {"success": True, "token": token, "query_id": query_id}
 
 
 @router.delete("/saved-queries/{query_id}/share")
 async def revoke_share_link(query_id: str, request: Request):
-    """Revoke all share tokens pointing at this query."""
+    """Revoke all share tokens pointing at this query — O(log n) via
+    the saved_query_id index."""
+    from api_gateway import persistence
     wsid = current_workspace_id(request)
-    with _saved_queries_lock:
-        exists = any(r["id"] == query_id and _in_workspace(r, wsid) for r in _saved_queries_store)
-    if not exists:
+    if await persistence.get_saved_query(query_id, workspace_id=wsid) is None:
         raise HTTPException(status_code=404, detail="Saved query not found")
-    revoked = 0
-    with _share_tokens_lock:
-        for tok, qid in list(_share_tokens_store.items()):
-            if qid == query_id:
-                del _share_tokens_store[tok]
-                revoked += 1
+    revoked = await persistence.revoke_share_tokens_for_query(query_id)
     return {"success": True, "query_id": query_id, "revoked": revoked}
 
 
@@ -511,17 +507,16 @@ async def read_shared_query(token: str):
 
     Intentionally bypasses the workspace header — anyone with the token
     sees the query's name, SQL, and prompt. No write paths are exposed.
-    """
-    with _share_tokens_lock:
-        query_id = _share_tokens_store.get(token)
+    Sprint P-1: backed by indexed lookups; dangling tokens (whose
+    query was deleted) are cleaned up on access."""
+    from api_gateway import persistence
+    query_id = await persistence.lookup_share_token(token)
     if query_id is None:
         raise HTTPException(status_code=404, detail="Share link is invalid or has been revoked")
-    with _saved_queries_lock:
-        record = next((r for r in _saved_queries_store if r["id"] == query_id), None)
+    record = await persistence.get_saved_query(query_id, workspace_id=None)
     if record is None:
-        # Token references a deleted query — clean up.
-        with _share_tokens_lock:
-            _share_tokens_store.pop(token, None)
+        # Dangling token — clean up.
+        await persistence.revoke_one_share_token(token)
         raise HTTPException(status_code=404, detail="Shared query no longer exists")
     return {
         "success": True,
@@ -579,48 +574,52 @@ def _compute_next_run(schedule: Dict[str, Any], *, now: Optional[datetime] = Non
 @router.put("/saved-queries/{query_id}/schedule")
 async def set_saved_query_schedule(query_id: str, payload: SavedQuerySchedule, request: Request):
     """Set or replace the schedule for a saved query."""
+    from api_gateway import persistence
     if payload.interval not in ("hourly", "daily", "weekly"):
         raise HTTPException(status_code=400, detail="interval must be hourly | daily | weekly")
     schedule = payload.dict()
     next_run = _compute_next_run(schedule)
     wsid = current_workspace_id(request)
-    with _saved_queries_lock:
-        record = next(
-            (r for r in _saved_queries_store if r["id"] == query_id and _in_workspace(r, wsid)),
-            None,
-        )
-        if record is None:
-            raise HTTPException(status_code=404, detail="Saved query not found")
-        record["schedule"] = schedule
-        record["next_run_at"] = next_run
-        record["updated_at"] = datetime.now().isoformat()
-    return {"success": True, "query": record}
+    updated = await persistence.update_saved_query(
+        query_id, wsid,
+        {
+            "schedule": schedule,
+            "next_run_at": next_run,
+            "updated_at": datetime.now().isoformat(),
+        },
+    )
+    if updated is None:
+        raise HTTPException(status_code=404, detail="Saved query not found")
+    return {"success": True, "query": updated}
 
 
 @router.delete("/saved-queries/{query_id}/schedule")
 async def clear_saved_query_schedule(query_id: str, request: Request):
     """Remove the schedule on a saved query."""
+    from api_gateway import persistence
     wsid = current_workspace_id(request)
-    with _saved_queries_lock:
-        record = next(
-            (r for r in _saved_queries_store if r["id"] == query_id and _in_workspace(r, wsid)),
-            None,
-        )
-        if record is None:
-            raise HTTPException(status_code=404, detail="Saved query not found")
-        record.pop("schedule", None)
-        record["next_run_at"] = None
-        record["updated_at"] = datetime.now().isoformat()
-    return {"success": True, "query": record}
+    updated = await persistence.update_saved_query(
+        query_id, wsid,
+        {
+            "schedule": None,
+            "next_run_at": None,
+            "updated_at": datetime.now().isoformat(),
+        },
+    )
+    if updated is None:
+        raise HTTPException(status_code=404, detail="Saved query not found")
+    return {"success": True, "query": updated}
 
 
 @router.get("/saved-queries/{query_id}/runs")
 async def list_saved_query_runs(query_id: str, request: Request, limit: int = 20):
-    """Return recent scheduled runs (newest first) for a saved query."""
+    """Return recent scheduled runs (newest first) for a saved query.
+
+    The runs store itself is out of scope for Sprint P-1 (still
+    in-memory) — only the existence check uses persistence."""
+    from api_gateway import persistence
     wsid = current_workspace_id(request)
-    with _saved_queries_lock:
-        exists = any(r["id"] == query_id and _in_workspace(r, wsid) for r in _saved_queries_store)
-    if not exists:
+    if await persistence.get_saved_query(query_id, workspace_id=wsid) is None:
         raise HTTPException(status_code=404, detail="Saved query not found")
     with _saved_query_runs_lock:
         runs = list(_saved_query_runs_store.get(query_id, []))
@@ -678,24 +677,43 @@ async def _record_run(query_id: str, entry: Dict[str, Any]) -> None:
 
 
 async def _fire_due_saved_queries() -> None:
-    """Iterate saved queries and fire any whose next_run_at has passed."""
+    """Iterate saved queries and fire any whose next_run_at has passed.
+
+    Sprint P-1: pulls the candidate set from the DB instead of an
+    in-memory list scan. Each workspace's saved queries are returned
+    via the indexed list; the schedule filter happens in Python (a
+    future optimisation could push it into SQL via a partial index)."""
     from datetime import timezone
+
+    from api_gateway import persistence
     now = datetime.now(timezone.utc)
-    with _saved_queries_lock:
-        due: List[Dict[str, Any]] = []
-        for record in _saved_queries_store:
-            schedule = record.get("schedule")
-            if not schedule or not schedule.get("enabled", True):
-                continue
-            next_run_iso = record.get("next_run_at")
-            if not next_run_iso:
-                continue
-            try:
-                next_run = datetime.fromisoformat(next_run_iso)
-            except ValueError:
-                continue
-            if next_run <= now:
-                due.append(record)
+    # Pull all schedulable records across known workspaces. For the
+    # current scale (< 500 per workspace) this is cheap; if scheduling
+    # grows we'll switch to a global SELECT with a WHERE on schedule
+    # JSON predicates.
+    async with persistence.session_scope() as s:
+        from sqlalchemy import select
+        rows = (await s.execute(
+            select(persistence.SavedQueryRow).where(
+                persistence.SavedQueryRow.schedule_json.is_not(None),
+            ),
+        )).scalars().all()
+        candidates = [persistence._row_to_saved_query_dict(r) for r in rows]
+
+    due: List[Dict[str, Any]] = []
+    for record in candidates:
+        schedule = record.get("schedule")
+        if not schedule or not schedule.get("enabled", True):
+            continue
+        next_run_iso = record.get("next_run_at")
+        if not next_run_iso:
+            continue
+        try:
+            next_run = datetime.fromisoformat(next_run_iso)
+        except ValueError:
+            continue
+        if next_run <= now:
+            due.append(record)
 
     for record in due:
         query_id = record["id"]
@@ -725,12 +743,16 @@ async def _fire_due_saved_queries() -> None:
             }
         await _record_run(query_id, entry)
 
-        # Advance next_run_at from *now* so we don't backfire past runs.
-        with _saved_queries_lock:
-            live = next((r for r in _saved_queries_store if r["id"] == query_id), None)
-            if live is not None:
-                live["last_run_at"] = entry["completed_at"]
-                live["next_run_at"] = _compute_next_run(live.get("schedule") or {})
+        # Advance next_run_at via the persistence layer.
+        new_next = _compute_next_run(record.get("schedule") or {})
+        await persistence.update_saved_query(
+            query_id, record.get("workspace_id") or DEFAULT_WORKSPACE_ID,
+            {
+                "last_run_at": entry["completed_at"],
+                "next_run_at": new_next,
+                "updated_at": datetime.now().isoformat(),
+            },
+        )
 
 
 async def _scheduler_loop(stop: asyncio.Event) -> None:
@@ -770,7 +792,10 @@ async def stop_saved_query_scheduler() -> None:
 
 @router.post("/query-history")
 async def save_query_history(payload: Dict[str, Any]):
-    """Save a query execution record."""
+    """Save a query execution record. Sprint P-1: backed by
+    ``gateway_query_history`` with the 200-row cap enforced inside
+    the persistence layer."""
+    from api_gateway import persistence
     record = {
         "id": payload.get("id", f"q_{int(datetime.now().timestamp() * 1000)}"),
         "prompt": payload.get("prompt", ""), "sql": payload.get("sql", ""),
@@ -778,10 +803,7 @@ async def save_query_history(payload: Dict[str, Any]):
         "executionTime": payload.get("executionTime", 0),
         "timestamp": payload.get("timestamp", datetime.now().isoformat()),
     }
-    with _query_history_lock:
-        _query_history_store.insert(0, record)
-        if len(_query_history_store) > 200:
-            del _query_history_store[200:]
+    await persistence.insert_query_history(record)
     return {"success": True, "id": record["id"]}
 
 

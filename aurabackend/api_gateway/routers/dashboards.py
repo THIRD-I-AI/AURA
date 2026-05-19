@@ -236,7 +236,9 @@ async def _run_tile(tile: Dict[str, Any], saved_queries: List[Dict[str, Any]]) -
 @router.post("/dashboards/{dashboard_id}/render")
 async def render_dashboard(dashboard_id: str, request: Request):
     """Execute every tile's underlying saved query and return rows."""
-    from api_gateway.routers.queries import _saved_queries_lock, _saved_queries_store
+    # Sprint P-1: saved queries are now in the gateway persistence
+    # layer (workspace-indexed SQL), not an in-process list.
+    from api_gateway import persistence
 
     wsid = current_workspace_id(request)
     with _dashboards_lock:
@@ -247,12 +249,9 @@ async def render_dashboard(dashboard_id: str, request: Request):
     if record is None:
         raise HTTPException(status_code=404, detail="Dashboard not found")
 
-    with _saved_queries_lock:
-        # Tiles can only reference saved queries in the same workspace
-        saved_queries = [
-            r for r in _saved_queries_store
-            if (r.get("workspace_id") or DEFAULT_WORKSPACE_ID) == wsid
-        ]
+    # Workspace filtering happens at the SQL level via the composite
+    # index — no more O(n) Python filter.
+    saved_queries = await persistence.list_saved_queries(wsid)
 
     tile_results = await asyncio.gather(
         *[_run_tile(t, saved_queries) for t in record.get("tiles", [])],

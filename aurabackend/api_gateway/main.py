@@ -66,6 +66,17 @@ async def _lifespan(app) -> AsyncGenerator[None, None]:
         except Exception as exc2:
             logger.warning("DB init failed (non-fatal): %s", exc2)
 
+    # Sprint P-1: initialise the gateway's own persistence (query
+    # history + saved queries + share tokens). Tables auto-create on
+    # first run; safe to re-invoke. Without this, the routes that
+    # read/write the SQL-backed stores would fail on cold start.
+    try:
+        from api_gateway.persistence import init_database as init_gateway_persistence
+        await init_gateway_persistence()
+        logger.info("Gateway persistence ready")
+    except Exception as exc:
+        logger.warning("Gateway persistence init failed (non-fatal): %s", exc)
+
     # Start the evolution engine background loop
     try:
         from evolution.engine import get_evolution_engine
