@@ -12,7 +12,7 @@ See `CLAUDE.md` for the sprint-numbering convention and commit style.
 | Sprint | Owner | Branch | Started | Goal |
 |---|---|---|---|---|
 | **S22** | Mouni | `feature/s22-tmle` | 2026-05-19 | TMLE — 6th estimator slot with cross-fitted targeting, MAE 0.20 on synthetic DGP |
-| **Audit burn-down (P-2b → P-3)** | Collaborator | `feature/audit-burn-down` (TBD) | 2026-05-19 | Close audit findings #3, #4, #5, #6, #8 — see `AUDIT_BURN_DOWN.md` |
+| **Audit burn-down (P-2c → P-3)** | Collaborator | `feature/audit-burn-down` | 2026-05-19 | Close audit findings #3, #4, #6, #8 — see `AUDIT_BURN_DOWN.md` |
 
 Both tracks are independent. S22 touches `counterfactual_service/`;
 the audit burn-down touches `api_gateway/`, `safety/`, and
@@ -22,6 +22,7 @@ the audit burn-down touches `api_gateway/`, `safety/`, and
 
 | Sprint | Bundle (+ hotfix) | Subsystem | What it ships |
 |---|---|---|---|
+| **P-2b** | `3a9d195` | api_gateway | Schema context cache resolves audit #5. `gateway_schema_context` table keyed by SHA-256 fingerprint; populate-on-upload + 60s refresh; queries.py switches to use_llm=False inline. |
 | **P-2a** | `ab25f71` | api_gateway | File metadata cache resolves audit #2. `gateway_file_metadata` table + populate-on-upload + 60s background refresh; `/dashboard/stats` becomes a single SELECT. ~100-1000× p99 dashboard-latency improvement. |
 | **P-1** | `5a03f16` + `9ffd91c` | api_gateway | Migrated `_query_history_store + _saved_queries_store + _share_tokens_store` to SQLAlchemy. Resolves audit #1 + #7. **Lazy-init via `session_scope()`** is the test-friendly pattern; don't break it. |
 | **Security** | `5ccaa15` | frontend | 12 Dependabot alerts → 0. axios `^1.16.1` + `overrides` block for 9 transitive deps. |
@@ -50,7 +51,7 @@ S1-S6 pre-dated this registry; see commit `157b293` and earlier for that history
 
 | Sprint | Pillar | Owner | Description |
 |---|---|---|---|
-| **P-2b** | Audit | Collaborator | Schema context cache — audit finding #5. Move `build_schema_context_cached` off the event loop OR pre-compute on upload. |
+| ~~**P-2b**~~ | ~~Audit~~ | ~~Collaborator~~ | ~~Schema context cache — DONE, see `3a9d195`~~ |
 | **P-2c** | Audit | Collaborator | Lineage materialised view — audit finding #8. Per-workspace lineage graph derived from `gateway_saved_queries` + `gateway_dashboards`, refreshed on writes. |
 | **P-3** | Audit | Collaborator | sqlglot AST replaces regex query validator + naive cost estimator — audit findings #3 + #4 + #6 (connection pooling can ride along). |
 | **S22** | Analytic depth | Mouni | TMLE estimator. Currently in flight (see In Flight section). |
@@ -78,4 +79,4 @@ When you reserve a future sprint:
 
 Update the date at the bottom when you make a material change.
 
-Last updated 2026-05-19 — two-dev coordination protocol established.
+Last updated 2026-05-12 — P-2b landed (`3a9d195`); audit finding #5 closed.

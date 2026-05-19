@@ -18,7 +18,7 @@ can move fast without re-deriving the architecture.
 | #2 | `queries.py:818-835` per-file DuckDB | HIGH | ✅ DONE | P-2a (`ab25f71`) |
 | #3 | `validator.py:162` `_estimate_query_cost` | MEDIUM | TODO | P-3 |
 | #4 | `validator.py:117-121` regex `PERFORMANCE_WARNINGS` | MEDIUM | TODO | P-3 |
-| #5 | `queries.py:217` `build_schema_context_cached` | HIGH | TODO | P-2b |
+| #5 | `queries.py:217` `build_schema_context_cached` | HIGH | ✅ DONE | P-2b (`3a9d195`) |
 | #6 | `queries.py:270-274` no connection pooling | HIGH | TODO | P-3 |
 | #7 | `queries.py:500-504` O(n) share-token loop | MEDIUM | ✅ DONE | P-1 |
 | #8 | `lineage.py` graph computed per request | MEDIUM | TODO | P-2c |
@@ -224,5 +224,4 @@ If you hit a wall (e.g., sqlglot can't parse a real query), open
 a GitHub issue and tag Mouni. We can rubber-duck in the issue
 thread or escalate.
 
-Last updated 2026-05-19 when this document was created. Update the
-date when you make material changes.
+Last updated 2026-05-12 — P-2b landed, finding #5 closed. 4 findings remain (#3, #4, #6, #8).
