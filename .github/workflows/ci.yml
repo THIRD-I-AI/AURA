@@ -156,6 +156,41 @@ jobs:
         run: |
           python -m pytest tests/test_e2e_eval_gate_real.py -v --tb=short
 
+  # ── SDK codegen sync (regenerate + git-diff) ────────────────────────────
+  # Sprint 21a: scripts/generate_sdk.py reads aurabackend/openapi.json and
+  # emits sdk_clients/aura_gateway_client/{__init__,models,README}. The
+  # committed output is byte-stable (generator sorts schemas + enforces
+  # required-then-optional field order). This lane regenerates and
+  # `git diff --exit-status` fails if the committed code drifts from
+  # what regeneration produces — catches forgotten regenerations after
+  # openapi.json changes.
+  sdk-codegen-sync:
+    name: SDK Codegen Sync
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Regenerate aura_gateway_client
+        run: |
+          python scripts/generate_sdk.py \
+            --openapi aurabackend/openapi.json \
+            --output sdk_clients/aura_gateway_client \
+            --package-name aura_gateway_client \
+            --service-tag aura-gateway
+
+      - name: Confirm committed clients match regeneration
+        run: |
+          if ! git diff --exit-status sdk_clients/; then
+            echo "::error::sdk_clients/ has drifted from openapi.json. Run scripts/generate_sdk.py locally and commit the result."
+            exit 1
+          fi
+
   # ── Scheduler distributed-queue integration (Postgres required) ─────────
   # Sprint 20b: tests/test_scheduler_distributed.py ships Postgres-required
   # tests for LISTEN/NOTIFY round-trip + pg_advisory_lock contention. The
