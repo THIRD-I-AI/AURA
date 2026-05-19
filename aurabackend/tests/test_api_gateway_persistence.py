@@ -342,3 +342,163 @@ async def test_revoke_one_share_token_specific(gateway_db) -> None:
     t1 = await persistence.get_or_create_share_token("sq_1")
     await persistence.revoke_one_share_token(t1)
     assert await persistence.lookup_share_token(t1) is None
+
+
+# ── File metadata cache (Sprint P-2a) ────────────────────────────────
+
+
+def _write_csv(path: Path, n_rows: int) -> None:
+    """Tiny CSV helper for the metadata tests."""
+    lines = ["id,value"] + [f"{i},x" for i in range(n_rows)]
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+@pytest.mark.asyncio
+async def test_index_file_metadata_counts_rows_and_upserts(
+    gateway_db, tmp_path,
+) -> None:
+    """A single index call computes row count + mtime + size and
+    persists them. Wire-shape dict matches what the dashboard
+    endpoint reads."""
+    csv = tmp_path / "small.csv"
+    _write_csv(csv, n_rows=42)
+    result = await persistence.index_file_metadata(str(csv))
+    assert result is not None
+    assert result["row_count"] == 42
+    assert result["file_suffix"] == ".csv"
+    assert result["file_name"] == "small.csv"
+    assert result["size_bytes"] > 0
+    # Confirm it landed in the list endpoint output.
+    rows = await persistence.list_file_metadata()
+    assert len(rows) == 1
+    assert rows[0]["row_count"] == 42
+
+
+@pytest.mark.asyncio
+async def test_index_file_metadata_upserts_on_repeat(
+    gateway_db, tmp_path,
+) -> None:
+    """Indexing the same path twice updates the existing row instead
+    of producing duplicates (file_path is the primary key)."""
+    csv = tmp_path / "doc.csv"
+    _write_csv(csv, n_rows=5)
+    await persistence.index_file_metadata(str(csv))
+    # Rewrite with more rows.
+    _write_csv(csv, n_rows=20)
+    await persistence.index_file_metadata(str(csv))
+    rows = await persistence.list_file_metadata()
+    assert len(rows) == 1
+    assert rows[0]["row_count"] == 20
+
+
+@pytest.mark.asyncio
+async def test_index_file_metadata_missing_file_prunes_row(
+    gateway_db, tmp_path,
+) -> None:
+    """If the file is deleted between request and indexing, the
+    indexer prunes the existing cached row and returns None."""
+    csv = tmp_path / "ephemeral.csv"
+    _write_csv(csv, n_rows=10)
+    await persistence.index_file_metadata(str(csv))
+    assert len(await persistence.list_file_metadata()) == 1
+    csv.unlink()
+    result = await persistence.index_file_metadata(str(csv))
+    assert result is None
+    assert len(await persistence.list_file_metadata()) == 0
+
+
+@pytest.mark.asyncio
+async def test_index_file_metadata_skips_untracked_suffix(
+    gateway_db, tmp_path,
+) -> None:
+    """Files with unsupported extensions (.txt, .md, etc.) are
+    silently skipped — no row inserted."""
+    txt = tmp_path / "notes.txt"
+    txt.write_text("hello", encoding="utf-8")
+    result = await persistence.index_file_metadata(str(txt))
+    assert result is None
+    assert len(await persistence.list_file_metadata()) == 0
+
+
+@pytest.mark.asyncio
+async def test_index_file_metadata_xlsx_counts_zero(
+    gateway_db, tmp_path,
+) -> None:
+    """xlsx/xls require the duckdb excel extension which isn't always
+    loaded — the indexer records the file but with row_count=0,
+    matching the legacy in-line endpoint's behaviour."""
+    xlsx = tmp_path / "report.xlsx"
+    xlsx.write_bytes(b"PK\x03\x04fake-xlsx-content")  # not a real xlsx
+    result = await persistence.index_file_metadata(str(xlsx))
+    assert result is not None
+    assert result["row_count"] == 0
+    assert result["file_suffix"] == ".xlsx"
+
+
+@pytest.mark.asyncio
+async def test_refresh_stale_walks_upload_dir(gateway_db, tmp_path) -> None:
+    """refresh_stale_file_metadata indexes new files + skips
+    unchanged files + prunes deleted files. Returns telemetry."""
+    a = tmp_path / "a.csv"
+    b = tmp_path / "b.csv"
+    _write_csv(a, n_rows=3)
+    _write_csv(b, n_rows=7)
+
+    stats1 = await persistence.refresh_stale_file_metadata(str(tmp_path))
+    assert stats1["indexed"] == 2
+    assert stats1["skipped"] == 0
+
+    # Second pass — nothing changed.
+    stats2 = await persistence.refresh_stale_file_metadata(str(tmp_path))
+    assert stats2["indexed"] == 0
+    assert stats2["skipped"] == 2
+
+    # Delete b; refresh should prune the cached row.
+    b.unlink()
+    stats3 = await persistence.refresh_stale_file_metadata(str(tmp_path))
+    assert stats3["pruned"] == 1
+    rows = await persistence.list_file_metadata()
+    assert {r["file_name"] for r in rows} == {"a.csv"}
+
+
+@pytest.mark.asyncio
+async def test_refresh_stale_handles_missing_upload_dir(
+    gateway_db, tmp_path,
+) -> None:
+    """refresh_stale_file_metadata returns zero counts when the
+    upload dir doesn't exist — graceful no-op for fresh deployments."""
+    nonexistent = tmp_path / "no_such_dir"
+    stats = await persistence.refresh_stale_file_metadata(str(nonexistent))
+    assert stats == {"indexed": 0, "skipped": 0, "pruned": 0}
+
+
+@pytest.mark.asyncio
+async def test_refresh_stale_reindexes_changed_mtime(
+    gateway_db, tmp_path,
+) -> None:
+    """If a file's mtime changes (user edits it after upload), the
+    refresh re-indexes it — picks up the new row count."""
+    import time
+    csv = tmp_path / "mutable.csv"
+    _write_csv(csv, n_rows=5)
+    await persistence.refresh_stale_file_metadata(str(tmp_path))
+
+    # Force a different mtime + new row count.
+    time.sleep(0.05)
+    _write_csv(csv, n_rows=15)
+    new_mtime = csv.stat().st_mtime + 1.0
+    os.utime(csv, (new_mtime, new_mtime))
+
+    stats = await persistence.refresh_stale_file_metadata(str(tmp_path))
+    assert stats["indexed"] == 1
+    rows = await persistence.list_file_metadata()
+    assert rows[0]["row_count"] == 15
+
+
+@pytest.mark.asyncio
+async def test_prune_missing_file_metadata_handles_empty_list(
+    gateway_db,
+) -> None:
+    """Defensive: pruning an empty list is a no-op, not an error."""
+    n = await persistence.prune_missing_file_metadata([])
+    assert n == 0

@@ -137,6 +137,22 @@ async def upload_universal(
         except Exception as _idx_exc:
             logger.warning("schema_indexer dispatch failed (non-fatal): %s", _idx_exc)
 
+        # Sprint P-2a: file metadata cache — populates
+        # gateway_file_metadata so the dashboard-stats endpoint reads
+        # cached row counts instead of running COUNT(*) per file per
+        # request. Backgrounded + best-effort like the schema indexer
+        # above. The 60s background tick is the defensive fallback if
+        # this dispatch is dropped for any reason.
+        try:
+            import asyncio as _asyncio
+
+            from api_gateway.persistence import index_file_metadata
+            _asyncio.create_task(index_file_metadata(file_path))
+        except Exception as _meta_exc:
+            logger.warning(
+                "file_metadata cache dispatch failed (non-fatal): %s", _meta_exc,
+            )
+
         await streaming_manager.publish_complete(TOPIC_UPLOAD, upload_id, result)
         return result
     except Exception as e:

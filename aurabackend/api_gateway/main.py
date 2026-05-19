@@ -23,6 +23,43 @@ logger = get_logger("aura.api_gateway")
 
 _UASR_URL = os.getenv("AURA_UASR_URL", "http://localhost:8009")
 _UASR_POLL_INTERVAL = float(os.getenv("AURA_UASR_POLL_SECONDS", "5"))
+_FILE_METADATA_REFRESH_INTERVAL = float(
+    os.getenv("AURA_FILE_METADATA_REFRESH_SECONDS", "60"),
+)
+
+
+async def _file_metadata_refresh_loop(stop_event: asyncio.Event) -> None:
+    """Sprint P-2a — defensive 60s refresh of gateway_file_metadata.
+
+    The upload endpoint already pushes a populate task on every new
+    file, so this loop is a safety net for: (a) files placed in the
+    upload dir out-of-band (e.g. scp'd by an operator), (b) files
+    whose mtime changes after upload (a manual edit), (c) dropped
+    background tasks. Each tick walks the upload dir, re-indexes
+    anything stale, and prunes rows for missing files.
+
+    Never raises — exceptions are logged at debug so a momentary DB
+    blip doesn't spam the warning channel."""
+    from pathlib import Path as _Path
+
+    from api_gateway import persistence
+
+    base = _Path(__file__).resolve().parent.parent
+    upload_dir = base / "data" / "uploads"
+    while not stop_event.is_set():
+        try:
+            stats = await persistence.refresh_stale_file_metadata(str(upload_dir))
+            if stats["indexed"] or stats["pruned"]:
+                logger.debug("file_metadata refresh: %s", stats)
+        except Exception as exc:
+            logger.debug("file_metadata refresh tick failed: %s", exc)
+        try:
+            await asyncio.wait_for(
+                stop_event.wait(),
+                timeout=_FILE_METADATA_REFRESH_INTERVAL,
+            )
+        except asyncio.TimeoutError:
+            pass
 
 
 async def _uasr_metrics_poller(stop_event: asyncio.Event) -> None:
@@ -107,7 +144,22 @@ async def _lifespan(app) -> AsyncGenerator[None, None]:
     except Exception as exc:
         logger.warning("Could not start saved-query scheduler: %s", exc)
 
+    # Sprint P-2a: file metadata cache refresh tick. Walks the upload
+    # dir every 60s; re-indexes anything whose mtime changed and
+    # prunes rows for deleted files. Defensive fallback to the
+    # upload-time hook in files.py.
+    file_meta_stop = asyncio.Event()
+    file_meta_task = asyncio.create_task(_file_metadata_refresh_loop(file_meta_stop))
+    logger.info("File metadata refresh loop started (interval=60s)")
+
     yield  # ── application runs ──
+
+    # Stop file-metadata refresh
+    file_meta_stop.set()
+    try:
+        await asyncio.wait_for(file_meta_task, timeout=2)
+    except (asyncio.TimeoutError, asyncio.CancelledError):
+        file_meta_task.cancel()
 
     # Stop UASR poller
     uasr_stop.set()

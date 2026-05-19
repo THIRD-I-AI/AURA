@@ -825,7 +825,18 @@ async def get_llm_stats():
 
 @router.get("/dashboard/stats")
 async def get_dashboard_stats():
-    """Real-time dashboard statistics (cached 30 s)."""
+    """Real-time dashboard statistics.
+
+    Sprint P-2a: replaced the per-request DuckDB-per-file COUNT(*)
+    scan (audit finding #2) with a single SELECT against the
+    ``gateway_file_metadata`` cache. The cache is populated on file
+    upload (background task in files.py) and refreshed every 60s by
+    the background tick. Falls back to the legacy in-line scan ONCE
+    if the cache is empty AND files exist on disk — guards the
+    cold-start case (e.g. a deploy that promoted a pre-existing
+    upload dir without an indexer pass)."""
+    from api_gateway import persistence
+
     cached = await dashboard_cache.get("dashboard:stats")
     if cached is not None:
         return cached
@@ -833,30 +844,24 @@ async def get_dashboard_stats():
     file_count = 0
     total_file_rows = 0
     try:
-        base = Path(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-        upload_dir = base / "data" / "uploads"
-        if upload_dir.exists():
-            import duckdb
-            for f in upload_dir.iterdir():
-                if f.is_file() and f.suffix.lower() in (".csv", ".json", ".parquet", ".xlsx", ".xls"):
-                    file_count += 1
-                    try:
-                        con = duckdb.connect(":memory:")
-                        fp = str(f).replace(chr(92), '/')
-                        if f.suffix.lower() == ".csv":
-                            count = con.execute(f"SELECT COUNT(*) FROM read_csv_auto('{fp}')").fetchone()[0]
-                        elif f.suffix.lower() == ".parquet":
-                            count = con.execute(f"SELECT COUNT(*) FROM read_parquet('{fp}')").fetchone()[0]
-                        elif f.suffix.lower() == ".json":
-                            count = con.execute(f"SELECT COUNT(*) FROM read_json_auto('{fp}')").fetchone()[0]
-                        else:
-                            count = 0
-                        total_file_rows += count
-                        con.close()
-                    except Exception:
-                        pass
-    except Exception:
-        pass
+        rows = await persistence.list_file_metadata()
+        file_count = len(rows)
+        total_file_rows = sum(r["row_count"] for r in rows)
+
+        # Cold-start guard: if the cache is empty but files exist on
+        # disk, kick off a one-shot refresh so the next request
+        # benefits. Don't await its completion — we'd rather return
+        # zeros for one request than block the caller for several
+        # seconds during the first indexing pass.
+        if file_count == 0:
+            base = Path(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+            upload_dir = base / "data" / "uploads"
+            if upload_dir.exists() and any(upload_dir.iterdir()):
+                asyncio.create_task(
+                    persistence.refresh_stale_file_metadata(str(upload_dir)),
+                )
+    except Exception as exc:
+        logger.warning("dashboard stats persistence read failed (non-fatal): %s", exc)
 
     with _connections_lock:
         active_conns = sum(1 for c in _connections_store.values() if c.get("is_active"))

@@ -144,6 +144,38 @@ class SavedQueryRow(Base):
     )
 
 
+class FileMetadataRow(Base):
+    """Cached row count + size + last-modified for one uploaded file.
+
+    Sprint P-2a: replaces the per-request DuckDB scan in the
+    dashboard-stats endpoint. The endpoint used to open an
+    in-memory DuckDB connection per file and run COUNT(*) every time
+    a dashboard loaded — a full table scan per file per request,
+    O(files × rows) per dashboard view. With this cache, the
+    endpoint becomes a single SELECT (O(files)) and rows survive
+    process restarts.
+
+    Cache invalidation:
+      * On upload: file path is re-indexed in a background task.
+      * On a 60s tick: any file whose ``mtime`` differs from the
+        cached value is re-indexed; deleted files have their row
+        pruned.
+
+    Primary key is the absolute ``file_path`` so the same path
+    upserts cleanly without ID generation.
+    """
+
+    __tablename__ = "gateway_file_metadata"
+
+    file_path = Column(String(512), primary_key=True)
+    file_name = Column(String(255), nullable=False)
+    file_suffix = Column(String(16), nullable=False)
+    row_count = Column(Integer, nullable=False, default=0)
+    size_bytes = Column(Integer, nullable=False, default=0)
+    mtime = Column(Float, nullable=False, index=True)
+    last_indexed_at = Column(String(64), nullable=False)
+
+
 class ShareTokenRow(Base):
     """One row per active share token.
 
@@ -568,6 +600,195 @@ async def revoke_one_share_token(token: str) -> None:
         )
 
 
+# ── File metadata (Sprint P-2a) ──
+
+
+# File extensions DuckDB can count cheaply. .xlsx / .xls require the
+# `excel` extension which isn't always loaded; they're counted as 0
+# rows to match the legacy in-line behaviour (which also returned 0).
+_COUNTABLE_SUFFIXES = {".csv", ".json", ".parquet"}
+_TRACKED_SUFFIXES = {".csv", ".json", ".parquet", ".xlsx", ".xls"}
+
+
+def _count_rows_via_duckdb(file_path: str, suffix: str) -> int:
+    """Run COUNT(*) on a single file via a fresh in-memory DuckDB.
+
+    Synchronous CPU/IO-bound work — callers MUST run via
+    ``asyncio.to_thread`` so the event loop stays responsive. Returns
+    0 on any error (matches the legacy endpoint's silent-failure
+    behaviour — a corrupt file in the upload dir shouldn't take
+    down the dashboard).
+    """
+    if suffix not in _COUNTABLE_SUFFIXES:
+        return 0
+    try:
+        import duckdb
+
+        normalised = file_path.replace("\\", "/")
+        con = duckdb.connect(":memory:")
+        try:
+            if suffix == ".csv":
+                stmt = f"SELECT COUNT(*) FROM read_csv_auto('{normalised}')"
+            elif suffix == ".parquet":
+                stmt = f"SELECT COUNT(*) FROM read_parquet('{normalised}')"
+            elif suffix == ".json":
+                stmt = f"SELECT COUNT(*) FROM read_json_auto('{normalised}')"
+            else:  # pragma: no cover — guarded by _COUNTABLE_SUFFIXES
+                return 0
+            return int(con.execute(stmt).fetchone()[0])
+        finally:
+            con.close()
+    except Exception as exc:
+        logger.warning("duckdb count failed for %s: %s", file_path, exc)
+        return 0
+
+
+async def index_file_metadata(file_path: str) -> Optional[Dict[str, Any]]:
+    """Compute + upsert metadata for one file. Idempotent.
+
+    Returns the upserted wire dict, or None if the file no longer
+    exists on disk (in which case the cached row is also pruned).
+
+    Callers should invoke this from a background task — the COUNT(*)
+    call is offloaded to a worker thread so the event loop stays
+    free for other requests.
+    """
+    import asyncio as _asyncio
+    from pathlib import Path as _Path
+
+    p = _Path(file_path)
+    if not p.exists() or not p.is_file():
+        # File deleted between request and indexing — prune the
+        # cached row if one exists.
+        await prune_missing_file_metadata([file_path])
+        return None
+
+    suffix = p.suffix.lower()
+    if suffix not in _TRACKED_SUFFIXES:
+        return None
+
+    size_bytes = p.stat().st_size
+    mtime = p.stat().st_mtime
+    row_count = await _asyncio.to_thread(
+        _count_rows_via_duckdb, str(p.resolve()), suffix,
+    )
+    now = datetime.now(timezone.utc).isoformat()
+
+    async with session_scope() as s:
+        existing = (
+            await s.execute(
+                select(FileMetadataRow).where(
+                    FileMetadataRow.file_path == str(p.resolve()),
+                ),
+            )
+        ).scalar_one_or_none()
+        if existing is None:
+            row = FileMetadataRow(
+                file_path=str(p.resolve()),
+                file_name=p.name,
+                file_suffix=suffix,
+                row_count=row_count,
+                size_bytes=size_bytes,
+                mtime=mtime,
+                last_indexed_at=now,
+            )
+            s.add(row)
+        else:
+            existing.row_count = row_count
+            existing.size_bytes = size_bytes
+            existing.mtime = mtime
+            existing.last_indexed_at = now
+            existing.file_name = p.name
+            existing.file_suffix = suffix
+        await s.flush()
+        return {
+            "file_path": str(p.resolve()),
+            "file_name": p.name,
+            "file_suffix": suffix,
+            "row_count": row_count,
+            "size_bytes": size_bytes,
+            "mtime": mtime,
+            "last_indexed_at": now,
+        }
+
+
+async def list_file_metadata() -> List[Dict[str, Any]]:
+    """Return every cached file metadata row. Used by the dashboard
+    stats endpoint to aggregate file_count + total_rows in O(files)
+    instead of the legacy O(files × rows) per-request DuckDB scan."""
+    async with session_scope() as s:
+        rows = (await s.execute(select(FileMetadataRow))).scalars().all()
+        return [
+            {
+                "file_path": r.file_path,
+                "file_name": r.file_name,
+                "file_suffix": r.file_suffix,
+                "row_count": r.row_count,
+                "size_bytes": r.size_bytes,
+                "mtime": r.mtime,
+                "last_indexed_at": r.last_indexed_at,
+            }
+            for r in rows
+        ]
+
+
+async def prune_missing_file_metadata(paths: List[str]) -> int:
+    """Delete metadata rows for files no longer on disk. Returns the
+    count pruned (useful for telemetry)."""
+    if not paths:
+        return 0
+    async with session_scope() as s:
+        result = await s.execute(
+            delete(FileMetadataRow).where(FileMetadataRow.file_path.in_(paths)),
+        )
+        return result.rowcount or 0
+
+
+async def refresh_stale_file_metadata(upload_dir: str) -> Dict[str, int]:
+    """Walk the upload directory and re-index anything stale.
+
+    A row is "stale" if (a) it's not in the cache yet, or (b) the
+    on-disk ``mtime`` differs from the cached value. Also prunes
+    rows whose files have been deleted.
+
+    Designed for the 60s background refresh tick. Returns a dict
+    with counts so the caller can emit telemetry."""
+    from pathlib import Path as _Path
+
+    upload_path = _Path(upload_dir)
+    if not upload_path.exists() or not upload_path.is_dir():
+        return {"indexed": 0, "skipped": 0, "pruned": 0}
+
+    # Snapshot on-disk state once.
+    on_disk: Dict[str, float] = {}
+    for f in upload_path.iterdir():
+        if not f.is_file() or f.suffix.lower() not in _TRACKED_SUFFIXES:
+            continue
+        try:
+            on_disk[str(f.resolve())] = f.stat().st_mtime
+        except OSError:
+            continue
+
+    # Compare against cache.
+    cached = {r["file_path"]: r["mtime"] for r in await list_file_metadata()}
+
+    # Re-index files whose mtime differs (or that aren't cached yet).
+    indexed = 0
+    skipped = 0
+    for path, mtime in on_disk.items():
+        if cached.get(path) == mtime:
+            skipped += 1
+            continue
+        await index_file_metadata(path)
+        indexed += 1
+
+    # Prune cache entries for files no longer on disk.
+    missing = [p for p in cached if p not in on_disk]
+    pruned = await prune_missing_file_metadata(missing)
+
+    return {"indexed": indexed, "skipped": skipped, "pruned": pruned}
+
+
 # ── Test-only helper ──
 
 
@@ -588,6 +809,7 @@ __all__ = [
     "QueryHistoryRow",
     "SavedQueryRow",
     "ShareTokenRow",
+    "FileMetadataRow",
     "QUERY_HISTORY_CAP",
     "SAVED_QUERIES_PER_WORKSPACE_CAP",
     "database_url",
@@ -606,5 +828,9 @@ __all__ = [
     "lookup_share_token",
     "revoke_share_tokens_for_query",
     "revoke_one_share_token",
+    "index_file_metadata",
+    "list_file_metadata",
+    "prune_missing_file_metadata",
+    "refresh_stale_file_metadata",
     "reset_all_for_tests",
 ]
