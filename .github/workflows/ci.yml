@@ -186,7 +186,10 @@ jobs:
 
       - name: Confirm committed clients match regeneration
         run: |
-          if ! git diff --exit-status sdk_clients/; then
+          # `git diff --exit-code` returns 0 if no diff, 1 if there is a diff.
+          # `--exit-status` is NOT a valid git option (rejected by git 2.54+);
+          # the correct flag name is `--exit-code` per `git diff --help`.
+          if ! git diff --exit-code sdk_clients/; then
             echo "::error::sdk_clients/ has drifted from openapi.json. Run scripts/generate_sdk.py locally and commit the result."
             exit 1
           fi
