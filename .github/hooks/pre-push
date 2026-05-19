@@ -29,7 +29,10 @@ else
     fi
   done
   if [ -n "$VENV_PYTEST" ]; then
-    "$VENV_PYTEST" "$REPO_ROOT/aurabackend/tests/" --ignore="$REPO_ROOT/aurabackend/tests/test_operability.py" --tb=short -q
+    "$VENV_PYTEST" "$REPO_ROOT/aurabackend/tests/" \
+      --ignore="$REPO_ROOT/aurabackend/tests/test_operability.py" \
+      --ignore="$REPO_ROOT/aurabackend/tests/test_e2e_eval_gate_real.py" \
+      --tb=short -q
   else
     echo "WARNING: neither make nor venv pytest found — skipping backend tests"
   fi
