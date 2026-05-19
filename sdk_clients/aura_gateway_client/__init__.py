@@ -1,12 +1,21 @@
 """
 Public surface of the auto-generated SDK package ``aura_gateway_client``.
 
-Re-exports every Pydantic model defined in ``models``.
-Regenerate via ``scripts/generate_sdk.py`` — see that module for the
-CLI; never edit this file by hand.
+Re-exports every Pydantic model from ``models`` plus the typed
+``Client`` + exception classes from ``client``. Regenerate via
+``scripts/generate_sdk.py`` — see that module for the CLI; never
+edit this file by hand.
 """
 from __future__ import annotations
 
+from .client import (
+    APIError,
+    Client,
+    NotFoundError,
+    RetryPolicy,
+    ServiceUnavailableError,
+    UnauthorizedError,
+)
 from .models import (
     AgentAsyncResponse,
     AgentExecuteRequest,
@@ -58,6 +67,12 @@ from .models import (
 )
 
 __all__ = [
+    "APIError",
+    "Client",
+    "NotFoundError",
+    "RetryPolicy",
+    "ServiceUnavailableError",
+    "UnauthorizedError",
     "AgentAsyncResponse",
     "AgentExecuteRequest",
     "AgentExecuteResponse",

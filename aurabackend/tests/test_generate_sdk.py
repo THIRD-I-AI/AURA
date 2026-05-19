@@ -43,8 +43,11 @@ sys.path.insert(0, str(SCRIPTS_DIR))
 
 from generate_sdk import (  # noqa: E402
     _emit_class,
+    _emit_one_operation,
     _python_type_for,
+    _python_type_for_response,
     _sanitize_field_name,
+    _shorten_operation_id,
     generate,
 )
 
@@ -244,15 +247,16 @@ def test_emit_class_empty_body_uses_pass() -> None:
 REAL_OPENAPI = REPO_ROOT / "aurabackend" / "openapi.json"
 
 
-def test_end_to_end_generates_three_files(tmp_path: Path) -> None:
-    """The driver returns __init__.py / models.py / README.md exactly."""
+def test_end_to_end_generates_four_files(tmp_path: Path) -> None:
+    """The driver returns __init__.py / models.py / client.py / README.md.
+    Sprint 21b added client.py; the count went from 3 to 4."""
     files = generate(
         openapi_path=REAL_OPENAPI,
         output_dir=tmp_path,
         package_name="aura_test_client",
         service_tag="aura-test",
     )
-    assert set(files.keys()) == {"__init__.py", "models.py", "README.md"}
+    assert set(files.keys()) == {"__init__.py", "models.py", "client.py", "README.md"}
 
 
 def test_end_to_end_byte_identical_across_runs(tmp_path: Path) -> None:
@@ -337,6 +341,241 @@ def test_generated_init_reexports_alphabetically_sorted(tmp_path: Path) -> None:
         if line.strip()
     ]
     assert names == sorted(names), "import block must be alphabetically sorted"
+
+
+# ── Sprint 21b: operation method emission ────────────────────────────
+
+
+def test_shorten_operation_id_strips_api_v1_prefix() -> None:
+    """FastAPI auto-IDs like `chat_endpoint_api_v1_chat_post` → `chat_endpoint`.
+    The path-and-verb noise after `_api_v1_` is stripped."""
+    assert _shorten_operation_id("chat_endpoint_api_v1_chat_post") == "chat_endpoint"
+
+
+def test_shorten_operation_id_handles_path_params() -> None:
+    """Operations with path parameters embed them in the ID:
+    `approve_job_api_v1_jobs__job_id__approve_post` → `approve_job`."""
+    assert (
+        _shorten_operation_id("approve_job_api_v1_jobs__job_id__approve_post")
+        == "approve_job"
+    )
+
+
+def test_shorten_operation_id_strips_trailing_verb_when_no_prefix() -> None:
+    """Operations without `_api_v1_` (e.g. /health) strip just the verb."""
+    assert _shorten_operation_id("health_health_get") == "health"
+
+
+def test_shorten_operation_id_collapses_duplicate_trailing_segment() -> None:
+    """`metrics_metrics_get` (FastAPI mounts /metrics as a top-level route)
+    → `metrics`, not `metrics_metrics`."""
+    assert _shorten_operation_id("metrics_metrics_get") == "metrics"
+
+
+def test_response_type_for_ref_returns_quoted_class_and_model() -> None:
+    """A $ref'd response narrows the return type to that model class
+    AND returns the model name so the emitter can `model_validate()`
+    after the HTTP call."""
+    components = {"Foo": {}}
+    schema = {"$ref": "#/components/schemas/Foo"}
+    ret_expr, model = _python_type_for_response(schema, components)
+    assert ret_expr == '"Foo"'
+    assert model == "Foo"
+
+
+def test_response_type_for_untyped_falls_back_to_dict() -> None:
+    """No-schema and inline-schema responses both return
+    `Dict[str, Any]` — Sprint 21c will extend to typed inline."""
+    assert _python_type_for_response({}, {}) == ("Dict[str, Any]", None)
+    assert _python_type_for_response({"type": "object"}, {}) == ("Dict[str, Any]", None)
+
+
+def test_response_type_for_unknown_ref_falls_back_to_dict() -> None:
+    """A $ref to a schema that doesn't exist in components is a
+    malformed OpenAPI; emit Dict[str, Any] rather than a forward-ref
+    to a non-existent class."""
+    components = {}  # empty
+    schema = {"$ref": "#/components/schemas/MissingModel"}
+    ret_expr, model = _python_type_for_response(schema, components)
+    assert ret_expr == "Dict[str, Any]"
+    assert model is None
+
+
+def test_emit_operation_basic_get_with_path_param() -> None:
+    """Path params are positional, no body, no query. The URL is
+    f-string-formatted with the path-param name from the spec
+    (NOT the sanitised Python identifier)."""
+    op = {
+        "summary": "Get a job",
+        "parameters": [
+            {"name": "job_id", "in": "path", "schema": {"type": "string"}},
+        ],
+        "responses": {"200": {"content": {"application/json": {"schema": {}}}}},
+    }
+    src = _emit_one_operation("get_job", "get", "/jobs/{job_id}", op, {})
+    assert "def get_job(self, job_id: str) -> Dict[str, Any]:" in src
+    assert '"""Get a job"""' in src
+    assert 'url = f"/jobs/{job_id}".format(job_id=job_id)' in src
+    assert 'self._request("GET"' in src
+
+
+def test_emit_operation_post_with_body() -> None:
+    """Body is keyword with a typed Pydantic model when the request
+    references a component schema."""
+    op = {
+        "requestBody": {
+            "content": {
+                "application/json": {
+                    "schema": {"$ref": "#/components/schemas/CreateJobRequest"},
+                },
+            },
+        },
+        "responses": {"200": {"content": {"application/json": {"schema": {}}}}},
+    }
+    src = _emit_one_operation("create_job", "post", "/jobs", op, {})
+    assert 'def create_job(self, body: "CreateJobRequest") -> Dict[str, Any]:' in src
+    assert "json_body = body.model_dump" in src
+
+
+def test_emit_operation_with_query_params() -> None:
+    """Query params are keyword with `Optional[T] = None` defaults so
+    callers can pass only what they care about. The body assembles a
+    dict and strips None values."""
+    op = {
+        "parameters": [
+            {"name": "limit", "in": "query", "schema": {"type": "integer"}},
+            {"name": "offset", "in": "query", "schema": {"type": "integer"}},
+        ],
+        "responses": {"200": {"content": {"application/json": {"schema": {}}}}},
+    }
+    src = _emit_one_operation("list_jobs", "get", "/jobs", op, {})
+    assert "limit: Optional[int] = None" in src
+    assert "offset: Optional[int] = None" in src
+    assert '"limit": limit,' in src
+    assert "params = {k: v for k, v in params.items() if v is not None}" in src
+
+
+def test_emit_operation_typed_return_uses_model_validate() -> None:
+    """When the 200 response is a $ref, the method body parses the
+    response via `Model.model_validate(...)` so the caller gets a
+    typed instance instead of a raw dict."""
+    components = {"JobStatus": {}}
+    op = {
+        "responses": {
+            "200": {
+                "content": {
+                    "application/json": {
+                        "schema": {"$ref": "#/components/schemas/JobStatus"},
+                    },
+                },
+            },
+        },
+    }
+    src = _emit_one_operation("get_status", "get", "/status", op, components)
+    assert '-> "JobStatus":' in src
+    assert "from .models import JobStatus" in src
+    assert "return JobStatus.model_validate(response)" in src
+
+
+def test_emit_operation_argument_order_path_then_body_then_query() -> None:
+    """Argument order convention: path params (positional, required) →
+    body (keyword, required if requestBody) → query params (keyword,
+    optional with None defaults). This convention is what callers
+    rely on — getting it backwards would break every call site."""
+    op = {
+        "parameters": [
+            {"name": "job_id", "in": "path", "schema": {"type": "string"}},
+            {"name": "verbose", "in": "query", "schema": {"type": "boolean"}},
+        ],
+        "requestBody": {
+            "content": {"application/json": {"schema": {"type": "object"}}},
+        },
+        "responses": {"200": {"content": {"application/json": {"schema": {}}}}},
+    }
+    src = _emit_one_operation("update_job", "put", "/jobs/{job_id}", op, {})
+    sig_line = next(line for line in src.split("\n") if line.startswith("    def "))
+    # Path param (job_id) before body before query (verbose).
+    assert sig_line.index("job_id") < sig_line.index("body")
+    assert sig_line.index("body") < sig_line.index("verbose")
+
+
+def test_generated_client_module_is_valid_python(tmp_path: Path) -> None:
+    """The generated client.py must parse as valid Python AST.
+    Without this, downstream consumers would get an ImportError at
+    `from aura_gateway_client import Client` — a silent breakage."""
+    files = generate(
+        openapi_path=REAL_OPENAPI,
+        output_dir=tmp_path,
+        package_name="aura_test_client",
+        service_tag="aura-test",
+    )
+    ast.parse(files["client.py"])
+
+
+def test_generated_client_emits_one_method_per_operation(tmp_path: Path) -> None:
+    """The committed openapi.json has 101 operations across all paths
+    × methods; the generated Client class must have a method for each.
+    Without this contract, a future change could silently drop methods."""
+    files = generate(
+        openapi_path=REAL_OPENAPI,
+        output_dir=tmp_path,
+        package_name="aura_test_client",
+        service_tag="aura-test",
+    )
+    schema_doc = json.loads(REAL_OPENAPI.read_text(encoding="utf-8"))
+    op_count = 0
+    for path, methods in schema_doc["paths"].items():
+        for m in methods:
+            if m in {"get", "post", "put", "delete", "patch"}:
+                op_count += 1
+    # Each method emits as `    def <name>(self, ...):` — count those.
+    method_def_count = files["client.py"].count("\n    def ") - 4
+    # Subtract 4 for __init__, __enter__, __exit__, _url, _request,
+    # _handle_response (6 private methods on the Client class). The
+    # exact subtraction depends on the template — verify against the
+    # real op count.
+    method_def_count = sum(
+        1 for line in files["client.py"].split("\n")
+        if line.startswith("    def ")
+        and not line.startswith("    def _")
+        and not line.startswith("    def __")
+    )
+    assert method_def_count == op_count, (
+        f"expected {op_count} operation methods, got {method_def_count}"
+    )
+
+
+def test_generated_client_byte_identical_across_runs(tmp_path: Path) -> None:
+    """client.py must be byte-stable — same as models.py — so the
+    CI git-diff drift check works for the new file too."""
+    files1 = generate(
+        openapi_path=REAL_OPENAPI,
+        output_dir=tmp_path / "a",
+        package_name="aura_test_client",
+        service_tag="aura-test",
+    )
+    files2 = generate(
+        openapi_path=REAL_OPENAPI,
+        output_dir=tmp_path / "b",
+        package_name="aura_test_client",
+        service_tag="aura-test",
+    )
+    assert files1["client.py"] == files2["client.py"]
+
+
+def test_generated_init_module_exports_client_class(tmp_path: Path) -> None:
+    """The package __init__.py must surface Client + exceptions so
+    consumers can `from aura_gateway_client import Client`."""
+    files = generate(
+        openapi_path=REAL_OPENAPI,
+        output_dir=tmp_path,
+        package_name="aura_test_client",
+        service_tag="aura-test",
+    )
+    init_src = files["__init__.py"]
+    assert "from .client import" in init_src
+    for sym in ("Client", "APIError", "NotFoundError", "RetryPolicy"):
+        assert sym in init_src
 
 
 def test_readme_embeds_schema_fingerprint(tmp_path: Path) -> None:

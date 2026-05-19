@@ -336,19 +336,29 @@ def _emit_models_module(
 
 
 def _emit_init_module(schema_names: List[str], package_name: str) -> str:
-    """``__init__.py`` re-exports every generated model class so the
-    SDK consumer can ``from aura_gateway_client import Foo``."""
+    """``__init__.py`` re-exports every generated model class plus the
+    Client + exception classes so the SDK consumer can write
+    ``from aura_gateway_client import Client, Foo``."""
     sorted_names = sorted(schema_names)
     lines = [
         '"""',
         f"Public surface of the auto-generated SDK package ``{package_name}``.",
         "",
-        "Re-exports every Pydantic model defined in ``models``.",
-        "Regenerate via ``scripts/generate_sdk.py`` — see that module for the",
-        "CLI; never edit this file by hand.",
+        "Re-exports every Pydantic model from ``models`` plus the typed",
+        "``Client`` + exception classes from ``client``. Regenerate via",
+        "``scripts/generate_sdk.py`` — see that module for the CLI; never",
+        "edit this file by hand.",
         '"""',
         "from __future__ import annotations",
         "",
+        "from .client import (",
+        "    APIError,",
+        "    Client,",
+        "    NotFoundError,",
+        "    RetryPolicy,",
+        "    ServiceUnavailableError,",
+        "    UnauthorizedError,",
+        ")",
         "from .models import (",
     ]
     for n in sorted_names:
@@ -356,11 +366,430 @@ def _emit_init_module(schema_names: List[str], package_name: str) -> str:
     lines.append(")")
     lines.append("")
     lines.append("__all__ = [")
+    # Client + exceptions first.
+    for sym in (
+        "APIError", "Client", "NotFoundError", "RetryPolicy",
+        "ServiceUnavailableError", "UnauthorizedError",
+    ):
+        lines.append(f'    "{sym}",')
     for n in sorted_names:
         lines.append(f'    "{n}",')
     lines.append("]")
     lines.append("")
     return "\n".join(lines)
+
+
+# ── Operation method emission (Sprint 21b) ───────────────────────────
+
+
+def _shorten_operation_id(op_id: str) -> str:
+    """Translate a FastAPI-style operationId into a clean Python method name.
+
+    FastAPI auto-generates verbose IDs like
+    ``chat_endpoint_api_v1_chat_post`` or
+    ``approve_job_api_v1_jobs__job_id__approve_post``. The leading
+    segment before ``_api_v1_`` is the descriptive name we want;
+    everything after is path-and-verb noise. For non-prefixed
+    operations like ``health_health_get`` we strip the trailing
+    HTTP-verb segment and any duplicate path-name suffix.
+    """
+    import re as _re
+    if "_api_v1_" in op_id:
+        return op_id.split("_api_v1_", 1)[0]
+    # No /api/v1/ prefix — strip trailing verb segment first.
+    short = _re.sub(r"_(get|post|put|delete|patch)$", "", op_id)
+    parts = short.split("_")
+    # Collapse trailing duplicate: `health_health` → `health`.
+    if len(parts) >= 2 and parts[-1] == parts[-2]:
+        short = "_".join(parts[:-1])
+    return short
+
+
+def _python_type_for_response(
+    response_schema: Dict[str, Any], components: Dict[str, Any],
+) -> Tuple[str, Optional[str]]:
+    """Determine the Python return type for an operation.
+
+    Returns ``(return_type_expr, model_name_or_None)``.
+
+    * If the response schema is a ``$ref`` to a component model, the
+      return type is that model and the method body parses via
+      ``Model.model_validate(...)`` so the caller gets a typed
+      instance.
+    * For anything else (untyped inline schema, no schema, anyOf, etc.)
+      we return ``Dict[str, Any]`` — caller deals with the raw dict.
+
+    The conservative choice here mirrors Sprint 21a's fallback for
+    inline object schemas: type narrowing only when we have a clear
+    component reference. Sprint 21c can extend to handle inline
+    schemas + anyOf'd responses.
+    """
+    if not response_schema:
+        return ("Dict[str, Any]", None)
+    if "$ref" in response_schema:
+        # "#/components/schemas/Foo" → "Foo"
+        name = response_schema["$ref"].rsplit("/", 1)[-1]
+        if name in components:
+            return (f'"{name}"', name)
+    return ("Dict[str, Any]", None)
+
+
+def _emit_one_operation(
+    method_name: str,
+    http_method: str,
+    path: str,
+    operation: Dict[str, Any],
+    components: Dict[str, Any],
+) -> str:
+    """Render one operation as a sync method on the Client class.
+
+    Argument order convention:
+        1. Path parameters (positional, required)
+        2. Body (keyword, required if requestBody present)
+        3. Query parameters (keyword, optional with None default)
+
+    The method body uses the private ``_request`` helper which
+    dispatches to httpx with retry policy for GETs and structured
+    error translation for any 4xx/5xx.
+    """
+    summary = operation.get("summary", "").strip()
+    params: List[Dict[str, Any]] = operation.get("parameters", []) or []
+    path_params = [p for p in params if p.get("in") == "path"]
+    query_params = [p for p in params if p.get("in") == "query"]
+
+    # Compose argument list.
+    args: List[str] = ["self"]
+    body_arg: Optional[str] = None
+    request_body = operation.get("requestBody")
+    body_model: Optional[str] = None
+    if request_body:
+        body_schema = (
+            request_body.get("content", {}).get("application/json", {}).get("schema", {})
+        )
+        if "$ref" in body_schema:
+            body_model = body_schema["$ref"].rsplit("/", 1)[-1]
+            body_arg = f'body: "{body_model}"'
+        else:
+            body_arg = "body: Dict[str, Any]"
+
+    for p in path_params:
+        p_name = _sanitize_field_name(p["name"])
+        p_schema = p.get("schema", {})
+        py_type = _python_type_for(p_schema)
+        args.append(f"{p_name}: {py_type}")
+
+    if body_arg:
+        args.append(body_arg)
+
+    for p in query_params:
+        p_name = _sanitize_field_name(p["name"])
+        p_schema = p.get("schema", {})
+        py_type = _python_type_for(p_schema)
+        # All query params optional with None default.
+        if not py_type.startswith("Optional["):
+            py_type = f"Optional[{py_type}]"
+        args.append(f"{p_name}: {py_type} = None")
+
+    # Determine return type from the 200 / 201 response schema.
+    responses = operation.get("responses", {}) or {}
+    success_resp = responses.get("200") or responses.get("201") or {}
+    success_schema = (
+        success_resp.get("content", {}).get("application/json", {}).get("schema", {})
+    )
+    return_type, return_model = _python_type_for_response(success_schema, components)
+
+    # Build the method source.
+    sig = f"    def {method_name}({', '.join(args)}) -> {return_type}:"
+    lines: List[str] = [sig]
+
+    # Docstring with summary if present.
+    if summary:
+        lines.append(f'        """{summary}"""')
+
+    # Format the URL path. Path params are sanitised in the
+    # signature but the URL uses the original spec name.
+    path_fmt_args = []
+    for p in path_params:
+        original = p["name"]
+        sanitised = _sanitize_field_name(original)
+        path_fmt_args.append(f'{original}={sanitised}')
+    if path_fmt_args:
+        lines.append(f'        url = f"{path}".format({", ".join(path_fmt_args)})')
+    else:
+        lines.append(f'        url = "{path}"')
+
+    # Build query params dict, omitting None values.
+    if query_params:
+        lines.append("        params = {")
+        for p in query_params:
+            sanitised = _sanitize_field_name(p["name"])
+            lines.append(f'            "{p["name"]}": {sanitised},')
+        lines.append("        }")
+        lines.append("        params = {k: v for k, v in params.items() if v is not None}")
+    else:
+        lines.append("        params = None")
+
+    # Body — pass model.model_dump or raw dict.
+    if body_arg:
+        if body_model:
+            lines.append("        json_body = body.model_dump(mode='json') if hasattr(body, 'model_dump') else body")
+        else:
+            lines.append("        json_body = body")
+    else:
+        lines.append("        json_body = None")
+
+    # Dispatch to httpx.
+    lines.append(
+        f'        response = self._request("{http_method.upper()}", url, params=params, json=json_body)'
+    )
+
+    # Return: parse via model or raw dict.
+    if return_model:
+        lines.append(
+            f'        from .models import {return_model}'
+        )
+        lines.append(f"        return {return_model}.model_validate(response)")
+    else:
+        lines.append("        return response")
+
+    lines.append("")
+    return "\n".join(lines)
+
+
+def _emit_client_module(
+    openapi_doc: Dict[str, Any], generator_signature: str, package_name: str,
+) -> str:
+    """Render the full client.py with all operation methods.
+
+    The Client class has:
+        * Constructor: base_url, prefix, api_key, timeout, retry
+        * Context-manager support (__enter__ / __exit__)
+        * Private _request() that wraps httpx with retry + error translation
+        * One typed method per OpenAPI operation
+    """
+    components: Dict[str, Any] = (
+        openapi_doc.get("components", {}).get("schemas", {}) or {}
+    )
+    paths: Dict[str, Any] = openapi_doc.get("paths", {}) or {}
+
+    # Collect (method_name, http_method, path, operation) tuples
+    # in a deterministic order: sort by method_name so the generated
+    # output is byte-stable across runs.
+    method_specs: List[Tuple[str, str, str, Dict[str, Any]]] = []
+    for path, methods in paths.items():
+        for http_method, op in methods.items():
+            if http_method not in {"get", "post", "put", "delete", "patch"}:
+                continue
+            op_id = op.get("operationId") or f"{http_method}_{path}"
+            method_name = _shorten_operation_id(op_id)
+            method_specs.append((method_name, http_method, path, op))
+
+    method_specs.sort(key=lambda t: (t[0], t[1], t[2]))
+
+    # Models referenced as return types — needed for the import block.
+    referenced_models: set = set()
+    for _, _, _, op in method_specs:
+        resp = (op.get("responses", {}) or {}).get("200") or (
+            op.get("responses", {}) or {}
+        ).get("201") or {}
+        schema = (
+            resp.get("content", {}).get("application/json", {}).get("schema", {})
+        )
+        if "$ref" in schema:
+            referenced_models.add(schema["$ref"].rsplit("/", 1)[-1])
+        body = op.get("requestBody")
+        if body:
+            body_schema = (
+                body.get("content", {}).get("application/json", {}).get("schema", {})
+            )
+            if "$ref" in body_schema:
+                referenced_models.add(body_schema["$ref"].rsplit("/", 1)[-1])
+
+    header = [
+        '"""',
+        "Auto-generated typed Client — DO NOT EDIT BY HAND.",
+        "",
+        "Regenerate with:",
+        "",
+        "    python scripts/generate_sdk.py \\",
+        f"        --openapi aurabackend/openapi.json \\",
+        f"        --output sdk_clients/{package_name} \\",
+        f"        --package-name {package_name}",
+        "",
+        f"Source schema fingerprint: {generator_signature}",
+        '"""',
+        "from __future__ import annotations",
+        "",
+        "from dataclasses import dataclass",
+        "from typing import Any, Dict, Iterable, List, Literal, Optional, Tuple, Union",
+        "",
+        "import httpx",
+        "",
+        "",
+        "# ── Exceptions ────────────────────────────────────────────────────────",
+        "",
+        "class APIError(RuntimeError):",
+        '    """Base class for any HTTP-level error from the service."""',
+        "",
+        "    def __init__(",
+        "        self, message: str, *,",
+        "        status_code: Optional[int] = None,",
+        "        body: Optional[str] = None,",
+        "    ) -> None:",
+        "        super().__init__(message)",
+        "        self.status_code = status_code",
+        "        self.body = body",
+        "",
+        "",
+        "class NotFoundError(APIError):",
+        '    """404 — resource not found."""',
+        "",
+        "",
+        "class UnauthorizedError(APIError):",
+        '    """401 / 403 — auth required or denied."""',
+        "",
+        "",
+        "class ServiceUnavailableError(APIError):",
+        '    """503 — service degraded; caller may retry after backoff."""',
+        "",
+        "",
+        "# ── Retry policy ──────────────────────────────────────────────────────",
+        "",
+        "@dataclass",
+        "class RetryPolicy:",
+        '    """Bounded retry for idempotent GETs only.',
+        "",
+        "    Three attempts over ~3 seconds with exponential backoff.",
+        "    Retries fire on transient 429 / 503 responses; never on 4xx",
+        "    semantics or network errors that the caller should see.",
+        '    """',
+        "    max_attempts: int = 3",
+        "    initial_delay_s: float = 0.3",
+        "    backoff_factor: float = 2.0",
+        "    retryable_statuses: Tuple[int, ...] = (429, 503)",
+        "",
+        "",
+        "# ── Client ────────────────────────────────────────────────────────────",
+        "",
+        "class Client:",
+        f'    """Auto-generated typed HTTP client for ``{package_name}``.',
+        "",
+        "    Method-per-operation surface — every public method corresponds to",
+        "    one OpenAPI path × HTTP-method pair. Path parameters are",
+        "    positional; request body and query parameters are keyword. Methods",
+        "    return either a typed Pydantic model (when the OpenAPI 200 response",
+        "    references a component schema) or a plain ``Dict[str, Any]`` for",
+        "    untyped responses.",
+        "",
+        "    See README.md for the regeneration command. Do not edit this file",
+        "    by hand — changes will be overwritten on next regeneration.",
+        '    """',
+        "",
+        "    def __init__(",
+        "        self,",
+        '        base_url: str = "http://localhost:8000",',
+        "        *,",
+        '        prefix: str = "",',
+        "        api_key: Optional[str] = None,",
+        "        timeout: Union[float, httpx.Timeout] = 30.0,",
+        "        retry: Optional[RetryPolicy] = None,",
+        "        client: Optional[httpx.Client] = None,",
+        "    ) -> None:",
+        '        self._base_url = base_url.rstrip("/")',
+        '        self._prefix = prefix.rstrip("/") if prefix else ""',
+        "        self._retry = retry or RetryPolicy()",
+        '        headers = {"Accept": "application/json"}',
+        "        if api_key:",
+        '            headers["Authorization"] = f"Bearer {api_key}"',
+        "        self._owns_client = client is None",
+        "        self._http = client or httpx.Client(timeout=timeout, headers=headers)",
+        "        if not self._owns_client:",
+        "            for k, v in headers.items():",
+        "                self._http.headers.setdefault(k, v)",
+        "",
+        '    def __enter__(self) -> "Client":',
+        "        return self",
+        "",
+        "    def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:",
+        "        if self._owns_client:",
+        "            self._http.close()",
+        "",
+        "    def _url(self, path: str) -> str:",
+        '        return f"{self._base_url}{self._prefix}{path}"',
+        "",
+        "    def _request(",
+        "        self, method: str, path: str, *,",
+        "        params: Optional[Dict[str, Any]] = None,",
+        "        json: Any = None,",
+        "    ) -> Any:",
+        '        """Dispatch one HTTP request and translate errors.',
+        "",
+        "        Idempotent GET requests retry on transient (429/503) status",
+        "        codes per ``self._retry``. POST/PUT/DELETE/PATCH never retry —",
+        "        the caller may have produced visible side effects already.",
+        '        """',
+        "        import time",
+        "        attempts = self._retry.max_attempts if method == \"GET\" else 1",
+        "        delay = self._retry.initial_delay_s",
+        "        last_resp: Optional[httpx.Response] = None",
+        "        for attempt in range(attempts):",
+        "            resp = self._http.request(",
+        "                method, self._url(path), params=params, json=json,",
+        "            )",
+        "            if (",
+        "                method == \"GET\"",
+        "                and resp.status_code in self._retry.retryable_statuses",
+        "                and attempt < attempts - 1",
+        "            ):",
+        "                last_resp = resp",
+        "                time.sleep(delay)",
+        "                delay *= self._retry.backoff_factor",
+        "                continue",
+        "            return self._handle_response(resp)",
+        "        # All retries exhausted.",
+        "        assert last_resp is not None",
+        "        return self._handle_response(last_resp)",
+        "",
+        "    @staticmethod",
+        "    def _handle_response(resp: httpx.Response) -> Any:",
+        '        """Translate HTTP status to typed exception or return JSON."""',
+        "        if resp.status_code == 404:",
+        '            raise NotFoundError(',
+        '                f"not found: {resp.url}",',
+        "                status_code=404, body=resp.text,",
+        "            )",
+        "        if resp.status_code in (401, 403):",
+        "            raise UnauthorizedError(",
+        '                f"unauthorized: {resp.url}",',
+        "                status_code=resp.status_code, body=resp.text,",
+        "            )",
+        "        if resp.status_code == 503:",
+        "            raise ServiceUnavailableError(",
+        '                f"service unavailable: {resp.url}",',
+        "                status_code=503, body=resp.text,",
+        "            )",
+        "        if resp.status_code >= 400:",
+        "            raise APIError(",
+        '                f"HTTP {resp.status_code} on {resp.url}",',
+        "                status_code=resp.status_code, body=resp.text,",
+        "            )",
+        "        # 2xx — may have empty body for 204 No Content.",
+        "        if resp.status_code == 204 or not resp.content:",
+        "            return {}",
+        "        return resp.json()",
+        "",
+        "    # ── Operation methods (one per OpenAPI path × method) ─────────────",
+        "",
+    ]
+
+    # Emit operations in sorted order.
+    body_lines: List[str] = []
+    for method_name, http_method, path, operation in method_specs:
+        body_lines.append(_emit_one_operation(
+            method_name, http_method, path, operation, components,
+        ))
+
+    return "\n".join(header) + "\n" + "\n".join(body_lines)
 
 
 def _emit_readme(
@@ -434,6 +863,7 @@ def generate(
     files = {
         "__init__.py": _emit_init_module(list(schemas.keys()), package_name),
         "models.py": _emit_models_module(schemas, fingerprint),
+        "client.py": _emit_client_module(schema_doc, fingerprint, package_name),
         "README.md": _emit_readme(
             package_name, service_tag, len(schemas), fingerprint,
         ),
