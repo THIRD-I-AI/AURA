@@ -175,6 +175,10 @@ class ShareTokenRow(Base):
 
 _engine: Optional[AsyncEngine] = None
 _session_factory: Optional[async_sessionmaker[AsyncSession]] = None
+# Tracks whether the schema has been created in the current engine.
+# Reset when the engine itself is recreated (e.g. in tests via
+# ``reset_all_for_tests`` or a fixture that swaps GATEWAY_DATABASE_URL).
+_schema_initialized: bool = False
 
 
 def database_url() -> str:
@@ -219,28 +223,41 @@ def get_session_factory() -> async_sessionmaker[AsyncSession]:
 async def init_database() -> None:
     """Create all tables on first run. Idempotent.
 
-    Called from the gateway's FastAPI lifespan. Production deployments
-    should run Alembic migrations instead — ``create_all`` is a dev
-    fallback to keep the test loop simple."""
+    Called from the gateway's FastAPI lifespan and lazily from
+    ``session_scope`` on first use so test contexts that bypass the
+    lifespan (e.g. unit tests that import a router directly) still
+    get a working DB. Production deployments should run Alembic
+    migrations instead — ``create_all`` is the dev / test fallback."""
+    global _schema_initialized
     engine = get_engine()
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+    _schema_initialized = True
     logger.info("api_gateway persistence ready (url=%s)", database_url())
 
 
 async def close_database() -> None:
     """Dispose the engine on shutdown."""
-    global _engine, _session_factory
+    global _engine, _session_factory, _schema_initialized
     if _engine is not None:
         await _engine.dispose()
         _engine = None
         _session_factory = None
+        _schema_initialized = False
 
 
 @asynccontextmanager
 async def session_scope() -> AsyncIterator[AsyncSession]:
     """Yield a session inside a transaction. Commits on success,
-    rolls back on exception."""
+    rolls back on exception.
+
+    Lazily initialises the schema on first call — fixes the test
+    failure mode where unit tests import a router but don't run the
+    lifespan, so the persistence tables never get created. Idempotent
+    via the ``_schema_initialized`` flag."""
+    global _schema_initialized
+    if not _schema_initialized:
+        await init_database()
     factory = get_session_factory()
     async with factory() as session:
         try:
@@ -558,10 +575,12 @@ async def reset_all_for_tests() -> None:
     """Drop + recreate every gateway table. Used by tests that need a
     fresh slate. NEVER call this from production code — it nukes user
     data."""
+    global _schema_initialized
     engine = get_engine()
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.drop_all)
         await conn.run_sync(Base.metadata.create_all)
+    _schema_initialized = True
 
 
 __all__ = [
