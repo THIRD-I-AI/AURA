@@ -33,7 +33,20 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from counterfactual_service.tmle import run_tmle_ate
+# sklearn is NOT in aurabackend/requirements.txt — only in
+# requirements-causal.txt (transitively via econml). The base backend
+# CI lane does NOT install it, so importing ``counterfactual_service.tmle``
+# (which imports sklearn at module load) would fail collection. Gate
+# the whole module on sklearn availability.
+#
+# The eval-gate CI lane installs requirements-causal.txt and runs
+# ``test_counterfactual_*.py`` end-to-end — that's where these tests
+# actually execute. NOT a silent-skip false-green per
+# [[feedback_optional_dep_test_gating]] because the eval-gate lane
+# globs every counterfactual test file.
+pytest.importorskip("sklearn")
+
+from counterfactual_service.tmle import run_tmle_ate  # noqa: E402
 
 # ── Helpers ──────────────────────────────────────────────────────────
 
