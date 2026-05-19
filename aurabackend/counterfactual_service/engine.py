@@ -808,6 +808,104 @@ def _build_causal_model(
 
 # ── Estimator fan-out ─────────────────────────────────────────────────
 
+def _run_one_tmle(
+    df: pd.DataFrame,
+    treatment: InterventionSpec,
+    outcome: OutcomeSpec,
+    dag: dict,
+    seed: int,
+) -> CounterfactualEstimate:
+    """Cross-fitted TMLE for ATE — Sprint S22.
+
+    Pure-NumPy + sklearn implementation in ``tmle.py`` (no econml,
+    no DoWhy). Achieves the semi-parametric efficiency bound that the
+    DR-Learner slots fall short of in finite samples. See the module
+    docstring there for the targeting-step math.
+
+    Determinism: ``run_tmle_ate(seed=seed)`` re-seeds numpy and threads
+    the seed into every stochastic component (KFold, LogisticRegression).
+    LinearRegression is analytic. Same input + same seed → byte-
+    identical output. Layer 10 contract.
+
+    Propensity diagnostics: shaped the same as the LinearDR / ForestDR
+    paths so the operator card renders propensity quantile bars
+    uniformly across DR-class estimators.
+
+    NO conformal_calibration plumbing yet — the TMLE asymptotic CI
+    from the influence-curve variance estimator is the right
+    publication CI here. A future S22.1 can wire conformal as an
+    opt-in override for parity with the DR slots."""
+    t0 = time.time()
+    try:
+        import numpy as np
+
+        from counterfactual_service.tmle import run_tmle_ate
+
+        _seed_numpy(seed)
+
+        # Same shape as the LinearDR / ForestDR feature build: binarise
+        # T against treatment.actual, use treatment parents from the DAG
+        # as confounders, fall back to a synthetic 1-col matrix when
+        # there are none.
+        T_bin = (df[treatment.column] == treatment.actual).astype(int).to_numpy()
+        Y = df[outcome.column].to_numpy(dtype=float)
+
+        treatment_parents = sorted({
+            src for src, dst in dag.get("edges", [])
+            if dst == treatment.column
+            and src != outcome.column
+            and src in df.columns
+        })
+        if treatment_parents:
+            X = df[treatment_parents].to_numpy(dtype=float)
+        else:
+            # No confounders declared — fit on a constant column so
+            # the propensity model degenerates to the marginal P(T=1)
+            # and TMLE reduces to a Hajek-style estimator. Surfaces
+            # an estimate rather than failing on edge-case DAGs.
+            X = np.ones((len(df), 1), dtype=float)
+
+        result = run_tmle_ate(Y=Y, T=T_bin, X=X, seed=seed)
+
+        if not (
+            np.isfinite(result["point"])
+            and np.isfinite(result["ci_lower"])
+            and np.isfinite(result["ci_upper"])
+        ):
+            raise ValueError(
+                f"TMLE produced non-finite output (point={result['point']}, "
+                f"ci=[{result['ci_lower']}, {result['ci_upper']}])"
+            )
+
+        propensity_diag = PropensityDiagnostics(
+            quantiles=result["g_quantiles"],
+            min=result["g_min"],
+            max=result["g_max"],
+            mean=result["g_mean"],
+            n_extreme=result["g_n_extreme"],
+            n_total=result["n_samples"],
+        )
+
+        return CounterfactualEstimate(
+            method="tmle",
+            point=result["point"],
+            ci_lower=result["ci_lower"],
+            ci_upper=result["ci_upper"],
+            n_samples=result["n_samples"],
+            elapsed_ms=(time.time() - t0) * 1000,
+            propensity_diagnostics=propensity_diag,
+        )
+    except Exception as exc:
+        logger.warning("TMLE failed: %s", exc)
+        return CounterfactualEstimate(
+            method="tmle",
+            point=0.0, ci_lower=0.0, ci_upper=0.0,
+            n_samples=len(df),
+            elapsed_ms=(time.time() - t0) * 1000,
+            error=f"{type(exc).__name__}: {exc}",
+        )
+
+
 def _run_one_estimator(
     method_key: EstimatorMethod,
     df: pd.DataFrame,
@@ -843,6 +941,13 @@ def _run_one_estimator(
             n_samples=len(df), elapsed_ms=0.0,
             error="econml not installed — forest_dr unavailable",
         )
+    # Sprint S22 dispatch: ``tmle`` is opt-in like forest_dr. NO econml
+    # dependency — pure sklearn + numpy — so the slot is always
+    # available when sklearn is installed (it already is, every DR
+    # path depends on it). Achieves the semi-parametric efficiency
+    # bound that DR-Learner falls short of in finite samples.
+    if method_key == "tmle":
+        return _run_one_tmle(df, treatment, outcome, dag, seed)
 
     t0 = time.time()
     try:
