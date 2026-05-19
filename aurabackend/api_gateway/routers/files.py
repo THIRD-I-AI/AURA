@@ -153,6 +153,20 @@ async def upload_universal(
                 "file_metadata cache dispatch failed (non-fatal): %s", _meta_exc,
             )
 
+        # Sprint P-2b: schema context cache — rebuilds gateway_schema_context
+        # with full LLM enrichment so future query executions read the
+        # cached context instead of running LLM inference inline. Same
+        # best-effort, non-blocking pattern as the file-metadata hook above.
+        try:
+            import asyncio as _asyncio
+
+            from api_gateway.persistence import refresh_schema_context
+            _asyncio.create_task(refresh_schema_context([upload_dir]))
+        except Exception as _ctx_exc:
+            logger.warning(
+                "schema_context rebuild dispatch failed (non-fatal): %s", _ctx_exc,
+            )
+
         await streaming_manager.publish_complete(TOPIC_UPLOAD, upload_id, result)
         return result
     except Exception as e:

@@ -230,7 +230,20 @@ async def execute_for_chat(req: _ChatExecuteRequest):
         ]
 
         con = duckdb.connect(":memory:")
-        await build_schema_context_cached(con, upload_dirs, use_llm=True)
+        # Sprint P-2b: load files into DuckDB without LLM inference so
+        # we never block a query on a potentially slow LLM call. The
+        # enriched context (with use_llm=True) is built in a background
+        # task after upload and persisted in gateway_schema_context; if
+        # no cached context exists yet we kick off a rebuild here.
+        await build_schema_context_cached(con, upload_dirs, use_llm=False)
+        from api_gateway import persistence as _gw_persistence
+        _fp = _gw_persistence.compute_schema_fingerprint(
+            [str(d) for d in upload_dirs]
+        )
+        if _fp and not await _gw_persistence.get_schema_context(_fp):
+            asyncio.create_task(
+                _gw_persistence.refresh_schema_context([str(d) for d in upload_dirs])
+            )
 
         def _run_sql() -> tuple[list[str], list[tuple]]:
             cur = con.execute(sql)

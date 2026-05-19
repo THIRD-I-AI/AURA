@@ -53,6 +53,15 @@ async def _file_metadata_refresh_loop(stop_event: asyncio.Event) -> None:
                 logger.debug("file_metadata refresh: %s", stats)
         except Exception as exc:
             logger.debug("file_metadata refresh tick failed: %s", exc)
+        # Sprint P-2b: keep schema context in sync with the upload dir.
+        # Only rebuilds when the fingerprint (dir × file × mtime hash)
+        # differs from what's cached — idempotent on a quiet dir.
+        try:
+            fp = persistence.compute_schema_fingerprint([str(upload_dir)])
+            if fp and not await persistence.get_schema_context(fp):
+                await persistence.refresh_schema_context([str(upload_dir)])
+        except Exception as exc:
+            logger.debug("schema_context refresh tick failed: %s", exc)
         try:
             await asyncio.wait_for(
                 stop_event.wait(),

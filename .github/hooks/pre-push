@@ -1,0 +1,22 @@
+#!/bin/sh
+# Pre-push hook: runs tests and type-check before any push.
+# Install with: .\scripts\install-hooks.ps1
+
+set -e
+
+BRANCH=$(git rev-parse --abbrev-ref HEAD)
+
+echo "==> pre-push: branch '$BRANCH'"
+
+if [ "$BRANCH" = "main" ] || [ "$BRANCH" = "master" ]; then
+  echo "ERROR: Direct push to '$BRANCH' is not allowed. Open a PR from a feature branch."
+  exit 1
+fi
+
+echo "==> Running: make test"
+make test
+
+echo "==> Running: make frontend-typecheck"
+make frontend-typecheck
+
+echo "==> All checks passed."
