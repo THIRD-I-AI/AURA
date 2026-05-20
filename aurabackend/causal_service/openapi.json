@@ -1,0 +1,425 @@
+{
+  "components": {
+    "schemas": {
+      "Attribution": {
+        "additionalProperties": false,
+        "properties": {
+          "cause": {
+            "title": "Cause",
+            "type": "string"
+          },
+          "confidence": {
+            "default": 0.0,
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Confidence",
+            "type": "number"
+          },
+          "direction": {
+            "default": "unknown",
+            "description": "'positive', 'negative', or 'unknown'.",
+            "title": "Direction",
+            "type": "string"
+          },
+          "score": {
+            "description": "Mean attribution score (gcm) or |partial corr| (fallback).",
+            "title": "Score",
+            "type": "number"
+          }
+        },
+        "required": [
+          "cause",
+          "score"
+        ],
+        "title": "Attribution",
+        "type": "object"
+      },
+      "CausalDiscoverRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "anomaly_data": {
+            "$ref": "#/components/schemas/DataSource",
+            "description": "The anomalous batch to attribute."
+          },
+          "candidate_causes": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Restrict candidate cause columns. If omitted, every non-target numeric column in the training set is used.",
+            "title": "Candidate Causes"
+          },
+          "causal_graph_edges": {
+            "anyOf": [
+              {
+                "items": {
+                  "maxItems": 2,
+                  "minItems": 2,
+                  "prefixItems": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "string"
+                    }
+                  ],
+                  "type": "array"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Optional prior DAG as a list of (parent, child) edges. When omitted, a fully-connected candidate\u2192target graph is used.",
+            "title": "Causal Graph Edges"
+          },
+          "enforce_stationarity": {
+            "default": true,
+            "description": "When true (default) and method resolves to 'gcm', the service runs an ADF test + split-mean drift check on the target column over the training window. If the training slice spans a regime change, the request is refused instead of returning misleading attributions. Set false to override (e.g. for synthetic regression tests).",
+            "title": "Enforce Stationarity",
+            "type": "boolean"
+          },
+          "method": {
+            "default": "auto",
+            "description": "'auto' (DoWhy gcm if available, else correlation), 'gcm' (force DoWhy), or 'correlation' (skip DoWhy).",
+            "title": "Method",
+            "type": "string"
+          },
+          "target_metric": {
+            "description": "Column whose anomaly we want to attribute.",
+            "title": "Target Metric",
+            "type": "string"
+          },
+          "top_k": {
+            "default": 5,
+            "maximum": 50.0,
+            "minimum": 1.0,
+            "title": "Top K",
+            "type": "integer"
+          },
+          "training_data": {
+            "$ref": "#/components/schemas/DataSource",
+            "description": "Historical data used to fit the SCM."
+          }
+        },
+        "required": [
+          "target_metric",
+          "training_data",
+          "anomaly_data"
+        ],
+        "title": "CausalDiscoverRequest",
+        "type": "object"
+      },
+      "CausalDiscoverResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "anomaly_count": {
+            "title": "Anomaly Count",
+            "type": "integer"
+          },
+          "attributions": {
+            "items": {
+              "$ref": "#/components/schemas/Attribution"
+            },
+            "title": "Attributions",
+            "type": "array"
+          },
+          "method_used": {
+            "title": "Method Used",
+            "type": "string"
+          },
+          "sample_count": {
+            "title": "Sample Count",
+            "type": "integer"
+          },
+          "stationarity": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/StationarityVerdict"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Populated when the gcm engine ran the stationarity guardrail. Absent for the correlation engine (which doesn't require stationarity to produce a valid result)."
+          },
+          "summary": {
+            "title": "Summary",
+            "type": "string"
+          },
+          "target_metric": {
+            "title": "Target Metric",
+            "type": "string"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Warnings",
+            "type": "array"
+          }
+        },
+        "required": [
+          "target_metric",
+          "method_used",
+          "sample_count",
+          "anomaly_count",
+          "attributions",
+          "summary"
+        ],
+        "title": "CausalDiscoverResponse",
+        "type": "object"
+      },
+      "DataSource": {
+        "additionalProperties": false,
+        "description": "Either inline rows OR a pointer to a DuckDB table (mutually exclusive).",
+        "properties": {
+          "duckdb_path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Duckdb Path"
+          },
+          "duckdb_table": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Duckdb Table"
+          },
+          "limit": {
+            "anyOf": [
+              {
+                "maximum": 500000.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": 10000,
+            "title": "Limit"
+          },
+          "rows": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rows"
+          },
+          "where": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Where"
+          }
+        },
+        "title": "DataSource",
+        "type": "object"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "title": "Detail",
+            "type": "array"
+          }
+        },
+        "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "StationarityVerdict": {
+        "additionalProperties": false,
+        "properties": {
+          "adf_p_value": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Adf P Value"
+          },
+          "reasons": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Reasons",
+            "type": "array"
+          },
+          "split_drift_sigma": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Split Drift Sigma"
+          },
+          "stationary": {
+            "title": "Stationary",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "stationary"
+        ],
+        "title": "StationarityVerdict",
+        "type": "object"
+      },
+      "ValidationError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "title": "Location",
+            "type": "array"
+          },
+          "msg": {
+            "title": "Message",
+            "type": "string"
+          },
+          "type": {
+            "title": "Error Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError",
+        "type": "object"
+      }
+    }
+  },
+  "info": {
+    "description": "Root-cause attribution for anomalous metrics using DoWhy's Structural Causal Models (gcm.attribute_anomalies). Falls back to partial-correlation ranking when DoWhy is unavailable.",
+    "title": "AURA Causal Discovery Service",
+    "version": "2.0.0"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/causal/discover": {
+      "post": {
+        "operationId": "causal_discover_causal_discover_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CausalDiscoverRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CausalDiscoverResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Causal Discover"
+      }
+    },
+    "/causal/info": {
+      "get": {
+        "description": "Diagnostic \u2014 which engines + guardrails are live in this deployment.",
+        "operationId": "causal_info_causal_info_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Causal Info Causal Info Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Causal Info"
+      }
+    },
+    "/health": {
+      "get": {
+        "operationId": "health_health_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Health"
+      }
+    }
+  }
+}

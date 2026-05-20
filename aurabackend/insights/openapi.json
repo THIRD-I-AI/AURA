@@ -1,0 +1,358 @@
+{
+  "components": {
+    "schemas": {
+      "AnalyzeRequest": {
+        "description": "Request to analyze results",
+        "properties": {
+          "column_profiles": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Optional column metadata and profiles",
+            "title": "Column Profiles"
+          },
+          "query": {
+            "description": "The SQL query that produced the results",
+            "title": "Query",
+            "type": "string"
+          },
+          "results": {
+            "description": "Query result rows",
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Results",
+            "type": "array"
+          }
+        },
+        "required": [
+          "query",
+          "results"
+        ],
+        "title": "AnalyzeRequest",
+        "type": "object"
+      },
+      "AnalyzeResponse": {
+        "description": "Response with insights",
+        "properties": {
+          "chart_suggestions": {
+            "description": "Suggested chart types and configurations",
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Chart Suggestions",
+            "type": "array"
+          },
+          "column_count": {
+            "description": "Number of columns",
+            "title": "Column Count",
+            "type": "integer"
+          },
+          "insights": {
+            "description": "Generated insights",
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Insights",
+            "type": "array"
+          },
+          "narrative": {
+            "description": "Natural language summary",
+            "title": "Narrative",
+            "type": "string"
+          },
+          "row_count": {
+            "description": "Number of rows analyzed",
+            "title": "Row Count",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "insights",
+          "chart_suggestions",
+          "narrative",
+          "row_count",
+          "column_count"
+        ],
+        "title": "AnalyzeResponse",
+        "type": "object"
+      },
+      "ChartSuggestionRequest": {
+        "description": "Request chart suggestions",
+        "properties": {
+          "columns": {
+            "description": "Available columns",
+            "items": {
+              "type": "string"
+            },
+            "title": "Columns",
+            "type": "array"
+          },
+          "data_sample": {
+            "description": "Sample of data for analysis",
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Data Sample",
+            "type": "array"
+          },
+          "query": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Original query context",
+            "title": "Query"
+          }
+        },
+        "required": [
+          "columns",
+          "data_sample"
+        ],
+        "title": "ChartSuggestionRequest",
+        "type": "object"
+      },
+      "ChartSuggestionResponse": {
+        "description": "Suggested charts",
+        "properties": {
+          "suggestions": {
+            "description": "List of suggested chart types with configurations",
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Suggestions",
+            "type": "array"
+          }
+        },
+        "required": [
+          "suggestions"
+        ],
+        "title": "ChartSuggestionResponse",
+        "type": "object"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "title": "Detail",
+            "type": "array"
+          }
+        },
+        "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "RecommendIndexesRequest": {
+        "description": "Request index recommendations",
+        "properties": {
+          "query_patterns": {
+            "description": "Common query patterns run against this table",
+            "items": {
+              "type": "string"
+            },
+            "title": "Query Patterns",
+            "type": "array"
+          },
+          "table": {
+            "description": "Table name to analyze",
+            "title": "Table",
+            "type": "string"
+          }
+        },
+        "required": [
+          "table"
+        ],
+        "title": "RecommendIndexesRequest",
+        "type": "object"
+      },
+      "ValidationError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "title": "Location",
+            "type": "array"
+          },
+          "msg": {
+            "title": "Message",
+            "type": "string"
+          },
+          "type": {
+            "title": "Error Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError",
+        "type": "object"
+      }
+    }
+  },
+  "info": {
+    "description": "Auto-generates insights and visualizations from query results",
+    "title": "AURA Insights Service",
+    "version": "2.0.0"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/analyze": {
+      "post": {
+        "description": "Analyze query results and generate insights",
+        "operationId": "analyze_results_analyze_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AnalyzeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AnalyzeResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Analyze Results"
+      }
+    },
+    "/chart-suggestions": {
+      "post": {
+        "description": "Suggest appropriate chart types for the data",
+        "operationId": "suggest_charts_chart_suggestions_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChartSuggestionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChartSuggestionResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Suggest Charts"
+      }
+    },
+    "/health": {
+      "get": {
+        "operationId": "health_health_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Health"
+      }
+    },
+    "/recommend-indexes": {
+      "post": {
+        "description": "Recommend indexes for a table based on query patterns.\n\nUsed by the agentic DE framework's optimization agent.\nReturns heuristic-based index suggestions.",
+        "operationId": "recommend_indexes_recommend_indexes_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RecommendIndexesRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Recommend Indexes"
+      }
+    }
+  }
+}

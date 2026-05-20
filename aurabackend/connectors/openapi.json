@@ -1,0 +1,759 @@
+{
+  "components": {
+    "schemas": {
+      "ConnectorTestRequest": {
+        "description": "Request to test a connector",
+        "properties": {
+          "config": {
+            "additionalProperties": true,
+            "description": "Connector configuration",
+            "title": "Config",
+            "type": "object"
+          },
+          "connector_type": {
+            "description": "postgresql, mysql, or bigquery",
+            "title": "Connector Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "connector_type",
+          "config"
+        ],
+        "title": "ConnectorTestRequest",
+        "type": "object"
+      },
+      "ConnectorTestResponse": {
+        "description": "Response from connector test",
+        "properties": {
+          "error": {
+            "default": "",
+            "title": "Error",
+            "type": "string"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          },
+          "success": {
+            "title": "Success",
+            "type": "boolean"
+          },
+          "table_count": {
+            "default": 0,
+            "title": "Table Count",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "success",
+          "message"
+        ],
+        "title": "ConnectorTestResponse",
+        "type": "object"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "title": "Detail",
+            "type": "array"
+          }
+        },
+        "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "IngestRequest": {
+        "description": "Request to ingest a file and profile it",
+        "properties": {
+          "file_path": {
+            "description": "Path to the file to ingest",
+            "title": "File Path",
+            "type": "string"
+          }
+        },
+        "required": [
+          "file_path"
+        ],
+        "title": "IngestRequest",
+        "type": "object"
+      },
+      "IntrospectRequest": {
+        "description": "Request to introspect a database schema",
+        "properties": {
+          "config": {
+            "additionalProperties": true,
+            "description": "Connector configuration",
+            "title": "Config",
+            "type": "object"
+          },
+          "connector_type": {
+            "description": "postgresql, mysql, or bigquery",
+            "title": "Connector Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "connector_type"
+        ],
+        "title": "IntrospectRequest",
+        "type": "object"
+      },
+      "QueryRequest": {
+        "description": "Request to execute a SQL query",
+        "properties": {
+          "connection_id": {
+            "default": "default",
+            "description": "Connection identifier",
+            "title": "Connection Id",
+            "type": "string"
+          },
+          "limit": {
+            "default": 1000,
+            "maximum": 100000.0,
+            "minimum": 1.0,
+            "title": "Limit",
+            "type": "integer"
+          },
+          "query": {
+            "description": "SQL query to execute",
+            "title": "Query",
+            "type": "string"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "title": "QueryRequest",
+        "type": "object"
+      },
+      "SpatialQueryRequest": {
+        "properties": {
+          "params": {
+            "items": {},
+            "title": "Params",
+            "type": "array"
+          },
+          "query": {
+            "description": "PostGIS-enabled SQL query",
+            "title": "Query",
+            "type": "string"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "title": "SpatialQueryRequest",
+        "type": "object"
+      },
+      "TableListRequest": {
+        "description": "Request to list tables from a connector",
+        "properties": {
+          "config": {
+            "additionalProperties": true,
+            "title": "Config",
+            "type": "object"
+          },
+          "connector_type": {
+            "title": "Connector Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "connector_type",
+          "config"
+        ],
+        "title": "TableListRequest",
+        "type": "object"
+      },
+      "TableListResponse": {
+        "description": "List of tables from a connector",
+        "properties": {
+          "connector_id": {
+            "title": "Connector Id",
+            "type": "string"
+          },
+          "tables": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Tables",
+            "type": "array"
+          },
+          "total_count": {
+            "title": "Total Count",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "connector_id",
+          "tables",
+          "total_count"
+        ],
+        "title": "TableListResponse",
+        "type": "object"
+      },
+      "ValidationError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "title": "Location",
+            "type": "array"
+          },
+          "msg": {
+            "title": "Message",
+            "type": "string"
+          },
+          "type": {
+            "title": "Error Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError",
+        "type": "object"
+      },
+      "VaultQueryRequest": {
+        "properties": {
+          "limit": {
+            "default": 1000,
+            "maximum": 100000.0,
+            "minimum": 1.0,
+            "title": "Limit",
+            "type": "integer"
+          },
+          "query": {
+            "description": "SQL query to run against the vault",
+            "title": "Query",
+            "type": "string"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "title": "VaultQueryRequest",
+        "type": "object"
+      },
+      "VectorSearchRequest": {
+        "properties": {
+          "column": {
+            "default": "embedding",
+            "title": "Column",
+            "type": "string"
+          },
+          "embedding": {
+            "description": "Query embedding vector",
+            "items": {
+              "type": "number"
+            },
+            "title": "Embedding",
+            "type": "array"
+          },
+          "limit": {
+            "default": 10,
+            "maximum": 1000.0,
+            "minimum": 1.0,
+            "title": "Limit",
+            "type": "integer"
+          },
+          "metric": {
+            "default": "cosine",
+            "description": "cosine or l2",
+            "title": "Metric",
+            "type": "string"
+          },
+          "table": {
+            "default": "image_assets",
+            "description": "Table with embeddings",
+            "title": "Table",
+            "type": "string"
+          }
+        },
+        "required": [
+          "embedding"
+        ],
+        "title": "VectorSearchRequest",
+        "type": "object"
+      }
+    }
+  },
+  "info": {
+    "description": "Database connection and data source management",
+    "title": "AURA Connectors Service",
+    "version": "2.0.0"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/connections/{connection_id}/query": {
+      "post": {
+        "description": "Execute a SQL query against a stored or default connection.\n\nThis is the endpoint the Execution Sandbox proxies to.",
+        "operationId": "execute_query_connections__connection_id__query_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "connection_id",
+            "required": true,
+            "schema": {
+              "title": "Connection Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/QueryRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Execute Query"
+      }
+    },
+    "/connectors/available": {
+      "get": {
+        "description": "List connectors via the central registry. Set\n``?include_unavailable=false`` to hide types whose driver isn't installed.",
+        "operationId": "list_available_connectors_connectors_available_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "include_unavailable",
+            "required": false,
+            "schema": {
+              "default": true,
+              "title": "Include Unavailable",
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Available Connectors"
+      }
+    },
+    "/connectors/registry": {
+      "get": {
+        "description": "Full registry payload including UI field schemas \u2014 same shape as the\ngateway's /connectors/registry, so either endpoint can drive a generic\ncatalog UI.",
+        "operationId": "connectors_registry_connectors_registry_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "include_unavailable",
+            "required": false,
+            "schema": {
+              "default": true,
+              "title": "Include Unavailable",
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Connectors Registry"
+      }
+    },
+    "/health": {
+      "get": {
+        "operationId": "health_health_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Health"
+      }
+    },
+    "/ingest": {
+      "post": {
+        "description": "Ingest a file and return basic profiling information.\n\nUsed by the agentic DE framework to ingest data files.",
+        "operationId": "ingest_file_ingest_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/IngestRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Ingest File"
+      }
+    },
+    "/introspect": {
+      "post": {
+        "description": "Introspect a database and return schema metadata.\n\nUsed by the agentic DE framework to discover tables and columns.",
+        "operationId": "introspect_database_introspect_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/IntrospectRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Introspect Database"
+      }
+    },
+    "/tables": {
+      "post": {
+        "description": "List tables from a connector",
+        "operationId": "list_tables_tables_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TableListRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TableListResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Tables"
+      }
+    },
+    "/test": {
+      "post": {
+        "description": "Test a database connection",
+        "operationId": "test_connector_test_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConnectorTestRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConnectorTestResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Test Connector"
+      }
+    },
+    "/vault/capabilities": {
+      "get": {
+        "description": "Report which data-planes (relational, vector, spatial) are available.",
+        "operationId": "vault_capabilities_vault_capabilities_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Vault Capabilities"
+      }
+    },
+    "/vault/health": {
+      "get": {
+        "description": "Health check for the AURA Vault database.",
+        "operationId": "vault_health_vault_health_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Vault Health"
+      }
+    },
+    "/vault/query": {
+      "post": {
+        "description": "Execute a SQL query against the AURA Vault.",
+        "operationId": "vault_query_vault_query_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VaultQueryRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Vault Query"
+      }
+    },
+    "/vault/spatial-query": {
+      "post": {
+        "description": "Run a spatial/PostGIS query against the vault.",
+        "operationId": "vault_spatial_query_vault_spatial_query_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SpatialQueryRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Vault Spatial Query"
+      }
+    },
+    "/vault/tables": {
+      "get": {
+        "description": "List all tables in the vault.",
+        "operationId": "vault_tables_vault_tables_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Vault Tables"
+      }
+    },
+    "/vault/vector-search": {
+      "post": {
+        "description": "Find nearest neighbours by vector similarity (pgvector).",
+        "operationId": "vault_vector_search_vault_vector_search_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VectorSearchRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Vault Vector Search"
+      }
+    }
+  }
+}
