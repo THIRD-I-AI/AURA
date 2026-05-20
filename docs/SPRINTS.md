@@ -52,7 +52,7 @@ graph TD
         S21a([S21a: OpenAPI → Pydantic models])
         S21b([S21b: Sync Client · 101 methods])
         S21c([S21c: AsyncClient mirror])
-        S21d[/S21d: Multi-service clients<br/>BACKLOG/]
+        S21d([S21d: Multi-service clients])
         S21a --> S21b --> S21c
     end
 
@@ -93,9 +93,9 @@ graph TD
     classDef flight fill:#dae8fc,stroke:#6c8ebf,color:#000
     classDef backlog fill:#fff2cc,stroke:#d6b656,color:#000
     classDef deferred fill:#f5f5f5,stroke:#999,color:#666,stroke-dasharray:5 5
-    class S7,S8,S9,S10,S11,S12,S13,S14,S15,S16,S17,S18,S19,S20a,S20b,S21a,S21b,S21c,SEC,P1d,P2a,S22 done
+    class S7,S8,S9,S10,S11,S12,S13,S14,S15,S16,S17,S18,S19,S20a,S20b,S21a,S21b,S21c,S21d,SEC,P1d,P2a,S22 done
     class P2b,P2c,P3_audit backlog
-    class S18_1,S20_1,S20_2,S21d,S23 deferred
+    class S18_1,S20_1,S20_2,S23 deferred
 ```
 
 **Legend**
@@ -114,7 +114,7 @@ graph TD
 graph LR
     subgraph MOUNI [Mouni - next sprint TBD]
         direction TB
-        M0([S22 merged 2026-05-19<br/>PR #12, f76db51])
+        M0([S22 + S21d merged 2026-05-19<br/>PRs #12 + #13])
         M1[/S23 candidate: E-value<br/>BACKLOG/]
         M0 --> M1
     end
@@ -152,15 +152,15 @@ The two tracks touched different subsystems (Mouni: `counterfactual_service/`; c
 |---|---|---|---|---|
 | **Audit burn-down (P-2b → P-3)** | Collaborator | `feature/audit-burn-down` (TBD) | 2026-05-19 | Close audit findings #3, #4, #5, #6, #8 — see `AUDIT_BURN_DOWN.md` |
 
-Mouni's S22 track merged 2026-05-19 as PR #12 (`f76db51`).
-Collaborator's audit-burn-down track is the only active feature
-branch. No merge conflicts expected when their PR lands —
-non-overlapping subsystems.
+Mouni's S22 (TMLE) and S21d (multi-service SDK codegen) both
+merged as PRs #12 and #13 on 2026-05-19. Collaborator's
+audit-burn-down track is the only active feature branch.
 
 ## Completed (newest first)
 
 | Sprint | Bundle (+ hotfix) | Subsystem | What it ships |
 |---|---|---|---|
+| **S21d** | `1e3c929` + hotfix `a52c3af` → squash-merge `817b75e` (PR #13) | scripts + sdk_clients + 11 service openapi.json | Multi-service SDK codegen — 11 typed clients (causal, code_generation, connectors, dar, database, execution_sandbox, gateway, insights, knowledge_base, metadata_store, orchestration, scheduler) auto-generated from each service's OpenAPI schema. 162 typed methods total. `scripts/regen_all_sdks.py` orchestrator with subprocess-per-service isolation. CI lane regenerates + diffs schemas AND clients. Pillar 5 vision complete. |
 | **S22** | `07794d2` + hotfix `e3d4d2a` → squash-merge `f76db51` (PR #12) | counterfactual_service | Cross-fitted TMLE as 6th estimator slot. Pure NumPy + sklearn (no econml). Closed-form ε targeting via van der Laan & Rubin 2006 identity-link linear submodel; influence-curve CI from the efficient gradient. Layer 19 contract proven: TRUE_EFFECT recovered within MAE ~0.01 on synthetic DGP (target was MAE 0.20). 16 contract tests gated on `pytest.importorskip("sklearn")` so the eval-gate lane runs them via the `test_counterfactual_*.py` glob. First sprint shipped under the two-developer protocol via feature branch + PR. |
 | **P-2a** | `ab25f71` | api_gateway | File metadata cache resolves audit #2. `gateway_file_metadata` table + populate-on-upload + 60s background refresh; `/dashboard/stats` becomes a single SELECT. ~100-1000× p99 dashboard-latency improvement. |
 | **P-1** | `5a03f16` + `9ffd91c` | api_gateway | Migrated `_query_history_store + _saved_queries_store + _share_tokens_store` to SQLAlchemy. Resolves audit #1 + #7. **Lazy-init via `session_scope()`** is the test-friendly pattern; don't break it. |
@@ -199,7 +199,7 @@ Deferred indefinitely:
 - **S18.1** — wire S18 causal-RL primitives into `uasr/mapek_worker.py` live path.
 - **S20.1** — wire S20a streaming primitives into `streaming_engine.py + window_processor.py + backpressure.py`.
 - **S20.2** — wire S20b distributed_queue + advisory locks into `scheduler_service/worker.py`.
-- **S21d** — auto-generate clients for additional services beyond api_gateway.
+- **S21e** — roll the api_gateway client into `regen_all_sdks.py` (currently kept on its own pipeline for historical reasons).
 
 ## How to update this file
 
