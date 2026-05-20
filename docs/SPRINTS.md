@@ -45,7 +45,7 @@ graph TD
         S20a([S20a: ABS + Watermarks + Triggers + PID])
         S20b([S20b: LISTEN/NOTIFY + advisory lock])
         S20_1[/S20.1: Engine wiring<br/>DEFERRED/]
-        S20_2[/S20.2: Worker wiring<br/>DEFERRED/]
+        S20_2([S20.2: Worker wiring])
     end
     subgraph P5 [Pillar 5 · Service Factory]
         direction TB
@@ -93,9 +93,9 @@ graph TD
     classDef flight fill:#dae8fc,stroke:#6c8ebf,color:#000
     classDef backlog fill:#fff2cc,stroke:#d6b656,color:#000
     classDef deferred fill:#f5f5f5,stroke:#999,color:#666,stroke-dasharray:5 5
-    class S7,S8,S9,S10,S11,S12,S13,S14,S15,S16,S17,S18,S19,S20a,S20b,S21a,S21b,S21c,S21d,SEC,P1d,P2a,S22 done
+    class S7,S8,S9,S10,S11,S12,S13,S14,S15,S16,S17,S18,S19,S20a,S20b,S20_2,S21a,S21b,S21c,S21d,SEC,P1d,P2a,S22 done
     class P2b,P2c,P3_audit backlog
-    class S18_1,S20_1,S20_2,S23 deferred
+    class S18_1,S20_1,S23 deferred
 ```
 
 **Legend**
@@ -160,6 +160,7 @@ audit-burn-down track is the only active feature branch.
 
 | Sprint | Bundle (+ hotfix) | Subsystem | What it ships |
 |---|---|---|---|
+| **S20.2** | `bfb31fa` + hotfixes `4b0279e` + `5ce3b38` → squash-merge `fbe5556` (PR #14) | scheduler_service | Wires S20b distributed primitives into live scheduler worker. Auto-detects Postgres → LISTEN/NOTIFY wake + pg_advisory_lock cron-evaluator leader election; SQLite → pure polling fallback (backward-compat unchanged). `scheduler.replicas > 1` finally unblocked. p99 job-start latency drops from 60s (polling) to sub-second (NOTIFY hop). Two hotfixes needed for tz-naive vs tz-aware datetime mismatch: SQLite stores datetimes as strings and is forgiving; Postgres+asyncpg is strict and rejected tz-aware parameters against tz-naive columns. Fix: `.replace(tzinfo=None)` in worker.\_evaluate\_and\_execute + every model `default=` lambda. Lesson: when a Postgres schema uses tz-naive columns, EVERY producer of values (worker reads, model defaults, test fixtures) must strip tzinfo. CI lane runs both test_scheduler_distributed.py (S20b) and test_scheduler_worker_integration.py (S20.2) against postgres:16. |
 | **S21d** | `1e3c929` + hotfix `a52c3af` → squash-merge `817b75e` (PR #13) | scripts + sdk_clients + 11 service openapi.json | Multi-service SDK codegen — 11 typed clients (causal, code_generation, connectors, dar, database, execution_sandbox, gateway, insights, knowledge_base, metadata_store, orchestration, scheduler) auto-generated from each service's OpenAPI schema. 162 typed methods total. `scripts/regen_all_sdks.py` orchestrator with subprocess-per-service isolation. CI lane regenerates + diffs schemas AND clients. Pillar 5 vision complete. |
 | **S22** | `07794d2` + hotfix `e3d4d2a` → squash-merge `f76db51` (PR #12) | counterfactual_service | Cross-fitted TMLE as 6th estimator slot. Pure NumPy + sklearn (no econml). Closed-form ε targeting via van der Laan & Rubin 2006 identity-link linear submodel; influence-curve CI from the efficient gradient. Layer 19 contract proven: TRUE_EFFECT recovered within MAE ~0.01 on synthetic DGP (target was MAE 0.20). 16 contract tests gated on `pytest.importorskip("sklearn")` so the eval-gate lane runs them via the `test_counterfactual_*.py` glob. First sprint shipped under the two-developer protocol via feature branch + PR. |
 | **P-2a** | `ab25f71` | api_gateway | File metadata cache resolves audit #2. `gateway_file_metadata` table + populate-on-upload + 60s background refresh; `/dashboard/stats` becomes a single SELECT. ~100-1000× p99 dashboard-latency improvement. |
@@ -198,7 +199,7 @@ S1-S6 pre-dated this registry; see commit `157b293` and earlier for that history
 Deferred indefinitely:
 - **S18.1** — wire S18 causal-RL primitives into `uasr/mapek_worker.py` live path.
 - **S20.1** — wire S20a streaming primitives into `streaming_engine.py + window_processor.py + backpressure.py`.
-- **S20.2** — wire S20b distributed_queue + advisory locks into `scheduler_service/worker.py`.
+- **S20.2.1** — schema migration to move `ScheduledJob.next_execution_time` (+ other DateTime columns) to `DateTime(timezone=True)` so the `.replace(tzinfo=None)` dance can be dropped.
 - **S21e** — roll the api_gateway client into `regen_all_sdks.py` (currently kept on its own pipeline for historical reasons).
 
 ## How to update this file
