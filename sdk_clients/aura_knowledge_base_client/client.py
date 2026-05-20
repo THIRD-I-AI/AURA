@@ -8,7 +8,7 @@ Regenerate with:
         --output sdk_clients/aura_knowledge_base_client \
         --package-name aura_knowledge_base_client
 
-Source schema fingerprint: 72a8e67f83c8f294
+Source schema fingerprint: bb64cd9af70f8efa
 """
 from __future__ import annotations
 

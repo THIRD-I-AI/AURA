@@ -8,7 +8,7 @@ Regenerate with:
         --output sdk_clients/aura_execution_sandbox_client \
         --package-name aura_execution_sandbox_client
 
-Source schema fingerprint: 6057f39c2db9814b
+Source schema fingerprint: dd430601c82dcf04
 """
 from __future__ import annotations
 

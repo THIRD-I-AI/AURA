@@ -8,7 +8,7 @@ Regenerate with:
         --output sdk_clients/aura_metadata_store_client \
         --package-name aura_metadata_store_client
 
-Source schema fingerprint: 6063dee6c502bf58
+Source schema fingerprint: a6c6bfb395be8d85
 """
 from __future__ import annotations
 

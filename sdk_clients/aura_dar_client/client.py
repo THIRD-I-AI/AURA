@@ -8,7 +8,7 @@ Regenerate with:
         --output sdk_clients/aura_dar_client \
         --package-name aura_dar_client
 
-Source schema fingerprint: 7ab69b05ad120206
+Source schema fingerprint: be8869c15f8f41c4
 """
 from __future__ import annotations
 

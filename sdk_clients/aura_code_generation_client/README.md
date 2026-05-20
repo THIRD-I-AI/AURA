@@ -10,7 +10,7 @@ with httpx) land in Sprint 21b once the model layer is proven.
 ## Schema fingerprint
 
 ```
-731ce0ed0c2c88a6
+62f43ad0dfb81caf
 ```
 
 ## Regenerate

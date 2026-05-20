@@ -8,7 +8,7 @@ Regenerate with:
         --output sdk_clients/aura_scheduler_client \
         --package-name aura_scheduler_client
 
-Source schema fingerprint: 4dd00e39fa97af3b
+Source schema fingerprint: 746a8fd1a630c245
 """
 from __future__ import annotations
 

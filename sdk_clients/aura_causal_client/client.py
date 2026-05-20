@@ -8,7 +8,7 @@ Regenerate with:
         --output sdk_clients/aura_causal_client \
         --package-name aura_causal_client
 
-Source schema fingerprint: ada35ed17c86f9cc
+Source schema fingerprint: 70aa5678bfd8f4f2
 """
 from __future__ import annotations
 

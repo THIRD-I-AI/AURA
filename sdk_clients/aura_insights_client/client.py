@@ -8,7 +8,7 @@ Regenerate with:
         --output sdk_clients/aura_insights_client \
         --package-name aura_insights_client
 
-Source schema fingerprint: 22549c3cfed13f5e
+Source schema fingerprint: 7ab0c21c40fa7f67
 """
 from __future__ import annotations
 

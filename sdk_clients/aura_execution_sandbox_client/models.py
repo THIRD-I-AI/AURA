@@ -8,7 +8,7 @@ Regenerate with:
         --output sdk_clients/aura_gateway_client \
         --package-name aura_gateway_client
 
-Source schema fingerprint: 6057f39c2db9814b
+Source schema fingerprint: dd430601c82dcf04
 """
 from __future__ import annotations
 
@@ -42,4 +42,6 @@ class ValidationError(BaseModel):
     loc: List[Union[str, int]]
     msg: str
     type: str
+    ctx: Optional[Dict[str, Any]] = None
+    input: Optional[Any] = None
 

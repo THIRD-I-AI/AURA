@@ -8,7 +8,7 @@ Regenerate with:
         --output sdk_clients/aura_orchestration_client \
         --package-name aura_orchestration_client
 
-Source schema fingerprint: 63415a368d3e4f8b
+Source schema fingerprint: f769f3228944a322
 """
 from __future__ import annotations
 
