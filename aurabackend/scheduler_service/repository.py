@@ -44,7 +44,13 @@ class SchedulerRepository:
     # ===== Scheduled Jobs =====
 
     async def create_job(self, job_data: Dict[str, Any]) -> ScheduledJob:
-        """Create a new scheduled job"""
+        """Create a new scheduled job.
+
+        Sprint S20.2: after the INSERT commits, fire a NOTIFY on the
+        scheduler_jobs channel so worker replicas wake immediately
+        instead of waiting for the next polling tick. No-op on SQLite
+        (no LISTEN/NOTIFY) — the polling loop is the fallback there.
+        """
         if "id" not in job_data:
             job_data["id"] = str(uuid.uuid4())
 
@@ -53,7 +59,19 @@ class SchedulerRepository:
             session.add(job)
             await session.commit()
             await session.refresh(job)
-            return job
+
+        # Fire-and-forget NOTIFY after the txn commits. Late import
+        # to avoid a circular import (worker.py imports repository).
+        try:
+            from .worker import notify_jobs_changed
+            await notify_jobs_changed(
+                self, kind="job_inserted", job_id=str(job.id),
+            )
+        except Exception:
+            # Already logged inside notify_jobs_changed; never break
+            # the create_job contract on a notify failure.
+            pass
+        return job
 
     async def get_job(self, job_id: str) -> Optional[ScheduledJob]:
         """Get job by ID"""
