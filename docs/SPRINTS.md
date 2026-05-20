@@ -70,7 +70,7 @@ graph TD
 
     %% Analytic depth
     subgraph AD [Analytic Depth]
-        S22{{S22: TMLE 6th estimator}}
+        S22([S22: TMLE 6th estimator])
         S23[/S23: E-value sensitivity<br/>BACKLOG/]
     end
 
@@ -93,8 +93,7 @@ graph TD
     classDef flight fill:#dae8fc,stroke:#6c8ebf,color:#000
     classDef backlog fill:#fff2cc,stroke:#d6b656,color:#000
     classDef deferred fill:#f5f5f5,stroke:#999,color:#666,stroke-dasharray:5 5
-    class S7,S8,S9,S10,S11,S12,S13,S14,S15,S16,S17,S18,S19,S20a,S20b,S21a,S21b,S21c,SEC,P1d,P2a done
-    class S22 flight
+    class S7,S8,S9,S10,S11,S12,S13,S14,S15,S16,S17,S18,S19,S20a,S20b,S21a,S21b,S21c,SEC,P1d,P2a,S22 done
     class P2b,P2c,P3_audit backlog
     class S18_1,S20_1,S20_2,S21d,S23 deferred
 ```
@@ -113,9 +112,11 @@ graph TD
 
 ```mermaid
 graph LR
-    subgraph MOUNI [Mouni on feature/s22-tmle]
+    subgraph MOUNI [Mouni - next sprint TBD]
         direction TB
-        M1([S22: TMLE estimator<br/>Layer 19: MAE ≤ 0.20])
+        M0([S22 merged 2026-05-19<br/>PR #12, f76db51])
+        M1[/S23 candidate: E-value<br/>BACKLOG/]
+        M0 --> M1
     end
     subgraph COLLAB [Collaborator on feature/audit-burn-down]
         direction TB
@@ -132,32 +133,35 @@ graph LR
     end
     SHARED -.->|both load on session start| MOUNI
     SHARED -.->|both load on session start| COLLAB
-    classDef flight fill:#dae8fc,stroke:#6c8ebf,color:#000
+    classDef done fill:#d5e8d4,stroke:#82b366,color:#000
     classDef backlog fill:#fff2cc,stroke:#d6b656,color:#000
+    classDef deferred fill:#f5f5f5,stroke:#999,color:#666,stroke-dasharray:5 5
     classDef shared fill:#f5e1ff,stroke:#9673a6,color:#000
-    class M1 flight
+    class M0 done
+    class M1 deferred
     class C1,C2,C3 backlog
     class D1,D2,D3 shared
 ```
 
-The two tracks touch different subsystems (Mouni: `counterfactual_service/`; collaborator: `api_gateway/` + `safety/`) so merge conflicts are unlikely. PRs land independently into `main`.
+The two tracks touched different subsystems (Mouni: `counterfactual_service/`; collaborator: `api_gateway/` + `safety/`) so merge conflicts were avoided. PRs land independently into `main`.
 
 
 ## In flight (active)
 
 | Sprint | Owner | Branch | Started | Goal |
 |---|---|---|---|---|
-| **S22** | Mouni | `feature/s22-tmle` | 2026-05-19 | TMLE — 6th estimator slot with cross-fitted targeting, MAE 0.20 on synthetic DGP |
 | **Audit burn-down (P-2b → P-3)** | Collaborator | `feature/audit-burn-down` (TBD) | 2026-05-19 | Close audit findings #3, #4, #5, #6, #8 — see `AUDIT_BURN_DOWN.md` |
 
-Both tracks are independent. S22 touches `counterfactual_service/`;
-the audit burn-down touches `api_gateway/`, `safety/`, and
-`connectors/`. No expected merge conflicts.
+Mouni's S22 track merged 2026-05-19 as PR #12 (`f76db51`).
+Collaborator's audit-burn-down track is the only active feature
+branch. No merge conflicts expected when their PR lands —
+non-overlapping subsystems.
 
 ## Completed (newest first)
 
 | Sprint | Bundle (+ hotfix) | Subsystem | What it ships |
 |---|---|---|---|
+| **S22** | `07794d2` + hotfix `e3d4d2a` → squash-merge `f76db51` (PR #12) | counterfactual_service | Cross-fitted TMLE as 6th estimator slot. Pure NumPy + sklearn (no econml). Closed-form ε targeting via van der Laan & Rubin 2006 identity-link linear submodel; influence-curve CI from the efficient gradient. Layer 19 contract proven: TRUE_EFFECT recovered within MAE ~0.01 on synthetic DGP (target was MAE 0.20). 16 contract tests gated on `pytest.importorskip("sklearn")` so the eval-gate lane runs them via the `test_counterfactual_*.py` glob. First sprint shipped under the two-developer protocol via feature branch + PR. |
 | **P-2a** | `ab25f71` | api_gateway | File metadata cache resolves audit #2. `gateway_file_metadata` table + populate-on-upload + 60s background refresh; `/dashboard/stats` becomes a single SELECT. ~100-1000× p99 dashboard-latency improvement. |
 | **P-1** | `5a03f16` + `9ffd91c` | api_gateway | Migrated `_query_history_store + _saved_queries_store + _share_tokens_store` to SQLAlchemy. Resolves audit #1 + #7. **Lazy-init via `session_scope()`** is the test-friendly pattern; don't break it. |
 | **Security** | `5ccaa15` | frontend | 12 Dependabot alerts → 0. axios `^1.16.1` + `overrides` block for 9 transitive deps. |
@@ -189,7 +193,6 @@ S1-S6 pre-dated this registry; see commit `157b293` and earlier for that history
 | **P-2b** | Audit | Collaborator | Schema context cache — audit finding #5. Move `build_schema_context_cached` off the event loop OR pre-compute on upload. |
 | **P-2c** | Audit | Collaborator | Lineage materialised view — audit finding #8. Per-workspace lineage graph derived from `gateway_saved_queries` + `gateway_dashboards`, refreshed on writes. |
 | **P-3** | Audit | Collaborator | sqlglot AST replaces regex query validator + naive cost estimator — audit findings #3 + #4 + #6 (connection pooling can ride along). |
-| **S22** | Analytic depth | Mouni | TMLE estimator. Currently in flight (see In Flight section). |
 | **S23** | Analytic depth | TBD | E-value sensitivity + Cinelli-Hazlett robustness analysis. |
 
 Deferred indefinitely:
