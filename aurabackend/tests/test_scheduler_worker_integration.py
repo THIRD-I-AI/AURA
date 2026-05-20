@@ -109,7 +109,10 @@ async def test_create_job_calls_notify_without_crashing(sqlite_repository) -> No
         "connection_id": "c1",
         "query": "SELECT 1",
         "schedule_type": ScheduleType.ONCE,
-        "next_execution_time": datetime.now(timezone.utc) + timedelta(minutes=1),
+        # Naive UTC — see comment in the Postgres Tier B tests below.
+        "next_execution_time": (
+            datetime.now(timezone.utc) + timedelta(minutes=1)
+        ).replace(tzinfo=None),
         "is_active": True,
     })
     assert job.id == "test_job_1"
@@ -218,7 +221,11 @@ async def test_two_workers_only_fire_each_job_once(pg_repository) -> None:
         "query": "SELECT 1",
         "schedule_type": ScheduleType.ONCE,
         # Make it immediately due:
-        "next_execution_time": datetime.now(timezone.utc) - timedelta(seconds=1),
+        # Naive UTC — `ScheduledJob.next_execution_time` is a tz-naive
+        # column. asyncpg rejects tz-aware datetimes against it.
+        "next_execution_time": (
+            datetime.now(timezone.utc) - timedelta(seconds=1)
+        ).replace(tzinfo=None),
         "is_active": True,
     })
 
@@ -267,7 +274,11 @@ async def test_notify_wake_fires_faster_than_interval(pg_repository) -> None:
             "connection_id": "c1",
             "query": "SELECT 1",
             "schedule_type": ScheduleType.ONCE,
-            "next_execution_time": datetime.now(timezone.utc) - timedelta(seconds=1),
+            # Naive UTC — `ScheduledJob.next_execution_time` is a tz-naive
+        # column. asyncpg rejects tz-aware datetimes against it.
+        "next_execution_time": (
+            datetime.now(timezone.utc) - timedelta(seconds=1)
+        ).replace(tzinfo=None),
             "is_active": True,
         })
         # Worker should pick this up within a couple of seconds, NOT

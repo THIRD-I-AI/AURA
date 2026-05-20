@@ -239,9 +239,22 @@ class SchedulerWorker:
         """The original tick body — pull due jobs, build waves, execute.
 
         Split out from `_check_and_execute_jobs` so the advisory-lock
-        wrapper above is a clean decoration. Unchanged semantics from
-        pre-S20.2."""
-        now = datetime.now(timezone.utc)
+        wrapper above is a clean decoration.
+
+        Note on datetime tz: ``ScheduledJob.next_execution_time`` is a
+        ``DateTime`` column (no ``timezone=True``), so Postgres stores
+        it as TIMESTAMP WITHOUT TIME ZONE. Comparing a tz-aware
+        ``datetime.now(timezone.utc)`` against a naive column raises
+        ``can't subtract offset-naive and offset-aware datetimes`` on
+        the asyncpg driver. We strip tzinfo here so the comparison
+        works on Postgres. SQLite stores datetimes as strings and
+        doesn't care either way — backward-compatible.
+
+        A future schema migration could move ``next_execution_time``
+        to ``DateTime(timezone=True)`` for full tz correctness; until
+        then we treat all timestamps as UTC naive.
+        """
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
         jobs = await self.repository.get_jobs_to_execute(now)
         if not jobs:
             return
