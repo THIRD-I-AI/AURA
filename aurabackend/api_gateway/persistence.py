@@ -941,6 +941,7 @@ async def refresh_schema_context(upload_dirs: List[str]) -> bool:
     def _build() -> Dict[str, Any]:
         try:
             import duckdb as _duckdb
+
             from shared.data_utils import build_schema_context_cached as _bsc
         except ImportError as exc:
             logger.warning("schema_context refresh skipped — missing dep: %s", exc)
