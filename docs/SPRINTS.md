@@ -7,6 +7,142 @@ maintained pre-2026-05-19.
 
 See `CLAUDE.md` for the sprint-numbering convention and commit style.
 
+## Sprint flow + dependencies
+
+```mermaid
+graph TD
+    %% Foundation
+    S7([S7: Foundation<br/>TRAIGA + LangGraph + MCP])
+
+    %% Counterfactual audit engine — Sprints 8 through 16
+    subgraph CF [Counterfactual Audit Engine]
+        direction TB
+        S8([S8: Operator card<br/>4-est × 4-ref fanout])
+        S9([S9: Auditor PDF + ED25519])
+        S10([S10: aura-counterfactual SDK])
+        S11([S11: Determinism + Layer 10])
+        S12([S12: EconML LinearDR])
+        S13([S13: Bulk replay + propensity])
+        S14([S14: Auto-challenge + viz])
+        S15([S15: ForestDR + CATE])
+        S16([S16: Conformal CATE intervals])
+        S8 --> S9 --> S10 --> S11 --> S12 --> S13 --> S14 --> S15 --> S16
+    end
+
+    %% Five enterprise pillars
+    subgraph P2 [Pillar 2 · Multi-Modal Fabric]
+        S17([S17: FAISS + DuckDB spatial])
+    end
+    subgraph P1 [Pillar 1 · Self-Healing UASR]
+        S18([S18: Causal-RL primitives])
+        S18_1[/S18.1: Worker integration<br/>DEFERRED/]
+    end
+    subgraph P3 [Pillar 3 · TRAIGA Governance]
+        S19([S19: Merkle + STH + SDK verify])
+    end
+    subgraph P4 [Pillar 4 · Distributed Streaming Fabric]
+        direction TB
+        S20a([S20a: ABS + Watermarks + Triggers + PID])
+        S20b([S20b: LISTEN/NOTIFY + advisory lock])
+        S20_1[/S20.1: Engine wiring<br/>DEFERRED/]
+        S20_2[/S20.2: Worker wiring<br/>DEFERRED/]
+    end
+    subgraph P5 [Pillar 5 · Service Factory]
+        direction TB
+        S21a([S21a: OpenAPI → Pydantic models])
+        S21b([S21b: Sync Client · 101 methods])
+        S21c([S21c: AsyncClient mirror])
+        S21d[/S21d: Multi-service clients<br/>BACKLOG/]
+        S21a --> S21b --> S21c
+    end
+
+    %% Performance audit burn-down
+    subgraph PERF [Performance Audit Burn-Down]
+        direction TB
+        SEC([Security: 12 Dependabot → 0])
+        P1d([P-1: In-memory → SQLAlchemy<br/>findings #1 + #7])
+        P2a([P-2a: File metadata cache<br/>finding #2])
+        P2b{{P-2b: Schema context cache<br/>finding #5}}
+        P2c{{P-2c: Lineage materialised view<br/>finding #8}}
+        P3_audit{{P-3: sqlglot + pooling<br/>findings #3/#4/#6}}
+        SEC --> P1d --> P2a --> P2b --> P2c --> P3_audit
+    end
+
+    %% Analytic depth
+    subgraph AD [Analytic Depth]
+        S22{{S22: TMLE 6th estimator}}
+        S23[/S23: E-value sensitivity<br/>BACKLOG/]
+    end
+
+    %% Chronological backbone
+    S7 --> S8
+    S16 --> S17 --> S18 --> S19 --> S20a --> S20b --> S21a
+    S21c --> SEC
+    P2a --> S22 --> S23
+
+    %% Deferred wiring (dashed)
+    S18 -.-> S18_1
+    S20a -.-> S20_1
+    S20b -.-> S20_2
+    S21c -.-> S21d
+
+    %% Status legend via fill colors:
+    %% rounded green = shipped, hex blue = in flight,
+    %% hex yellow = backlog open, trapezoid grey = deferred
+    classDef done fill:#d5e8d4,stroke:#82b366,color:#000
+    classDef flight fill:#dae8fc,stroke:#6c8ebf,color:#000
+    classDef backlog fill:#fff2cc,stroke:#d6b656,color:#000
+    classDef deferred fill:#f5f5f5,stroke:#999,color:#666,stroke-dasharray:5 5
+    class S7,S8,S9,S10,S11,S12,S13,S14,S15,S16,S17,S18,S19,S20a,S20b,S21a,S21b,S21c,SEC,P1d,P2a done
+    class S22 flight
+    class P2b,P2c,P3_audit backlog
+    class S18_1,S20_1,S20_2,S21d,S23 deferred
+```
+
+**Legend**
+- **🟢 Rounded** (`S7`, `S8`, `S17`, …) — shipped to `main` with CI green
+- **🔵 Hexagon, blue** (`S22`) — currently in flight on a feature branch
+- **🟡 Hexagon, yellow** (`P-2b/c`, `P-3`) — in the backlog, ready to start
+- **⬜ Trapezoid, dashed** (`S18.1`, `S20.1/2`, `S21d`, `S23`) — deferred or future
+
+**Dependencies**
+- **Solid arrow** — chronological order or hard prerequisite (e.g., S12 builds on S11's determinism contract)
+- **Dashed arrow** — "this will wire into that later" (e.g., S18 primitives → S18.1 integration into the live MAPEK worker)
+
+## Current parallel tracks
+
+```mermaid
+graph LR
+    subgraph MOUNI [Mouni on feature/s22-tmle]
+        direction TB
+        M1([S22: TMLE estimator<br/>Layer 19: MAE ≤ 0.20])
+    end
+    subgraph COLLAB [Collaborator on feature/audit-burn-down]
+        direction TB
+        C1{{P-2b: Schema context cache}}
+        C2{{P-2c: Lineage materialised view}}
+        C3{{P-3: sqlglot + pooling}}
+        C1 --> C2 --> C3
+    end
+    subgraph SHARED [Shared / Coordination]
+        direction TB
+        D1[CLAUDE.md]
+        D2[docs/SPRINTS.md]
+        D3[docs/AUDIT_BURN_DOWN.md]
+    end
+    SHARED -.->|both load on session start| MOUNI
+    SHARED -.->|both load on session start| COLLAB
+    classDef flight fill:#dae8fc,stroke:#6c8ebf,color:#000
+    classDef backlog fill:#fff2cc,stroke:#d6b656,color:#000
+    classDef shared fill:#f5e1ff,stroke:#9673a6,color:#000
+    class M1 flight
+    class C1,C2,C3 backlog
+    class D1,D2,D3 shared
+```
+
+The two tracks touch different subsystems (Mouni: `counterfactual_service/`; collaborator: `api_gateway/` + `safety/`) so merge conflicts are unlikely. PRs land independently into `main`.
+
+
 ## In flight (active)
 
 | Sprint | Owner | Branch | Started | Goal |

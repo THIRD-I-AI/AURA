@@ -58,7 +58,7 @@ class CounterfactualQuery(BaseModel):
 
 # ── Engine outputs ────────────────────────────────────────────────────
 
-EstimatorMethod = Literal["linear_regression", "ipw", "psm", "double_ml", "forest_dr"]
+EstimatorMethod = Literal["linear_regression", "ipw", "psm", "double_ml", "forest_dr", "tmle"]
 RefuterName = Literal["random_common_cause", "placebo", "data_subset", "sensitivity"]
 Severity = Literal["low", "medium", "high"]
 
