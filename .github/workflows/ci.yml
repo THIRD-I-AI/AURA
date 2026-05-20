@@ -272,8 +272,12 @@ jobs:
           # AURA_PG_TEST_DSN unlocks Tier B Postgres-required tests.
           # asyncpg + SQLAlchemy async URL format.
           AURA_PG_TEST_DSN: "postgresql+asyncpg://aura_test:aura_test_pw@localhost:5432/aura_scheduler_test"
+        # S20.2: also run test_scheduler_worker_integration.py — its
+        # Tier B tests verify the worker's advisory-lock leader
+        # election + NOTIFY-wake against the same postgres:16 service
+        # container. Both files use the AURA_PG_TEST_DSN env-var gate.
         run: |
-          python -m pytest tests/test_scheduler_distributed.py -v --tb=short
+          python -m pytest tests/test_scheduler_distributed.py tests/test_scheduler_worker_integration.py -v --tb=short
 
   # ── Frontend type-check ──────────────────────────────────────────────────
   frontend-typecheck:
