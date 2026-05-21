@@ -35,7 +35,7 @@ graph TD
     end
     subgraph P1 [Pillar 1 · Self-Healing UASR]
         S18([S18: Causal-RL primitives])
-        S18_1[/S18.1: Worker integration<br/>DEFERRED/]
+        S18_1([S18.1: Martingale into worker])
     end
     subgraph P3 [Pillar 3 · TRAIGA Governance]
         S19([S19: Merkle + STH + SDK verify])
@@ -93,16 +93,16 @@ graph TD
     classDef flight fill:#dae8fc,stroke:#6c8ebf,color:#000
     classDef backlog fill:#fff2cc,stroke:#d6b656,color:#000
     classDef deferred fill:#f5f5f5,stroke:#999,color:#666,stroke-dasharray:5 5
-    class S7,S8,S9,S10,S11,S12,S13,S14,S15,S16,S17,S18,S19,S20a,S20b,S20_2,S21a,S21b,S21c,S21d,SEC,P1d,P2a,S22 done
+    class S7,S8,S9,S10,S11,S12,S13,S14,S15,S16,S17,S18,S18_1,S19,S20a,S20b,S20_2,S21a,S21b,S21c,S21d,SEC,P1d,P2a,S22 done
     class P2b,P2c,P3_audit backlog
-    class S18_1,S20_1,S23 deferred
+    class S20_1,S23 deferred
 ```
 
 **Legend**
 - **🟢 Rounded** (`S7`, `S8`, `S17`, …) — shipped to `main` with CI green
 - **🔵 Hexagon, blue** (`S22`) — currently in flight on a feature branch
 - **🟡 Hexagon, yellow** (`P-2b/c`, `P-3`) — in the backlog, ready to start
-- **⬜ Trapezoid, dashed** (`S18.1`, `S20.1/2`, `S21d`, `S23`) — deferred or future
+- **⬜ Trapezoid, dashed** (`S20.1`, `S23`) — deferred or future
 
 **Dependencies**
 - **Solid arrow** — chronological order or hard prerequisite (e.g., S12 builds on S11's determinism contract)
@@ -160,6 +160,7 @@ audit-burn-down track is the only active feature branch.
 
 | Sprint | Bundle (+ hotfix) | Subsystem | What it ships |
 |---|---|---|---|
+| **S18.1** | `cae03b2` → squash-merge `5026ce0` (PR #15) | uasr | Wires S18 `WassersteinMartingaleDetector` into live `mapek_worker._analyze_detect_drift`. 4 new `MAPEKConfig` flags (default OFF for backwards-compat); `__init__` lazy-constructs the detector only when opted in. Dispatch tries martingale first → falls through to classical IQR on no-alarm / no-baseline (never silently drops a drift signal). DriftDetectionResult shape preserved across paths so recovery loop + audit log + frontend operator card need zero changes. Severity escalation flag (`martingale_alarm_severity_high`) lets operators bypass `pause_on_severity` gating per source. 9 contract tests pinning the Azuma-Hoeffding bound (≤ 3 false-positives in 30 batches at α=0.05) + 3σ drift detection within 20 batches. Bundle scope: detector swap only — Causal-RL shim selection (S18.1b) and Kramer-Magee canary router replacing pause/resume (S18.1c) deferred. Second of three deferred integration sprints. |
 | **S20.2** | `bfb31fa` + hotfixes `4b0279e` + `5ce3b38` → squash-merge `fbe5556` (PR #14) | scheduler_service | Wires S20b distributed primitives into live scheduler worker. Auto-detects Postgres → LISTEN/NOTIFY wake + pg_advisory_lock cron-evaluator leader election; SQLite → pure polling fallback (backward-compat unchanged). `scheduler.replicas > 1` finally unblocked. p99 job-start latency drops from 60s (polling) to sub-second (NOTIFY hop). Two hotfixes needed for tz-naive vs tz-aware datetime mismatch: SQLite stores datetimes as strings and is forgiving; Postgres+asyncpg is strict and rejected tz-aware parameters against tz-naive columns. Fix: `.replace(tzinfo=None)` in worker.\_evaluate\_and\_execute + every model `default=` lambda. Lesson: when a Postgres schema uses tz-naive columns, EVERY producer of values (worker reads, model defaults, test fixtures) must strip tzinfo. CI lane runs both test_scheduler_distributed.py (S20b) and test_scheduler_worker_integration.py (S20.2) against postgres:16. |
 | **S21d** | `1e3c929` + hotfix `a52c3af` → squash-merge `817b75e` (PR #13) | scripts + sdk_clients + 11 service openapi.json | Multi-service SDK codegen — 11 typed clients (causal, code_generation, connectors, dar, database, execution_sandbox, gateway, insights, knowledge_base, metadata_store, orchestration, scheduler) auto-generated from each service's OpenAPI schema. 162 typed methods total. `scripts/regen_all_sdks.py` orchestrator with subprocess-per-service isolation. CI lane regenerates + diffs schemas AND clients. Pillar 5 vision complete. |
 | **S22** | `07794d2` + hotfix `e3d4d2a` → squash-merge `f76db51` (PR #12) | counterfactual_service | Cross-fitted TMLE as 6th estimator slot. Pure NumPy + sklearn (no econml). Closed-form ε targeting via van der Laan & Rubin 2006 identity-link linear submodel; influence-curve CI from the efficient gradient. Layer 19 contract proven: TRUE_EFFECT recovered within MAE ~0.01 on synthetic DGP (target was MAE 0.20). 16 contract tests gated on `pytest.importorskip("sklearn")` so the eval-gate lane runs them via the `test_counterfactual_*.py` glob. First sprint shipped under the two-developer protocol via feature branch + PR. |
@@ -197,7 +198,8 @@ S1-S6 pre-dated this registry; see commit `157b293` and earlier for that history
 | **S23** | Analytic depth | TBD | E-value sensitivity + Cinelli-Hazlett robustness analysis. |
 
 Deferred indefinitely:
-- **S18.1** — wire S18 causal-RL primitives into `uasr/mapek_worker.py` live path.
+- **S18.1b** — wire S18 CausalRLEvaluator into `uasr/recovery_loop.py` for off-policy shim selection.
+- **S18.1c** — wire S18 `shim_router` (Kramer-Magee canary) into `uasr/mapek_worker.py` to replace `pause/resume`.
 - **S20.1** — wire S20a streaming primitives into `streaming_engine.py + window_processor.py + backpressure.py`.
 - **S20.2.1** — schema migration to move `ScheduledJob.next_execution_time` (+ other DateTime columns) to `DateTime(timezone=True)` so the `.replace(tzinfo=None)` dance can be dropped.
 - **S21e** — roll the api_gateway client into `regen_all_sdks.py` (currently kept on its own pipeline for historical reasons).
@@ -218,4 +220,4 @@ When you reserve a future sprint:
 
 Update the date at the bottom when you make a material change.
 
-Last updated 2026-05-19 — two-dev coordination protocol established.
+Last updated 2026-05-21 — S18.1 (martingale into MAPE-K worker) shipped as PR #15 / `5026ce0`.
