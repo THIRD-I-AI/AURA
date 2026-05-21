@@ -451,6 +451,9 @@ async def create_saved_query(payload: SavedQueryCreate, request: Request):
         "updated_at": ts.isoformat(),
     }
     saved = await persistence.insert_saved_query(record)
+    # P-2c: pre-compute table→query edges at write time so GET /lineage
+    # reads the cache instead of re-parsing SQL on every request.
+    asyncio.create_task(persistence.upsert_lineage_edges(saved["id"], wsid, sql))
     return {"success": True, "query": saved}
 
 

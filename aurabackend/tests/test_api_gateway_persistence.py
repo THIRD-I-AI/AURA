@@ -127,13 +127,13 @@ async def test_query_history_cap_enforces_200_rows(gateway_db) -> None:
 # ── Saved queries ────────────────────────────────────────────────────
 
 
-def _saved_query(i: int = 1, workspace_id: str = "ws1", starred: bool = False) -> dict:
+def _saved_query(i: int = 1, workspace_id: str = "ws1", starred: bool = False, sql: str = "") -> dict:
     ts = datetime.now(timezone.utc)
     return {
         "id": f"sq_{i}",
         "workspace_id": workspace_id,
         "name": f"Query {i}",
-        "sql": f"SELECT {i}",
+        "sql": sql or f"SELECT {i}",
         "prompt": f"prompt {i}",
         "starred": starred,
         "created_at": ts.isoformat(),
@@ -595,3 +595,58 @@ async def test_schema_context_empty_fingerprint_is_noop(gateway_db) -> None:
     await persistence.upsert_schema_context("", {"context_text": "x"})
     result = await persistence.get_schema_context("")
     assert result is None
+
+
+# ── Lineage edges (Sprint P-2c) ──────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_upsert_lineage_edges_basic(gateway_db) -> None:
+    """Creating a saved query then upserting its edges stores the table refs."""
+    await persistence.insert_saved_query(_saved_query(1, sql="SELECT * FROM orders JOIN customers ON orders.cid = customers.id"))
+    await persistence.upsert_lineage_edges("sq_1", "ws1", "SELECT * FROM orders JOIN customers ON orders.cid = customers.id")
+    edges = await persistence.list_lineage_edges("ws1")
+    tables = {e["table_name"] for e in edges}
+    assert tables == {"orders", "customers"}
+    assert all(e["saved_query_id"] == "sq_1" for e in edges)
+
+
+@pytest.mark.asyncio
+async def test_list_lineage_edges_workspace_isolated(gateway_db) -> None:
+    """Edges from workspace A are invisible to workspace B."""
+    await persistence.insert_saved_query(_saved_query(1, workspace_id="ws_a", sql="SELECT * FROM sales"))
+    await persistence.insert_saved_query(_saved_query(2, workspace_id="ws_b", sql="SELECT * FROM inventory"))
+    await persistence.upsert_lineage_edges("sq_1", "ws_a", "SELECT * FROM sales")
+    await persistence.upsert_lineage_edges("sq_2", "ws_b", "SELECT * FROM inventory")
+    edges_a = await persistence.list_lineage_edges("ws_a")
+    edges_b = await persistence.list_lineage_edges("ws_b")
+    assert {e["table_name"] for e in edges_a} == {"sales"}
+    assert {e["table_name"] for e in edges_b} == {"inventory"}
+
+
+@pytest.mark.asyncio
+async def test_upsert_lineage_edges_idempotent(gateway_db) -> None:
+    """Calling upsert twice for the same query replaces, not doubles, the edges."""
+    await persistence.insert_saved_query(_saved_query(1, sql="SELECT * FROM orders"))
+    await persistence.upsert_lineage_edges("sq_1", "ws1", "SELECT * FROM orders")
+    await persistence.upsert_lineage_edges("sq_1", "ws1", "SELECT * FROM orders")
+    edges = await persistence.list_lineage_edges("ws1")
+    assert len(edges) == 1
+
+
+@pytest.mark.asyncio
+async def test_delete_saved_query_cascades_lineage_edges(gateway_db) -> None:
+    """Deleting a saved query removes its lineage edges via FK CASCADE."""
+    await persistence.insert_saved_query(_saved_query(1, sql="SELECT * FROM orders"))
+    await persistence.upsert_lineage_edges("sq_1", "ws1", "SELECT * FROM orders")
+    assert len(await persistence.list_lineage_edges("ws1")) == 1
+    await persistence.delete_saved_query("sq_1", "ws1")
+    assert await persistence.list_lineage_edges("ws1") == []
+
+
+@pytest.mark.asyncio
+async def test_upsert_lineage_edges_no_tables(gateway_db) -> None:
+    """SQL with no table references (e.g. SELECT 1) stores zero edges cleanly."""
+    await persistence.insert_saved_query(_saved_query(1, sql="SELECT 1"))
+    await persistence.upsert_lineage_edges("sq_1", "ws1", "SELECT 1")
+    assert await persistence.list_lineage_edges("ws1") == []

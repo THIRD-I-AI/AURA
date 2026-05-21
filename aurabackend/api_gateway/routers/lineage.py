@@ -1,18 +1,21 @@
 """
 Lineage Router
 ==============
-Walks every saved query via sqlglot, extracts referenced tables, and
-returns a directed graph of (table → saved_query) edges plus a second
-layer of (saved_query → dashboard) edges.
+Returns a directed graph of (table → saved_query → dashboard) edges
+scoped to the caller's workspace.
 
-Graph is computed on every request — saved queries & dashboards both
-live in in-memory stores, so this is cheap even for a few hundred
-entries.
+Sprint P-2c: table→query edges are now read from the
+``gateway_lineage_edges`` materialised cache instead of being computed
+by running sqlglot on every saved query's SQL at request time.
+The cache is populated once at create_saved_query time and pruned via
+FK CASCADE on delete — GET /lineage is now a single DB read per layer.
 """
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Set, Tuple
+import asyncio
+from collections import defaultdict
+from typing import Any, Dict, List
 
 from fastapi import APIRouter, Request
 
@@ -24,43 +27,18 @@ logger = get_logger("aura.api_gateway.lineage")
 router = APIRouter(tags=["Lineage"])
 
 
-def _extract_tables(sql: str) -> Set[str]:
-    """Return the set of table names referenced in the SQL. Best effort."""
-    try:
-        import sqlglot
-        from sqlglot import exp
-    except ImportError:  # pragma: no cover — sqlglot is a hard dep after S2.4
-        return set()
-    try:
-        parsed = sqlglot.parse(sql, error_level="ignore")
-    except Exception:
-        return set()
-    tables: Set[str] = set()
-    for statement in parsed or []:
-        if statement is None:
-            continue
-        for table in statement.find_all(exp.Table):
-            name = getattr(table, "name", None)
-            if name and not name.startswith("__"):
-                tables.add(name.lower())
-    return tables
-
-
 @router.get("/lineage")
 async def get_lineage(request: Request):
     """Return nodes + edges for the saved-query → table dependency graph,
     scoped to the caller's workspace.
 
     Layers, left to right:
-      * **table** nodes      — every distinct physical table referenced
+      * **table** nodes       — every distinct physical table referenced
       * **saved_query** nodes — every saved query in the library
       * **dashboard** nodes   — every dashboard, connected to its tile queries
 
     Edges always point "downstream": table → query → dashboard.
     """
-    # Sprint P-1: saved queries pulled from the gateway persistence
-    # layer via an indexed workspace filter; dashboards still
-    # in-memory (out of scope for this sprint).
     from api_gateway import persistence
     from api_gateway.routers.dashboards import _dashboards_lock, _dashboards_store
 
@@ -69,9 +47,19 @@ async def get_lineage(request: Request):
     def _in_ws(r: Dict[str, Any]) -> bool:
         return (r.get("workspace_id") or DEFAULT_WORKSPACE_ID) == wsid
 
-    saved_queries = await persistence.list_saved_queries(wsid)
+    # P-2c: fetch cached edges and saved-query metadata in parallel —
+    # both are indexed workspace-scoped SELECTs, O(edges) + O(queries).
+    cached_edges, saved_queries = await asyncio.gather(
+        persistence.list_lineage_edges(wsid),
+        persistence.list_saved_queries(wsid),
+    )
     with _dashboards_lock:
         dashboards = [r for r in _dashboards_store if _in_ws(r)]
+
+    # Group cached edges by query id for O(1) table_count lookup.
+    tables_by_query: Dict[str, List[str]] = defaultdict(list)
+    for e in cached_edges:
+        tables_by_query[e["saved_query_id"]].append(e["table_name"])
 
     tables: Dict[str, Dict[str, Any]] = {}
     query_nodes: List[Dict[str, Any]] = []
@@ -79,8 +67,8 @@ async def get_lineage(request: Request):
     edges: List[Dict[str, Any]] = []
 
     for sq in saved_queries:
-        refs = _extract_tables(sq.get("sql", ""))
         query_id = f"q:{sq['id']}"
+        ref_tables = tables_by_query[sq["id"]]
         query_nodes.append({
             "id": query_id,
             "type": "saved_query",
@@ -90,10 +78,10 @@ async def get_lineage(request: Request):
                 "prompt": sq.get("prompt"),
                 "starred": sq.get("starred", False),
                 "scheduled": bool(sq.get("schedule")),
-                "table_count": len(refs),
+                "table_count": len(ref_tables),
             },
         })
-        for table in refs:
+        for table in ref_tables:
             table_id = f"t:{table}"
             tables.setdefault(table_id, {
                 "id": table_id,
@@ -108,7 +96,6 @@ async def get_lineage(request: Request):
                 "target": query_id,
             })
 
-    # saved_query → dashboard edges
     for dash in dashboards:
         dash_id = f"d:{dash['id']}"
         tile_queries = [t.get("saved_query_id") for t in dash.get("tiles", [])]

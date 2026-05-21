@@ -228,6 +228,33 @@ class ShareTokenRow(Base):
     )
 
 
+class LineageEdgeRow(Base):
+    """Materialised table→query edge for the lineage graph — Sprint P-2c.
+
+    One row per (table_name, saved_query_id) pair. Populated once at
+    create_saved_query time by parsing the SQL with sqlglot; pruned
+    automatically when the saved query is deleted via FK CASCADE.
+
+    SQL is immutable after creation (the PATCH endpoint only allows
+    name/starred edits), so this cache never needs a refresh tick —
+    the write-time parse is the single source of truth.
+
+    workspace_id is denormalised here so the list endpoint can filter
+    in one SELECT without a join back to gateway_saved_queries.
+    """
+
+    __tablename__ = "gateway_lineage_edges"
+
+    table_name = Column(String(255), primary_key=True)
+    saved_query_id = Column(
+        String(64),
+        ForeignKey("gateway_saved_queries.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    workspace_id = Column(String(64), nullable=False, index=True)
+    updated_at = Column(Float, nullable=False)
+
+
 # ── Engine + session factory ─────────────────────────────────────────
 
 
@@ -258,14 +285,23 @@ def get_engine() -> AsyncEngine:
     global _engine
     if _engine is None:
         url = database_url()
-        # SQLite needs check_same_thread=False for async use. Postgres
-        # doesn't care about the kwarg.
         connect_args: Dict[str, Any] = {}
         if url.startswith("sqlite"):
             connect_args["check_same_thread"] = False
         _engine = create_async_engine(
             url, echo=False, future=True, connect_args=connect_args,
         )
+        if url.startswith("sqlite"):
+            # SQLite disables FK enforcement by default; enable it per
+            # connection so ON DELETE CASCADE and FK constraints work.
+            from sqlalchemy import event
+
+            @event.listens_for(_engine.sync_engine, "connect")
+            def _set_sqlite_pragma(dbapi_conn, _record):
+                cur = dbapi_conn.cursor()
+                cur.execute("PRAGMA foreign_keys=ON")
+                cur.close()
+
     return _engine
 
 
@@ -970,6 +1006,77 @@ async def refresh_schema_context(upload_dirs: List[str]) -> bool:
     return True
 
 
+# ── Lineage edge helpers (Sprint P-2c) ───────────────────────────────
+
+
+def _extract_tables(sql: str) -> set:
+    """Return lower-cased table names referenced in *sql*. Best effort."""
+    try:
+        import sqlglot
+        from sqlglot import exp
+    except ImportError:  # pragma: no cover
+        return set()
+    try:
+        parsed = sqlglot.parse(sql, error_level="ignore")
+    except Exception:
+        return set()
+    tables: set = set()
+    for statement in parsed or []:
+        if statement is None:
+            continue
+        for table in statement.find_all(exp.Table):
+            name = getattr(table, "name", None)
+            if name and not name.startswith("__"):
+                tables.add(name.lower())
+    return tables
+
+
+async def upsert_lineage_edges(
+    saved_query_id: str,
+    workspace_id: str,
+    sql: str,
+) -> None:
+    """Parse *sql*, extract table references, and persist as lineage edges.
+
+    Called as an asyncio.create_task from create_saved_query so it never
+    blocks the HTTP response. Safe to call multiple times — deletes all
+    existing edges for the query before re-inserting (idempotent)."""
+    table_names = _extract_tables(sql)
+    async with session_scope() as session:
+        await session.execute(
+            delete(LineageEdgeRow).where(
+                LineageEdgeRow.saved_query_id == saved_query_id
+            )
+        )
+        if table_names:
+            ts = time.time()
+            session.add_all([
+                LineageEdgeRow(
+                    table_name=t,
+                    saved_query_id=saved_query_id,
+                    workspace_id=workspace_id,
+                    updated_at=ts,
+                )
+                for t in table_names
+            ])
+
+
+async def list_lineage_edges(workspace_id: str) -> List[Dict[str, Any]]:
+    """Return all cached (table_name, saved_query_id) edges for a workspace."""
+    async with session_scope() as session:
+        rows = (
+            await session.execute(
+                select(LineageEdgeRow).where(
+                    LineageEdgeRow.workspace_id == workspace_id
+                )
+            )
+        ).scalars().all()
+        return [
+            {"table_name": r.table_name, "saved_query_id": r.saved_query_id}
+            for r in rows
+        ]
+
+
 # ── Test-only helper ──
 
 
@@ -1018,5 +1125,7 @@ __all__ = [
     "get_any_schema_context",
     "upsert_schema_context",
     "refresh_schema_context",
+    "upsert_lineage_edges",
+    "list_lineage_edges",
     "reset_all_for_tests",
 ]
