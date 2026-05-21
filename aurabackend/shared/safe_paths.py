@@ -57,21 +57,14 @@ def safe_join(base: Union[str, Path], user_input: str) -> Path:
     if any(p == ".." for p in parts):
         raise PathTraversalError("filename must not contain parent-directory references")
 
-    # Use os.path.realpath + os.path.commonpath — the canonical
+    # Use os.path.realpath + startswith(base + sep) — the canonical
     # CodeQL-recognised sanitizer pattern for py/path-injection. The
-    # Path.relative_to alternative is semantically equivalent but the
-    # standard model doesn't trace taint through it.
-    base_real = os.path.realpath(str(base))
+    # trailing separator on `base_real` is essential: it prevents a
+    # candidate like `/data/processed-evil/foo` from passing the
+    # check against base `/data/processed`.
+    base_real = os.path.realpath(str(base)) + os.sep
     candidate_real = os.path.realpath(os.path.join(base_real, user_input))
-    # commonpath raises ValueError if the two paths are on different
-    # drives (Windows); treat that as escape too.
-    try:
-        common = os.path.commonpath([base_real, candidate_real])
-    except ValueError as exc:
-        raise PathTraversalError(
-            "resolved path escapes the allowed base directory"
-        ) from exc
-    if common != base_real:
+    if not candidate_real.startswith(base_real):
         raise PathTraversalError(
             "resolved path escapes the allowed base directory"
         )

@@ -404,20 +404,16 @@ async def etl_download(filename: str):
     base = Path(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
     output_dir = base / "data" / "processed"
 
-    # Sec-2 #37-#38: inline sanitizer so CodeQL's py/path-injection
-    # query can see the commonpath check in the same scope as the
-    # FileResponse sink. safe_join validates the same way but its
-    # check sits in a helper, which CodeQL's standard model doesn't
-    # trace through interprocedurally.
+    # Sec-2 #37-#38: inline sanitizer at the FileResponse sink. The
+    # `realpath + startswith` pattern is the canonical CodeQL
+    # py/path-injection sanitizer that the standard query model
+    # recognises directly (no intermediate variable, comparison in
+    # the same `if`).
     if (not filename) or os.path.isabs(filename) or any(p == ".." for p in Path(filename).parts):
         raise HTTPException(status_code=400, detail="Invalid filename")
-    output_dir_real = os.path.realpath(str(output_dir))
+    output_dir_real = os.path.realpath(str(output_dir)) + os.sep
     file_path_str = os.path.realpath(os.path.join(output_dir_real, filename))
-    try:
-        common = os.path.commonpath([output_dir_real, file_path_str])
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid filename")
-    if common != output_dir_real:
+    if not file_path_str.startswith(output_dir_real):
         raise HTTPException(status_code=400, detail="Invalid filename")
     file_path = Path(file_path_str)
 

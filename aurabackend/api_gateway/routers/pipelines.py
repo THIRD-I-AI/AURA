@@ -307,18 +307,14 @@ async def pipeline_download(filename: str):
     """Download a pipeline output file."""
     from fastapi.responses import FileResponse
     output_dir = Path(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))) / "data" / "processed"
-    # Sec-2 #40-#41: inline sanitizer (commonpath check in the same
-    # scope as the FileResponse sink so CodeQL's py/path-injection
-    # query recognises the guard interprocedural propagation fails).
+    # Sec-2 #40-#41: inline sanitizer (realpath + startswith) at the
+    # FileResponse sink — the canonical CodeQL py/path-injection
+    # sanitizer pattern that the standard model recognises directly.
     if (not filename) or os.path.isabs(filename) or any(p == ".." for p in Path(filename).parts):
         raise HTTPException(status_code=400, detail="Invalid filename")
-    output_dir_real = os.path.realpath(str(output_dir))
+    output_dir_real = os.path.realpath(str(output_dir)) + os.sep
     file_path_str = os.path.realpath(os.path.join(output_dir_real, filename))
-    try:
-        common = os.path.commonpath([output_dir_real, file_path_str])
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid filename")
-    if common != output_dir_real:
+    if not file_path_str.startswith(output_dir_real):
         raise HTTPException(status_code=400, detail="Invalid filename")
     file_path = Path(file_path_str)
     if not file_path.exists():
