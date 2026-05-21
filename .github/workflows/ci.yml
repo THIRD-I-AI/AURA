@@ -6,6 +6,16 @@ on:
   pull_request:
     branches: [main, master, "feature/**"]
 
+# Sec-2 #1-#10: CodeQL flagged every job for not declaring permissions
+# explicitly. Default GITHUB_TOKEN can be `contents: write` for repos
+# created before GitHub's 2023 default tightening, which is more than
+# any AURA CI job needs (tests + lint + coverage upload — no deploy,
+# no PR comment, no release create). Workflow-level `contents: read`
+# forces the principle of least privilege; individual jobs that need
+# more can opt up with their own permissions block.
+permissions:
+  contents: read
+
 jobs:
   # ── Backend tests ────────────────────────────────────────────────────────
   backend-test:

@@ -19,7 +19,9 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
+from shared.error_handler import sanitize_error
 from shared.logging_config import get_logger
+from shared.safe_paths import PathTraversalError, safe_join
 from shared.streaming_manager import TOPIC_ETL, streaming_manager
 
 logger = get_logger("aura.api_gateway.etl")
@@ -292,7 +294,7 @@ async def etl_preview_source(payload: Dict[str, Any]):
     except HTTPException:
         raise
     except Exception as e:
-        return {"status": "error", "error": str(e)}
+        return {"status": "error", "error": sanitize_error(e, logger=logger, context="etl preview")}
 
 
 @router.post("/etl/execute")
@@ -313,9 +315,13 @@ async def etl_execute(pipeline: ETLPipelineRequest):
     output_dir = base / "data" / "processed"
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    file_path = upload_dir / pipeline.source_file
+    # Sec-2 #36: user-supplied source_file must be sandboxed under upload_dir.
+    try:
+        file_path = safe_join(upload_dir, pipeline.source_file)
+    except PathTraversalError:
+        raise HTTPException(status_code=400, detail="Invalid source filename")
     if not file_path.exists():
-        raise HTTPException(status_code=404, detail=f"Source file '{pipeline.source_file}' not found")
+        raise HTTPException(status_code=404, detail="Source file not found")
 
     try:
         con = duckdb.connect(":memory:")
@@ -384,9 +390,12 @@ async def etl_execute(pipeline: ETLPipelineRequest):
     except HTTPException:
         raise
     except Exception as e:
-        logger.error("ETL execute failed for '%s': %s", pipeline.name, e, exc_info=True)
-        await streaming_manager.publish_error(TOPIC_ETL, run_id, str(e))
-        return {"status": "error", "run_id": run_id, "error": str(e), "transform_sql": "", "preview": []}
+        # Sec-2 #16-#19: don't echo raw exception text to client OR
+        # SSE stream — log + send a sanitized message. The full
+        # traceback is in the server log under "etl execute".
+        safe_message = sanitize_error(e, logger=logger, context=f"etl execute pipeline={pipeline.name!r}")
+        await streaming_manager.publish_error(TOPIC_ETL, run_id, safe_message)
+        return {"status": "error", "run_id": run_id, "error": safe_message, "transform_sql": "", "preview": []}
 
 
 @router.get("/etl/download/{filename}")
@@ -394,14 +403,19 @@ async def etl_download(filename: str):
     """Download a processed ETL output file."""
     base = Path(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
     output_dir = base / "data" / "processed"
-    file_path = output_dir / filename
+
+    # Sec-2 #37-#38: filename path-component must be confined to output_dir.
+    try:
+        file_path = safe_join(output_dir, filename)
+    except PathTraversalError:
+        raise HTTPException(status_code=400, detail="Invalid filename")
 
     if not file_path.exists():
-        raise HTTPException(status_code=404, detail=f"Output file '{filename}' not found")
+        raise HTTPException(status_code=404, detail="Output file not found")
 
     media_types = {".csv": "text/csv", ".parquet": "application/octet-stream", ".json": "application/json"}
     media_type = media_types.get(file_path.suffix.lower(), "application/octet-stream")
-    return FileResponse(path=str(file_path), filename=filename, media_type=media_type)
+    return FileResponse(path=str(file_path), filename=file_path.name, media_type=media_type)
 
 
 @router.post("/etl/natural-language")
@@ -413,9 +427,14 @@ async def etl_from_natural_language(req: ETLNaturalLanguageRequest):
     from shared.llm_provider import get_llm
 
     base = Path(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-    file_path = base / "data" / "uploads" / req.source_file
+    upload_dir = base / "data" / "uploads"
+    # Sec-2 #39: source_file is user-supplied; sandbox under upload_dir.
+    try:
+        file_path = safe_join(upload_dir, req.source_file)
+    except PathTraversalError:
+        raise HTTPException(status_code=400, detail="Invalid source filename")
     if not file_path.exists():
-        raise HTTPException(status_code=404, detail=f"Source file '{req.source_file}' not found")
+        raise HTTPException(status_code=404, detail="Source file not found")
 
     try:
         con = duckdb.connect(":memory:")
@@ -460,7 +479,11 @@ Return ONLY the JSON array, no markdown, no explanation."""
             elif isinstance(parsed, dict) and "transforms" in parsed:
                 transforms = parsed["transforms"]
         except Exception as e:
-            llm_error = str(e)
+            # Sec-2 #18: llm_error flows through to a client-visible
+            # `error_message` field below; never put the raw LLM
+            # provider exception there (it can contain API keys in
+            # the traceback formatting).
+            llm_error = sanitize_error(e, logger=logger, context="etl natural-language LLM call")
     else:
         llm_error = "No LLM provider available"
 

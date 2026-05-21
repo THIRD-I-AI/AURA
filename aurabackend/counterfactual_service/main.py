@@ -355,12 +355,14 @@ async def replay_bulk(req: BulkReplayRequest) -> StreamingResponse:
                 # Defensive: _verify_one_artifact is already supposed
                 # to swallow all failures, but a totally unexpected
                 # crash should still produce a structured row rather
-                # than break the stream.
+                # than break the stream. Sec-2 #24: surface only the
+                # exception class name to the auditor — exception
+                # messages can leak server-side filesystem paths.
                 logger.exception("Unexpected bulk-replay error for %s", h)
                 result = {
                     "record_hash": h,
                     "status": "error",
-                    "reason": f"{type(exc).__name__}: {exc}",
+                    "reason": type(exc).__name__,
                 }
             yield json.dumps(result) + "\n"
 

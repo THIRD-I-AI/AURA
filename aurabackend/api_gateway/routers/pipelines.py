@@ -7,13 +7,16 @@ AI-driven pipeline management, semantic models, and UASR proxy endpoints.
 import asyncio
 import os
 import uuid
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import httpx
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
+from shared.error_handler import sanitize_error
 from shared.logging_config import get_logger
+from shared.safe_paths import PathTraversalError, safe_join
 from shared.streaming_manager import TOPIC_PIPELINE, StreamEvent, streaming_manager
 
 logger = get_logger("aura.api_gateway.pipelines")
@@ -121,8 +124,7 @@ async def pipeline_generate(req: PipelineGenerateRequest):
             pipeline.source.file_name = req.source_file
         return {"status": "success", "pipeline": pipeline.model_dump()}
     except Exception as e:
-        logger.error("[Pipeline] Generate failed: %s", e, exc_info=True)
-        return {"status": "error", "error": str(e)}
+        return {"status": "error", "error": sanitize_error(e, logger=logger, context="pipeline generate")}
 
 
 @router.post("/pipeline/execute")
@@ -131,13 +133,16 @@ async def pipeline_execute(req: PipelineExecuteRequest):
     try:
         pipeline = PipelineModel(**req.pipeline)
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Invalid pipeline: {e}")
+        # Pipeline-model validation errors are user-facing (they tell
+        # the caller what's wrong with their payload), but we still
+        # don't echo the raw exception text — log + generic message.
+        logger.warning("[Pipeline] Invalid pipeline payload: %s", e)
+        raise HTTPException(status_code=400, detail="Invalid pipeline payload")
     try:
         run = await _pipeline_engine.execute(pipeline, preview_only=req.preview_only)
         return {"status": "success", "run": run.model_dump()}
     except Exception as e:
-        logger.error("[Pipeline] Execute failed: %s", e, exc_info=True)
-        return {"status": "error", "error": str(e)}
+        return {"status": "error", "error": sanitize_error(e, logger=logger, context="pipeline execute")}
 
 
 @router.post("/pipeline/execute/async")
@@ -150,7 +155,8 @@ async def pipeline_execute_async(req: PipelineExecuteRequest):
     try:
         pipeline = PipelineModel(**req.pipeline)
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Invalid pipeline: {e}")
+        logger.warning("[Pipeline] Invalid pipeline payload on async execute: %s", e)
+        raise HTTPException(status_code=400, detail="Invalid pipeline payload")
 
     run_id = uuid.uuid4().hex
 
@@ -231,8 +237,12 @@ async def pipeline_execute_async(req: PipelineExecuteRequest):
                 TOPIC_PIPELINE, run_id, run.model_dump(),
             )
         except Exception as exc:
+            # Sec-2 #27: don't echo raw exception text out over the
+            # SSE stream — log full detail server-side and send a
+            # generic failure code to the client.
+            logger.error("[Pipeline] Async run %s failed: %s", run_id, exc, exc_info=True)
             await streaming_manager.publish_error(
-                TOPIC_PIPELINE, run_id, str(exc), code="PIPELINE_FAILED",
+                TOPIC_PIPELINE, run_id, "Pipeline failed", code="PIPELINE_FAILED",
             )
 
     asyncio.create_task(_run())
@@ -245,7 +255,8 @@ async def pipeline_save(req: PipelineSaveRequest):
     try:
         pipeline = PipelineModel(**req.pipeline)
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Invalid pipeline: {e}")
+        logger.warning("[Pipeline] Invalid pipeline on save: %s", e)
+        raise HTTPException(status_code=400, detail="Invalid pipeline payload")
     saved = _pipeline_engine.save(pipeline)
     return {"status": "success", "pipeline_id": saved.id, "name": saved.name}
 
@@ -289,18 +300,22 @@ async def pipeline_file_schema(file_name: str):
         schema = gen.get_file_schema(file_name)
         return {"status": "success", "schema": schema}
     except Exception as e:
-        return {"status": "error", "error": str(e)}
+        return {"status": "error", "error": sanitize_error(e, logger=logger, context="pipeline file schema")}
 
 
 @router.get("/pipeline/download/{filename}")
 async def pipeline_download(filename: str):
     """Download a pipeline output file."""
     from fastapi.responses import FileResponse
-    output_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "data", "processed")
-    file_path = os.path.join(output_dir, filename)
-    if not os.path.exists(file_path):
+    output_dir = Path(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))) / "data" / "processed"
+    # Sec-2 #40-#41: confine `filename` to output_dir.
+    try:
+        file_path = safe_join(output_dir, filename)
+    except PathTraversalError:
+        raise HTTPException(status_code=400, detail="Invalid filename")
+    if not file_path.exists():
         raise HTTPException(status_code=404, detail="Output file not found")
-    return FileResponse(file_path, filename=filename)
+    return FileResponse(str(file_path), filename=file_path.name)
 
 
 # ── Semantic Model endpoints ─────────────────────────────────────────
@@ -334,7 +349,7 @@ async def auto_generate_model_from_file(file_id: str) -> Dict[str, Any]:
     except HTTPException:
         raise
     except Exception as e:
-        return {"status": "error", "error": str(e)}
+        return {"status": "error", "error": sanitize_error(e, logger=logger, context="semantic model auto-generate")}
 
 
 @router.post("/semantic/models")
@@ -347,7 +362,7 @@ async def upsert_semantic_model(payload: SemanticModelPayload) -> Dict[str, Any]
             break
         return {"status": "success", "model": _serialize_semantic_model(model)}
     except Exception as e:
-        return {"status": "error", "error": str(e)}
+        return {"status": "error", "error": sanitize_error(e, logger=logger, context="semantic model upsert")}
 
 
 @router.get("/semantic/models")
@@ -360,7 +375,7 @@ async def list_semantic_models() -> Dict[str, Any]:
             break
         return {"status": "success", "models": [_serialize_semantic_model(m) for m in models]}
     except Exception as e:
-        return {"status": "error", "error": str(e)}
+        return {"status": "error", "error": sanitize_error(e, logger=logger, context="semantic model list")}
 
 
 @router.get("/semantic/models/{model_id}")
@@ -377,7 +392,7 @@ async def get_semantic_model(model_id: str) -> Dict[str, Any]:
     except HTTPException:
         raise
     except Exception as e:
-        return {"status": "error", "error": str(e)}
+        return {"status": "error", "error": sanitize_error(e, logger=logger, context="semantic model get")}
 
 
 # ── UASR Self-Healing proxy routes ───────────────────────────────────

@@ -22,6 +22,7 @@ from connectors import (
     available_connectors,
     get_connector,
 )
+from shared.error_handler import sanitize_error
 from shared.logging_config import get_logger
 
 logger = get_logger("aura.api_gateway.connections")
@@ -115,7 +116,7 @@ async def test_connector(connector_type: str, config: Dict[str, Any]):
             return {"success": True, "message": f"Connected successfully. Found {len(tables)} tables.", "table_count": len(tables)}
         return {"success": False, "message": "Failed to connect", "error": "Connection failed"}
     except Exception as e:
-        return {"success": False, "message": "Test failed", "error": str(e)}
+        return {"success": False, "message": "Test failed", "error": sanitize_error(e, logger=logger, context="connector test")}
 
 
 @router.post("/connectors/{connector_type}/tables")
@@ -131,7 +132,10 @@ async def list_connector_tables(connector_type: str, config: Dict[str, Any]) -> 
         await connector.disconnect()
         return ConnectorTableListResponse(connector_id=f"test-{connector_type}", tables=tables, total_count=len(tables))
     except Exception as e:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=sanitize_error(e, logger=logger, context=f"list tables {connector_type}"),
+        )
 
 
 @router.post("/connectors/{connector_type}/profile")
@@ -147,7 +151,10 @@ async def profile_table(connector_type: str, request: ProfileTableRequest) -> Di
         await connector.disconnect()
         return profile
     except Exception as e:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=sanitize_error(e, logger=logger, context=f"profile table {connector_type}"),
+        )
 
 
 # ── Connection CRUD ──────────────────────────────────────────────────
@@ -239,7 +246,7 @@ async def test_connection_by_id(connection_id: str):
             return {"success": True, "message": f"Connected. Found {len(tables)} tables.", "table_count": len(tables)}
         return {"success": False, "message": "Connection failed"}
     except Exception as e:
-        return {"success": False, "message": str(e)}
+        return {"success": False, "message": sanitize_error(e, logger=logger, context="connection test by id")}
 
 
 @router.delete("/connections/{connection_id}")
@@ -281,7 +288,7 @@ async def get_connection_schema(connection_id: str):
         await connector.disconnect()
         return {"success": True, "schema": schema, "table_count": len(tables)}
     except Exception as e:
-        return {"success": False, "error": str(e), "schema": {}}
+        return {"success": False, "error": sanitize_error(e, logger=logger, context="connection schema"), "schema": {}}
 
 
 @router.get("/databases/test/{db_type}")
@@ -294,4 +301,5 @@ async def test_database_connection(db_type: str):
             response = await client.get(f"{db_svc}/databases/test/{db_type}")
             return response.json()
     except Exception as e:
-        return {"error": f"Database service unavailable: {str(e)}", "status": "error"}
+        sanitize_error(e, logger=logger, context=f"database service proxy {db_type}")
+        return {"error": "Database service unavailable", "status": "error"}
