@@ -16,7 +16,6 @@ from pydantic import BaseModel, Field
 
 from shared.error_handler import sanitize_error
 from shared.logging_config import get_logger
-from shared.safe_paths import PathTraversalError, safe_join
 from shared.streaming_manager import TOPIC_PIPELINE, StreamEvent, streaming_manager
 
 logger = get_logger("aura.api_gateway.pipelines")
@@ -308,14 +307,23 @@ async def pipeline_download(filename: str):
     """Download a pipeline output file."""
     from fastapi.responses import FileResponse
     output_dir = Path(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))) / "data" / "processed"
-    # Sec-2 #40-#41: confine `filename` to output_dir via safe_join.
-    try:
-        file_path = safe_join(output_dir, filename)
-    except PathTraversalError:
+    # Sec-2 #40-#41: inline sanitizer (commonpath check in the same
+    # scope as the FileResponse sink so CodeQL's py/path-injection
+    # query recognises the guard interprocedural propagation fails).
+    if (not filename) or os.path.isabs(filename) or any(p == ".." for p in Path(filename).parts):
         raise HTTPException(status_code=400, detail="Invalid filename")
+    output_dir_real = os.path.realpath(str(output_dir))
+    file_path_str = os.path.realpath(os.path.join(output_dir_real, filename))
+    try:
+        common = os.path.commonpath([output_dir_real, file_path_str])
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid filename")
+    if common != output_dir_real:
+        raise HTTPException(status_code=400, detail="Invalid filename")
+    file_path = Path(file_path_str)
     if not file_path.exists():
         raise HTTPException(status_code=404, detail="Output file not found")
-    return FileResponse(str(file_path), filename=file_path.name)
+    return FileResponse(file_path_str, filename=file_path.name)
 
 
 # ── Semantic Model endpoints ─────────────────────────────────────────

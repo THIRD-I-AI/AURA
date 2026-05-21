@@ -404,18 +404,29 @@ async def etl_download(filename: str):
     base = Path(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
     output_dir = base / "data" / "processed"
 
-    # Sec-2 #37-#38: filename path-component must be confined to output_dir.
-    try:
-        file_path = safe_join(output_dir, filename)
-    except PathTraversalError:
+    # Sec-2 #37-#38: inline sanitizer so CodeQL's py/path-injection
+    # query can see the commonpath check in the same scope as the
+    # FileResponse sink. safe_join validates the same way but its
+    # check sits in a helper, which CodeQL's standard model doesn't
+    # trace through interprocedurally.
+    if (not filename) or os.path.isabs(filename) or any(p == ".." for p in Path(filename).parts):
         raise HTTPException(status_code=400, detail="Invalid filename")
+    output_dir_real = os.path.realpath(str(output_dir))
+    file_path_str = os.path.realpath(os.path.join(output_dir_real, filename))
+    try:
+        common = os.path.commonpath([output_dir_real, file_path_str])
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid filename")
+    if common != output_dir_real:
+        raise HTTPException(status_code=400, detail="Invalid filename")
+    file_path = Path(file_path_str)
 
     if not file_path.exists():
         raise HTTPException(status_code=404, detail="Output file not found")
 
     media_types = {".csv": "text/csv", ".parquet": "application/octet-stream", ".json": "application/json"}
     media_type = media_types.get(file_path.suffix.lower(), "application/octet-stream")
-    return FileResponse(path=str(file_path), filename=file_path.name, media_type=media_type)
+    return FileResponse(path=file_path_str, filename=file_path.name, media_type=media_type)
 
 
 @router.post("/etl/natural-language")
