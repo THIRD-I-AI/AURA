@@ -189,9 +189,13 @@ class JWTAuthMiddleware(BaseHTTPMiddleware):
                 "JWT rejected for %s %s: %s",
                 request.method, request.url.path, exc,
             )
+            # Sec-2 #25: don't leak token-validation internals (which
+            # claim failed, signature vs expiry vs audience) to an
+            # unauthenticated caller. Generic message; full reason
+            # already logged above.
             return JSONResponse(
                 status_code=401,
-                content={"error": "AUTHENTICATION_REQUIRED", "message": str(exc)},
+                content={"error": "AUTHENTICATION_REQUIRED", "message": "Authentication required"},
             )
 
         request.state.user = payload

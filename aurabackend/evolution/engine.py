@@ -413,7 +413,15 @@ class EvolutionEngine:
                         "total_cycles": self._cycle_count}
             except Exception as exc:
                 await db.rollback()
-                return {"status": "error", "error": str(exc), "cycle_id": cycle_id}
+                # Sec-2 #11: this dict propagates through evolution/api.py:84
+                # straight to an authenticated client. Log full exception
+                # detail (with traceback) server-side; return a generic
+                # message so we don't leak DB-engine internals.
+                logger.error(
+                    "Evolution cycle %s failed: %s",
+                    cycle_id, exc, exc_info=True,
+                )
+                return {"status": "error", "error": "evolution cycle failed", "cycle_id": cycle_id}
             break
         return {"status": "error", "error": "no db session"}
 

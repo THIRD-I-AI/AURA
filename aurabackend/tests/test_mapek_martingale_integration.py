@@ -230,13 +230,6 @@ def test_martingale_skips_columns_without_baseline(worker_with_baseline: MAPEKWo
     crash the detector — the martingale.update fail-open behaviour
     handles it."""
     rng = np.random.default_rng(seed=42)
-    # Push a drifted batch on the baselined column AND a noisy
-    # un-baselined column in the same batch.
-    rows = [
-        {"metric": float(rng.standard_normal() + 3.0), "stranger": rng.uniform()}
-        for _ in range(50)
-    ]
-    batch = _make_batch(rows)
     # Should not raise; should run successfully across many batches.
     for _ in range(15):
         rows = [

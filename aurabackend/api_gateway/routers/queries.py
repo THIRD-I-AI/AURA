@@ -24,6 +24,7 @@ from insights import InsightsEngine
 from safety import SQLSafetyValidator
 from shared.cache import dashboard_cache, query_cache
 from shared.circuit_breaker import get_breaker
+from shared.error_handler import sanitize_error
 from shared.logging_config import get_logger
 from shared.streaming_manager import TOPIC_QUERY, streaming_manager
 
@@ -211,8 +212,9 @@ async def execute_for_chat(req: _ChatExecuteRequest):
             await streaming_manager.publish_error(TOPIC_QUERY, job_id, str(detail))
             return {"success": False, "error": str(detail), "data": [], "columns": []}
         except Exception as exc:
-            await streaming_manager.publish_error(TOPIC_QUERY, job_id, str(exc))
-            return {"success": False, "error": str(exc), "data": [], "columns": []}
+            safe_message = sanitize_error(exc, logger=logger, context=f"query execute job={job_id}")
+            await streaming_manager.publish_error(TOPIC_QUERY, job_id, safe_message)
+            return {"success": False, "error": safe_message, "data": [], "columns": []}
 
     # No connection: execute against uploaded files via DuckDB
     try:
@@ -261,7 +263,7 @@ async def execute_for_chat(req: _ChatExecuteRequest):
             "conclusion": conclusion,
         }
     except Exception as exc:
-        return {"success": False, "error": str(exc), "data": [], "columns": []}
+        return {"success": False, "error": sanitize_error(exc, logger=logger, context="duckdb query execute"), "data": [], "columns": []}
 
 
 @router.post("/execute/query", response_model=ExecuteQueryResponse)
@@ -310,7 +312,7 @@ async def execute_query_with_insights(request: ExecuteQueryRequest):
             execution_time_ms=execution_time,
         )
     except Exception as e:
-        return ExecuteQueryResponse(success=False, data=None, rows=0, columns=[], error=str(e), execution_time_ms=0)
+        return ExecuteQueryResponse(success=False, data=None, rows=0, columns=[], error=sanitize_error(e, logger=logger, context="execute query with insights"), execution_time_ms=0)
 
 
 @router.post("/generate_query")
@@ -323,9 +325,11 @@ async def generate_query_proxy(request: QueryRequest) -> Dict[str, Any]:
             response.raise_for_status()
             return response.json()
     except httpx.HTTPStatusError as http_exc:
-        return {"status": "Error", "error_message": f"Orchestration error: {http_exc.response.text}", "final_query": "-- Error generating query"}
+        logger.error("Orchestration HTTP error: status=%s body=%s", http_exc.response.status_code, http_exc.response.text)
+        return {"status": "Error", "error_message": "Orchestration service returned an error", "final_query": "-- Error generating query"}
     except Exception as exc:
-        return {"status": "Error", "error_message": f"Backend error: {str(exc)}", "final_query": "-- Error generating query"}
+        sanitize_error(exc, logger=logger, context="generate_query proxy")
+        return {"status": "Error", "error_message": "Backend error", "final_query": "-- Error generating query"}
 
 
 # ── Validation & Linting ─────────────────────────────────────────────
