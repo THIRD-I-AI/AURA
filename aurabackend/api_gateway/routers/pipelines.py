@@ -308,7 +308,7 @@ async def pipeline_download(filename: str):
     """Download a pipeline output file."""
     from fastapi.responses import FileResponse
     output_dir = Path(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))) / "data" / "processed"
-    # Sec-2 #40-#41: confine `filename` to output_dir.
+    # Sec-2 #40-#41: confine `filename` to output_dir via safe_join.
     try:
         file_path = safe_join(output_dir, filename)
     except PathTraversalError:

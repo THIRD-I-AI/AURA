@@ -6,13 +6,15 @@ component (e.g. `etl_download(filename: str)`) must NEVER do a raw
 `base / filename` join. A malicious value like `../../etc/passwd` or
 `/etc/passwd` escapes the intended sandbox.
 
-`safe_join` resolves the candidate, then asserts that the resolved
-path is still under the resolved base. Returns the resolved Path on
-success; raises PathTraversalError otherwise.
+`safe_join` resolves both sides, then asserts containment using
+`os.path.commonpath` — the pattern CodeQL's `py/path-injection` query
+recognises as a sanitizer. (An equivalent `Path.relative_to` check is
+correct but the CodeQL standard model doesn't recognise it; using
+`commonpath` here lets the helper's return value clear the taint flow
+for every caller.)
 
-The check uses `Path.relative_to` after resolving both sides — this
-catches symlink-following too (resolution chases symlinks; comparison
-happens in real-path space).
+Returns the resolved real path on success; raises PathTraversalError
+otherwise.
 """
 from __future__ import annotations
 
@@ -40,7 +42,7 @@ def safe_join(base: Union[str, Path], user_input: str) -> Path:
         user_input: untrusted relative path component(s).
 
     Returns:
-        Resolved Path under `base`.
+        Resolved real path under `base`.
 
     Raises:
         PathTraversalError on any of the above violations.
@@ -50,17 +52,27 @@ def safe_join(base: Union[str, Path], user_input: str) -> Path:
     if os.path.isabs(user_input):
         raise PathTraversalError("filename must be relative, not absolute")
     # Disallow any explicit parent-dir hop even before resolution — purely
-    # defensive; .resolve() catches it too, but cheap to fail fast.
+    # defensive; .realpath() catches it too, but cheap to fail fast.
     parts = Path(user_input).parts
     if any(p == ".." for p in parts):
         raise PathTraversalError("filename must not contain parent-directory references")
 
-    base_resolved = Path(base).resolve()
-    candidate = (base_resolved / user_input).resolve()
+    # Use os.path.realpath + os.path.commonpath — the canonical
+    # CodeQL-recognised sanitizer pattern for py/path-injection. The
+    # Path.relative_to alternative is semantically equivalent but the
+    # standard model doesn't trace taint through it.
+    base_real = os.path.realpath(str(base))
+    candidate_real = os.path.realpath(os.path.join(base_real, user_input))
+    # commonpath raises ValueError if the two paths are on different
+    # drives (Windows); treat that as escape too.
     try:
-        candidate.relative_to(base_resolved)
+        common = os.path.commonpath([base_real, candidate_real])
     except ValueError as exc:
         raise PathTraversalError(
             "resolved path escapes the allowed base directory"
         ) from exc
-    return candidate
+    if common != base_real:
+        raise PathTraversalError(
+            "resolved path escapes the allowed base directory"
+        )
+    return Path(candidate_real)
