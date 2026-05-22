@@ -6,6 +6,8 @@ dashboard stats, and job control endpoints.
 """
 
 import asyncio
+import hashlib
+import json
 import os
 import secrets
 import threading
@@ -67,6 +69,75 @@ _SAVED_QUERY_RUN_RETENTION = 50  # per saved query
 _scheduler_task: Optional[asyncio.Task] = None
 _scheduler_stop: Optional[asyncio.Event] = None
 _SCHEDULER_INTERVAL_SEC = 30
+
+# ── PostgreSQL connection pool registry (finding #6) ──────────────────
+# One asyncpg pool per unique DB config, shared across all requests so
+# connect()/disconnect() overhead (full pool creation) is paid once at
+# cold-start instead of on every POST /execute/query call.
+# Pools are closed in the lifespan teardown via close_all_pg_pools().
+
+_pg_pool_registry_lock = threading.Lock()
+_pg_pool_registry: Dict[str, Any] = {}
+
+
+def _pg_pool_key(config: "ConnectorConfig") -> str:
+    """Deterministic registry key from connection coordinates."""
+    return hashlib.sha256(
+        json.dumps(
+            {
+                "host": config.host,
+                "port": config.port,
+                "database": config.database,
+                "username": config.username,
+                "password": config.password,
+            },
+            sort_keys=True,
+        ).encode()
+    ).hexdigest()
+
+
+async def _get_or_create_pg_pool(config: "ConnectorConfig") -> Any:
+    """Return the cached asyncpg pool for *config* or create one."""
+    import asyncpg
+
+    key = _pg_pool_key(config)
+    with _pg_pool_registry_lock:
+        existing = _pg_pool_registry.get(key)
+    if existing is not None:
+        return existing
+
+    pool = await asyncpg.create_pool(
+        user=config.username or "postgres",
+        password=config.password or "",
+        database=config.database or "postgres",
+        host=config.host or "localhost",
+        port=config.port or 5432,
+        min_size=1,
+        max_size=int(os.getenv("DB_POOL_SIZE", "10")),
+    )
+    with _pg_pool_registry_lock:
+        if key in _pg_pool_registry:
+            # Lost the creation race — discard the duplicate.
+            dup, pool = pool, _pg_pool_registry[key]
+        else:
+            _pg_pool_registry[key] = pool
+            dup = None
+    if dup is not None:
+        await dup.close()
+    return pool
+
+
+async def close_all_pg_pools() -> None:
+    """Close all pooled connections — called from lifespan teardown."""
+    with _pg_pool_registry_lock:
+        pools = list(_pg_pool_registry.values())
+        _pg_pool_registry.clear()
+    for pool in pools:
+        try:
+            await pool.close()
+        except Exception:
+            pass
+
 
 # Re-use the connections store from the connections router
 from api_gateway.routers.connections import _connections_lock, _connections_store
@@ -297,9 +368,17 @@ async def execute_query_with_insights(request: ExecuteQueryRequest):
             raise ValueError(f"Unknown connector type: {request.connector_type}")
 
         start_time = time.time()
-        await connector.connect()
-        results = await connector.execute_query(request.query)
-        await connector.disconnect()
+        if request.connector_type == "postgresql":
+            # P-3 finding #6: reuse a long-lived pool — skip connect/disconnect
+            # per call, which was destroying and recreating asyncpg's pool every
+            # request.  The registry manages pool lifetime; lifespan tears down.
+            connector.pool = await _get_or_create_pg_pool(connector_config)
+            connector._is_connected = True
+            results = await connector.execute_query(request.query)
+        else:
+            await connector.connect()
+            results = await connector.execute_query(request.query)
+            await connector.disconnect()
         execution_time = (time.time() - start_time) * 1000
 
         conclusion = None

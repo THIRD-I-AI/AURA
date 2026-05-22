@@ -191,6 +191,13 @@ async def _lifespan(app) -> AsyncGenerator[None, None]:
     except Exception:
         pass
 
+    # Sprint P-3 finding #6: drain the PostgreSQL connection pool registry
+    try:
+        from api_gateway.routers.queries import close_all_pg_pools
+        await close_all_pg_pools()
+    except Exception:
+        pass
+
     # Stop evolution engine gracefully
     try:
         from evolution.engine import get_evolution_engine
