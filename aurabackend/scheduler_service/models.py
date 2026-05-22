@@ -70,8 +70,8 @@ class ScheduledJob(Base):
 
     # Metadata
     created_by = Column(String(100), nullable=True)
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
-    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None), onupdate=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
 
 
 class JobExecution(Base):
@@ -100,7 +100,7 @@ class JobExecution(Base):
     # Metadata
     triggered_by = Column(String(50), default="scheduler")  # scheduler, manual, api
     execution_metadata = Column(JSON, nullable=True)
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
 
 
 class ExecutionLog(Base):
@@ -111,7 +111,7 @@ class ExecutionLog(Base):
     execution_id = Column(String(36), nullable=False, index=True)
 
     # Log entry
-    timestamp = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    timestamp = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
     level = Column(String(20), nullable=False)  # INFO, WARNING, ERROR
     message = Column(Text, nullable=False)
     details = Column(JSON, nullable=True)

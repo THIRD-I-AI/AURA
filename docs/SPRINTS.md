@@ -35,7 +35,7 @@ graph TD
     end
     subgraph P1 [Pillar 1 · Self-Healing UASR]
         S18([S18: Causal-RL primitives])
-        S18_1[/S18.1: Worker integration<br/>DEFERRED/]
+        S18_1([S18.1: Martingale into worker])
     end
     subgraph P3 [Pillar 3 · TRAIGA Governance]
         S19([S19: Merkle + STH + SDK verify])
@@ -45,14 +45,14 @@ graph TD
         S20a([S20a: ABS + Watermarks + Triggers + PID])
         S20b([S20b: LISTEN/NOTIFY + advisory lock])
         S20_1[/S20.1: Engine wiring<br/>DEFERRED/]
-        S20_2[/S20.2: Worker wiring<br/>DEFERRED/]
+        S20_2([S20.2: Worker wiring])
     end
     subgraph P5 [Pillar 5 · Service Factory]
         direction TB
         S21a([S21a: OpenAPI → Pydantic models])
         S21b([S21b: Sync Client · 101 methods])
         S21c([S21c: AsyncClient mirror])
-        S21d[/S21d: Multi-service clients<br/>BACKLOG/]
+        S21d([S21d: Multi-service clients])
         S21a --> S21b --> S21c
     end
 
@@ -70,7 +70,7 @@ graph TD
 
     %% Analytic depth
     subgraph AD [Analytic Depth]
-        S22{{S22: TMLE 6th estimator}}
+        S22([S22: TMLE 6th estimator])
         S23[/S23: E-value sensitivity<br/>BACKLOG/]
     end
 
@@ -93,17 +93,16 @@ graph TD
     classDef flight fill:#dae8fc,stroke:#6c8ebf,color:#000
     classDef backlog fill:#fff2cc,stroke:#d6b656,color:#000
     classDef deferred fill:#f5f5f5,stroke:#999,color:#666,stroke-dasharray:5 5
-    class S7,S8,S9,S10,S11,S12,S13,S14,S15,S16,S17,S18,S19,S20a,S20b,S21a,S21b,S21c,SEC,P1d,P2a done
-    class S22 flight
+    class S7,S8,S9,S10,S11,S12,S13,S14,S15,S16,S17,S18,S18_1,S19,S20a,S20b,S20_2,S21a,S21b,S21c,S21d,SEC,P1d,P2a,S22 done
     class P2b,P2c,P3_audit backlog
-    class S18_1,S20_1,S20_2,S21d,S23 deferred
+    class S20_1,S23 deferred
 ```
 
 **Legend**
 - **🟢 Rounded** (`S7`, `S8`, `S17`, …) — shipped to `main` with CI green
 - **🔵 Hexagon, blue** (`S22`) — currently in flight on a feature branch
 - **🟡 Hexagon, yellow** (`P-2b/c`, `P-3`) — in the backlog, ready to start
-- **⬜ Trapezoid, dashed** (`S18.1`, `S20.1/2`, `S21d`, `S23`) — deferred or future
+- **⬜ Trapezoid, dashed** (`S20.1`, `S23`) — deferred or future
 
 **Dependencies**
 - **Solid arrow** — chronological order or hard prerequisite (e.g., S12 builds on S11's determinism contract)
@@ -113,9 +112,11 @@ graph TD
 
 ```mermaid
 graph LR
-    subgraph MOUNI [Mouni on feature/s22-tmle]
+    subgraph MOUNI [Mouni - next sprint TBD]
         direction TB
-        M1([S22: TMLE estimator<br/>Layer 19: MAE ≤ 0.20])
+        M0([S22 + S21d merged 2026-05-19<br/>PRs #12 + #13])
+        M1[/S23 candidate: E-value<br/>BACKLOG/]
+        M0 --> M1
     end
     subgraph COLLAB [Collaborator on feature/audit-burn-down]
         direction TB
@@ -132,33 +133,41 @@ graph LR
     end
     SHARED -.->|both load on session start| MOUNI
     SHARED -.->|both load on session start| COLLAB
-    classDef flight fill:#dae8fc,stroke:#6c8ebf,color:#000
+    classDef done fill:#d5e8d4,stroke:#82b366,color:#000
     classDef backlog fill:#fff2cc,stroke:#d6b656,color:#000
+    classDef deferred fill:#f5f5f5,stroke:#999,color:#666,stroke-dasharray:5 5
     classDef shared fill:#f5e1ff,stroke:#9673a6,color:#000
-    class M1 flight
+    class M0 done
+    class M1 deferred
     class C1,C2,C3 backlog
     class D1,D2,D3 shared
 ```
 
-The two tracks touch different subsystems (Mouni: `counterfactual_service/`; collaborator: `api_gateway/` + `safety/`) so merge conflicts are unlikely. PRs land independently into `main`.
+The two tracks touched different subsystems (Mouni: `counterfactual_service/`; collaborator: `api_gateway/` + `safety/`) so merge conflicts were avoided. PRs land independently into `main`.
 
 
 ## In flight (active)
 
 | Sprint | Owner | Branch | Started | Goal |
 |---|---|---|---|---|
-| **S22** | Mouni | `feature/s22-tmle` | 2026-05-19 | TMLE — 6th estimator slot with cross-fitted targeting, MAE 0.20 on synthetic DGP |
-| **Audit burn-down (P-2c → P-3)** | Collaborator | `feature/audit-burn-down` | 2026-05-19 | Close audit findings #3, #4, #6, #8 — see `AUDIT_BURN_DOWN.md` |
+| _(no active feature branches)_ | — | — | — | — |
 
-Both tracks are independent. S22 touches `counterfactual_service/`;
-the audit burn-down touches `api_gateway/`, `safety/`, and
-`connectors/`. No expected merge conflicts.
+Mouni's S22 (TMLE) and S21d (multi-service SDK codegen) both
+merged as PRs #12 and #13 on 2026-05-19. Collaborator's
+audit-burn-down track is the only active feature branch.
 
 ## Completed (newest first)
 
 | Sprint | Bundle (+ hotfix) | Subsystem | What it ships |
 |---|---|---|---|
+| **P-3** | PR #17 | api_gateway + safety | sqlglot AST validator + connection pooling. Closes audit findings #3, #4, #6. `_estimate_query_cost` + `_check_performance_ast` use AST node counts; `QueryPlanner` join multiplier linearised; asyncpg pool registry replaces per-request connect/disconnect. 973 tests pass. |
+| **P-2c** | `27c088b` | api_gateway | Lineage materialised view resolves audit #8. `gateway_lineage_edges` cache populated at create-time; `GET /lineage` is now two indexed SELECTs; FK CASCADE prunes on delete. |
 | **P-2b** | `3a9d195` | api_gateway | Schema context cache resolves audit #5. `gateway_schema_context` table keyed by SHA-256 fingerprint; populate-on-upload + 60s refresh; queries.py switches to use_llm=False inline. |
+| **Sec-2** | `39d8d58` + fix-ups `ad7e0f3` + `0194486` + `801b673` → squash-merge `4161ccc` (PR #16) | shared + api_gateway + database + counterfactual_service + evolution + .github | Closes all 42 open CodeQL alerts + 1 github-code-quality bot lint comment on PR #15. Four fix clusters: (a) `SQLSafetyValidator` wired into `connection_manager.execute_query` (HIGH alert #42, defense-in-depth); (b) new `shared/safe_paths.py` + inline `realpath + startswith + trailing-sep` sanitizer at FileResponse sinks in `etl.py`/`pipelines.py` (HIGH alerts #36-#41); (c) new `shared/error_handler.py::sanitize_error` helper + 25 callsite replacements removing `str(exc)`-into-response leaks (MEDIUM alerts #11-#35); (d) workflow-level `permissions: contents: read` block in `.github/workflows/ci.yml` (MEDIUM alerts #1-#10). Three fix-up commits needed to find the CodeQL-recognised sanitizer pattern: `Path.relative_to` (not modelled), then `commonpath` w/ intermediate variable (not modelled), then canonical `realpath + startswith(base + os.sep)` form (recognised). 20 contract tests in `test_sec2_helpers.py` pin the boundary attacks. |
+| **S18.1** | `cae03b2` → squash-merge `5026ce0` (PR #15) | uasr | Wires S18 `WassersteinMartingaleDetector` into live `mapek_worker._analyze_detect_drift`. 4 new `MAPEKConfig` flags (default OFF for backwards-compat); `__init__` lazy-constructs the detector only when opted in. Dispatch tries martingale first → falls through to classical IQR on no-alarm / no-baseline (never silently drops a drift signal). DriftDetectionResult shape preserved across paths so recovery loop + audit log + frontend operator card need zero changes. Severity escalation flag (`martingale_alarm_severity_high`) lets operators bypass `pause_on_severity` gating per source. 9 contract tests pinning the Azuma-Hoeffding bound (≤ 3 false-positives in 30 batches at α=0.05) + 3σ drift detection within 20 batches. Bundle scope: detector swap only — Causal-RL shim selection (S18.1b) and Kramer-Magee canary router replacing pause/resume (S18.1c) deferred. Second of three deferred integration sprints. |
+| **S20.2** | `bfb31fa` + hotfixes `4b0279e` + `5ce3b38` → squash-merge `fbe5556` (PR #14) | scheduler_service | Wires S20b distributed primitives into live scheduler worker. Auto-detects Postgres → LISTEN/NOTIFY wake + pg_advisory_lock cron-evaluator leader election; SQLite → pure polling fallback (backward-compat unchanged). `scheduler.replicas > 1` finally unblocked. p99 job-start latency drops from 60s (polling) to sub-second (NOTIFY hop). Two hotfixes needed for tz-naive vs tz-aware datetime mismatch: SQLite stores datetimes as strings and is forgiving; Postgres+asyncpg is strict and rejected tz-aware parameters against tz-naive columns. Fix: `.replace(tzinfo=None)` in worker.\_evaluate\_and\_execute + every model `default=` lambda. Lesson: when a Postgres schema uses tz-naive columns, EVERY producer of values (worker reads, model defaults, test fixtures) must strip tzinfo. CI lane runs both test_scheduler_distributed.py (S20b) and test_scheduler_worker_integration.py (S20.2) against postgres:16. |
+| **S21d** | `1e3c929` + hotfix `a52c3af` → squash-merge `817b75e` (PR #13) | scripts + sdk_clients + 11 service openapi.json | Multi-service SDK codegen — 11 typed clients (causal, code_generation, connectors, dar, database, execution_sandbox, gateway, insights, knowledge_base, metadata_store, orchestration, scheduler) auto-generated from each service's OpenAPI schema. 162 typed methods total. `scripts/regen_all_sdks.py` orchestrator with subprocess-per-service isolation. CI lane regenerates + diffs schemas AND clients. Pillar 5 vision complete. |
+| **S22** | `07794d2` + hotfix `e3d4d2a` → squash-merge `f76db51` (PR #12) | counterfactual_service | Cross-fitted TMLE as 6th estimator slot. Pure NumPy + sklearn (no econml). Closed-form ε targeting via van der Laan & Rubin 2006 identity-link linear submodel; influence-curve CI from the efficient gradient. Layer 19 contract proven: TRUE_EFFECT recovered within MAE ~0.01 on synthetic DGP (target was MAE 0.20). 16 contract tests gated on `pytest.importorskip("sklearn")` so the eval-gate lane runs them via the `test_counterfactual_*.py` glob. First sprint shipped under the two-developer protocol via feature branch + PR. |
 | **P-2a** | `ab25f71` | api_gateway | File metadata cache resolves audit #2. `gateway_file_metadata` table + populate-on-upload + 60s background refresh; `/dashboard/stats` becomes a single SELECT. ~100-1000× p99 dashboard-latency improvement. |
 | **P-1** | `5a03f16` + `9ffd91c` | api_gateway | Migrated `_query_history_store + _saved_queries_store + _share_tokens_store` to SQLAlchemy. Resolves audit #1 + #7. **Lazy-init via `session_scope()`** is the test-friendly pattern; don't break it. |
 | **Security** | `5ccaa15` | frontend | 12 Dependabot alerts → 0. axios `^1.16.1` + `overrides` block for 9 transitive deps. |
@@ -188,16 +197,16 @@ S1-S6 pre-dated this registry; see commit `157b293` and earlier for that history
 | Sprint | Pillar | Owner | Description |
 |---|---|---|---|
 | ~~**P-2b**~~ | ~~Audit~~ | ~~Collaborator~~ | ~~Schema context cache — DONE, see `3a9d195`~~ |
-| **P-2c** | Audit | Collaborator | Lineage materialised view — audit finding #8. Per-workspace lineage graph derived from `gateway_saved_queries` + `gateway_dashboards`, refreshed on writes. |
-| **P-3** | Audit | Collaborator | sqlglot AST replaces regex query validator + naive cost estimator — audit findings #3 + #4 + #6 (connection pooling can ride along). |
-| **S22** | Analytic depth | Mouni | TMLE estimator. Currently in flight (see In Flight section). |
+| ~~**P-2c**~~ | ~~Audit~~ | ~~Collaborator~~ | ~~Lineage materialised view — DONE, see PR #17~~ |
+| ~~**P-3**~~ | ~~Audit~~ | ~~Collaborator~~ | ~~sqlglot AST validator + connection pooling — DONE, see PR #17~~ |
 | **S23** | Analytic depth | TBD | E-value sensitivity + Cinelli-Hazlett robustness analysis. |
 
 Deferred indefinitely:
-- **S18.1** — wire S18 causal-RL primitives into `uasr/mapek_worker.py` live path.
+- **S18.1b** — wire S18 CausalRLEvaluator into `uasr/recovery_loop.py` for off-policy shim selection.
+- **S18.1c** — wire S18 `shim_router` (Kramer-Magee canary) into `uasr/mapek_worker.py` to replace `pause/resume`.
 - **S20.1** — wire S20a streaming primitives into `streaming_engine.py + window_processor.py + backpressure.py`.
-- **S20.2** — wire S20b distributed_queue + advisory locks into `scheduler_service/worker.py`.
-- **S21d** — auto-generate clients for additional services beyond api_gateway.
+- **S20.2.1** — schema migration to move `ScheduledJob.next_execution_time` (+ other DateTime columns) to `DateTime(timezone=True)` so the `.replace(tzinfo=None)` dance can be dropped.
+- **S21e** — roll the api_gateway client into `regen_all_sdks.py` (currently kept on its own pipeline for historical reasons).
 
 ## How to update this file
 
@@ -215,4 +224,4 @@ When you reserve a future sprint:
 
 Update the date at the bottom when you make a material change.
 
-Last updated 2026-05-12 — P-2b landed (`3a9d195`); audit finding #5 closed.
+Last updated 2026-05-21 — P-3 (findings #3, #4, #6) + P-2c (finding #8) shipped as PR #17. All audit burn-down findings closed. Previous: Sec-2 (42 CodeQL findings) shipped as PR #16 / `4161ccc`.

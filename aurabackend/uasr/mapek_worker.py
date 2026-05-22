@@ -44,6 +44,7 @@ from .models import (
     BatchPayload,
     DriftDetectionResult,
     DriftSeverity,
+    DriftType,
     RecoveryLoopResult,
     RecoveryStatus,
 )
@@ -87,6 +88,24 @@ class MAPEKConfig:
     # Recovery
     pause_on_severity: DriftSeverity = DriftSeverity.MEDIUM
 
+    # ── Sprint S18.1 opt-in: Wasserstein-Martingale drift detector ───
+    # Default OFF — preserves the existing IQR / KL detector behaviour
+    # for every UASR worker that doesn't explicitly opt in. When True,
+    # `_analyze_detect_drift` routes through `WassersteinMartingaleDetector`
+    # which gives a provable Azuma-Hoeffding false-positive bound of
+    # `martingale_alpha` (default 0.1%). Bifet & Gavalda + Hoeffding 1963.
+    # The classical IQR / KL-divergence checks remain available for
+    # comparison + as a fallback if the martingale baseline isn't
+    # registered for the source.
+    use_martingale_detector: bool = False
+    martingale_alpha: float = 0.001
+    martingale_baseline_window: int = 100
+    # When True AND martingale fires AND a baseline column triggered,
+    # the resulting DriftDetectionResult uses severity HIGH. When False
+    # (default), severity stays MEDIUM — softer escalation lets
+    # operators tune the recovery-trigger threshold via pause_on_severity.
+    martingale_alarm_severity_high: bool = False
+
 
 # ── Progress callback signature ───────────────────────────────────────
 # (phase, message, payload) → awaitable
@@ -111,6 +130,17 @@ class MAPEKWorker:
         self._loop = recovery_loop or RecoveryLoop(self._detector)
         self._metrics = metrics or HealingMetricTracker()
         self._progress_cb = progress_cb
+
+        # Sprint S18.1 — lazily initialise the WassersteinMartingaleDetector
+        # ONLY when the flag is on. Keeps the import + state allocation
+        # off the hot path for the (default) IQR-only deployment.
+        self._martingale: Optional[Any] = None
+        if self._cfg.use_martingale_detector:
+            from .martingale import WassersteinMartingaleDetector
+            self._martingale = WassersteinMartingaleDetector(
+                alpha=self._cfg.martingale_alpha,
+                baseline_window=self._cfg.martingale_baseline_window,
+            )
 
         self._consumer: Any = None
         self._duckdb_con: Any = None
@@ -283,7 +313,94 @@ class MAPEKWorker:
     # ── Analyze ───────────────────────────────────────────────────────
 
     def _analyze_detect_drift(self, batch: BatchPayload) -> DriftDetectionResult:
+        """Run the configured drift detector.
+
+        Sprint S18.1 dispatch: when ``cfg.use_martingale_detector`` is
+        True, the Wasserstein-Martingale detector runs alongside the
+        classical IQR/KL detector and FAILS-OPEN to it on any column
+        without a registered baseline. This way:
+
+        * If a martingale alarm fires (provable α false-positive bound),
+          we report it as the primary drift signal — the operator gets
+          a mathematically-guaranteed-real drift.
+        * If no martingale alarm but the classical detector fires
+          (schema drift, large KL, semantic shift), we still report
+          it. The classical signals catch things the martingale
+          doesn't (schema additions, embedding cosine).
+
+        Default OFF — `cfg.use_martingale_detector=False` skips the
+        martingale path entirely and the function reduces to the
+        pre-S18.1 single-line `self._detector.detect(batch)`.
+        """
+        if self._cfg.use_martingale_detector and self._martingale is not None:
+            martingale_result = self._analyze_martingale(batch)
+            if martingale_result is not None and martingale_result.drift_detected:
+                return martingale_result
         return self._detector.detect(batch)
+
+    def _analyze_martingale(
+        self, batch: BatchPayload,
+    ) -> Optional[DriftDetectionResult]:
+        """Per-column Wasserstein-Martingale update; build the same
+        ``DriftDetectionResult`` shape the classical detector returns.
+
+        Returns None when no column in this batch has a registered
+        baseline (martingale can't fire) — caller falls through to
+        the classical detector. Returns a result with ``drift_detected
+        = True`` only when at least one column's martingale crossed
+        the Azuma-Hoeffding bound.
+        """
+        assert self._martingale is not None
+        alarms: List[str] = []
+        max_distance: float = 0.0
+        for col in batch.columns:
+            # Extract numeric samples from this column. Skip strings,
+            # None, dicts — only Wasserstein-comparable values.
+            samples: List[float] = []
+            for r in batch.rows:
+                v = r.get(col)
+                if isinstance(v, (int, float)) and not isinstance(v, bool):
+                    samples.append(float(v))
+            if not samples:
+                continue
+            try:
+                fired = self._martingale.update(batch.source_id, col, samples)
+            except Exception as exc:
+                logger.warning("martingale update failed for col=%s: %s", col, exc)
+                continue
+            diag = self._martingale.diagnostics(batch.source_id, col)
+            if diag.get("last_distance") is not None:
+                max_distance = max(max_distance, float(diag["last_distance"]))
+            if fired:
+                alarms.append(col)
+
+        if not alarms:
+            return None
+
+        severity = (
+            DriftSeverity.HIGH
+            if self._cfg.martingale_alarm_severity_high
+            else DriftSeverity.MEDIUM
+        )
+        return DriftDetectionResult(
+            source_id=batch.source_id,
+            batch_id=batch.batch_id,
+            drift_detected=True,
+            drift_type=DriftType.STATISTICAL,
+            severity=severity,
+            affected_columns=alarms,
+            kl_divergence=None,
+            drift_vector={
+                "detector": "wasserstein_martingale",
+                "alpha": self._cfg.martingale_alpha,
+                "alarms": alarms,
+                "max_wasserstein_1": max_distance,
+            },
+            details=(
+                f"Wasserstein-Martingale alarm on columns {alarms!r} "
+                f"(α={self._cfg.martingale_alpha}, max W₁={max_distance:.4f})"
+            ),
+        )
 
     def _should_pause(self, drift: DriftDetectionResult) -> bool:
         if not drift.drift_detected or drift.severity is None:

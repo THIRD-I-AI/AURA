@@ -17,6 +17,8 @@ from sqlalchemy.engine.reflection import Inspector
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
+from safety.validator import SQLSafetyValidator
+
 logger = logging.getLogger("aura.database.connection_manager")
 
 
@@ -91,6 +93,13 @@ class DatabaseConnectionManager:
         self.connections: Dict[str, DatabaseConnection] = {}
         self.engines: Dict[str, AsyncEngine] = {}
         self.schema_cache: Dict[str, DatabaseSchema] = {}
+        # Sec-2 #42: defense-in-depth — even though the gateway router
+        # validates queries up front, callers reaching execute_query
+        # directly (e.g. agents, scheduled jobs) must also pass the
+        # validator. CodeQL's "SQL query built from user-controlled
+        # sources" alert fires on `text(query)` at line 274; the
+        # validator runs before that.
+        self._sql_validator = SQLSafetyValidator()
 
     def _get_connection_string(self, connection: DatabaseConnection) -> str:
         if connection.connection_string:
@@ -269,6 +278,16 @@ class DatabaseConnectionManager:
         engine = self.engines.get(connection_id)
         if not engine:
             raise ValueError(f"Connection {connection_id} not found or not initialized")
+
+        # Sec-2 #42: defense-in-depth. Reject forbidden / injection-shaped
+        # queries before they hit the engine. Callers that have already
+        # validated upstream pay only the regex cost; callers that haven't
+        # get the protection.
+        validation = self._sql_validator.validate(query)
+        if not validation.is_valid:
+            raise ValueError(
+                f"Query rejected by safety validator: {'; '.join(validation.errors)}"
+            )
 
         async with engine.connect() as conn:
             result = await conn.execute(text(query))

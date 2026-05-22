@@ -671,6 +671,101 @@ def test_generated_init_module_exports_client_class(tmp_path: Path) -> None:
         assert sym in init_src
 
 
+# ── Sprint S21d: multi-service generated clients ─────────────────────
+
+
+SDK_CLIENTS_DIR = REPO_ROOT / "sdk_clients"
+
+
+# (package_name, service_dir, expected min method count) — the count
+# is a floor so adding endpoints to a service doesn't break the test;
+# REMOVING endpoints would. If a sprint legitimately reduces a
+# service's surface, update the floor here in the same PR.
+EXPECTED_CLIENTS = [
+    ("aura_causal_client",            "causal_service",          3),
+    ("aura_code_generation_client",   "code_generation_service", 2),
+    ("aura_connectors_client",        "connectors",              14),
+    ("aura_dar_client",               "dar_service",             7),
+    ("aura_database_client",          "database",                1),
+    ("aura_execution_sandbox_client", "execution_sandbox",       2),
+    ("aura_gateway_client",           None,                      101),
+    ("aura_insights_client",          "insights",                4),
+    ("aura_knowledge_base_client",    "knowledge_base",          1),
+    ("aura_metadata_store_client",    "metadata_store",          9),
+    ("aura_orchestration_client",     "orchestration_service",   3),
+    ("aura_scheduler_client",         "scheduler_service",       15),
+]
+
+
+@pytest.mark.parametrize("package_name,service_dir,min_methods", EXPECTED_CLIENTS)
+def test_generated_client_imports_and_has_expected_methods(
+    package_name: str, service_dir: str, min_methods: int,
+) -> None:
+    """Every generated SDK client must import cleanly + expose at
+    least the expected number of operation methods on Client +
+    AsyncClient. Catches: silently truncated codegen, missing
+    classes in __all__, etc."""
+    import importlib
+    import sys as _sys
+
+    if str(SDK_CLIENTS_DIR) not in _sys.path:
+        _sys.path.insert(0, str(SDK_CLIENTS_DIR))
+
+    module = importlib.import_module(package_name)
+    # Both sync + async client classes must be exported.
+    assert hasattr(module, "Client"), f"{package_name} missing Client"
+    assert hasattr(module, "AsyncClient"), f"{package_name} missing AsyncClient"
+    assert hasattr(module, "APIError"), f"{package_name} missing APIError"
+
+    # Method-count floor — counts public methods on Client (one per
+    # OpenAPI operation). AsyncClient has the same shape so checking
+    # one is enough.
+    c = module.Client(base_url="http://test.invalid")
+    methods = [
+        name for name in dir(c)
+        if not name.startswith("_") and callable(getattr(c, name))
+    ]
+    assert len(methods) >= min_methods, (
+        f"{package_name} has {len(methods)} methods, expected >= {min_methods}"
+    )
+
+
+def test_every_service_with_a_main_has_a_committed_schema() -> None:
+    """If a developer adds a new service with a main.py, they should
+    also add it to scripts/regen_all_sdks.py and commit the resulting
+    aurabackend/<service>/openapi.json + sdk_clients/aura_<service>_client/.
+    This test fails if a NEW service shows up without an openapi.json
+    next to it — a forced reminder to register it with the codegen
+    orchestrator."""
+    import sys as _sys
+
+    if str(REPO_ROOT / "scripts") not in _sys.path:
+        _sys.path.insert(0, str(REPO_ROOT / "scripts"))
+    from regen_all_sdks import SERVICES
+
+    registered_dirs = {service_dir for service_dir, *_ in SERVICES}
+    # Plus the special cases that don't go through the orchestrator.
+    registered_dirs.update({
+        "api_gateway",            # has its own pipeline + repo-root openapi.json
+        "counterfactual_service", # has hand-written aura-counterfactual SDK
+    })
+
+    backend = REPO_ROOT / "aurabackend"
+    services_with_main = set()
+    for child in backend.iterdir():
+        if not child.is_dir():
+            continue
+        if (child / "main.py").exists():
+            services_with_main.add(child.name)
+
+    missing = services_with_main - registered_dirs
+    assert not missing, (
+        f"Service(s) with main.py NOT registered in regen_all_sdks.py "
+        f"and not in the special-cases list: {sorted(missing)}. "
+        f"Add to SERVICES in scripts/regen_all_sdks.py and regenerate."
+    )
+
+
 def test_readme_embeds_schema_fingerprint(tmp_path: Path) -> None:
     """The README carries a SHA-256 fingerprint of the source schema
     for traceability — auditors comparing two generated artifacts can

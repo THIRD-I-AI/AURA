@@ -6,6 +6,16 @@ on:
   pull_request:
     branches: [main, master, "feature/**"]
 
+# Sec-2 #1-#10: CodeQL flagged every job for not declaring permissions
+# explicitly. Default GITHUB_TOKEN can be `contents: write` for repos
+# created before GitHub's 2023 default tightening, which is more than
+# any AURA CI job needs (tests + lint + coverage upload — no deploy,
+# no PR comment, no release create). Workflow-level `contents: read`
+# forces the principle of least privilege; individual jobs that need
+# more can opt up with their own permissions block.
+permissions:
+  contents: read
+
 jobs:
   # ── Backend tests ────────────────────────────────────────────────────────
   backend-test:
@@ -175,8 +185,25 @@ jobs:
         uses: actions/setup-python@v6
         with:
           python-version: "3.12"
+          cache: pip
+          cache-dependency-path: aurabackend/requirements*.txt
 
-      - name: Regenerate aura_gateway_client
+      - name: Install backend dependencies
+        # Sprint S21d: the multi-service regen needs every service to
+        # import cleanly. That requires the full backend dep stack
+        # (FastAPI, sqlalchemy, asyncpg, dowhy, sklearn, …) since each
+        # service's main.py wires routers + middleware + lifespan
+        # callables at import time. requirements-causal pulls in the
+        # sklearn / dowhy chain transitively.
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r aurabackend/requirements.txt
+          pip install -r aurabackend/requirements-causal.txt
+
+      - name: Regenerate gateway client (pre-S21d snapshot)
+        # Kept as a separate step so the gateway openapi.json snapshot
+        # at the repo root stays in sync. S21e can roll this into
+        # regen_all_sdks.py.
         run: |
           python scripts/generate_sdk.py \
             --openapi aurabackend/openapi.json \
@@ -184,13 +211,21 @@ jobs:
             --package-name aura_gateway_client \
             --service-tag aura-gateway
 
-      - name: Confirm committed clients match regeneration
+      - name: Regenerate every microservice client (S21d)
+        # Walks every service in scripts/regen_all_sdks.py::SERVICES,
+        # dumps fresh OpenAPI to aurabackend/<service>/openapi.json,
+        # then regenerates sdk_clients/aura_<service>_client/. Strict
+        # mode so any service failing to dump fails CI immediately.
+        run: |
+          python scripts/regen_all_sdks.py --strict
+
+      - name: Confirm committed clients + schemas match regeneration
         run: |
           # `git diff --exit-code` returns 0 if no diff, 1 if there is a diff.
-          # `--exit-status` is NOT a valid git option (rejected by git 2.54+);
-          # the correct flag name is `--exit-code` per `git diff --help`.
-          if ! git diff --exit-code sdk_clients/; then
-            echo "::error::sdk_clients/ has drifted from openapi.json. Run scripts/generate_sdk.py locally and commit the result."
+          # Covers BOTH the generated sdk_clients/ AND the committed
+          # service openapi.json snapshots — drift in either fails CI.
+          if ! git diff --exit-code sdk_clients/ aurabackend/openapi.json aurabackend/**/openapi.json; then
+            echo "::error::sdk_clients/ or a service's openapi.json drifted from regeneration. Run scripts/regen_all_sdks.py locally and commit the result."
             exit 1
           fi
 
@@ -247,8 +282,12 @@ jobs:
           # AURA_PG_TEST_DSN unlocks Tier B Postgres-required tests.
           # asyncpg + SQLAlchemy async URL format.
           AURA_PG_TEST_DSN: "postgresql+asyncpg://aura_test:aura_test_pw@localhost:5432/aura_scheduler_test"
+        # S20.2: also run test_scheduler_worker_integration.py — its
+        # Tier B tests verify the worker's advisory-lock leader
+        # election + NOTIFY-wake against the same postgres:16 service
+        # container. Both files use the AURA_PG_TEST_DSN env-var gate.
         run: |
-          python -m pytest tests/test_scheduler_distributed.py -v --tb=short
+          python -m pytest tests/test_scheduler_distributed.py tests/test_scheduler_worker_integration.py -v --tb=short
 
   # ── Frontend type-check ──────────────────────────────────────────────────
   frontend-typecheck:

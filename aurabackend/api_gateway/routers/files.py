@@ -11,6 +11,7 @@ from typing import Any, Dict, Optional
 from fastapi import APIRouter, File, Header, HTTPException, UploadFile
 
 from shared.data_utils import invalidate_schema_cache
+from shared.error_handler import sanitize_error
 from shared.logging_config import get_logger
 from shared.streaming_manager import TOPIC_UPLOAD, streaming_manager
 
@@ -170,11 +171,11 @@ async def upload_universal(
         await streaming_manager.publish_complete(TOPIC_UPLOAD, upload_id, result)
         return result
     except Exception as e:
-        logger.error("Upload failed: %s", e)
+        safe_message = sanitize_error(e, logger=logger, context=f"upload {upload_id}")
         await streaming_manager.publish_error(
-            TOPIC_UPLOAD, upload_id, str(e), code="UPLOAD_FAILED",
+            TOPIC_UPLOAD, upload_id, safe_message, code="UPLOAD_FAILED",
         )
-        raise HTTPException(status_code=500, detail=f"Server save failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=safe_message)
 
 
 @router.get("/files")
@@ -186,7 +187,7 @@ async def list_files() -> Dict[str, Any]:
         files = file_service.list_files()
         return {"status": "success", "files": files}
     except Exception as e:
-        return {"status": "error", "error": str(e)}
+        return {"status": "error", "error": sanitize_error(e, logger=logger, context="list files")}
 
 
 @router.get("/files/{file_id}")
@@ -203,7 +204,7 @@ async def get_file_info(file_id: str) -> Dict[str, Any]:
     except HTTPException:
         raise
     except Exception as e:
-        return {"status": "error", "error": str(e)}
+        return {"status": "error", "error": sanitize_error(e, logger=logger, context="get file info")}
 
 
 @router.get("/files/{file_id}/profile")
@@ -229,7 +230,7 @@ async def get_file_profile(file_id: str) -> Dict[str, Any]:
     except HTTPException:
         raise
     except Exception as e:
-        return {"status": "error", "error": str(e)}
+        return {"status": "error", "error": sanitize_error(e, logger=logger, context="get file profile")}
 
 
 @router.delete("/files/{file_id}")
@@ -247,4 +248,4 @@ async def delete_file(file_id: str) -> Dict[str, Any]:
     except HTTPException:
         raise
     except Exception as e:
-        return {"status": "error", "error": str(e)}
+        return {"status": "error", "error": sanitize_error(e, logger=logger, context="delete file")}
