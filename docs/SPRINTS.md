@@ -149,11 +149,11 @@ The two tracks touched different subsystems (Mouni: `counterfactual_service/`; c
 
 | Sprint | Owner | Branch | Started | Goal |
 |---|---|---|---|---|
-| _(no active feature branches)_ | — | — | — | — |
+| **S23** | Mouni | `feature/s23-sensitivity` | 2026-05-22 | E-value (VanderWeele-Ding 2017) + Cinelli-Hazlett 2020 robustness value attached to every `CounterfactualEstimate`. In hash basis. Issue #20. |
 
 Mouni's S22 (TMLE) and S21d (multi-service SDK codegen) both
 merged as PRs #12 and #13 on 2026-05-19. Collaborator's
-audit-burn-down track is the only active feature branch.
+audit-burn-down track wrapped on 2026-05-20 (PR #17 merged).
 
 ## Completed (newest first)
 
@@ -199,7 +199,7 @@ S1-S6 pre-dated this registry; see commit `157b293` and earlier for that history
 | ~~**P-2b**~~ | ~~Audit~~ | ~~Collaborator~~ | ~~Schema context cache — DONE, see `3a9d195`~~ |
 | ~~**P-2c**~~ | ~~Audit~~ | ~~Collaborator~~ | ~~Lineage materialised view — DONE, see PR #17~~ |
 | ~~**P-3**~~ | ~~Audit~~ | ~~Collaborator~~ | ~~sqlglot AST validator + connection pooling — DONE, see PR #17~~ |
-| **S23** | Analytic depth | TBD | E-value sensitivity + Cinelli-Hazlett robustness analysis. |
+| **S23** | Analytic depth | Mouni (in flight) | E-value sensitivity + Cinelli-Hazlett robustness analysis. See In Flight section. |
 
 Deferred indefinitely:
 - **S18.1b** — wire S18 CausalRLEvaluator into `uasr/recovery_loop.py` for off-policy shim selection.
@@ -223,4 +223,4 @@ When you reserve a future sprint:
 
 Update the date at the bottom when you make a material change.
 
-Last updated 2026-05-21 — **S20.1 closes the deferred integration arc** (PR #18 / `9d3db43`). All three deferred wirings — S20.2 (scheduler), S18.1 (UASR martingale), S20.1 (streaming engine) — now landed. Collaborator's P-3 + P-2c audit burn-down also landed in parallel as PR #17. Previous: Sec-2 (42 CodeQL findings) shipped as PR #16 / `4161ccc`.
+Last updated 2026-05-22 — **S23 (E-value + Cinelli-Hazlett sensitivity) claimed by Mouni**, branch `feature/s23-sensitivity`, issue #20. Previous: S20.1 closes the deferred integration arc (PR #18 / `9d3db43`); Sec-2 (42 CodeQL findings) shipped as PR #16 / `4161ccc`.
