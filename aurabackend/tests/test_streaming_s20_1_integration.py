@@ -21,13 +21,11 @@ All tests Tier A (pure-Python, no optional deps).
 """
 from __future__ import annotations
 
-import asyncio
 import time
-from typing import List
 
 import pytest
 
-from pipeline.streaming.backpressure import BackpressureManager, BackpressureStrategy
+from pipeline.streaming.backpressure import BackpressureManager
 from pipeline.streaming.late_data import (
     LateDataDecision,
     remerge_within_allowed_lateness_policy,
