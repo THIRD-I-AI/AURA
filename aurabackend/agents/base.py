@@ -198,7 +198,7 @@ class BaseAgent(ABC):
         raise last_exc if last_exc else RuntimeError("retry loop exited unexpectedly")
 
     async def execute(self, ctx: AgentContext) -> AgentResult:
-        start = time.time()
+        start = time.perf_counter()
         result = AgentResult(status=AgentStatus.RUNNING)
 
         # BATS: short-circuit before doing any work if the session pool is
@@ -222,7 +222,7 @@ class BaseAgent(ABC):
                     output_summary=str(exc),
                     severity=Severity.WARNING,
                 )
-                result.duration_ms = (time.time() - start) * 1000
+                result.duration_ms = (time.perf_counter() - start) * 1000
                 return result
 
         try:
@@ -252,7 +252,7 @@ class BaseAgent(ABC):
                 severity=Severity.ERROR,
             )
         finally:
-            duration_s = time.time() - start
+            duration_s = time.perf_counter() - start
             result.duration_ms = duration_s * 1000
             try:
                 from shared.observability import AGENT_DURATION  # late import to avoid cycle

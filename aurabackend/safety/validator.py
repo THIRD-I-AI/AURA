@@ -113,12 +113,11 @@ class SQLSafetyValidator:
                 errors.append(f"Security risk: {reason}")
                 risk_level = QueryRiskLevel.CRITICAL
 
-        # Check for performance issues
-        for pattern, warning in self.PERFORMANCE_WARNINGS.items():
-            if re.search(pattern, query_upper, re.IGNORECASE):
-                warnings.append(warning)
-                if risk_level in (QueryRiskLevel.SAFE, QueryRiskLevel.LOW_RISK):
-                    risk_level = QueryRiskLevel.LOW_RISK
+        # Check for performance issues via AST (finding #4)
+        for warning in self._check_performance_ast(query):
+            warnings.append(warning)
+            if risk_level in (QueryRiskLevel.SAFE, QueryRiskLevel.LOW_RISK):
+                risk_level = QueryRiskLevel.LOW_RISK
 
         # Extract LIMIT clause
         limit_match = re.search(r"LIMIT\s+(\d+)", query_upper)
@@ -160,12 +159,69 @@ class SQLSafetyValidator:
         )
 
     def _estimate_query_cost(self, query: str) -> int:
-        """Estimate relative query cost"""
-        cost = 0
-        for op, op_cost in self.OPERATION_COSTS.items():
-            if f" {op}" in query or f" {op} " in query:
-                cost += op_cost
-        return cost
+        """Estimate relative query cost via sqlglot AST node counts."""
+        try:
+            import sqlglot
+            from sqlglot import exp
+
+            parsed = sqlglot.parse(query, error_level="ignore")
+            if not parsed or parsed[0] is None:
+                return 0
+            stmt = parsed[0]
+            cost = 0
+            cost += len(list(stmt.find_all(exp.Join))) * self.OPERATION_COSTS["JOIN"]
+            cost += (1 if stmt.find(exp.Group) else 0) * self.OPERATION_COSTS["GROUP BY"]
+            cost += (1 if stmt.find(exp.Distinct) else 0) * self.OPERATION_COSTS["DISTINCT"]
+            cost += (1 if stmt.find(exp.Order) else 0) * self.OPERATION_COSTS["ORDER BY"]
+            cost += len(list(stmt.find_all(exp.Subquery))) * self.OPERATION_COSTS["SUBQUERY"]
+            return cost
+        except Exception:
+            cost = 0
+            for op, op_cost in self.OPERATION_COSTS.items():
+                if f" {op}" in query or f" {op} " in query:
+                    cost += op_cost
+            return cost
+
+    def _check_performance_ast(self, query: str) -> List[str]:
+        """Detect performance anti-patterns via sqlglot AST (finding #4)."""
+        try:
+            import sqlglot
+            from sqlglot import exp
+
+            parsed = sqlglot.parse(query, error_level="ignore")
+            if not parsed or parsed[0] is None:
+                return self._check_performance_regex(query)
+            stmt = parsed[0]
+            found: List[str] = []
+
+            if stmt.find(exp.Star):
+                found.append("inefficient: select specific columns")
+
+            for like in stmt.find_all(exp.Like):
+                rhs = like.args.get("expression")
+                if isinstance(rhs, exp.Literal) and str(rhs.this).startswith("%"):
+                    found.append("performance: leading wildcard")
+                    break
+
+            if len(list(stmt.find_all(exp.Join))) >= 3:
+                found.append("complex joins: may be slow")
+
+            for ordered in stmt.find_all(exp.Ordered):
+                if isinstance(ordered.this, exp.Literal) and not ordered.this.is_string:
+                    found.append("order by ordinal (brittle)")
+                    break
+
+            return found
+        except Exception:
+            return self._check_performance_regex(query)
+
+    def _check_performance_regex(self, query: str) -> List[str]:
+        """Regex fallback for environments where sqlglot is unavailable."""
+        found = []
+        for pattern, warning in self.PERFORMANCE_WARNINGS.items():
+            if re.search(pattern, query.upper(), re.IGNORECASE):
+                found.append(warning)
+        return found
 
     def add_safety_limit(self, query: str) -> str:
         """Add LIMIT clause if missing"""
@@ -212,42 +268,63 @@ class QueryPlanner:
     @staticmethod
     def estimate_execution_time(query: str, row_count: int = 1000000) -> Tuple[float, str]:
         """
-        Estimate query execution time (very rough approximation)
+        Estimate query execution time (rough approximation).
+
+        Uses sqlglot AST to count joins linearly — the old string-count
+        approach used 2**join_count which blew up exponentially.
 
         Returns:
             Tuple of (estimated_time_ms, explanation)
         """
-        base_time = 0.1  # Base latency in ms
+        base_time = 0.1
+        explanation: List[str] = []
 
-        query_upper = query.upper()
-        explanation = []
+        try:
+            import sqlglot
+            from sqlglot import exp
 
-        # Scan operations (0.001ms per row)
-        if "WHERE" in query_upper:
+            parsed = sqlglot.parse(query, error_level="ignore")
+            stmt = (parsed or [None])[0]
+        except Exception:
+            stmt = None
+
+        if stmt is None:
+            query_upper = query.upper()
             base_time += row_count * 0.001
-            explanation.append("Full table scan with filter")
-        else:
-            base_time += row_count * 0.001
-            explanation.append("Full table scan")
+            explanation.append("Full table scan with filter" if "WHERE" in query_upper else "Full table scan")
+            join_count = query_upper.count("JOIN")
+            if join_count:
+                base_time *= (1 + 0.5 * join_count)
+                explanation.append(f"Includes {join_count} join(s)")
+            if "GROUP BY" in query_upper:
+                base_time *= 3
+                explanation.append("Includes grouping")
+            if "ORDER BY" in query_upper:
+                base_time *= 2
+                explanation.append("Includes sorting")
+            if "DISTINCT" in query_upper:
+                base_time *= 1.5
+                explanation.append("Includes DISTINCT")
+            return (base_time, "; ".join(explanation))
 
-        # Join operations (2x multiplier per join)
-        join_count = query_upper.count("JOIN")
-        if join_count > 0:
-            base_time *= (2 ** join_count)
+        base_time += row_count * 0.001
+        has_where = stmt.find(exp.Where) is not None
+        explanation.append("Full table scan with filter" if has_where else "Full table scan")
+
+        join_count = len(list(stmt.find_all(exp.Join)))
+        if join_count:
+            base_time *= (1 + 0.5 * join_count)
             explanation.append(f"Includes {join_count} join(s)")
 
-        # Group by operations (3x multiplier)
-        if "GROUP BY" in query_upper:
+        if stmt.find(exp.Group):
             base_time *= 3
             explanation.append("Includes grouping")
 
-        # Sort operations (2x multiplier)
-        if "ORDER BY" in query_upper:
+        if stmt.find(exp.Order):
             base_time *= 2
             explanation.append("Includes sorting")
 
-        # Distinct (1.5x multiplier)
-        if "DISTINCT" in query_upper:
+        if stmt.find(exp.Distinct):
             base_time *= 1.5
             explanation.append("Includes DISTINCT")
 

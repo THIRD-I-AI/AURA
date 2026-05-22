@@ -239,3 +239,76 @@ class TestQueryPlanner:
         assert "memory_estimate_mb" in cost
         assert "category" in cost
         assert cost["category"] == "low-cost"
+
+    def test_join_multiplier_is_linear_not_exponential(self):
+        # Old code: 2**3 = 8x. New code: (1 + 0.5*3) = 2.5x.
+        t1, _ = QueryPlanner.estimate_execution_time("SELECT * FROM a")
+        t3, _ = QueryPlanner.estimate_execution_time(
+            "SELECT * FROM a JOIN b ON a.id=b.id JOIN c ON b.id=c.id JOIN d ON c.id=d.id"
+        )
+        # 8x multiplier would give t3 > t1 * 7; linear gives t3 < t1 * 5.
+        assert t3 < t1 * 5
+
+
+# ── P-3 AST-based cost and performance checks ────────────────────────────────
+
+class TestASTCost:
+    def test_multiple_joins_cost(self):
+        v = SQLSafetyValidator()
+        q = "SELECT a.id FROM a JOIN b ON a.id=b.id JOIN c ON b.id=c.id JOIN d ON c.id=d.id"
+        cost = v._estimate_query_cost(q)
+        assert cost >= 6  # 3 joins × 2
+
+    def test_subquery_cost(self):
+        v = SQLSafetyValidator()
+        q = "SELECT id FROM (SELECT id FROM users WHERE active=1) AS sub LIMIT 10"
+        cost = v._estimate_query_cost(q)
+        assert cost >= 4  # one subquery × 4
+
+    def test_group_by_cost(self):
+        v = SQLSafetyValidator()
+        q = "SELECT dept, COUNT(*) FROM employees GROUP BY dept"
+        cost = v._estimate_query_cost(q)
+        assert cost >= 3  # GROUP BY × 3
+
+
+class TestASTPerformanceWarnings:
+    def test_select_star_warning(self):
+        v = SQLSafetyValidator()
+        found = v._check_performance_ast("SELECT * FROM users")
+        assert any("select specific" in w.lower() for w in found)
+
+    def test_leading_wildcard_warns(self):
+        v = SQLSafetyValidator()
+        found = v._check_performance_ast("SELECT id FROM users WHERE name LIKE '%test'")
+        assert any("wildcard" in w.lower() for w in found)
+
+    def test_trailing_wildcard_no_warning(self):
+        # Trailing wildcard is index-friendly — must not warn.
+        v = SQLSafetyValidator()
+        found = v._check_performance_ast("SELECT id FROM users WHERE name LIKE 'test%'")
+        assert not any("wildcard" in w.lower() for w in found)
+
+    def test_three_joins_warns(self):
+        v = SQLSafetyValidator()
+        found = v._check_performance_ast(
+            "SELECT a.id FROM a JOIN b ON a.id=b.id JOIN c ON b.id=c.id JOIN d ON c.id=d.id"
+        )
+        assert any("join" in w.lower() for w in found)
+
+    def test_two_joins_no_warning(self):
+        v = SQLSafetyValidator()
+        found = v._check_performance_ast(
+            "SELECT a.id FROM a JOIN b ON a.id=b.id JOIN c ON b.id=c.id"
+        )
+        assert not any("join" in w.lower() for w in found)
+
+    def test_ordinal_order_by_warns(self):
+        v = SQLSafetyValidator()
+        found = v._check_performance_ast("SELECT id, name FROM users ORDER BY 1")
+        assert any("ordinal" in w.lower() for w in found)
+
+    def test_named_order_by_no_warning(self):
+        v = SQLSafetyValidator()
+        found = v._check_performance_ast("SELECT id, name FROM users ORDER BY name")
+        assert not any("ordinal" in w.lower() for w in found)

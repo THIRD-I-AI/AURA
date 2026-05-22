@@ -150,7 +150,7 @@ The two tracks touched different subsystems (Mouni: `counterfactual_service/`; c
 
 | Sprint | Owner | Branch | Started | Goal |
 |---|---|---|---|---|
-| **Audit burn-down (P-2b → P-3)** | Collaborator | `feature/audit-burn-down` (TBD) | 2026-05-19 | Close audit findings #3, #4, #5, #6, #8 — see `AUDIT_BURN_DOWN.md` |
+| _(no active feature branches)_ | — | — | — | — |
 
 Mouni's S22 (TMLE) and S21d (multi-service SDK codegen) both
 merged as PRs #12 and #13 on 2026-05-19. Collaborator's
@@ -160,6 +160,9 @@ audit-burn-down track is the only active feature branch.
 
 | Sprint | Bundle (+ hotfix) | Subsystem | What it ships |
 |---|---|---|---|
+| **P-3** | PR #17 | api_gateway + safety | sqlglot AST validator + connection pooling. Closes audit findings #3, #4, #6. `_estimate_query_cost` + `_check_performance_ast` use AST node counts; `QueryPlanner` join multiplier linearised; asyncpg pool registry replaces per-request connect/disconnect. 973 tests pass. |
+| **P-2c** | `27c088b` | api_gateway | Lineage materialised view resolves audit #8. `gateway_lineage_edges` cache populated at create-time; `GET /lineage` is now two indexed SELECTs; FK CASCADE prunes on delete. |
+| **P-2b** | `3a9d195` | api_gateway | Schema context cache resolves audit #5. `gateway_schema_context` table keyed by SHA-256 fingerprint; populate-on-upload + 60s refresh; queries.py switches to use_llm=False inline. |
 | **Sec-2** | `39d8d58` + fix-ups `ad7e0f3` + `0194486` + `801b673` → squash-merge `4161ccc` (PR #16) | shared + api_gateway + database + counterfactual_service + evolution + .github | Closes all 42 open CodeQL alerts + 1 github-code-quality bot lint comment on PR #15. Four fix clusters: (a) `SQLSafetyValidator` wired into `connection_manager.execute_query` (HIGH alert #42, defense-in-depth); (b) new `shared/safe_paths.py` + inline `realpath + startswith + trailing-sep` sanitizer at FileResponse sinks in `etl.py`/`pipelines.py` (HIGH alerts #36-#41); (c) new `shared/error_handler.py::sanitize_error` helper + 25 callsite replacements removing `str(exc)`-into-response leaks (MEDIUM alerts #11-#35); (d) workflow-level `permissions: contents: read` block in `.github/workflows/ci.yml` (MEDIUM alerts #1-#10). Three fix-up commits needed to find the CodeQL-recognised sanitizer pattern: `Path.relative_to` (not modelled), then `commonpath` w/ intermediate variable (not modelled), then canonical `realpath + startswith(base + os.sep)` form (recognised). 20 contract tests in `test_sec2_helpers.py` pin the boundary attacks. |
 | **S18.1** | `cae03b2` → squash-merge `5026ce0` (PR #15) | uasr | Wires S18 `WassersteinMartingaleDetector` into live `mapek_worker._analyze_detect_drift`. 4 new `MAPEKConfig` flags (default OFF for backwards-compat); `__init__` lazy-constructs the detector only when opted in. Dispatch tries martingale first → falls through to classical IQR on no-alarm / no-baseline (never silently drops a drift signal). DriftDetectionResult shape preserved across paths so recovery loop + audit log + frontend operator card need zero changes. Severity escalation flag (`martingale_alarm_severity_high`) lets operators bypass `pause_on_severity` gating per source. 9 contract tests pinning the Azuma-Hoeffding bound (≤ 3 false-positives in 30 batches at α=0.05) + 3σ drift detection within 20 batches. Bundle scope: detector swap only — Causal-RL shim selection (S18.1b) and Kramer-Magee canary router replacing pause/resume (S18.1c) deferred. Second of three deferred integration sprints. |
 | **S20.2** | `bfb31fa` + hotfixes `4b0279e` + `5ce3b38` → squash-merge `fbe5556` (PR #14) | scheduler_service | Wires S20b distributed primitives into live scheduler worker. Auto-detects Postgres → LISTEN/NOTIFY wake + pg_advisory_lock cron-evaluator leader election; SQLite → pure polling fallback (backward-compat unchanged). `scheduler.replicas > 1` finally unblocked. p99 job-start latency drops from 60s (polling) to sub-second (NOTIFY hop). Two hotfixes needed for tz-naive vs tz-aware datetime mismatch: SQLite stores datetimes as strings and is forgiving; Postgres+asyncpg is strict and rejected tz-aware parameters against tz-naive columns. Fix: `.replace(tzinfo=None)` in worker.\_evaluate\_and\_execute + every model `default=` lambda. Lesson: when a Postgres schema uses tz-naive columns, EVERY producer of values (worker reads, model defaults, test fixtures) must strip tzinfo. CI lane runs both test_scheduler_distributed.py (S20b) and test_scheduler_worker_integration.py (S20.2) against postgres:16. |
@@ -193,9 +196,9 @@ S1-S6 pre-dated this registry; see commit `157b293` and earlier for that history
 
 | Sprint | Pillar | Owner | Description |
 |---|---|---|---|
-| **P-2b** | Audit | Collaborator | Schema context cache — audit finding #5. Move `build_schema_context_cached` off the event loop OR pre-compute on upload. |
-| **P-2c** | Audit | Collaborator | Lineage materialised view — audit finding #8. Per-workspace lineage graph derived from `gateway_saved_queries` + `gateway_dashboards`, refreshed on writes. |
-| **P-3** | Audit | Collaborator | sqlglot AST replaces regex query validator + naive cost estimator — audit findings #3 + #4 + #6 (connection pooling can ride along). |
+| ~~**P-2b**~~ | ~~Audit~~ | ~~Collaborator~~ | ~~Schema context cache — DONE, see `3a9d195`~~ |
+| ~~**P-2c**~~ | ~~Audit~~ | ~~Collaborator~~ | ~~Lineage materialised view — DONE, see PR #17~~ |
+| ~~**P-3**~~ | ~~Audit~~ | ~~Collaborator~~ | ~~sqlglot AST validator + connection pooling — DONE, see PR #17~~ |
 | **S23** | Analytic depth | TBD | E-value sensitivity + Cinelli-Hazlett robustness analysis. |
 
 Deferred indefinitely:
@@ -221,4 +224,4 @@ When you reserve a future sprint:
 
 Update the date at the bottom when you make a material change.
 
-Last updated 2026-05-21 — Sec-2 (42 CodeQL findings + PR #15 lint nit) shipped as PR #16 / `4161ccc`. Previous: S18.1 (martingale into MAPE-K worker) shipped as PR #15 / `5026ce0`.
+Last updated 2026-05-21 — P-3 (findings #3, #4, #6) + P-2c (finding #8) shipped as PR #17. All audit burn-down findings closed. Previous: Sec-2 (42 CodeQL findings) shipped as PR #16 / `4161ccc`.

@@ -144,6 +144,32 @@ class SavedQueryRow(Base):
     )
 
 
+class SchemaContextRow(Base):
+    """DB-persisted schema context — Sprint P-2b.
+
+    Replaces the in-process-only ``schema_cache`` entry in
+    ``shared/data_utils.py`` with a durable SQLite/Postgres row so the
+    context survives process restarts. The expensive work (LLM header
+    inference + O(N²) relationship probes) is done once in a background
+    task after upload; subsequent query executions read the cached
+    ``context_json`` without touching the LLM.
+
+    Fingerprint: SHA-256 of ``(sorted upload-dir filenames + mtimes)``
+    so a content-identical directory always hits the same row.
+    Primary key is the fingerprint — upsert semantics fall out for free.
+    """
+
+    __tablename__ = "gateway_schema_context"
+
+    fingerprint = Column(String(64), primary_key=True)
+    context_json = Column(Text, nullable=False)
+    last_indexed_at = Column(String(64), nullable=False)
+
+    __table_args__ = (
+        Index("ix_schema_context_indexed_at", "last_indexed_at"),
+    )
+
+
 class FileMetadataRow(Base):
     """Cached row count + size + last-modified for one uploaded file.
 
@@ -202,6 +228,33 @@ class ShareTokenRow(Base):
     )
 
 
+class LineageEdgeRow(Base):
+    """Materialised table→query edge for the lineage graph — Sprint P-2c.
+
+    One row per (table_name, saved_query_id) pair. Populated once at
+    create_saved_query time by parsing the SQL with sqlglot; pruned
+    automatically when the saved query is deleted via FK CASCADE.
+
+    SQL is immutable after creation (the PATCH endpoint only allows
+    name/starred edits), so this cache never needs a refresh tick —
+    the write-time parse is the single source of truth.
+
+    workspace_id is denormalised here so the list endpoint can filter
+    in one SELECT without a join back to gateway_saved_queries.
+    """
+
+    __tablename__ = "gateway_lineage_edges"
+
+    table_name = Column(String(255), primary_key=True)
+    saved_query_id = Column(
+        String(64),
+        ForeignKey("gateway_saved_queries.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    workspace_id = Column(String(64), nullable=False, index=True)
+    updated_at = Column(Float, nullable=False)
+
+
 # ── Engine + session factory ─────────────────────────────────────────
 
 
@@ -232,14 +285,23 @@ def get_engine() -> AsyncEngine:
     global _engine
     if _engine is None:
         url = database_url()
-        # SQLite needs check_same_thread=False for async use. Postgres
-        # doesn't care about the kwarg.
         connect_args: Dict[str, Any] = {}
         if url.startswith("sqlite"):
             connect_args["check_same_thread"] = False
         _engine = create_async_engine(
             url, echo=False, future=True, connect_args=connect_args,
         )
+        if url.startswith("sqlite"):
+            # SQLite disables FK enforcement by default; enable it per
+            # connection so ON DELETE CASCADE and FK constraints work.
+            from sqlalchemy import event
+
+            @event.listens_for(_engine.sync_engine, "connect")
+            def _set_sqlite_pragma(dbapi_conn, _record):
+                cur = dbapi_conn.cursor()
+                cur.execute("PRAGMA foreign_keys=ON")
+                cur.close()
+
     return _engine
 
 
@@ -789,6 +851,232 @@ async def refresh_stale_file_metadata(upload_dir: str) -> Dict[str, int]:
     return {"indexed": indexed, "skipped": skipped, "pruned": pruned}
 
 
+# ── Schema context (Sprint P-2b) ──
+
+
+def compute_schema_fingerprint(upload_dirs: List[str]) -> str:
+    """SHA-256 of (sorted dir × filename × mtime) for the given dirs.
+
+    Mirrors the fingerprint logic inside ``shared/data_utils.py`` so
+    staleness checks here align with the in-process cache key. Returns
+    an empty string when all dirs are missing or empty (no files to
+    hash).
+    """
+    import hashlib
+    from pathlib import Path as _Path
+
+    _TRACKED = {".csv", ".json", ".parquet", ".xlsx", ".xls"}
+    parts: List[str] = []
+    for d in sorted(upload_dirs):
+        p = _Path(d)
+        if not p.exists() or not p.is_dir():
+            continue
+        for f in sorted(p.iterdir()):
+            if not f.is_file() or f.suffix.lower() not in _TRACKED:
+                continue
+            try:
+                parts.append(f"{d}/{f.name}/{f.stat().st_mtime:.3f}")
+            except OSError:
+                continue
+    if not parts:
+        return ""
+    return hashlib.sha256("|".join(parts).encode()).hexdigest()[:64]
+
+
+async def get_schema_context(fingerprint: str) -> Optional[Dict[str, Any]]:
+    """Return the cached context for ``fingerprint``, or None on miss."""
+    if not fingerprint:
+        return None
+    async with session_scope() as s:
+        row = (
+            await s.execute(
+                select(SchemaContextRow).where(
+                    SchemaContextRow.fingerprint == fingerprint,
+                ),
+            )
+        ).scalar_one_or_none()
+        if row is None:
+            return None
+        try:
+            return json.loads(row.context_json)
+        except json.JSONDecodeError:
+            logger.warning("schema_context row %s has malformed JSON", fingerprint)
+            return None
+
+
+async def get_any_schema_context() -> Optional[Dict[str, Any]]:
+    """Return the most recently indexed schema context regardless of
+    fingerprint. Used as a cold-start fallback when the caller doesn't
+    know the current fingerprint yet."""
+    async with session_scope() as s:
+        row = (
+            await s.execute(
+                select(SchemaContextRow).order_by(
+                    SchemaContextRow.last_indexed_at.desc(),
+                ).limit(1),
+            )
+        ).scalar_one_or_none()
+        if row is None:
+            return None
+        try:
+            return json.loads(row.context_json)
+        except json.JSONDecodeError:
+            logger.warning("schema_context (any) has malformed JSON")
+            return None
+
+
+async def upsert_schema_context(fingerprint: str, context: Dict[str, Any]) -> None:
+    """Upsert the schema context for ``fingerprint``.
+
+    Callers are responsible for computing the fingerprint via
+    ``compute_schema_fingerprint`` before calling this. The ``context``
+    dict must be JSON-serialisable (tables, relationships, context_text).
+    """
+    if not fingerprint:
+        return
+    now = datetime.now(timezone.utc).isoformat()
+    async with session_scope() as s:
+        existing = (
+            await s.execute(
+                select(SchemaContextRow).where(
+                    SchemaContextRow.fingerprint == fingerprint,
+                ),
+            )
+        ).scalar_one_or_none()
+        if existing is None:
+            s.add(SchemaContextRow(
+                fingerprint=fingerprint,
+                context_json=json.dumps(context, separators=(",", ":")),
+                last_indexed_at=now,
+            ))
+        else:
+            existing.context_json = json.dumps(context, separators=(",", ":"))
+            existing.last_indexed_at = now
+        await s.flush()
+
+
+async def refresh_schema_context(upload_dirs: List[str]) -> bool:
+    """Compute the full schema context (with LLM enrichment) for
+    ``upload_dirs`` in a worker thread and persist it to the DB.
+
+    Returns True if a context was stored, False if there were no
+    tracked files. Designed to be called as an ``asyncio.create_task``
+    from the upload hook and the background refresh loop — never blocks
+    the caller.
+
+    A fresh in-memory DuckDB connection is opened + closed inside the
+    worker thread so the caller's connection state is unaffected.
+    """
+    import asyncio as _asyncio
+    from pathlib import Path as _Path
+
+    fingerprint = compute_schema_fingerprint(upload_dirs)
+    if not fingerprint:
+        return False
+
+    def _build() -> Dict[str, Any]:
+        try:
+            import duckdb as _duckdb
+
+            from shared.data_utils import build_schema_context_cached as _bsc
+        except ImportError as exc:
+            logger.warning("schema_context refresh skipped — missing dep: %s", exc)
+            return {}
+
+        con = _duckdb.connect(":memory:")
+        try:
+            import asyncio as _aio
+            loop = _aio.new_event_loop()
+            try:
+                dirs = [_Path(d) for d in upload_dirs]
+                return loop.run_until_complete(_bsc(con, dirs, use_llm=True))
+            finally:
+                loop.close()
+        except Exception as exc:
+            logger.warning("schema_context full build failed: %s", exc)
+            return {}
+        finally:
+            con.close()
+
+    ctx = await _asyncio.to_thread(_build)
+    if not ctx:
+        return False
+    await upsert_schema_context(fingerprint, ctx)
+    logger.debug("schema_context refreshed (fingerprint=%s…)", fingerprint[:8])
+    return True
+
+
+# ── Lineage edge helpers (Sprint P-2c) ───────────────────────────────
+
+
+def _extract_tables(sql: str) -> set:
+    """Return lower-cased table names referenced in *sql*. Best effort."""
+    try:
+        import sqlglot
+        from sqlglot import exp
+    except ImportError:  # pragma: no cover
+        return set()
+    try:
+        parsed = sqlglot.parse(sql, error_level="ignore")
+    except Exception:
+        return set()
+    tables: set = set()
+    for statement in parsed or []:
+        if statement is None:
+            continue
+        for table in statement.find_all(exp.Table):
+            name = getattr(table, "name", None)
+            if name and not name.startswith("__"):
+                tables.add(name.lower())
+    return tables
+
+
+async def upsert_lineage_edges(
+    saved_query_id: str,
+    workspace_id: str,
+    sql: str,
+) -> None:
+    """Parse *sql*, extract table references, and persist as lineage edges.
+
+    Called as an asyncio.create_task from create_saved_query so it never
+    blocks the HTTP response. Safe to call multiple times — deletes all
+    existing edges for the query before re-inserting (idempotent)."""
+    table_names = _extract_tables(sql)
+    async with session_scope() as session:
+        await session.execute(
+            delete(LineageEdgeRow).where(
+                LineageEdgeRow.saved_query_id == saved_query_id
+            )
+        )
+        if table_names:
+            ts = time.time()
+            session.add_all([
+                LineageEdgeRow(
+                    table_name=t,
+                    saved_query_id=saved_query_id,
+                    workspace_id=workspace_id,
+                    updated_at=ts,
+                )
+                for t in table_names
+            ])
+
+
+async def list_lineage_edges(workspace_id: str) -> List[Dict[str, Any]]:
+    """Return all cached (table_name, saved_query_id) edges for a workspace."""
+    async with session_scope() as session:
+        rows = (
+            await session.execute(
+                select(LineageEdgeRow).where(
+                    LineageEdgeRow.workspace_id == workspace_id
+                )
+            )
+        ).scalars().all()
+        return [
+            {"table_name": r.table_name, "saved_query_id": r.saved_query_id}
+            for r in rows
+        ]
+
+
 # ── Test-only helper ──
 
 
@@ -832,5 +1120,12 @@ __all__ = [
     "list_file_metadata",
     "prune_missing_file_metadata",
     "refresh_stale_file_metadata",
+    "compute_schema_fingerprint",
+    "get_schema_context",
+    "get_any_schema_context",
+    "upsert_schema_context",
+    "refresh_schema_context",
+    "upsert_lineage_edges",
+    "list_lineage_edges",
     "reset_all_for_tests",
 ]

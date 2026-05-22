@@ -127,13 +127,13 @@ async def test_query_history_cap_enforces_200_rows(gateway_db) -> None:
 # ── Saved queries ────────────────────────────────────────────────────
 
 
-def _saved_query(i: int = 1, workspace_id: str = "ws1", starred: bool = False) -> dict:
+def _saved_query(i: int = 1, workspace_id: str = "ws1", starred: bool = False, sql: str = "") -> dict:
     ts = datetime.now(timezone.utc)
     return {
         "id": f"sq_{i}",
         "workspace_id": workspace_id,
         "name": f"Query {i}",
-        "sql": f"SELECT {i}",
+        "sql": sql or f"SELECT {i}",
         "prompt": f"prompt {i}",
         "starred": starred,
         "created_at": ts.isoformat(),
@@ -502,3 +502,151 @@ async def test_prune_missing_file_metadata_handles_empty_list(
     """Defensive: pruning an empty list is a no-op, not an error."""
     n = await persistence.prune_missing_file_metadata([])
     assert n == 0
+
+
+# ── Schema context (Sprint P-2b) ─────────────────────────────────────
+
+
+def _write_schema_csv(path: Path, rows: int = 3) -> None:
+    """Write a tiny CSV so compute_schema_fingerprint returns a non-empty hash."""
+    path.write_text("a,b\n" + "".join(f"{i},{i*2}\n" for i in range(rows)))
+
+
+@pytest.mark.asyncio
+async def test_schema_context_miss_returns_none(gateway_db, tmp_path) -> None:
+    """get_schema_context returns None when nothing has been stored yet."""
+    _write_schema_csv(tmp_path / "data.csv")
+    fp = persistence.compute_schema_fingerprint([str(tmp_path)])
+    assert fp  # sanity: fingerprint is non-empty
+    result = await persistence.get_schema_context(fp)
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_schema_context_upsert_then_get(gateway_db, tmp_path) -> None:
+    """Upsert stores the context; get_schema_context returns it byte-for-byte."""
+    _write_schema_csv(tmp_path / "data.csv")
+    fp = persistence.compute_schema_fingerprint([str(tmp_path)])
+    ctx = {"tables": {"data": {"columns": []}}, "relationships": [], "context_text": "test"}
+    await persistence.upsert_schema_context(fp, ctx)
+    fetched = await persistence.get_schema_context(fp)
+    assert fetched == ctx
+
+
+@pytest.mark.asyncio
+async def test_schema_context_upsert_is_idempotent(gateway_db, tmp_path) -> None:
+    """Second upsert overwrites the first; only one row exists per fingerprint."""
+    _write_schema_csv(tmp_path / "data.csv")
+    fp = persistence.compute_schema_fingerprint([str(tmp_path)])
+    ctx_v1 = {"context_text": "v1", "tables": {}, "relationships": []}
+    ctx_v2 = {"context_text": "v2", "tables": {}, "relationships": []}
+    await persistence.upsert_schema_context(fp, ctx_v1)
+    await persistence.upsert_schema_context(fp, ctx_v2)
+    fetched = await persistence.get_schema_context(fp)
+    assert fetched["context_text"] == "v2"
+
+
+@pytest.mark.asyncio
+async def test_get_any_schema_context_cold_start(gateway_db, tmp_path) -> None:
+    """get_any_schema_context returns None when the table is empty (cold start)."""
+    result = await persistence.get_any_schema_context()
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_get_any_schema_context_returns_latest(gateway_db, tmp_path) -> None:
+    """get_any_schema_context returns the most recently indexed row."""
+    _write_schema_csv(tmp_path / "a.csv")
+    _write_schema_csv(tmp_path / "b.csv")
+    fp_a = "fp_a_" + uuid.uuid4().hex[:8]
+    fp_b = "fp_b_" + uuid.uuid4().hex[:8]
+    ctx_a = {"context_text": "A", "tables": {}, "relationships": []}
+    ctx_b = {"context_text": "B", "tables": {}, "relationships": []}
+    await persistence.upsert_schema_context(fp_a, ctx_a)
+    await asyncio.sleep(0.01)  # ensure last_indexed_at differs
+    await persistence.upsert_schema_context(fp_b, ctx_b)
+    result = await persistence.get_any_schema_context()
+    assert result["context_text"] == "B"
+
+
+@pytest.mark.asyncio
+async def test_schema_fingerprint_changes_on_mtime(tmp_path) -> None:
+    """Fingerprint changes when a file's mtime changes — stale detection works."""
+    csv = tmp_path / "data.csv"
+    _write_schema_csv(csv)
+    fp1 = persistence.compute_schema_fingerprint([str(tmp_path)])
+    # Advance mtime by 10 seconds
+    mtime = csv.stat().st_mtime + 10
+    os.utime(csv, (mtime, mtime))
+    fp2 = persistence.compute_schema_fingerprint([str(tmp_path)])
+    assert fp1 != fp2
+
+
+@pytest.mark.asyncio
+async def test_schema_fingerprint_empty_dir_returns_empty(tmp_path) -> None:
+    """Empty upload dir produces an empty fingerprint — no context to cache."""
+    fp = persistence.compute_schema_fingerprint([str(tmp_path)])
+    assert fp == ""
+
+
+@pytest.mark.asyncio
+async def test_schema_context_empty_fingerprint_is_noop(gateway_db) -> None:
+    """upsert + get with empty fingerprint are no-ops, not errors."""
+    await persistence.upsert_schema_context("", {"context_text": "x"})
+    result = await persistence.get_schema_context("")
+    assert result is None
+
+
+# ── Lineage edges (Sprint P-2c) ──────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_upsert_lineage_edges_basic(gateway_db) -> None:
+    """Creating a saved query then upserting its edges stores the table refs."""
+    await persistence.insert_saved_query(_saved_query(1, sql="SELECT * FROM orders JOIN customers ON orders.cid = customers.id"))
+    await persistence.upsert_lineage_edges("sq_1", "ws1", "SELECT * FROM orders JOIN customers ON orders.cid = customers.id")
+    edges = await persistence.list_lineage_edges("ws1")
+    tables = {e["table_name"] for e in edges}
+    assert tables == {"orders", "customers"}
+    assert all(e["saved_query_id"] == "sq_1" for e in edges)
+
+
+@pytest.mark.asyncio
+async def test_list_lineage_edges_workspace_isolated(gateway_db) -> None:
+    """Edges from workspace A are invisible to workspace B."""
+    await persistence.insert_saved_query(_saved_query(1, workspace_id="ws_a", sql="SELECT * FROM sales"))
+    await persistence.insert_saved_query(_saved_query(2, workspace_id="ws_b", sql="SELECT * FROM inventory"))
+    await persistence.upsert_lineage_edges("sq_1", "ws_a", "SELECT * FROM sales")
+    await persistence.upsert_lineage_edges("sq_2", "ws_b", "SELECT * FROM inventory")
+    edges_a = await persistence.list_lineage_edges("ws_a")
+    edges_b = await persistence.list_lineage_edges("ws_b")
+    assert {e["table_name"] for e in edges_a} == {"sales"}
+    assert {e["table_name"] for e in edges_b} == {"inventory"}
+
+
+@pytest.mark.asyncio
+async def test_upsert_lineage_edges_idempotent(gateway_db) -> None:
+    """Calling upsert twice for the same query replaces, not doubles, the edges."""
+    await persistence.insert_saved_query(_saved_query(1, sql="SELECT * FROM orders"))
+    await persistence.upsert_lineage_edges("sq_1", "ws1", "SELECT * FROM orders")
+    await persistence.upsert_lineage_edges("sq_1", "ws1", "SELECT * FROM orders")
+    edges = await persistence.list_lineage_edges("ws1")
+    assert len(edges) == 1
+
+
+@pytest.mark.asyncio
+async def test_delete_saved_query_cascades_lineage_edges(gateway_db) -> None:
+    """Deleting a saved query removes its lineage edges via FK CASCADE."""
+    await persistence.insert_saved_query(_saved_query(1, sql="SELECT * FROM orders"))
+    await persistence.upsert_lineage_edges("sq_1", "ws1", "SELECT * FROM orders")
+    assert len(await persistence.list_lineage_edges("ws1")) == 1
+    await persistence.delete_saved_query("sq_1", "ws1")
+    assert await persistence.list_lineage_edges("ws1") == []
+
+
+@pytest.mark.asyncio
+async def test_upsert_lineage_edges_no_tables(gateway_db) -> None:
+    """SQL with no table references (e.g. SELECT 1) stores zero edges cleanly."""
+    await persistence.insert_saved_query(_saved_query(1, sql="SELECT 1"))
+    await persistence.upsert_lineage_edges("sq_1", "ws1", "SELECT 1")
+    assert await persistence.list_lineage_edges("ws1") == []
