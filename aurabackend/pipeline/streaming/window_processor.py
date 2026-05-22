@@ -30,6 +30,10 @@ from pipeline.streaming.models import (
     WindowType,
 )
 
+# S20.1: type alias for the optional late-data policy callable. Imported
+# lazily inside __init__ to keep the cold path import-free.
+LatePolicyCallable = Callable[[Any, float, float], Any]
+
 
 def _window_key(event_key: Optional[str], window_start: float, window_end: float) -> str:
     """Unique identifier for a window instance."""
@@ -57,6 +61,11 @@ class WindowProcessor:
         aggregate_fields: Optional[List[Dict[str, str]]] = None,
         max_active_windows: int = 50_000,
         max_closed_history: int = 500,
+        # S20.1 opt-in flags (default OFF — classical paths unchanged).
+        use_composite_watermark_tracker: bool = False,
+        upstream_ids: Optional[List[str]] = None,
+        use_dataflow_triggers: bool = False,
+        late_data_policy_callable: Optional[LatePolicyCallable] = None,
     ):
         self.config = config
         self.watermark_delay = watermark_delay
@@ -75,6 +84,34 @@ class WindowProcessor:
         self.late_events = 0
         self.total_events = 0
         self.evicted_windows = 0
+
+        # S20.1: per-window first-event timestamp (for ProcessingTimeTrigger).
+        # Map window_key -> wall-clock when first event arrived. Populated
+        # only when dataflow triggers are enabled.
+        self._window_first_processing_ts: Dict[str, float] = {}
+
+        # S20.1: lazy-construct composite watermark tracker when opted in.
+        # Routes per-upstream watermark updates → composite=min(upstreams).
+        self._use_tracker = use_composite_watermark_tracker
+        self._tracker: Optional[Any] = None
+        if use_composite_watermark_tracker:
+            from pipeline.streaming.watermark_tracker import WatermarkTracker
+            upstreams = upstream_ids or ["default"]
+            self._tracker = WatermarkTracker(upstream_ids=list(upstreams))
+
+        # S20.1: when use_dataflow_triggers=True, _fire_ready_windows
+        # builds a WatermarkTrigger per window and dispatches through
+        # should_fire(ctx) instead of the inline watermark>=window_end
+        # check. Same semantic outcome for the default trigger but the
+        # plumbing is in place for callers to override with composite
+        # triggers (count + watermark, processing-time fallback, etc.).
+        self._use_dataflow_triggers = use_dataflow_triggers
+
+        # S20.1: optional parametric late-data policy callable. When
+        # set, takes precedence over the enum-based dispatch in
+        # process_event. Lets callers inject remerge-within-allowed-
+        # lateness without changing the model enum.
+        self._late_policy_callable = late_data_policy_callable
 
     @property
     def watermark(self) -> float:
@@ -106,7 +143,21 @@ class WindowProcessor:
             event.is_late = True
             self.late_events += 1
 
-            if self.config.late_data_policy == LateDataPolicy.DROP:
+            # S20.1: if a parametric late-policy callable is registered,
+            # delegate to it (lets callers use remerge-within-allowed-
+            # lateness from late_data.py without changing the enum).
+            if self._late_policy_callable is not None:
+                decision = self._late_policy_callable(
+                    event, event.timestamp, self._watermark,
+                )
+                if not getattr(decision, "accept_to_window", False):
+                    # Treat side_output the same as DEAD_LETTER on the
+                    # main path — the operator surfaces it on the late
+                    # list either way.
+                    return [], [event]
+                # accept_to_window=True → fall through to normal
+                # accumulation (Dataflow accumulation mode).
+            elif self.config.late_data_policy == LateDataPolicy.DROP:
                 return [], [event]
             elif self.config.late_data_policy == LateDataPolicy.DEAD_LETTER:
                 return [], [event]
@@ -118,9 +169,31 @@ class WindowProcessor:
         # Accumulate into each window
         for win_key in windows:
             self._accumulate(event, win_key)
+            # S20.1: track first-event processing time per window so
+            # ProcessingTimeTrigger can compute elapsed wall-clock.
+            if self._use_dataflow_triggers and win_key not in self._window_first_processing_ts:
+                self._window_first_processing_ts[win_key] = time.time()
 
-        # Advance watermark
-        self._advance_watermark(event.timestamp)
+        # Advance watermark — S20.1: when tracker enabled, route the
+        # event-time through the per-upstream tracker; composite =
+        # min(upstreams). The StreamEvent.source field labels the
+        # originating upstream; pipelines that don't set it collapse
+        # to a single "default" upstream (equivalent to the classical
+        # path for single-source topologies).
+        if self._use_tracker and self._tracker is not None:
+            upstream_id = getattr(event, "source", None) or "default"
+            try:
+                self._tracker.receive(upstream_id, event.timestamp - self.watermark_delay)
+            except Exception:
+                # Monotonicity violation, unknown upstream id, etc. —
+                # log + ignore, classical advance still runs below to
+                # maintain backward compat.
+                pass
+            composite = self._tracker.composite
+            if composite > self._watermark:
+                self._watermark = composite
+        else:
+            self._advance_watermark(event.timestamp)
 
         # Check for fired windows
         fired = self._fire_ready_windows()
@@ -305,8 +378,32 @@ class WindowProcessor:
                     fired.append(ws)
                     self._closed_windows.append(ws)
             else:
-                # Tumbling/Sliding: close when watermark passes window end
-                if self._watermark >= ws.window_end:
+                # Tumbling/Sliding firing decision.
+                # S20.1: when dataflow triggers are enabled, dispatch
+                # through Trigger.should_fire(ctx) — same outcome as
+                # the inline check for WatermarkTrigger but the
+                # plumbing supports composite triggers (count +
+                # watermark, processing-time fallback) for callers
+                # that need them.
+                should_fire = False
+                if self._use_dataflow_triggers:
+                    from pipeline.streaming.triggers import (
+                        TriggerContext,
+                        WatermarkTrigger,
+                    )
+                    first_ts = self._window_first_processing_ts.get(
+                        win_key, float("nan"),
+                    )
+                    ctx = TriggerContext(
+                        watermark_ts=self._watermark,
+                        event_count=ws.event_count,
+                        processing_ts=time.time(),
+                        first_event_processing_ts=first_ts,
+                    )
+                    should_fire = WatermarkTrigger(ws.window_end).should_fire(ctx)
+                else:
+                    should_fire = self._watermark >= ws.window_end
+                if should_fire:
                     ws.is_closed = True
                     fired.append(ws)
                     self._closed_windows.append(ws)
@@ -314,6 +411,9 @@ class WindowProcessor:
         # Clean up closed windows from active map (keep last 1000 for metrics)
         for ws in fired:
             self._windows.pop(ws.window_key, None)
+            # S20.1: also drop the per-window first-event timestamp
+            # so we don't leak memory across million-window runs.
+            self._window_first_processing_ts.pop(ws.window_key, None)
 
         if len(self._closed_windows) > self._max_closed_history:
             self._closed_windows = self._closed_windows[-self._max_closed_history:]

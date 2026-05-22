@@ -18,7 +18,7 @@ import asyncio
 import logging
 import time
 from enum import Enum
-from typing import List, Optional
+from typing import Any, List, Optional
 
 from pipeline.streaming.models import StreamEvent
 
@@ -44,6 +44,13 @@ class BackpressureManager:
         sample_rate: int = 2,
         high_watermark: float = 0.8,
         low_watermark: float = 0.5,
+        # S20.1 PID opt-in (default OFF — classical hi/lo-watermark path
+        # unchanged unless the operator opts in).
+        use_pid_control: bool = False,
+        pid_target_utilization: float = 0.7,
+        pid_kp: float = 0.5,
+        pid_ki: float = 0.1,
+        pid_kd: float = 0.05,
     ):
         self._max_size = max_buffer_size
         self._strategy = strategy
@@ -57,6 +64,23 @@ class BackpressureManager:
         self._is_pressured = False
         self._pressure_start: float = 0.0
         self._total_pressure_seconds: float = 0.0
+
+        # S20.1: lazy-construct PID controller only when opted in. The
+        # cold-path classical mode stays import-free for deployments
+        # that haven't enabled it (matches the [[aura-sprint-18-1]] /
+        # [[aura-sprint-20-2]] integration discipline).
+        self._use_pid = use_pid_control
+        self._pid: Optional[Any] = None
+        if use_pid_control:
+            from pipeline.streaming.pid_controller import PIDBackpressureController
+            # b_target in absolute event count (target_utilization * max).
+            self._pid = PIDBackpressureController(
+                b_target=float(max_buffer_size) * pid_target_utilization,
+                b_max=float(max_buffer_size),
+                kp=pid_kp, ki=pid_ki, kd=pid_kd,
+            )
+        self._pid_last_u: float = 0.0
+        self._pid_last_dt: float = 0.0
 
     @property
     def buffer_depth(self) -> int:
@@ -182,9 +206,30 @@ class BackpressureManager:
                 util * 100,
             )
 
+    def compute_ingest_sleep_seconds(self, dt: float, max_sleep_seconds: float) -> float:
+        """
+        S20.1: PID-controlled ingest throttle (Hellerstein-Diao 2004).
+
+        Returns 0.0 when PID mode is disabled — classical strategy
+        (BLOCK / DROP_TAIL / SAMPLE) handles overflow at put time, so
+        the ingest loop doesn't need an extra sleep.
+
+        When PID is enabled, returns ``u(t) * max_sleep_seconds`` where
+        ``u(t) ∈ [0, 1]`` is the controller's sleep-fraction output.
+        Higher buffer depth → larger ``u`` → ingestor sleeps longer →
+        inflow slows. The clamp is asymmetric ``[0, 1]`` — the
+        controller only ever slows ingest, never speeds it up.
+        """
+        if not self._use_pid or self._pid is None:
+            return 0.0
+        u = self._pid.step(current_b=float(self.buffer_depth), dt=max(dt, 1e-6))
+        self._pid_last_u = u
+        self._pid_last_dt = dt
+        return u * max_sleep_seconds
+
     def stats(self) -> dict:
         """Return current backpressure statistics."""
-        return {
+        d: dict = {
             "buffer_depth": self.buffer_depth,
             "buffer_utilization": round(self.buffer_utilization, 3),
             "is_pressured": self._is_pressured,
@@ -192,3 +237,11 @@ class BackpressureManager:
             "total_pressure_seconds": round(self.total_pressure_seconds, 2),
             "strategy": self._strategy.value,
         }
+        if self._use_pid and self._pid is not None:
+            d["pid"] = {
+                "enabled": True,
+                "last_u": round(self._pid_last_u, 4),
+                "last_dt_seconds": round(self._pid_last_dt, 4),
+                "metrics": self._pid.metrics().__dict__ if hasattr(self._pid, "metrics") else {},
+            }
+        return d

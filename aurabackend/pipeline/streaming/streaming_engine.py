@@ -154,6 +154,20 @@ class StreamingEngine:
         tick_interval: float = 0.5,
         backpressure_buffer: int = 10_000,
         backpressure_strategy: str = "block",
+        # S20.1 opt-in primitive flags (default OFF; classical path
+        # byte-identical to pre-S20.1 unless the operator opts in).
+        use_pid_backpressure: bool = False,
+        pid_target_utilization: float = 0.7,
+        pid_kp: float = 0.5,
+        pid_ki: float = 0.1,
+        pid_kd: float = 0.05,
+        pid_max_sleep_seconds: float = 1.0,
+        use_composite_watermark_tracker: bool = False,
+        upstream_ids: Optional[List[str]] = None,
+        use_dataflow_triggers: bool = False,
+        late_data_policy_callable: Optional[Callable[..., Any]] = None,
+        use_barrier_alignment: bool = False,
+        barrier_interval_seconds: float = 30.0,
     ):
         self.pipeline = pipeline
         self.batch_size = batch_size
@@ -169,6 +183,23 @@ class StreamingEngine:
         # Backpressure config
         self._bp_buffer_size = backpressure_buffer
         self._bp_strategy = BackpressureStrategy(backpressure_strategy)
+
+        # S20.1 primitive config (threaded through to constructors at
+        # start() time so each primitive is lazy-constructed only when
+        # opted in).
+        self._use_pid = use_pid_backpressure
+        self._pid_target_utilization = pid_target_utilization
+        self._pid_kp, self._pid_ki, self._pid_kd = pid_kp, pid_ki, pid_kd
+        self._pid_max_sleep = pid_max_sleep_seconds
+        self._use_composite_watermark = use_composite_watermark_tracker
+        self._upstream_ids = upstream_ids
+        self._use_dataflow_triggers = use_dataflow_triggers
+        self._late_policy_callable = late_data_policy_callable
+        self._use_barrier_alignment = use_barrier_alignment
+        self._barrier_interval = barrier_interval_seconds
+        self._barrier_aligner: Optional[Any] = None
+        self._barrier_id: int = 0
+        self._last_barrier_emit_ts: float = 0.0
 
         # Runtime
         self._task: Optional[asyncio.Task] = None
@@ -238,6 +269,12 @@ class StreamingEngine:
                 config=self.pipeline.window,
                 watermark_delay=float(self.pipeline.watermark_delay_seconds),
                 aggregate_fields=agg_fields,
+                # S20.1: thread through the dataflow flags. Default OFF
+                # so existing pipelines see no behavioural change.
+                use_composite_watermark_tracker=self._use_composite_watermark,
+                upstream_ids=self._upstream_ids,
+                use_dataflow_triggers=self._use_dataflow_triggers,
+                late_data_policy_callable=self._late_policy_callable,
             )
 
             # State manager + recovery
@@ -250,11 +287,26 @@ class StreamingEngine:
                 if self._source:
                     await self._source.commit_offsets(checkpoint.source_offsets)
 
-            # Backpressure buffer
+            # Backpressure buffer — S20.1: opt-in PID controller. When
+            # the flag is off the classical hi/lo-watermark strategy is
+            # used; when on, the PID-derived sleep duration is consumed
+            # in the ingest loop via compute_ingest_sleep_seconds.
             self._backpressure = BackpressureManager(
                 max_buffer_size=self._bp_buffer_size,
                 strategy=self._bp_strategy,
+                use_pid_control=self._use_pid,
+                pid_target_utilization=self._pid_target_utilization,
+                pid_kp=self._pid_kp, pid_ki=self._pid_ki, pid_kd=self._pid_kd,
             )
+
+            # S20.1: lazy-construct BarrierAligner for snapshot-aligned
+            # checkpointing. Single-source pipelines collapse to one
+            # channel; multi-source topologies use upstream_ids.
+            if self._use_barrier_alignment:
+                from pipeline.streaming.barrier import BarrierAligner
+                channels = self._upstream_ids or [self.pipeline.source.type.value]
+                self._barrier_aligner = BarrierAligner(input_channels=list(channels))
+                self._last_barrier_emit_ts = time.time()
 
             # Start main loop + ingest loop
             self.pipeline.status = StreamPipelineStatus.RUNNING
@@ -336,6 +388,7 @@ class StreamingEngine:
     async def _ingest_loop(self) -> None:
         """Read from source and push into backpressure buffer."""
         logger.info("Ingest loop started for %s", self.pipeline.id)
+        last_tick = time.time()
         try:
             while True:
                 if self._paused:
@@ -346,6 +399,18 @@ class StreamingEngine:
                     await self._backpressure.put_batch(events)
                 else:
                     await asyncio.sleep(self.tick_interval)
+
+                # S20.1: PID throttle. Classical mode returns 0.0 so
+                # this is a no-op; PID mode returns u(t) * max_sleep
+                # to slow ingest when the buffer is overfull.
+                now = time.time()
+                dt = now - last_tick
+                last_tick = now
+                pid_sleep = self._backpressure.compute_ingest_sleep_seconds(
+                    dt=dt, max_sleep_seconds=self._pid_max_sleep,
+                )
+                if pid_sleep > 0.0:
+                    await asyncio.sleep(pid_sleep)
         except asyncio.CancelledError:
             logger.info("Ingest loop cancelled for %s", self.pipeline.id)
         except Exception as e:
@@ -412,11 +477,22 @@ class StreamingEngine:
                         self._metrics.events_in / elapsed, 1
                     )
 
-                # 7. Periodic checkpoint
-                if self._state_mgr and self._state_mgr.should_checkpoint(
-                    self.pipeline.checkpoint_interval_seconds
-                ):
-                    await self._checkpoint()
+                # 7. Periodic checkpoint. S20.1: when barrier alignment
+                # is enabled, gate the checkpoint on the BarrierAligner
+                # reporting ALIGNED — the snapshot is then consistent
+                # across all input channels per Chandy-Lamport. When
+                # disabled, fall back to the classical wall-clock
+                # interval check.
+                if self._state_mgr:
+                    if self._use_barrier_alignment and self._barrier_aligner is not None:
+                        if self._should_emit_barrier():
+                            aligned = self._inject_barrier()
+                            if aligned:
+                                await self._checkpoint()
+                    elif self._state_mgr.should_checkpoint(
+                        self.pipeline.checkpoint_interval_seconds
+                    ):
+                        await self._checkpoint()
 
                 # 8. Broadcast metrics via SSE
                 tick_count += 1
@@ -433,6 +509,37 @@ class StreamingEngine:
             logger.error("Engine loop error for %s: %s", self.pipeline.id, e, exc_info=True)
 
     # ── Internal helpers ──────────────────────────────────────────
+
+    def _should_emit_barrier(self) -> bool:
+        """S20.1: have we passed the barrier interval since the last
+        barrier emit? The interval is configurable via
+        `barrier_interval_seconds` constructor arg (default 30s).
+        """
+        return (time.time() - self._last_barrier_emit_ts) >= self._barrier_interval
+
+    def _inject_barrier(self) -> bool:
+        """S20.1: emit one logical barrier across all input channels by
+        feeding `receive_barrier(channel, barrier_id)` for each known
+        channel. Returns True when the aligner reports ALIGNED on the
+        final channel — that's the signal to take a consistent
+        snapshot per the Carbone-et-al-2015 ABS protocol.
+
+        Single-source pipelines align in one call; multi-source
+        topologies need every channel to deliver the barrier before
+        ALIGNED fires.
+        """
+        if self._barrier_aligner is None:
+            return False
+        from pipeline.streaming.barrier import AlignmentEvent
+        self._barrier_id += 1
+        bid = self._barrier_id
+        aligned = False
+        for channel in self._barrier_aligner.channels:
+            event = self._barrier_aligner.receive_barrier(channel, bid)
+            if event == AlignmentEvent.ALIGNED:
+                aligned = True
+        self._last_barrier_emit_ts = time.time()
+        return aligned
 
     async def _checkpoint(self) -> None:
         if not self._state_mgr or not self._window_proc:
