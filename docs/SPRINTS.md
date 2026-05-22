@@ -44,7 +44,7 @@ graph TD
         direction TB
         S20a([S20a: ABS + Watermarks + Triggers + PID])
         S20b([S20b: LISTEN/NOTIFY + advisory lock])
-        S20_1[/S20.1: Engine wiring<br/>DEFERRED/]
+        S20_1([S20.1: Primitives into live engine])
         S20_2([S20.2: Worker wiring])
     end
     subgraph P5 [Pillar 5 · Service Factory]
@@ -93,16 +93,15 @@ graph TD
     classDef flight fill:#dae8fc,stroke:#6c8ebf,color:#000
     classDef backlog fill:#fff2cc,stroke:#d6b656,color:#000
     classDef deferred fill:#f5f5f5,stroke:#999,color:#666,stroke-dasharray:5 5
-    class S7,S8,S9,S10,S11,S12,S13,S14,S15,S16,S17,S18,S18_1,S19,S20a,S20b,S20_2,S21a,S21b,S21c,S21d,SEC,P1d,P2a,S22 done
-    class P2b,P2c,P3_audit backlog
-    class S20_1,S23 deferred
+    class S7,S8,S9,S10,S11,S12,S13,S14,S15,S16,S17,S18,S18_1,S19,S20a,S20b,S20_1,S20_2,S21a,S21b,S21c,S21d,SEC,P1d,P2a,P2b,P2c,P3_audit,S22 done
+    class S23 deferred
 ```
 
 **Legend**
 - **🟢 Rounded** (`S7`, `S8`, `S17`, …) — shipped to `main` with CI green
-- **🔵 Hexagon, blue** (`S22`) — currently in flight on a feature branch
-- **🟡 Hexagon, yellow** (`P-2b/c`, `P-3`) — in the backlog, ready to start
-- **⬜ Trapezoid, dashed** (`S20.1`, `S23`) — deferred or future
+- **🔵 Hexagon, blue** (none currently) — currently in flight on a feature branch
+- **🟡 Hexagon, yellow** (none currently) — in the backlog, ready to start
+- **⬜ Trapezoid, dashed** (`S23`) — deferred or future
 
 **Dependencies**
 - **Solid arrow** — chronological order or hard prerequisite (e.g., S12 builds on S11's determinism contract)
@@ -160,6 +159,7 @@ audit-burn-down track is the only active feature branch.
 
 | Sprint | Bundle (+ hotfix) | Subsystem | What it ships |
 |---|---|---|---|
+| **S20.1** | `4c529be` → squash-merge `9d3db43` (PR #18) | pipeline/streaming | Third and final deferred integration sprint — closes the arc S20.2 → S18.1 → **S20.1**. Wires all 5 S20a streaming primitives into the 3 live streaming modules in one bundled PR. `backpressure.py`: `BackpressureManager` gains `use_pid_control` + `PIDBackpressureController` lazy-init; new `compute_ingest_sleep_seconds(dt, max_sleep)` returns 0.0 in classical mode or `u(t)*max_sleep` in PID mode — ingest loop sleeps that long when buffer overshoots target (asymmetric clamp [0,1] — never speeds up ingest). `window_processor.py`: 4 new flags — composite `WatermarkTracker` (composite = min(per-upstream watermarks)), `WatermarkTrigger`/`TriggerContext` dispatch in `_fire_ready_windows`, parametric `late_data_policy_callable` (e.g. `remerge_within_allowed_lateness_policy`). `streaming_engine.py`: `BarrierAligner` lazy-constructed for snapshot-aligned checkpointing — `_inject_barrier` feeds every channel; checkpoint fires only when `AlignmentEvent.ALIGNED` (Chandy-Lamport exactly-once). Threads all flags through `__init__`. Every flag defaults OFF — 64 pre-S20.1 streaming tests still pass byte-identical. 16 new contract tests in `test_streaming_s20_1_integration.py` pin each opt-in path. CodeQL: 0 new alerts. Deferred follow-ups: S18.1b (CausalRLEvaluator into recovery loop), S18.1c (Kramer-Magee ShimRouter replacing pause/resume). |
 | **P-3** | PR #17 | api_gateway + safety | sqlglot AST validator + connection pooling. Closes audit findings #3, #4, #6. `_estimate_query_cost` + `_check_performance_ast` use AST node counts; `QueryPlanner` join multiplier linearised; asyncpg pool registry replaces per-request connect/disconnect. 973 tests pass. |
 | **P-2c** | `27c088b` | api_gateway | Lineage materialised view resolves audit #8. `gateway_lineage_edges` cache populated at create-time; `GET /lineage` is now two indexed SELECTs; FK CASCADE prunes on delete. |
 | **P-2b** | `3a9d195` | api_gateway | Schema context cache resolves audit #5. `gateway_schema_context` table keyed by SHA-256 fingerprint; populate-on-upload + 60s refresh; queries.py switches to use_llm=False inline. |
@@ -204,7 +204,6 @@ S1-S6 pre-dated this registry; see commit `157b293` and earlier for that history
 Deferred indefinitely:
 - **S18.1b** — wire S18 CausalRLEvaluator into `uasr/recovery_loop.py` for off-policy shim selection.
 - **S18.1c** — wire S18 `shim_router` (Kramer-Magee canary) into `uasr/mapek_worker.py` to replace `pause/resume`.
-- **S20.1** — wire S20a streaming primitives into `streaming_engine.py + window_processor.py + backpressure.py`.
 - **S20.2.1** — schema migration to move `ScheduledJob.next_execution_time` (+ other DateTime columns) to `DateTime(timezone=True)` so the `.replace(tzinfo=None)` dance can be dropped.
 - **S21e** — roll the api_gateway client into `regen_all_sdks.py` (currently kept on its own pipeline for historical reasons).
 
@@ -224,4 +223,4 @@ When you reserve a future sprint:
 
 Update the date at the bottom when you make a material change.
 
-Last updated 2026-05-21 — P-3 (findings #3, #4, #6) + P-2c (finding #8) shipped as PR #17. All audit burn-down findings closed. Previous: Sec-2 (42 CodeQL findings) shipped as PR #16 / `4161ccc`.
+Last updated 2026-05-21 — **S20.1 closes the deferred integration arc** (PR #18 / `9d3db43`). All three deferred wirings — S20.2 (scheduler), S18.1 (UASR martingale), S20.1 (streaming engine) — now landed. Collaborator's P-3 + P-2c audit burn-down also landed in parallel as PR #17. Previous: Sec-2 (42 CodeQL findings) shipped as PR #16 / `4161ccc`.
