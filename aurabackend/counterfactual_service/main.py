@@ -298,11 +298,14 @@ def _verify_one_artifact(record_hash: str) -> Dict[str, Any]:
         payload_bytes = canonical_dumps(payload).encode("utf-8")
         ok = signing.verify_bytes(payload_bytes, sig_b64)
     except Exception as exc:
-        logger.warning("Bulk verify failed for %s: %s", record_hash, exc)
+        # Sec-3 #24: surface only the exception class name to the auditor
+        # — interpolating str(exc) into the response leaks server-side
+        # filesystem paths, SQL fragments, and stack-trace context.
+        logger.exception("Bulk verify failed for %s", record_hash)
         return {
             "record_hash": record_hash,
             "status": "error",
-            "reason": f"{type(exc).__name__}: {exc}",
+            "reason": type(exc).__name__,
         }
 
     return {

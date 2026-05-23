@@ -454,7 +454,19 @@ async def etl_from_natural_language(req: ETLNaturalLanguageRequest):
         con.close()
         schema_text = ", ".join(f"{r[0]} ({r[1]})" for r in schema_rows)
     except Exception as e:
-        return {"status": "error", "error": f"Failed to read source: {e}", "transforms": []}
+        # Sec-3 #18: f"{e}" leaks server-side paths + duckdb internals
+        # straight into the response body. sanitize_error logs the full
+        # detail server-side and returns the curated message for
+        # AuraError subclasses / a generic fallback otherwise.
+        return {
+            "status": "error",
+            "error": sanitize_error(
+                e, logger=logger,
+                context="etl suggest source-read",
+                fallback="Failed to read source",
+            ),
+            "transforms": [],
+        }
 
     llm = get_llm()
 
