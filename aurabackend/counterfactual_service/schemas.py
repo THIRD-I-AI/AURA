@@ -63,6 +63,41 @@ RefuterName = Literal["random_common_cause", "placebo", "data_subset", "sensitiv
 Severity = Literal["low", "medium", "high"]
 
 
+class SensitivityReport(BaseModel):
+    """Sprint S23: per-estimate sensitivity analysis.
+
+    Two complementary tools attached to every estimator's effect:
+
+    * **E-value** (VanderWeele & Ding 2017): how strong an unmeasured
+      confounder, measured on the risk-ratio scale, would have to be
+      to fully explain away the observed effect. Closed-form via
+      Chinn 2000 continuous-outcome conversion ``RR ≈ exp(0.91·|d|)``
+      followed by ``E = RR + sqrt(RR·(RR-1))``.
+    * **Robustness value** (Cinelli & Hazlett 2020): the minimum
+      partial-R² strength that an unmeasured confounder would need
+      with BOTH treatment and outcome to bring the estimate to zero
+      (``RV_1``). Closed-form from ``f = |t|/sqrt(dof)`` via
+      ``RV_q = 0.5·(sqrt(f⁴ + 4f²) - f²)``.
+
+    Every field is deterministic given the (point, CI, n_samples,
+    n_controls, outcome_sd) tuple — embedding in the artifact hash
+    basis preserves Layer 10 byte-identity. ``extreme_scenario_
+    adjusted`` is the worst-case adjusted estimate under the
+    "1x benchmark" assumption that the unmeasured confounder is as
+    strong as the observed partial Y~D relationship.
+    """
+    e_value_point: float
+    e_value_ci: float
+    rr_approx: float
+    standardised_effect_d: float
+    null_crossed: bool
+    t_statistic: float
+    dof: int
+    partial_r2_yd_x: float
+    robustness_value: float
+    extreme_scenario_adjusted: float
+
+
 class PropensityDiagnostics(BaseModel):
     """Cross-fitted propensity score distribution for one estimator.
 
@@ -122,6 +157,13 @@ class CounterfactualEstimate(BaseModel):
     # stronger contract; the operator card shows both with a small
     # badge.
     ci_method: Literal["asymptotic", "conformal"] = "asymptotic"
+    # Sprint S23: omitted-variable-bias sensitivity attached after the
+    # fan-out. None for failed estimates (where point + CI are
+    # placeholder zeros and the question doesn't make sense). The
+    # field IS in the artifact hash basis — any drift in the sensitivity
+    # numbers surfaces as a hash change so an auditor can detect a
+    # changed input dataset or DAG.
+    sensitivity: Optional[SensitivityReport] = None
 
 
 class RefutationResult(BaseModel):

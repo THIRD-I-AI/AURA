@@ -37,8 +37,10 @@ from .schemas import (
     PropensityDiagnostics,
     RefutationResult,
     RefuterName,
+    SensitivityReport,
     Severity,
 )
+from .sensitivity import compute_sensitivity_report
 
 logger = logging.getLogger("aura.counterfactual.engine")
 
@@ -1069,7 +1071,75 @@ async def run_estimators(
         results = await asyncio.gather(*(_one(m) for m in chosen))
     else:
         results = [await _one(m) for m in chosen]
+
+    # Sprint S23: attach VanderWeele-Ding E-value + Cinelli-Hazlett
+    # robustness value to every successful estimate. Computed centrally
+    # (rather than inside each wrapper) so the eight existing wrappers
+    # stay untouched. outcome_sd and n_controls are functions of (df,
+    # outcome, dag) — invariant across all estimator slots — so they
+    # only need computing once per fan-out. Failed estimates (error
+    # populated, point/CI are placeholder zeros) keep sensitivity=None
+    # because the question "how strong a confounder?" isn't meaningful
+    # when the estimator never produced a value to be confounded.
+    _attach_sensitivity(results, df=df, treatment=treatment, outcome=outcome, dag=dag)
     return sorted(results, key=lambda e: e.method)
+
+
+# ── Sprint S23: sensitivity attachment ───────────────────────────────
+
+def _attach_sensitivity(
+    estimates: List[CounterfactualEstimate],
+    *,
+    df: pd.DataFrame,
+    treatment: InterventionSpec,
+    outcome: OutcomeSpec,
+    dag: dict,
+) -> None:
+    """Populate ``estimate.sensitivity`` in place for every successful
+    estimate in ``estimates``.
+
+    Computes outcome_sd from the outcome column once, derives n_controls
+    from the DAG (treatment-parents excluding the outcome itself, intersected
+    with df.columns — same convention as the DR / TMLE wrappers), then calls
+    ``compute_sensitivity_report`` per estimate.
+
+    Failure mode: any exception in the per-estimate compute is swallowed
+    and that estimate's ``sensitivity`` stays ``None``. Sensitivity is
+    *advisory* — the artifact must still seal even if a downstream
+    sklearn / scipy quirk produces NaN.
+    """
+    try:
+        import numpy as np
+        y_arr = df[outcome.column].to_numpy(dtype=float)
+        # ddof=1 to match the unbiased sample-SD convention every other
+        # statistical step in the engine uses (statsmodels, sklearn).
+        outcome_sd = float(np.std(y_arr, ddof=1)) if len(y_arr) > 1 else 0.0
+    except Exception as exc:
+        logger.warning("Sensitivity outcome_sd capture failed: %s", exc)
+        return
+
+    n_controls = sum(
+        1 for src, dst in dag.get("edges", [])
+        if dst == treatment.column
+        and src != outcome.column
+        and src in df.columns
+    )
+
+    for est in estimates:
+        if est.error is not None:
+            continue
+        try:
+            payload = compute_sensitivity_report(
+                point=float(est.point),
+                ci_lower=float(est.ci_lower),
+                ci_upper=float(est.ci_upper),
+                n_samples=int(est.n_samples),
+                n_controls=n_controls,
+                outcome_sd=outcome_sd,
+            )
+            est.sensitivity = SensitivityReport(**payload)
+        except Exception as exc:  # pragma: no cover
+            logger.warning("Sensitivity attach failed for %s: %s", est.method, exc)
 
 
 # ── Refuter fan-out ───────────────────────────────────────────────────
