@@ -149,16 +149,17 @@ The two tracks touched different subsystems (Mouni: `counterfactual_service/`; c
 
 | Sprint | Owner | Branch | Started | Goal |
 |---|---|---|---|---|
-| **S23** | Mouni | `feature/s23-sensitivity` | 2026-05-22 | E-value (VanderWeele-Ding 2017) + Cinelli-Hazlett 2020 robustness value attached to every `CounterfactualEstimate`. In hash basis. Issue #20. |
+| _(no active feature branches)_ | — | — | — | — |
 
-Mouni's S22 (TMLE) and S21d (multi-service SDK codegen) both
-merged as PRs #12 and #13 on 2026-05-19. Collaborator's
-audit-burn-down track wrapped on 2026-05-20 (PR #17 merged).
+Mouni's S23 (sensitivity) shipped 2026-05-22 as PR #22 → `987b277`;
+Sec-3 (4 new CodeQL alerts) shipped same day as PR #23 → `f842136`.
 
 ## Completed (newest first)
 
 | Sprint | Bundle (+ hotfix) | Subsystem | What it ships |
 |---|---|---|---|
+| **Sec-3** | `489cdf4` → squash-merge `f842136` (PR #23) | api_gateway + database + counterfactual_service | Closes 4 new CodeQL alerts on `main`. (#49 HIGH `py/weak-sensitive-data-hashing`) drops `password` from `_pg_pool_key` dict — pool identity is (host, port, database, username); password adds no uniqueness. (#42 HIGH `py/sql-injection`) inline barrier-guard before `text(query)` in `connection_manager.execute_query`: string-prefix whitelist (SELECT/WITH/SHOW/DESCRIBE/DESC/EXPLAIN) + sqlglot AST deny-list (Drop/Delete/Insert/Update/Alter/Create/TruncateTable/Merge/Commit/Rollback) covering both top-level and nested statements. Same intraprocedural-sanitizer lesson as `feedback_codeql_path_injection_sanitizer`. (#24 MED `py/stack-trace-exposure`) bulk-verify endpoint strips exception to `type(exc).__name__`. (#18 MED) `etl.suggest_transforms` swaps `f"{e}"` for `sanitize_error()`. |
+| **S23** | `a866784` + hotfix `3f73a91` → squash-merge `987b277` (PR #22) | counterfactual_service | E-value (VanderWeele-Ding 2017) + Cinelli-Hazlett 2020 robustness value attached to every `CounterfactualEstimate`. New `SensitivityReport` schema in hash basis → Layer 10 byte-identity extends to cover sensitivity drift. Pure NumPy + stdlib `sensitivity.py` with closed-form `compute_evalue` (Chinn 2000 continuous-outcome conversion `RR ≈ exp(0.91·|d|)` + `E = RR + sqrt(RR·(RR-1))`) and `compute_robustness_value` (`RV_q = 0.5·(sqrt(f⁴ + 4f²) - f²)` + 1x-benchmark extreme-scenario adjustment). Single `_attach_sensitivity` helper in `engine.run_estimators` post-fan-out — the eight existing estimator wrappers (LinearDR/ForestDR/TMLE/DoWhy×4) are byte-identical at the line level. Hotfix: relaxed one test from `adjusted == 0` (only triggered at pathological partial_r²→1) to `|adjusted| ≤ |point|` + sign-preservation invariants. SE backed out of CI under normal-sampling z=1.959964 (no scipy dep). Tier A contracts verified against `EValue` / `sensemakr` R packages: Darfur t=4.18,dof=783 → RV=0.139; d=0.5 → E=2.529. Layer 22 contract: strong-effect DGP RV=0.44 / E=5.41, null-effect DGP RV=0.028 / null_crossed=True. |
 | **S20.1** | `4c529be` → squash-merge `9d3db43` (PR #18) | pipeline/streaming | Third and final deferred integration sprint — closes the arc S20.2 → S18.1 → **S20.1**. Wires all 5 S20a streaming primitives into the 3 live streaming modules in one bundled PR. `backpressure.py`: `BackpressureManager` gains `use_pid_control` + `PIDBackpressureController` lazy-init; new `compute_ingest_sleep_seconds(dt, max_sleep)` returns 0.0 in classical mode or `u(t)*max_sleep` in PID mode — ingest loop sleeps that long when buffer overshoots target (asymmetric clamp [0,1] — never speeds up ingest). `window_processor.py`: 4 new flags — composite `WatermarkTracker` (composite = min(per-upstream watermarks)), `WatermarkTrigger`/`TriggerContext` dispatch in `_fire_ready_windows`, parametric `late_data_policy_callable` (e.g. `remerge_within_allowed_lateness_policy`). `streaming_engine.py`: `BarrierAligner` lazy-constructed for snapshot-aligned checkpointing — `_inject_barrier` feeds every channel; checkpoint fires only when `AlignmentEvent.ALIGNED` (Chandy-Lamport exactly-once). Threads all flags through `__init__`. Every flag defaults OFF — 64 pre-S20.1 streaming tests still pass byte-identical. 16 new contract tests in `test_streaming_s20_1_integration.py` pin each opt-in path. CodeQL: 0 new alerts. Deferred follow-ups: S18.1b (CausalRLEvaluator into recovery loop), S18.1c (Kramer-Magee ShimRouter replacing pause/resume). |
 | **P-3** | PR #17 | api_gateway + safety | sqlglot AST validator + connection pooling. Closes audit findings #3, #4, #6. `_estimate_query_cost` + `_check_performance_ast` use AST node counts; `QueryPlanner` join multiplier linearised; asyncpg pool registry replaces per-request connect/disconnect. 973 tests pass. |
 | **P-2c** | `27c088b` | api_gateway | Lineage materialised view resolves audit #8. `gateway_lineage_edges` cache populated at create-time; `GET /lineage` is now two indexed SELECTs; FK CASCADE prunes on delete. |
@@ -199,7 +200,8 @@ S1-S6 pre-dated this registry; see commit `157b293` and earlier for that history
 | ~~**P-2b**~~ | ~~Audit~~ | ~~Collaborator~~ | ~~Schema context cache — DONE, see `3a9d195`~~ |
 | ~~**P-2c**~~ | ~~Audit~~ | ~~Collaborator~~ | ~~Lineage materialised view — DONE, see PR #17~~ |
 | ~~**P-3**~~ | ~~Audit~~ | ~~Collaborator~~ | ~~sqlglot AST validator + connection pooling — DONE, see PR #17~~ |
-| **S23** | Analytic depth | Mouni (in flight) | E-value sensitivity + Cinelli-Hazlett robustness analysis. See In Flight section. |
+| ~~**S23**~~ | ~~Analytic depth~~ | ~~Mouni~~ | ~~E-value sensitivity + Cinelli-Hazlett robustness — DONE, see PR #22~~ |
+| **S24** | Analytic depth | TBD | Next slot: candidates include IV (instrumental variables) estimator, RV-vs-DR auto-challenge (per S22.2-style), or T-/X-learner outcome models for the TMLE path. |
 
 Deferred indefinitely:
 - **S18.1b** — wire S18 CausalRLEvaluator into `uasr/recovery_loop.py` for off-policy shim selection.
@@ -223,4 +225,4 @@ When you reserve a future sprint:
 
 Update the date at the bottom when you make a material change.
 
-Last updated 2026-05-22 — **S23 (E-value + Cinelli-Hazlett sensitivity) claimed by Mouni**, branch `feature/s23-sensitivity`, issue #20. Previous: S20.1 closes the deferred integration arc (PR #18 / `9d3db43`); Sec-2 (42 CodeQL findings) shipped as PR #16 / `4161ccc`.
+Last updated 2026-05-22 — **S23 (sensitivity) + Sec-3 (4 new CodeQL alerts)** both shipped to `main` (PRs #22 `987b277` + #23 `f842136`). Previous: S20.1 closes the deferred integration arc (PR #18 / `9d3db43`); Sec-2 (42 CodeQL findings) shipped as PR #16 / `4161ccc`.
