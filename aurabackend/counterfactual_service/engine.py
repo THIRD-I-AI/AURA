@@ -1389,6 +1389,116 @@ def _propensity_warning_challenges(
     return out
 
 
+# ── Sprint S24: estimator-class disagreement auto-challenge ──────────
+
+# The "2× the CI half-width" threshold below is the same factor the
+# RV-vs-DR auto-challenge concept is anchored on (S23 sensitivity +
+# S22 TMLE). Two estimators whose point estimates diverge by more
+# than twice the conformal/asymptotic CI half-width are statistically
+# inconsistent — at the stated coverage level, both intervals can't
+# cover the true ATE simultaneously. Either nuisance misspecification
+# (more likely on the DR-Learner family) or a positivity violation
+# (where both can fail) is the most common cause.
+_DISAGREEMENT_HALF_WIDTH_MULTIPLIER = 2.0
+
+
+def _estimator_disagreement_challenges(
+    estimates: List[CounterfactualEstimate],
+) -> List[AdversarialChallenge]:
+    """Sprint S24. Emit one high-severity AdversarialChallenge when the
+    TMLE point estimate and the ForestDR point estimate diverge by more
+    than 2× the larger conformal/asymptotic CI half-width.
+
+    Anchors S14's `_propensity_warning_challenges` exactly:
+      * Pure function of already-computed `estimates` — no I/O, no LLM.
+      * Fixed-precision format strings (`{:.3f}`) so the challenge text
+        is byte-stable across re-runs with the same inputs (Layer 10).
+      * Calls into the same severity = "high" + suggested_check shape
+        the operator-card renderer + audit-chain consumers expect.
+
+    Why TMLE vs ForestDR specifically: these are AURA's two semi-
+    parametric efficiency-bound-achieving estimators with very different
+    final-stage assumptions (linear submodel vs honest random forest).
+    Significant disagreement between them is one of the strongest
+    signals that nuisance misspecification (likely the DR side) or
+    positivity violation is at play. The DoWhy quartet (linear / IPW /
+    PSM / DR stub) are weaker baselines — disagreement among them is
+    less informative.
+
+    Returns an empty list when:
+      * Either TMLE or forest_dr is missing from the estimates list
+        (operator didn't opt them in via `methods=[...]`).
+      * Either estimate has a populated `error` field.
+      * Either estimate's CI is degenerate (lower == upper).
+      * The conformal half-width is missing AND the asymptotic half-
+        width is zero (no signal to compare).
+
+    Threshold: 2× the LARGER of the two estimators' CI half-widths.
+    Using the larger gives the lower-disagreement-rate side the
+    benefit of the doubt — we only fire when the gap exceeds the
+    more-conservative estimator's own uncertainty by 2x.
+    """
+    by_method = {e.method: e for e in estimates}
+    tmle = by_method.get("tmle")
+    forest = by_method.get("forest_dr")
+    if tmle is None or forest is None:
+        return []
+    if tmle.error is not None or forest.error is not None:
+        return []
+
+    def _half_width(est: CounterfactualEstimate) -> float:
+        return max(0.0, (est.ci_upper - est.ci_lower) / 2.0)
+
+    hw_tmle = _half_width(tmle)
+    hw_forest = _half_width(forest)
+    hw = max(hw_tmle, hw_forest)
+    if hw <= 0.0:
+        # No CI signal — can't decide if disagreement is significant.
+        return []
+
+    gap = abs(tmle.point - forest.point)
+    threshold = _DISAGREEMENT_HALF_WIDTH_MULTIPLIER * hw
+    if gap <= threshold:
+        return []
+
+    # Identify the "stronger CI contract" for the explanatory text.
+    # When both are conformal, the contract is finite-sample
+    # distribution-free; when one is asymptotic, the comparison is
+    # only asymptotically valid. Either way the disagreement is
+    # informative; we just label it accurately for the auditor.
+    ci_contract = (
+        "conformal"
+        if tmle.ci_method == "conformal" and forest.ci_method == "conformal"
+        else "asymptotic"
+    )
+
+    text = (
+        f"Estimator-class disagreement: TMLE point={tmle.point:.3f} "
+        f"(CI [{tmle.ci_lower:.3f}, {tmle.ci_upper:.3f}]) "
+        f"vs ForestDR point={forest.point:.3f} "
+        f"(CI [{forest.ci_lower:.3f}, {forest.ci_upper:.3f}]). "
+        f"Gap {gap:.3f} exceeds "
+        f"{_DISAGREEMENT_HALF_WIDTH_MULTIPLIER:.1f}× the larger "
+        f"{ci_contract} CI half-width ({hw:.3f}). "
+        "Linear-submodel vs non-parametric DR are pulled apart by "
+        "either nuisance misspecification or a positivity violation."
+    )
+
+    return [
+        AdversarialChallenge(
+            text=text,
+            severity="high",
+            suggested_check=(
+                "Inspect propensity diagnostics on both estimates "
+                "(n_extreme / n_total). If both look fine, the "
+                "outcome-stage nuisance is the likely culprit — "
+                "try ForestDR with a deeper forest or LinearDR with "
+                "a polynomial feature expansion and re-run."
+            ),
+        )
+    ]
+
+
 # ── End-to-end orchestration ──────────────────────────────────────────
 
 def _dataset_fingerprint(df: pd.DataFrame) -> str:
@@ -1573,6 +1683,13 @@ async def run_job(query: CounterfactualQuery, df: pd.DataFrame) -> Counterfactua
     # threshold rationale.
     challenges_unsorted.extend(
         _propensity_warning_challenges(estimates),
+    )
+    # Sprint S24: estimator-class disagreement check — runs after S14's
+    # propensity check so the operator card sees them in stable order
+    # post-sort. Same shape, same byte-stability, same hash-basis
+    # discipline: deterministic function of (estimates,) only.
+    challenges_unsorted.extend(
+        _estimator_disagreement_challenges(estimates),
     )
     # SHA-1 is only used as a stable, deterministic tie-breaker on the
     # challenge text — purely so two artifacts with identical (severity,
