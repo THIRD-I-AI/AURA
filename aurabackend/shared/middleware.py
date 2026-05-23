@@ -227,6 +227,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         window_seconds: int = 60,
         exempt_path_prefixes: tuple[str, ...] = ("/stream/",),
         backend=None,
+        trust_forwarded_for: bool | None = None,
     ) -> None:
         super().__init__(app)
         self._max_requests = requests_per_window
@@ -238,10 +239,25 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             backend = InMemoryBackend()
         self._backend = backend
 
+        # Sec-4: X-Forwarded-For is spoofable by any client. Honour it
+        # only when explicitly opted in via AURA_TRUST_FORWARDED_FOR=true,
+        # which the operator should set only when the service runs
+        # behind a known reverse proxy that overwrites the header. None
+        # at construction time falls back to the global setting so
+        # tests can override the flag without monkey-patching env vars.
+        if trust_forwarded_for is None:
+            try:
+                from shared.config import settings
+                trust_forwarded_for = bool(settings.trust_forwarded_for)
+            except Exception:
+                trust_forwarded_for = False
+        self._trust_forwarded_for = trust_forwarded_for
+
     def _client_ip(self, request: Request) -> str:
-        forwarded = request.headers.get("X-Forwarded-For")
-        if forwarded:
-            return forwarded.split(",")[0].strip()
+        if self._trust_forwarded_for:
+            forwarded = request.headers.get("X-Forwarded-For")
+            if forwarded:
+                return forwarded.split(",")[0].strip()
         return request.client.host if request.client else "unknown"
 
     async def dispatch(self, request: Request, call_next: Callable):
@@ -276,6 +292,40 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 
 
 # ── Exception Handlers ──────────────────────────────────────────────────
+
+# ── Security Headers Middleware ─────────────────────────────────────────
+
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    """Set defensive response headers on every response.
+
+    Sec-4: AURA didn't set X-Content-Type-Options / X-Frame-Options /
+    Referrer-Policy / HSTS on responses, leaving the api_gateway public
+    surface exposed to MIME-sniffing, clickjacking, and referer-leak
+    classes of attacks. HSTS is set only in production to avoid
+    breaking the localhost http:// dev flow.
+
+    Headers chosen are the OWASP-recommended minimum set for a JSON
+    API. No Content-Security-Policy because the gateway also serves
+    no HTML — CSP would have no effect on the API surface and would
+    need bespoke per-page values if the frontend were ever co-served.
+    """
+
+    def __init__(self, app, *, hsts: bool = False, hsts_max_age: int = 31536000) -> None:
+        super().__init__(app)
+        self._hsts = hsts
+        self._hsts_max_age = hsts_max_age
+
+    async def dispatch(self, request: Request, call_next: Callable):
+        response = await call_next(request)
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["Referrer-Policy"] = "no-referrer"
+        if self._hsts:
+            response.headers["Strict-Transport-Security"] = (
+                f"max-age={self._hsts_max_age}; includeSubDomains"
+            )
+        return response
+
 
 def register_exception_handlers(app: FastAPI) -> None:
     """Attach global exception handlers so every error returns structured JSON."""
