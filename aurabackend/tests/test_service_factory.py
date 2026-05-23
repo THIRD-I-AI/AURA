@@ -50,6 +50,17 @@ class TestCreateService:
         resp = client.get("/health")
         assert "X-Request-ID" in resp.headers
 
+    def test_security_headers_present(self, client):
+        # Sec-4: every response carries the OWASP-recommended minimum
+        # set of defensive headers. HSTS is gated on is_production so
+        # it should be absent in the test fixture's dev defaults.
+        resp = client.get("/health")
+        assert resp.headers.get("X-Content-Type-Options") == "nosniff"
+        assert resp.headers.get("X-Frame-Options") == "DENY"
+        assert resp.headers.get("Referrer-Policy") == "no-referrer"
+        # Dev fixture → no HSTS.
+        assert "Strict-Transport-Security" not in resp.headers
+
     def test_exception_handler_returns_json(self, app, client):
         from shared.exceptions import NotFoundError
 
