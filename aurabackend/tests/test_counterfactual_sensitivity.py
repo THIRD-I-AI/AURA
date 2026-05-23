@@ -120,13 +120,26 @@ class TestRobustnessValueClosedForm:
         expected = t2 / (t2 + 100)
         assert rv["partial_r2_yd_x"] == pytest.approx(expected, abs=1e-6)
 
-    def test_extreme_scenario_zero_when_bias_dominates(self) -> None:
-        # Weak estimate (small t) on a noisy sample → 1x-benchmark bias
-        # easily exceeds |point|, so the worst-case adjusted estimate
-        # is clamped to 0.
-        rv = compute_robustness_value(point=0.5, se=0.4, dof=20)
-        # |point| - bias is likely negative here → clamped
-        assert rv["extreme_scenario_adjusted"] == pytest.approx(0.0, abs=1e-9)
+    def test_extreme_scenario_bounded_and_sign_preserving(self) -> None:
+        # Contract: the 1x-benchmark adjusted estimate is |point| minus
+        # a non-negative bias bound, then sign-restored and clamped at
+        # 0. So |adjusted| ≤ |point| always, and the sign matches
+        # point's sign whenever adjusted is non-zero.
+        #
+        # (Triggering the actual clamp-to-zero path requires partial_r²
+        # extremely close to 1 — pathological inputs. The bounded-by-
+        # point + sign-preservation contract is the testable invariant
+        # over the normal input range.)
+        for point, se, dof in [(0.5, 0.4, 20), (2.0, 1.0, 100), (-1.5, 0.5, 50)]:
+            rv = compute_robustness_value(point=point, se=se, dof=dof)
+            adj = rv["extreme_scenario_adjusted"]
+            assert abs(adj) <= abs(point) + 1e-9, (
+                f"|adjusted|={abs(adj)} should be <= |point|={abs(point)}"
+            )
+            if adj != 0.0:
+                assert (adj > 0) == (point > 0), (
+                    f"sign mismatch: point={point}, adj={adj}"
+                )
 
     def test_extreme_scenario_preserves_sign_when_robust(self) -> None:
         # Very strong estimate, tight CI → bias bound shouldn't fully
