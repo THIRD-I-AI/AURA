@@ -279,15 +279,62 @@ class DatabaseConnectionManager:
         if not engine:
             raise ValueError(f"Connection {connection_id} not found or not initialized")
 
-        # Sec-2 #42: defense-in-depth. Reject forbidden / injection-shaped
-        # queries before they hit the engine. Callers that have already
-        # validated upstream pay only the regex cost; callers that haven't
-        # get the protection.
+        # Sec-2 #42: defense-in-depth — regex-based forbidden-keyword
+        # / injection-pattern reject.
         validation = self._sql_validator.validate(query)
         if not validation.is_valid:
             raise ValueError(
                 f"Query rejected by safety validator: {'; '.join(validation.errors)}"
             )
+
+        # Sec-3 #42: inline barrier-guard against SQL injection. CodeQL's
+        # py/sql-injection rule does taint-tracking intraprocedurally —
+        # the validator helper call above doesn't propagate as a sanitizer
+        # to the `text(query)` sink. Two inline checks immediately before
+        # the sink:
+        #
+        #   1. String-prefix whitelist on the trimmed leading token.
+        #      Rejects any statement whose first keyword isn't an
+        #      explicit read operation. Recognised by CodeQL's barrier-
+        #      guard model.
+        #   2. sqlglot AST deny-list. Even if a query passes the prefix
+        #      check (e.g. "SELECT ... ; DROP TABLE x" via a stacked
+        #      statement), parsing it surfaces the mutation as a
+        #      separate top-level statement and we reject it.
+        _ALLOWED_PREFIXES = ("SELECT", "WITH", "SHOW", "DESCRIBE", "EXPLAIN", "DESC")
+        _trimmed = query.lstrip().upper()
+        if not any(_trimmed.startswith(p + " ") or _trimmed == p for p in _ALLOWED_PREFIXES):
+            raise ValueError(
+                "Query rejected: only SELECT / WITH / SHOW / DESCRIBE / EXPLAIN permitted"
+            )
+
+        try:
+            import sqlglot
+            from sqlglot import exp as _sg_exp
+
+            _parsed = sqlglot.parse(query, error_level=sqlglot.ErrorLevel.RAISE)
+        except Exception as parse_exc:
+            raise ValueError(
+                f"Query rejected by SQL parser: {parse_exc.__class__.__name__}"
+            ) from None
+        _DISALLOWED_TYPES = (
+            _sg_exp.Drop, _sg_exp.Delete, _sg_exp.Insert, _sg_exp.Update,
+            _sg_exp.Alter, _sg_exp.Create, _sg_exp.TruncateTable, _sg_exp.Merge,
+            _sg_exp.Commit, _sg_exp.Rollback,
+        )
+        for _stmt in _parsed:
+            if _stmt is None:
+                raise ValueError("Empty SQL statement rejected")
+            if isinstance(_stmt, _DISALLOWED_TYPES):
+                raise ValueError(
+                    f"Disallowed statement type: {_stmt.__class__.__name__}"
+                )
+            for _node in _stmt.walk():
+                _inner = _node[0] if isinstance(_node, tuple) else _node
+                if isinstance(_inner, _DISALLOWED_TYPES):
+                    raise ValueError(
+                        f"Disallowed nested statement: {_inner.__class__.__name__}"
+                    )
 
         async with engine.connect() as conn:
             result = await conn.execute(text(query))

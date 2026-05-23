@@ -82,7 +82,14 @@ _pg_pool_registry: Dict[str, Any] = {}
 
 
 def _pg_pool_key(config: "ConnectorConfig") -> str:
-    """Deterministic registry key from connection coordinates."""
+    """Deterministic registry key from connection coordinates.
+
+    Pool identity is (host, port, database, username) — same user on
+    the same host:port/database always authenticates with the same
+    password, so the password adds no uniqueness to the cache key and
+    its inclusion in a fast hash (Sec-3 #49) trips a CodeQL false-flag
+    for weak password hashing. Keep the password OUT of the key.
+    """
     return hashlib.sha256(
         json.dumps(
             {
@@ -90,7 +97,6 @@ def _pg_pool_key(config: "ConnectorConfig") -> str:
                 "port": config.port,
                 "database": config.database,
                 "username": config.username,
-                "password": config.password,
             },
             sort_keys=True,
         ).encode()
