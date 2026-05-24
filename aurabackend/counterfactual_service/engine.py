@@ -1404,6 +1404,10 @@ _HASH_EXCLUDE_FIELDS: Dict[str, Any] = {
     "signature_b64": True,
     "signature_status": True,
     "signing_key_source": True,
+    # Sprint S23: sensitivity is advisory metadata computed post-signing.
+    # Excluding it preserves byte-stable hashes on existing artifacts and
+    # allows sensitivity to be re-derived on demand without re-sealing.
+    "sensitivity": True,
     # record_id is uuid-random and uncorrelated with the inputs — exclude
     # so two jobs with identical inputs produce the same artifact_hash
     # regardless of the random ID assigned at submission time.
@@ -1561,6 +1565,21 @@ async def run_job(query: CounterfactualQuery, df: pd.DataFrame) -> Counterfactua
             persistence.write_signature(artifact_hash, sig_b64)
     except Exception as exc:  # pragma: no cover
         logger.warning("Artifact persistence failed (non-fatal): %s", exc)
+
+    # Sprint S23: attach sensitivity analysis AFTER signing so these advisory
+    # fields never enter the signed payload. Computed from the outcome column's
+    # SD (available here since we hold df) and the estimates already sealed.
+    try:
+        from .sensitivity import sensitivity_analysis as _sa
+        outcome_col = query.outcome.column
+        if outcome_col in df.columns:
+            sd_y = float(df[outcome_col].std())
+            sd_y = sd_y if sd_y > 0 else 1.0
+        else:
+            sd_y = 1.0
+        artifact.sensitivity = _sa(estimates, sd_outcome=sd_y)
+    except Exception as exc:
+        logger.debug("Sensitivity analysis failed (non-fatal): %s", exc)
 
     # Seal in TRAIGA audit log (best-effort; engine never blocks on audit).
     try:

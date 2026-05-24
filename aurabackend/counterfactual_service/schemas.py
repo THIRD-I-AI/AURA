@@ -59,6 +59,25 @@ class CounterfactualQuery(BaseModel):
 # ── Engine outputs ────────────────────────────────────────────────────
 
 EstimatorMethod = Literal["linear_regression", "ipw", "psm", "double_ml", "forest_dr", "tmle"]
+
+
+class SensitivityReport(BaseModel):
+    """Sprint S23: E-value + partial-R² robustness for one estimator.
+
+    Attached to CounterfactualArtifact.sensitivity AFTER signing so
+    these advisory fields never enter the audit hash basis.
+    """
+    method: EstimatorMethod
+    # VanderWeele & Ding (2017) E-value at the point estimate.
+    evalue: float
+    # E-value at the CI bound closer to null; 1.0 when CI includes zero.
+    evalue_ci: float
+    # Cinelli-Hazlett (2020) partial-R² threshold; None when degenerate.
+    robustness_value: Optional[float] = None
+    # SD_Y used for standardisation (logged for reproducibility).
+    sd_outcome: float
+    # Human-readable interpretation for the operator card.
+    interpretation: str
 RefuterName = Literal["random_common_cause", "placebo", "data_subset", "sensitivity"]
 Severity = Literal["low", "medium", "high"]
 
@@ -168,4 +187,6 @@ class CounterfactualArtifact(BaseModel):
     signing_key_source: Optional[str] = None
     rendered: Dict[str, Any] = Field(default_factory=dict)
     warnings: List[str] = Field(default_factory=list)
+    # Sprint S23: E-value + Cinelli-Hazlett robustness; advisory, not in hash.
+    sensitivity: List[SensitivityReport] = Field(default_factory=list)
     created_at: Optional[datetime] = None
