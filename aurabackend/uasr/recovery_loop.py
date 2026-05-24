@@ -46,12 +46,18 @@ class RecoveryLoopConfig:
         kl_reduction_target: float = 0.5,
         sandbox_timeout_seconds: float = 30.0,
         auto_deploy: bool = True,
+        # S18.1b: opt-in causal-RL shim selection. When True, the loop
+        # collects all validated candidates across iterations and then
+        # runs the CausalRLEvaluator to pick the winner by
+        # counterfactual expected-improvement, rather than deploying
+        # the first validated shim greedily.
+        use_causal_rl_evaluator: bool = False,
     ) -> None:
         self.max_iterations = max_iterations
-        # Target: post-shim KL should be < zeta * this factor
         self.kl_reduction_target = kl_reduction_target
         self.sandbox_timeout_seconds = sandbox_timeout_seconds
         self.auto_deploy = auto_deploy
+        self.use_causal_rl_evaluator = use_causal_rl_evaluator
 
 
 class RecoveryLoop:
@@ -78,6 +84,27 @@ class RecoveryLoop:
         # Shim registry: source_id → [deployed shim codes]
         self._deployed_shims: Dict[str, List[str]] = {}
 
+        # S18.1b: lazily construct the causal-RL evaluator only when
+        # opted in. The drift_score_fn delegates to the detector's
+        # KL divergence (or falls back to 1.0/0.0 binary for schema
+        # drift where kl_divergence is None).
+        self._evaluator = None
+        if self._config.use_causal_rl_evaluator:
+            from .causal_rl_evaluator import CausalRLEvaluator
+
+            def _drift_score(rows: List[Dict[str, Any]]) -> float:
+                batch = BatchPayload(
+                    source_id="__eval__",
+                    batch_id="__eval__",
+                    rows=rows,
+                )
+                result = self._detector.detect(batch)
+                if result.kl_divergence is not None:
+                    return result.kl_divergence
+                return 1.0 if result.drift_detected else 0.0
+
+            self._evaluator = CausalRLEvaluator(drift_score_fn=_drift_score)
+
     # ────────────────────────────────────────────────────────────────
     # Main loop
     # ────────────────────────────────────────────────────────────────
@@ -103,6 +130,11 @@ class RecoveryLoop:
             drift_result.drift_type,
             drift_result.severity,
         )
+
+        # S18.1b: when the evaluator is on, we collect all validated
+        # candidates across iterations and defer deployment to the end.
+        # When off, the greedy "first-validated wins" path is unchanged.
+        validated_candidates: List[tuple] = []  # (shim, validation)
 
         for iteration in range(self._config.max_iterations):
             logger.info("Recovery iteration %d/%d", iteration + 1, self._config.max_iterations)
@@ -136,31 +168,25 @@ class RecoveryLoop:
             loop_result.shim = shim
 
             if validation["passed"]:
-                # ── Step 4: Deploy ──────────────────────────────────
-                if self._config.auto_deploy:
-                    loop_result.status = RecoveryStatus.DEPLOYED
-                    shim.deployed = True
-                    self._deployed_shims.setdefault(
-                        drift_result.source_id, []
-                    ).append(shim.shim_code)
-
-                    if self._on_shim_deployed:
-                        try:
-                            self._on_shim_deployed(
-                                drift_result.source_id,
-                                shim.shim_code,
-                                recovery_id,
-                            )
-                        except Exception as exc:
-                            logger.warning("on_shim_deployed callback failed: %s", exc)
-
+                if self._evaluator is not None:
+                    # S18.1b path: collect the validated shim as a
+                    # candidate and continue iterating to gather more.
+                    validated_candidates.append((shim, validation))
                     logger.info(
-                        "Shim deployed successfully: recovery=%s, post_kl=%s",
-                        recovery_id,
+                        "Candidate %d collected (post_kl=%s), continuing",
+                        len(validated_candidates),
                         validation.get("post_kl"),
                     )
+                    drift_result = self._update_drift_with_feedback(
+                        drift_result, validation,
+                    )
+                    continue
+
+                # ── Greedy path (original): deploy immediately ──────
+                if self._config.auto_deploy:
+                    self._deploy_shim(loop_result, shim, drift_result, recovery_id, validation)
                 else:
-                    loop_result.status = RecoveryStatus.VALIDATING  # Awaiting manual deploy
+                    loop_result.status = RecoveryStatus.VALIDATING
                     logger.info("Shim validated but auto_deploy=False, awaiting manual deploy")
 
                 break
@@ -170,13 +196,24 @@ class RecoveryLoop:
                     iteration + 1,
                     validation.get("reason", "unknown"),
                 )
-                # Feed validation failure back into next iteration
                 drift_result = self._update_drift_with_feedback(drift_result, validation)
 
         else:
             # Exhausted iterations
-            loop_result.status = RecoveryStatus.FAILED
-            logger.error("Recovery loop exhausted %d iterations", self._config.max_iterations)
+            if not validated_candidates:
+                loop_result.status = RecoveryStatus.FAILED
+                logger.error("Recovery loop exhausted %d iterations", self._config.max_iterations)
+
+        # S18.1b: if we collected candidates, run the evaluator now
+        if validated_candidates and self._evaluator is not None:
+            winner_shim, winner_val = await self._select_winner_via_evaluator(
+                validated_candidates, drift_result, original_batch, loop_result,
+            )
+            if winner_shim is not None and self._config.auto_deploy:
+                self._deploy_shim(
+                    loop_result, winner_shim, drift_result,
+                    recovery_id, winner_val,
+                )
 
         loop_result.total_latency_seconds = time.time() - start_time
         return loop_result
@@ -348,6 +385,104 @@ class RecoveryLoop:
         if "post_kl" in validation:
             drift.drift_vector["prev_post_kl"] = validation["post_kl"]
         return drift
+
+    # ────────────────────────────────────────────────────────────────
+    # S18.1b: deployment helper + evaluator wiring
+    # ────────────────────────────────────────────────────────────────
+
+    def _deploy_shim(
+        self,
+        loop_result: RecoveryLoopResult,
+        shim: ShimResult,
+        drift_result: DriftDetectionResult,
+        recovery_id: str,
+        validation: Dict[str, Any],
+    ) -> None:
+        loop_result.status = RecoveryStatus.DEPLOYED
+        loop_result.shim = shim
+        shim.deployed = True
+        self._deployed_shims.setdefault(
+            drift_result.source_id, [],
+        ).append(shim.shim_code)
+
+        if self._on_shim_deployed:
+            try:
+                self._on_shim_deployed(
+                    drift_result.source_id,
+                    shim.shim_code,
+                    recovery_id,
+                )
+            except Exception as exc:
+                logger.warning("on_shim_deployed callback failed: %s", exc)
+
+        logger.info(
+            "Shim deployed: recovery=%s, post_kl=%s",
+            recovery_id, validation.get("post_kl"),
+        )
+
+    async def _select_winner_via_evaluator(
+        self,
+        validated_candidates: List[tuple],
+        drift_result: DriftDetectionResult,
+        original_batch: BatchPayload,
+        loop_result: RecoveryLoopResult,
+    ) -> tuple:
+        """S18.1b: run CausalRLEvaluator on the collected candidates
+        and return (winner_shim, winner_validation) or (None, None).
+        """
+        from .causal_rl_evaluator import ShimCandidate
+
+        candidates = []
+        shim_map: Dict[str, tuple] = {}
+        for i, (shim, val) in enumerate(validated_candidates):
+            cid = f"candidate_{i}"
+            code = shim.shim_code
+
+            def _make_transform(c: str):
+                def transform(source_id: str, rows: List[Dict[str, Any]]):
+                    return self._sandbox_execute(c, rows)
+                return transform
+
+            candidates.append(ShimCandidate(
+                candidate_id=cid,
+                transform=_make_transform(code),
+                source="recovery_loop",
+                metadata={"post_kl": val.get("post_kl")},
+            ))
+            shim_map[cid] = (shim, val)
+
+        try:
+            artifact = await self._evaluator.select_winner(
+                source_id=drift_result.source_id,
+                drift_event=drift_result,
+                batch=original_batch,
+                candidates=candidates,
+            )
+            loop_result.evaluation_artifact = {
+                "record_id": artifact.record_id,
+                "winner_id": artifact.winner_id,
+                "selection_rationale": artifact.selection_rationale,
+                "candidates": [
+                    {"id": c.candidate_id, "improvement": c.improvement}
+                    for c in artifact.candidates
+                ],
+            }
+            if artifact.winner_id and artifact.winner_id in shim_map:
+                logger.info(
+                    "Evaluator selected %s (%s)",
+                    artifact.winner_id,
+                    artifact.selection_rationale,
+                )
+                return shim_map[artifact.winner_id]
+            logger.warning("Evaluator returned no winner")
+        except Exception as exc:
+            logger.warning("CausalRLEvaluator failed (non-fatal): %s", exc)
+
+        # Fallback: use the first validated candidate (greedy)
+        if validated_candidates:
+            logger.info("Falling back to first validated candidate")
+            return validated_candidates[0]
+        return (None, None)
 
     # ────────────────────────────────────────────────────────────────
     # Shim management

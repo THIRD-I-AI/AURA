@@ -192,6 +192,10 @@ class RecoveryLoopResult(BaseModel):
     diagnosis: Optional[DiagnosisResult] = None
     shim: Optional[ShimResult] = None
     total_latency_seconds: float = 0.0
+    # S18.1b: when use_causal_rl_evaluator is on, the evaluator's
+    # audit artifact is attached so the operator can see which
+    # candidates were considered and why the winner was chosen.
+    evaluation_artifact: Optional[Dict[str, Any]] = None
 
 
 class HealingReport(BaseModel):
