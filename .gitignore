@@ -1,3 +1,8 @@
+# Project artifacts
+graphify-out/
+sprint13_demo.py
+.sprint13_demo/
+
 # Python
 __pycache__/
 *.py[cod]
