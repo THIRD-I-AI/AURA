@@ -53,4 +53,4 @@ class TestShimRouterConstruction:
         worker = MAPEKWorker(config=cfg)
         assert hasattr(worker, "pause")
         assert hasattr(worker, "resume")
-        assert not worker.is_paused()
+        assert not worker.is_paused
