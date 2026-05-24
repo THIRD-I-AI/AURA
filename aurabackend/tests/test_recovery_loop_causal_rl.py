@@ -58,9 +58,8 @@ def _batch() -> BatchPayload:
 
 def _shim(code: str = "rows") -> ShimResult:
     return ShimResult(
+        recovery_id="test_recovery_001",
         shim_code=code,
-        shim_type="transform",
-        confidence=0.9,
     )
 
 
