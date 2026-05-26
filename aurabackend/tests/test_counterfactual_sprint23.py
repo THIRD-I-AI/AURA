@@ -29,16 +29,15 @@ import math
 
 import pytest
 
+from counterfactual_service.schemas import (
+    CounterfactualEstimate,
+    SensitivityReport,
+)
 from counterfactual_service.sensitivity import (
     compute_evalue,
     compute_robustness_value,
     compute_sensitivity_report,
 )
-from counterfactual_service.schemas import (
-    CounterfactualEstimate,
-    SensitivityReport,
-)
-
 
 # ── Tier A: compute_evalue ───────────────────────────────────────────
 
@@ -250,8 +249,11 @@ def _small_df(n: int = 200, seed: int = 0) -> "pd.DataFrame":
 
 def _make_query():
     from counterfactual_service.schemas import (
-        CounterfactualQuery, DAGSpec, DatasetRef,
-        InterventionSpec, OutcomeSpec,
+        CounterfactualQuery,
+        DAGSpec,
+        DatasetRef,
+        InterventionSpec,
+        OutcomeSpec,
     )
     return CounterfactualQuery(
         question="S23 integration test",
@@ -267,10 +269,23 @@ def _make_query():
     reason="numpy/pandas + dowhy required for Tier B engine integration",
 )
 class TestEngineIntegration:
-    @pytest.mark.asyncio
-    async def test_run_job_attaches_sensitivity_to_estimates(self):
+    """Full-engine integration tests.
+
+    Each test redirects AURA_AUDIT_DIR to a tmp_path and installs the
+    unified mock LLM — identical setup to test_counterfactual_engine.py
+    — so the critic-cache and persistence layers never touch /var/log/aura.
+    """
+
+    def _run_job(self, monkeypatch, tmp_path):
         from counterfactual_service.engine import run_job
-        artifact = await run_job(_make_query(), _small_df())
+        from tests._mock_llm import UnifiedMockLLM, install_mock
+        install_mock(monkeypatch, UnifiedMockLLM(default_response='{"challenges": []}'))
+        monkeypatch.setenv("AURA_AUDIT_DIR", str(tmp_path))
+        return run_job(_make_query(), _small_df())
+
+    @pytest.mark.asyncio
+    async def test_run_job_attaches_sensitivity_to_estimates(self, monkeypatch, tmp_path):
+        artifact = await self._run_job(monkeypatch, tmp_path)
         successful = [e for e in artifact.estimates if e.error is None]
         assert len(successful) > 0, "At least one estimator must succeed"
         for est in successful:
@@ -280,19 +295,17 @@ class TestEngineIntegration:
             assert isinstance(est.sensitivity, SensitivityReport)
 
     @pytest.mark.asyncio
-    async def test_failed_estimates_have_sensitivity_none(self):
-        from counterfactual_service.engine import run_job
-        artifact = await run_job(_make_query(), _small_df())
+    async def test_failed_estimates_have_sensitivity_none(self, monkeypatch, tmp_path):
+        artifact = await self._run_job(monkeypatch, tmp_path)
         for est in artifact.estimates:
             if est.error is not None:
                 assert est.sensitivity is None
 
     @pytest.mark.asyncio
-    async def test_sensitivity_in_hash_payload(self):
-        from counterfactual_service.engine import run_job, strip_for_hashing
-        artifact = await run_job(_make_query(), _small_df())
+    async def test_sensitivity_in_hash_payload(self, monkeypatch, tmp_path):
+        from counterfactual_service.engine import strip_for_hashing
+        artifact = await self._run_job(monkeypatch, tmp_path)
         payload = strip_for_hashing(artifact)
-        # estimates are in the hash; each estimate dict should carry sensitivity
         estimates_in_payload = payload.get("estimates", [])
         successful_payload = [e for e in estimates_in_payload if e.get("error") is None]
         assert len(successful_payload) > 0
@@ -302,18 +315,16 @@ class TestEngineIntegration:
             )
 
     @pytest.mark.asyncio
-    async def test_sensitivity_e_value_finite_and_gte_one(self):
-        from counterfactual_service.engine import run_job
-        artifact = await run_job(_make_query(), _small_df())
+    async def test_sensitivity_e_value_finite_and_gte_one(self, monkeypatch, tmp_path):
+        artifact = await self._run_job(monkeypatch, tmp_path)
         for est in artifact.estimates:
             if est.sensitivity is not None:
                 assert math.isfinite(est.sensitivity.e_value_point)
                 assert est.sensitivity.e_value_point >= 1.0
 
     @pytest.mark.asyncio
-    async def test_sensitivity_robustness_value_in_0_1(self):
-        from counterfactual_service.engine import run_job
-        artifact = await run_job(_make_query(), _small_df())
+    async def test_sensitivity_robustness_value_in_0_1(self, monkeypatch, tmp_path):
+        artifact = await self._run_job(monkeypatch, tmp_path)
         for est in artifact.estimates:
             if est.sensitivity is not None:
                 rv = est.sensitivity.robustness_value
