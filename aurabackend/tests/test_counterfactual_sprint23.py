@@ -231,6 +231,14 @@ try:
 except ImportError:
     _NUMPY_AVAILABLE = False
 
+try:
+    from counterfactual_service.engine import dowhy_available as _dowhy_available
+    _DOWHY_AVAILABLE = _dowhy_available()
+except Exception:
+    _DOWHY_AVAILABLE = False
+
+_TIER_B_AVAILABLE = _NUMPY_AVAILABLE and _DOWHY_AVAILABLE
+
 
 def _small_df(n: int = 200, seed: int = 0) -> "pd.DataFrame":
     rng = np.random.default_rng(seed)
@@ -254,7 +262,10 @@ def _make_query():
     )
 
 
-@pytest.mark.skipif(not _NUMPY_AVAILABLE, reason="numpy/pandas required for Tier B")
+@pytest.mark.skipif(
+    not _TIER_B_AVAILABLE,
+    reason="numpy/pandas + dowhy required for Tier B engine integration",
+)
 class TestEngineIntegration:
     @pytest.mark.asyncio
     async def test_run_job_attaches_sensitivity_to_estimates(self):
