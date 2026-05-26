@@ -59,27 +59,43 @@ class CounterfactualQuery(BaseModel):
 # ── Engine outputs ────────────────────────────────────────────────────
 
 EstimatorMethod = Literal["linear_regression", "ipw", "psm", "double_ml", "forest_dr", "tmle"]
+RefuterName = Literal["random_common_cause", "placebo", "data_subset", "sensitivity"]
+Severity = Literal["low", "medium", "high"]
 
 
 class SensitivityReport(BaseModel):
-    """Sprint S23: E-value + partial-R² robustness for one estimator.
+    """Sprint S23: per-estimate sensitivity analysis.
 
-    Attached to CounterfactualArtifact.sensitivity AFTER signing so
-    these advisory fields never enter the audit hash basis.
+    Two complementary tools attached to every estimator's effect:
+
+    * **E-value** (VanderWeele & Ding 2017): how strong an unmeasured
+      confounder, measured on the risk-ratio scale, would have to be
+      to fully explain away the observed effect. Closed-form via
+      Chinn 2000 continuous-outcome conversion ``RR ≈ exp(0.91·|d|)``
+      followed by ``E = RR + sqrt(RR·(RR-1))``.
+    * **Robustness value** (Cinelli & Hazlett 2020): the minimum
+      partial-R² strength that an unmeasured confounder would need
+      with BOTH treatment and outcome to bring the estimate to zero
+      (``RV_1``). Closed-form from ``f = |t|/sqrt(dof)`` via
+      ``RV_q = 0.5·(sqrt(f⁴ + 4f²) - f²)``.
+
+    Every field is deterministic given the (point, CI, n_samples,
+    n_controls, outcome_sd) tuple — embedding in the artifact hash
+    basis preserves Layer 10 byte-identity. ``extreme_scenario_
+    adjusted`` is the worst-case adjusted estimate under the
+    "1x benchmark" assumption that the unmeasured confounder is as
+    strong as the observed partial Y~D relationship.
     """
-    method: EstimatorMethod
-    # VanderWeele & Ding (2017) E-value at the point estimate.
-    evalue: float
-    # E-value at the CI bound closer to null; 1.0 when CI includes zero.
-    evalue_ci: float
-    # Cinelli-Hazlett (2020) partial-R² threshold; None when degenerate.
-    robustness_value: Optional[float] = None
-    # SD_Y used for standardisation (logged for reproducibility).
-    sd_outcome: float
-    # Human-readable interpretation for the operator card.
-    interpretation: str
-RefuterName = Literal["random_common_cause", "placebo", "data_subset", "sensitivity"]
-Severity = Literal["low", "medium", "high"]
+    e_value_point: float
+    e_value_ci: float
+    rr_approx: float
+    standardised_effect_d: float
+    null_crossed: bool
+    t_statistic: float
+    dof: int
+    partial_r2_yd_x: float
+    robustness_value: float
+    extreme_scenario_adjusted: float
 
 
 class PropensityDiagnostics(BaseModel):
@@ -141,6 +157,13 @@ class CounterfactualEstimate(BaseModel):
     # stronger contract; the operator card shows both with a small
     # badge.
     ci_method: Literal["asymptotic", "conformal"] = "asymptotic"
+    # Sprint S23: omitted-variable-bias sensitivity attached after the
+    # fan-out. None for failed estimates (where point + CI are
+    # placeholder zeros and the question doesn't make sense). The
+    # field IS in the artifact hash basis — any drift in the sensitivity
+    # numbers surfaces as a hash change so an auditor can detect a
+    # changed input dataset or DAG.
+    sensitivity: Optional[SensitivityReport] = None
 
 
 class RefutationResult(BaseModel):
@@ -187,6 +210,4 @@ class CounterfactualArtifact(BaseModel):
     signing_key_source: Optional[str] = None
     rendered: Dict[str, Any] = Field(default_factory=dict)
     warnings: List[str] = Field(default_factory=list)
-    # Sprint S23: E-value + Cinelli-Hazlett robustness; advisory, not in hash.
-    sensitivity: List[SensitivityReport] = Field(default_factory=list)
     created_at: Optional[datetime] = None

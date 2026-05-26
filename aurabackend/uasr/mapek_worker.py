@@ -89,22 +89,18 @@ class MAPEKConfig:
     pause_on_severity: DriftSeverity = DriftSeverity.MEDIUM
 
     # ── Sprint S18.1 opt-in: Wasserstein-Martingale drift detector ───
-    # Default OFF — preserves the existing IQR / KL detector behaviour
-    # for every UASR worker that doesn't explicitly opt in. When True,
-    # `_analyze_detect_drift` routes through `WassersteinMartingaleDetector`
-    # which gives a provable Azuma-Hoeffding false-positive bound of
-    # `martingale_alpha` (default 0.1%). Bifet & Gavalda + Hoeffding 1963.
-    # The classical IQR / KL-divergence checks remain available for
-    # comparison + as a fallback if the martingale baseline isn't
-    # registered for the source.
     use_martingale_detector: bool = False
     martingale_alpha: float = 0.001
     martingale_baseline_window: int = 100
-    # When True AND martingale fires AND a baseline column triggered,
-    # the resulting DriftDetectionResult uses severity HIGH. When False
-    # (default), severity stays MEDIUM — softer escalation lets
-    # operators tune the recovery-trigger threshold via pause_on_severity.
     martingale_alarm_severity_high: bool = False
+
+    # ── Sprint S18.1c opt-in: Kramer-Magee canary ShimRouter ──────
+    # When True, shim deployment uses gradual canary routing instead
+    # of the pause/resume mechanism. Batch ingestion continues
+    # uninterrupted; new shims receive a small initial traffic share
+    # and are promoted or reverted based on drift re-detection.
+    use_shim_router: bool = False
+    shim_router_canary_initial_weight: float = 0.1
 
 
 # ── Progress callback signature ───────────────────────────────────────
@@ -141,6 +137,15 @@ class MAPEKWorker:
                 alpha=self._cfg.martingale_alpha,
                 baseline_window=self._cfg.martingale_baseline_window,
             )
+
+        # Sprint S18.1c — lazily initialise the ShimRouter when opted in.
+        # Canary routing replaces pause/resume for shim deployment:
+        # batch ingestion continues; new shims get a fractional traffic
+        # share that grows or reverts based on drift re-detection.
+        self._shim_router: Optional[Any] = None
+        if self._cfg.use_shim_router:
+            from .shim_router import ShimRouter
+            self._shim_router = ShimRouter()
 
         self._consumer: Any = None
         self._duckdb_con: Any = None
@@ -222,10 +227,20 @@ class MAPEKWorker:
                 if batch is None or not batch.rows:
                     continue
 
-                # Apply already-deployed shims so resolved drift doesn't re-fire
-                healed_rows = self._loop.apply_shims(batch.source_id, batch.rows)
-                batch.rows = healed_rows
-                batch.columns = list(healed_rows[0].keys()) if healed_rows else batch.columns
+                # Apply already-deployed shims so resolved drift doesn't re-fire.
+                # S18.1c: when ShimRouter is active, use its weighted
+                # canary routing instead of the recovery loop's linear
+                # shim-chain application.
+                if self._shim_router is not None:
+                    try:
+                        routed = await self._shim_router.apply(batch.source_id, batch.rows)
+                        batch.rows = routed["rows"]
+                    except Exception:
+                        pass  # no routes yet — use raw rows
+                else:
+                    healed_rows = self._loop.apply_shims(batch.source_id, batch.rows)
+                    batch.rows = healed_rows
+                batch.columns = list(batch.rows[0].keys()) if batch.rows else batch.columns
 
                 # ── Analyze ────────────────────────────────────────────
                 drift = self._analyze_detect_drift(batch)
@@ -236,27 +251,57 @@ class MAPEKWorker:
                 )
 
                 if drift.drift_detected and self._should_pause(drift):
-                    # ── Plan + Execute (recovery path) ─────────────────
-                    self.pause(reason=f"drift {drift.drift_type}/{drift.severity}")
-                    recovery = await self._plan_recovery(drift, batch)
+                    if self._shim_router is not None:
+                        # ── S18.1c: canary-deploy (no pause) ──────────
+                        recovery = await self._plan_recovery(drift, batch)
+                        if recovery.status == RecoveryStatus.DEPLOYED and recovery.shim:
+                            version = f"v_{recovery.recovery_id}"
+                            code = recovery.shim.shim_code
 
-                    if recovery.status == RecoveryStatus.DEPLOYED:
-                        # Re-apply healed batch and persist
-                        healed = self._loop.apply_shims(batch.source_id, batch.rows)
-                        batch.rows = healed
-                        batch.columns = list(healed[0].keys()) if healed else batch.columns
-                        await self._execute_persist(batch)
-                        await self._knowledge_update(batch, drift, recovery)
-                        self.resume()
+                            def _make_transform(c: str):
+                                def transform(sid: str, rows):
+                                    return RecoveryLoop._sandbox_execute(c, rows)
+                                return transform
+
+                            await self._shim_router.add_canary(
+                                batch.source_id,
+                                version,
+                                _make_transform(code),
+                                initial_weight=self._cfg.shim_router_canary_initial_weight,
+                            )
+                            await self._execute_persist(batch)
+                            await self._knowledge_update(batch, drift, recovery)
+                            await self._emit(
+                                "canary_deployed",
+                                f"shim {version} deployed as canary (weight={self._cfg.shim_router_canary_initial_weight})",
+                                {"recovery_id": recovery.recovery_id},
+                            )
+                        else:
+                            await self._emit(
+                                "recovery_failed",
+                                f"recovery {recovery.recovery_id} status={recovery.status.value}; canary NOT deployed",
+                                {"recovery_id": recovery.recovery_id, "drift_event_id": drift.batch_id},
+                            )
                     else:
-                        # Recovery failed — stay paused, surface for human triage
-                        await self._emit(
-                            "recovery_failed",
-                            f"recovery {recovery.recovery_id} status={recovery.status.value}; consumer remains paused",
-                            {"recovery_id": recovery.recovery_id, "drift_event_id": drift.batch_id},
-                        )
-                        await self._stop_signal.wait()
-                        break
+                        # ── Original pause/resume path ────────────────
+                        self.pause(reason=f"drift {drift.drift_type}/{drift.severity}")
+                        recovery = await self._plan_recovery(drift, batch)
+
+                        if recovery.status == RecoveryStatus.DEPLOYED:
+                            healed = self._loop.apply_shims(batch.source_id, batch.rows)
+                            batch.rows = healed
+                            batch.columns = list(healed[0].keys()) if healed else batch.columns
+                            await self._execute_persist(batch)
+                            await self._knowledge_update(batch, drift, recovery)
+                            self.resume()
+                        else:
+                            await self._emit(
+                                "recovery_failed",
+                                f"recovery {recovery.recovery_id} status={recovery.status.value}; consumer remains paused",
+                                {"recovery_id": recovery.recovery_id, "drift_event_id": drift.batch_id},
+                            )
+                            await self._stop_signal.wait()
+                            break
                 else:
                     # ── Execute (happy path) ───────────────────────────
                     await self._execute_persist(batch)

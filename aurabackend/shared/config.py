@@ -107,17 +107,41 @@ class AuraSettings(BaseSettings):
                 )
             for origin in v:
                 if origin.startswith("http://"):
-                    import warnings
-                    warnings.warn(
-                        f"Non-HTTPS CORS origin '{origin}' in production. "
-                        "Use HTTPS origins for production deployments.",
-                        stacklevel=2,
+                    # Sec-4: HTTP origin in a production CORS list is a real
+                    # MITM exposure on the cross-origin path — promote the
+                    # pre-Sec-4 warning to a hard rejection, parallel to
+                    # the wildcard '*' check above. An explicit env opt-in
+                    # would be the right escape hatch if anyone runs prod
+                    # behind a non-TLS proxy, but no caller does today.
+                    raise ValueError(
+                        f"Non-HTTPS CORS origin '{origin}' is not allowed "
+                        "in production. Use HTTPS origins for production "
+                        "deployments."
                     )
         return v
 
     # ── Security / Auth ─────────────────────────────────────────────────
     auth_mode: str = Field("open", alias="AURA_AUTH_MODE")
     secret_key: str = Field("change-me-in-production", alias="SECRET_KEY")
+    trust_forwarded_for: bool = Field(False, alias="AURA_TRUST_FORWARDED_FOR")
+
+    @field_validator("auth_mode", mode="after")
+    @classmethod
+    def _reject_open_auth_in_production(cls, v, info):
+        # Sec-4: parallel to the SECRET_KEY production validator below.
+        # auth_mode="open" issues JWTs without credential validation —
+        # acceptable for development ergonomics but a complete
+        # authentication bypass if it ever reaches a public surface.
+        # An accidental ENVIRONMENT=production deployment with the
+        # default config must fail loud, not silently mint tokens.
+        env = info.data.get("environment", "development")
+        if env.lower() == "production" and v == "open":
+            raise ValueError(
+                "auth_mode='open' is not allowed in production. "
+                "Set AURA_AUTH_MODE=password (or another credential-"
+                "validating mode) for production deployments."
+            )
+        return v
 
     @field_validator("secret_key", mode="after")
     @classmethod

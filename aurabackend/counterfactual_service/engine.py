@@ -37,8 +37,10 @@ from .schemas import (
     PropensityDiagnostics,
     RefutationResult,
     RefuterName,
+    SensitivityReport,
     Severity,
 )
+from .sensitivity import compute_sensitivity_report
 
 logger = logging.getLogger("aura.counterfactual.engine")
 
@@ -1069,7 +1071,75 @@ async def run_estimators(
         results = await asyncio.gather(*(_one(m) for m in chosen))
     else:
         results = [await _one(m) for m in chosen]
+
+    # Sprint S23: attach VanderWeele-Ding E-value + Cinelli-Hazlett
+    # robustness value to every successful estimate. Computed centrally
+    # (rather than inside each wrapper) so the eight existing wrappers
+    # stay untouched. outcome_sd and n_controls are functions of (df,
+    # outcome, dag) — invariant across all estimator slots — so they
+    # only need computing once per fan-out. Failed estimates (error
+    # populated, point/CI are placeholder zeros) keep sensitivity=None
+    # because the question "how strong a confounder?" isn't meaningful
+    # when the estimator never produced a value to be confounded.
+    _attach_sensitivity(results, df=df, treatment=treatment, outcome=outcome, dag=dag)
     return sorted(results, key=lambda e: e.method)
+
+
+# ── Sprint S23: sensitivity attachment ───────────────────────────────
+
+def _attach_sensitivity(
+    estimates: List[CounterfactualEstimate],
+    *,
+    df: pd.DataFrame,
+    treatment: InterventionSpec,
+    outcome: OutcomeSpec,
+    dag: dict,
+) -> None:
+    """Populate ``estimate.sensitivity`` in place for every successful
+    estimate in ``estimates``.
+
+    Computes outcome_sd from the outcome column once, derives n_controls
+    from the DAG (treatment-parents excluding the outcome itself, intersected
+    with df.columns — same convention as the DR / TMLE wrappers), then calls
+    ``compute_sensitivity_report`` per estimate.
+
+    Failure mode: any exception in the per-estimate compute is swallowed
+    and that estimate's ``sensitivity`` stays ``None``. Sensitivity is
+    *advisory* — the artifact must still seal even if a downstream
+    sklearn / scipy quirk produces NaN.
+    """
+    try:
+        import numpy as np
+        y_arr = df[outcome.column].to_numpy(dtype=float)
+        # ddof=1 to match the unbiased sample-SD convention every other
+        # statistical step in the engine uses (statsmodels, sklearn).
+        outcome_sd = float(np.std(y_arr, ddof=1)) if len(y_arr) > 1 else 0.0
+    except Exception as exc:
+        logger.warning("Sensitivity outcome_sd capture failed: %s", exc)
+        return
+
+    n_controls = sum(
+        1 for src, dst in dag.get("edges", [])
+        if dst == treatment.column
+        and src != outcome.column
+        and src in df.columns
+    )
+
+    for est in estimates:
+        if est.error is not None:
+            continue
+        try:
+            payload = compute_sensitivity_report(
+                point=float(est.point),
+                ci_lower=float(est.ci_lower),
+                ci_upper=float(est.ci_upper),
+                n_samples=int(est.n_samples),
+                n_controls=n_controls,
+                outcome_sd=outcome_sd,
+            )
+            est.sensitivity = SensitivityReport(**payload)
+        except Exception as exc:  # pragma: no cover
+            logger.warning("Sensitivity attach failed for %s: %s", est.method, exc)
 
 
 # ── Refuter fan-out ───────────────────────────────────────────────────
@@ -1319,6 +1389,116 @@ def _propensity_warning_challenges(
     return out
 
 
+# ── Sprint S24: estimator-class disagreement auto-challenge ──────────
+
+# The "2× the CI half-width" threshold below is the same factor the
+# RV-vs-DR auto-challenge concept is anchored on (S23 sensitivity +
+# S22 TMLE). Two estimators whose point estimates diverge by more
+# than twice the conformal/asymptotic CI half-width are statistically
+# inconsistent — at the stated coverage level, both intervals can't
+# cover the true ATE simultaneously. Either nuisance misspecification
+# (more likely on the DR-Learner family) or a positivity violation
+# (where both can fail) is the most common cause.
+_DISAGREEMENT_HALF_WIDTH_MULTIPLIER = 2.0
+
+
+def _estimator_disagreement_challenges(
+    estimates: List[CounterfactualEstimate],
+) -> List[AdversarialChallenge]:
+    """Sprint S24. Emit one high-severity AdversarialChallenge when the
+    TMLE point estimate and the ForestDR point estimate diverge by more
+    than 2× the larger conformal/asymptotic CI half-width.
+
+    Anchors S14's `_propensity_warning_challenges` exactly:
+      * Pure function of already-computed `estimates` — no I/O, no LLM.
+      * Fixed-precision format strings (`{:.3f}`) so the challenge text
+        is byte-stable across re-runs with the same inputs (Layer 10).
+      * Calls into the same severity = "high" + suggested_check shape
+        the operator-card renderer + audit-chain consumers expect.
+
+    Why TMLE vs ForestDR specifically: these are AURA's two semi-
+    parametric efficiency-bound-achieving estimators with very different
+    final-stage assumptions (linear submodel vs honest random forest).
+    Significant disagreement between them is one of the strongest
+    signals that nuisance misspecification (likely the DR side) or
+    positivity violation is at play. The DoWhy quartet (linear / IPW /
+    PSM / DR stub) are weaker baselines — disagreement among them is
+    less informative.
+
+    Returns an empty list when:
+      * Either TMLE or forest_dr is missing from the estimates list
+        (operator didn't opt them in via `methods=[...]`).
+      * Either estimate has a populated `error` field.
+      * Either estimate's CI is degenerate (lower == upper).
+      * The conformal half-width is missing AND the asymptotic half-
+        width is zero (no signal to compare).
+
+    Threshold: 2× the LARGER of the two estimators' CI half-widths.
+    Using the larger gives the lower-disagreement-rate side the
+    benefit of the doubt — we only fire when the gap exceeds the
+    more-conservative estimator's own uncertainty by 2x.
+    """
+    by_method = {e.method: e for e in estimates}
+    tmle = by_method.get("tmle")
+    forest = by_method.get("forest_dr")
+    if tmle is None or forest is None:
+        return []
+    if tmle.error is not None or forest.error is not None:
+        return []
+
+    def _half_width(est: CounterfactualEstimate) -> float:
+        return max(0.0, (est.ci_upper - est.ci_lower) / 2.0)
+
+    hw_tmle = _half_width(tmle)
+    hw_forest = _half_width(forest)
+    hw = max(hw_tmle, hw_forest)
+    if hw <= 0.0:
+        # No CI signal — can't decide if disagreement is significant.
+        return []
+
+    gap = abs(tmle.point - forest.point)
+    threshold = _DISAGREEMENT_HALF_WIDTH_MULTIPLIER * hw
+    if gap <= threshold:
+        return []
+
+    # Identify the "stronger CI contract" for the explanatory text.
+    # When both are conformal, the contract is finite-sample
+    # distribution-free; when one is asymptotic, the comparison is
+    # only asymptotically valid. Either way the disagreement is
+    # informative; we just label it accurately for the auditor.
+    ci_contract = (
+        "conformal"
+        if tmle.ci_method == "conformal" and forest.ci_method == "conformal"
+        else "asymptotic"
+    )
+
+    text = (
+        f"Estimator-class disagreement: TMLE point={tmle.point:.3f} "
+        f"(CI [{tmle.ci_lower:.3f}, {tmle.ci_upper:.3f}]) "
+        f"vs ForestDR point={forest.point:.3f} "
+        f"(CI [{forest.ci_lower:.3f}, {forest.ci_upper:.3f}]). "
+        f"Gap {gap:.3f} exceeds "
+        f"{_DISAGREEMENT_HALF_WIDTH_MULTIPLIER:.1f}× the larger "
+        f"{ci_contract} CI half-width ({hw:.3f}). "
+        "Linear-submodel vs non-parametric DR are pulled apart by "
+        "either nuisance misspecification or a positivity violation."
+    )
+
+    return [
+        AdversarialChallenge(
+            text=text,
+            severity="high",
+            suggested_check=(
+                "Inspect propensity diagnostics on both estimates "
+                "(n_extreme / n_total). If both look fine, the "
+                "outcome-stage nuisance is the likely culprit — "
+                "try ForestDR with a deeper forest or LinearDR with "
+                "a polynomial feature expansion and re-run."
+            ),
+        )
+    ]
+
+
 # ── End-to-end orchestration ──────────────────────────────────────────
 
 def _dataset_fingerprint(df: pd.DataFrame) -> str:
@@ -1404,10 +1584,6 @@ _HASH_EXCLUDE_FIELDS: Dict[str, Any] = {
     "signature_b64": True,
     "signature_status": True,
     "signing_key_source": True,
-    # Sprint S23: sensitivity is advisory metadata computed post-signing.
-    # Excluding it preserves byte-stable hashes on existing artifacts and
-    # allows sensitivity to be re-derived on demand without re-sealing.
-    "sensitivity": True,
     # record_id is uuid-random and uncorrelated with the inputs — exclude
     # so two jobs with identical inputs produce the same artifact_hash
     # regardless of the random ID assigned at submission time.
@@ -1508,6 +1684,13 @@ async def run_job(query: CounterfactualQuery, df: pd.DataFrame) -> Counterfactua
     challenges_unsorted.extend(
         _propensity_warning_challenges(estimates),
     )
+    # Sprint S24: estimator-class disagreement check — runs after S14's
+    # propensity check so the operator card sees them in stable order
+    # post-sort. Same shape, same byte-stability, same hash-basis
+    # discipline: deterministic function of (estimates,) only.
+    challenges_unsorted.extend(
+        _estimator_disagreement_challenges(estimates),
+    )
     # SHA-1 is only used as a stable, deterministic tie-breaker on the
     # challenge text — purely so two artifacts with identical (severity,
     # text) lists sort identically across runs. ``usedforsecurity=False``
@@ -1565,21 +1748,6 @@ async def run_job(query: CounterfactualQuery, df: pd.DataFrame) -> Counterfactua
             persistence.write_signature(artifact_hash, sig_b64)
     except Exception as exc:  # pragma: no cover
         logger.warning("Artifact persistence failed (non-fatal): %s", exc)
-
-    # Sprint S23: attach sensitivity analysis AFTER signing so these advisory
-    # fields never enter the signed payload. Computed from the outcome column's
-    # SD (available here since we hold df) and the estimates already sealed.
-    try:
-        from .sensitivity import sensitivity_analysis as _sa
-        outcome_col = query.outcome.column
-        if outcome_col in df.columns:
-            sd_y = float(df[outcome_col].std())
-            sd_y = sd_y if sd_y > 0 else 1.0
-        else:
-            sd_y = 1.0
-        artifact.sensitivity = _sa(estimates, sd_outcome=sd_y)
-    except Exception as exc:
-        logger.debug("Sensitivity analysis failed (non-fatal): %s", exc)
 
     # Seal in TRAIGA audit log (best-effort; engine never blocks on audit).
     try:

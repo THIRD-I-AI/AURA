@@ -37,6 +37,7 @@ from shared.middleware import (
     RateLimitMiddleware,
     RequestIDMiddleware,
     RequestLoggingMiddleware,
+    SecurityHeadersMiddleware,
     register_exception_handlers,
 )
 from shared.observability import init_metrics, init_sentry
@@ -165,6 +166,13 @@ def create_service(
     #     Records every non-health request to the immutable hash-chained
     #     JSONL on the audit PVC mounted by the Helm chart.
     app.add_middleware(AuditLogMiddleware)
+    #  8. Security headers  (Sec-4 — sets X-Content-Type-Options /
+    #     X-Frame-Options / Referrer-Policy on every response. HSTS only
+    #     in production so the http:// localhost dev flow stays working.)
+    app.add_middleware(
+        SecurityHeadersMiddleware,
+        hsts=settings.is_production,
+    )
 
     # ── Exception handlers ──────────────────────────────────────────────
     register_exception_handlers(app)

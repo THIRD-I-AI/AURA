@@ -196,7 +196,11 @@ cd aurabackend
 .\start_all.ps1          # 9 services in named windows
 # Then in a new terminal — Sprint 8+ counterfactual engine (not in start_all)
 $env:PYTHONPATH = (Get-Location).Path
-$env:AURA_SIGNING_PRIVATE_KEY_HEX = ("01" * 32)
+# Generate an Ed25519 signing key for the audit engine.
+# DO NOT reuse this key across environments and DO NOT commit it.
+# In production, generate once with `python -c "import secrets; print(secrets.token_hex(32))"`
+# and store in your secrets manager.
+$env:AURA_SIGNING_PRIVATE_KEY_HEX = (python -c "import secrets; print(secrets.token_hex(32))")
 python -m uvicorn counterfactual_service.main:app --port 8012 --reload
 ```
 

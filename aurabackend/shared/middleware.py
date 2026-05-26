@@ -227,6 +227,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         window_seconds: int = 60,
         exempt_path_prefixes: tuple[str, ...] = ("/stream/",),
         backend=None,
+        trust_forwarded_for: bool | None = None,
     ) -> None:
         super().__init__(app)
         self._max_requests = requests_per_window
@@ -238,10 +239,30 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             backend = InMemoryBackend()
         self._backend = backend
 
+        # Sec-4: X-Forwarded-For is spoofable by any client. Honour it
+        # only when explicitly opted in via AURA_TRUST_FORWARDED_FOR=true,
+        # which the operator should set only when the service runs
+        # behind a known reverse proxy that overwrites the header. None
+        # at construction time falls back to the global setting so
+        # tests can override the flag without monkey-patching env vars.
+        # Sec-4.1: narrow except to (ImportError, AttributeError) so a
+        # production-config ValueError raised by config field-validators
+        # propagates instead of being silently swallowed into a fail-
+        # closed default. ValueErrors here mean the operator botched the
+        # config and should hear about it loudly at startup.
+        if trust_forwarded_for is None:
+            try:
+                from shared.config import settings
+                trust_forwarded_for = bool(settings.trust_forwarded_for)
+            except (ImportError, AttributeError):
+                trust_forwarded_for = False
+        self._trust_forwarded_for = trust_forwarded_for
+
     def _client_ip(self, request: Request) -> str:
-        forwarded = request.headers.get("X-Forwarded-For")
-        if forwarded:
-            return forwarded.split(",")[0].strip()
+        if self._trust_forwarded_for:
+            forwarded = request.headers.get("X-Forwarded-For")
+            if forwarded:
+                return forwarded.split(",")[0].strip()
         return request.client.host if request.client else "unknown"
 
     async def dispatch(self, request: Request, call_next: Callable):
@@ -277,8 +298,78 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 
 # ── Exception Handlers ──────────────────────────────────────────────────
 
+# ── Security Headers Middleware ─────────────────────────────────────────
+
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    """Set defensive response headers on every response.
+
+    Sec-4: AURA didn't set X-Content-Type-Options / X-Frame-Options /
+    Referrer-Policy / HSTS on responses, leaving the api_gateway public
+    surface exposed to MIME-sniffing, clickjacking, and referer-leak
+    classes of attacks. HSTS is set only in production to avoid
+    breaking the localhost http:// dev flow.
+
+    Headers chosen are the OWASP-recommended minimum set for a JSON
+    API. No Content-Security-Policy because the gateway also serves
+    no HTML — CSP would have no effect on the API surface and would
+    need bespoke per-page values if the frontend were ever co-served.
+    """
+
+    def __init__(self, app, *, hsts: bool = False, hsts_max_age: int = 31536000) -> None:
+        super().__init__(app)
+        self._hsts = hsts
+        self._hsts_max_age = hsts_max_age
+
+    def apply_to(self, response) -> None:
+        """Set defensive headers on an arbitrary response.
+
+        Sec-4.1: exposed as a public method so global exception handlers
+        can call it on their JSONResponse — when ``call_next`` raises,
+        the response constructed by an `@app.exception_handler` doesn't
+        re-traverse this middleware on its way back to the client, so
+        the headers would otherwise be missing on every 4xx/5xx error
+        response.
+        """
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["Referrer-Policy"] = "no-referrer"
+        if self._hsts:
+            response.headers["Strict-Transport-Security"] = (
+                f"max-age={self._hsts_max_age}; includeSubDomains"
+            )
+
+    async def dispatch(self, request: Request, call_next: Callable):
+        response = await call_next(request)
+        self.apply_to(response)
+        return response
+
+
 def register_exception_handlers(app: FastAPI) -> None:
     """Attach global exception handlers so every error returns structured JSON."""
+
+    def _apply_security_headers(response) -> None:
+        # Sec-4.1: walk the app's user_middleware to find the
+        # SecurityHeadersMiddleware instance and apply its headers
+        # to error responses. The middleware's dispatch path doesn't
+        # run for exception-handler-produced responses because
+        # `await call_next(request)` raised before the dispatch
+        # reached the post-call_next header block. Look up by class
+        # name so this stays decoupled from import order (the
+        # service_factory registers the middleware AFTER calling
+        # register_exception_handlers in some flows).
+        for mw in app.user_middleware:
+            cls = getattr(mw, "cls", None)
+            if cls is not None and cls.__name__ == "SecurityHeadersMiddleware":
+                kwargs = getattr(mw, "kwargs", None) or {}
+                hsts = bool(kwargs.get("hsts", False))
+                response.headers["X-Content-Type-Options"] = "nosniff"
+                response.headers["X-Frame-Options"] = "DENY"
+                response.headers["Referrer-Policy"] = "no-referrer"
+                if hsts:
+                    response.headers["Strict-Transport-Security"] = (
+                        "max-age=31536000; includeSubDomains"
+                    )
+                return
 
     @app.exception_handler(AuraError)
     async def _handle_aura_error(request: Request, exc: AuraError):
@@ -293,7 +384,9 @@ def register_exception_handlers(app: FastAPI) -> None:
             request.url.path,
             exc.message,
         )
-        return JSONResponse(status_code=exc.status_code, content=payload)
+        resp = JSONResponse(status_code=exc.status_code, content=payload)
+        _apply_security_headers(resp)
+        return resp
 
     @app.exception_handler(Exception)
     async def _handle_unhandled(request: Request, exc: Exception):
@@ -305,4 +398,6 @@ def register_exception_handlers(app: FastAPI) -> None:
         }
         if request_id:
             payload["request_id"] = request_id
-        return JSONResponse(status_code=500, content=payload)
+        resp = JSONResponse(status_code=500, content=payload)
+        _apply_security_headers(resp)
+        return resp
