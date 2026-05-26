@@ -149,7 +149,6 @@ The two tracks touched different subsystems (Mouni: `counterfactual_service/`; c
 
 | Sprint | Owner | Branch | Started | Goal |
 |---|---|---|---|---|
-| _(no active feature branches)_ | — | — | — | — |
 
 S24 (disagreement auto-challenge) + Sec-4.1 (silent-failure fixes) shipped
 2026-05-23 as PR #26 → `9cdc7ee`. Sec-4 shipped same day as PR #25 →
