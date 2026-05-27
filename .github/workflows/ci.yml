@@ -87,7 +87,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          pip install schemathesis uvicorn
+          pip install 'schemathesis<4' uvicorn
 
       - name: Run Schemathesis API Fuzzing
         # We boot the gateway locally. Downstream services aren't running,
