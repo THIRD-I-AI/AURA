@@ -87,7 +87,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          pip install 'schemathesis<4' uvicorn
+          pip install schemathesis uvicorn
 
       - name: Run Schemathesis API Fuzzing
         # We boot the gateway locally. Downstream services aren't running,
@@ -98,8 +98,7 @@ jobs:
           sleep 5
           schemathesis run http://localhost:8000/openapi.json \
             --checks response_schema_conformance \
-            --max-examples=10 \
-            --experimental=schema-analysis-off
+            --hypothesis-max-examples=10
 
   # ── Causal tests ─────────────────────────────────────────────────────────
   causal-test:
