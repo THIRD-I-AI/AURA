@@ -98,7 +98,8 @@ jobs:
           sleep 5
           schemathesis run http://localhost:8000/openapi.json \
             --checks response_schema_conformance \
-            --max-examples=10
+            --max-examples=10 \
+            --experimental=schema-analysis-off
 
   # ── Causal tests ─────────────────────────────────────────────────────────
   causal-test:
