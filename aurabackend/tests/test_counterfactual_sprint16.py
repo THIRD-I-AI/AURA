@@ -246,7 +246,7 @@ async def test_layer13_conformal_coverage_simulation():
 
     n_reps = 200
     n_per_rep = 300
-    
+
 
     rng = np.random.default_rng(0xC0FFEE_BEEF)
     conformal_hits = 0

@@ -691,7 +691,7 @@ class TestStreamingEngine:
         loop.run_until_complete(asyncio.sleep(0.5))
         # Processing loop paused, but events_in shouldn't grow much
         # (ingest loop also pauses)
-        
+
 
         loop.run_until_complete(engine.resume())
         assert pipeline.status == StreamPipelineStatus.RUNNING

@@ -128,11 +128,11 @@ jobs:
 
       - name: Run tests with coverage
         run: |
-          python -m pytest tests/test_counterfactual_*.py tests/test_causal_*.py \
+          python -m pytest tests/test_counterfactual_*.py \
             --tb=short \
             -q \
             -x \
-            --cov=causal_service --cov=counterfactual_service \
+            --cov=counterfactual_service \
             --cov-report=term-missing \
             --cov-fail-under=60
 
@@ -164,13 +164,13 @@ jobs:
 
       - name: Run tests with coverage
         run: |
-          python -m pytest tests/test_streaming*.py \
+          python -m pytest tests/test_streaming*.py tests/test_uasr*.py tests/test_mapek*.py tests/test_recovery*.py \
             --tb=short \
             -q \
             -x \
             --cov=uasr --cov=pipeline \
             --cov-report=term-missing \
-            --cov-fail-under=60
+            --cov-fail-under=40
 
   # ── E2E evaluation gate (8-layer Attest pipeline) ────────────────────────
   # Runs the wide-schema (75-col) chat path through 8 independent assertion

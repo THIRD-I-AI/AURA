@@ -21,7 +21,7 @@ def test_service_health(name, url):
         resp = httpx.get(f"{url}/health", timeout=5.0)
     except httpx.RequestError as exc:
         pytest.fail(f"Failed to connect to {name} at {url}: {exc}")
-    
+
     assert resp.status_code == 200, f"{name} healthcheck failed with {resp.status_code}"
     # Most services return {"status": "healthy"} or similar
     data = resp.json()

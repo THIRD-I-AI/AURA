@@ -182,13 +182,14 @@ def create_service(
 
     # ── OpenTelemetry Tracing ───────────────────────────────────────────
     try:
-        from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+        import os
+
         from opentelemetry import trace
+        from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+        from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+        from opentelemetry.sdk.resources import Resource
         from opentelemetry.sdk.trace import TracerProvider
         from opentelemetry.sdk.trace.export import BatchSpanProcessor
-        from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
-        from opentelemetry.sdk.resources import Resource
-        import os
 
         # Only init provider if not already initialized
         if not isinstance(trace.get_tracer_provider(), TracerProvider):
@@ -200,7 +201,7 @@ def create_service(
                 processor = BatchSpanProcessor(OTLPSpanExporter(endpoint=otlp_endpoint))
                 provider.add_span_processor(processor)
             trace.set_tracer_provider(provider)
-        
+
         FastAPIInstrumentor.instrument_app(app, excluded_urls="health,healthz,ready,metrics")
         logger.info("OpenTelemetry instrumentation ENABLED for %s", name)
     except ImportError:

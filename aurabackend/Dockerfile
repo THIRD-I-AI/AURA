@@ -42,9 +42,9 @@ RUN pip install --no-cache-dir --upgrade pip \
     && pip install --no-cache-dir --no-index --find-links=/tmp/wheels -r requirements.txt \
     && rm -rf /tmp/wheels
 COPY . .
+RUN mkdir -p /app/data/uploads /app/data/db && chown -R aura:aura /app/data
 ENV PYTHONPATH=/app
 USER aura
-RUN mkdir -p /app/data/uploads /app/data/db
 EXPOSE 8000 8001 8002 8003 8004 8005 8006 8007
 CMD ["uvicorn", "api_gateway.main:app", "--host", "0.0.0.0", "--port", "8000"]
 
@@ -56,9 +56,9 @@ RUN pip install --no-cache-dir --upgrade pip \
     && pip install --no-cache-dir --no-index --find-links=/tmp/wheels -r requirements.txt -r requirements-causal.txt \
     && rm -rf /tmp/wheels
 COPY . .
+RUN mkdir -p /app/data/uploads /app/data/db && chown -R aura:aura /app/data
 ENV PYTHONPATH=/app
 USER aura
-RUN mkdir -p /app/data/uploads /app/data/db
 EXPOSE 8000 8001 8002 8003 8004 8005 8006 8007
 CMD ["uvicorn", "counterfactual_service.main:app", "--host", "0.0.0.0", "--port", "8000"]
 
@@ -70,8 +70,8 @@ RUN pip install --no-cache-dir --upgrade pip \
     && pip install --no-cache-dir --no-index --find-links=/tmp/wheels -r requirements.txt -r requirements-streaming.txt \
     && rm -rf /tmp/wheels
 COPY . .
+RUN mkdir -p /app/data/uploads /app/data/db && chown -R aura:aura /app/data
 ENV PYTHONPATH=/app
 USER aura
-RUN mkdir -p /app/data/uploads /app/data/db
 EXPOSE 8000 8001 8002 8003 8004 8005 8006 8007
 CMD ["uvicorn", "uasr.service:app", "--host", "0.0.0.0", "--port", "8009"]
