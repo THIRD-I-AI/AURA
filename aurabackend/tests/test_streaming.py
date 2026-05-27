@@ -351,7 +351,7 @@ class TestStateManager:
 
         sm = StateManager(pipeline_id="p1", checkpoint_dir=self.checkpoint_dir)
         ws = WindowState(window_key="k1|0-60", window_start=0, window_end=60, event_count=10)
-        sm.create_checkpoint(watermark=50.0, window_states=[ws], source_offsets={})
+        cp = sm.create_checkpoint(watermark=50.0, window_states=[ws], source_offsets={})
 
         assert cp.pipeline_id == "p1"
         assert cp.watermark == 50.0

@@ -36,6 +36,8 @@ graph TD
     subgraph P1 [Pillar 1 · Self-Healing UASR]
         S18([S18: Causal-RL primitives])
         S18_1([S18.1: Martingale into worker])
+        S18_1b([S18.1b: CausalRL into recovery])
+        S18_1c([S18.1c: ShimRouter canary])
     end
     subgraph P3 [Pillar 3 · TRAIGA Governance]
         S19([S19: Merkle + STH + SDK verify])
@@ -71,20 +73,34 @@ graph TD
     %% Analytic depth
     subgraph AD [Analytic Depth]
         S22([S22: TMLE 6th estimator])
-        S23[/S23: E-value sensitivity<br/>BACKLOG/]
+        S23([S23: E-value sensitivity])
+        S24([S24: Disagreement auto-challenge])
+    end
+
+    %% Operational readiness
+    subgraph OPS [Operational Readiness]
+        direction TB
+        S25([S25: Code health hygiene])
+        S26([S26: OpenTelemetry])
+        S27([S27: Docker per-tier images])
+        S28([S28: CI coverage expansion])
+        S29([S29: Integration testing])
+        S30([S30: CI/CD GHCR pipeline])
+        S25 --> S26 --> S27 --> S28 --> S29 --> S30
     end
 
     %% Chronological backbone
     S7 --> S8
     S16 --> S17 --> S18 --> S19 --> S20a --> S20b --> S21a
     S21c --> SEC
-    P2a --> S22 --> S23
+    P2a --> S22 --> S23 --> S24
+    S24 --> S25
 
-    %% Deferred wiring (dashed)
-    S18 -.-> S18_1
-    S20a -.-> S20_1
-    S20b -.-> S20_2
-    S21c -.-> S21d
+    %% Integration wiring (was deferred, now shipped)
+    S18 --> S18_1 --> S18_1b --> S18_1c
+    S20a --> S20_1
+    S20b --> S20_2
+    S21c --> S21d
 
     %% Status legend via fill colors:
     %% rounded green = shipped, hex blue = in flight,
@@ -93,78 +109,46 @@ graph TD
     classDef flight fill:#dae8fc,stroke:#6c8ebf,color:#000
     classDef backlog fill:#fff2cc,stroke:#d6b656,color:#000
     classDef deferred fill:#f5f5f5,stroke:#999,color:#666,stroke-dasharray:5 5
-    class S7,S8,S9,S10,S11,S12,S13,S14,S15,S16,S17,S18,S18_1,S19,S20a,S20b,S20_1,S20_2,S21a,S21b,S21c,S21d,SEC,P1d,P2a,P2b,P2c,P3_audit,S22 done
-    class S23 deferred
+    class S7,S8,S9,S10,S11,S12,S13,S14,S15,S16,S17,S18,S18_1,S18_1b,S18_1c,S19,S20a,S20b,S20_1,S20_2,S21a,S21b,S21c,S21d,SEC,P1d,P2a,P2b,P2c,P3_audit,S22,S23,S24,S25,S26,S27,S28,S29,S30 done
 ```
 
 **Legend**
 - **🟢 Rounded** (`S7`, `S8`, `S17`, …) — shipped to `main` with CI green
 - **🔵 Hexagon, blue** (none currently) — currently in flight on a feature branch
 - **🟡 Hexagon, yellow** (none currently) — in the backlog, ready to start
-- **⬜ Trapezoid, dashed** (`S23`) — deferred or future
+- **⬜ Trapezoid, dashed** (none currently) — deferred or future
 
 **Dependencies**
 - **Solid arrow** — chronological order or hard prerequisite (e.g., S12 builds on S11's determinism contract)
 - **Dashed arrow** — "this will wire into that later" (e.g., S18 primitives → S18.1 integration into the live MAPEK worker)
 
-## Current parallel tracks
+## Current status
 
-```mermaid
-graph LR
-    subgraph MOUNI [Mouni - next sprint TBD]
-        direction TB
-        M0([S22 + S21d merged 2026-05-19<br/>PRs #12 + #13])
-        M1[/S23 candidate: E-value<br/>BACKLOG/]
-        M0 --> M1
-    end
-    subgraph COLLAB [Collaborator on feature/audit-burn-down]
-        direction TB
-        C1{{P-2b: Schema context cache}}
-        C2{{P-2c: Lineage materialised view}}
-        C3{{P-3: sqlglot + pooling}}
-        C1 --> C2 --> C3
-    end
-    subgraph SHARED [Shared / Coordination]
-        direction TB
-        D1[CLAUDE.md]
-        D2[docs/SPRINTS.md]
-        D3[docs/AUDIT_BURN_DOWN.md]
-    end
-    SHARED -.->|both load on session start| MOUNI
-    SHARED -.->|both load on session start| COLLAB
-    classDef done fill:#d5e8d4,stroke:#82b366,color:#000
-    classDef backlog fill:#fff2cc,stroke:#d6b656,color:#000
-    classDef deferred fill:#f5f5f5,stroke:#999,color:#666,stroke-dasharray:5 5
-    classDef shared fill:#f5e1ff,stroke:#9673a6,color:#000
-    class M0 done
-    class M1 deferred
-    class C1,C2,C3 backlog
-    class D1,D2,D3 shared
-```
-
-The two tracks touched different subsystems (Mouni: `counterfactual_service/`; collaborator: `api_gateway/` + `safety/`) so merge conflicts were avoided. PRs land independently into `main`.
+All 5 enterprise pillars are feature-complete. All deferred integration
+sprints (S18.1b, S18.1c, S20.1, S20.2) are shipped. Operational
+readiness sprints S25-S30 landed 2026-05-26 covering code health,
+observability, Docker tiering, CI expansion, integration testing, and
+CI/CD pipeline. Next sprint is S31 (analytic depth — TBD).
 
 
 ## In flight (active)
 
 | Sprint | Owner | Branch | Started | Goal |
 |---|---|---|---|---|
-
-S24 (disagreement auto-challenge) + Sec-4.1 (silent-failure fixes) shipped
-2026-05-23 as PR #26 → `9cdc7ee`. Sec-4 shipped same day as PR #25 →
-`5ae3171`. S23 + Sec-3 landed 2026-05-22. **All 5 stated pillars are
-feature-complete.**
+| _(no active feature branches)_ | — | — | — | — |
 
 ## Completed (newest first)
 
 | Sprint | Bundle (+ hotfix) | Subsystem | What it ships |
 |---|---|---|---|
-| **S30** | TBD | shared | **CI/CD Pipeline (Build & Push to GHCR):** Created `.github/workflows/cd.yml` to automatically build and push Docker images to the GitHub Container Registry. Implemented a Docker Buildx matrix to concurrently build all three optimized tiers (`base-runtime`, `causal-runtime`, and `streaming-runtime`) from our new multi-stage `Dockerfile`. Configured dynamic metadata tagging so that pushes to `main` are automatically tagged as `latest`, and GitHub Releases are tagged with their respective Semantic Versioning numbers (`v1.x.y`). |
-| **S29** | TBD | shared | **Integration Testing (Schemathesis + Compose):** Added a new `contract-test` job to `ci.yml` that boots the API Gateway locally and uses `schemathesis` against the `/openapi.json` spec to ensure the running API strictly conforms to the advertised schema. Created `.github/workflows/nightly-e2e.yml` which runs on a cron schedule (`0 3 * * *`) to boot the entire microservice stack using `docker-compose up -d`, waits for health checks, and then runs a new E2E test suite (`tests_e2e/test_compose.py`) that pings every single service across the `localhost:8000-8009` port range using `httpx`. |
-| **S28** | TBD | shared | **CI Test Coverage Expansion:** Closed the coverage blind spots without bloating the base test lane time. Added a new `causal-test` CI job that installs `dowhy` and `econml`, specifically targeting `causal_service` and `counterfactual_service`. Added a new `streaming-test` CI job that installs `aiokafka`, specifically targeting the `uasr` and `pipeline` components. Removed redundant dowhy-gated test steps from the `eval-gate` job. All three testing lanes now successfully enforce the project's 60% base coverage threshold. |
-| **S27** | TBD | shared | **Docker Restructuring (per-tier images):** Decomposed the monolithic `aurabackend/Dockerfile` into an optimized multi-stage build emitting three distinct runtime tiers: `base-runtime` (slim API services), `causal-runtime` (+DoWhy/EconML), and `streaming-runtime` (+Kafka handlers). Separated `aiokafka` and `websockets` into a new `requirements-streaming.txt` to avoid installing heavy Kafka clients where not needed. Updated the `docker-compose.yml` build context so the shared anchor targets `base-runtime` while `uasr_service` explicitly overrides to target `streaming-runtime`. |
-| **S26** | TBD | shared | **Observability (OpenTelemetry):** Enabled out-of-the-box OpenTelemetry distributed tracing across all microservices. Added `opentelemetry-distro`, `opentelemetry-exporter-otlp`, and `opentelemetry-instrumentation-fastapi` to `requirements.txt`. Intercepted the shared `create_service()` factory to auto-instrument every API router, deliberately ignoring high-noise `/health` and `/metrics` routes. Added a local `jaeger` all-in-one collector to `docker-compose.yml` (exposing the UI on port 16686) and set the `AURA_OTLP_ENDPOINT` environment variable in the shared compose block. |
-| **S25** | TBD | many | **Code Health Hygiene:** Mass converted 316 frontend files from scattered 2-space to unified 4-space indentation for absolute consistency. Dropped unused `_legacy/` frontend components and `.bak` backups to reduce repository cruft. Fixed 15 unused/undefined variables (like `F841`) across Python services and patched 5 fragile test cases (`test_rate_limit.py`, `test_streaming.py`, `test_sprint7_smoke.py`) that were relying on dangling variable assignments. Wired `ruff check --fix` and `ruff format` directly into `.pre-commit-config.yaml` to permanently enforce the linting standard. |
+| **S30** | `ea83cdd` | shared | **CI/CD Pipeline (Build & Push to GHCR):** Created `.github/workflows/cd.yml` to automatically build and push Docker images to the GitHub Container Registry. Implemented a Docker Buildx matrix to concurrently build all three optimized tiers (`base-runtime`, `causal-runtime`, and `streaming-runtime`) from our new multi-stage `Dockerfile`. Configured dynamic metadata tagging so that pushes to `main` are automatically tagged as `latest`, and GitHub Releases are tagged with their respective Semantic Versioning numbers (`v1.x.y`). |
+| **S29** | `ea83cdd` | shared | **Integration Testing (Schemathesis + Compose):** Added a new `contract-test` job to `ci.yml` that boots the API Gateway locally and uses `schemathesis` against the `/openapi.json` spec to ensure the running API strictly conforms to the advertised schema. Created `.github/workflows/nightly-e2e.yml` which runs on a cron schedule (`0 3 * * *`) to boot the entire microservice stack using `docker-compose up -d`, waits for health checks, and then runs a new E2E test suite (`tests_e2e/test_compose.py`) that pings every single service across the `localhost:8000-8009` port range using `httpx`. |
+| **S28** | `ea83cdd` | shared | **CI Test Coverage Expansion:** Closed the coverage blind spots without bloating the base test lane time. Added a new `causal-test` CI job that installs `dowhy` and `econml`, specifically targeting `causal_service` and `counterfactual_service`. Added a new `streaming-test` CI job that installs `aiokafka`, specifically targeting the `uasr` and `pipeline` components. Removed redundant dowhy-gated test steps from the `eval-gate` job. All three testing lanes now successfully enforce the project's 60% base coverage threshold. |
+| **S27** | `ea83cdd` | shared | **Docker Restructuring (per-tier images):** Decomposed the monolithic `aurabackend/Dockerfile` into an optimized multi-stage build emitting three distinct runtime tiers: `base-runtime` (slim API services), `causal-runtime` (+DoWhy/EconML), and `streaming-runtime` (+Kafka handlers). Separated `aiokafka` and `websockets` into a new `requirements-streaming.txt` to avoid installing heavy Kafka clients where not needed. Updated the `docker-compose.yml` build context so the shared anchor targets `base-runtime` while `uasr_service` explicitly overrides to target `streaming-runtime`. |
+| **S26** | `ea83cdd` | shared | **Observability (OpenTelemetry):** Enabled out-of-the-box OpenTelemetry distributed tracing across all microservices. Added `opentelemetry-distro`, `opentelemetry-exporter-otlp`, and `opentelemetry-instrumentation-fastapi` to `requirements.txt`. Intercepted the shared `create_service()` factory to auto-instrument every API router, deliberately ignoring high-noise `/health` and `/metrics` routes. Added a local `jaeger` all-in-one collector to `docker-compose.yml` (exposing the UI on port 16686) and set the `AURA_OTLP_ENDPOINT` environment variable in the shared compose block. |
+| **S25** | `ea83cdd` | many | **Code Health Hygiene:** Mass converted 316 frontend files from scattered 2-space to unified 4-space indentation for absolute consistency. Dropped unused `_legacy/` frontend components and `.bak` backups to reduce repository cruft. Fixed 15 unused/undefined variables (like `F841`) across Python services and patched 5 fragile test cases (`test_rate_limit.py`, `test_streaming.py`, `test_sprint7_smoke.py`) that were relying on dangling variable assignments. Wired `ruff check --fix` and `ruff format` directly into `.pre-commit-config.yaml` to permanently enforce the linting standard. |
+| **S18.1c** | squash-merge `079da0c` (PR #28) | uasr | Wires S18 `shim_router` (Kramer-Magee canary routing) into `uasr/mapek_worker.py`, replacing the pause/resume pattern with traffic-splitting canary deploys. |
+| **S18.1b** | squash-merge `4a7b862` (PR #27) | uasr | Wires S18 `CausalRLEvaluator` into `uasr/recovery_loop.py` for off-policy shim selection during MAPE-K recovery. |
 | **S24 + Sec-4.1** | `fec3487` + hotfix `8d3b96f` → squash-merge `9cdc7ee` (PR #26) | counterfactual_service + shared/middleware | TMLE-vs-ForestDR disagreement auto-challenge: emits high-severity `AdversarialChallenge` when point estimates diverge by >2× the larger CI half-width. Same shape as S14's propensity warning. Sec-4.1: narrowed overbroad `except Exception` in `RateLimitMiddleware.__init__` to `(ImportError, AttributeError)`; exposed `SecurityHeadersMiddleware.apply_to()` + wired `_apply_security_headers` into both exception handlers so 4xx/5xx responses also get defensive headers. |
 | **Sec-4** | `fa09e4f` + hotfix `5684044` + hotfix `9b7e114` → squash-merge `5ae3171` (PR #25) | shared (config + middleware + service_factory) + README + 3 test files | Five real findings from a Copilot audit triage (other findings either stale per Sec-3, wrong threat model for header-auth APIs, or maturity recommendations rather than vulnerabilities). (1) auth-mode prod gate — new `@field_validator` rejects `AURA_AUTH_MODE=open` when `ENVIRONMENT=production`, mirroring the existing SECRET_KEY validator. (2) CORS `http://` prod gate — promoted `warnings.warn` to `raise ValueError`, parallel to the existing wildcard `*` rejection. (3) X-Forwarded-For opt-in — new `AURA_TRUST_FORWARDED_FOR` env flag (default `False`); `RateLimitMiddleware._client_ip` honours XFF only when set, mitigating header-spoofed rate-limit bypass. (4) `SecurityHeadersMiddleware` (new) — sets `X-Content-Type-Options: nosniff` + `X-Frame-Options: DENY` + `Referrer-Policy: no-referrer` on every response; HSTS in production only (preserves http://localhost dev flow). (5) README signing-key example — replaced `("01" * 32)` with `python -c "import secrets; print(secrets.token_hex(32))"` + DON'T-USE-IN-PROD callout. Two hotfixes needed: (a) existing prod-mode test fixtures (`test_is_production_property`, `test_production_rejects_default_secret_key`, `test_cors_wildcard_rejected_in_production`) cascade-failed on the new validators because they instantiated `AuraSettings(env=production)` without overriding the default localhost CORS or default `auth_mode=open` — supplied explicit valid auth_mode + HTTPS CORS in every prod-mode fixture; (b) rewrote `test_x_forwarded_for_ignored_by_default` from a flaky TestClient route handler that instantiated a second `RateLimitMiddleware` inside the request (returned HTTP 422) to a pure unit test against a `SimpleNamespace` duck-typed Request — `-x` flag in CI made the single XFF failure cascade into the coverage gate too. Lesson: when adding any new production-mode validator on a Settings field, every existing prod-mode test fixture must be updated in the same PR to supply a complete valid config, otherwise CI cascades. |
 | **Sec-3** | `489cdf4` → squash-merge `f842136` (PR #23) | api_gateway + database + counterfactual_service | Closes 4 new CodeQL alerts on `main`. (#49 HIGH `py/weak-sensitive-data-hashing`) drops `password` from `_pg_pool_key` dict — pool identity is (host, port, database, username); password adds no uniqueness. (#42 HIGH `py/sql-injection`) inline barrier-guard before `text(query)` in `connection_manager.execute_query`: string-prefix whitelist (SELECT/WITH/SHOW/DESCRIBE/DESC/EXPLAIN) + sqlglot AST deny-list (Drop/Delete/Insert/Update/Alter/Create/TruncateTable/Merge/Commit/Rollback) covering both top-level and nested statements. Same intraprocedural-sanitizer lesson as `feedback_codeql_path_injection_sanitizer`. (#24 MED `py/stack-trace-exposure`) bulk-verify endpoint strips exception to `type(exc).__name__`. (#18 MED) `etl.suggest_transforms` swaps `f"{e}"` for `sanitize_error()`. |
@@ -220,8 +204,6 @@ S1-S6 pre-dated this registry; see commit `157b293` and earlier for that history
 | **S31** | Analytic depth | TBD | Next slot: IV (instrumental variables) estimator, T-/X-learner outcome models for TMLE. |
 
 Deferred indefinitely:
-- **S18.1b** — wire S18 CausalRLEvaluator into `uasr/recovery_loop.py` for off-policy shim selection.
-- **S18.1c** — wire S18 `shim_router` (Kramer-Magee canary) into `uasr/mapek_worker.py` to replace `pause/resume`.
 - **S20.2.1** — schema migration to move `ScheduledJob.next_execution_time` (+ other DateTime columns) to `DateTime(timezone=True)` so the `.replace(tzinfo=None)` dance can be dropped.
 - **S21e** — roll the api_gateway client into `regen_all_sdks.py` (currently kept on its own pipeline for historical reasons).
 
@@ -241,4 +223,4 @@ When you reserve a future sprint:
 
 Update the date at the bottom when you make a material change.
 
-Last updated 2026-05-23 — **S24 (disagreement auto-challenge) + Sec-4.1 + Sec-4 + S23 + Sec-3** all shipped this week. All 5 stated pillars are feature-complete. Next: S25 (TBD), deferred integrations S18.1b/c, or frontend operator cards for S23/S24.
+Last updated 2026-05-26 — **S25-S30** (operational readiness) + **S18.1b/c** (UASR integration) all shipped. 30 sprints completed. Next: S31 (analytic depth — IV estimator or T-/X-learner outcome models).

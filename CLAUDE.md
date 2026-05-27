@@ -161,13 +161,16 @@ collaborators. If you discover something important, **write it into
 
 ## Verification + CI
 
-* CI sweep has **11 jobs** as of 2026-05-19: Backend Tests (Python 3.11 +
+* CI sweep has **14 jobs** as of 2026-05-26: Backend Tests (Python 3.11 +
   3.12), Backend Lint (ruff), Bandit, Frontend Lint + Tests + Type Check,
   Scheduler Distributed (Postgres integration), SDK Codegen Sync,
-  E2E Eval Gate (mock + real LLM).
-* **All 11 must be green** before merging a PR. If a new optional dep
-  needs a new lane, add it; never silently `pytest.mark.skipif()` and
-  hope the gate catches it.
+  E2E Eval Gate (mock + real LLM), Causal Tests (dowhy + econml),
+  Streaming Tests (aiokafka), Contract Tests (Schemathesis).
+  CD workflow (`cd.yml`) builds and pushes 3 Docker tiers to GHCR.
+  Nightly E2E (`nightly-e2e.yml`) boots the full compose stack.
+* **All CI jobs must be green** before merging a PR. If a new optional
+  dep needs a new lane, add it; never silently `pytest.mark.skipif()`
+  and hope the gate catches it.
 * **SDK Codegen Sync** runs `scripts/generate_sdk.py` and `git diff
   --exit-code sdk_clients/` — if you regenerate locally, commit the
   result. Drift breaks the build.
@@ -196,5 +199,5 @@ collaborators. If you discover something important, **write it into
 * `STREAMING_FOUNDATIONS.md` — formal math behind the streaming
   primitives (existing).
 
-Last updated 2026-05-19 by Mouni when adding the two-dev coordination
-protocol. Update the date when you make material changes to this file.
+Last updated 2026-05-26 by Mouni. CI expanded to 14 jobs (S28-S30).
+Update the date when you make material changes to this file.
