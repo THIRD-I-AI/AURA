@@ -232,7 +232,7 @@ def test_detect_relationships_matching_ids():
 
     # Mock the count distinct calls: customers.id has 10 unique, orders.customer_id has 5
     call_count = {"n": 0}
-    original_execute = mock_conn.execute
+    
 
     def side_effect(sql):
         result = MagicMock()

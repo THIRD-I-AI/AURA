@@ -41,7 +41,7 @@ class SynthesisActuatorAgent(BaseAgent):
 
         params = cast(ActuatorAgentParams, ctx.metadata or {})
         diagnosis_data = params.get("diagnosis")
-        drift_data = params.get("drift_result", {})
+        
         recovery_id = params.get("recovery_id", ctx.run_id)
 
         if isinstance(diagnosis_data, dict):

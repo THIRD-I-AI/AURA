@@ -182,7 +182,7 @@ class TestE2EEvaluationGate:
 
         # ── Layer 4: determinism (idempotent SQL emitted twice) ─────
         try:
-            sql_emissions = [c["prompt"] for c in mock_llm.calls if "select" in c.get("prompt", "").lower()]
+            
             second = client.post(f"{V1}/chat", json={"message": QUESTION, "auto_execute": True})
             assert second.status_code == 200, "determinism rerun failed"
             second_body = second.json()

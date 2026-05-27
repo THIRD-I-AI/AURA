@@ -9,7 +9,7 @@ from agents.params import ExecutionAgentParams
 
 class ExecutionAgent(BaseAgent):
     """
-    Takes an upstream generated SQL query from the SQLGeneratorAgent and securely executes it 
+    Takes an upstream generated SQL query from the SQLGeneratorAgent and securely executes it
     against the provided DuckDB local connection, returning serialized rows and columns.
     """
 

@@ -180,6 +180,32 @@ def create_service(
     # ── Prometheus /metrics  (no-op when dep missing or disabled) ───────
     init_metrics(app, service_tag=service_tag)
 
+    # ── OpenTelemetry Tracing ───────────────────────────────────────────
+    try:
+        from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+        from opentelemetry import trace
+        from opentelemetry.sdk.trace import TracerProvider
+        from opentelemetry.sdk.trace.export import BatchSpanProcessor
+        from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+        from opentelemetry.sdk.resources import Resource
+        import os
+
+        # Only init provider if not already initialized
+        if not isinstance(trace.get_tracer_provider(), TracerProvider):
+            resource = Resource.create({"service.name": service_tag, "service.version": version})
+            provider = TracerProvider(resource=resource)
+            # Default to jaeger if env var is set
+            otlp_endpoint = os.environ.get("AURA_OTLP_ENDPOINT")
+            if otlp_endpoint:
+                processor = BatchSpanProcessor(OTLPSpanExporter(endpoint=otlp_endpoint))
+                provider.add_span_processor(processor)
+            trace.set_tracer_provider(provider)
+        
+        FastAPIInstrumentor.instrument_app(app, excluded_urls="health,healthz,ready,metrics")
+        logger.info("OpenTelemetry instrumentation ENABLED for %s", name)
+    except ImportError:
+        logger.warning("OpenTelemetry SDK not installed; tracing disabled for %s", name)
+
     # ── Standard health endpoint ────────────────────────────────────────
     # When `health_checks` is provided, each probe runs in parallel with a
     # bounded timeout. The endpoint returns 503 if any probe fails or times out.

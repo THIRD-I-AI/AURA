@@ -81,7 +81,7 @@ def test_sender_does_not_receive_its_own_message(client):
 
 def test_multiple_rooms_are_isolated(client):
     with client.websocket_connect("/ws/collab/room-1") as a:
-        with client.websocket_connect("/ws/collab/room-2") as b:
+        with client.websocket_connect("/ws/collab/room-2"):
             a.send_bytes(b"only-for-room-1")
             # b is in a different room and should never see the message.
             # The cleanest assertion is via the rooms listing.
@@ -90,8 +90,8 @@ def test_multiple_rooms_are_isolated(client):
 
 
 def test_room_disappears_only_after_last_client_leaves(client):
-    with client.websocket_connect("/ws/collab/room-X") as a:
-        with client.websocket_connect("/ws/collab/room-X") as b:
+    with client.websocket_connect("/ws/collab/room-X"):
+        with client.websocket_connect("/ws/collab/room-X"):
             assert client.get("/collab/rooms").json() == {
                 "rooms": {"room-X": 2},
                 "total": 1,

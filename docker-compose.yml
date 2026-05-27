@@ -5,12 +5,15 @@ version: '3.8'
 # ──────────────────────────────────────────────────────────────────────────
 
 x-common: &common
-  build: ./aurabackend
+  build:
+    context: ./aurabackend
+    target: base-runtime
   volumes:
     - ./aurabackend:/app
   env_file: .env
   environment:
     - PYTHONPATH=/app
+    - AURA_OTLP_ENDPOINT=http://jaeger:4318/v1/traces
   restart: unless-stopped
 
 services:
@@ -142,6 +145,9 @@ services:
   # ── Port 8009 — UASR (Self-Healing Layer) ────────────────────────────
   uasr_service:
     <<: *common
+    build:
+      context: ./aurabackend
+      target: streaming-runtime
     command: uvicorn uasr.service:app --host 0.0.0.0 --port 8009 --reload
     ports:
       - "8009:8009"
@@ -180,6 +186,16 @@ services:
       retries: 5
     volumes:
       - redpanda_data:/var/lib/redpanda/data
+
+  # ── Port 16686 — Jaeger (OpenTelemetry tracing backend) ───────────────
+  jaeger:
+    image: jaegertracing/all-in-one:1.56
+    ports:
+      - "16686:16686" # UI
+      - "4317:4317"   # OTLP gRPC
+      - "4318:4318"   # OTLP HTTP
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
 
 volumes:
   scheduler_data:

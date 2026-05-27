@@ -82,7 +82,7 @@ class PipelineAgent(BaseAgent):
         scheduled = False
         if self.tools and pipeline_def.get("schedule"):
             try:
-                sched_result = await self.tools.call(
+                await self.tools.call(
                     "create_schedule",
                     pipeline_id=pipeline_def.get("name", str(uuid.uuid4())),
                     cron=pipeline_def["schedule"],

@@ -168,6 +168,7 @@ def test_collab_manager_attach_detach():
     from collab.agent_peer import AgentPeer
 
     async def go():
+        manager.set_broadcast_hook(lambda room, msg: None)
         peer = AgentPeer(room_id="room-x", agent_name="agent-test")
         await manager.attach(peer)
         try:

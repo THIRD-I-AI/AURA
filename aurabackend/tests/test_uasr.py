@@ -163,7 +163,7 @@ class TestSemanticGateway:
         v1 = gw.register_baseline(batch1, desc="v1")
 
         batch2 = _make_batch("src1", ["a", "b"], [{"a": 1, "b": 2}], "b6")
-        v2 = gw.register_baseline(batch2, desc="v2")
+        gw.register_baseline(batch2, desc="v2")
 
         versions = gw.reference_versions("src1")
         assert len(versions) == 2

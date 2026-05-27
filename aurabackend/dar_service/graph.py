@@ -71,7 +71,7 @@ def _open_duckdb(path: str) -> Any:
 def introspect_node(state: DARState) -> Dict[str, Any]:
     """Sync node — DuckDB introspection. Wrapped in to_thread by the
     LangGraph runtime when invoked through ainvoke."""
-    t0 = time.perf_counter()
+    
     try:
         con = _open_duckdb(state.duckdb_path)
         try:
@@ -100,7 +100,7 @@ def introspect_node(state: DARState) -> Dict[str, Any]:
 def profile_node(state: DARState) -> Dict[str, Any]:
     """Compute distribution stats per column. Numeric → mean/std/min/max,
     categorical → top-3 values + counts. One-pass query per column."""
-    t0 = time.perf_counter()
+    
     try:
         con = _open_duckdb(state.duckdb_path)
     except Exception as exc:
@@ -184,7 +184,7 @@ def profile_node(state: DARState) -> Dict[str, Any]:
 
 
 async def formulate_node(state: DARState) -> Dict[str, Any]:
-    t0 = time.perf_counter()
+    
     res = await _agent().execute(AgentContext(
         user_prompt="(headless DAR research)",
         task_description=f"Formulate research questions for {state.table_name}",
@@ -214,7 +214,7 @@ def execute_node(state: DARState) -> Dict[str, Any]:
     """Run each question's SQL against DuckDB. read_only=True at the
     connection level enforces SELECT-only — destructive statements
     fail at the engine boundary, no extra parsing required."""
-    t0 = time.perf_counter()
+    
     try:
         con = _open_duckdb(state.duckdb_path)
     except Exception as exc:
@@ -248,7 +248,7 @@ async def score_node(state: DARState) -> Dict[str, Any]:
     """One LLM call per query result — small fan-out, max 5 questions
     by formulate's contract. Sequential rather than parallel because
     rate limits + caching mean parallel rarely speeds this up."""
-    t0 = time.perf_counter()
+    
     findings: List[Finding] = []
     for qr in state.query_results:
         if qr.error or qr.row_count == 0:
@@ -312,7 +312,7 @@ async def persist_node(state: DARState) -> Dict[str, Any]:
     """Write findings to metadata DB. Each finding gets a fresh UUID;
     the run_id is the same for all findings in this DAR run so the UI
     can group them."""
-    t0 = time.perf_counter()
+    
     if not state.findings:
         return {"completed_nodes": _completed(state, "persist")}
 

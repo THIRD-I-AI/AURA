@@ -497,7 +497,7 @@ async def trigger_job_execution(job_id: str):
         import asyncio
 
         # Start execution in background task
-        task = asyncio.create_task(executor.execute_job(job, triggered_by="manual"))
+        asyncio.create_task(executor.execute_job(job, triggered_by="manual"))
 
         logger.info(f"Manually triggered job {job_id}")
         return {

@@ -90,7 +90,7 @@ class TestGetRateLimitBackendRedis:
         with patch("shared.rate_limit.RedisBackend") as mock_cls:
             mock_cls.return_value = mock_cls
             from shared.rate_limit import get_rate_limit_backend
-            backend = get_rate_limit_backend()
+            backend = get_rate_limit_backend()  # noqa: F841
             mock_cls.assert_called_once_with("redis://localhost:6379")
 
     def test_falls_back_on_redis_error(self, monkeypatch):
@@ -103,6 +103,7 @@ class TestGetRateLimitBackendRedis:
             from shared.rate_limit import get_rate_limit_backend
             backend = get_rate_limit_backend()
             assert isinstance(backend, InMemoryBackend)
+
 
 class TestInMemoryBackend:
     @pytest.fixture()
@@ -214,5 +215,6 @@ class TestGetRateLimitBackend:
         config_mod.get_settings.cache_clear()
 
         from shared.rate_limit import InMemoryBackend, get_rate_limit_backend
+
         backend = get_rate_limit_backend()
         assert isinstance(backend, InMemoryBackend)

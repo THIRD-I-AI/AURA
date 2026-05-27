@@ -351,7 +351,7 @@ class TestStateManager:
 
         sm = StateManager(pipeline_id="p1", checkpoint_dir=self.checkpoint_dir)
         ws = WindowState(window_key="k1|0-60", window_start=0, window_end=60, event_count=10)
-        cp = sm.create_checkpoint(watermark=50.0, window_states=[ws], source_offsets={})
+        sm.create_checkpoint(watermark=50.0, window_states=[ws], source_offsets={})
 
         assert cp.pipeline_id == "p1"
         assert cp.watermark == 50.0
@@ -388,7 +388,7 @@ class TestStateManager:
 
         sm = StateManager(pipeline_id="p3", checkpoint_dir=self.checkpoint_dir)
         metrics = StreamMetrics(pipeline_id="p3", events_in=100, events_out=80)
-        cp = sm.create_checkpoint(
+        cp = sm.create_checkpoint(  # noqa: F841
             watermark=100.0,
             window_states=[],
             source_offsets={},
@@ -691,7 +691,7 @@ class TestStreamingEngine:
         loop.run_until_complete(asyncio.sleep(0.5))
         # Processing loop paused, but events_in shouldn't grow much
         # (ingest loop also pauses)
-        events_while_paused = engine.metrics.events_in
+        
 
         loop.run_until_complete(engine.resume())
         assert pipeline.status == StreamPipelineStatus.RUNNING

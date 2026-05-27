@@ -214,7 +214,7 @@ class PostgresAdapter(DatabaseAdapter):
             return {"ok": False, "error": "not connected"}
         try:
             async with self._pool.acquire() as conn:
-                val = await conn.fetchval("SELECT 1")
+                await conn.fetchval("SELECT 1")
             return {
                 "ok": True,
                 "backend": "postgresql",
