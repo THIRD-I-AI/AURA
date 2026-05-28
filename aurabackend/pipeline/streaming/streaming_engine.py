@@ -467,8 +467,13 @@ class StreamingEngine:
                             for sink in self._sinks:
                                 try:
                                     await sink.emit_late_event(late_ev, self.pipeline.id)
-                                except Exception:
-                                    pass
+                                except Exception as exc:
+                                    # Match the live-emit error handler
+                                    # above (line ~462). Sink failures
+                                    # must not block the pipeline; logging
+                                    # makes the failure visible without
+                                    # halting ingest.
+                                    logger.error("Late-event sink emit error: %s", exc)
 
                 # 6. EPS calculation
                 elapsed = time.time() - self._start_time
@@ -562,5 +567,9 @@ class StreamingEngine:
             try:
                 m = self.metrics
                 await sse.emit_metrics(m.model_dump())
-            except Exception:
-                pass
+            except Exception as exc:
+                # SSE broadcast failures are expected when no clients
+                # are subscribed or a client just disconnected. Log at
+                # debug so chronic failures (broken sink, dead loop)
+                # are still discoverable without flooding the log.
+                logger.debug("metrics broadcast failed: %s", exc)

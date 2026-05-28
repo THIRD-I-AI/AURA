@@ -20,20 +20,16 @@ from shared.secret_resolver import SecretResolver
 def test_get_secret_from_env():
     with patch.dict(os.environ, {"MY_SECRET": "secret_value", "KEY_VAULT_URI": ""}, clear=False):
         resolver = SecretResolver()
-        resolver.get_secret.cache_clear()
         assert resolver._client is None
         result = resolver.get_secret("MY_SECRET")
         assert result == "secret_value"
-        resolver.get_secret.cache_clear()
 
 
 def test_get_secret_missing_returns_none():
     with patch.dict(os.environ, {"KEY_VAULT_URI": ""}, clear=False):
         resolver = SecretResolver()
-        resolver.get_secret.cache_clear()
         result = resolver.get_secret("TOTALLY_MISSING_SECRET_XYZ_12345")
         assert result is None or result == os.getenv("TOTALLY_MISSING_SECRET_XYZ_12345")
-        resolver.get_secret.cache_clear()
 
 
 # ── Vault client mock ───────────────────────────────────────────────
@@ -46,9 +42,7 @@ def test_get_secret_from_vault():
     mock_client.get_secret.return_value = mock_secret
     resolver._client = mock_client
     resolver._vault_uri = "https://myvault.vault.azure.net"
-
-    # Clear lru_cache for this instance method
-    resolver.get_secret = SecretResolver.get_secret.__wrapped__.__get__(resolver, SecretResolver)
+    resolver._cache = {}
 
     result = resolver.get_secret("DB_PASSWORD")
     assert result == "vault_value"
@@ -62,11 +56,27 @@ def test_vault_exception_falls_back_to_env():
         mock_client.get_secret.side_effect = Exception("vault unreachable")
         resolver._client = mock_client
         resolver._vault_uri = "https://myvault.vault.azure.net"
-
-        resolver.get_secret = SecretResolver.get_secret.__wrapped__.__get__(resolver, SecretResolver)
+        resolver._cache = {}
 
         result = resolver.get_secret("DB_PASSWORD")
         assert result == "env_fallback"
+
+
+def test_cache_avoids_repeated_lookups():
+    """Per-instance cache should memoize vault lookups."""
+    resolver = SecretResolver.__new__(SecretResolver)
+    mock_client = MagicMock()
+    mock_secret = MagicMock()
+    mock_secret.value = "cached_value"
+    mock_client.get_secret.return_value = mock_secret
+    resolver._client = mock_client
+    resolver._vault_uri = "https://v.vault.azure.net"
+    resolver._cache = {}
+
+    resolver.get_secret("KEY")
+    resolver.get_secret("KEY")
+    # Second call hits the cache, not the client
+    assert mock_client.get_secret.call_count == 1
 
 
 # ── _build_client returns None when no vault URI ────────────────────

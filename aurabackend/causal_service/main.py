@@ -74,8 +74,8 @@ def _load(source: DataSource, role: str) -> pd.DataFrame:
     finally:
         try:
             con.close()  # type: ignore[name-defined]
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("duckdb close failed: %s", exc)
 
 
 # ── Endpoint ──────────────────────────────────────────────────────────

@@ -99,8 +99,7 @@ jobs:
           schemathesis run http://localhost:8000/openapi.json \
             --checks response_schema_conformance \
             --hypothesis-max-examples=10 \
-            --experimental=openapi-3.1 \
-            --exclude-path='/api/v1/upload'
+            --experimental=openapi-3.1
 
   # ── Causal tests ─────────────────────────────────────────────────────────
   causal-test:

@@ -281,16 +281,25 @@ class BaseAgent(ABC):
             try:
                 from shared.observability import AGENT_DURATION  # late import to avoid cycle
                 AGENT_DURATION.labels(agent=self.name).observe(duration_s)
-            except Exception:
-                pass
+            except Exception as obs_exc:
+                # Observability must never mask an agent result. Log
+                # so a metric outage is visible without breaking the
+                # agent's caller.
+                import logging
+                logging.getLogger("aura.agents.base").debug(
+                    "agent duration observability failed: %s", obs_exc,
+                )
             # BATS: count this agent invocation as one tool-call against the
             # session pool. Done in finally so failed/timeout agents still
             # bill — the orchestrator's "single-path" search shouldn't get
             # free retries by failing.
             try:
                 consume_tool_call_from_current(1)
-            except Exception:
-                pass
+            except Exception as budget_exc:
+                import logging
+                logging.getLogger("aura.agents.base").debug(
+                    "budget consume failed: %s", budget_exc,
+                )
             await self._report(
                 f"{'✓' if result.succeeded else '✗'} {self.name} "
                 f"({result.duration_ms:.0f} ms)",

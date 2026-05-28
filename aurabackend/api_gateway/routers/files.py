@@ -73,7 +73,12 @@ async def upload_universal(
     target_file = file or upload_file
 
     if not target_file:
-        raise HTTPException(status_code=422, detail="No file sent. Ensure formData uses key 'file'")
+        # 400 not 422 — Pydantic's ValidationError schema (detail: array)
+        # owns 422 in FastAPI's OpenAPI emission. Using 422 with a plain
+        # string detail causes Schemathesis to flag a schema/implementation
+        # mismatch. This is a "bad request payload", not a Pydantic
+        # validation failure, so 400 is the correct code.
+        raise HTTPException(status_code=400, detail="No file sent. Ensure formData uses key 'file'")
 
     upload_id = x_upload_id or uuid.uuid4().hex
     logger.info("Receiving file: %s (upload_id=%s)", target_file.filename, upload_id)

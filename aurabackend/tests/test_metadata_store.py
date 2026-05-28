@@ -321,9 +321,80 @@ class TestRepositoryDocuments:
         assert updated.title == "V2"
         assert updated.body == "new"
 
+    async def test_upsert_with_embedding(self, db_session):
+        from metadata_store.repository import MetadataRepository
+        repo = MetadataRepository(db_session)
+        doc = await repo.upsert_document(
+            document_id="doc-emb",
+            title="Embedded Doc",
+            body="some text",
+            embedding=[3.0, 4.0],
+        )
+        assert doc.embedding is not None
+        assert doc.embedding.embedding_model == "hash-projection"
+        # _normalize_vector turns [3, 4] into [0.6, 0.8] (unit vector)
+        assert abs(doc.embedding.vector[0] - 0.6) < 1e-5
+        assert abs(doc.embedding.vector[1] - 0.8) < 1e-5
+
+    async def test_list_embeddings(self, db_session):
+        from metadata_store.repository import MetadataRepository
+        repo = MetadataRepository(db_session)
+        await repo.upsert_document(
+            document_id="d1", title="A", body="a", embedding=[1.0, 0.0],
+        )
+        await repo.upsert_document(
+            document_id="d2", title="B", body="b", embedding=[0.0, 1.0],
+        )
+        await repo.upsert_document(
+            document_id="d3", title="C", body="c",
+        )
+        embeddings = await repo.list_embeddings()
+        assert len(embeddings) == 2
+        assert all(e.document is not None for e in embeddings)
+
 
 @pytest.mark.asyncio
 class TestRepositorySemanticModels:
+    async def test_upsert_creates_model_with_fields(self, db_session):
+        from metadata_store.repository import MetadataRepository
+        repo = MetadataRepository(db_session)
+        model = await repo.upsert_semantic_model(
+            model_id=None,
+            name="Revenue Model",
+            description="Tracks revenue metrics",
+            source={"table": "sales"},
+            tags=["finance"],
+            fields=[
+                {"name": "revenue", "field_type": "measure", "data_type": "DOUBLE",
+                 "expression": "SUM(amount)", "aggregation": "sum"},
+                {"name": "region", "field_type": "dimension", "data_type": "VARCHAR"},
+            ],
+        )
+        assert model.name == "Revenue Model"
+        assert model.tags == ["finance"]
+        assert len(model.fields) == 2
+        assert model.fields[0].name == "revenue"
+
+    async def test_upsert_updates_fields(self, db_session):
+        from metadata_store.repository import MetadataRepository
+        repo = MetadataRepository(db_session)
+        model = await repo.upsert_semantic_model(
+            model_id="sm1", name="V1", description=None,
+            source={}, fields=[{"name": "a", "field_type": "dimension"}],
+        )
+        assert len(model.fields) == 1
+
+        updated = await repo.upsert_semantic_model(
+            model_id="sm1", name="V2", description="updated",
+            source={}, fields=[
+                {"name": "b", "field_type": "measure"},
+                {"name": "c", "field_type": "dimension"},
+            ],
+        )
+        assert updated.name == "V2"
+        assert len(updated.fields) == 2
+        assert updated.fields[0].name == "b"
+
     async def test_upsert_creates_model_without_fields(self, db_session):
         from metadata_store.repository import MetadataRepository
         repo = MetadataRepository(db_session)

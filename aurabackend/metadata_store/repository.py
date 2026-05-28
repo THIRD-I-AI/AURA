@@ -65,9 +65,28 @@ class MetadataRepository:
         embedding_model: str = "hash-projection",
     ) -> Document:
         document_id = document_id or str(uuid.uuid4())
-        result = await self._session.execute(select(Document).where(Document.id == document_id))
+        # selectinload(.embedding) eagerly populates the relationship
+        # so the update path below can mutate it without triggering a
+        # MissingGreenlet lazy-load under async sessions.
+        result = await self._session.execute(
+            select(Document)
+            .options(selectinload(Document.embedding))
+            .where(Document.id == document_id)
+        )
         document = result.scalar_one_or_none()
+
         if document is None:
+            # NEW path. Construct the Document WITH its embedding pre-
+            # populated so SQLAlchemy never has to read the relationship
+            # from the DB. Assigning `document.embedding = ...` after
+            # add() would trigger a lazy-load to detect the old value
+            # for replacement, which fails under async sessions.
+            emb = None
+            if embedding is not None:
+                emb = DocumentEmbedding(
+                    vector=_normalize_vector(embedding),
+                    embedding_model=embedding_model,
+                )
             document = Document(
                 id=document_id,
                 title=title,
@@ -75,29 +94,30 @@ class MetadataRepository:
                 tags=tags or [],
                 details=details or {},
                 source_type=source_type,
+                embedding=emb,
             )
             self._session.add(document)
-            await self._session.flush()
         else:
+            # UPDATE path. selectinload above guarantees document.embedding
+            # is preloaded, so accessing / mutating / reassigning is safe.
             document.title = title
             document.body = body
             document.tags = tags or []
             document.details = details or {}
             document.source_type = source_type
-
-        if embedding is not None:
-            vector = _normalize_vector(embedding)
-            if document.embedding:
-                document.embedding.vector = vector
-                document.embedding.embedding_model = embedding_model
-            else:
-                document.embedding = DocumentEmbedding(
-                    vector=vector,
-                    embedding_model=embedding_model,
-                )
+            if embedding is not None:
+                vector = _normalize_vector(embedding)
+                if document.embedding is not None:
+                    document.embedding.vector = vector
+                    document.embedding.embedding_model = embedding_model
+                else:
+                    document.embedding = DocumentEmbedding(
+                        vector=vector,
+                        embedding_model=embedding_model,
+                    )
 
         await self._session.commit()
-        await self._session.refresh(document)
+        await self._session.refresh(document, ["embedding"])
         return document
 
     async def list_embeddings(self) -> List[DocumentEmbedding]:
@@ -151,42 +171,61 @@ class MetadataRepository:
         fields: Optional[List[Dict[str, Any]]] = None,
     ) -> SemanticModel:
         model_id = model_id or str(uuid.uuid4())
-        result = await self._session.execute(select(SemanticModel).where(SemanticModel.id == model_id))
+
+        def _build_fields(specs: List[Dict[str, Any]]) -> List[SemanticField]:
+            return [
+                SemanticField(
+                    id=f.get("id") or str(uuid.uuid4()),
+                    name=f["name"],
+                    field_type=f.get("field_type", "dimension"),
+                    data_type=f.get("data_type"),
+                    expression=f.get("expression"),
+                    description=f.get("description"),
+                    aggregation=f.get("aggregation"),
+                    metadata=f.get("metadata", {}),
+                )
+                for f in specs
+            ]
+
+        # selectinload(.fields) eagerly populates the collection so the
+        # update path can mutate it without triggering a lazy-load
+        # MissingGreenlet error under async sessions.
+        result = await self._session.execute(
+            select(SemanticModel)
+            .options(selectinload(SemanticModel.fields))
+            .where(SemanticModel.id == model_id)
+        )
         model = result.scalar_one_or_none()
+
         if model is None:
+            # NEW path. Construct the model WITH its fields pre-populated
+            # so SQLAlchemy never has to read the relationship from the
+            # DB. Calling model.fields.clear() / .append() after add()
+            # would trigger a lazy-load to read the existing collection,
+            # which fails under async sessions.
+            initial_fields = _build_fields(fields) if fields is not None else []
             model = SemanticModel(
                 id=model_id,
                 name=name,
                 description=description,
                 source=source,
                 tags=tags or [],
+                fields=initial_fields,
             )
             self._session.add(model)
-            await self._session.flush()
         else:
+            # UPDATE path. selectinload above guarantees model.fields is
+            # preloaded, so mutation is safe.
             model.name = name
             model.description = description
             model.source = source
             model.tags = tags or []
-
-        if fields is not None:
-            model.fields.clear()
-            for field in fields:
-                model.fields.append(
-                    SemanticField(
-                        id=field.get("id") or str(uuid.uuid4()),
-                        name=field["name"],
-                        field_type=field.get("field_type", "dimension"),
-                        data_type=field.get("data_type"),
-                        expression=field.get("expression"),
-                        description=field.get("description"),
-                        aggregation=field.get("aggregation"),
-                        metadata=field.get("metadata", {}),
-                    )
-                )
+            if fields is not None:
+                model.fields.clear()
+                model.fields.extend(_build_fields(fields))
 
         await self._session.commit()
-        await self._session.refresh(model)
+        await self._session.refresh(model, ["fields"])
         return model
 
     async def list_semantic_models(self) -> List[SemanticModel]:

@@ -196,8 +196,8 @@ class MAPEKWorker:
         if self._duckdb_con is not None:
             try:
                 self._duckdb_con.close()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("duckdb close on shutdown failed: %s", exc)
         await self._emit("stopped", "MAPE-K worker shut down", {})
 
     def pause(self, reason: str = "") -> None:
