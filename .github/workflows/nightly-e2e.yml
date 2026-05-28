@@ -33,19 +33,36 @@ jobs:
         # external API that needs a real key.
         run: cp .env.example .env
 
+      - name: Pre-create writable data directories
+        # The compose bind-mount ./aurabackend:/app overlays the
+        # Dockerfile's `mkdir /app/data`. Without these dirs on the
+        # host, the in-container `aura` user can't create them
+        # (different UID than the host runner) and metadata_store /
+        # uasr_service crash at startup with "unable to open database
+        # file". 777 because the container's runtime UID isn't
+        # predictable from the host.
+        run: |
+          mkdir -p aurabackend/data/uploads aurabackend/data/db
+          chmod -R 777 aurabackend/data
+
       - name: Boot Docker Compose stack
         run: |
           docker compose up -d --build
           
       - name: Wait for services to be healthy
-        # Wait up to 3 minutes for all services to pass their docker healthchecks
+        # Wait up to 3 minutes for all services with a HEALTHCHECK to
+        # report healthy. Containers without HEALTHCHECK (e.g. redpanda,
+        # jaeger) lack a .State.Health field, which crashed the prior
+        # one-liner with "map has no entry for key Health". Use a Go
+        # template conditional to skip those containers.
         run: |
           timeout 180s bash -c '
-            until [ -z "$(docker compose ps -q | xargs docker inspect -f "{{.State.Health.Status}}" | grep -v "healthy")" ]; do
-              echo "Waiting for all services to be healthy..."
+            until [ -z "$(docker compose ps -q | xargs docker inspect -f "{{if .State.Health}}{{.State.Health.Status}}{{end}}" | grep -v "^$" | grep -v "healthy")" ]; do
+              echo "Waiting for healthchecked services..."
+              docker compose ps -q | xargs docker inspect -f "{{.Name}}: {{if .State.Health}}{{.State.Health.Status}}{{else}}no-healthcheck{{end}}"
               sleep 5
             done
-            echo "All services are healthy!"
+            echo "All healthchecked services are healthy!"
           '
 
       - name: Run E2E Pytest suite
