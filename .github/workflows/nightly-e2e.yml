@@ -26,6 +26,13 @@ jobs:
           python -m pip install --upgrade pip
           pip install pytest httpx
 
+      - name: Seed .env from .env.example
+        # docker-compose.yml requires .env (gitignored). For nightly E2E
+        # the .env.example dummy values are sufficient — services boot,
+        # health endpoints respond, and the E2E suite doesn't hit any
+        # external API that needs a real key.
+        run: cp .env.example .env
+
       - name: Boot Docker Compose stack
         run: |
           docker compose up -d --build

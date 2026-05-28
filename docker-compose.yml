@@ -1,8 +1,9 @@
-version: '3.8'
-
 # ──────────────────────────────────────────────────────────────────────────
 # AURA Microservices — 8 services, shared Dockerfile, separate commands
 # ──────────────────────────────────────────────────────────────────────────
+# Note: Compose V2 deprecated the top-level `version:` key — schema is now
+# auto-detected. Removing the key silences the obsolete-attribute warning
+# on every compose invocation.
 
 x-common: &common
   build:
