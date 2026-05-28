@@ -13,7 +13,31 @@ import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Awaitable, Callable, Dict, List, Optional
+from typing import Any, Awaitable, Callable, Dict, List, Optional, TypedDict
+
+
+class AgentContextMetadata(TypedDict, total=False):
+    """Typed structure for ``AgentContext.metadata``.
+
+    Every key is optional (``total=False``) — the bag accumulates state
+    as the agent pipeline runs. Keys are documented inline at each
+    callsite, but the central catalogue lives here.
+    """
+    # Budget tracking — populated by BaseAgent.execute() before _run()
+    budget_status: Dict[str, Any]
+
+    # DAR research agent dispatch (mode + per-mode inputs)
+    dar_mode: str
+    table_name: str
+    profile_text: str
+    question: str
+    sql: str
+    rows: List[Dict[str, Any]]
+
+    # Orchestrator routing flags + the shared DuckDB handle for the run
+    skip_planner: bool
+    skip_analysis: bool
+    duckdb_con: Any
 
 # ────────────────────────────────────────────────────────────────────
 # Enums & value objects
@@ -64,8 +88,8 @@ class AgentContext:
     # File references
     files: List[str] = field(default_factory=list)
 
-    # Arbitrary metadata
-    metadata: Dict[str, Any] = field(default_factory=dict)
+    # Arbitrary metadata — see AgentContextMetadata for known keys.
+    metadata: AgentContextMetadata = field(default_factory=lambda: AgentContextMetadata())
 
     # Maximum seconds this agent may run
     timeout_seconds: int = int(os.getenv("AURA_AGENT_TIMEOUT", "120"))

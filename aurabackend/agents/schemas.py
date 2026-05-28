@@ -131,6 +131,9 @@ class OrchestratorState(BaseModel):
     files: List[str] = Field(default_factory=list)
     connection: Dict[str, Any] = Field(default_factory=dict)
     schema_context: Dict[str, Any] = Field(default_factory=dict)
+    # Known-key catalogue lives in agents.base.AgentContextMetadata.
+    # Kept as Dict[str, Any] at the Pydantic boundary so JSON input
+    # from the API gateway round-trips without per-key validation.
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
     # Per-node outputs (populated as the graph progresses)
