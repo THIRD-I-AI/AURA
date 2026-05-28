@@ -1,3 +1,7 @@
 # Streaming dependencies for AURA
 aiokafka>=0.10,<1.0
-websockets>=12.0,<14.0
+# websockets >=15.0 required by langsmith 0.8.6 (transitive via langgraph).
+# The earlier <14.0 pin caused a ResolutionImpossible in the streaming
+# tier Docker build. Widening the upper bound to <17 keeps us inside
+# the API contract we use today while matching langsmith.
+websockets>=15.0,<17
