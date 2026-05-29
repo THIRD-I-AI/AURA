@@ -237,8 +237,10 @@ class DAGExecutor:
         await self._progress(f"✅ {report.summary}", "executor", 100)
 
         # Feed results back to the evolution engine for learning
-        asyncio.create_task(
-            self._record_in_evolution_engine(plan, user_prompt, report)
+        from shared.tasks import fire_and_forget
+        fire_and_forget(
+            self._record_in_evolution_engine(plan, user_prompt, report),
+            name="evolution-record",
         )
 
         return report

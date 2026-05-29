@@ -385,7 +385,7 @@ def _run_one_econml_dr_learner(
     (a single number), not a CATE vector, so we feed a constant feature
     and read out one effect. Confounders go entirely through ``W``.
     """
-    t0 = time.time()
+    t0 = time.perf_counter()
     try:
         # Heavy sklearn import is local to keep the engine importable
         # without econml/sklearn — the dispatcher already gates on
@@ -544,7 +544,7 @@ def _run_one_econml_dr_learner(
             ci_lower=ci_lower,
             ci_upper=ci_upper,
             n_samples=n,
-            elapsed_ms=(time.time() - t0) * 1000,
+            elapsed_ms=(time.perf_counter() - t0) * 1000,
             propensity_diagnostics=propensity_diag,
             ci_method=ci_method,  # type: ignore[arg-type]
         )
@@ -554,7 +554,7 @@ def _run_one_econml_dr_learner(
             method="double_ml",
             point=0.0, ci_lower=0.0, ci_upper=0.0,
             n_samples=len(df),
-            elapsed_ms=(time.time() - t0) * 1000,
+            elapsed_ms=(time.perf_counter() - t0) * 1000,
             error=f"{type(exc).__name__}: {exc}",
         )
 
@@ -605,7 +605,7 @@ def _run_one_econml_forest_dr_learner(
     when the DGP is linear-in-X — only switch when the operator wants
     heterogeneity visibility.
     """
-    t0 = time.time()
+    t0 = time.perf_counter()
     try:
         import numpy as np
         from sklearn.calibration import CalibratedClassifierCV
@@ -737,7 +737,7 @@ def _run_one_econml_forest_dr_learner(
             ci_lower=ci_lower,
             ci_upper=ci_upper,
             n_samples=n,
-            elapsed_ms=(time.time() - t0) * 1000,
+            elapsed_ms=(time.perf_counter() - t0) * 1000,
             propensity_diagnostics=propensity_diag,
             cate_distribution=cate_quantiles,
             ci_method=ci_method,  # type: ignore[arg-type]
@@ -748,7 +748,7 @@ def _run_one_econml_forest_dr_learner(
             method="forest_dr",
             point=0.0, ci_lower=0.0, ci_upper=0.0,
             n_samples=len(df),
-            elapsed_ms=(time.time() - t0) * 1000,
+            elapsed_ms=(time.perf_counter() - t0) * 1000,
             error=f"{type(exc).__name__}: {exc}",
         )
 
@@ -837,7 +837,7 @@ def _run_one_tmle(
     from the influence-curve variance estimator is the right
     publication CI here. A future S22.1 can wire conformal as an
     opt-in override for parity with the DR slots."""
-    t0 = time.time()
+    t0 = time.perf_counter()
     try:
         import numpy as np
 
@@ -894,7 +894,7 @@ def _run_one_tmle(
             ci_lower=result["ci_lower"],
             ci_upper=result["ci_upper"],
             n_samples=result["n_samples"],
-            elapsed_ms=(time.time() - t0) * 1000,
+            elapsed_ms=(time.perf_counter() - t0) * 1000,
             propensity_diagnostics=propensity_diag,
         )
     except Exception as exc:
@@ -903,7 +903,7 @@ def _run_one_tmle(
             method="tmle",
             point=0.0, ci_lower=0.0, ci_upper=0.0,
             n_samples=len(df),
-            elapsed_ms=(time.time() - t0) * 1000,
+            elapsed_ms=(time.perf_counter() - t0) * 1000,
             error=f"{type(exc).__name__}: {exc}",
         )
 
@@ -951,7 +951,7 @@ def _run_one_estimator(
     if method_key == "tmle":
         return _run_one_tmle(df, treatment, outcome, dag, seed)
 
-    t0 = time.time()
+    t0 = time.perf_counter()
     try:
         # Pin the global numpy RNG immediately before DoWhy touches it.
         # Bootstrap CI + propensity-score fitting both use np.random
@@ -998,7 +998,7 @@ def _run_one_estimator(
             ci_lower=lo,
             ci_upper=hi,
             n_samples=len(df),
-            elapsed_ms=(time.time() - t0) * 1000,
+            elapsed_ms=(time.perf_counter() - t0) * 1000,
         )
     except Exception as exc:
         logger.warning("Estimator %s failed: %s", method_key, exc)
@@ -1006,7 +1006,7 @@ def _run_one_estimator(
             method=method_key,
             point=0.0, ci_lower=0.0, ci_upper=0.0,
             n_samples=len(df),
-            elapsed_ms=(time.time() - t0) * 1000,
+            elapsed_ms=(time.perf_counter() - t0) * 1000,
             error=f"{type(exc).__name__}: {exc}",
         )
 
@@ -1167,7 +1167,7 @@ def _run_one_refuter(
     baseline_estimate: Any,
     seed: int = 0,
 ) -> RefutationResult:
-    t0 = time.time()
+    t0 = time.perf_counter()
     try:
         # Refuters explicitly use random sampling (placebo treatment,
         # data subset, random common cause). Pin numpy global state
@@ -1215,7 +1215,7 @@ def _run_one_refuter(
             estimate_after=new_value,
             p_value=p_value,
             passed=passed,
-            elapsed_ms=(time.time() - t0) * 1000,
+            elapsed_ms=(time.perf_counter() - t0) * 1000,
         )
     except Exception as exc:
         logger.warning("Refuter %s failed: %s", refuter_key, exc)
@@ -1223,7 +1223,7 @@ def _run_one_refuter(
             refuter=refuter_key,
             estimate_after=None, p_value=None,
             passed=False,
-            elapsed_ms=(time.time() - t0) * 1000,
+            elapsed_ms=(time.perf_counter() - t0) * 1000,
             error=f"{type(exc).__name__}: {exc}",
         )
 

@@ -309,7 +309,7 @@ async def etl_execute(pipeline: ETLPipelineRequest):
     run_id = f"etl-{int(time.time()*1000)}"
     await streaming_manager.publish_progress(TOPIC_ETL, run_id, f"Starting ETL pipeline '{pipeline.name}'", 0.05)
 
-    t0 = time.time()
+    t0 = time.perf_counter()
     base = Path(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
     upload_dir = base / "data" / "uploads"
     output_dir = base / "data" / "processed"
@@ -370,7 +370,7 @@ async def etl_execute(pipeline: ETLPipelineRequest):
                 raise HTTPException(status_code=400, detail=f"Unsupported destination format: {fmt}")
 
         con.close()
-        elapsed_ms = (time.time() - t0) * 1000
+        elapsed_ms = (time.perf_counter() - t0) * 1000
 
         await streaming_manager.publish_complete(TOPIC_ETL, run_id, {
             "pipeline_name": pipeline.name,

@@ -99,9 +99,9 @@ class ToolRegistry:
             self._history.append(record)
             return record.output
 
-        start = time.time()
+        start = time.perf_counter()
         output = await tool.fn(**kwargs)
-        elapsed = (time.time() - start) * 1000
+        elapsed = (time.perf_counter() - start) * 1000
 
         self._history.append(ToolCallRecord(
             tool_name=name,

@@ -280,7 +280,11 @@ class WebhookDispatcher:
             payload = self._build_payload(event_type, event)
             for sub in matched:
                 # Fire-and-forget per subscription so a slow target doesn't block others
-                asyncio.create_task(self._deliver(sub, event_type, payload))
+                from shared.tasks import fire_and_forget
+                fire_and_forget(
+                    self._deliver(sub, event_type, payload),
+                    name=f"webhook-{sub.id}",
+                )
 
     # ── Delivery ───────────────────────────────────────────────────
 

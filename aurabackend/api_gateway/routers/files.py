@@ -136,10 +136,9 @@ async def upload_universal(
         # of LIKE-grepping a free-text body. Backgrounded and best-effort:
         # never delays the upload response, never fails it.
         try:
-            import asyncio as _asyncio
-
             from shared.schema_indexer import index_uploaded_file
-            _asyncio.create_task(index_uploaded_file(file_path))
+            from shared.tasks import fire_and_forget
+            fire_and_forget(index_uploaded_file(file_path), name=f"schema-index-{upload_id}")
         except Exception as _idx_exc:
             logger.warning("schema_indexer dispatch failed (non-fatal): %s", _idx_exc)
 
@@ -150,10 +149,9 @@ async def upload_universal(
         # above. The 60s background tick is the defensive fallback if
         # this dispatch is dropped for any reason.
         try:
-            import asyncio as _asyncio
-
             from api_gateway.persistence import index_file_metadata
-            _asyncio.create_task(index_file_metadata(file_path))
+            from shared.tasks import fire_and_forget
+            fire_and_forget(index_file_metadata(file_path), name=f"file-meta-{upload_id}")
         except Exception as _meta_exc:
             logger.warning(
                 "file_metadata cache dispatch failed (non-fatal): %s", _meta_exc,
@@ -164,10 +162,9 @@ async def upload_universal(
         # cached context instead of running LLM inference inline. Same
         # best-effort, non-blocking pattern as the file-metadata hook above.
         try:
-            import asyncio as _asyncio
-
             from api_gateway.persistence import refresh_schema_context
-            _asyncio.create_task(refresh_schema_context([upload_dir]))
+            from shared.tasks import fire_and_forget
+            fire_and_forget(refresh_schema_context([upload_dir]), name=f"schema-ctx-{upload_id}")
         except Exception as _ctx_exc:
             logger.warning(
                 "schema_context rebuild dispatch failed (non-fatal): %s", _ctx_exc,

@@ -209,7 +209,8 @@ async def _fire_pipeline(pipeline_id: str, payload: Dict[str, Any]) -> Dict[str,
                 TOPIC_PIPELINE, run_id, str(exc), code="PIPELINE_FAILED",
             )
 
-    asyncio.create_task(_run())
+    from shared.tasks import fire_and_forget
+    fire_and_forget(_run(), name=f"hook-pipeline-{run_id}")
     return {
         "status": "success", "kind": "pipeline",
         "pipeline_id": pipeline.id, "run_id": run_id,
@@ -279,7 +280,8 @@ async def _fire_agent(
                 TOPIC_AGENT, session_id, str(exc), code="AGENT_FAILED",
             )
 
-    asyncio.create_task(_run())
+    from shared.tasks import fire_and_forget
+    fire_and_forget(_run(), name=f"hook-agent-{session_id}")
     return {
         "status": "success", "kind": "agent",
         "session_id": session_id, "topic": f"{TOPIC_AGENT}:{session_id}",

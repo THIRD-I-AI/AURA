@@ -190,7 +190,7 @@ async def _run_tile(tile: Dict[str, Any], saved_queries: List[Dict[str, Any]]) -
     ]
 
     con = duckdb.connect(":memory:")
-    started = time.time()
+    started = time.perf_counter()
     try:
         await build_schema_context_cached(con, upload_dirs, use_llm=False)
 
@@ -199,7 +199,7 @@ async def _run_tile(tile: Dict[str, Any], saved_queries: List[Dict[str, Any]]) -
             return [d[0] for d in cur.description], cur.fetchall()
 
         columns, rows = await asyncio.to_thread(_run)
-        elapsed = (time.time() - started) * 1000
+        elapsed = (time.perf_counter() - started) * 1000
         # Cap preview to 500 rows so dashboards don't push megabytes per tile
         preview_rows = rows[:500]
         return {
@@ -224,7 +224,7 @@ async def _run_tile(tile: Dict[str, Any], saved_queries: List[Dict[str, Any]]) -
             "columns": [],
             "rows": [],
             "row_count": 0,
-            "execution_time_ms": round((time.time() - started) * 1000, 1),
+            "execution_time_ms": round((time.perf_counter() - started) * 1000, 1),
         }
     finally:
         try:

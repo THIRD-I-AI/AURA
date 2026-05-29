@@ -478,13 +478,16 @@ async def test_refresh_stale_reindexes_changed_mtime(
 ) -> None:
     """If a file's mtime changes (user edits it after upload), the
     refresh re-indexes it — picks up the new row count."""
-    import time
+    import asyncio
     csv = tmp_path / "mutable.csv"
     _write_csv(csv, n_rows=5)
     await persistence.refresh_stale_file_metadata(str(tmp_path))
 
     # Force a different mtime + new row count.
-    time.sleep(0.05)
+    # asyncio.sleep, not time.sleep — inside an async def, time.sleep
+    # blocks the entire event loop and prevents any concurrent task
+    # from making progress.
+    await asyncio.sleep(0.05)
     _write_csv(csv, n_rows=15)
     new_mtime = csv.stat().st_mtime + 1.0
     os.utime(csv, (new_mtime, new_mtime))

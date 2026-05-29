@@ -235,7 +235,7 @@ async def execute_for_chat(req: _ChatExecuteRequest):
     • If *connection_id* is provided, proxy to the execution sandbox.
     • Otherwise, run against uploaded files via DuckDB.
     """
-    start = time.time()
+    start = time.perf_counter()
     sql = req.sql.strip()
     if not sql:
         raise HTTPException(status_code=400, detail="SQL query is required")
@@ -273,7 +273,7 @@ async def execute_for_chat(req: _ChatExecuteRequest):
             columns = data.get("columns", [])
             rows = data.get("rows", [])
             records = [dict(zip(columns, row)) for row in rows]
-            elapsed = (time.time() - start) * 1000
+            elapsed = (time.perf_counter() - start) * 1000
             await streaming_manager.publish_complete(TOPIC_QUERY, job_id, {"rows": len(records), "execution_time_ms": round(elapsed, 1)})
             return {
                 "success": True, "data": records, "columns": columns,
@@ -320,8 +320,10 @@ async def execute_for_chat(req: _ChatExecuteRequest):
             [str(d) for d in upload_dirs]
         )
         if _fp and not await _gw_persistence.get_schema_context(_fp):
-            asyncio.create_task(
-                _gw_persistence.refresh_schema_context([str(d) for d in upload_dirs])
+            from shared.tasks import fire_and_forget
+            fire_and_forget(
+                _gw_persistence.refresh_schema_context([str(d) for d in upload_dirs]),
+                name="schema-ctx-refresh",
             )
 
         def _run_sql() -> tuple[list[str], list[tuple]]:
@@ -345,7 +347,7 @@ async def execute_for_chat(req: _ChatExecuteRequest):
             if analysis_res.succeeded:
                 conclusion = analysis_res.output.get("conclusion")
 
-        elapsed = (time.time() - start) * 1000
+        elapsed = (time.perf_counter() - start) * 1000
         con.close()
         return {
             "success": True, "data": records, "columns": columns,
@@ -375,7 +377,7 @@ async def execute_query_with_insights(request: ExecuteQueryRequest):
         else:
             raise ValueError(f"Unknown connector type: {request.connector_type}")
 
-        start_time = time.time()
+        start_time = time.perf_counter()
         if request.connector_type == "postgresql":
             # P-3 finding #6: reuse a long-lived pool — skip connect/disconnect
             # per call, which was destroying and recreating asyncpg's pool every
@@ -387,7 +389,7 @@ async def execute_query_with_insights(request: ExecuteQueryRequest):
             await connector.connect()
             results = await connector.execute_query(request.query)
             await connector.disconnect()
-        execution_time = (time.time() - start_time) * 1000
+        execution_time = (time.perf_counter() - start_time) * 1000
 
         conclusion = None
         if results:
@@ -542,7 +544,11 @@ async def create_saved_query(payload: SavedQueryCreate, request: Request):
     saved = await persistence.insert_saved_query(record)
     # P-2c: pre-compute table→query edges at write time so GET /lineage
     # reads the cache instead of re-parsing SQL on every request.
-    asyncio.create_task(persistence.upsert_lineage_edges(saved["id"], wsid, sql))
+    from shared.tasks import fire_and_forget
+    fire_and_forget(
+        persistence.upsert_lineage_edges(saved["id"], wsid, sql),
+        name=f"lineage-edges-{saved['id']}",
+    )
     return {"success": True, "query": saved}
 
 
@@ -757,9 +763,9 @@ async def _execute_saved_query_sql(sql: str) -> Dict[str, Any]:
             cur = con.execute(sql)
             return [d[0] for d in cur.description], cur.fetchall()
 
-        start = time.time()
+        start = time.perf_counter()
         columns, rows = await asyncio.to_thread(_run)
-        elapsed = (time.time() - start) * 1000
+        elapsed = (time.perf_counter() - start) * 1000
         return {
             "success": True,
             "row_count": len(rows),
@@ -962,8 +968,10 @@ async def get_dashboard_stats():
             base = Path(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
             upload_dir = base / "data" / "uploads"
             if upload_dir.exists() and any(upload_dir.iterdir()):
-                asyncio.create_task(
+                from shared.tasks import fire_and_forget
+                fire_and_forget(
                     persistence.refresh_stale_file_metadata(str(upload_dir)),
+                    name="file-meta-bulk-refresh",
                 )
     except Exception as exc:
         logger.warning("dashboard stats persistence read failed (non-fatal): %s", exc)

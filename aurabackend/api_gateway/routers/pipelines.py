@@ -244,7 +244,8 @@ async def pipeline_execute_async(req: PipelineExecuteRequest):
                 TOPIC_PIPELINE, run_id, "Pipeline failed", code="PIPELINE_FAILED",
             )
 
-    asyncio.create_task(_run())
+    from shared.tasks import fire_and_forget
+    fire_and_forget(_run(), name=f"pipeline-async-{run_id}")
     return {"status": "success", "run_id": run_id, "topic": f"{TOPIC_PIPELINE}:{run_id}"}
 
 

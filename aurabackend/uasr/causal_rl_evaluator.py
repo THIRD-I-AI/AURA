@@ -174,7 +174,7 @@ class CausalRLEvaluator:
         evaluations: List[CandidateEvaluation] = []
 
         for cand in candidates:
-            t0 = time.time()
+            t0 = time.perf_counter()
             try:
                 transformed = cand.transform(source_id, batch.rows)
                 # transform_fn may be async — await if so
@@ -197,7 +197,7 @@ class CausalRLEvaluator:
                     improvement=improvement,
                     ci_lower=improvement - ci_half_width,
                     ci_upper=improvement + ci_half_width,
-                    elapsed_ms=(time.time() - t0) * 1000,
+                    elapsed_ms=(time.perf_counter() - t0) * 1000,
                 ))
             except Exception as exc:  # noqa: BLE001
                 logger.warning(
@@ -211,7 +211,7 @@ class CausalRLEvaluator:
                     improvement=float("-inf"),
                     ci_lower=float("-inf"),
                     ci_upper=float("-inf"),
-                    elapsed_ms=(time.time() - t0) * 1000,
+                    elapsed_ms=(time.perf_counter() - t0) * 1000,
                     error=f"{type(exc).__name__}: {exc}",
                 ))
 

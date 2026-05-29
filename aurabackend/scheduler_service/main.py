@@ -494,10 +494,13 @@ async def trigger_job_execution(job_id: str):
             )
 
         # Execute the job asynchronously using the global executor
-        import asyncio
+        from shared.tasks import fire_and_forget
 
         # Start execution in background task
-        asyncio.create_task(executor.execute_job(job, triggered_by="manual"))
+        fire_and_forget(
+            executor.execute_job(job, triggered_by="manual"),
+            name=f"scheduler-manual-{job_id}",
+        )
 
         logger.info(f"Manually triggered job {job_id}")
         return {

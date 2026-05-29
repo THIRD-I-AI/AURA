@@ -115,7 +115,7 @@ class RecoveryLoop:
         original_batch: BatchPayload,
     ) -> RecoveryLoopResult:
         """Execute the full recovery cycle."""
-        start_time = time.time()
+        start_time = time.perf_counter()
         recovery_id = uuid.uuid4().hex[:16]
 
         loop_result = RecoveryLoopResult(
@@ -215,7 +215,7 @@ class RecoveryLoop:
                     recovery_id, winner_val,
                 )
 
-        loop_result.total_latency_seconds = time.time() - start_time
+        loop_result.total_latency_seconds = time.perf_counter() - start_time
         return loop_result
 
     # ────────────────────────────────────────────────────────────────

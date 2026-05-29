@@ -120,7 +120,7 @@ async def chat_endpoint(request: ChatRequest) -> ChatResponse:
     3. Auto-executes the SQL on DuckDB.
     4. Returns data + generated SQL + chart suggestion.
     """
-    t0 = time.time()
+    t0 = time.perf_counter()
     message = request.message.strip()
     if not message:
         raise HTTPException(status_code=400, detail="Message is required")
@@ -211,7 +211,7 @@ async def chat_endpoint(request: ChatRequest) -> ChatResponse:
             status="Conversational",
             job_id=f"job_{session_id}",
             message=intent_result.output.get("message", "Hello! How can I help you today?"),
-            execution_time_ms=round((time.time() - t0) * 1000, 1),
+            execution_time_ms=round((time.perf_counter() - t0) * 1000, 1),
             available_tables=list(table_schemas.keys()),
         )
 
@@ -260,7 +260,7 @@ async def chat_endpoint(request: ChatRequest) -> ChatResponse:
         execution_result.conclusion = state.analysis.conclusion
 
     con.close()
-    elapsed_ms = (time.time() - t0) * 1000
+    elapsed_ms = (time.perf_counter() - t0) * 1000
 
     # ── Track query in server-side history ──────────────────────────
     if generated_sql:

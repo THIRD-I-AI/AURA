@@ -566,10 +566,12 @@ async def _main() -> None:
     cfg = MAPEKConfig()
     worker = MAPEKWorker(cfg)
     await worker.start()
+    # Wait on an Event that never fires — sleeps until SIGINT/cancel
+    # without a periodic wakeup. The previous ``while True: sleep(3600)``
+    # would wake every hour even when nothing changed (Ruff ASYNC110).
+    stop = asyncio.Event()
     try:
-        # Run until SIGINT
-        while True:
-            await asyncio.sleep(3600)
+        await stop.wait()
     except (KeyboardInterrupt, asyncio.CancelledError):
         pass
     finally:

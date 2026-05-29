@@ -295,7 +295,8 @@ async def execute_prompt_async(req: AgentExecuteRequest):
                 TOPIC_AGENT, session_id, str(exc), code="AGENT_FAILED",
             )
 
-    asyncio.create_task(_run())
+    from shared.tasks import fire_and_forget
+    fire_and_forget(_run(), name=f"agent-async-{session_id}")
     return AgentAsyncResponse(
         session_id=session_id,
         topic=f"{TOPIC_AGENT}:{session_id}",

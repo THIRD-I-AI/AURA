@@ -346,7 +346,8 @@ async def system_health():
     # Publish snapshot to the streaming manager so the LiveDashboard gets it
     try:
         from shared.streaming_manager import TOPIC_SYSTEM, streaming_manager
-        asyncio.create_task(streaming_manager.publish(
+        from shared.tasks import fire_and_forget
+        fire_and_forget(streaming_manager.publish(
             __import__("shared.streaming_manager", fromlist=["StreamEvent"]).StreamEvent(
                 topic=f"{TOPIC_SYSTEM}:health",
                 event_type="data",
@@ -357,9 +358,9 @@ async def system_health():
                     "hu_score": hu_score,
                 },
             )
-        ))
-    except Exception:
-        pass
+        ), name="health-broadcast")
+    except Exception as exc:
+        logger.debug("health snapshot broadcast scheduling failed: %s", exc)
 
     return {
         "overall": overall,
