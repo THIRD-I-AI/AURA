@@ -51,13 +51,28 @@ QUESTION = "What is the total revenue by region?"
 
 
 def _has_real_provider() -> bool:
-    """A real provider is configured iff at least one of the supported keys
-    is present. Mirrors the auto-detection precedence in
-    shared.llm_provider so we skip when get_llm() would also fail."""
-    return any(os.getenv(k) for k in (
-        "GROQ_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY",
-        "OPENAI_API_KEY",
-    ))
+    """A real provider is configured iff a supported key is present AND
+    the matching SDK is importable. Mirrors shared.llm_provider's
+    auto-detection so we skip locally when the SDK isn't installed."""
+    if os.getenv("GROQ_API_KEY"):
+        try:
+            import groq  # noqa: F401
+            return True
+        except ImportError:
+            pass
+    if os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY"):
+        try:
+            import google.generativeai  # noqa: F401
+            return True
+        except ImportError:
+            pass
+    if os.getenv("OPENAI_API_KEY"):
+        try:
+            import openai  # noqa: F401
+            return True
+        except ImportError:
+            pass
+    return False
 
 
 # ── Observer that records every LLM call for assertion ───────────────
