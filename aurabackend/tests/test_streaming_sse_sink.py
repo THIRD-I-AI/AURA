@@ -177,15 +177,16 @@ class TestSSESinkUnit:
 
     async def test_slow_subscriber_evicted_on_queue_full(self, sink):
         """A subscriber whose queue fills up is removed; fast subscribers keep receiving."""
-        slow = sink.subscribe("slow", maxsize=2)
+        slow_q = sink.subscribe("slow", maxsize=2)
         fast = sink.subscribe("fast")
 
         # Overfill the slow queue — 3 emissions on a maxsize=2 queue
         for i in range(3):
             await sink.emit_window(_make_window(count=i), "p1")
 
-        # slow subscriber should be evicted
+        # slow subscriber should be evicted; its queue stops receiving
         assert "slow" not in sink._subscribers
+        assert slow_q.qsize() <= 2  # never grew past maxsize
         # fast subscriber should have received all 3
         assert fast.qsize() == 3
 
