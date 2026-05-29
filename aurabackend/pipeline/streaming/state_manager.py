@@ -25,10 +25,14 @@ from pipeline.streaming.models import (
 
 logger = logging.getLogger(__name__)
 
-CHECKPOINT_DIR = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+# Default: AURA/data/checkpoints/ — one level above aurabackend/ so
+# uvicorn --reload never sees checkpoint writes and self-restarts.
+# Override with AURA_CHECKPOINT_DIR for Docker volumes or custom paths.
+_DEFAULT_CHECKPOINT_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))),
     "data", "checkpoints",
 )
+CHECKPOINT_DIR = os.environ.get("AURA_CHECKPOINT_DIR", _DEFAULT_CHECKPOINT_DIR)
 
 
 class StateManager:

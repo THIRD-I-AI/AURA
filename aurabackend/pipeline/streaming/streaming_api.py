@@ -297,6 +297,7 @@ _SOURCE_SCHEMAS = {
             {"key": "headers",       "label": "Headers (JSON)",    "type": "text",   "default": "{}",                     "required": False, "help": "Optional headers as JSON (e.g. auth tokens)"},
             {"key": "subprotocols",  "label": "Subprotocols (CSV)", "type": "text",  "default": "",                       "required": False, "help": "Optional comma-separated subprotocol list"},
             {"key": "key_field",     "label": "Partition Key Field", "type": "text", "default": "",                       "required": False, "help": "Event data field used as partition key (optional)"},
+            {"key": "connect_timeout","label": "Connect Timeout (s)","type": "number", "default": 10,                      "required": False, "help": "Seconds to wait for initial connection before retrying"},
             {"key": "ping_interval", "label": "Ping Interval (s)", "type": "number", "default": 20,                       "required": False, "help": "Keepalive ping interval"},
             {"key": "reconnect",     "label": "Auto-Reconnect",    "type": "select", "default": "true",                   "required": False, "options": ["true", "false"], "help": "Reconnect on drop with exponential backoff"},
             {"key": "max_buffer",    "label": "Max Buffer",        "type": "number", "default": 10000,                    "required": False, "help": "Drop oldest once buffered messages exceed this"},
