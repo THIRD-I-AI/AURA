@@ -3,6 +3,7 @@ import { type PageType } from '../components/Layout/AppLayout';
 import {
   etlService,
   pipelineService,
+  API_BASE_URL,
   type ETLColumnSchema,
   type ETLTransformStep,
   type ETLSourcePreview,
@@ -221,7 +222,7 @@ const PipelinesPanel: React.FC<PipelinesPanelProps> = () => {
 
   const fetchSourceFiles = async () => {
     try {
-      const resp = await fetch(`${localStorage.getItem('apiUrl') || 'http://localhost:8000'}/files`);
+      const resp = await fetch(`${API_BASE_URL}/files`);
       const data = await resp.json();
       if (data.status === 'success' && data.files) {
         const DATA_EXTENSIONS = ['.csv', '.json', '.parquet'];
