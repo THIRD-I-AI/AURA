@@ -9,9 +9,10 @@ Config options:
   headers:     dict | str(JSON) – optional additional headers
   subprotocols: list | str(CSV) – optional subprotocols
   key_field:   str   – event data field to use as the partition key (optional)
-  ping_interval: float – keepalive ping interval in seconds (default: 20)
-  reconnect:   bool  – auto-reconnect with exponential backoff (default: True)
-  max_buffer:  int   – drop oldest once buffered messages exceed this (default: 10000)
+  ping_interval:   float – keepalive ping interval in seconds (default: 20)
+  connect_timeout: float – seconds to wait for initial connection before retrying (default: 10)
+  reconnect:       bool  – auto-reconnect with exponential backoff (default: True)
+  max_buffer:      int   – drop oldest once buffered messages exceed this (default: 10000)
 
 Requires the ``websockets`` package.
 """
@@ -64,6 +65,7 @@ class WebSocketSource(BaseSource):
         self._subprotocols: List[str] = _parse_subprotocols(config.get("subprotocols"))
         self._key_field: Optional[str] = config.get("key_field") or None
         self._ping_interval: float = float(config.get("ping_interval", 20))
+        self._connect_timeout: float = float(config.get("connect_timeout", 10))
         self._reconnect: bool = bool(config.get("reconnect", True))
         self._max_buffer: int = int(config.get("max_buffer", 10_000))
 
@@ -127,7 +129,10 @@ class WebSocketSource(BaseSource):
                 if self._subprotocols:
                     connect_kwargs["subprotocols"] = self._subprotocols
 
-                async with websockets.connect(self._url, **connect_kwargs) as ws:
+                async with await asyncio.wait_for(
+                    websockets.connect(self._url, **connect_kwargs),
+                    timeout=self._connect_timeout,
+                ) as ws:
                     logger.info("WebSocket connected: %s", self._url)
                     backoff = 1.0
                     async for raw_msg in ws:

@@ -59,6 +59,17 @@ function formatEpoch(epoch: number): string {
   return new Date(epoch * 1000).toLocaleTimeString();
 }
 
+function formatWindowTime(epoch: number): string {
+  if (!epoch) return '—';
+  const date = new Date(epoch * 1000);
+  const abs = date.toLocaleTimeString();
+  const diffMs = Date.now() - date.getTime();
+  const diffMins = Math.floor(diffMs / 60000);
+  if (diffMins < 1) return `just now (${abs})`;
+  if (diffMins === 1) return `1m ago (${abs})`;
+  return `${diffMins}m ago (${abs})`;
+}
+
 function defaultsFromFields(fields: SchemaField[]): Record<string, any> {
   const out: Record<string, any> = {};
   for (const f of fields) {
@@ -489,9 +500,9 @@ const StreamingPanel: React.FC<StreamingPanelProps> = () => {
                           <span className="streaming-event-type">{ev.type}</span>
                           <span className="streaming-event-detail">
                             {ev.type === 'window_closed'
-                              ? `key=${ev.window_key}  events=${ev.event_count}  agg=${JSON.stringify(ev.aggregations)}`
+                              ? `key=${ev.window_key}  events=${ev.event_count}  window=${formatWindowTime(ev.window_start)}–${formatWindowTime(ev.window_end)}  agg=${JSON.stringify(ev.aggregations)}`
                               : ev.type === 'late_event'
-                                ? `key=${ev.key}  ts=${ev.timestamp}`
+                                ? `key=${ev.key}  ts=${formatWindowTime(ev.timestamp)}`
                                 : JSON.stringify(ev).slice(0, 120)}
                           </span>
                         </div>
