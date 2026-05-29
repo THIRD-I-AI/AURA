@@ -49,8 +49,8 @@ class SSESink(BaseSink):
             "type": "window_closed",
             "pipeline_id": pipeline_id,
             "window_key": window.window_key,
-            "window_start": window.window_start.isoformat() if window.window_start else None,
-            "window_end": window.window_end.isoformat() if window.window_end else None,
+            "window_start": window.window_start,
+            "window_end": window.window_end,
             "event_count": window.event_count,
             "aggregations": window.aggregations,
         })
@@ -62,7 +62,7 @@ class SSESink(BaseSink):
             "pipeline_id": pipeline_id,
             "event_id": event.event_id,
             "key": event.key,
-            "timestamp": event.timestamp.isoformat(),
+            "timestamp": event.timestamp,
         })
         await self._broadcast(payload)
 
