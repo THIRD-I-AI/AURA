@@ -9,7 +9,7 @@
 
 const _RAW_BASE = localStorage.getItem('apiUrl') || import.meta.env.VITE_API_URL || 'http://localhost:8000';
 const ROOT_BASE_URL = _RAW_BASE.replace(/\/+$/, '');              // For non-versioned endpoints (e.g. /health)
-const API_BASE_URL = `${ROOT_BASE_URL}/api/v1`;                   // All domain endpoints are versioned
+export const API_BASE_URL = `${ROOT_BASE_URL}/api/v1`;            // All domain endpoints are versioned
 const REQUEST_TIMEOUT = 300000; // 300 seconds (5 minutes) to allow massive agent queries
 const HEALTH_CHECK_INTERVAL = Number(import.meta.env.VITE_HEALTH_CHECK_INTERVAL) || 10000; // 10 seconds for faster detection
 

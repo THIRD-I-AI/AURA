@@ -2,6 +2,7 @@ import React, { useCallback, useMemo, useState } from 'react';
 import CounterfactualCard, {
   type CounterfactualOperatorView,
 } from '../components/CounterfactualCard';
+import { API_BASE_URL } from '../services/api';
 
 type Audience = 'operator' | 'auditor' | 'analyst';
 
@@ -58,7 +59,7 @@ const Counterfactual: React.FC = () => {
     setProgress('Submitting…');
 
     try {
-      const submitResp = await fetch('/api/v1/counterfactual/jobs', {
+      const submitResp = await fetch(`${API_BASE_URL}/counterfactual/jobs`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: queryText,
@@ -71,7 +72,7 @@ const Counterfactual: React.FC = () => {
 
       for (let i = 0; i < 120; i++) {
         await new Promise(res => setTimeout(res, 1000));
-        const statusResp = await fetch(`/api/v1/counterfactual/jobs/${job_id}`);
+        const statusResp = await fetch(`${API_BASE_URL}/counterfactual/jobs/${job_id}`);
         const status = await statusResp.json();
         if (status.state === 'succeeded') {
           setArtifact(status.artifact.rendered as CounterfactualOperatorView);
@@ -94,15 +95,15 @@ const Counterfactual: React.FC = () => {
   }, [queryText]);
 
   const pdfUrl = useMemo(
-    () => recordHash ? `/api/v1/counterfactual/artifacts/${recordHash}/report.pdf` : null,
+    () => recordHash ? `${API_BASE_URL}/counterfactual/artifacts/${recordHash}/report.pdf` : null,
     [recordHash],
   );
   const replayUrl = useMemo(
-    () => recordHash ? `/api/v1/counterfactual/artifacts/${recordHash}` : null,
+    () => recordHash ? `${API_BASE_URL}/counterfactual/artifacts/${recordHash}` : null,
     [recordHash],
   );
   const verifyUrl = useMemo(
-    () => recordHash ? `/api/v1/counterfactual/artifacts/${recordHash}/verify` : null,
+    () => recordHash ? `${API_BASE_URL}/counterfactual/artifacts/${recordHash}/verify` : null,
     [recordHash],
   );
 
