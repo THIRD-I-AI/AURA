@@ -1675,7 +1675,11 @@ def _request_hash(query: CounterfactualQuery, dataset_fingerprint: str) -> str:
     })
 
 
-async def run_job(query: CounterfactualQuery, df: pd.DataFrame) -> CounterfactualArtifact:
+async def run_job(
+    query: CounterfactualQuery,
+    df: pd.DataFrame,
+    methods: Optional[List[EstimatorMethod]] = None,
+) -> CounterfactualArtifact:
     """Full engine: estimate → refute → critique (cached) → score → sign → persist → seal.
 
     Returns the artifact with ``audit_record_hash`` and (when signing is
@@ -1692,6 +1696,7 @@ async def run_job(query: CounterfactualQuery, df: pd.DataFrame) -> Counterfactua
 
     estimates = await run_estimators(
         df, query.treatment, query.outcome, query.dag.model_dump(),
+        methods=methods,
         request_hash=req_hash,
     )
     refutations = await run_refuters(
