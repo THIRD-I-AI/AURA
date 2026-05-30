@@ -28,6 +28,36 @@ logger = get_logger("aura.api_gateway.chat")
 router = APIRouter(tags=["Chat"])
 
 
+# Raw provider exceptions (e.g. a multi-line Gemini 429 quota dump, or a
+# stack-tracey internal error) must never reach the UI verbatim. Map the
+# common, *expected* failure signatures to crisp, actionable text, and
+# hard-cap anything else so a wall of provider text can't leak to the user.
+_RATE_LIMIT_MARKERS = (
+    "rate limit", "rate/size", "quota", "429",
+    "resource_exhausted", "too large", "413",
+)
+_NO_LLM_MARKERS = (
+    "no llm provider", "llm provider available",
+    "no provider", "ollama",
+)
+
+
+def _humanize_pipeline_error(message: Optional[str]) -> str:
+    low = (message or "").lower()
+    if any(m in low for m in _RATE_LIMIT_MARKERS):
+        return (
+            "The AI service is temporarily rate-limited. "
+            "Please wait a few seconds and try again."
+        )
+    if any(m in low for m in _NO_LLM_MARKERS):
+        return (
+            "No AI model is configured on the server. Set GROQ_API_KEY or "
+            "GEMINI_API_KEY (or start a local Ollama) and retry."
+        )
+    msg = (message or "").strip() or "unknown error"
+    return msg if len(msg) <= 240 else msg[:237] + "…"
+
+
 # ── Models ───────────────────────────────────────────────────────────
 
 class ChatRequest(BaseModel):
@@ -236,12 +266,13 @@ async def chat_endpoint(request: ChatRequest) -> ChatResponse:
         # Surface the FIRST blocking error — downstream errors are usually
         # cascade effects of the first failure (sql gen → execution).
         first = state.errors[0]
+        human = _humanize_pipeline_error(first.message)
         if first.node == "sql_gen":
-            error_message = f"SQL Generation failed: {first.message}"
+            error_message = f"SQL generation failed: {human}"
         elif first.node == "execution":
-            execution_result.error = f"Execution failed: {first.message}"
+            execution_result.error = f"Execution failed: {human}"
         else:
-            error_message = f"{first.node} failed: {first.message}"
+            error_message = f"{first.node} failed: {human}"
 
     if state.sql and state.sql.explanation:
         execution_result.sql_explanation = state.sql.explanation

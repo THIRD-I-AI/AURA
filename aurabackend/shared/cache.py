@@ -88,8 +88,12 @@ class InMemoryCache:
 # Hot path: dashboard stats (30s TTL — matches frontend polling interval)
 dashboard_cache = InMemoryCache(default_ttl=30)
 
-# Schema introspection results (10 min TTL — schemas rarely change)
-schema_cache = InMemoryCache(default_ttl=600)
+# Schema introspection results. The cache key is a content fingerprint
+# (path|mtime_ns|size of every data file), so an entry can never go stale —
+# any file change yields a new key. The TTL is therefore just memory hygiene,
+# not a correctness bound; keep it long so we don't pay the rebuild (DuckDB
+# load + O(N²) relationship probes) every few minutes on an idle-ish server.
+schema_cache = InMemoryCache(default_ttl=3600)
 
 # Recent query results (5 min TTL — useful for re-runs from history)
 query_cache = InMemoryCache(default_ttl=300)

@@ -17,11 +17,13 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from shared.data_utils import (
     _columns_might_relate,
     _format_context_for_llm,
+    _header_cache_path,
     _infer_column_name,
     _looks_like_header,
     _serialize,
     detect_relationships,
     infer_headers_with_llm,
+    smart_load_csv,
 )
 
 # ── _looks_like_header ──────────────────────────────────────────────
@@ -325,3 +327,86 @@ def test_format_context_headers_inferred_note():
     }
     result = _format_context_for_llm(tables, [])
     assert "inferred" in result.lower()
+
+
+# ── sidecar header cache ────────────────────────────────────────────
+# Inferred headers are persisted next to the data file so the (slow, rate-
+# limited) LLM inference runs exactly once per file version — surviving
+# process restarts and the in-memory schema_cache's TTL expiry.
+
+duckdb = pytest.importorskip("duckdb")
+
+
+def _write_headerless_csv(path) -> None:
+    # Numeric-leading rows so DuckDB's auto-detector assigns generic
+    # column0/column1/... names, triggering the inference path.
+    path.write_text(
+        "1,Orlando,Gee\n2,Keith,Harris\n3,Donna,Carreras\n4,Janet,Gates\n",
+        encoding="utf-8",
+    )
+
+
+def test_sidecar_cache_skips_second_inference(tmp_path):
+    csv = tmp_path / "people.csv"
+    _write_headerless_csv(csv)
+
+    calls = {"n": 0}
+
+    def fake_infer(file_name, col_types, sample_rows):
+        calls["n"] += 1
+        return [f"field_{i}" for i in range(len(col_types))]
+
+    with patch("shared.data_utils.infer_headers_with_llm", side_effect=fake_infer):
+        first = smart_load_csv(duckdb.connect(":memory:"), str(csv), "t1")
+        assert calls["n"] == 1
+        assert first["headers_inferred"] is True
+        assert _header_cache_path(str(csv)).exists()
+
+        # Fresh connection → must read the sidecar, NOT re-infer.
+        second = smart_load_csv(duckdb.connect(":memory:"), str(csv), "t2")
+        assert calls["n"] == 1, "second load must not call the LLM again"
+
+    cols_first = [c["name"] for c in first["columns"]]
+    cols_second = [c["name"] for c in second["columns"]]
+    assert cols_first == cols_second == ["field_0", "field_1", "field_2"]
+
+
+def test_sidecar_cache_invalidated_on_file_change(tmp_path):
+    csv = tmp_path / "people.csv"
+    _write_headerless_csv(csv)
+
+    calls = {"n": 0}
+
+    def fake_infer(file_name, col_types, sample_rows):
+        calls["n"] += 1
+        return [f"field_{i}" for i in range(len(col_types))]
+
+    with patch("shared.data_utils.infer_headers_with_llm", side_effect=fake_infer):
+        smart_load_csv(duckdb.connect(":memory:"), str(csv), "t1")
+        assert calls["n"] == 1
+
+        # Change the file: different mtime AND size + an extra column → the
+        # cached (mtime, size, n_cols) fingerprint no longer matches.
+        csv.write_text(
+            "1,Orlando,Gee,extra\n2,Keith,Harris,more\n3,Donna,Carreras,vals\n",
+            encoding="utf-8",
+        )
+        smart_load_csv(duckdb.connect(":memory:"), str(csv), "t2")
+        assert calls["n"] == 2, "changed file must force re-inference"
+
+
+def test_sidecar_cache_not_seen_as_data_file(tmp_path):
+    """The sidecar dir must not be mistaken for a data file by the upload
+    scan — it lives in a dot-prefixed subdir with no data extension."""
+    csv = tmp_path / "people.csv"
+    _write_headerless_csv(csv)
+    with patch(
+        "shared.data_utils.infer_headers_with_llm",
+        side_effect=lambda *a: ["a", "b", "c"],
+    ):
+        smart_load_csv(duckdb.connect(":memory:"), str(csv), "t1")
+
+    sidecar = _header_cache_path(str(csv))
+    assert sidecar.exists()
+    assert sidecar.parent.name == ".aura_header_cache"
+    assert sidecar.parent.suffix == ""  # dir is skipped by the extension filter

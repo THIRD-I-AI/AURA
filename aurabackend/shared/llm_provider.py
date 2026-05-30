@@ -463,8 +463,18 @@ class GeminiProvider(LLMProvider):
                 )
             return text.strip() if text else None
         except Exception as exc:
-            logger.warning("Gemini generation failed: %s", exc)
-            return None
+            # Detect rate-limit / quota errors so callers can distinguish
+            # "you need to add billing" from "LLM hallucinated empty".
+            # Previously this was swallowed into None — users saw "empty
+            # SQL response" with no hint that the root cause was a 429.
+            msg = str(exc)
+            logger.warning("Gemini generation failed: %s", msg)
+            lower = msg.lower()
+            if "429" in msg or "quota" in lower or "rate" in lower or "resource_exhausted" in lower:
+                raise LLMRateLimitError(f"Gemini rate-limit / quota: {msg}") from exc
+            # Re-raise so the calling agent surfaces the real error
+            # instead of degrading to a generic "empty response" path.
+            raise
 
 
 # ────────────────────────────────────────────────────────────────────
@@ -551,31 +561,58 @@ class _FallbackProvider(LLMProvider):
         return self._primary.is_available()
 
     def generate(self, prompt: Union[str, List[str]], **kwargs: Any) -> Optional[str]:
+        last_exc: Optional[Exception] = None
         for provider in self._providers:
             try:
                 result = provider.generate(prompt, **kwargs)
                 if result is not None:
                     return result
-            except LLMRateLimitError:
+            except LLMRateLimitError as exc:
+                last_exc = exc
                 logger.warning(
                     "Provider %s hit rate/size limit, falling back to next provider…",
                     provider.provider_name,
                 )
                 continue
+            except Exception as exc:
+                # Per-provider generation errors must not abort the
+                # fallback chain — record and try the next provider.
+                # If every provider raises, re-raise the last one so the
+                # caller knows the real reason (was previously silently
+                # turning into None → "empty SQL response").
+                last_exc = exc
+                logger.warning(
+                    "Provider %s failed (%s), falling back to next provider…",
+                    provider.provider_name, exc,
+                )
+                continue
+        if last_exc is not None:
+            raise last_exc
         return None
 
     def generate_json(self, prompt: Union[str, List[str]], **kwargs: Any) -> Optional[Dict[str, Any]]:
+        last_exc: Optional[Exception] = None
         for provider in self._providers:
             try:
                 result = provider.generate_json(prompt, **kwargs)
                 if result is not None:
                     return result
-            except LLMRateLimitError:
+            except LLMRateLimitError as exc:
+                last_exc = exc
                 logger.warning(
                     "Provider %s hit rate/size limit, falling back to next provider…",
                     provider.provider_name,
                 )
                 continue
+            except Exception as exc:
+                last_exc = exc
+                logger.warning(
+                    "Provider %s generate_json failed (%s), falling back…",
+                    provider.provider_name, exc,
+                )
+                continue
+        if last_exc is not None:
+            raise last_exc
         return None
 
 

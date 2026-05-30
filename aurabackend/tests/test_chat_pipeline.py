@@ -187,5 +187,50 @@ def test_validate_safe_query(client):
     assert data["is_valid"] is True
 
 
+# ── _humanize_pipeline_error ────────────────────────────────────────
+# Raw provider exceptions (a multi-line Gemini 429 quota dump, an internal
+# stack trace) must never reach the UI verbatim.
+
+class TestHumanizePipelineError:
+    def _fn(self):
+        from api_gateway.routers.chat import _humanize_pipeline_error
+        return _humanize_pipeline_error
+
+    def test_rate_limit_dump_becomes_crisp(self):
+        humanize = self._fn()
+        raw = (
+            "LLM error: 429 You exceeded your current quota. "
+            "quota_metric: generativelanguage.googleapis.com/generate_content_free_tier "
+            "violations { quota_id: GenerateRequestsPerMinutePerProjectPerModel-FreeTier }"
+        )
+        out = humanize(raw)
+        assert "rate-limited" in out.lower()
+        assert "quota_metric" not in out
+        assert len(out) < 120
+
+    def test_groq_size_limit_is_rate_limited_message(self):
+        out = self._fn()("Groq rate/size limit: prompt too large (413)")
+        assert "rate-limited" in out.lower()
+
+    def test_no_llm_configured_message(self):
+        out = self._fn()("No LLM provider available — install Ollama or set GROQ_API_KEY.")
+        assert "no ai model is configured" in out.lower()
+        assert "GROQ_API_KEY" in out
+
+    def test_genuine_sql_error_is_preserved(self):
+        # A real, actionable DB error must NOT be swallowed by the humanizer.
+        raw = 'Catalog Error: Table "custmer" does not exist'
+        out = self._fn()(raw)
+        assert out == raw
+
+    def test_long_unknown_error_is_capped(self):
+        out = self._fn()("x" * 500)
+        assert len(out) <= 240
+        assert out.endswith("…")
+
+    def test_none_message_safe(self):
+        assert self._fn()(None) == "unknown error"
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
