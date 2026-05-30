@@ -105,3 +105,6 @@ coverage.xml
 *.bak
 # S31b: persisted signing key (never commit)
 aurabackend/data/keys/
+
+# S31b: pre-computed demo artifacts (per-deploy, never commit)
+aurabackend/data/demo_artifacts/

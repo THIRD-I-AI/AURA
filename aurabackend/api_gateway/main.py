@@ -161,6 +161,22 @@ async def _lifespan(app) -> AsyncGenerator[None, None]:
     file_meta_task = asyncio.create_task(_file_metadata_refresh_loop(file_meta_stop))
     logger.info("File metadata refresh loop started (interval=60s)")
 
+    # S31b: LOAD pre-computed demo artifacts (instant, CPU-free) so the first
+    # /api/v1/counterfactual/demo/{id} call serves the cached certificate. We
+    # deliberately do NOT compute audits here: the gateway mounts the
+    # counterfactual service in-process, and a GIL-bound dowhy audit would
+    # starve this event loop. Artifacts are produced out-of-process by
+    # `python -m counterfactual_service.warm_demos` at deploy time.
+    try:
+        from counterfactual_service.main import load_persisted_demo_artifacts
+        loaded = load_persisted_demo_artifacts()
+        if loaded:
+            logger.info("Loaded %d pre-computed demo artifact(s)", loaded)
+        else:
+            logger.info("No pre-computed demo artifacts (run warm_demos to enable instant /demo)")
+    except Exception as exc:
+        logger.warning("Could not load demo artifacts (non-fatal): %s", exc)
+
     yield  # ── application runs ──
 
     # Stop file-metadata refresh

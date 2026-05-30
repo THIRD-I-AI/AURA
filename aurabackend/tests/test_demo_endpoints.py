@@ -29,6 +29,16 @@ def test_unknown_scenario_404():
     assert r.status_code == 404
 
 
+def test_demo_cold_cache_returns_503_not_blocking_audit(monkeypatch):
+    """With no pre-warmed artifact and no ?fresh, the endpoint must refuse
+    (503) rather than launch a GIL-bound audit that would freeze the
+    in-process gateway."""
+    monkeypatch.setattr(m, "_demo_last_good", {})
+    r = client.post("/counterfactual/demo/fair_lending")
+    assert r.status_code == 503
+    assert "warm_demos" in r.json()["detail"]
+
+
 def test_demo_reachable_through_gateway():
     """The gateway proxies /api/v1/counterfactual/demo/* — the paths S31a's
     frontend builds against."""
@@ -102,6 +112,39 @@ def test_pdf_renders_with_verdict_and_attestation():
             {"method": "iv", "point": -0.23, "ci_lower": -0.35, "ci_upper": -0.11, "n_samples": 800, "error": None},
         ],
         "refutations": [], "challenges": [],
+    }
+    pdf = pdf_renderer.render_pdf(art)
+    assert pdf is not None and pdf[:4] == b"%PDF"
+    assert len(pdf) > 1500
+
+
+def test_pdf_renders_from_persisted_string_numbers():
+    """The persistence layer serialises numeric fields as STRINGS (canonical
+    JSON for byte-stable replay). report.pdf reads the persisted artifact, so
+    the renderer must coerce — regression for the report.pdf 500 the live demo
+    exposed."""
+    pytest.importorskip("reportlab")
+    from counterfactual_service import pdf_renderer
+    art = {
+        "record_id": "ca_demo", "confidence": "medium",
+        "audit_record_hash": "abc123def4567890",
+        "dataset_fingerprint": "fp", "schema_version": "v1",
+        "signature_status": "signed", "signing_key_source": "persisted_file",
+        "query": {
+            "question": "q?",
+            "treatment": {"column": "flagged_high_risk", "actual": 1.0, "counterfactual": 0.0},
+            "outcome": {"column": "approved", "agg": "mean", "window": ["1970-01-01", "2100-01-01"]},
+        },
+        # Numbers as strings, exactly as persistence.read_artifact returns them.
+        "estimates": [
+            {"method": "double_ml", "point": "-0.393147", "ci_lower": "-0.45", "ci_upper": "-0.33", "n_samples": 800, "error": None},
+            {"method": "iv", "point": "-0.232242", "ci_lower": "-0.35", "ci_upper": "-0.11", "n_samples": 800, "error": None},
+        ],
+        "refutations": [
+            {"refuter": "placebo", "estimate_after": "0.000000", "p_value": "0.000000", "passed": True, "error": None},
+            {"refuter": "sensitivity", "estimate_after": "-0.183501", "p_value": None, "passed": True, "error": None},
+        ],
+        "challenges": [],
     }
     pdf = pdf_renderer.render_pdf(art)
     assert pdf is not None and pdf[:4] == b"%PDF"
