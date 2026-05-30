@@ -202,7 +202,7 @@ S1-S6 pre-dated this registry; see commit `157b293` and earlier for that history
 | ~~**S29**~~ | ~~Ops~~ | ~~Mouni~~ | ~~Integration Testing (Schemathesis + Compose)~~ |
 | ~~**S30**~~ | ~~Ops~~ | ~~Mouni~~ | ~~CI/CD Pipeline (Build & Push to GHCR)~~ |
 | **S31a** | YC Demo — Service Front Door | **Mounith or Rohith** — claim below | Frontend pivot: reposition AURA as an AI-native audit service (not a tool). Audit Submit wizard (guided form replacing raw JSON editor), live estimator progress view, Audit Certificate page (hash + ED25519 badge + PDF download), public `/verify/{hash}` page. Branch: `feature/s31a-service-frontend` |
-| **S31b** | YC Demo — Audit Engine & Data | **Mounith or Rohith** — claim below | Backend pivot: pre-loaded compliance demo dataset + scenario, persistent ED25519 signing key (non-ephemeral), IV estimator as 7th slot (S31 analytic depth), PDF report polish, single `/demo` endpoint that runs the full audit on pre-loaded data. Branch: `feature/s31b-audit-engine` |
+| **S31b** | YC Demo — Audit Engine & Data | **Mounith** · claimed 2026-05-30 · status: spec landed, building MVP | Backend pivot: pre-loaded compliance demo dataset + scenario, persistent ED25519 signing key (non-ephemeral), IV estimator as 7th slot (S31 analytic depth), PDF report polish, single `/demo` endpoint that runs the full audit on pre-loaded data. Branch: `feature/s31b-audit-engine`. Spec: `docs/superpowers/specs/2026-05-29-s31b-audit-engine-design.md` |
 
 **⚡ Action needed — claim your track:**
 - Update the Owner column above with your name + today's date
