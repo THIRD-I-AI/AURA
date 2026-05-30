@@ -102,4 +102,6 @@ coverage.xml
 .ipynb_checkpoints
 
 # Backup files
-*.bak.superpowers/
+*.bak
+# Superpowers brainstorming artifacts (never commit)
+.superpowers/
