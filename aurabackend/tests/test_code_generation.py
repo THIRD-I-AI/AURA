@@ -62,43 +62,6 @@ class TestBuildPrompt:
         assert any("bar_chart" in p for p in parts)
 
 
-class TestFallback:
-    def test_default_fallback(self):
-        from code_generation_service.main import CodeGenerationEngine
-        step = PlanStep(step="Something generic")
-        result = CodeGenerationEngine._fallback(step)
-        assert "SELECT" in result["sql"]
-        assert result["source"] == "fallback"
-
-    def test_top_products_pattern(self):
-        from code_generation_service.main import CodeGenerationEngine
-        step = PlanStep(step="Show top products by revenue")
-        result = CodeGenerationEngine._fallback(step)
-        assert "product_name" in result["sql"]
-        assert "GROUP BY" in result["sql"]
-        assert "DESC" in result["sql"]
-
-    def test_trend_pattern(self):
-        from code_generation_service.main import CodeGenerationEngine
-        step = PlanStep(step="Revenue trend over time")
-        result = CodeGenerationEngine._fallback(step)
-        assert "DATE_TRUNC" in result["sql"]
-        assert "month" in result["sql"].lower()
-
-    def test_region_pattern(self):
-        from code_generation_service.main import CodeGenerationEngine
-        step = PlanStep(step="Revenue by region")
-        result = CodeGenerationEngine._fallback(step)
-        assert "region" in result["sql"].lower()
-        assert "GROUP BY" in result["sql"]
-
-    def test_chart_type_preserved(self):
-        from code_generation_service.main import CodeGenerationEngine
-        step = PlanStep(step="Show top products", chart_type="pie")
-        result = CodeGenerationEngine._fallback(step)
-        assert result["visualization_suggestion"] == "pie"
-
-
 class TestGenerate:
     def test_generate_uses_llm_when_available(self):
         from code_generation_service.main import CodeGenerationEngine
@@ -126,7 +89,12 @@ class TestGenerate:
         assert "```" not in result["sql"]
         assert result["sql"] == "SELECT 1"
 
-    def test_generate_falls_back_when_llm_unavailable(self):
+    def test_generate_raises_503_when_llm_unavailable(self):
+        """No LLM configured → caller gets an actionable error, NOT a
+        templated SQL query against a fictional sales_table that
+        would silently fail at execution time."""
+        from fastapi import HTTPException
+
         from code_generation_service.main import CodeGenerationEngine
         engine = CodeGenerationEngine.__new__(CodeGenerationEngine)
         mock_llm = MagicMock()
@@ -134,10 +102,14 @@ class TestGenerate:
         engine._llm = mock_llm
 
         step = PlanStep(step="Something")
-        result = engine.generate(step)
-        assert result["source"] == "fallback"
+        with pytest.raises(HTTPException) as exc_info:
+            engine.generate(step)
+        assert exc_info.value.status_code == 503
+        assert "LLM" in exc_info.value.detail
 
-    def test_generate_falls_back_on_empty_llm_response(self):
+    def test_generate_raises_502_on_empty_llm_response(self):
+        from fastapi import HTTPException
+
         from code_generation_service.main import CodeGenerationEngine
         engine = CodeGenerationEngine.__new__(CodeGenerationEngine)
         mock_llm = MagicMock()
@@ -146,5 +118,22 @@ class TestGenerate:
         engine._llm = mock_llm
 
         step = PlanStep(step="Something")
-        result = engine.generate(step)
-        assert result["source"] == "fallback"
+        with pytest.raises(HTTPException) as exc_info:
+            engine.generate(step)
+        assert exc_info.value.status_code == 502
+
+    def test_generate_raises_502_on_llm_exception(self):
+        from fastapi import HTTPException
+
+        from code_generation_service.main import CodeGenerationEngine
+        engine = CodeGenerationEngine.__new__(CodeGenerationEngine)
+        mock_llm = MagicMock()
+        mock_llm.is_available.return_value = True
+        mock_llm.generate.side_effect = Exception("rate limited")
+        engine._llm = mock_llm
+
+        step = PlanStep(step="Something")
+        with pytest.raises(HTTPException) as exc_info:
+            engine.generate(step)
+        assert exc_info.value.status_code == 502
+        assert "rate limited" in exc_info.value.detail

@@ -48,55 +48,53 @@ class CodeGenerationEngine:
         )
         return context_bits
 
-    @staticmethod
-    def _fallback(step: PlanStep) -> Dict[str, Any]:
-        step_lower = f"{step.step} {step.task or ''}".lower()
-        sql = "SELECT * FROM sales_table LIMIT 100;"
-        chart = step.chart_type or "table"
+    def generate(self, step: PlanStep) -> Dict[str, Any]:
+        """Generate SQL via LLM, or raise HTTPException 503 with a clear
+        actionable reason. Previously this returned templated SQL
+        referencing a fictional ``sales_table`` whose product_name,
+        total_revenue, region columns don't exist for any real user —
+        producing a query that the execution engine then failed on,
+        leaving the user staring at a "table doesn't exist" error
+        chain and no idea that the root cause was a missing/invalid
+        LLM key. Failing loudly here surfaces the real reason.
+        """
+        prompt = self._build_prompt(step)
+        if not self._llm.is_available():
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "No LLM provider configured. Set one of "
+                    "GROQ_API_KEY, GEMINI_API_KEY, OPENAI_API_KEY in the "
+                    "service's environment, or point OLLAMA_HOST at a "
+                    "running Ollama instance."
+                ),
+            )
+        try:
+            raw = self._llm.generate(prompt)
+        except Exception as exc:
+            logger.warning("CodeGenerationEngine LLM call failed: %s", exc)
+            raise HTTPException(
+                status_code=502,
+                detail=f"LLM call failed: {exc}",
+            ) from exc
 
-        if "top" in step_lower and "product" in step_lower:
-            sql = (
-                "SELECT product_name, SUM(total_revenue) AS total_revenue "
-                "FROM sales_table GROUP BY product_name ORDER BY total_revenue DESC LIMIT 10;"
+        if not raw or not raw.strip():
+            raise HTTPException(
+                status_code=502,
+                detail="LLM returned an empty SQL response.",
             )
-            chart = chart or "bar_chart"
-        elif "trend" in step_lower or "over time" in step_lower:
-            sql = (
-                "SELECT DATE_TRUNC('month', sale_date) AS month, SUM(total_revenue) AS monthly_revenue "
-                "FROM sales_table GROUP BY month ORDER BY month;"
-            )
-            chart = chart or "line_chart"
-        elif "region" in step_lower:
-            sql = (
-                "SELECT region, SUM(total_revenue) AS regional_revenue "
-                "FROM sales_table GROUP BY region ORDER BY regional_revenue DESC;"
-            )
-            chart = chart or "choropleth"
 
+        sql = raw.strip().replace("```sql", "").replace("```", "").strip()
+        if not sql:
+            raise HTTPException(
+                status_code=502,
+                detail="LLM response was only markdown fences with no SQL.",
+            )
         return {
             "sql": sql,
-            "visualization_suggestion": chart,
-            "source": "fallback",
+            "visualization_suggestion": step.chart_type or "table",
+            "source": "llm",
         }
-
-    def generate(self, step: PlanStep) -> Dict[str, Any]:
-        prompt = self._build_prompt(step)
-        if self._llm.is_available():
-            try:
-                raw = self._llm.generate(prompt)
-                if raw:
-                    sql = raw.strip().replace("```sql", "").replace("```", "").strip()
-                    if sql:
-                        chart = step.chart_type or "table"
-                        return {
-                            "sql": sql,
-                            "visualization_suggestion": chart,
-                            "source": "llm",
-                        }
-            except Exception as exc:  # pragma: no cover - remote failure path
-                logger.warning("CodeGenerationEngine remote generation failed: %s", exc)
-
-        return self._fallback(step)
 
 
 _engine = CodeGenerationEngine()

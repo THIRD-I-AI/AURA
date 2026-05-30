@@ -94,11 +94,25 @@ jobs:
         # so we only check 'response_schema_conformance' to ensure the API
         # gracefully handles errors and returns JSON matching the spec.
         run: |
-          uvicorn api_gateway.main:app --port 8000 &
-          sleep 5
+          uvicorn api_gateway.main:app --port 8000 --log-level warning > /tmp/uvicorn.log 2>&1 &
+          UVICORN_PID=$!
+          # Poll /health instead of a fixed `sleep 5`. The app does heavy import
+          # work (LLM providers, OpenTelemetry, langgraph) and a fixed sleep
+          # raced the server's startup, intermittently failing with
+          # "Connection refused" ~250ms before the app finished starting.
+          for i in $(seq 1 60); do
+            if curl -sf http://localhost:8000/health >/dev/null 2>&1; then
+              echo "gateway ready after ${i}s"; break
+            fi
+            if ! kill -0 "$UVICORN_PID" 2>/dev/null; then
+              echo "uvicorn exited before becoming ready:"; cat /tmp/uvicorn.log; exit 1
+            fi
+            sleep 1
+          done
           schemathesis run http://localhost:8000/openapi.json \
             --checks response_schema_conformance \
             --hypothesis-max-examples=10 \
+            --wait-for-schema=30 \
             --experimental=openapi-3.1
 
   # ── Causal tests ─────────────────────────────────────────────────────────

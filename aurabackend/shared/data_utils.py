@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import logging
 import os
 import re
@@ -21,6 +22,66 @@ logger = logging.getLogger("aura.data_utils")
 SCHEMA_CACHE_PREFIX = "schema:ctx:"
 
 UPLOAD_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "uploads")
+
+# Inferred headers are a pure function of file content, so we persist them in a
+# sidecar keyed by (mtime_ns, size). This survives process restarts and the
+# in-memory schema_cache's TTL expiry, so the (rate-limited, ~seconds-each) LLM
+# header-inference call is made exactly once per file version — never again
+# unless the file actually changes. Without this, every cold start re-inferred
+# headers for every headerless file, which both dominated first-request latency
+# and exhausted free-tier LLM quotas before the user's question was even seen.
+_HEADER_CACHE_DIRNAME = ".aura_header_cache"
+
+
+def _header_cache_path(file_path: str) -> Path:
+    p = Path(file_path)
+    # Sidecars live in a sibling subdir (not a sibling file) so the non-recursive
+    # upload-dir scan in build_schema_context never mistakes them for data files.
+    return p.parent / _HEADER_CACHE_DIRNAME / f"{p.name}.json"
+
+
+def _load_cached_headers(
+    file_path: str, stat: os.stat_result, n_cols: int
+) -> Optional[List[str]]:
+    """Return persisted inferred headers iff they match this file's (mtime, size)
+    and column count; otherwise None (forcing a fresh inference)."""
+    cache_path = _header_cache_path(file_path)
+    try:
+        with open(cache_path, encoding="utf-8") as fh:
+            payload = json.load(fh)
+    except (OSError, ValueError):
+        return None
+    if (
+        payload.get("mtime_ns") != stat.st_mtime_ns
+        or payload.get("size") != stat.st_size
+    ):
+        return None
+    headers = payload.get("headers")
+    if isinstance(headers, list) and len(headers) == n_cols:
+        return [str(h) for h in headers]
+    return None
+
+
+def _store_cached_headers(
+    file_path: str, stat: os.stat_result, headers: List[str]
+) -> None:
+    cache_path = _header_cache_path(file_path)
+    try:
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = cache_path.with_suffix(".json.tmp")
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(
+                {
+                    "mtime_ns": stat.st_mtime_ns,
+                    "size": stat.st_size,
+                    "headers": headers,
+                },
+                fh,
+            )
+        os.replace(tmp, cache_path)  # atomic publish
+    except OSError as exc:
+        # Caching is best-effort; a read-only data dir must not break loading.
+        logger.debug("Could not persist header cache for %s: %s", file_path, exc)
 
 
 # ─── Header Detection ────────────────────────────────────────────────────────
@@ -211,32 +272,50 @@ def smart_load_csv(
     }
 
     if has_generic_headers:
-        logger.info("File '%s' has no headers — inferring column names", file_name)
+        try:
+            file_stat = Path(file_path).stat()
+        except OSError:
+            file_stat = None
 
-        # Get sample data for inference
-        sample = conn.execute(f'SELECT * FROM "{table_name}" LIMIT 20').fetchall()
+        inferred_names = (
+            _load_cached_headers(file_path, file_stat, len(col_names))
+            if file_stat is not None
+            else None
+        )
 
-        # Try LLM inference first
-        inferred_names = None
-        if use_llm:
-            inferred_names = infer_headers_with_llm(file_name, col_types, sample)
+        if inferred_names:
+            logger.info(
+                "File '%s' has no headers — using cached inferred names", file_name
+            )
+        else:
+            logger.info("File '%s' has no headers — inferring column names", file_name)
 
-        # Fallback to heuristic inference
-        if not inferred_names:
-            # Transpose sample for per-column analysis
-            inferred_names = []
-            for idx in range(len(col_names)):
-                col_values = [row[idx] for row in sample]
-                inferred_names.append(_infer_column_name(col_values, idx))
+            # Get sample data for inference
+            sample = conn.execute(f'SELECT * FROM "{table_name}" LIMIT 20').fetchall()
 
-            # De-duplicate names
-            seen = {}
-            for i, name in enumerate(inferred_names):
-                if name in seen:
-                    seen[name] += 1
-                    inferred_names[i] = f"{name}_{seen[name]}"
-                else:
-                    seen[name] = 0
+            # Try LLM inference first
+            if use_llm:
+                inferred_names = infer_headers_with_llm(file_name, col_types, sample)
+
+            # Fallback to heuristic inference
+            if not inferred_names:
+                # Transpose sample for per-column analysis
+                inferred_names = []
+                for idx in range(len(col_names)):
+                    col_values = [row[idx] for row in sample]
+                    inferred_names.append(_infer_column_name(col_values, idx))
+
+                # De-duplicate names
+                seen = {}
+                for i, name in enumerate(inferred_names):
+                    if name in seen:
+                        seen[name] += 1
+                        inferred_names[i] = f"{name}_{seen[name]}"
+                    else:
+                        seen[name] = 0
+
+            if file_stat is not None:
+                _store_cached_headers(file_path, file_stat, inferred_names)
 
         # Rename columns in the table
         for old_name, new_name in zip(col_names, inferred_names):
