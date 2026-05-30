@@ -83,6 +83,31 @@ def test_audit_estimators_agree_and_iv_valid():
     assert iv.ci_lower < iv.point < iv.ci_upper
 
 
+def test_pdf_renders_with_verdict_and_attestation():
+    pytest.importorskip("reportlab")
+    from counterfactual_service import pdf_renderer
+    art = {
+        "record_id": "ca_demo", "confidence": "high",
+        "audit_record_hash": "abc123def4567890", "dataset_fingerprint": "fp",
+        "schema_version": "v1",
+        "signature_status": "signed", "signing_key_source": "persisted_file",
+        "query": {
+            "question": "did the high-risk flag lower approval?",
+            "treatment": {"column": "flagged_high_risk", "actual": 1.0, "counterfactual": 0.0},
+            "outcome": {"column": "approved", "agg": "mean", "window": ["1970-01-01", "2100-01-01"]},
+        },
+        "estimates": [
+            {"method": "double_ml", "point": -0.39, "ci_lower": -0.45, "ci_upper": -0.33, "n_samples": 800, "error": None},
+            {"method": "tmle", "point": -0.40, "ci_lower": -0.46, "ci_upper": -0.34, "n_samples": 800, "error": None},
+            {"method": "iv", "point": -0.23, "ci_lower": -0.35, "ci_upper": -0.11, "n_samples": 800, "error": None},
+        ],
+        "refutations": [], "challenges": [],
+    }
+    pdf = pdf_renderer.render_pdf(art)
+    assert pdf is not None and pdf[:4] == b"%PDF"
+    assert len(pdf) > 1500
+
+
 def test_full_audit_is_hashed_and_signed():
     pytest.importorskip("econml")
     pytest.importorskip("dowhy")
