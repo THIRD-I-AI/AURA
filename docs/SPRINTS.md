@@ -201,7 +201,7 @@ S1-S6 pre-dated this registry; see commit `157b293` and earlier for that history
 | ~~**S28**~~ | ~~Ops~~ | ~~Mouni~~ | ~~CI Test Coverage Expansion (Causal/Streaming lanes)~~ |
 | ~~**S29**~~ | ~~Ops~~ | ~~Mouni~~ | ~~Integration Testing (Schemathesis + Compose)~~ |
 | ~~**S30**~~ | ~~Ops~~ | ~~Mouni~~ | ~~CI/CD Pipeline (Build & Push to GHCR)~~ |
-| **S31a** | YC Demo — Service Front Door | **Mounith or Rohith** — claim below | Frontend pivot: reposition AURA as an AI-native audit service (not a tool). Audit Submit wizard (guided form replacing raw JSON editor), live estimator progress view, Audit Certificate page (hash + ED25519 badge + PDF download), public `/verify/{hash}` page. Branch: `feature/s31a-service-frontend` |
+| **S31a** | YC Demo — Service Front Door | **Rohith** · claimed 2026-05-30 · status: spec landed, building MVP | Frontend pivot: reposition AURA as an AI-native audit service (not a tool). Public front door (hero + scenario grid), live estimator-checklist progress view, formal Audit Certificate page (hash + ED25519 badge + PDF download), public `/verify/{hash}` page, custom-audit wizard (replaces raw JSON editor). Adds `react-router-dom`; existing dashboard moves under `/app/*`. Branch: `feature/s31a-service-frontend`. Spec: `docs/superpowers/specs/2026-05-30-s31a-service-frontend-design.md` |
 | **S31b** | YC Demo — Audit Engine & Data | **Mounith** · claimed 2026-05-30 · status: spec landed, building MVP | Backend pivot: pre-loaded compliance demo dataset + scenario, persistent ED25519 signing key (non-ephemeral), IV estimator as 7th slot (S31 analytic depth), PDF report polish, single `/demo` endpoint that runs the full audit on pre-loaded data. Branch: `feature/s31b-audit-engine`. Spec: `docs/superpowers/specs/2026-05-29-s31b-audit-engine-design.md` |
 
 **⚡ Action needed — claim your track:**
@@ -231,4 +231,4 @@ When you reserve a future sprint:
 
 Update the date at the bottom when you make a material change.
 
-Last updated 2026-05-29 — S31a/S31b planned as two parallel YC demo tracks. S31a = service-facing frontend pivot; S31b = audit engine + demo data + IV estimator. Mounith and Rohith to claim one track each. Also shipped this session: #31 SSE sink fix, #32 streaming production hardening, #33 eval-gate skip guard, #34 API URL fixes (Counterfactual + ETL Pipelines).
+Last updated 2026-05-30 — S31a claimed by Rohith (spec `docs/superpowers/specs/2026-05-30-s31a-service-frontend-design.md`); S31b claimed by Mounith. Both YC demo tracks now in flight: S31a = service-facing frontend pivot (front door + live progress + formal certificate + public verify + custom-audit wizard); S31b = audit engine + demo data + IV estimator. Tracks touch disjoint subsystems (frontend vs backend) — independent PRs.

@@ -102,4 +102,4 @@ coverage.xml
 .ipynb_checkpoints
 
 # Backup files
-*.bak
+*.bak.superpowers/
