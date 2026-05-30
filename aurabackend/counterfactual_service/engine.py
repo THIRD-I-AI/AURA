@@ -951,6 +951,36 @@ def _run_one_estimator(
     if method_key == "tmle":
         return _run_one_tmle(df, treatment, outcome, dag, seed)
 
+    # S31b dispatch: ``iv`` is opt-in. Pure-NumPy 2SLS, no dowhy/econml —
+    # the instrument is read from the DAG (a node -> treatment, not ->
+    # outcome). Absent instrument surfaces a structured error, not a crash.
+    if method_key == "iv":
+        from .iv_estimator import instruments_from_dag, run_iv_2sls
+        iv_t0 = time.perf_counter()
+        edges = dag.get("edges", [])
+        instruments = instruments_from_dag(edges, treatment.column, outcome.column)
+        confounders = [
+            src for src, dst in edges
+            if dst == outcome.column and src != treatment.column
+            and src not in instruments
+        ]
+        try:
+            if not instruments:
+                raise ValueError("no instrument in DAG (need a node -> treatment, not -> outcome)")
+            point, lo, hi = run_iv_2sls(
+                df, treatment.column, outcome.column, instruments, sorted(set(confounders)),
+            )
+            return CounterfactualEstimate(
+                method="iv", point=point, ci_lower=lo, ci_upper=hi,
+                n_samples=len(df), elapsed_ms=(time.perf_counter() - iv_t0) * 1000,
+            )
+        except Exception as exc:
+            return CounterfactualEstimate(
+                method="iv", point=0.0, ci_lower=0.0, ci_upper=0.0,
+                n_samples=len(df), elapsed_ms=(time.perf_counter() - iv_t0) * 1000,
+                error=f"IV (2SLS) failed: {exc}",
+            )
+
     t0 = time.perf_counter()
     try:
         # Pin the global numpy RNG immediately before DoWhy touches it.
