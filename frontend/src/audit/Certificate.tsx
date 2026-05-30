@@ -1,0 +1,52 @@
+import { Link } from 'react-router-dom';
+import { auditApi } from './auditApi';
+import type { Artifact, VerifyResult } from './types';
+
+/** Plain-English verdict from the estimates (used when no scenario narrative). */
+function verdict(a: Artifact): string {
+  const pts = a.estimates.map((e) => e.point_estimate).filter((v): v is number => v !== undefined);
+  if (pts.length === 0) return 'Audit complete — see estimator detail.';
+  const avg = pts.reduce((s, v) => s + v, 0) / pts.length;
+  const material = Math.abs(avg) >= 0.02;
+  return material
+    ? 'Disparate impact detected after causal adjustment.'
+    : 'No material disparate impact detected after causal adjustment.';
+}
+
+export function Certificate({ artifact, verifyResult, readOnly = false }: {
+  artifact: Artifact;
+  verifyResult?: VerifyResult;
+  readOnly?: boolean;
+}) {
+  const ok = verifyResult ? verifyResult.verified : artifact.signature_status === 'signed';
+
+  return (
+    <div data-testid="certificate" style={{ maxWidth: 720, margin: '0 auto', background: 'var(--bg-surface)', border: '1px solid var(--border-strong)', borderRadius: 'var(--radius-lg)', padding: 'var(--space-8)', textAlign: 'center' }}>
+      <div data-testid="cert-signature-badge" style={{ display: 'inline-flex', alignItems: 'center', gap: 'var(--space-2)', padding: 'var(--space-1) var(--space-3)', borderRadius: 'var(--radius-full)', background: ok ? 'var(--green-bg, rgba(76,175,80,0.15))' : 'var(--red-bg, rgba(244,67,54,0.15))', color: ok ? 'var(--green)' : 'var(--red)', fontWeight: 600, fontSize: 'var(--font-sm)' }}>
+        {ok ? '✓ ED25519 signed' : '✕ signature ' + artifact.signature_status}
+      </div>
+
+      <h1 style={{ fontSize: 'var(--font-2xl)', margin: 'var(--space-5) 0 var(--space-2)' }}>Audit Certificate</h1>
+      <p style={{ color: 'var(--text-secondary)', marginBottom: 'var(--space-6)' }}>{verdict(artifact)}</p>
+
+      <div style={{ textAlign: 'left', background: 'var(--bg-base)', borderRadius: 'var(--radius-md)', padding: 'var(--space-4)', marginBottom: 'var(--space-6)' }}>
+        <div style={{ fontSize: 'var(--font-xs)', textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--text-tertiary)' }}>Record hash</div>
+        <div data-testid="cert-hash" style={{ fontFamily: 'monospace', wordBreak: 'break-all', color: 'var(--accent)' }}>{artifact.audit_record_hash}</div>
+        <div data-testid="cert-key-source" style={{ marginTop: 'var(--space-3)', fontSize: 'var(--font-sm)', color: 'var(--text-tertiary)' }}>Key source: {artifact.signing_key_source}</div>
+      </div>
+
+      {verifyResult && (
+        <div data-testid="cert-verify-status" style={{ marginBottom: 'var(--space-5)', fontWeight: 600, color: verifyResult.verified ? 'var(--green)' : 'var(--red)' }}>
+          {verifyResult.verified ? 'Independently verified ✓' : `NOT verified — ${verifyResult.reason ?? verifyResult.signature_status}`}
+        </div>
+      )}
+
+      {!readOnly && (
+        <div style={{ display: 'flex', gap: 'var(--space-3)', justifyContent: 'center' }}>
+          <a data-testid="cert-download-pdf" href={auditApi.pdfUrl(artifact.audit_record_hash)} target="_blank" rel="noreferrer" style={{ padding: 'var(--space-2) var(--space-5)', background: 'var(--accent)', color: '#fff', borderRadius: 'var(--radius-md)', textDecoration: 'none' }}>Download PDF</a>
+          <Link data-testid="cert-verify-link" to={`/verify/${artifact.audit_record_hash}`} style={{ padding: 'var(--space-2) var(--space-5)', border: '1px solid var(--border-strong)', borderRadius: 'var(--radius-md)', textDecoration: 'none', color: 'var(--text-primary)' }}>Verify independently</Link>
+        </div>
+      )}
+    </div>
+  );
+}
