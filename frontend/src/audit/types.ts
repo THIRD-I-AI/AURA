@@ -35,6 +35,9 @@ export interface DemoSubmitResult {
   job_id: string;
   scenario_id: string;
   degraded: boolean;
+  // S31b pre-warms scenarios at startup; cached=true means an instant
+  // pre-sealed artifact was returned rather than a fresh live run.
+  cached?: boolean;
 }
 
 export interface VerifyResult {

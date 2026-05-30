@@ -59,6 +59,12 @@ export function AuditFrontDoor() {
           </button>
         ))}
       </div>
+
+      <p style={{ marginTop: 'var(--space-8)', fontSize: 'var(--font-sm)' }}>
+        <a href="/audit/new" style={{ color: 'var(--accent)' }}>Run a custom audit</a>
+        {' · '}
+        <a href="/app" style={{ color: 'var(--text-tertiary)' }}>Open dashboard</a>
+      </p>
     </div>
   );
 }
