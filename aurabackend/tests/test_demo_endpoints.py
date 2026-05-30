@@ -29,6 +29,16 @@ def test_unknown_scenario_404():
     assert r.status_code == 404
 
 
+def test_demo_reachable_through_gateway():
+    """The gateway proxies /api/v1/counterfactual/demo/* — the paths S31a's
+    frontend builds against."""
+    from api_gateway.main import app as gateway_app
+    gc = TestClient(gateway_app)
+    r = gc.get("/api/v1/counterfactual/demo/scenarios")
+    assert r.status_code == 200
+    assert any(s["id"] == "fair_lending" for s in r.json()["scenarios"])
+
+
 def test_demo_serves_prewarmed_artifact_instantly(monkeypatch):
     """When a scenario is pre-warmed, POST returns the sealed artifact as an
     already-complete job — no waiting on the live fan-out."""

@@ -30,6 +30,12 @@ from counterfactual_service.main import (
     info as _svc_info,
 )
 from counterfactual_service.main import (
+    demo_scenarios as _svc_demo_scenarios,
+)
+from counterfactual_service.main import (
+    run_demo as _svc_run_demo,
+)
+from counterfactual_service.main import (
     submit_job as _svc_submit,
 )
 from counterfactual_service.main import (
@@ -75,3 +81,15 @@ async def verify_artifact(record_hash: str) -> Dict[str, Any]:
 @router.get("/public-key")
 async def public_key() -> Dict[str, Any]:
     return await _svc_get_public_key()
+
+
+# ── S31b — One-click demo on pre-loaded compliance data ───────────────
+
+@router.get("/demo/scenarios")
+async def demo_scenarios() -> Dict[str, Any]:
+    return await _svc_demo_scenarios()
+
+
+@router.post("/demo/{scenario_id}")
+async def run_demo(scenario_id: str, fresh: bool = False) -> Dict[str, Any]:
+    return await _svc_run_demo(scenario_id, fresh=fresh)
