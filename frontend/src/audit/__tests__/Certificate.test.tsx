@@ -37,4 +37,17 @@ describe('Certificate', () => {
     expect(screen.getByTestId('cert-verify-status')).toHaveTextContent(/not verified/i);
     expect(screen.getByTestId('cert-verify-status')).toHaveTextContent('signature mismatch');
   });
+
+  it('does not trust the self-reported status on a read-only public surface without a verifyResult', () => {
+    render(<MemoryRouter><Certificate artifact={artifact} readOnly /></MemoryRouter>);
+    // signature_status is 'signed' but with no server-recomputed verifyResult
+    // the public badge must stay neutral, not claim "ED25519 signed".
+    expect(screen.getByTestId('cert-signature-badge')).not.toHaveTextContent(/ED25519 signed/i);
+    expect(screen.getByTestId('cert-signature-badge')).toHaveTextContent(/not independently verified/i);
+  });
+
+  it('notes a degraded (cached fail-safe) artifact', () => {
+    render(<MemoryRouter><Certificate artifact={{ ...artifact, degraded: true }} /></MemoryRouter>);
+    expect(screen.getByTestId('cert-degraded')).toHaveTextContent(/cached result/i);
+  });
 });

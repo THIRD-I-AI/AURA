@@ -20,6 +20,9 @@ export interface Artifact {
   signature_status: string;
   signing_key_source: string;
   rendered?: unknown;
+  // S31b fail-safe: a live run that errored served the last-good sealed
+  // artifact instead. Still a valid certificate, but worth noting to the user.
+  degraded?: boolean;
 }
 
 export type JobState = 'queued' | 'running' | 'succeeded' | 'failed';

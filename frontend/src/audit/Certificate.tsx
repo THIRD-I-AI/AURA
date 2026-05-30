@@ -18,13 +18,31 @@ export function Certificate({ artifact, verifyResult, readOnly = false }: {
   verifyResult?: VerifyResult;
   readOnly?: boolean;
 }) {
-  const ok = verifyResult ? verifyResult.verified : artifact.signature_status === 'signed';
+  // Public read-only surfaces must NOT trust the artifact's self-reported
+  // status — only the server-recomputed verifyResult. Without one, stay neutral.
+  const badge: { tone: 'ok' | 'bad' | 'neutral'; label: string } = verifyResult
+    ? verifyResult.verified
+      ? { tone: 'ok', label: '✓ ED25519 signed' }
+      : { tone: 'bad', label: '✕ signature ' + verifyResult.signature_status }
+    : readOnly
+      ? { tone: 'neutral', label: 'signature not independently verified' }
+      : artifact.signature_status === 'signed'
+        ? { tone: 'ok', label: '✓ ED25519 signed' }
+        : { tone: 'bad', label: '✕ signature ' + artifact.signature_status };
+  const badgeColor = badge.tone === 'ok' ? 'var(--green)' : badge.tone === 'bad' ? 'var(--red)' : 'var(--text-tertiary)';
+  const badgeBg = badge.tone === 'ok' ? 'var(--green-bg, rgba(76,175,80,0.15))' : badge.tone === 'bad' ? 'var(--red-bg, rgba(244,67,54,0.15))' : 'var(--bg-base)';
 
   return (
     <div data-testid="certificate" style={{ maxWidth: 720, margin: '0 auto', background: 'var(--bg-surface)', border: '1px solid var(--border-strong)', borderRadius: 'var(--radius-lg)', padding: 'var(--space-8)', textAlign: 'center' }}>
-      <div data-testid="cert-signature-badge" style={{ display: 'inline-flex', alignItems: 'center', gap: 'var(--space-2)', padding: 'var(--space-1) var(--space-3)', borderRadius: 'var(--radius-full)', background: ok ? 'var(--green-bg, rgba(76,175,80,0.15))' : 'var(--red-bg, rgba(244,67,54,0.15))', color: ok ? 'var(--green)' : 'var(--red)', fontWeight: 600, fontSize: 'var(--font-sm)' }}>
-        {ok ? '✓ ED25519 signed' : '✕ signature ' + artifact.signature_status}
+      <div data-testid="cert-signature-badge" style={{ display: 'inline-flex', alignItems: 'center', gap: 'var(--space-2)', padding: 'var(--space-1) var(--space-3)', borderRadius: 'var(--radius-full)', background: badgeBg, color: badgeColor, fontWeight: 600, fontSize: 'var(--font-sm)' }}>
+        {badge.label}
       </div>
+
+      {artifact.degraded && (
+        <p data-testid="cert-degraded" style={{ marginTop: 'var(--space-3)', fontSize: 'var(--font-sm)', color: 'var(--text-tertiary)' }}>
+          Served a verified cached result.
+        </p>
+      )}
 
       <h1 style={{ fontSize: 'var(--font-2xl)', margin: 'var(--space-5) 0 var(--space-2)' }}>Audit Certificate</h1>
       <p style={{ color: 'var(--text-secondary)', marginBottom: 'var(--space-6)' }}>{verdict(artifact)}</p>

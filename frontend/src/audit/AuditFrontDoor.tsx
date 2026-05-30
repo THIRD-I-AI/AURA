@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, Link } from 'react-router-dom';
 import { auditApi } from './auditApi';
 import type { Scenario } from './types';
 
@@ -61,8 +61,9 @@ export function AuditFrontDoor() {
       </div>
 
       <p style={{ marginTop: 'var(--space-8)', fontSize: 'var(--font-sm)' }}>
-        <a href="/audit/new" style={{ color: 'var(--accent)' }}>Run a custom audit</a>
+        <Link to="/audit/new" style={{ color: 'var(--accent)' }}>Run a custom audit</Link>
         {' · '}
+        {/* Hard nav: intentionally exits the public shell to load the dashboard. */}
         <a href="/app" style={{ color: 'var(--text-tertiary)' }}>Open dashboard</a>
       </p>
     </div>
