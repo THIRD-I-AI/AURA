@@ -156,6 +156,44 @@ GET  /counterfactual/public-key                   -> { public_key_pem, key_sourc
 These are the integration boundary; S31a builds the wizard/progress/certificate/
 `/verify` pages against them. No file overlap with S31b.
 
+### 5.1 Exact element shapes + the number-type caveat (READ THIS, S31a)
+
+The `estimates[]` element field names are (verified against the running
+service — do NOT guess `point_estimate`/`ci_low`/`ci_high`):
+
+```
+estimate = {
+  method: str,          # "double_ml" | "tmle" | "iv"
+  point: number|str,    # ATE point estimate
+  ci_lower: number|str,
+  ci_upper: number|str,
+  n_samples: int,
+  error: str | null,    # non-null ⇒ this estimator failed; point/ci are 0
+  # also present, usually ignorable for the certificate UI:
+  elapsed_ms, ci_method, propensity_diagnostics, cate_distribution, sensitivity
+}
+refutation = { refuter: str, estimate_after: number|str, p_value: number|str|null,
+               passed: bool, error: str|null }
+```
+
+**⚠️ Numbers are typed differently on the two artifact paths — by design:**
+
+| Path | numeric fields (`point`, `ci_lower`, …) |
+|------|------------------------------------------|
+| `GET /jobs/{id}.artifact` (live/demo job) | JSON **number** (float) |
+| `GET /artifacts/{hash}` (replay) | JSON **string** — e.g. `"-0.393147"` |
+
+The replay endpoint is **byte-identical** to the canonical signed bytes
+(eval-gate Layer 10), and canonical JSON stringifies floats for stability —
+that's intentional and MUST NOT change (it's what makes `/verify` work). So the
+frontend must coerce: `Number(e.point)` / `parseFloat`, not assume `number`.
+
+`POST /demo/{id}` also returns `cached: bool`. Default is the instant
+pre-warmed artifact; pass `?fresh=true` to run a live audit (only in the
+multi-service deploy — see S31b follow-up #39). The certificate's plain-English
+verdict is derived client-side from `estimates[]` (S31b does not ship a
+`narrative` field in the artifact).
+
 ## 6. Testing (Tier A + Tier B)
 
 **Tier A (always-on lane, pure Python):**
