@@ -119,20 +119,27 @@ def test_signing_with_env_hex_key(monkeypatch, fresh_signing):
     assert signing.signing_key_source() == "env_hex"
 
 
-def test_signing_falls_back_to_ephemeral_when_no_env(monkeypatch, fresh_signing):
+def test_signing_persists_to_file_when_no_env(monkeypatch, fresh_signing, tmp_path):
+    # S31b: with no env key the resolver auto-generates AND persists a key
+    # (so certificate signatures survive restarts), rather than going
+    # ephemeral. Ephemeral is now only the last-resort fallback when the key
+    # dir is unwritable — covered by test_signing_persistent_key.py.
     monkeypatch.delenv("AURA_SIGNING_PRIVATE_KEY_HEX", raising=False)
     monkeypatch.delenv("AURA_SIGNING_PRIVATE_KEY_PATH", raising=False)
+    monkeypatch.setenv("AURA_SIGNING_KEY_DIR", str(tmp_path))
     sig = signing.sign_bytes(b"x")
     assert sig
-    assert signing.signing_key_source() == "ephemeral"
+    assert signing.signing_key_source() == "persisted_file"
+    assert (tmp_path / "signing_ed25519.pem").exists()
 
 
-def test_signing_invalid_hex_falls_through_to_ephemeral(monkeypatch, fresh_signing):
+def test_signing_invalid_hex_falls_through_to_persisted(monkeypatch, fresh_signing, tmp_path):
     monkeypatch.setenv("AURA_SIGNING_PRIVATE_KEY_HEX", "not-hex-at-all")
+    monkeypatch.setenv("AURA_SIGNING_KEY_DIR", str(tmp_path))
     sig = signing.sign_bytes(b"x")
     assert sig
-    # Falls back to ephemeral (warning logged)
-    assert signing.signing_key_source() == "ephemeral"
+    # Invalid hex falls through to the persisted-file source (warning logged).
+    assert signing.signing_key_source() == "persisted_file"
 
 
 def test_public_key_pem_usable_for_external_verify(monkeypatch, fresh_signing):

@@ -105,6 +105,32 @@ def render_pdf(artifact_dict: Dict[str, Any]) -> Optional[bytes]:
         s["body"],
     ))
 
+    # ── Attestation badge — this artifact's whole value is that it's
+    # independently verifiable, so surface the signature up top, not just
+    # in the provenance footer.
+    if artifact_dict.get("signature_status") == "signed":
+        story.append(Paragraph(
+            "<font color='#065f46'><b>SIGNED</b></font> &nbsp;— ED25519 "
+            f"(key: {artifact_dict.get('signing_key_source', '—') or '—'}) &nbsp;·&nbsp; "
+            f"verify independently at <font name='Courier'>/verify/{audit_hash[:16]}…</font>",
+            s["small"],
+        ))
+
+    # ── Verdict — plain-English summary of the audited effect ──────
+    ok_est = [e for e in artifact_dict.get("estimates", []) if not e.get("error")]
+    if ok_est:
+        pts = [float(e.get("point", 0.0)) for e in ok_est]
+        avg = sum(pts) / len(pts)
+        direction = "decreased" if avg < 0 else "increased"
+        agree = sum(1 for p in pts if (p < 0) == (avg < 0))
+        story.append(Paragraph("Verdict", s["subtitle"]))
+        story.append(Paragraph(
+            f"Across <b>{len(ok_est)}</b> independent estimators, the intervention "
+            f"<b>{direction}</b> the outcome (average effect "
+            f"<b>{avg:+.3f}</b>; {agree}/{len(ok_est)} agree on direction).",
+            s["body"],
+        ))
+
     # ── Question + treatment + outcome ────────────────────────────
     query = artifact_dict.get("query", {})
     story.append(Paragraph("Question", s["subtitle"]))

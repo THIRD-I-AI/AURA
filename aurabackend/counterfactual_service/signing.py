@@ -98,22 +98,55 @@ def _resolve_key_pair() -> Optional[Tuple[object, object]]:
         except Exception as exc:
             logger.warning("AURA_SIGNING_PRIVATE_KEY_PATH unreadable (%s); falling through", exc)
 
-    # Ephemeral fallback. Logged loudly because it changes the
+    # Persisted-file source: auto-generate once and reuse across restarts
+    # with zero env config, so certificate signatures stay valid for the
+    # demo. Default dir data/keys/; override with AURA_SIGNING_KEY_DIR.
+    key_dir = os.getenv("AURA_SIGNING_KEY_DIR", "data/keys").strip() or "data/keys"
+    key_file = Path(key_dir) / "signing_ed25519.pem"
+    try:
+        if key_file.exists():
+            sk = serialization.load_pem_private_key(key_file.read_bytes(), password=None)
+            if isinstance(sk, ed25519.Ed25519PrivateKey):
+                _KEY_PAIR = (sk, sk.public_key())
+                _KEY_SOURCE = "persisted_file"
+                logger.info("ED25519 signing key loaded from %s", key_file)
+                return _KEY_PAIR
+        sk = ed25519.Ed25519PrivateKey.generate()
+        key_file.parent.mkdir(parents=True, exist_ok=True)
+        pem = sk.private_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PrivateFormat.PKCS8,
+            encryption_algorithm=serialization.NoEncryption(),
+        )
+        key_file.write_bytes(pem)
+        try:
+            os.chmod(key_file, 0o600)
+        except OSError:
+            pass
+        _KEY_PAIR = (sk, sk.public_key())
+        _KEY_SOURCE = "persisted_file"
+        logger.info("ED25519 signing key generated + persisted at %s", key_file)
+        return _KEY_PAIR
+    except Exception as exc:
+        logger.warning("persisted-key path failed (%s); using ephemeral key", exc)
+
+    # Ephemeral fallback (final). Logged loudly because it changes the
     # security posture (signatures become advisory rather than
-    # auditor-grade).
+    # auditor-grade): a restart invalidates prior signatures.
     sk = ed25519.Ed25519PrivateKey.generate()
     _KEY_PAIR = (sk, sk.public_key())
     _KEY_SOURCE = "ephemeral"
     logger.warning(
-        "ED25519 signing key auto-generated for this process. Set "
-        "AURA_SIGNING_PRIVATE_KEY_HEX or AURA_SIGNING_PRIVATE_KEY_PATH "
-        "for stable signatures across restarts."
+        "ED25519 signing key auto-generated (ephemeral). Set "
+        "AURA_SIGNING_KEY_DIR to a writable path (or "
+        "AURA_SIGNING_PRIVATE_KEY_HEX/_PATH) for stable signatures."
     )
     return _KEY_PAIR
 
 
 def signing_key_source() -> str:
-    """One of: ``uninitialized``, ``env_hex``, ``env_pem``, ``ephemeral``."""
+    """One of: ``uninitialized``, ``env_hex``, ``env_pem``,
+    ``persisted_file``, ``ephemeral``."""
     _resolve_key_pair()
     return _KEY_SOURCE
 
