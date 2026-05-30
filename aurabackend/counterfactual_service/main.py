@@ -25,6 +25,7 @@ from pydantic import BaseModel, Field
 from shared.service_factory import create_service
 
 from . import pdf_renderer, persistence, signing
+from .demo_scenarios import get_scenario, list_scenarios
 from .engine import dowhy_available, run_job
 from .renderers import render
 from .schemas import CounterfactualQuery
@@ -45,6 +46,15 @@ app = create_service(
 
 _jobs: Dict[str, Dict[str, Any]] = {}    # job_id → {state, artifact, error}
 _datasets: Dict[str, pd.DataFrame] = {}  # source_id → DataFrame
+
+# S31b: the demo runs a curated set of fast, modern estimators. The classical
+# DoWhy backdoor methods (linear_regression/ipw/psm) bootstrap their CIs and
+# take 15-30s each, while DR-Learner, TMLE and IV run in <1s and are the more
+# credible methods anyway. IV (officer-leniency instrument) is what corrects
+# the unobserved-confounding bias the backdoor methods can't see.
+_DEMO_METHODS = ["double_ml", "tmle", "iv"]
+_demo_last_good: Dict[str, Dict[str, Any]] = {}  # scenario_id → artifact dict
+_prewarm_tasks: set = set()
 
 
 def register_dataset(source_id: str, df: pd.DataFrame) -> None:
@@ -104,6 +114,28 @@ async def _run_async(job_id: str, query: CounterfactualQuery) -> None:
         _jobs[job_id].update(state="failed", error=f"{type(exc).__name__}: {exc}")
 
 
+async def _run_demo_async(job_id: str, scenario_id: str, query: CounterfactualQuery) -> None:
+    """Demo job worker: runs all 7 estimators; on failure serves the last
+    good artifact (degraded) so the demo never shows a broken state."""
+    _jobs[job_id]["state"] = "running"
+    try:
+        df = _resolve_dataset(query.dataset.source_id)
+        artifact = await run_job(query, df=df, methods=_DEMO_METHODS)
+        artifact.rendered = render(artifact, query.audience)
+        art_dict = artifact.model_dump(mode="json")
+        _demo_last_good[scenario_id] = art_dict
+        _jobs[job_id].update(state="succeeded", artifact=art_dict)
+    except Exception as exc:
+        logger.exception("Demo job %s failed", job_id)
+        fallback = _demo_last_good.get(scenario_id)
+        if fallback is not None:
+            patched = dict(fallback)
+            patched["degraded"] = True
+            _jobs[job_id].update(state="succeeded", artifact=patched)
+        else:
+            _jobs[job_id].update(state="failed", error=f"{type(exc).__name__}: {exc}")
+
+
 # ── Endpoints ─────────────────────────────────────────────────────────
 
 @app.post("/counterfactual/jobs")
@@ -140,10 +172,47 @@ async def info() -> Dict[str, Any]:
         "signing_available": signing.signing_available(),
         "signing_key_source": signing.signing_key_source(),
         "pdf_available": pdf_renderer.pdf_available(),
-        "estimators": ["linear_regression", "ipw", "psm", "double_ml"],
+        "estimators": ["linear_regression", "ipw", "psm", "double_ml", "forest_dr", "tmle", "iv"],
         "refuters":   ["random_common_cause", "placebo", "data_subset", "sensitivity"],
         "audiences":  ["operator", "auditor", "analyst"],
     }
+
+
+# ── S31b — One-click demo on pre-loaded compliance data ───────────────
+
+@app.get("/counterfactual/demo/scenarios")
+async def demo_scenarios() -> Dict[str, Any]:
+    """List the pre-loaded compliance audit scenarios available to /demo."""
+    return {"scenarios": list_scenarios()}
+
+
+@app.post("/counterfactual/demo/{scenario_id}")
+async def run_demo(scenario_id: str, fresh: bool = False) -> Dict[str, Any]:
+    """Run the pre-loaded compliance audit. Poll GET /counterfactual/jobs/{id}.
+
+    Fast path: once a scenario is pre-warmed, return its sealed artifact as an
+    already-complete job (instant, deterministic). ``fresh=true`` forces a live
+    run for the "watch it compute" progress view."""
+    try:
+        scenario = get_scenario(scenario_id)
+    except KeyError:
+        raise HTTPException(404, f"unknown demo scenario: {scenario_id!r}")
+
+    cached = _demo_last_good.get(scenario_id)
+    if cached is not None and not fresh:
+        job_id = f"demo_{uuid.uuid4().hex[:12]}"
+        _jobs[job_id] = {"state": "succeeded", "artifact": cached, "error": None}
+        return {"job_id": job_id, "scenario_id": scenario_id, "degraded": False, "cached": True}
+
+    df = scenario.build_dataset()
+    query = scenario.query()
+    register_dataset(query.dataset.source_id, df)
+    job_id = f"demo_{uuid.uuid4().hex[:12]}"
+    _jobs[job_id] = {"state": "queued", "artifact": None, "error": None}
+    _jobs[job_id]["_task"] = asyncio.create_task(
+        _run_demo_async(job_id, scenario_id, query)
+    )
+    return {"job_id": job_id, "scenario_id": scenario_id, "degraded": False, "cached": False}
 
 
 # ── Sprint 9 — Auditor view ───────────────────────────────────────────
@@ -527,3 +596,30 @@ async def get_inclusion_proof(
             ),
         )
     return InclusionProofResponse(record_hash=record_hash, **proof_info)
+
+
+# ── S31b — Startup pre-warm (non-blocking) ────────────────────────────
+
+@app.on_event("startup")
+async def _prewarm_demos() -> None:
+    """Run each scenario once in the background so the first user-triggered
+    demo is fast and a last-good artifact exists for the fail-safe. Runs as
+    a held background task so it never blocks service startup; failures are
+    logged, not fatal."""
+    async def _warm() -> None:
+        for meta in list_scenarios():
+            sid = meta["id"]
+            try:
+                scenario = get_scenario(sid)
+                df = scenario.build_dataset()
+                query = scenario.query()
+                register_dataset(query.dataset.source_id, df)
+                artifact = await run_job(query, df=df, methods=_DEMO_METHODS)
+                _demo_last_good[sid] = artifact.model_dump(mode="json")
+                logger.info("pre-warmed demo scenario %s", sid)
+            except Exception as exc:
+                logger.warning("pre-warm of scenario %s failed (non-fatal): %s", sid, exc)
+
+    task = asyncio.create_task(_warm())
+    _prewarm_tasks.add(task)
+    task.add_done_callback(_prewarm_tasks.discard)

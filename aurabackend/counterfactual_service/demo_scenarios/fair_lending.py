@@ -1,4 +1,20 @@
-"""Fair-lending credit-decision audit (YC demo scenario #1)."""
+"""Fair-lending credit-decision audit (YC demo scenario #1).
+
+Examiner / officer-leniency instrumental-variables design (the classic
+judge-leniency identification strategy, Angrist & Krueger): the audited
+treatment is a *mutable* underwriting decision — being ``flagged_high_risk``
+by review — not the applicant's immutable protected class. Loan officers
+vary in how readily they flag (``officer_assignment`` is the quasi-random
+instrument), which shifts the flag but does not affect the final approval
+except through it.
+
+A latent ``u`` (unobserved financial instability) drives BOTH the flag and
+the denial, so a naive/backdoor estimate of the flag's effect is
+endogenous — IV (officer leniency) recovers the true effect that
+confounder-adjustment alone cannot. Protected class enters as the
+disparate-impact lens: it raises the flag rate, so the harm of flagging
+falls disproportionately on the protected group.
+"""
 from __future__ import annotations
 
 import numpy as np
@@ -14,7 +30,11 @@ from ..schemas import (
 from .base import DemoScenario, register
 
 _SEED = 31021
-_N = 600
+_N = 800
+
+
+def _sigmoid(x: np.ndarray) -> np.ndarray:
+    return 1.0 / (1.0 + np.exp(-x))
 
 
 class FairLendingScenario(DemoScenario):
@@ -22,55 +42,74 @@ class FairLendingScenario(DemoScenario):
     title = "Fair-Lending Credit Decision Audit"
     vertical = "compliance"
     description = (
-        "Did an applicant's protected class causally affect loan approval, "
-        "holding creditworthiness fixed? (ECOA / fair-lending)"
+        "Did an underwriting 'high-risk' flag — which disproportionately hits "
+        "the protected class — causally lower loan approval? Identified via "
+        "officer-leniency instrumental variables (ECOA / fair-lending)."
     )
     instrument = "officer_assignment"
 
     def build_dataset(self) -> pd.DataFrame:
         rng = np.random.default_rng(_SEED)
         n = _N
-        protected = rng.integers(0, 2, n)                       # treatment (0/1)
-        # Confounder correlated with protected class AND approval.
-        credit_score = (680 - 25 * protected + rng.normal(0, 40, n)).clip(300, 850)
+        protected = rng.integers(0, 2, n).astype(float)
+        u = rng.normal(0.0, 1.0, n)                         # unobserved instability
+        credit_score = (700 - 25 * protected - 22 * u + rng.normal(0, 35, n)).clip(300, 850)
         income = (60000 - 5000 * protected + rng.normal(0, 12000, n)).clip(15000, None)
-        dti = (0.30 + 0.04 * protected + rng.normal(0, 0.06, n)).clip(0.0, 0.9)
-        officer = rng.integers(0, 2, n)                          # instrument (leniency)
-        # Planted causal structure: creditworthiness drives approval; a
-        # modest DIRECT protected-class effect (-0.12 on the logit) is the
-        # disparate impact the audit must recover; officer leniency shifts
-        # approval but is independent of creditworthiness (valid instrument).
-        logit = (
-            -3.5
-            + 0.006 * (credit_score - 680)
-            + 0.000015 * (income - 60000)
-            - 1.5 * (dti - 0.30)
-            - 0.12 * protected
-            + 0.8 * officer
+        dti = (0.30 + 0.04 * protected + 0.03 * u + rng.normal(0, 0.05, n)).clip(0.0, 0.9)
+        officer = rng.integers(0, 2, n).astype(float)       # instrument (leniency)
+
+        # Treatment: the mutable 'high-risk' flag. Driven by low credit, the
+        # protected class (proxy bias), the unobserved u, and — crucially —
+        # officer leniency (the instrument), independent of u.
+        flag_logit = (
+            -0.4
+            - 0.010 * (credit_score - 700)
+            + 0.55 * protected
+            + 0.70 * u
+            + 1.20 * officer
         )
-        p = 1.0 / (1.0 + np.exp(-logit))
-        approved = (rng.random(n) < p).astype(int)
+        flagged = (rng.random(n) < _sigmoid(flag_logit)).astype(float)
+
+        # Outcome: approval. The flag causally lowers approval (the effect we
+        # audit); u also lowers it (endogeneity that defeats backdoor
+        # adjustment); officer does NOT enter directly (exclusion), and
+        # protected class enters only THROUGH the flag.
+        approve_logit = (
+            1.0
+            + 0.011 * (credit_score - 700)
+            + 0.000012 * (income - 60000)
+            - 2.0 * (dti - 0.30)
+            - 2.1 * flagged
+            - 0.9 * u
+        )
+        approved = (rng.random(n) < _sigmoid(approve_logit)).astype(float)
+
         return pd.DataFrame({
-            "protected_class": protected.astype(float),
+            "protected_class": protected,
             "credit_score": credit_score.round(1),
             "income": income.round(2),
             "dti": dti.round(4),
-            "officer_assignment": officer.astype(float),
-            "approved": approved.astype(float),
+            "officer_assignment": officer,
+            "flagged_high_risk": flagged,
+            "approved": approved,
         })
 
     def query(self) -> CounterfactualQuery:
         return CounterfactualQuery(
-            question="Did protected class causally affect approval, holding creditworthiness fixed?",
-            treatment=InterventionSpec(column="protected_class", actual=1.0, counterfactual=0.0),
+            question=(
+                "Did being flagged high-risk causally lower approval, "
+                "instrumented by officer leniency?"
+            ),
+            treatment=InterventionSpec(column="flagged_high_risk", actual=1.0, counterfactual=0.0),
             outcome=OutcomeSpec(column="approved", agg="mean", window=("1970-01-01", "2100-01-01")),
             dag=DAGSpec(edges=[
-                ("credit_score", "protected_class"),
+                ("credit_score", "flagged_high_risk"),
                 ("credit_score", "approved"),
                 ("income", "approved"),
                 ("dti", "approved"),
-                ("protected_class", "approved"),
-                ("officer_assignment", "protected_class"),  # instrument -> treatment
+                ("protected_class", "flagged_high_risk"),
+                ("officer_assignment", "flagged_high_risk"),  # instrument -> treatment
+                ("flagged_high_risk", "approved"),             # the effect audited
             ]),
             dataset=DatasetRef(source_id="demo:fair_lending"),
             audience="auditor",
@@ -84,10 +123,11 @@ class FairLendingScenario(DemoScenario):
         avg = sum(pts) / len(pts)
         direction = "lowered" if avg < 0 else "raised"
         return (
-            f"Across {len(ests)} estimators, belonging to the protected class "
-            f"{direction} the probability of approval by {abs(avg):.1%} on average, "
-            f"after adjusting for creditworthiness — the disparate impact a raw "
-            f"approval-rate comparison would misstate."
+            f"Across {len(ests)} estimators, a high-risk flag {direction} the "
+            f"probability of approval by {abs(avg):.0%} on average. Because the "
+            f"protected class is flagged more often, that harm falls "
+            f"disproportionately on them — a disparate impact a raw approval-rate "
+            f"comparison would miss."
         )
 
 
