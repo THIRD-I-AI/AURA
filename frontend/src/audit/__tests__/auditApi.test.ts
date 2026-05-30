@@ -48,4 +48,11 @@ describe('auditApi', () => {
   it('pdfUrl and verifyPath build correct hrefs without fetching', () => {
     expect(auditApi.pdfUrl('h')).toBe(`${API_BASE_URL}/counterfactual/artifacts/h/report.pdf`);
   });
+
+  it('submitCustomAudit POSTs the query to the jobs endpoint', async () => {
+    (fetch as ReturnType<typeof vi.fn>).mockReturnValue(mockJson({ job_id: 'ca_5' }));
+    const out = await auditApi.submitCustomAudit({ treatment: 't', outcome: 'y' });
+    expect(fetch).toHaveBeenCalledWith(`${API_BASE_URL}/counterfactual/jobs`, expect.objectContaining({ method: 'POST' }));
+    expect(out.job_id).toBe('ca_5');
+  });
 });

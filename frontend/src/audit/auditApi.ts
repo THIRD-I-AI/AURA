@@ -36,4 +36,14 @@ export const auditApi = {
   pdfUrl(hash: string): string {
     return `${CF}/artifacts/${hash}/report.pdf`;
   },
+
+  async submitCustomAudit(query: Record<string, unknown>): Promise<{ job_id: string }> {
+    const resp = await fetch(`${CF}/jobs`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(query),
+    });
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}: ${await resp.text()}`);
+    return resp.json() as Promise<{ job_id: string }>;
+  },
 };
