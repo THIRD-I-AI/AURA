@@ -201,7 +201,15 @@ S1-S6 pre-dated this registry; see commit `157b293` and earlier for that history
 | ~~**S28**~~ | ~~Ops~~ | ~~Mouni~~ | ~~CI Test Coverage Expansion (Causal/Streaming lanes)~~ |
 | ~~**S29**~~ | ~~Ops~~ | ~~Mouni~~ | ~~Integration Testing (Schemathesis + Compose)~~ |
 | ~~**S30**~~ | ~~Ops~~ | ~~Mouni~~ | ~~CI/CD Pipeline (Build & Push to GHCR)~~ |
-| **S31** | Analytic depth | TBD | Next slot: IV (instrumental variables) estimator, T-/X-learner outcome models for TMLE. |
+| **S31a** | YC Demo — Service Front Door | **Mounith or Rohith** — claim below | Frontend pivot: reposition AURA as an AI-native audit service (not a tool). Audit Submit wizard (guided form replacing raw JSON editor), live estimator progress view, Audit Certificate page (hash + ED25519 badge + PDF download), public `/verify/{hash}` page. Branch: `feature/s31a-service-frontend` |
+| **S31b** | YC Demo — Audit Engine & Data | **Mounith or Rohith** — claim below | Backend pivot: pre-loaded compliance demo dataset + scenario, persistent ED25519 signing key (non-ephemeral), IV estimator as 7th slot (S31 analytic depth), PDF report polish, single `/demo` endpoint that runs the full audit on pre-loaded data. Branch: `feature/s31b-audit-engine` |
+
+**⚡ Action needed — claim your track:**
+- Update the Owner column above with your name + today's date
+- Open a GitHub issue titled `Sprint S31a: YC Demo Service Frontend` or `Sprint S31b: YC Demo Audit Engine`
+- Push to the branch named above
+
+The two tracks touch completely different subsystems (S31a = frontend only, S31b = backend + data) — no merge conflicts expected. Merge both to `main` independently as separate PRs.
 
 Deferred indefinitely:
 - **S20.2.1** — schema migration to move `ScheduledJob.next_execution_time` (+ other DateTime columns) to `DateTime(timezone=True)` so the `.replace(tzinfo=None)` dance can be dropped.
@@ -223,4 +231,4 @@ When you reserve a future sprint:
 
 Update the date at the bottom when you make a material change.
 
-Last updated 2026-05-26 — **S25-S30** (operational readiness) + **S18.1b/c** (UASR integration) all shipped. 30 sprints completed. Next: S31 (analytic depth — IV estimator or T-/X-learner outcome models).
+Last updated 2026-05-29 — S31a/S31b planned as two parallel YC demo tracks. S31a = service-facing frontend pivot; S31b = audit engine + demo data + IV estimator. Mounith and Rohith to claim one track each. Also shipped this session: #31 SSE sink fix, #32 streaming production hardening, #33 eval-gate skip guard, #34 API URL fixes (Counterfactual + ETL Pipelines).
