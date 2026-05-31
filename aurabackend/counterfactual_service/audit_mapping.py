@@ -97,3 +97,66 @@ def validate_and_prepare(df: pd.DataFrame, mapping: dict) -> Tuple[pd.DataFrame,
         treatment_is_binary=treatment_is_binary, warnings=warnings,
     )
     return work.reset_index(drop=True), dq
+
+
+def select_methods(instrument: Optional[str]) -> List[str]:
+    """Fast, modern, doubly-robust default. IV only when an instrument is mapped.
+    The slow classical DoWhy bootstrap methods and forest_dr (broken on binary
+    outcomes) are deliberately excluded."""
+    methods = ["double_ml", "tmle"]
+    if instrument:
+        methods.append("iv")
+    return methods
+
+
+def build_query_from_mapping(clean_df: pd.DataFrame, mapping: dict) -> CounterfactualQuery:
+    """Build a CounterfactualQuery from a cleaned df + mapping. Treatment is already
+    0/1 after validate_and_prepare, so actual=1 / counterfactual=0."""
+    treatment = mapping["treatment"]
+    outcome = mapping["outcome"]
+    confounders = list(mapping.get("confounders") or [])
+    instrument = mapping.get("instrument")
+    return CounterfactualQuery(
+        question=f"Causal effect of '{treatment}' on '{outcome}' (user audit).",
+        treatment=InterventionSpec(column=treatment, actual=1.0, counterfactual=0.0),
+        outcome=OutcomeSpec(column=outcome, agg="mean", window=("1970-01-01", "2100-01-01")),
+        dag=build_dag_from_mapping(treatment, outcome, confounders, instrument),
+        dataset=DatasetRef(source_id=f"uploaded_file:{mapping['uploaded_file']}"),
+        audience="auditor",
+    )
+
+
+def identification_statement(mapping: dict) -> str:
+    conf = ", ".join(mapping.get("confounders") or []) or "(none specified)"
+    s = (
+        "This estimate is valid only under the assumption of no unmeasured "
+        f"confounding beyond the adjusted variables: {conf}. "
+    )
+    if mapping.get("instrument"):
+        s += (
+            f"The instrument '{mapping['instrument']}' is additionally assumed to "
+            "affect the treatment but the outcome only through the treatment "
+            "(the exclusion restriction)."
+        )
+    else:
+        s += (
+            "No instrument was supplied, so this is a backdoor-adjustment estimate; "
+            "judge its robustness by the sensitivity bound below."
+        )
+    return s
+
+
+def sensitivity_headline(artifact: dict) -> str:
+    """Plain-English E-value headline from the strongest available estimate."""
+    ok = [e for e in artifact.get("estimates", [])
+          if e.get("error") is None and isinstance(e.get("sensitivity"), dict)]
+    evals = [e["sensitivity"].get("e_value_point") for e in ok
+             if e["sensitivity"].get("e_value_point") is not None]
+    if not evals:
+        return "Sensitivity to unmeasured confounding was not available for this audit."
+    e = max(evals)  # most conservative (largest) E-value across methods
+    return (
+        f"Robustness: an unmeasured confounder would need an E-value of about {e:.2f} "
+        "(on the risk-ratio scale, beyond the measured associations) to fully explain "
+        "away this effect."
+    )

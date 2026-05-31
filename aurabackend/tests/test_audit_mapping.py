@@ -78,3 +78,45 @@ def test_validate_binarises_continuous_treatment_and_flags():
     assert set(clean["t"].unique()) <= {0.0, 1.0}
     assert dq.treatment_is_binary is False
     assert any("binaris" in w.lower() for w in dq.warnings)
+
+
+# ── query builder + method selection + honesty text ─────────────────
+
+from counterfactual_service.audit_mapping import (  # noqa: E402
+    build_query_from_mapping,
+    identification_statement,
+    select_methods,
+    sensitivity_headline,
+)
+
+
+def test_select_methods_iv_only_with_instrument():
+    assert select_methods(None) == ["double_ml", "tmle"]
+    assert select_methods("officer") == ["double_ml", "tmle", "iv"]
+
+
+def test_build_query_from_mapping_shapes():
+    df = pd.DataFrame({"t": [0.0, 1.0] * 60, "y": [1.0, 0.0] * 60, "x": [0.1] * 120})
+    q = build_query_from_mapping(df, _mapping())
+    assert q.treatment.column == "t" and q.treatment.actual == 1.0 and q.treatment.counterfactual == 0.0
+    assert q.outcome.column == "y"
+    assert ("x", "t") in set(q.dag.edges) and ("t", "y") in set(q.dag.edges)
+    assert q.dataset.source_id == "uploaded_file:decisions.csv"
+
+
+def test_identification_statement_mentions_confounders_and_iv():
+    s = identification_statement(_mapping())
+    assert "x" in s
+    assert "no instrument" in s.lower()
+    s2 = identification_statement(_mapping(instrument="officer"))
+    assert "officer" in s2 and "exclusion" in s2.lower()
+
+
+def test_sensitivity_headline_reads_evalue():
+    art = {"estimates": [
+        {"method": "tmle", "error": None, "sensitivity": {"e_value_point": 1.8}},
+        {"method": "double_ml", "error": None, "sensitivity": {"e_value_point": 1.6}},
+    ]}
+    h = sensitivity_headline(art)
+    assert "1.8" in h
+    assert "confounder" in h.lower()
