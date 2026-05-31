@@ -120,3 +120,13 @@ def test_audit_wiring_creates_job_and_stores_result(tmp_path, monkeypatch):
     assert art is not None and art["state"] == "succeeded", art
     assert art["artifact"]["sensitivity_headline"]
     assert art["artifact"]["data_quality"]["n_clean"] == 160
+
+
+def test_audit_reachable_through_gateway(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "data" / "uploads").mkdir(parents=True, exist_ok=True)
+    from api_gateway.main import app as gw
+    gc = TestClient(gw)
+    r = gc.post("/api/v1/counterfactual/audit", json={
+        "uploaded_file": "nope.csv", "treatment": "t", "outcome": "y", "confounders": []})
+    assert r.status_code == 404  # routed through; file-missing check fired

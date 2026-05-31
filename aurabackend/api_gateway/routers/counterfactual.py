@@ -33,6 +33,12 @@ from counterfactual_service.main import (
     info as _svc_info,
 )
 from counterfactual_service.main import (
+    AuditRequest,
+)
+from counterfactual_service.main import (
+    run_audit as _svc_run_audit,
+)
+from counterfactual_service.main import (
     run_demo as _svc_run_demo,
 )
 from counterfactual_service.main import (
@@ -93,3 +99,8 @@ async def demo_scenarios() -> Dict[str, Any]:
 @router.post("/demo/{scenario_id}")
 async def run_demo(scenario_id: str, fresh: bool = False) -> Dict[str, Any]:
     return await _svc_run_demo(scenario_id, fresh=fresh)
+
+
+@router.post("/audit")
+async def run_audit(req: AuditRequest) -> Dict[str, Any]:
+    return await _svc_run_audit(req)
