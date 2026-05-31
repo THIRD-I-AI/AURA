@@ -3,14 +3,21 @@ import { useNavigate, useParams } from 'react-router-dom';
 import { useJobPolling } from './useJobPolling';
 import type { Estimate } from './types';
 
+/** Coerce a contract numeric (number on live path, string on replay) to fixed-dp. */
+function fmt(v: number | string | undefined, dp: number): string {
+  if (v === undefined || v === null) return '—';
+  const n = Number(v);
+  return Number.isFinite(n) ? n.toFixed(dp) : String(v);
+}
+
 function EstimatorRow({ e }: { e: Estimate }) {
-  const done = e.point_estimate !== undefined || e.error !== undefined;
+  const done = (e.point !== undefined && e.point !== null) || e.error != null;
   return (
     <div data-testid={`estimator-${e.method}`} style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-3)', padding: 'var(--space-3) 0', borderBottom: '1px solid var(--border-default)' }}>
       <span style={{ width: 14, height: 14, borderRadius: '50%', background: e.error ? 'var(--red)' : done ? 'var(--green)' : 'var(--accent)', flexShrink: 0 }} />
       <span style={{ flex: 1, fontWeight: 500 }}>{e.method}</span>
       <span style={{ fontFamily: 'monospace', fontSize: 'var(--font-sm)', color: 'var(--text-tertiary)' }}>
-        {e.error ? 'n/a' : e.point_estimate !== undefined ? `${e.point_estimate.toFixed(3)} [${e.ci_low?.toFixed(2)}, ${e.ci_high?.toFixed(2)}]` : 'running…'}
+        {e.error ? 'n/a' : (e.point !== undefined && e.point !== null) ? `${fmt(e.point, 3)} [${fmt(e.ci_lower, 2)}, ${fmt(e.ci_upper, 2)}]` : 'running…'}
       </span>
     </div>
   );

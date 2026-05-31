@@ -2,9 +2,13 @@ import { Link } from 'react-router-dom';
 import { auditApi } from './auditApi';
 import type { Artifact, VerifyResult } from './types';
 
-/** Plain-English verdict from the estimates (used when no scenario narrative). */
+/** Plain-English verdict from the estimates (S31b ships no narrative field). */
 function verdict(a: Artifact): string {
-  const pts = a.estimates.map((e) => e.point_estimate).filter((v): v is number => v !== undefined);
+  // Skip failed estimators; coerce point (number on live path, string on replay).
+  const pts = a.estimates
+    .filter((e) => !e.error && e.point !== undefined && e.point !== null)
+    .map((e) => Number(e.point))
+    .filter((v) => Number.isFinite(v));
   if (pts.length === 0) return 'Audit complete — see estimator detail.';
   const avg = pts.reduce((s, v) => s + v, 0) / pts.length;
   const material = Math.abs(avg) >= 0.02;

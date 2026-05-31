@@ -7,7 +7,7 @@ import type { Artifact } from '../types';
 
 const artifact: Artifact = {
   audit_record_hash: 'a3f9c1deadbeef',
-  estimates: [{ method: 'tmle', point_estimate: 0.08, ci_low: 0.01, ci_high: 0.15 }],
+  estimates: [{ method: 'tmle', point: 0.08, ci_lower: 0.01, ci_upper: 0.15 }],
   refutations: [],
   signature_status: 'signed',
   signing_key_source: 'persisted_file',
@@ -49,5 +49,19 @@ describe('Certificate', () => {
   it('notes a degraded (cached fail-safe) artifact', () => {
     render(<MemoryRouter><Certificate artifact={{ ...artifact, degraded: true }} /></MemoryRouter>);
     expect(screen.getByTestId('cert-degraded')).toHaveTextContent(/cached result/i);
+  });
+
+  it('derives a verdict from string-typed estimates (replay path) and skips errored estimators', () => {
+    // Replay numbers are strings; an errored estimator must not skew the verdict.
+    const replay: Artifact = {
+      ...artifact,
+      estimates: [
+        { method: 'double_ml', point: '0.084', ci_lower: '0.02', ci_upper: '0.15' },
+        { method: 'iv', point: 0, ci_lower: 0, ci_upper: 0, error: 'instrument unavailable' },
+      ],
+    };
+    render(<MemoryRouter><Certificate artifact={replay} /></MemoryRouter>);
+    // 0.084 (string) is material (>=0.02); errored iv is ignored, not averaged in as 0.
+    expect(screen.getByTestId('certificate')).toHaveTextContent(/disparate impact detected/i);
   });
 });

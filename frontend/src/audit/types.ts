@@ -7,10 +7,14 @@ export interface Scenario {
 
 export interface Estimate {
   method: string;
-  point_estimate?: number;
-  ci_low?: number;
-  ci_high?: number;
-  error?: string;
+  // Numbers are JSON floats on the live/demo job path but STRINGS on the
+  // byte-identical replay path (GET /artifacts/{hash}) — always coerce with
+  // Number() before arithmetic/formatting. (S31b spec §5.1.)
+  point?: number | string;
+  ci_lower?: number | string;
+  ci_upper?: number | string;
+  n_samples?: number;
+  error?: string | null;
 }
 
 export interface Artifact {
