@@ -201,3 +201,8 @@ collaborators. If you discover something important, **write it into
 
 Last updated 2026-05-26 by Mouni. CI expanded to 14 jobs (S28-S30).
 Update the date when you make material changes to this file.
+
+<!-- SPECKIT START -->
+For additional context about technologies to be used, project structure,
+shell commands, and other important information, read the current plan
+<!-- SPECKIT END -->
