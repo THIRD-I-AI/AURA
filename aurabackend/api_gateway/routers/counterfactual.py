@@ -15,6 +15,9 @@ from fastapi import APIRouter
 from fastapi.responses import Response
 
 from counterfactual_service.main import (
+    AuditRequest,
+)
+from counterfactual_service.main import (
     demo_scenarios as _svc_demo_scenarios,
 )
 from counterfactual_service.main import (
@@ -31,9 +34,6 @@ from counterfactual_service.main import (
 )
 from counterfactual_service.main import (
     info as _svc_info,
-)
-from counterfactual_service.main import (
-    AuditRequest,
 )
 from counterfactual_service.main import (
     run_audit as _svc_run_audit,
