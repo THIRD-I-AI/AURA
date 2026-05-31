@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import pathlib
 import uuid
 from typing import Any, Dict, List, Literal, Optional
@@ -55,6 +56,47 @@ _datasets: Dict[str, pd.DataFrame] = {}  # source_id → DataFrame
 _DEMO_METHODS = ["double_ml", "tmle", "iv"]
 _demo_last_good: Dict[str, Dict[str, Any]] = {}  # scenario_id → artifact dict
 _prewarm_tasks: set = set()
+
+# Demo artifacts are pre-computed by a separate one-shot process
+# (`python -m counterfactual_service.warm_demos`) and persisted here, so the
+# gateway — which mounts this service IN-PROCESS — can serve the instant /demo
+# path by LOADING the JSON at startup rather than running a GIL-bound dowhy
+# audit that would starve its event loop. See warm_demos.py.
+_DEMO_ARTIFACT_DIR = pathlib.Path(
+    os.getenv("AURA_DEMO_ARTIFACT_DIR", "data/demo_artifacts")
+)
+
+
+def _persist_demo_artifact(scenario_id: str, artifact_dict: Dict[str, Any]) -> None:
+    try:
+        _DEMO_ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
+        tmp = _DEMO_ARTIFACT_DIR / f".{scenario_id}.json.tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(artifact_dict, fh)
+        os.replace(tmp, _DEMO_ARTIFACT_DIR / f"{scenario_id}.json")
+    except OSError as exc:
+        logger.warning("could not persist demo artifact %s: %s", scenario_id, exc)
+
+
+def load_persisted_demo_artifacts() -> int:
+    """Load pre-computed demo artifacts from disk into the in-memory cache.
+
+    Instant + CPU-free — safe to call from the gateway's startup. Returns the
+    number of scenarios loaded. Missing dir / files is fine (returns 0): the
+    deploy just hasn't run warm_demos yet."""
+    n = 0
+    if not _DEMO_ARTIFACT_DIR.exists():
+        return 0
+    for p in _DEMO_ARTIFACT_DIR.glob("*.json"):
+        try:
+            with open(p, encoding="utf-8") as fh:
+                _demo_last_good[p.stem] = json.load(fh)
+            n += 1
+        except (OSError, ValueError) as exc:
+            logger.warning("could not load demo artifact %s: %s", p.name, exc)
+    if n:
+        logger.info("loaded %d pre-computed demo artifact(s) from %s", n, _DEMO_ARTIFACT_DIR)
+    return n
 
 
 def register_dataset(source_id: str, df: pd.DataFrame) -> None:
@@ -203,6 +245,19 @@ async def run_demo(scenario_id: str, fresh: bool = False) -> Dict[str, Any]:
         job_id = f"demo_{uuid.uuid4().hex[:12]}"
         _jobs[job_id] = {"state": "succeeded", "artifact": cached, "error": None}
         return {"job_id": job_id, "scenario_id": scenario_id, "degraded": False, "cached": True}
+
+    if not fresh:
+        # No pre-warmed artifact and the caller didn't explicitly opt into a
+        # live run. Refuse rather than launch a GIL-bound dowhy audit in-
+        # request: in the gateway's in-process mount that would starve the
+        # event loop and freeze every other request. Pre-warm out-of-process.
+        raise HTTPException(
+            503,
+            f"demo scenario {scenario_id!r} is not pre-warmed. Run "
+            f"`python -m counterfactual_service.warm_demos`, or retry with "
+            f"?fresh=true to run a live audit (only safe when this service "
+            f"runs as its own process).",
+        )
 
     df = scenario.build_dataset()
     query = scenario.query()
@@ -600,26 +655,36 @@ async def get_inclusion_proof(
 
 # ── S31b — Startup pre-warm (non-blocking) ────────────────────────────
 
-@app.on_event("startup")
-async def _prewarm_demos() -> None:
-    """Run each scenario once in the background so the first user-triggered
-    demo is fast and a last-good artifact exists for the fail-safe. Runs as
-    a held background task so it never blocks service startup; failures are
-    logged, not fatal."""
-    async def _warm() -> None:
-        for meta in list_scenarios():
-            sid = meta["id"]
-            try:
-                scenario = get_scenario(sid)
-                df = scenario.build_dataset()
-                query = scenario.query()
-                register_dataset(query.dataset.source_id, df)
-                artifact = await run_job(query, df=df, methods=_DEMO_METHODS)
-                _demo_last_good[sid] = artifact.model_dump(mode="json")
-                logger.info("pre-warmed demo scenario %s", sid)
-            except Exception as exc:
-                logger.warning("pre-warm of scenario %s failed (non-fatal): %s", sid, exc)
+async def prewarm_demo_scenarios() -> None:
+    """Run each registered scenario once, caching the sealed artifact for the
+    instant /demo path + the fail-safe. Best-effort (failures logged, never
+    fatal). Idempotent — safe to call from any app's startup."""
+    for meta in list_scenarios():
+        sid = meta["id"]
+        try:
+            scenario = get_scenario(sid)
+            df = scenario.build_dataset()
+            query = scenario.query()
+            register_dataset(query.dataset.source_id, df)
+            artifact = await run_job(query, df=df, methods=_DEMO_METHODS)
+            art_dict = artifact.model_dump(mode="json")
+            _demo_last_good[sid] = art_dict
+            _persist_demo_artifact(sid, art_dict)
+            logger.info("pre-warmed demo scenario %s", sid)
+        except Exception as exc:
+            logger.warning("pre-warm of scenario %s failed (non-fatal): %s", sid, exc)
 
-    task = asyncio.create_task(_warm())
+
+def start_demo_prewarm() -> None:
+    """Spawn the pre-warm as a held background task so it never blocks
+    startup. Callable from the counterfactual service's own startup AND from
+    the api_gateway lifespan (the gateway mounts this service in-process, so
+    the @app.on_event hook below does NOT fire in gateway-only deployments)."""
+    task = asyncio.create_task(prewarm_demo_scenarios())
     _prewarm_tasks.add(task)
     task.add_done_callback(_prewarm_tasks.discard)
+
+
+@app.on_event("startup")
+async def _prewarm_demos() -> None:
+    start_demo_prewarm()

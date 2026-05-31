@@ -68,6 +68,21 @@ def _confidence_color(label: str) -> Any:
     }.get(label, colors.HexColor("#475569"))
 
 
+def _to_float(val: Any) -> Optional[float]:
+    """Persistence serialises numeric fields as STRINGS (canonical JSON
+    stringifies floats for byte-stable replay), so the renderer — which reads
+    the persisted artifact — must coerce before formatting."""
+    try:
+        return float(val)
+    except (TypeError, ValueError):
+        return None
+
+
+def _fmt_num(val: Any, places: int = 4) -> str:
+    f = _to_float(val)
+    return f"{f:.{places}f}" if f is not None else "—"
+
+
 # ── Public API ────────────────────────────────────────────────────────
 
 def render_pdf(artifact_dict: Dict[str, Any]) -> Optional[bytes]:
@@ -118,16 +133,16 @@ def render_pdf(artifact_dict: Dict[str, Any]) -> Optional[bytes]:
 
     # ── Verdict — plain-English summary of the audited effect ──────
     ok_est = [e for e in artifact_dict.get("estimates", []) if not e.get("error")]
-    if ok_est:
-        pts = [float(e.get("point", 0.0)) for e in ok_est]
+    pts = [f for f in (_to_float(e.get("point")) for e in ok_est) if f is not None]
+    if pts:
         avg = sum(pts) / len(pts)
         direction = "decreased" if avg < 0 else "increased"
         agree = sum(1 for p in pts if (p < 0) == (avg < 0))
         story.append(Paragraph("Verdict", s["subtitle"]))
         story.append(Paragraph(
-            f"Across <b>{len(ok_est)}</b> independent estimators, the intervention "
+            f"Across <b>{len(pts)}</b> independent estimators, the intervention "
             f"<b>{direction}</b> the outcome (average effect "
-            f"<b>{avg:+.3f}</b>; {agree}/{len(ok_est)} agree on direction).",
+            f"<b>{avg:+.3f}</b>; {agree}/{len(pts)} agree on direction).",
             s["body"],
         ))
 
@@ -165,9 +180,9 @@ def render_pdf(artifact_dict: Dict[str, Any]) -> Optional[bytes]:
         status = "ok" if not e.get("error") else f"error: {e['error'][:40]}"
         est_rows.append([
             e.get("method", "—"),
-            f"{e.get('point', 0):.4f}" if not e.get("error") else "—",
-            f"{e.get('ci_lower', 0):.4f}" if not e.get("error") else "—",
-            f"{e.get('ci_upper', 0):.4f}" if not e.get("error") else "—",
+            _fmt_num(e.get("point")) if not e.get("error") else "—",
+            _fmt_num(e.get("ci_lower")) if not e.get("error") else "—",
+            _fmt_num(e.get("ci_upper")) if not e.get("error") else "—",
             str(e.get("n_samples", "—")),
             status,
         ])
@@ -189,8 +204,8 @@ def render_pdf(artifact_dict: Dict[str, Any]) -> Optional[bytes]:
         passed = "Yes" if r.get("passed") else "No"
         ref_rows.append([
             r.get("refuter", "—"),
-            f"{r['estimate_after']:.4f}" if r.get("estimate_after") is not None else "—",
-            f"{r['p_value']:.4f}" if r.get("p_value") is not None else "—",
+            _fmt_num(r.get("estimate_after")),
+            _fmt_num(r.get("p_value")),
             passed,
             status,
         ])
