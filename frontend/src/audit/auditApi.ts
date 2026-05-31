@@ -34,7 +34,15 @@ export const auditApi = {
   },
 
   pdfUrl(hash: string): string {
-    return `${CF}/artifacts/${hash}/report.pdf`;
+    const url = `${CF}/artifacts/${hash}/report.pdf`;
+    // CF derives from a localStorage-set API base; guarantee the value handed to
+    // an anchor href is a well-formed http(s) URL so a javascript:/data: base
+    // can't reach the DOM (CodeQL js/xss-through-dom). Bad input → safe '#'.
+    try {
+      const u = new URL(url, window.location.origin);
+      if (u.protocol === 'http:' || u.protocol === 'https:') return u.href;
+    } catch { /* malformed URL → fall through */ }
+    return '#';
   },
 
   async submitCustomAudit(query: Record<string, unknown>): Promise<{ job_id: string }> {
