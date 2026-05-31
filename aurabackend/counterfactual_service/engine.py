@@ -1679,6 +1679,7 @@ async def run_job(
     query: CounterfactualQuery,
     df: pd.DataFrame,
     methods: Optional[List[EstimatorMethod]] = None,
+    critic_timeout: Optional[float] = None,
 ) -> CounterfactualArtifact:
     """Full engine: estimate → refute → critique (cached) → score → sign → persist → seal.
 
@@ -1703,11 +1704,37 @@ async def run_job(
         df, query.treatment, query.outcome, query.dag.model_dump(),
         request_hash=req_hash,
     )
-    challenges_unsorted, regenerated = await _run_critic(
-        estimates, refutations, query.dag.model_dump(),
-        query.treatment, query.outcome,
-        request_hash=req_hash,
-    )
+    # The adversarial critic is an LLM call. On a cache miss against a slow or
+    # rate-limited provider it can block for minutes — unacceptable on the
+    # critical path of a numeric audit. ``critic_timeout`` bounds it: on
+    # timeout/failure the audit proceeds with only the DETERMINISTIC checks
+    # (propensity + estimator-disagreement, added just below) and surfaces the
+    # skip in the signed artifact's warnings. The demo path passes no timeout,
+    # so its behaviour (and byte-stable replay) is unchanged.
+    critic_warnings: List[str] = []
+    if critic_timeout is not None:
+        try:
+            challenges_unsorted, regenerated = await asyncio.wait_for(
+                _run_critic(
+                    estimates, refutations, query.dag.model_dump(),
+                    query.treatment, query.outcome, request_hash=req_hash,
+                ),
+                timeout=critic_timeout,
+            )
+        except Exception as exc:  # deliberate: critic is best-effort, never fatal
+            logger.warning("adversarial critic skipped (%s): %s", type(exc).__name__, exc)
+            challenges_unsorted, regenerated = [], False
+            critic_warnings.append(
+                f"Adversarial LLM critic skipped (exceeded {critic_timeout:g}s or "
+                "errored); deterministic checks (propensity, estimator-disagreement) "
+                "still applied."
+            )
+    else:
+        challenges_unsorted, regenerated = await _run_critic(
+            estimates, refutations, query.dag.model_dump(),
+            query.treatment, query.outcome,
+            request_hash=req_hash,
+        )
     # Sprint 14: deterministic propensity check. If any estimator surfaced
     # cross-fitted propensity diagnostics that look IPW-fragile, append a
     # high-severity challenge BEFORE the sort+hash so it's part of the
@@ -1752,6 +1779,7 @@ async def run_job(
         schema_version=schema_version,
         dataset_fingerprint=fingerprint,
         regenerated_critic=regenerated,
+        warnings=critic_warnings,
     )
 
     # Compute artifact_hash over the artifact MINUS audit/render/signature

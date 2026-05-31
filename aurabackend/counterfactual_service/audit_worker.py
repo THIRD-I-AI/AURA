@@ -41,7 +41,12 @@ def run_audit_subprocess(payload: Dict[str, Any]) -> Dict[str, Any]:
     query = build_query_from_mapping(clean_df, payload)
     methods = select_methods(payload.get("instrument"))
 
-    artifact = asyncio.run(run_job(query, df=clean_df, methods=methods))
+    # Bound the LLM adversarial critic so a numeric audit never blocks on a
+    # slow/rate-limited provider (the COMPAS run hung here). Deterministic
+    # checks still run; the skip is surfaced in the artifact warnings.
+    critic_timeout = float(os.getenv("AURA_AUDIT_CRITIC_TIMEOUT_S", "8"))
+    artifact = asyncio.run(run_job(query, df=clean_df, methods=methods,
+                                   critic_timeout=critic_timeout))
     artifact.rendered = render(artifact, query.audience)
 
     result = artifact.model_dump(mode="json")
