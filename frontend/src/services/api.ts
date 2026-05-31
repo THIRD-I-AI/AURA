@@ -7,7 +7,26 @@
 // Configuration
 // =============================================================================
 
-const _RAW_BASE = localStorage.getItem('apiUrl') || import.meta.env.VITE_API_URL || 'http://localhost:8000';
+/**
+ * Only an absolute http/https URL may serve as the API base. A `javascript:` or
+ * `data:` value smuggled into localStorage('apiUrl') would otherwise flow into
+ * anchor hrefs built from API_BASE_URL (CodeQL js/xss-through-dom). Anything that
+ * isn't a well-formed http(s) URL falls back to the build-time / default base.
+ */
+export function sanitizeApiBase(candidate: string | null | undefined, fallback: string): string {
+  if (!candidate) return fallback;
+  try {
+    const u = new URL(candidate);
+    if (u.protocol === 'http:' || u.protocol === 'https:') return candidate;
+  } catch { /* malformed URL → fall back */ }
+  return fallback;
+}
+
+const _FALLBACK_BASE = (import.meta.env.VITE_API_URL as string) || 'http://localhost:8000';
+const _RAW_BASE = sanitizeApiBase(
+  typeof localStorage !== 'undefined' ? localStorage.getItem('apiUrl') : null,
+  _FALLBACK_BASE,
+);
 const ROOT_BASE_URL = _RAW_BASE.replace(/\/+$/, '');              // For non-versioned endpoints (e.g. /health)
 export const API_BASE_URL = `${ROOT_BASE_URL}/api/v1`;            // All domain endpoints are versioned
 const REQUEST_TIMEOUT = 300000; // 300 seconds (5 minutes) to allow massive agent queries
