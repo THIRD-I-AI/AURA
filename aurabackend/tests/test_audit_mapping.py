@@ -36,3 +36,45 @@ def test_dag_includes_instrument_edge():
 def test_dag_rejects_self_loop_when_confounder_equals_treatment():
     with pytest.raises(Exception):
         build_dag_from_mapping("flag", "approved", ["flag"], None)
+
+
+# ── validate_and_prepare ────────────────────────────────────────────
+
+from counterfactual_service.audit_mapping import DataQuality, validate_and_prepare  # noqa: E402
+
+
+def test_validate_missing_column_raises():
+    df = pd.DataFrame({"t": [0, 1], "y": [1, 0]})  # no 'x'
+    with pytest.raises(ValueError) as e:
+        validate_and_prepare(df, _mapping())
+    assert "x" in str(e.value)
+
+
+def test_validate_drops_nan_rows_and_counts():
+    rng = np.random.default_rng(0)
+    n = 200
+    df = pd.DataFrame({"t": rng.integers(0, 2, n), "y": rng.integers(0, 2, n),
+                       "x": rng.normal(size=n)})
+    df.loc[:9, "x"] = np.nan  # 10 missing
+    clean, dq = validate_and_prepare(df, _mapping())
+    assert dq.n_dropped == 10 and dq.n_clean == n - 10
+    assert clean["x"].isna().sum() == 0
+    assert isinstance(dq, DataQuality)
+
+
+def test_validate_too_few_rows_raises():
+    df = pd.DataFrame({"t": [0, 1, 0], "y": [1, 0, 1], "x": [0.1, 0.2, 0.3]})
+    with pytest.raises(ValueError) as e:
+        validate_and_prepare(df, _mapping())
+    assert "rows" in str(e.value).lower()
+
+
+def test_validate_binarises_continuous_treatment_and_flags():
+    rng = np.random.default_rng(1)
+    n = 200
+    df = pd.DataFrame({"t": rng.normal(size=n), "y": rng.integers(0, 2, n),
+                       "x": rng.normal(size=n)})
+    clean, dq = validate_and_prepare(df, _mapping())
+    assert set(clean["t"].unique()) <= {0.0, 1.0}
+    assert dq.treatment_is_binary is False
+    assert any("binaris" in w.lower() for w in dq.warnings)
