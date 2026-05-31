@@ -15,6 +15,7 @@ import json
 import logging
 import os
 import pathlib
+import re
 import uuid
 from typing import Any, Dict, List, Literal, Optional
 
@@ -26,6 +27,7 @@ from pydantic import BaseModel, Field
 from shared.service_factory import create_service
 
 from . import pdf_renderer, persistence, signing
+from .audit_worker import get_audit_pool, run_audit_subprocess
 from .demo_scenarios import get_scenario, list_scenarios
 from .engine import dowhy_available, run_job
 from .renderers import render
@@ -116,13 +118,22 @@ def _resolve_dataset(source_id: str) -> pd.DataFrame:
     if source_id.startswith("uploaded_file:"):
         from shared.data_utils import _READ_FN_BY_EXT  # type: ignore
         name = source_id.split(":", 1)[1]
+        # Defense-in-depth: the worker reaches this directly, so re-validate the
+        # name against path traversal here too (not only at the HTTP boundary).
+        if not _safe_upload_name(name):
+            raise HTTPException(404, f"invalid uploaded file name: {name!r}")
         for d in (
             pathlib.Path("data/uploads"),
             pathlib.Path("api_gateway/uploads"),
             pathlib.Path("uploads"),
         ):
-            p = d / name
-            if p.exists() and p.suffix.lower() in _READ_FN_BY_EXT:
+            base = d.resolve()
+            p = (base / name).resolve()
+            try:
+                p.relative_to(base)
+            except ValueError:
+                continue
+            if p.is_file() and p.suffix.lower() in _READ_FN_BY_EXT:
                 # Use the same read function the chat upload pipeline does
                 # so column names come back identical.
                 read_fn = _READ_FN_BY_EXT[p.suffix.lower()]
@@ -268,6 +279,80 @@ async def run_demo(scenario_id: str, fresh: bool = False) -> Dict[str, Any]:
         _run_demo_async(job_id, scenario_id, query)
     )
     return {"job_id": job_id, "scenario_id": scenario_id, "degraded": False, "cached": False}
+
+
+# ── Audit Your Own Data — run the engine on a user's uploaded CSV ──────
+
+class AuditRequest(BaseModel):
+    uploaded_file: str
+    treatment: str
+    outcome: str
+    confounders: List[str] = []
+    instrument: Optional[str] = None
+
+
+# ``uploaded_file`` is user-controlled. A name like "../../etc/passwd" must never
+# escape the uploads dir — reject anything but a bare safe filename, and re-verify
+# the resolved realpath is inside the allow-listed base.
+_SAFE_UPLOAD_NAME = re.compile(r"^[A-Za-z0-9._-]+$")
+
+
+def _safe_upload_name(name: str) -> bool:
+    return bool(name) and name not in (".", "..") and bool(_SAFE_UPLOAD_NAME.match(name))
+
+
+def _find_upload(name: str) -> Optional[pathlib.Path]:
+    if not _safe_upload_name(name):
+        return None
+    for d in (pathlib.Path("data/uploads"), pathlib.Path("api_gateway/uploads"),
+              pathlib.Path("uploads")):
+        base = d.resolve()
+        p = (base / name).resolve()
+        try:
+            p.relative_to(base)
+        except ValueError:
+            continue  # escaped the base — refuse
+        if p.is_file():
+            return p
+    return None
+
+
+def _csv_header_columns(path: pathlib.Path) -> list:
+    return list(pd.read_csv(path, nrows=0).columns)
+
+
+async def _run_audit_job_async(job_id: str, payload: Dict[str, Any]) -> None:
+    _jobs[job_id]["state"] = "running"
+    loop = asyncio.get_event_loop()
+    try:
+        result = await loop.run_in_executor(get_audit_pool(), run_audit_subprocess, payload)
+        _jobs[job_id].update(state="succeeded", artifact=result)
+    except Exception as exc:
+        logger.exception("Audit job %s failed", job_id)
+        _jobs[job_id].update(state="failed", error=f"{type(exc).__name__}: {exc}")
+
+
+@app.post("/counterfactual/audit")
+async def run_audit(req: AuditRequest) -> Dict[str, Any]:
+    """Audit the user's own uploaded data. Cheap pre-validation here; the heavy,
+    GIL-bound fan-out runs out-of-process so the gateway never blocks."""
+    path = _find_upload(req.uploaded_file)
+    if path is None:
+        raise HTTPException(404, f"uploaded file not found: {req.uploaded_file!r}")
+    if path.suffix.lower() == ".csv":
+        header = _csv_header_columns(path)
+        needed = [req.treatment, req.outcome, *req.confounders] + (
+            [req.instrument] if req.instrument else [])
+        missing = [c for c in needed if c not in header]
+        if missing:
+            raise HTTPException(400, f"columns not in file {req.uploaded_file!r}: {missing}")
+
+    job_id = f"audit_{uuid.uuid4().hex[:12]}"
+    _jobs[job_id] = {"state": "queued", "artifact": None, "error": None}
+    _jobs[job_id]["_task"] = asyncio.create_task(
+        _run_audit_job_async(job_id, req.model_dump())
+    )
+    return {"job_id": job_id}
 
 
 # ── Sprint 9 — Auditor view ───────────────────────────────────────────
