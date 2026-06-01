@@ -64,4 +64,18 @@ describe('Certificate', () => {
     // 0.084 (string) is material (>=0.02); errored iv is ignored, not averaged in as 0.
     expect(screen.getByTestId('certificate')).toHaveTextContent(/disparate impact detected/i);
   });
+
+  it('does NOT claim impact when the point is material but CIs cross zero (e.g. COMPAS)', () => {
+    // Adjusted COMPAS: point ~ -0.024 (material) but 95% CIs include zero → not significant.
+    const compas: Artifact = {
+      ...artifact,
+      estimates: [
+        { method: 'double_ml', point: -0.024, ci_lower: -0.077, ci_upper: 0.029 },
+        { method: 'tmle', point: -0.023, ci_lower: -0.051, ci_upper: 0.005 },
+      ],
+    };
+    render(<MemoryRouter><Certificate artifact={compas} /></MemoryRouter>);
+    expect(screen.getByTestId('certificate')).toHaveTextContent(/not statistically significant/i);
+    expect(screen.getByTestId('certificate')).not.toHaveTextContent(/disparate impact detected/i);
+  });
 });
