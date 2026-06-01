@@ -51,4 +51,23 @@ describe('AuditWizard (audit your own data)', () => {
     expect(screen.getByTestId('wizard-next')).toBeDisabled();
     expect(screen.getByTestId('err-treatment')).toBeInTheDocument();
   });
+
+  it('blocks a non-numeric treatment (e.g. raw COMPAS race strings)', async () => {
+    vi.spyOn(auditApi, 'uploadDataset').mockResolvedValue({ filename: 'compas.csv' });
+    const user = userEvent.setup();
+    // Raw race is string-typed → backend coerces to NaN and drops every row.
+    const file = new File(['race,recid,priors\nAfrican-American,1,3\nCaucasian,0,1\nHispanic,1,2\n'], 'compas.csv', { type: 'text/csv' });
+    render(<MemoryRouter><AuditWizard /></MemoryRouter>);
+    await user.upload(screen.getByTestId('wizard-file-input'), file);
+    await waitFor(() => screen.getByTestId('wizard-preview'));
+    await waitFor(() => expect(screen.getByTestId('wizard-next')).toBeEnabled());
+    await user.click(screen.getByTestId('wizard-next'));
+
+    await user.selectOptions(screen.getByTestId('map-treatment'), 'race');
+    await user.selectOptions(screen.getByTestId('map-outcome'), 'recid');
+    await user.click(screen.getByTestId('confounder-priors'));
+    // Mapping is otherwise valid, but the numeric guard blocks a string treatment.
+    expect(screen.getByTestId('err-treatment')).toHaveTextContent(/non-numeric|numbers/i);
+    expect(screen.getByTestId('wizard-next')).toBeDisabled();
+  });
 });

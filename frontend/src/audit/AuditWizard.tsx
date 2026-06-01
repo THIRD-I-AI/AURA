@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { auditApi } from './auditApi';
 import { useCsvPreview } from './useCsvPreview';
 import { validateMapping } from './validateMapping';
+import { nonNumericMappingErrors } from './mappingTypeGuard';
 import type { ColumnMapping } from './types';
 import { UploadStep } from './wizard/UploadStep';
 import { MapStep } from './wizard/MapStep';
@@ -23,6 +24,16 @@ export function AuditWizard() {
 
   const preview = useCsvPreview(file);
   const validation = useMemo(() => validateMapping(mapping, preview.columns), [mapping, preview.columns]);
+  const typeErrs = useMemo(() => nonNumericMappingErrors(mapping, preview.types), [mapping, preview.types]);
+  // Surface the numeric guard per role without masking a higher-priority
+  // required/collision error from validateMapping.
+  const mapErrors = {
+    treatment: validation.errors.treatment ?? typeErrs.treatment,
+    outcome: validation.errors.outcome ?? typeErrs.outcome,
+    confounders: validation.errors.confounders ?? typeErrs.confounders,
+    instrument: validation.errors.instrument ?? typeErrs.instrument,
+  };
+  const mappingOk = validation.valid && Object.keys(typeErrs).length === 0;
 
   const pickFile = async (f: File) => {
     setFile(f);
@@ -61,7 +72,7 @@ export function AuditWizard() {
   const canNext = step === 0
     ? preview.columns.length > 0 && !uploading && !uploadError && filename !== null
     : step === 1
-      ? validation.valid
+      ? mappingOk
       : false;
 
   const btn = (testid: string, label: string, enabled: boolean, onClick: () => void) => (
@@ -84,7 +95,7 @@ export function AuditWizard() {
       </div>
 
       {step === 0 && <UploadStep file={file} columns={preview.columns} previewRows={preview.previewRows} types={preview.types} uploading={uploading} error={uploadError} onPick={pickFile} />}
-      {step === 1 && <MapStep columns={preview.columns} mapping={mapping} errors={validation.errors} onChange={setMapping} />}
+      {step === 1 && <MapStep columns={preview.columns} mapping={mapping} errors={mapErrors} onChange={setMapping} />}
       {step === 2 && <ReviewStep filename={filename} mapping={mapping} />}
 
       {runError && <p style={{ color: 'var(--red)' }}>{runError}</p>}
@@ -95,7 +106,7 @@ export function AuditWizard() {
           : <span />}
         {step < 2
           ? btn('wizard-next', 'Next', canNext, () => setStep((s) => s + 1))
-          : btn('wizard-run', running ? 'Running…' : 'Run audit', !running && validation.valid && filename !== null, run)}
+          : btn('wizard-run', running ? 'Running…' : 'Run audit', !running && mappingOk && filename !== null, run)}
       </div>
     </div>
   );
