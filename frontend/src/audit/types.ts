@@ -54,3 +54,18 @@ export interface VerifyResult {
   signing_key_source: string;
   reason?: string;
 }
+
+export interface ColumnMapping {
+  treatment: string;
+  outcome: string;
+  confounders: string[];
+  instrument?: string;
+}
+
+export interface DataAuditRequest {
+  uploaded_file: string;
+  treatment: string;
+  outcome: string;
+  confounders: string[];
+  instrument?: string;
+}
