@@ -51,4 +51,23 @@ describe('AuditWizard (audit your own data)', () => {
     expect(screen.getByTestId('wizard-next')).toBeDisabled();
     expect(screen.getByTestId('err-treatment')).toBeInTheDocument();
   });
+
+  it('blocks a non-numeric treatment with >2 categories (e.g. raw COMPAS race)', async () => {
+    vi.spyOn(auditApi, 'uploadDataset').mockResolvedValue({ filename: 'compas.csv' });
+    const user = userEvent.setup();
+    // race has 3 string categories → backend would choke on median-binarisation.
+    const file = new File(['race,recid,priors\nAfrican-American,1,3\nCaucasian,0,1\nHispanic,1,2\n'], 'compas.csv', { type: 'text/csv' });
+    render(<MemoryRouter><AuditWizard /></MemoryRouter>);
+    await user.upload(screen.getByTestId('wizard-file-input'), file);
+    await waitFor(() => screen.getByTestId('wizard-preview'));
+    await waitFor(() => expect(screen.getByTestId('wizard-next')).toBeEnabled());
+    await user.click(screen.getByTestId('wizard-next'));
+
+    await user.selectOptions(screen.getByTestId('map-treatment'), 'race');
+    await user.selectOptions(screen.getByTestId('map-outcome'), 'recid');
+    await user.click(screen.getByTestId('confounder-priors'));
+    // Mapping is otherwise valid, but the categorical-treatment guard blocks it.
+    expect(screen.getByTestId('err-treatment')).toHaveTextContent(/two groups/i);
+    expect(screen.getByTestId('wizard-next')).toBeDisabled();
+  });
 });
