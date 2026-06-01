@@ -1,54 +1,102 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { auditApi } from './auditApi';
+import { useCsvPreview } from './useCsvPreview';
+import { validateMapping } from './validateMapping';
+import type { ColumnMapping } from './types';
+import { UploadStep } from './wizard/UploadStep';
+import { MapStep } from './wizard/MapStep';
+import { ReviewStep } from './wizard/ReviewStep';
+
+const EMPTY_MAPPING: ColumnMapping = { treatment: '', outcome: '', confounders: [] };
 
 export function AuditWizard() {
   const navigate = useNavigate();
-  const [treatment, setTreatment] = useState('');
-  const [outcome, setOutcome] = useState('');
-  const [confounders, setConfounders] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [step, setStep] = useState(0);
+  const [file, setFile] = useState<File | null>(null);
+  const [filename, setFilename] = useState<string | null>(null);
+  const [uploading, setUploading] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+  const [mapping, setMapping] = useState<ColumnMapping>(EMPTY_MAPPING);
+  const [running, setRunning] = useState(false);
+  const [runError, setRunError] = useState<string | null>(null);
 
-  const canSubmit = treatment.trim() !== '' && outcome.trim() !== '' && !busy;
+  const preview = useCsvPreview(file);
+  const validation = useMemo(() => validateMapping(mapping, preview.columns), [mapping, preview.columns]);
 
-  const submit = async () => {
-    setBusy(true);
-    setError(null);
+  const pickFile = async (f: File) => {
+    setFile(f);
+    setMapping(EMPTY_MAPPING);
+    setUploadError(null);
+    setUploading(true);
     try {
-      const query = {
-        treatment: treatment.trim(),
-        outcome: outcome.trim(),
-        confounders: confounders.split(',').map((c) => c.trim()).filter(Boolean),
-      };
-      const { job_id } = await auditApi.submitCustomAudit(query);
-      navigate(`/audit/${job_id}`);
+      const { filename: name } = await auditApi.uploadDataset(f);
+      setFilename(name);
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-      setBusy(false);
+      setUploadError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setUploading(false);
     }
   };
 
-  const field = (testid: string, label: string, value: string, setter: (v: string) => void, placeholder: string) => (
-    <label style={{ display: 'block', marginBottom: 'var(--space-4)' }}>
-      <span style={{ display: 'block', fontSize: 'var(--font-sm)', color: 'var(--text-secondary)', marginBottom: 'var(--space-1)' }}>{label}</span>
-      <input data-testid={testid} value={value} placeholder={placeholder} onChange={(e) => setter(e.target.value)}
-        style={{ width: '100%', padding: 'var(--space-3)', background: 'var(--bg-base)', border: '1px solid var(--border-default)', borderRadius: 'var(--radius-md)', color: 'var(--text-primary)' }} />
-    </label>
+  const run = async () => {
+    if (!filename) return;
+    setRunning(true);
+    setRunError(null);
+    try {
+      const { job_id } = await auditApi.runDataAudit({
+        uploaded_file: filename,
+        treatment: mapping.treatment,
+        outcome: mapping.outcome,
+        confounders: mapping.confounders,
+        instrument: mapping.instrument,
+      });
+      navigate(`/audit/${job_id}`);
+    } catch (e) {
+      setRunError(e instanceof Error ? e.message : String(e));
+      setRunning(false);
+    }
+  };
+
+  const canNext = step === 0
+    ? preview.columns.length > 0 && !uploading && !uploadError && filename !== null
+    : step === 1
+      ? validation.valid
+      : false;
+
+  const btn = (testid: string, label: string, enabled: boolean, onClick: () => void) => (
+    <button data-testid={testid} disabled={!enabled} onClick={onClick}
+      style={{ padding: 'var(--space-3) var(--space-6)', background: enabled ? 'var(--accent)' : 'var(--border-default)', color: '#fff', border: 'none', borderRadius: 'var(--radius-md)', cursor: enabled ? 'pointer' : 'not-allowed' }}>
+      {label}
+    </button>
   );
 
   return (
-    <div data-testid="audit-wizard" style={{ maxWidth: 560, margin: '0 auto' }}>
-      <h2>Run a custom audit</h2>
-      <p style={{ color: 'var(--text-tertiary)', marginBottom: 'var(--space-6)' }}>Define the causal question. We run the full estimator battery and seal a certificate.</p>
-      {field('wizard-treatment', 'Treatment column', treatment, setTreatment, 'e.g. protected_class')}
-      {field('wizard-outcome', 'Outcome column', outcome, setOutcome, 'e.g. approved')}
-      {field('wizard-confounders', 'Confounders (comma-separated)', confounders, setConfounders, 'e.g. income, dti, credit_score')}
-      {error && <p style={{ color: 'var(--red)' }}>{error}</p>}
-      <button data-testid="wizard-submit" disabled={!canSubmit} onClick={submit}
-        style={{ padding: 'var(--space-3) var(--space-6)', background: canSubmit ? 'var(--accent)' : 'var(--border-default)', color: '#fff', border: 'none', borderRadius: 'var(--radius-md)', cursor: canSubmit ? 'pointer' : 'not-allowed' }}>
-        {busy ? 'Submitting…' : 'Run audit'}
-      </button>
+    <div data-testid="audit-wizard" style={{ maxWidth: 640, margin: '0 auto' }}>
+      <h2>Audit your own data</h2>
+      <div style={{ display: 'flex', gap: 'var(--space-2)', margin: 'var(--space-3) 0 var(--space-6)' }}>
+        {['Upload', 'Map', 'Review'].map((label, i) => (
+          <span key={label} data-testid={`wizard-dot-${i}`} style={{ fontSize: 'var(--font-xs)', textTransform: 'uppercase', letterSpacing: '0.06em',
+            color: i === step ? 'var(--accent)' : i < step ? 'var(--green)' : 'var(--text-tertiary)' }}>
+            {i + 1}. {label}
+          </span>
+        ))}
+      </div>
+
+      {step === 0 && <UploadStep file={file} columns={preview.columns} previewRows={preview.previewRows} types={preview.types} uploading={uploading} error={uploadError} onPick={pickFile} />}
+      {step === 1 && <MapStep columns={preview.columns} mapping={mapping} errors={validation.errors} onChange={setMapping} />}
+      {step === 2 && <ReviewStep filename={filename} mapping={mapping} />}
+
+      {runError && <p style={{ color: 'var(--red)' }}>{runError}</p>}
+
+      <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 'var(--space-6)' }}>
+        {step > 0
+          ? btn('wizard-back', 'Back', true, () => setStep((s) => s - 1))
+          : <span />}
+        {step < 2
+          ? btn('wizard-next', 'Next', canNext, () => setStep((s) => s + 1))
+          : btn('wizard-run', running ? 'Running…' : 'Run audit', !running && validation.valid && filename !== null, run)}
+      </div>
     </div>
   );
 }
