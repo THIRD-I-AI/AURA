@@ -49,10 +49,18 @@ describe('auditApi', () => {
     expect(auditApi.pdfUrl('h')).toBe(`${API_BASE_URL}/counterfactual/artifacts/h/report.pdf`);
   });
 
-  it('submitCustomAudit POSTs the query to the jobs endpoint', async () => {
-    (fetch as ReturnType<typeof vi.fn>).mockReturnValue(mockJson({ job_id: 'ca_5' }));
-    const out = await auditApi.submitCustomAudit({ treatment: 't', outcome: 'y' });
-    expect(fetch).toHaveBeenCalledWith(`${API_BASE_URL}/counterfactual/jobs`, expect.objectContaining({ method: 'POST' }));
-    expect(out.job_id).toBe('ca_5');
+  it('uploadDataset POSTs multipart to /upload and returns the filename', async () => {
+    (fetch as ReturnType<typeof vi.fn>).mockReturnValue(mockJson({ upload_id: 'u1', filename: 'data.csv', bytes: 10, status: 'success' }));
+    const file = new File(['a,b\n1,2\n'], 'data.csv', { type: 'text/csv' });
+    const out = await auditApi.uploadDataset(file);
+    expect(fetch).toHaveBeenCalledWith(`${API_BASE_URL}/upload`, expect.objectContaining({ method: 'POST' }));
+    expect(out.filename).toBe('data.csv');
+  });
+
+  it('runDataAudit POSTs the AuditRequest to /counterfactual/audit', async () => {
+    (fetch as ReturnType<typeof vi.fn>).mockReturnValue(mockJson({ job_id: 'audit_1' }));
+    const out = await auditApi.runDataAudit({ uploaded_file: 'data.csv', treatment: 't', outcome: 'y', confounders: ['c1'] });
+    expect(fetch).toHaveBeenCalledWith(`${API_BASE_URL}/counterfactual/audit`, expect.objectContaining({ method: 'POST' }));
+    expect(out.job_id).toBe('audit_1');
   });
 });

@@ -1,5 +1,5 @@
 import { API_BASE_URL } from '../services/api';
-import type { Scenario, JobSnapshot, DemoSubmitResult, VerifyResult, Artifact } from './types';
+import type { Scenario, JobSnapshot, DemoSubmitResult, VerifyResult, Artifact, DataAuditRequest } from './types';
 
 const CF = `${API_BASE_URL}/counterfactual`;
 
@@ -45,11 +45,20 @@ export const auditApi = {
     return '#';
   },
 
-  async submitCustomAudit(query: Record<string, unknown>): Promise<{ job_id: string }> {
-    const resp = await fetch(`${CF}/jobs`, {
+  async uploadDataset(file: File): Promise<{ filename: string }> {
+    const form = new FormData();
+    form.append('file', file);
+    const resp = await fetch(`${API_BASE_URL}/upload`, { method: 'POST', body: form });
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}: ${await resp.text()}`);
+    const body = (await resp.json()) as { filename: string };
+    return { filename: body.filename };
+  },
+
+  async runDataAudit(req: DataAuditRequest): Promise<{ job_id: string }> {
+    const resp = await fetch(`${CF}/audit`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(query),
+      body: JSON.stringify(req),
     });
     if (!resp.ok) throw new Error(`HTTP ${resp.status}: ${await resp.text()}`);
     return resp.json() as Promise<{ job_id: string }>;
