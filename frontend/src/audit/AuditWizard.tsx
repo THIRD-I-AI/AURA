@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { auditApi } from './auditApi';
 import { useCsvPreview } from './useCsvPreview';
 import { validateMapping } from './validateMapping';
-import { treatmentCardinalityError } from './treatmentGuard';
+import { nonNumericMappingErrors } from './mappingTypeGuard';
 import type { ColumnMapping } from './types';
 import { UploadStep } from './wizard/UploadStep';
 import { MapStep } from './wizard/MapStep';
@@ -24,14 +24,16 @@ export function AuditWizard() {
 
   const preview = useCsvPreview(file);
   const validation = useMemo(() => validateMapping(mapping, preview.columns), [mapping, preview.columns]);
-  const treatmentErr = useMemo(
-    () => treatmentCardinalityError(mapping.treatment, preview.columns, preview.types, preview.previewRows),
-    [mapping.treatment, preview.columns, preview.types, preview.previewRows],
-  );
-  // Surface the cardinality guard on the treatment field without masking a
-  // higher-priority required/collision error from validateMapping.
-  const mapErrors = { ...validation.errors, treatment: validation.errors.treatment ?? treatmentErr ?? undefined };
-  const mappingOk = validation.valid && !treatmentErr;
+  const typeErrs = useMemo(() => nonNumericMappingErrors(mapping, preview.types), [mapping, preview.types]);
+  // Surface the numeric guard per role without masking a higher-priority
+  // required/collision error from validateMapping.
+  const mapErrors = {
+    treatment: validation.errors.treatment ?? typeErrs.treatment,
+    outcome: validation.errors.outcome ?? typeErrs.outcome,
+    confounders: validation.errors.confounders ?? typeErrs.confounders,
+    instrument: validation.errors.instrument ?? typeErrs.instrument,
+  };
+  const mappingOk = validation.valid && Object.keys(typeErrs).length === 0;
 
   const pickFile = async (f: File) => {
     setFile(f);
