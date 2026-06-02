@@ -42,3 +42,29 @@ def test_results_agree_series_and_none():
     s = pd.Series([10, 20])
     assert results_agree(["c"], [[10], [20]], s) is True
     assert results_agree(["c"], [[None]], pd.Series([np.nan])) is True
+
+
+from agents.dpc_verifier import extract_single_table
+
+
+def test_extract_single_table_simple():
+    assert extract_single_table('SELECT * FROM "sales"') == "sales"
+
+
+def test_extract_single_table_join_returns_none():
+    sql = 'SELECT a.x FROM "t1" a JOIN "t2" b ON a.id = b.id'
+    assert extract_single_table(sql) is None
+
+
+def test_extract_single_table_cte_excludes_alias():
+    # CTE alias `c` is not a base table — the lone base table is `orders`.
+    sql = 'WITH c AS (SELECT * FROM "orders") SELECT count(*) FROM c'
+    assert extract_single_table(sql) == "orders"
+
+
+def test_extract_single_table_no_table():
+    assert extract_single_table("SELECT 1") is None
+
+
+def test_extract_single_table_unparseable():
+    assert extract_single_table("this is not sql ;;;") is None

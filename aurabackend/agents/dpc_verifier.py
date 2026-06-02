@@ -67,3 +67,35 @@ def results_agree(sql_columns: List[str], sql_rows: List[List[Any]],
     left = _to_multiset(sql_rows or [], ndigits)
     right = _to_multiset(_pandas_to_2d(pandas_result), ndigits)
     return left == right
+
+
+try:
+    import sqlglot
+    from sqlglot import exp as _exp
+    _SQLGLOT = True
+except ImportError:  # pragma: no cover
+    sqlglot = None  # type: ignore[assignment]
+    _exp = None  # type: ignore[assignment]
+    _SQLGLOT = False
+
+
+def extract_single_table(sql: str) -> Optional[str]:
+    """Return the lone base table referenced by `sql`, or None for 0/>1/unparseable.
+
+    CTE alias names are excluded — the generation prompt prefers CTEs, so a
+    single-table query is commonly wrapped in a WITH clause.
+    """
+    if not _SQLGLOT:
+        return None
+    try:
+        tree = sqlglot.parse_one(sql, dialect="postgres")
+    except Exception:
+        return None
+    if tree is None:
+        return None
+    cte_aliases = {c.alias_or_name.lower() for c in tree.find_all(_exp.CTE)}
+    tables = {
+        t.name for t in tree.find_all(_exp.Table)
+        if t.name and t.name.lower() not in cte_aliases
+    }
+    return next(iter(tables)) if len(tables) == 1 else None
