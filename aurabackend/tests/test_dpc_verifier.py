@@ -68,3 +68,39 @@ def test_extract_single_table_no_table():
 
 def test_extract_single_table_unparseable():
     assert extract_single_table("this is not sql ;;;") is None
+
+
+import time as _time
+
+from agents.dpc_verifier import _run_with_timeout, safe_eval_pandas
+
+
+def _df():
+    return pd.DataFrame({"g": ["a", "a", "b"], "v": [1, 2, 3], "cost": [10, 20, 30]})
+
+
+def test_safe_eval_pandas_correct():
+    assert safe_eval_pandas('df["v"].sum()', _df()) == 6
+
+
+def test_safe_eval_pandas_allows_columns_containing_denied_substrings():
+    # "cost" contains "os" — must NOT be rejected (word-boundary denylist).
+    assert safe_eval_pandas('df["cost"].sum()', _df()) == 60
+
+
+@pytest.mark.parametrize("expr", [
+    '__import__("os").system("echo hi")',
+    "import os",
+    'open("/etc/passwd").read()',
+    "df.__class__.__mro__",
+    "globals()",
+    "os.getcwd()",
+])
+def test_safe_eval_pandas_rejects_dangerous(expr):
+    with pytest.raises(ValueError):
+        safe_eval_pandas(expr, _df())
+
+
+def test_run_with_timeout_raises():
+    with pytest.raises(TimeoutError):
+        _run_with_timeout(lambda: _time.sleep(2.0), 0.2)

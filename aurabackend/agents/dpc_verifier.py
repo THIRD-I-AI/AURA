@@ -99,3 +99,66 @@ def extract_single_table(sql: str) -> Optional[str]:
         if t.name and t.name.lower() not in cte_aliases
     }
     return next(iter(tables)) if len(tables) == 1 else None
+
+
+import re
+import threading
+
+# Dangerous identifiers matched as WHOLE WORDS so column names that merely
+# contain them (e.g. "cost" contains "os", "position" contains "os") are not
+# rejected. Dunder access (`__`) is blocked outright — no legitimate pandas
+# expression needs it, and it is the usual sandbox-escape vector.
+_DENY_WORDS = re.compile(
+    r"\b(import|exec|eval|compile|globals|locals|getattr|setattr|"
+    r"breakpoint|subprocess|os|sys|open|input)\b"
+)
+
+
+def _run_with_timeout(fn, timeout_s: float):
+    """Run `fn()` in a daemon thread; raise TimeoutError if it overruns.
+
+    The abandoned thread cannot be force-killed, but a pandas expression over an
+    already-bounded DataFrame will finish on its own; this just stops us waiting.
+    """
+    box: dict = {}
+
+    def runner():
+        try:
+            box["r"] = fn()
+        except Exception as exc:  # surface the eval error to the caller
+            box["e"] = exc
+
+    th = threading.Thread(target=runner, daemon=True)
+    th.start()
+    th.join(timeout_s)
+    if th.is_alive():
+        raise TimeoutError(f"pandas eval exceeded {timeout_s:g}s")
+    if "e" in box:
+        raise box["e"]
+    return box.get("r")
+
+
+def safe_eval_pandas(expr: str, df: pd.DataFrame, timeout_s: float = 5.0) -> Any:
+    """Evaluate a single pandas expression over `df` in a locked-down namespace.
+
+    Defense in depth: word-boundary denylist + `__` block, `__builtins__`
+    stripped, only {df, pd, np} in scope, wall-clock timeout. Raises ValueError
+    on a denylist hit, or the underlying error / TimeoutError otherwise.
+    """
+    if "__" in expr:
+        raise ValueError("disallowed token in pandas expression: __")
+    hit = _DENY_WORDS.search(expr)
+    if hit:
+        raise ValueError(f"disallowed token in pandas expression: {hit.group(0)}")
+    namespace = {"df": df, "pd": pd, "np": np}
+
+    def _do():
+        # Deliberate, sandboxed eval — the core of the approved DPC dual-paradigm
+        # design (S32 spec): cross-check the SQL answer against an LLM-written
+        # pandas expression. Hardened above (denylist + `__` block) and here
+        # (`__builtins__` stripped, only {df, pd, np} in scope, wall-clock
+        # timeout). Threat model: non-adversarial LLM, local/single-tenant,
+        # user's own data. ast.literal_eval can't run pandas method chains.
+        return eval(expr, {"__builtins__": {}}, namespace)  # nosec B307
+
+    return _run_with_timeout(_do, timeout_s)
