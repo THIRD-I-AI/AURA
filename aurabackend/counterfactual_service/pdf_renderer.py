@@ -18,6 +18,8 @@ import io
 import logging
 from typing import Any, Dict, Optional
 
+from .verdict import significance_verdict
+
 logger = logging.getLogger("aura.counterfactual.pdf")
 
 
@@ -85,6 +87,24 @@ def _fmt_num(val: Any, places: int = 4) -> str:
 
 # ── Public API ────────────────────────────────────────────────────────
 
+def _verdict_text(artifact_dict: Dict[str, Any]) -> Optional[str]:
+    """Significance-aware verdict line for the signed PDF — the ONE canonical rule,
+    so the downloadable compliance artifact never asserts a directional effect
+    whose 95% CI straddles zero. Returns None when no estimator succeeded."""
+    estimates = artifact_dict.get("estimates", [])
+    verdict = significance_verdict(estimates)
+    if verdict["status"] == "empty":
+        return None
+    pts = [f for f in (_to_float(e.get("point")) for e in estimates if not e.get("error"))
+           if f is not None]
+    if not pts:
+        return verdict["label"]
+    avg = sum(pts) / len(pts)
+    agree = sum(1 for p in pts if (p < 0) == (avg < 0))
+    return (f"{verdict['label']} Across {len(pts)} independent estimators the average "
+            f"effect was {avg:+.3f} ({agree}/{len(pts)} agree on direction).")
+
+
 def render_pdf(artifact_dict: Dict[str, Any]) -> Optional[bytes]:
     """Render an audit-grade PDF from an artifact dict.
 
@@ -131,20 +151,11 @@ def render_pdf(artifact_dict: Dict[str, Any]) -> Optional[bytes]:
             s["small"],
         ))
 
-    # ── Verdict — plain-English summary of the audited effect ──────
-    ok_est = [e for e in artifact_dict.get("estimates", []) if not e.get("error")]
-    pts = [f for f in (_to_float(e.get("point")) for e in ok_est) if f is not None]
-    if pts:
-        avg = sum(pts) / len(pts)
-        direction = "decreased" if avg < 0 else "increased"
-        agree = sum(1 for p in pts if (p < 0) == (avg < 0))
+    # ── Verdict — significance-aware summary of the audited effect ──
+    verdict_line = _verdict_text(artifact_dict)
+    if verdict_line:
         story.append(Paragraph("Verdict", s["subtitle"]))
-        story.append(Paragraph(
-            f"Across <b>{len(pts)}</b> independent estimators, the intervention "
-            f"<b>{direction}</b> the outcome (average effect "
-            f"<b>{avg:+.3f}</b>; {agree}/{len(pts)} agree on direction).",
-            s["body"],
-        ))
+        story.append(Paragraph(verdict_line, s["body"]))
 
     # ── Question + treatment + outcome ────────────────────────────
     query = artifact_dict.get("query", {})

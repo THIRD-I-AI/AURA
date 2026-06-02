@@ -135,7 +135,8 @@ CI/CD pipeline. Next sprint is S31 (analytic depth — TBD).
 
 | Sprint | Owner | Branch | Started | Goal |
 |---|---|---|---|---|
-| _(no active feature branches)_ | — | — | — | — |
+| **S33** | Mounith | `feature/s33-verdict-significance` | 2026-06-02 | Backend significance-aware verdict (pairs with Rohith's S31f): ONE `significance_verdict()` rule routes the PDF + chat headline (both overclaimed) so the SIGNED compliance artifact never asserts a directional effect whose 95% CI straddles zero. Canonical verdict also attached to `rendered` (excluded from hash → Layer-10 intact). |
+| **S32** | Mounith | `feature/s32-dpc-sql-verification` | 2026-05-31 | _(paused — spec+plan landed)_ DPC dual-paradigm SQL verification for the chat path. Resumes after S33. |
 
 ## Completed (newest first)
 
