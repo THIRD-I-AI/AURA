@@ -56,7 +56,7 @@ def test_validate_drops_nan_rows_and_counts():
     df = pd.DataFrame({"t": rng.integers(0, 2, n), "y": rng.integers(0, 2, n),
                        "x": rng.normal(size=n)})
     df.loc[:9, "x"] = np.nan  # 10 missing
-    clean, dq = validate_and_prepare(df, _mapping())
+    clean, dq, _ = validate_and_prepare(df, _mapping())
     assert dq.n_dropped == 10 and dq.n_clean == n - 10
     assert clean["x"].isna().sum() == 0
     assert isinstance(dq, DataQuality)
@@ -74,7 +74,7 @@ def test_validate_binarises_continuous_treatment_and_flags():
     n = 200
     df = pd.DataFrame({"t": rng.normal(size=n), "y": rng.integers(0, 2, n),
                        "x": rng.normal(size=n)})
-    clean, dq = validate_and_prepare(df, _mapping())
+    clean, dq, _ = validate_and_prepare(df, _mapping())
     assert set(clean["t"].unique()) <= {0.0, 1.0}
     assert dq.treatment_is_binary is False
     assert any("binaris" in w.lower() for w in dq.warnings)
