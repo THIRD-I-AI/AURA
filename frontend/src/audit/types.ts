@@ -17,13 +17,30 @@ export interface Estimate {
   error?: string | null;
 }
 
+// S33 (backend) computes the significance-aware verdict once and attaches it to
+// the rendered block. The frontend reads this as the single source of truth so
+// the web certificate can never disagree with the signed PDF for the same hash.
+export type VerdictStatus = 'empty' | 'not_material' | 'not_significant' | 'detected';
+
+export interface RenderedVerdict {
+  status: VerdictStatus;
+  label: string;
+  avg?: number | null;
+  n_usable?: number;
+}
+
+export interface RenderedBlock {
+  verdict?: RenderedVerdict;
+  [k: string]: unknown;
+}
+
 export interface Artifact {
   audit_record_hash: string;
   estimates: Estimate[];
   refutations: unknown[];
   signature_status: string;
   signing_key_source: string;
-  rendered?: unknown;
+  rendered?: RenderedBlock;
   // S31b fail-safe: a live run that errored served the last-good sealed
   // artifact instead. Still a valid certificate, but worth noting to the user.
   degraded?: boolean;
