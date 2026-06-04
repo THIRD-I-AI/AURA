@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { auditApi } from './auditApi';
 import { useCsvPreview } from './useCsvPreview';
 import { validateMapping } from './validateMapping';
-import { nonNumericMappingErrors } from './mappingTypeGuard';
+import { mappingTypeGuard } from './mappingTypeGuard';
 import type { ColumnMapping } from './types';
 import { UploadStep } from './wizard/UploadStep';
 import { MapStep } from './wizard/MapStep';
@@ -24,16 +24,19 @@ export function AuditWizard() {
 
   const preview = useCsvPreview(file);
   const validation = useMemo(() => validateMapping(mapping, preview.columns), [mapping, preview.columns]);
-  const typeErrs = useMemo(() => nonNumericMappingErrors(mapping, preview.types), [mapping, preview.types]);
-  // Surface the numeric guard per role without masking a higher-priority
-  // required/collision error from validateMapping.
+  const guard = useMemo(
+    () => mappingTypeGuard(mapping, preview.columns, preview.types, preview.previewRows),
+    [mapping, preview.columns, preview.types, preview.previewRows],
+  );
+  // Blocking errors merge with validateMapping (required/collision takes priority);
+  // the backend auto-encodes the rest, surfaced as non-blocking notes.
   const mapErrors = {
-    treatment: validation.errors.treatment ?? typeErrs.treatment,
-    outcome: validation.errors.outcome ?? typeErrs.outcome,
-    confounders: validation.errors.confounders ?? typeErrs.confounders,
-    instrument: validation.errors.instrument ?? typeErrs.instrument,
+    treatment: validation.errors.treatment ?? guard.errors.treatment,
+    outcome: validation.errors.outcome ?? guard.errors.outcome,
+    confounders: validation.errors.confounders ?? guard.errors.confounders,
+    instrument: validation.errors.instrument ?? guard.errors.instrument,
   };
-  const mappingOk = validation.valid && Object.keys(typeErrs).length === 0;
+  const mappingOk = validation.valid && Object.keys(guard.errors).length === 0;
 
   const pickFile = async (f: File) => {
     setFile(f);
@@ -95,7 +98,7 @@ export function AuditWizard() {
       </div>
 
       {step === 0 && <UploadStep file={file} columns={preview.columns} previewRows={preview.previewRows} types={preview.types} uploading={uploading} error={uploadError} onPick={pickFile} />}
-      {step === 1 && <MapStep columns={preview.columns} mapping={mapping} errors={mapErrors} onChange={setMapping} />}
+      {step === 1 && <MapStep columns={preview.columns} mapping={mapping} errors={mapErrors} notes={guard.notes} onChange={setMapping} />}
       {step === 2 && <ReviewStep filename={filename} mapping={mapping} />}
 
       {runError && <p style={{ color: 'var(--red)' }}>{runError}</p>}

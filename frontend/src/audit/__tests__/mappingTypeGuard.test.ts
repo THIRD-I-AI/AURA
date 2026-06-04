@@ -1,34 +1,58 @@
 import { describe, expect, it } from 'vitest';
-import { nonNumericMappingErrors } from '../mappingTypeGuard';
+import { mappingTypeGuard } from '../mappingTypeGuard';
 import type { ColumnType } from '../csv';
 import type { ColumnMapping } from '../types';
 
 const types: Record<string, ColumnType> = {
-  race: 'string', sex: 'string', recid: 'number', priors: 'number', age: 'number',
+  race2: 'string', race3: 'string', sex: 'string', zip: 'string',
+  recid: 'number', priors: 'number', recid_str: 'string',
 };
+// columns + a sample whose distinct counts drive the guard.
+const columns = ['race2', 'race3', 'sex', 'zip', 'recid', 'priors', 'recid_str'];
+const rows = [
+  ['AA', 'AA', 'M', 'z1', '1', '3', 'yes'],
+  ['Cauc', 'Cauc', 'F', 'z2', '0', '1', 'no'],
+  ['AA', 'Hispanic', 'M', 'z3', '1', '2', 'yes'],
+  ['Cauc', 'Other', 'F', 'z4', '0', '0', 'no'],
+];
 
-describe('nonNumericMappingErrors', () => {
-  it('flags a non-numeric treatment regardless of cardinality (even 2 categories)', () => {
-    const m: ColumnMapping = { treatment: 'race', outcome: 'recid', confounders: ['priors'] };
-    expect(nonNumericMappingErrors(m, types).treatment).toMatch(/non-numeric|numbers/i);
+function guard(m: ColumnMapping) {
+  return mappingTypeGuard(m, columns, types, rows, /* cardCap */ 3);
+}
+
+describe('mappingTypeGuard', () => {
+  it('notes (does NOT block) a 2-category treatment — backend auto-encodes it', () => {
+    const g = guard({ treatment: 'race2', outcome: 'recid', confounders: ['priors'] });
+    expect(g.errors.treatment).toBeUndefined();
+    expect(g.notes.treatment).toMatch(/auto-encoded to 0\/1/i);
   });
 
-  it('flags non-numeric outcome, confounders, and instrument', () => {
-    const m: ColumnMapping = { treatment: 'priors', outcome: 'race', confounders: ['sex', 'age'], instrument: 'race' };
-    const errs = nonNumericMappingErrors(m, types);
-    expect(errs.outcome).toBeTruthy();
-    expect(errs.confounders).toContain('sex');
-    expect(errs.instrument).toBeTruthy();
+  it('blocks a >2-category treatment (backend requires a binary contrast)', () => {
+    const g = guard({ treatment: 'race3', outcome: 'recid', confounders: ['priors'] });
+    expect(g.errors.treatment).toMatch(/two groups|binary/i);
+    expect(g.notes.treatment).toBeUndefined();
   });
 
-  it('returns no errors when every mapped column is numeric', () => {
-    const m: ColumnMapping = { treatment: 'race_encoded', outcome: 'recid', confounders: ['priors', 'age'] };
-    const numTypes: Record<string, ColumnType> = { ...types, race_encoded: 'number' };
-    expect(nonNumericMappingErrors(m, numTypes)).toEqual({});
+  it('notes a low-cardinality categorical confounder (one-hot) but does not block', () => {
+    const g = guard({ treatment: 'recid', outcome: 'recid', confounders: ['sex'] });
+    expect(g.errors.confounders).toBeUndefined();
+    expect(g.notes.confounders).toMatch(/one-hot/i);
   });
 
-  it('ignores empty/unset roles', () => {
-    const m: ColumnMapping = { treatment: '', outcome: '', confounders: [] };
-    expect(nonNumericMappingErrors(m, types)).toEqual({});
+  it('blocks a high-cardinality categorical confounder', () => {
+    // zip has 4 distinct in the sample; cardCap=3 → high-cardinality.
+    const g = guard({ treatment: 'recid', outcome: 'recid', confounders: ['zip'] });
+    expect(g.errors.confounders).toMatch(/high-cardinality|bucket/i);
+  });
+
+  it('blocks a >2-category outcome but notes a binary string outcome', () => {
+    expect(guard({ treatment: 'race2', outcome: 'race3', confounders: ['priors'] }).errors.outcome).toBeTruthy();
+    expect(guard({ treatment: 'priors', outcome: 'recid_str', confounders: ['priors'] }).notes.outcome).toMatch(/0\/1/);
+  });
+
+  it('numeric columns produce no errors and no notes', () => {
+    const g = guard({ treatment: 'recid', outcome: 'priors', confounders: ['priors'] });
+    expect(g.errors).toEqual({});
+    expect(g.notes).toEqual({});
   });
 });
