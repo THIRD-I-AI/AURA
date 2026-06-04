@@ -78,4 +78,23 @@ describe('Certificate', () => {
     expect(screen.getByTestId('certificate')).toHaveTextContent(/not statistically significant/i);
     expect(screen.getByTestId('certificate')).not.toHaveTextContent(/disparate impact detected/i);
   });
+
+  it('prefers the backend signed verdict (rendered.verdict.label) over the local rule', () => {
+    // Local rule on these estimates would say "detected" (material, CI excludes 0);
+    // the backend verdict must win so the web cert matches the signed PDF.
+    const withRendered: Artifact = {
+      ...artifact,
+      estimates: [{ method: 'tmle', point: 0.08, ci_lower: 0.01, ci_upper: 0.15 }],
+      rendered: { verdict: { status: 'not_significant', label: 'Server verdict: not statistically significant after adjustment.' } },
+    };
+    render(<MemoryRouter><Certificate artifact={withRendered} /></MemoryRouter>);
+    expect(screen.getByTestId('certificate')).toHaveTextContent('Server verdict: not statistically significant after adjustment.');
+    expect(screen.getByTestId('certificate')).not.toHaveTextContent(/disparate impact detected/i);
+  });
+
+  it('falls back to the local verdict when the artifact has no rendered block (verify page)', () => {
+    // `artifact` has no `rendered`; its tmle 0.08 [0.01,0.15] is material + significant.
+    render(<MemoryRouter><Certificate artifact={artifact} /></MemoryRouter>);
+    expect(screen.getByTestId('certificate')).toHaveTextContent(/disparate impact detected/i);
+  });
 });

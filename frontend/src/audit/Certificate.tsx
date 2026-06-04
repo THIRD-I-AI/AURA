@@ -63,7 +63,10 @@ export function Certificate({ artifact, verifyResult, readOnly = false }: {
       )}
 
       <h1 style={{ fontSize: 'var(--font-2xl)', margin: 'var(--space-5) 0 var(--space-2)' }}>Audit Certificate</h1>
-      <p style={{ color: 'var(--text-secondary)', marginBottom: 'var(--space-6)' }}>{verdict(artifact)}</p>
+      {/* Prefer the backend's signed verdict (S33) so the web cert matches the
+          PDF exactly; fall back to the local rule when `rendered` is absent
+          (e.g. the public verify page reconstructs an artifact without it). */}
+      <p style={{ color: 'var(--text-secondary)', marginBottom: 'var(--space-6)' }}>{artifact.rendered?.verdict?.label ?? verdict(artifact)}</p>
 
       <div style={{ textAlign: 'left', background: 'var(--bg-base)', borderRadius: 'var(--radius-md)', padding: 'var(--space-4)', marginBottom: 'var(--space-6)' }}>
         <div style={{ fontSize: 'var(--font-xs)', textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--text-tertiary)' }}>Record hash</div>
