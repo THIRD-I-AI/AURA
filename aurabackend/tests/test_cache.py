@@ -37,9 +37,11 @@ async def test_get_missing_key():
 @pytest.mark.asyncio
 async def test_get_expired_key():
     cache = InMemoryCache(default_ttl=60)
-    await cache.set("k1", "v1", ttl=0)
-    # Immediately expired (ttl=0 means expires_at = monotonic() + 0)
-    await asyncio.sleep(0.01)
+    # ttl < 0 puts expires_at in the past, so the entry is expired
+    # deterministically. (ttl=0 + a short sleep was flaky on Windows, where the
+    # monotonic clock granularity is ~15ms and get() uses a strict `>` compare,
+    # so a 10ms sleep didn't always advance past expires_at.)
+    await cache.set("k1", "v1", ttl=-1)
     assert await cache.get("k1") is None
 
 
