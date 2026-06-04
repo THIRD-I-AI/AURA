@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from typing import List, Optional, Tuple
 
+import numpy as np
 import pandas as pd
 from pydantic import BaseModel
 
@@ -47,22 +48,120 @@ class DataQuality(BaseModel):
     warnings: List[str] = []
 
 
-def validate_and_prepare(df: pd.DataFrame, mapping: dict) -> Tuple[pd.DataFrame, DataQuality]:
-    """Coerce mapped columns to numeric, drop rows with missing values, enforce a
-    minimum sample size, and binarise a non-binary treatment at its median.
-    Raises ValueError (→ a clear 400 / failed job) on unrecoverable problems."""
+CARD_CAP = 12
+
+
+def _binarise_categorical(work: pd.DataFrame, col: str, role: str, warnings: List[str]) -> None:
+    """Encode a 2-value treatment/outcome/instrument to 0/1 in place. Numeric 0/1
+    is left as-is; a continuous numeric column is left for the median-binariser;
+    a non-numeric column with >2 categories raises (the contrast must be binary)."""
+    uniq = sorted(work[col].dropna().unique().tolist())
+    numeric = pd.api.types.is_numeric_dtype(work[col])
+    if numeric and set(uniq) <= {0, 1}:
+        return
+    if len(uniq) == 2:
+        lo, hi = uniq[0], uniq[1]
+        work[col] = work[col].where(work[col].isna(), (work[col] == hi).astype(float))
+        warnings.append(f"{role} '{col}' encoded: {lo}=0, {hi}=1")
+    elif numeric:
+        return  # continuous → existing median-binarisation handles it downstream
+    else:
+        raise ValueError(
+            f"{role} '{col}' has {len(uniq)} categories; the audit needs a binary "
+            "contrast — filter to two groups or pick a reference."
+        )
+
+
+def encode_for_audit(
+    df: pd.DataFrame, mapping: dict, card_cap: int = CARD_CAP
+) -> Tuple[pd.DataFrame, dict, List[str]]:
+    """Auto-encode categorical columns so a raw real-world CSV can be audited
+    without manual numeric encoding. Returns (encoded_df, effective_mapping,
+    warnings). The effective mapping carries the encoded confounder column names
+    (one-hot dummies) so the DAG adjusts on them.
+
+    Raises ValueError on a >2-category treatment/outcome/instrument or a
+    high-cardinality categorical confounder (> ``card_cap``)."""
+    work = df.copy()
+    eff = dict(mapping)
+    warnings: List[str] = []
+
     treatment = mapping["treatment"]
     outcome = mapping["outcome"]
     confounders = list(mapping.get("confounders") or [])
     instrument = mapping.get("instrument")
-    cols = [treatment, outcome, *confounders] + ([instrument] if instrument else [])
 
-    missing = [c for c in cols if c not in df.columns]
+    _binarise_categorical(work, treatment, "treatment", warnings)
+
+    if not pd.api.types.is_numeric_dtype(work[outcome]):
+        uniq = sorted(work[outcome].dropna().unique().tolist())
+        if len(uniq) == 2:
+            work[outcome] = work[outcome].where(
+                work[outcome].isna(), (work[outcome] == uniq[1]).astype(float)
+            )
+            warnings.append(f"outcome '{outcome}' encoded: {uniq[0]}=0, {uniq[1]}=1")
+        else:
+            raise ValueError(
+                f"outcome '{outcome}' must be numeric or binary (has {len(uniq)} categories)."
+            )
+
+    if instrument:
+        _binarise_categorical(work, instrument, "instrument", warnings)
+
+    new_confounders: List[str] = []
+    for c in confounders:
+        if pd.api.types.is_numeric_dtype(work[c]):
+            new_confounders.append(c)
+            continue
+        distinct = work[c].dropna().nunique()
+        if distinct > card_cap:
+            raise ValueError(
+                f"confounder '{c}' has {distinct} categories (> {card_cap}); "
+                "drop or bucket it before auditing."
+            )
+        mask_na = work[c].isna()
+        dummies = pd.get_dummies(work[c], prefix=c, drop_first=True).astype(float)
+        # Missing categoricals must propagate to NaN so the downstream dropna
+        # removes those rows (rather than silently treating NaN as the reference).
+        dummies.loc[mask_na, :] = np.nan
+        work = work.drop(columns=[c])
+        for dcol in dummies.columns:
+            work[dcol] = dummies[dcol]
+        new_confounders.extend(list(dummies.columns))
+        warnings.append(
+            f"confounder '{c}' one-hot encoded → {', '.join(dummies.columns)} (drop-first)"
+        )
+    eff["confounders"] = new_confounders
+
+    return work, eff, warnings
+
+
+def validate_and_prepare(
+    df: pd.DataFrame, mapping: dict
+) -> Tuple[pd.DataFrame, DataQuality, dict]:
+    """Auto-encode categorical columns (see ``encode_for_audit``), coerce mapped
+    columns to numeric, drop rows with missing values, enforce a minimum sample
+    size, and binarise a non-binary treatment at its median. Returns
+    ``(clean_df, DataQuality, effective_mapping)`` — the effective mapping carries
+    the encoded column names so the DAG adjusts on them. Raises ValueError (→ a
+    clear 400 / failed job) on unrecoverable problems."""
+    # Validate the user's mapped columns exist before we touch the frame.
+    orig_cols = [mapping["treatment"], mapping["outcome"], *(mapping.get("confounders") or [])]
+    if mapping.get("instrument"):
+        orig_cols.append(mapping["instrument"])
+    missing = [c for c in orig_cols if c not in df.columns]
     if missing:
         raise ValueError(f"columns not found in data: {missing}")
 
-    warnings: List[str] = []
-    work = df[cols].copy()
+    encoded, eff, warnings = encode_for_audit(df, mapping)
+
+    treatment = eff["treatment"]
+    outcome = eff["outcome"]
+    confounders = list(eff.get("confounders") or [])
+    instrument = eff.get("instrument")
+    cols = [treatment, outcome, *confounders] + ([instrument] if instrument else [])
+
+    work = encoded[cols].copy()
     for c in cols:
         coerced = pd.to_numeric(work[c], errors="coerce")
         if coerced.isna().sum() > work[c].isna().sum():
@@ -96,7 +195,7 @@ def validate_and_prepare(df: pd.DataFrame, mapping: dict) -> Tuple[pd.DataFrame,
         n_input=n_input, n_clean=n_clean, n_dropped=n_dropped,
         treatment_is_binary=treatment_is_binary, warnings=warnings,
     )
-    return work.reset_index(drop=True), dq
+    return work.reset_index(drop=True), dq, eff
 
 
 def select_methods(instrument: Optional[str]) -> List[str]:

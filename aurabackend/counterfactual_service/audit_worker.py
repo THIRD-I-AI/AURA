@@ -37,9 +37,11 @@ def run_audit_subprocess(payload: Dict[str, Any]) -> Dict[str, Any]:
     from .renderers import render
 
     df = _resolve_dataset(f"uploaded_file:{payload['uploaded_file']}")
-    clean_df, dq = validate_and_prepare(df, payload)
-    query = build_query_from_mapping(clean_df, payload)
-    methods = select_methods(payload.get("instrument"))
+    # `eff` carries the auto-encoded column names (one-hot dummies, etc.) so the
+    # DAG + identification statement adjust on the columns actually used.
+    clean_df, dq, eff = validate_and_prepare(df, payload)
+    query = build_query_from_mapping(clean_df, eff)
+    methods = select_methods(eff.get("instrument"))
 
     # Bound the LLM adversarial critic so a numeric audit never blocks on a
     # slow/rate-limited provider (the COMPAS run hung here). Deterministic
@@ -50,7 +52,7 @@ def run_audit_subprocess(payload: Dict[str, Any]) -> Dict[str, Any]:
     artifact.rendered = render(artifact, query.audience)
 
     result = artifact.model_dump(mode="json")
-    result["identification"] = identification_statement(payload)
+    result["identification"] = identification_statement(eff)
     result["sensitivity_headline"] = sensitivity_headline(result)
     result["data_quality"] = dq.model_dump()
     return result
