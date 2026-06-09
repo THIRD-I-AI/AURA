@@ -20,13 +20,15 @@ import uuid
 from typing import Any, Dict, List, Literal, Optional
 
 import pandas as pd
-from fastapi import HTTPException
+from fastapi import Depends, HTTPException
 from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, Field
 
+from shared.auth import require_user
+from shared.exceptions import ForbiddenError
 from shared.service_factory import create_service
 
-from . import pdf_renderer, persistence, signing
+from . import pdf_renderer, persistence, signing, cryptography
 from .audit_worker import get_audit_pool, run_audit_subprocess
 from .demo_scenarios import get_scenario, list_scenarios
 from .engine import dowhy_available, run_job
@@ -460,6 +462,30 @@ async def get_public_key() -> Dict[str, Any]:
         # 501 — feature unavailable in this deployment, not transient.
         raise HTTPException(501, "signing unavailable — cryptography not installed")
     return {"public_key_pem": pem, "key_source": signing.signing_key_source()}
+
+@app.get("/jwks")
+async def jwks_endpoint() -> Dict[str, Any]:
+    """Returns the JSON Web Key Set (JWKS) for ED25519 public keys."""
+    try:
+        return cryptography.get_jwks()
+    except Exception as e:
+        logger.error(f"Error fetching JWKS: {e}")
+        raise HTTPException(status_code=500, detail="Internal Server Error")
+
+async def _require_admin(user: Dict[str, Any] = Depends(require_user)) -> Dict[str, Any]:
+    """Admin gate for privileged mutations. Requires a valid bearer token whose
+    claims carry role == "admin". Fails closed: without auth wired/token present,
+    the route 401s rather than allowing an anonymous key revocation."""
+    if (user or {}).get("role") != "admin":
+        raise ForbiddenError("admin role required to revoke signing keys")
+    return user
+
+
+@app.post("/counterfactual/admin/revoke-key", dependencies=[Depends(_require_admin)])
+async def revoke_key(kid: str) -> Dict[str, str]:
+    """Soft revokes an ED25519 key. Admin-only (see _require_admin)."""
+    cryptography.soft_revoke_key(kid)
+    return {"status": "success", "revoked_kid": kid, "message": "Key has been soft revoked."}
 
 
 # ── Sprint 13 — Auditor bulk-replay ───────────────────────────────────

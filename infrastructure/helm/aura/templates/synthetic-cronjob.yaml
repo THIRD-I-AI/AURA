@@ -1,0 +1,19 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: aura-synthetic-monitor
+spec:
+  schedule: "*/5 * * * *" # Run every 5 minutes to continuously monitor API Gateway and DLQ routing
+  concurrencyPolicy: Forbid
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          containers:
+          - name: synthetic-monitor
+            image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+            command: ["python", "tests_contract/synthetic_monitor.py"]
+            env:
+            - name: TARGET_ENDPOINT
+              value: "http://aura-ingestion-service.default.svc.cluster.local:8000"
+          restartPolicy: OnFailure

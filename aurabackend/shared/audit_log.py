@@ -188,6 +188,21 @@ def audit_event(kind: str, payload: Dict[str, Any]) -> None:
     get_writer().append(kind, payload)
 
 
+def audit_human_override(ai_record_hash: str, human_auditor_id: str, rationale: str, approved: bool) -> None:
+    """
+    PCAOB AS 1215 Compliance: Documenting Contradictions.
+    Records a human auditor's explicit override or approval of an autonomous AI finding.
+    The original AI finding's record_hash is immutably linked here, ensuring both 
+    the AI's initial assessment and the human's professional judgment are preserved.
+    """
+    get_writer().append("human_override", {
+        "original_finding_hash": ai_record_hash,
+        "human_auditor_id": human_auditor_id,
+        "action": "approved" if approved else "overridden",
+        "rationale": rationale,
+    })
+
+
 # ── Verifier (used by the auditor sidecar / CLI) ──────────────────────
 
 def verify_chain(path: Path) -> Dict[str, Any]:
