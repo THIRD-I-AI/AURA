@@ -6,7 +6,9 @@ See docs/superpowers/specs/2026-05-31-dpc-sql-verification-design.md.
 """
 from __future__ import annotations
 
+import asyncio
 import math
+import os
 from typing import Any, List, Literal, Optional, Tuple
 
 import numpy as np
@@ -268,3 +270,60 @@ def generate_pandas_solution(question: str, df: pd.DataFrame, llm: Any) -> str:
     if not expr:
         raise RuntimeError("no pandas expression parsed from LLM output")
     return expr
+
+
+# ── Config ────────────────────────────────────────────────────────────────
+
+def dpc_enabled() -> bool:
+    return os.getenv("AURA_DPC_ENABLED", "1") != "0"
+
+
+def dpc_timeout() -> float:
+    return float(os.getenv("AURA_DPC_TIMEOUT_S", "10"))
+
+
+def dpc_max_rows() -> int:
+    return int(os.getenv("AURA_DPC_MAX_ROWS", "200000"))
+
+
+def dpc_max_retries() -> int:
+    return int(os.getenv("AURA_DPC_MAX_RETRIES", "1"))
+
+
+# ── Bounded orchestrator ──────────────────────────────────────────────────
+
+def _skipped(reason: str) -> VerificationResult:
+    return VerificationResult(status="skipped", verified=None, reason=reason)
+
+
+async def _verify_inner(question, sql, sql_columns, sql_rows, tools, llm, max_rows, tol):
+    table = extract_single_table(sql)
+    if table is None:
+        return _skipped("multi-table or unparseable query not yet cross-verified")
+    df = await materialize_table(table, tools, max_rows)
+    if df is None:
+        return _skipped("dataset too large or unreadable to cross-verify")
+    expr = await asyncio.to_thread(generate_pandas_solution, question, df, llm)
+    result = await asyncio.to_thread(safe_eval_pandas, expr, df)
+    agree = results_agree(sql_columns, sql_rows, result, tol)
+    return VerificationResult(
+        status="verified" if agree else "mismatch",
+        verified=agree,
+        reason=("independent pandas computation agrees"
+                if agree else "independent pandas computation disagrees"),
+        pandas_expr=expr,
+    )
+
+
+async def verify_sql_result(question, sql, sql_columns, sql_rows, tools, llm, *,
+                            timeout: float, max_rows: int, tol: float = 1e-6) -> VerificationResult:
+    """One bounded verification pass. Never raises — any failure → `skipped`."""
+    try:
+        return await asyncio.wait_for(
+            _verify_inner(question, sql, sql_columns, sql_rows, tools, llm, max_rows, tol),
+            timeout=timeout,
+        )
+    except asyncio.TimeoutError:
+        return _skipped(f"cross-check exceeded {timeout:g}s")
+    except Exception as exc:
+        return _skipped(f"cross-check error: {type(exc).__name__}")

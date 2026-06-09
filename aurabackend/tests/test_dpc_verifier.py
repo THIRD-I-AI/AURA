@@ -190,3 +190,51 @@ def test_generate_pandas_solution_raises_when_unavailable():
 
     with pytest.raises(RuntimeError):
         generate_pandas_solution("q", pd.DataFrame({"v": [1]}), _Down(""))
+
+
+from agents.dpc_verifier import dpc_enabled, dpc_max_rows, dpc_timeout, verify_sql_result
+
+_TABLE = {"columns": ["g", "v"], "rows": [["a", 1], ["a", 2], ["b", 3]]}
+
+
+def _verify(sql, sql_cols, sql_rows, pandas_expr, table=_TABLE, max_rows=1000, timeout=5.0):
+    return asyncio.run(verify_sql_result(
+        "total v", sql, sql_cols, sql_rows, _tools(table), _FixedLLM(pandas_expr),
+        timeout=timeout, max_rows=max_rows, tol=1e-6,
+    ))
+
+
+def test_verify_sql_result_verified():
+    vr = _verify('SELECT SUM("v") AS s FROM "t"', ["s"], [[6]], 'df["v"].sum()')
+    assert vr.status == "verified" and vr.verified is True
+    assert vr.pandas_expr == 'df["v"].sum()'
+
+
+def test_verify_sql_result_mismatch():
+    vr = _verify('SELECT SUM("v") AS s FROM "t"', ["s"], [[5]], 'df["v"].sum()')
+    assert vr.status == "mismatch" and vr.verified is False
+
+
+def test_verify_sql_result_skips_multi_table():
+    vr = _verify('SELECT 1 FROM "t1" JOIN "t2" ON 1=1', ["s"], [[1]], 'df["v"].sum()')
+    assert vr.status == "skipped" and vr.verified is None
+    assert "multi-table" in vr.reason.lower() or "single" in vr.reason.lower()
+
+
+def test_verify_sql_result_skips_oversized():
+    vr = _verify('SELECT SUM("v") AS s FROM "t"', ["s"], [[6]], 'df["v"].sum()', max_rows=1)
+    assert vr.status == "skipped" and "large" in vr.reason.lower()
+
+
+def test_verify_sql_result_skips_on_bad_pandas():
+    # Denylisted pandas expr → AST-rejected → skipped (never crashes the caller).
+    vr = _verify('SELECT SUM("v") AS s FROM "t"', ["s"], [[6]], 'os.system("x")')
+    assert vr.status == "skipped"
+
+
+def test_config_readers_defaults(monkeypatch):
+    for k in ("AURA_DPC_ENABLED", "AURA_DPC_TIMEOUT_S", "AURA_DPC_MAX_ROWS"):
+        monkeypatch.delenv(k, raising=False)
+    assert dpc_enabled() is True
+    assert dpc_timeout() == 10.0
+    assert dpc_max_rows() == 200000
