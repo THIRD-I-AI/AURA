@@ -100,3 +100,17 @@ def test_run_full_audit_clean_batch_no_findings(monkeypatch):
         [{"po_number": "PO-1"}], [{"invoice_number": "I", "po_number": "PO-1"}],
         [{"internal_id": "J", "amount": 123.45, "account_code": "6000", "vendor_id": "V"}]))
     assert result["findings"] == []
+
+
+def test_client_view_redacts_evidence_but_artifact_keeps_raw(monkeypatch):
+    _store(monkeypatch)
+    doc = fr.build_completion_document("t1", [{"pcaob_standard": "AS 2201", "risk_level": "Medium",
+        "description": "unmatched", "evidence_payload": {"invoice": {"employee_name": "Ada", "po_number": "x"}},
+        "requires_human_review": True}], "f" * 64, 50000.0)
+    stored = fr.sign_and_persist(doc)
+    view = fr.client_view(stored)
+    # Egress view is redacted ...
+    assert view["findings"][0]["evidence_payload"]["invoice"]["employee_name"] == "[REDACTED]"
+    # ... but the signed artifact retains raw evidence AND still verifies.
+    assert stored["findings"][0]["evidence_payload"]["invoice"]["employee_name"] == "Ada"
+    assert fr.verify_report(stored["record_hash"])["verified"] is True

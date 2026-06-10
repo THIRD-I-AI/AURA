@@ -96,3 +96,13 @@ def verify_report(record_hash: str) -> Dict[str, Any]:
           and signing.verify_bytes(canonical, sig))
     return {"verified": bool(ok), "record_hash": record_hash,
             "signature_status": art.get("signature_status")}
+
+
+def client_view(report: Dict[str, Any]) -> Dict[str, Any]:
+    """Egress projection: a deep copy with PII redacted in the findings. The
+    signed/persisted artifact is never mutated — redaction is display-only and
+    must never feed back into the hash/signature."""
+    from shared.pii_masking import redact_pii
+    view = json.loads(json.dumps(report))
+    view["findings"] = redact_pii(view.get("findings", []))
+    return view
