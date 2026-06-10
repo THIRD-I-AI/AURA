@@ -70,3 +70,33 @@ def test_revoked_key_yields_unsigned(monkeypatch):
     monkeypatch.setattr(fr.cryptography, "is_revoked", lambda kid=None: True)
     stored = fr.sign_and_persist(_doc())
     assert stored["signature_status"] == "unsigned"
+
+
+import asyncio
+
+
+def test_run_full_audit_spans_standards(monkeypatch):
+    import agents.specialists.financial_auditor as fa
+    monkeypatch.setattr(fa, "audit_event", lambda *a, **k: None)
+    agent = fa.FinancialAuditorAgent(tenant_id="t1")
+    ledger = [{"internal_id": "L1", "account_code": "4000", "amount": 250000.0}]   # AS 2305 variance
+    pos = [{"po_number": "PO-1"}]
+    invoices = [{"invoice_number": "INV-9", "po_number": "PO-MISSING",
+                 "employee_name": "Ada Lovelace"}]                                  # AS 2201 unmatched
+    jes = [{"internal_id": "J1", "amount": 5000.0, "account_code": "6000", "vendor_id": "V1"},
+           {"internal_id": "J2", "amount": 5000.0, "account_code": "6000", "vendor_id": "V1"}]  # AS 2401 dup+round
+    result = asyncio.run(agent.run_full_audit(ledger, pos, invoices, jes))
+    stds = {f.pcaob_standard for f in result["findings"]}
+    assert {"AS 2305", "AS 2201", "AS 2401"}.issubset(stds)
+    assert result["materiality_threshold"] == 50000.0
+
+
+def test_run_full_audit_clean_batch_no_findings(monkeypatch):
+    import agents.specialists.financial_auditor as fa
+    monkeypatch.setattr(fa, "audit_event", lambda *a, **k: None)
+    agent = fa.FinancialAuditorAgent(tenant_id="t1")
+    result = asyncio.run(agent.run_full_audit(
+        [{"internal_id": "L", "account_code": "4000", "amount": 100.0}],
+        [{"po_number": "PO-1"}], [{"invoice_number": "I", "po_number": "PO-1"}],
+        [{"internal_id": "J", "amount": 123.45, "account_code": "6000", "vendor_id": "V"}]))
+    assert result["findings"] == []

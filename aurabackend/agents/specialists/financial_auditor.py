@@ -128,3 +128,14 @@ class FinancialAuditorAgent:
                 audit_event("as2401_fraud_risk_round_dollar", finding.model_dump())
 
         return findings
+
+    async def run_full_audit(self, ledger, purchase_orders, invoices, journal_entries,
+                             historical_reports=None):
+        """Run AS-2110/2305/2201/2401 over RAW inputs (fraud cross-checks need the
+        real employee/vendor fields). Returns {findings, materiality_threshold}."""
+        risk = await self.execute_as2110_risk_assessment(historical_reports or [])
+        findings = []
+        findings += await self.execute_as2305_analytical_procedures(ledger)
+        findings += await self.execute_as2201_internal_controls(purchase_orders, invoices)
+        findings += await self.execute_as2401_fraud_detection(journal_entries)
+        return {"findings": findings, "materiality_threshold": risk["materiality_threshold"]}
