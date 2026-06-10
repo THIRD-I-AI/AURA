@@ -9,7 +9,7 @@ logger = logging.getLogger("aura.agents.financial_auditor")
 
 # "Who performed the work" for PCAOB AS-1215 §.06 provenance — bump on any
 # change to the audit logic so the completion document records which model ran.
-FINANCIAL_AUDITOR_VERSION = "0.1.0"
+FINANCIAL_AUDITOR_VERSION = "0.2.0"
 
 class AuditFinding(BaseModel):
     pcaob_standard: str = Field(..., description="The relevant PCAOB standard (e.g., 'AS 2305')")

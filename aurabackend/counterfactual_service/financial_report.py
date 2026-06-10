@@ -35,6 +35,15 @@ def dataset_fingerprint(ledger, purchase_orders, invoices, journal_entries) -> s
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
 
+def _finding_id(index: int, finding: Dict[str, Any]) -> str:
+    """Stable per-finding identity, index-salted so content-identical
+    findings stay distinct. Assigned BEFORE signing so ids are covered
+    by the report signature (S34b HITL decisions reference them)."""
+    return hashlib.sha256(
+        canonical_dumps({"i": index, "finding": finding}).encode("utf-8")
+    ).hexdigest()
+
+
 def build_completion_document(tenant_id: str, findings: List[Any], fingerprint: str,
                               materiality: float) -> Dict[str, Any]:
     """Assemble the AS-1215 §.12 Engagement Completion Document."""
@@ -48,7 +57,10 @@ def build_completion_document(tenant_id: str, findings: List[Any], fingerprint: 
         "tenant_id": tenant_id,
         "dataset_fingerprint": fingerprint,
         "materiality_threshold": materiality,
-        "findings": [_as_dict(f) for f in findings],
+        "findings": [
+            {**_as_dict(f), "finding_id": _finding_id(i, _as_dict(f))}
+            for i, f in enumerate(findings)
+        ],
         "risk_counts": risk_counts,
         "n_findings": len(findings),
         "performed_by": {"agent": "FinancialAuditorAgent", "version": FINANCIAL_AUDITOR_VERSION},
