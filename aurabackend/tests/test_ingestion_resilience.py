@@ -71,3 +71,36 @@ def test_publish_works_when_broker_up(live_broker):
     asyncio.run(p.start())
     asyncio.run(p.publish_with_retry("t", {"x": 1}, partition_key="k"))
     assert p.producer.sent == [("t", {"x": 1}, "k")]
+
+
+# ── Task 2: lifespan + auditable publish failure ─────────────────────
+
+
+def test_process_raw_batch_audits_publish_failure(dead_broker, monkeypatch):
+    import ingestion_service.main as im
+
+    events = []
+    monkeypatch.setattr(im, "audit_event", lambda kind, payload: events.append((kind, payload)))
+    monkeypatch.setattr(im.kafka_producer, "producer", None)
+    payload = im.RawIngestionPayload(
+        tenant_id="t1", batch_id="b1",
+        entries=[{"tranId": "X1", "account": {"number": "4000"},
+                  "amount": 10.0, "tranDate": "2026-06-01"}],
+    )
+    asyncio.run(im.process_raw_batch_async(payload, "NetSuite"))  # must NOT raise
+    kinds = [k for k, _ in events]
+    assert "ingestion_publish_failed" in kinds
+    failed = dict(events)["ingestion_publish_failed"]
+    assert failed["batch_id"] == "b1" and failed["entry_count"] == 1
+
+
+def test_app_boots_with_broker_down(dead_broker, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    import ingestion_service.main as im
+
+    monkeypatch.setattr(im.kafka_producer, "producer", None)
+    # on_event hooks must be gone — startup/shutdown live in the lifespan.
+    assert im.app.router.on_startup == [] and im.app.router.on_shutdown == []
+    with TestClient(im.app) as client:                      # runs the lifespan
+        assert client.get("/health").status_code == 200

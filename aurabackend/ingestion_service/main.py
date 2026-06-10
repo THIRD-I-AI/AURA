@@ -1,22 +1,35 @@
 from __future__ import annotations
 
 import logging
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, AsyncGenerator, Dict, List, Optional
 
-from fastapi import BackgroundTasks, Depends, HTTPException, Request
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from shared.audit_log import audit_event
 from shared.service_factory import create_service
 
+from .kafka_client import KafkaUnavailableError, kafka_producer
+
 logger = logging.getLogger("aura.ingestion")
+
+
+@asynccontextmanager
+async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
+    # Tolerant start: a broker outage degrades publishes, never boot.
+    await kafka_producer.start()
+    yield
+    await kafka_producer.stop()
+
 
 # Initialize the service using AURA's factory
 app = create_service(
     name="Ingestion Gateway",
     service_tag="ingestion_service",
     description="Headless API Gateway for Composable ERP integrations.",
+    lifespan=_lifespan,
 )
 
 from shared.pii_masking import PIIMaskingMiddleware
@@ -42,16 +55,7 @@ def map_erc_to_internal_id(erc: str, system_origin: str) -> str:
 
 from .erp_adapters.netsuite import NetSuiteAdapter
 from .erp_adapters.workday import WorkdayAdapter
-from .kafka_client import kafka_producer
 
-
-@app.on_event("startup")
-async def startup_event():
-    await kafka_producer.start()
-
-@app.on_event("shutdown")
-async def shutdown_event():
-    await kafka_producer.stop()
 
 async def process_raw_batch_async(payload: RawIngestionPayload, system_origin: str):
     """
@@ -69,11 +73,23 @@ async def process_raw_batch_async(payload: RawIngestionPayload, system_origin: s
 
         normalized_entries.append(norm_entry.model_dump())
 
-    await kafka_producer.publish_with_retry(
-        topic="aura.ledger.ingested",
-        payload={"batch_id": payload.batch_id, "entries": normalized_entries},
-        partition_key=payload.tenant_id
-    )
+    try:
+        await kafka_producer.publish_with_retry(
+            topic="aura.ledger.ingested",
+            payload={"batch_id": payload.batch_id, "entries": normalized_entries},
+            partition_key=payload.tenant_id
+        )
+    except KafkaUnavailableError as exc:
+        # The batch was already 202-accepted; the WORM trail is the
+        # traceability contract for what happened to it.
+        logger.critical(f"Batch {payload.batch_id} NOT published: {exc}")
+        audit_event("ingestion_publish_failed", {
+            "batch_id": payload.batch_id,
+            "system_origin": system_origin,
+            "entry_count": len(normalized_entries),
+            "error": str(exc),
+        })
+        return
 
     audit_event("ingestion_batch_processed", {
         "batch_id": payload.batch_id,
