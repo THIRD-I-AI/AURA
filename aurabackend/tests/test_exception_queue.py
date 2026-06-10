@@ -51,3 +51,73 @@ def test_finding_ids_are_signed(monkeypatch):
     assert fr.verify_report(stored["record_hash"])["verified"] is True
     store[stored["record_hash"]]["findings"][0]["finding_id"] = "0" * 64  # tamper
     assert fr.verify_report(stored["record_hash"])["verified"] is False
+
+
+# ── Task 3: queue module ─────────────────────────────────────────────
+
+from counterfactual_service import exception_queue as eq  # noqa: E402
+
+
+def _signed_report(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_ARTIFACT_DIR", str(tmp_path))
+    store = _store(monkeypatch)
+    worm: list = []
+    monkeypatch.setattr(eq, "audit_human_override",
+                        lambda *a: worm.append(a))
+    doc = fr.build_completion_document("t1", [
+        {"pcaob_standard": "AS 2201", "risk_level": "Medium", "description": "unmatched",
+         "evidence_payload": {"invoice": {"employee_name": "Ada", "po_number": "x"}},
+         "requires_human_review": True},
+        {"pcaob_standard": "AS 2305", "risk_level": "High", "description": "variance",
+         "evidence_payload": {"entry_id": "L1"}, "requires_human_review": True},
+        {"pcaob_standard": "AS 2110", "risk_level": "Low", "description": "info only",
+         "evidence_payload": {}, "requires_human_review": False},
+    ], "f" * 64, 50000.0)
+    return store, worm, fr.sign_and_persist(doc)
+
+
+def test_pending_lists_only_unreviewed_and_redacts(monkeypatch, tmp_path):
+    _, _, report = _signed_report(monkeypatch, tmp_path)
+    q = eq.pending_exceptions(report["record_hash"])
+    assert q["n_pending"] == 2 and q["n_decided"] == 0
+    assert {p["pcaob_standard"] for p in q["pending"]} == {"AS 2201", "AS 2305"}
+    assert q["pending"][0]["evidence_payload"]["invoice"]["employee_name"] == "[REDACTED]"
+    # Egress redaction must NOT leak back into the stored artifact.
+    assert report["findings"][0]["evidence_payload"]["invoice"]["employee_name"] == "Ada"
+
+
+def test_record_decision_signs_worm_logs_and_shrinks_queue(monkeypatch, tmp_path):
+    _, worm, report = _signed_report(monkeypatch, tmp_path)
+    fid = report["findings"][0]["finding_id"]
+    decision = eq.record_decision(report["record_hash"], fid,
+                                  "auditor-7", "manual review: legit invoice", approved=False)
+    assert decision["document_type"] == "HumanOverrideRecord"
+    assert decision["signature_status"] == "signed"
+    assert fr.verify_report(decision["record_hash"])["verified"] is True
+    assert worm == [(fid, "auditor-7", "manual review: legit invoice", False)]
+    q = eq.pending_exceptions(report["record_hash"])
+    assert q["n_pending"] == 1 and q["n_decided"] == 1
+    assert fid not in {p["finding_id"] for p in q["pending"]}
+
+
+def test_double_decision_conflict(monkeypatch, tmp_path):
+    _, _, report = _signed_report(monkeypatch, tmp_path)
+    fid = report["findings"][0]["finding_id"]
+    eq.record_decision(report["record_hash"], fid, "a1", "ok", approved=True)
+    with pytest.raises(eq.AlreadyDecidedError):
+        eq.record_decision(report["record_hash"], fid, "a2", "again", approved=False)
+
+
+def test_unknown_report_and_finding(monkeypatch, tmp_path):
+    _, _, report = _signed_report(monkeypatch, tmp_path)
+    with pytest.raises(LookupError):
+        eq.pending_exceptions("0" * 64)
+    with pytest.raises(LookupError):
+        eq.record_decision(report["record_hash"], "0" * 64, "a", "r", approved=True)
+
+
+def test_empty_rationale_rejected(monkeypatch, tmp_path):
+    _, _, report = _signed_report(monkeypatch, tmp_path)
+    fid = report["findings"][0]["finding_id"]
+    with pytest.raises(ValueError):
+        eq.record_decision(report["record_hash"], fid, "a", "   ", approved=True)
