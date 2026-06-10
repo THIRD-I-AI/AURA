@@ -6,6 +6,12 @@ from aiokafka import AIOKafkaProducer
 
 logger = logging.getLogger("aura.ingestion.kafka")
 
+
+class KafkaUnavailableError(RuntimeError):
+    """The broker is down and a lazy reconnect attempt also failed. Raised
+    instead of attempting the DLQ fallback — the DLQ is Kafka too."""
+
+
 class ResilientKafkaProducer:
     """
     Enterprise-grade async Kafka Producer tailored for high-volume headless ERP ingestion.
@@ -16,9 +22,11 @@ class ResilientKafkaProducer:
         self.producer = None
 
     async def start(self):
+        # A broker outage at boot must NOT kill the gateway: a service that
+        # fails its publishes loudly is recoverable; one that won't boot is not.
         # enable_idempotence=True guarantees exactly-once processing even if network retries occur,
         # perfectly matching the enterprise requirement for zero duplicate ledger entries.
-        self.producer = AIOKafkaProducer(
+        producer = AIOKafkaProducer(
             bootstrap_servers=self.bootstrap_servers,
             enable_idempotence=True,
             key_serializer=lambda k: k.encode('utf-8') if k else None,
@@ -28,8 +36,21 @@ class ResilientKafkaProducer:
             request_timeout_ms=30000,
             retry_backoff_ms=500
         )
-        await self.producer.start()
+        try:
+            await producer.start()
+        except Exception as exc:
+            self.producer = None
+            logger.error(
+                f"Kafka unavailable at {self.bootstrap_servers} ({exc}); "
+                "boot continues, publishes will lazily retry")
+            return
+        self.producer = producer
         logger.info(f"Connected resilient Kafka producer to {self.bootstrap_servers} with idempotence=True")
+
+    async def _ensure_started(self) -> bool:
+        if self.producer is None:
+            await self.start()
+        return self.producer is not None
 
     async def stop(self):
         if self.producer:
@@ -42,6 +63,9 @@ class ResilientKafkaProducer:
         routes the failed message to a Dead Letter Queue (DLQ).
         Partition keying ensures parallel node synchronization without eventual consistency delays.
         """
+        if not await self._ensure_started():
+            raise KafkaUnavailableError(
+                f"broker {self.bootstrap_servers} down; cannot publish to {topic}")
         try:
             # We rely on aiokafka's internal retries for transient network issues.
             await self.producer.send_and_wait(topic, value=payload, key=partition_key)
