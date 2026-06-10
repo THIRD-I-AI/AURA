@@ -100,7 +100,8 @@ def sign_and_persist(doc: Dict[str, Any]) -> Dict[str, Any]:
     audit_event("financial_audit_completed", {
         "record_hash": record_hash, "tenant_id": doc.get("tenant_id"),
         "dataset_fingerprint": doc.get("dataset_fingerprint"),
-        "n_findings": doc.get("n_findings"), "signature_status": status,
+        "n_findings": doc.get("n_findings"),
+        "signature_status": stored["signature_status"],
     })
     return stored
 
