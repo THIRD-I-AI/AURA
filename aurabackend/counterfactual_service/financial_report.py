@@ -77,9 +77,11 @@ def _signable(doc: Dict[str, Any]) -> Dict[str, Any]:
     return {k: v for k, v in doc.items() if k not in _META_FIELDS}
 
 
-def sign_and_persist(doc: Dict[str, Any]) -> Dict[str, Any]:
-    """Hash + ED25519-sign the document, persist it, append an immutable audit
-    record. Refuses to sign if the active key is revoked (status 'unsigned')."""
+def _sign_document(doc: Dict[str, Any]) -> Dict[str, Any]:
+    """Hash + ED25519-sign any document dict and persist it content-addressed.
+    Refuses to sign if the active key is revoked (status 'unsigned'). Shared
+    by completion documents and S34b HumanOverrideRecords — callers attach
+    their own audit-log event."""
     canonical = canonical_dumps(_signable(doc)).encode("utf-8")
     record_hash = hashlib.sha256(canonical).hexdigest()
     sig = None if cryptography.is_revoked() else signing.sign_bytes(canonical)
@@ -87,6 +89,14 @@ def sign_and_persist(doc: Dict[str, Any]) -> Dict[str, Any]:
     stored = {**doc, "record_hash": record_hash, "signature_b64": sig,
               "signature_status": status, "signing_key_source": signing.signing_key_source()}
     persistence.write_artifact(record_hash, stored)
+    return stored
+
+
+def sign_and_persist(doc: Dict[str, Any]) -> Dict[str, Any]:
+    """Sign + persist the completion document and append the immutable
+    audit-chain record."""
+    stored = _sign_document(doc)
+    record_hash = stored["record_hash"]
     audit_event("financial_audit_completed", {
         "record_hash": record_hash, "tenant_id": doc.get("tenant_id"),
         "dataset_fingerprint": doc.get("dataset_fingerprint"),
