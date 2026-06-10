@@ -135,7 +135,8 @@ CI/CD pipeline. Next sprint is S31 (analytic depth — TBD).
 
 | Sprint | Owner | Branch | Started | Goal |
 |---|---|---|---|---|
-| **S32** | Mounith | `feature/s32-dpc-sql-verification` | 2026-05-31 | _(paused — spec+plan landed; resuming now S33 is shipped)_ DPC dual-paradigm SQL verification for the chat path. |
+| **S32** | Mounith | `feature/s32-dpc-sql-verification` | 2026-05-31 | DPC dual-paradigm SQL verification for the chat path — cross-check `SQLGeneratorAgent` SQL vs an independently-generated, AST-sandboxed pandas solution; tri-state verified/mismatch/skipped + one bounded retry. Impl complete (7 TDD tasks), PR open. |
+| **S34** | Mounith | `feature/s34-finance-auditor-pivot` | 2026-06-09 | AI-native finance-auditor pivot (scaffold + validation hardening): headless ERP ingestion, ED25519/JWKS provenance, PII masking, PCAOB-mapped auditor, HITL, infra. Committed locally; not yet pushed. |
 
 ## Completed (newest first)
 
