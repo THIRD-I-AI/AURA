@@ -16,6 +16,7 @@ from fastapi.responses import Response
 
 from counterfactual_service.main import (
     AuditRequest,
+    ExceptionDecisionRequest,
     FinancialAuditRequest,
 )
 from counterfactual_service.main import (
@@ -23,6 +24,12 @@ from counterfactual_service.main import (
 )
 from counterfactual_service.main import (
     financial_audit as _svc_financial_audit,
+)
+from counterfactual_service.main import (
+    financial_audit_decide as _svc_financial_audit_decide,
+)
+from counterfactual_service.main import (
+    financial_audit_exceptions as _svc_financial_audit_exceptions,
 )
 from counterfactual_service.main import (
     financial_audit_verify as _svc_financial_audit_verify,
@@ -121,3 +128,15 @@ async def financial_audit(req: FinancialAuditRequest) -> Dict[str, Any]:
 @router.get("/audit/financial/verify/{record_hash}")
 async def financial_audit_verify(record_hash: str) -> Dict[str, Any]:
     return await _svc_financial_audit_verify(record_hash)
+
+
+@router.get("/audit/financial/{record_hash}/exceptions")
+async def financial_audit_exceptions(record_hash: str) -> Dict[str, Any]:
+    return await _svc_financial_audit_exceptions(record_hash)
+
+
+@router.post("/audit/financial/{record_hash}/exceptions/{finding_id}/decision")
+async def financial_audit_decide(
+    record_hash: str, finding_id: str, req: ExceptionDecisionRequest,
+) -> Dict[str, Any]:
+    return await _svc_financial_audit_decide(record_hash, finding_id, req)

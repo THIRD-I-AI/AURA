@@ -530,6 +530,45 @@ async def financial_audit_verify(record_hash: str) -> Dict[str, Any]:
     return verify_report(record_hash)
 
 
+# ── S34b — HITL exception queue ───────────────────────────────────────
+
+class ExceptionDecisionRequest(BaseModel):
+    human_auditor_id: str
+    rationale: str = Field(..., min_length=1)
+    approved: bool
+
+
+@app.get("/audit/financial/{record_hash}/exceptions")
+async def financial_audit_exceptions(record_hash: str) -> Dict[str, Any]:
+    """Findings of a signed completion document still awaiting a human
+    decision (PII redacted at egress)."""
+    from . import exception_queue
+    try:
+        return exception_queue.pending_exceptions(record_hash)
+    except (LookupError, ValueError) as exc:
+        raise HTTPException(404, str(exc))
+
+
+@app.post("/audit/financial/{record_hash}/exceptions/{finding_id}/decision")
+async def financial_audit_decide(record_hash: str, finding_id: str,
+                                 req: ExceptionDecisionRequest) -> Dict[str, Any]:
+    """Record a human approve/override: WORM ``audit_human_override`` entry
+    plus a signed HumanOverrideRecord artifact (AS 1215 contradiction doc)."""
+    from . import exception_queue
+    if not req.rationale.strip():
+        raise HTTPException(422, "AS 1215 requires a non-blank rationale")
+    try:
+        stored = exception_queue.record_decision(
+            record_hash, finding_id, req.human_auditor_id, req.rationale, req.approved)
+    except exception_queue.AlreadyDecidedError as exc:
+        raise HTTPException(409, str(exc))
+    except (LookupError, ValueError) as exc:
+        # ValueError here = non-hex record_hash from the URL → not found.
+        raise HTTPException(404, str(exc))
+    stored["verify_url"] = f"/audit/financial/verify/{stored['record_hash']}"
+    return stored
+
+
 # ── Sprint 13 — Auditor bulk-replay ───────────────────────────────────
 
 class BulkReplayRequest(BaseModel):

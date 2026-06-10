@@ -121,3 +121,50 @@ def test_empty_rationale_rejected(monkeypatch, tmp_path):
     fid = report["findings"][0]["finding_id"]
     with pytest.raises(ValueError):
         eq.record_decision(report["record_hash"], fid, "a", "   ", approved=True)
+
+
+# ── Task 4: endpoints e2e ────────────────────────────────────────────
+
+
+def test_exception_endpoints_e2e(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_ARTIFACT_DIR", str(tmp_path))
+    _store(monkeypatch)
+    from fastapi import HTTPException
+
+    import counterfactual_service.main as m
+
+    report = asyncio.run(m.financial_audit(m.FinancialAuditRequest(
+        tenant_id="t1",
+        ledger=[{"internal_id": "L1", "account_code": "4000", "amount": 250000.0}],
+        purchase_orders=[{"po_number": "PO-1"}],
+        invoices=[{"invoice_number": "INV-9", "po_number": "PO-MISSING",
+                   "employee_name": "Ada"}],
+        journal_entries=[],
+    )))
+    rh = report["record_hash"]
+
+    q = asyncio.run(m.financial_audit_exceptions(rh))
+    assert q["n_pending"] == 2 and q["n_decided"] == 0
+    assert "Ada" not in str(q["pending"])     # egress redaction
+
+    fid = q["pending"][0]["finding_id"]
+    body = m.ExceptionDecisionRequest(
+        human_auditor_id="auditor-7", rationale="confirmed with vendor", approved=True)
+    decision = asyncio.run(m.financial_audit_decide(rh, fid, body))
+    assert decision["document_type"] == "HumanOverrideRecord"
+    assert decision["verify_url"].endswith(decision["record_hash"])
+    # The decision verifies through the same generic verify endpoint.
+    assert asyncio.run(m.financial_audit_verify(decision["record_hash"]))["verified"] is True
+
+    q2 = asyncio.run(m.financial_audit_exceptions(rh))
+    assert q2["n_pending"] == 1 and q2["n_decided"] == 1
+
+    with pytest.raises(HTTPException) as exc409:
+        asyncio.run(m.financial_audit_decide(rh, fid, body))
+    assert exc409.value.status_code == 409
+    with pytest.raises(HTTPException) as exc404:
+        asyncio.run(m.financial_audit_exceptions("0" * 64))
+    assert exc404.value.status_code == 404
+    with pytest.raises(HTTPException) as exc404b:
+        asyncio.run(m.financial_audit_decide(rh, "0" * 64, body))
+    assert exc404b.value.status_code == 404
