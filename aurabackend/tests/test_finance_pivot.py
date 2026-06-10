@@ -6,8 +6,6 @@
 The ERP circular-import fix is covered by tests_contract/test_erp_contracts.py.
 """
 import asyncio
-import base64
-import json
 import os
 import sys
 
@@ -15,39 +13,30 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from cryptography.hazmat.primitives import serialization
-
 from agents.specialists.financial_auditor import FinancialAuditorAgent
-from counterfactual_service import cryptography as crypto
+from counterfactual_service import cryptography as crypto, signing
 from shared.pii_masking import redact_pii
 
 
-def test_revoked_key_cannot_sign():
-    kid = "agent-revoke-test"
-    crypto.generate_agent_keypair(kid)
-    assert crypto.sign_payload(kid, {"x": 1})            # signs before revocation
-    crypto.soft_revoke_key(kid)
-    with pytest.raises(ValueError):
-        crypto.sign_payload(kid, {"x": 2})               # blocked after revocation
+def test_jwks_reflects_persistent_signing_key():
+    jwks = crypto.get_jwks()
+    assert len(jwks["keys"]) == 1
+    k = jwks["keys"][0]
+    assert k["kty"] == "OKP" and k["crv"] == "Ed25519"
+    assert k["x"] == signing.public_key_raw_b64url()
 
 
-def test_jwks_marks_revoked_key():
-    kid = "agent-jwks-test"
-    crypto.generate_agent_keypair(kid)
-    crypto.soft_revoke_key(kid)
-    entry = next(k for k in crypto.get_jwks()["keys"] if k["kid"] == kid)
-    assert entry["revoked"] is True
-    assert entry["kty"] == "OKP" and entry["crv"] == "Ed25519"
+def test_soft_revoke_persists_and_marks_jwks(tmp_path, monkeypatch):
+    monkeypatch.setenv("AURA_SIGNING_KEY_DIR", str(tmp_path))
+    crypto.soft_revoke_key("aura-ed25519")
+    assert crypto.is_revoked("aura-ed25519") is True
+    assert crypto.get_jwks()["keys"][0]["revoked"] is True
 
 
-def test_signature_verifies_against_published_key():
-    kid = "agent-verify-test"
-    _, pub_pem = crypto.generate_agent_keypair(kid)
-    payload = {"a": 1, "b": 2}
-    sig = base64.b64decode(crypto.sign_payload(kid, payload))
-    pub = serialization.load_pem_public_key(pub_pem.encode())
-    msg = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
-    pub.verify(sig, msg)  # raises on a bad signature; returns None on success
+def test_signing_roundtrips_via_signing_module():
+    sig = signing.sign_bytes(b"hello")
+    assert sig and signing.verify_bytes(b"hello", sig)
+    assert not signing.verify_bytes(b"tampered", sig)
 
 
 def test_redact_pii_masks_known_keys_recursively():
