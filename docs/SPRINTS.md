@@ -135,7 +135,7 @@ CI/CD pipeline. Next sprint is S31 (analytic depth — TBD).
 
 | Sprint | Owner | Branch | Started | Goal |
 |---|---|---|---|---|
-| **S34** | Mounith | `feature/s34-finance-auditor-pivot` | 2026-06-09 | AI-native finance-auditor pivot (scaffold + validation hardening): headless ERP ingestion, ED25519/JWKS provenance, PII masking, PCAOB-mapped auditor, HITL, infra. Committed locally; not yet pushed. |
+| **S34** | Mounith | `feature/s34-finance-auditor-pivot` | 2026-06-09 | AI-native finance-auditor pivot (issue #60, **PR #61 open**). **S34a shipped on the branch:** signed financial audit core — `run_full_audit` composes AS-2110/2305/2201/2401, AS-1215 Engagement Completion Document with dataset fingerprint, persistent-ED25519 `sign_and_persist` (refuses revoked kids), tamper-detecting `/audit/financial/verify`, egress-only PII `client_view` (signed artifact keeps raw evidence), gateway proxy routes. Spec: `docs/superpowers/specs/2026-06-10-s34a-signed-financial-audit-design.md`. Hotfix `f9fda92` greens CI (ruff sweep + registers `ingestion_service` in the S21d SDK codegen). **Remaining:** S34b HITL exception queue, S34c Kafka/ERP ingestion wiring (`on_event`→lifespan, Kafka-fails-boot, contract-test CI lane), S34d PII tokenization policy. |
 
 ## Completed (newest first)
 
