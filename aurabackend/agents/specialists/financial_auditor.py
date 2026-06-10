@@ -6,6 +6,10 @@ from shared.audit_log import audit_event
 
 logger = logging.getLogger("aura.agents.financial_auditor")
 
+# "Who performed the work" for PCAOB AS-1215 §.06 provenance — bump on any
+# change to the audit logic so the completion document records which model ran.
+FINANCIAL_AUDITOR_VERSION = "0.1.0"
+
 class AuditFinding(BaseModel):
     pcaob_standard: str = Field(..., description="The relevant PCAOB standard (e.g., 'AS 2305')")
     risk_level: str = Field(..., description="'Low', 'Medium', 'High', 'Critical'")
