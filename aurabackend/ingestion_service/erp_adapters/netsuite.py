@@ -4,6 +4,7 @@ from typing import Any, Dict
 
 from ..models import LedgerEntry
 
+
 class NetSuiteAdapter:
     """
     Adapter for NetSuite SuiteScript JSON payloads.
@@ -26,14 +27,14 @@ class NetSuiteAdapter:
         """
         internal_id = raw_payload.get("internalId", "")
         tran_type = raw_payload.get("tranType", "Journal")
-        
+
         erc = cls._generate_erc(tenant_id, internal_id, tran_type)
-        
+
         # Parse amount. NetSuite often stores credit/debit in separate fields
         debit = float(raw_payload.get("debit", 0.0) or 0.0)
         credit = float(raw_payload.get("credit", 0.0) or 0.0)
         amount = debit - credit
-        
+
         # Parse date
         tran_date_str = raw_payload.get("tranDate")
         try:

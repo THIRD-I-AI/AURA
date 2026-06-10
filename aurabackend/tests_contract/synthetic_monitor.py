@@ -57,7 +57,7 @@ async def run_monitor():
     async with httpx.AsyncClient() as client:
         # Test 1: Valid NetSuite Payload -> Expect 202 Accepted
         await ping_endpoint(client, "netsuite", valid_netsuite_payload, 202)
-        
+
         # Test 2: Invalid NetSuite Payload -> Expect 422 Unprocessable Entity
         await ping_endpoint(client, "netsuite", invalid_netsuite_payload, 422)
 

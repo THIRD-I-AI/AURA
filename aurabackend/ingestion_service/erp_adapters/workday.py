@@ -4,6 +4,7 @@ from typing import Any, Dict
 
 from ..models import LedgerEntry
 
+
 class WorkdayAdapter:
     """
     Adapter for Workday Financial Management payloads.
@@ -26,12 +27,12 @@ class WorkdayAdapter:
         """
         wd_id = raw_payload.get("WorkdayID", "")
         cost_center = raw_payload.get("CostCenterID", "DEFAULT")
-        
+
         erc = cls._generate_erc(tenant_id, wd_id, cost_center)
-        
+
         amount = float(raw_payload.get("BaseAmount", 0.0))
         currency = raw_payload.get("CurrencyCode", "USD")
-        
+
         # Parse date
         date_str = raw_payload.get("AccountingDate")
         try:

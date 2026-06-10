@@ -45,13 +45,13 @@ async def worker(client: httpx.AsyncClient, num_requests: int, include_pii: bool
     for i in range(num_requests):
         payload = generate_payload(i, include_pii)
         start_time = time.perf_counter()
-        
+
         metrics["requests_sent"] += 1
         try:
             response = await client.post(f"{BASE_URL}/workday", json=payload, timeout=10.0)
             duration_ms = (time.perf_counter() - start_time) * 1000
             metrics["total_latency_ms"] += duration_ms
-            
+
             if response.status_code == 202:
                 metrics["success_202"] += 1
             elif response.status_code == 429:
@@ -65,20 +65,20 @@ async def worker(client: httpx.AsyncClient, num_requests: int, include_pii: bool
 
 async def run_load_test(total_requests: int, concurrency: int, chaos_mode: bool = False, include_pii: bool = True):
     logger.info(f"Starting Enterprise Load Test. Total Requests: {total_requests}, Concurrency: {concurrency}, Chaos Mode: {chaos_mode}")
-    
+
     if chaos_mode:
         logger.warning("CHAOS MODE ACTIVATED: Network failure to Kafka will be simulated on the server. Expecting DLQ Routing.")
-    
+
     start_time = time.perf_counter()
-    
+
     async with httpx.AsyncClient(limits=httpx.Limits(max_connections=concurrency)) as client:
         requests_per_worker = total_requests // concurrency
         tasks = [worker(client, requests_per_worker, include_pii) for _ in range(concurrency)]
         await asyncio.gather(*tasks)
-        
+
     total_duration = time.perf_counter() - start_time
     avg_latency = metrics["total_latency_ms"] / metrics["success_202"] if metrics["success_202"] > 0 else 0
-    
+
     logger.info("=== Load Test Complete ===")
     logger.info(f"Total Duration: {total_duration:.2f} seconds")
     logger.info(f"Requests Sent: {metrics['requests_sent']}")
@@ -87,7 +87,7 @@ async def run_load_test(total_requests: int, concurrency: int, chaos_mode: bool 
     logger.info(f"Failed (Other): {metrics['failed_other']}")
     logger.info(f"KPI - Avg Ingestion Latency: {avg_latency:.2f} ms")
     logger.info("KPI - Settlement Time: Simulated as instantaneous due to async Kafka publishing.")
-    
+
     # Assertions
     if metrics["requests_sent"] > 0:
         if metrics["throttled_429"] > 0:

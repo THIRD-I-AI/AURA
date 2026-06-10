@@ -16,18 +16,16 @@ from fastapi.responses import Response
 
 from counterfactual_service.main import (
     AuditRequest,
+    FinancialAuditRequest,
 )
 from counterfactual_service.main import (
-    FinancialAuditRequest,
+    demo_scenarios as _svc_demo_scenarios,
 )
 from counterfactual_service.main import (
     financial_audit as _svc_financial_audit,
 )
 from counterfactual_service.main import (
     financial_audit_verify as _svc_financial_audit_verify,
-)
-from counterfactual_service.main import (
-    demo_scenarios as _svc_demo_scenarios,
 )
 from counterfactual_service.main import (
     get_artifact as _svc_get_artifact,

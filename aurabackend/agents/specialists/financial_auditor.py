@@ -2,6 +2,7 @@ import logging
 from typing import Any, Dict, List
 
 from pydantic import BaseModel, Field
+
 from shared.audit_log import audit_event
 
 logger = logging.getLogger("aura.agents.financial_auditor")
@@ -22,7 +23,7 @@ class FinancialAuditorAgent:
     Autonomous AI Auditor re-tasked to map directly to PCAOB Standards.
     Leverages DAR (Data Agnostic Researcher) semantics and UASR statistical baselines.
     """
-    
+
     def __init__(self, tenant_id: str):
         self.tenant_id = tenant_id
 
@@ -32,10 +33,10 @@ class FinancialAuditorAgent:
         Establishes baseline materiality thresholds before scanning ledgers.
         """
         logger.info(f"[{self.tenant_id}] Executing AS 2110 Risk Assessment")
-        
+
         # Mock logic for calculating materiality
         materiality_threshold = 50000.00 # $50k threshold
-        
+
         audit_event("as2110_risk_assessment_completed", {
             "tenant_id": self.tenant_id,
             "materiality_threshold_usd": materiality_threshold,
@@ -50,7 +51,7 @@ class FinancialAuditorAgent:
         """
         logger.info(f"[{self.tenant_id}] Executing AS 2305 Substantive Analytical Procedures")
         findings = []
-        
+
         for entry in ledger_batch:
             # Mock variance detection: Any entry > $100k triggers a variance alert
             if entry.get("amount", 0) > 100000:
@@ -61,9 +62,9 @@ class FinancialAuditorAgent:
                     evidence_payload={"entry_id": entry.get("internal_id"), "amount": entry.get("amount")}
                 )
                 findings.append(finding)
-                
+
                 audit_event("as2305_variance_detected", finding.model_dump())
-                
+
         return findings
 
     async def execute_as2201_internal_controls(self, purchase_orders: List[Dict], invoices: List[Dict]) -> List[AuditFinding]:
@@ -73,7 +74,7 @@ class FinancialAuditorAgent:
         """
         logger.info(f"[{self.tenant_id}] Executing AS 2201 Internal Control Checks")
         findings = []
-        
+
         # Mock logic: Flag if invoice has no matching PO
         po_ids = {po.get("po_number") for po in purchase_orders}
         for inv in invoices:
@@ -86,7 +87,7 @@ class FinancialAuditorAgent:
                 )
                 findings.append(finding)
                 audit_event("as2201_control_deficiency", finding.model_dump())
-                
+
         return findings
 
     async def execute_as2401_fraud_detection(self, journal_entries: List[Dict]) -> List[AuditFinding]:

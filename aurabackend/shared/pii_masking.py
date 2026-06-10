@@ -34,8 +34,8 @@ async def set_body(request: Request, body: bytes):
 
 class PIIMaskingMiddleware(BaseHTTPMiddleware):
     """
-    Perimeter Defense: Intercepts raw JSON bodies at the API Gateway level 
-    and permanently redacts restricted PII fields before they are parsed by 
+    Perimeter Defense: Intercepts raw JSON bodies at the API Gateway level
+    and permanently redacts restricted PII fields before they are parsed by
     Pydantic or routed to internal Kafka streams.
     """
     async def dispatch(self, request: Request, call_next):
@@ -46,16 +46,16 @@ class PIIMaskingMiddleware(BaseHTTPMiddleware):
                 if body_bytes:
                     payload = json.loads(body_bytes)
                     redacted_payload = redact_pii(payload)
-                    
+
                     # Re-serialize and inject the cleansed body back into the request stream
                     cleansed_bytes = json.dumps(redacted_payload).encode("utf-8")
                     await set_body(request, cleansed_bytes)
-                    
+
             except json.JSONDecodeError:
                 # If it's not valid JSON, we can't redact it. Let the downstream validation handle the 422.
                 pass
             except Exception as e:
                 logger.error(f"PIIMaskingMiddleware error: {e}")
-                
+
         response = await call_next(request)
         return response

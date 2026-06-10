@@ -1,5 +1,6 @@
-import pytest
 from datetime import datetime
+
+import pytest
 
 from ingestion_service.erp_adapters.netsuite import NetSuiteAdapter
 from ingestion_service.erp_adapters.workday import WorkdayAdapter
@@ -41,13 +42,13 @@ def test_netsuite_adapter_contract():
     """
     tenant_id = "tenant-test-123"
     entry = NetSuiteAdapter.normalize(tenant_id, NETSUITE_MOCK)
-    
+
     assert isinstance(entry, LedgerEntry)
     assert entry.amount == 1500.00
     assert entry.system_origin == "NetSuite"
     assert entry.account_code == "4000"
     assert entry.metadata["netsuite_internal_id"] == "10001"
-    
+
     # ERC must be 64-character SHA256 hex string
     assert len(entry.erc) == 64
 
@@ -57,13 +58,13 @@ def test_workday_adapter_contract():
     """
     tenant_id = "tenant-test-123"
     entry = WorkdayAdapter.normalize(tenant_id, WORKDAY_MOCK)
-    
+
     assert isinstance(entry, LedgerEntry)
     assert entry.amount == -500.00
     assert entry.system_origin == "Workday"
     assert entry.account_code == "6000"
     assert entry.metadata["workday_id"] == "WD-889900"
-    
+
     assert len(entry.erc) == 64
 
 def test_erc_determinism():
@@ -74,6 +75,6 @@ def test_erc_determinism():
     erc1 = NetSuiteAdapter._generate_erc(tenant_id, "100", "Journal")
     erc2 = NetSuiteAdapter._generate_erc(tenant_id, "100", "Journal")
     erc3 = NetSuiteAdapter._generate_erc(tenant_id, "101", "Journal")
-    
+
     assert erc1 == erc2
     assert erc1 != erc3

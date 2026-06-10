@@ -192,7 +192,7 @@ def audit_human_override(ai_record_hash: str, human_auditor_id: str, rationale: 
     """
     PCAOB AS 1215 Compliance: Documenting Contradictions.
     Records a human auditor's explicit override or approval of an autonomous AI finding.
-    The original AI finding's record_hash is immutably linked here, ensuring both 
+    The original AI finding's record_hash is immutably linked here, ensuring both
     the AI's initial assessment and the human's professional judgment are preserved.
     """
     get_writer().append("human_override", {

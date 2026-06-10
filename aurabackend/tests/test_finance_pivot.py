@@ -14,7 +14,8 @@ import pytest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from agents.specialists.financial_auditor import FinancialAuditorAgent
-from counterfactual_service import cryptography as crypto, signing
+from counterfactual_service import cryptography as crypto
+from counterfactual_service import signing
 from shared.pii_masking import redact_pii
 
 
@@ -69,9 +70,8 @@ def test_as2401_detects_duplicate_and_round_dollar(monkeypatch):
 
 
 def test_revoke_key_requires_admin_role():
-    from shared.exceptions import ForbiddenError
-
     from counterfactual_service.main import _require_admin
+    from shared.exceptions import ForbiddenError
     with pytest.raises(ForbiddenError):
         asyncio.run(_require_admin(user={"role": "user"}))
     assert asyncio.run(_require_admin(user={"role": "admin"}))["role"] == "admin"

@@ -14,7 +14,7 @@ class ResilientKafkaProducer:
     def __init__(self, bootstrap_servers: str = "localhost:9092"):
         self.bootstrap_servers = bootstrap_servers
         self.producer = None
-        
+
     async def start(self):
         # enable_idempotence=True guarantees exactly-once processing even if network retries occur,
         # perfectly matching the enterprise requirement for zero duplicate ledger entries.

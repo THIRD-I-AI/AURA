@@ -1,14 +1,14 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Optional
 from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional
 
 from fastapi import BackgroundTasks, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
-from shared.service_factory import create_service
 from shared.audit_log import audit_event
+from shared.service_factory import create_service
 
 logger = logging.getLogger("aura.ingestion")
 
@@ -20,13 +20,13 @@ app = create_service(
 )
 
 from shared.pii_masking import PIIMaskingMiddleware
+
 app.add_middleware(PIIMaskingMiddleware)
 
 # --- Models ---
 # Defined in models.py so the ERP adapters can import LedgerEntry without an
 # import cycle (main -> adapters -> models; adapters never import main).
 from .models import IngestionPayload, LedgerEntry, RawIngestionPayload  # noqa: F401
-
 
 # --- ERC Mapping Logic (Mock/Stub for Phase 1) ---
 
@@ -40,9 +40,10 @@ def map_erc_to_internal_id(erc: str, system_origin: str) -> str:
 
 # --- Event Publishing & Adapters ---
 
-from .kafka_client import kafka_producer
 from .erp_adapters.netsuite import NetSuiteAdapter
 from .erp_adapters.workday import WorkdayAdapter
+from .kafka_client import kafka_producer
+
 
 @app.on_event("startup")
 async def startup_event():
@@ -57,7 +58,7 @@ async def process_raw_batch_async(payload: RawIngestionPayload, system_origin: s
     Background task to normalize raw ERP payload and publish to Kafka.
     """
     normalized_entries = []
-    
+
     for raw_entry in payload.entries:
         if system_origin == "NetSuite":
             norm_entry = NetSuiteAdapter.normalize(payload.tenant_id, raw_entry)
@@ -65,15 +66,15 @@ async def process_raw_batch_async(payload: RawIngestionPayload, system_origin: s
             norm_entry = WorkdayAdapter.normalize(payload.tenant_id, raw_entry)
         else:
             raise ValueError(f"Unknown system origin: {system_origin}")
-            
+
         normalized_entries.append(norm_entry.model_dump())
-        
+
     await kafka_producer.publish_with_retry(
         topic="aura.ledger.ingested",
         payload={"batch_id": payload.batch_id, "entries": normalized_entries},
         partition_key=payload.tenant_id
     )
-    
+
     audit_event("ingestion_batch_processed", {
         "batch_id": payload.batch_id,
         "system_origin": system_origin,
