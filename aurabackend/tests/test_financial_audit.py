@@ -114,3 +114,21 @@ def test_client_view_redacts_evidence_but_artifact_keeps_raw(monkeypatch):
     # ... but the signed artifact retains raw evidence AND still verifies.
     assert stored["findings"][0]["evidence_payload"]["invoice"]["employee_name"] == "Ada"
     assert fr.verify_report(stored["record_hash"])["verified"] is True
+
+
+def test_financial_audit_endpoint_e2e(monkeypatch):
+    _store(monkeypatch)
+    import counterfactual_service.main as m
+    req = m.FinancialAuditRequest(
+        tenant_id="t1",
+        ledger=[{"internal_id": "L1", "account_code": "4000", "amount": 250000.0}],
+        purchase_orders=[{"po_number": "PO-1"}],
+        invoices=[{"invoice_number": "INV-9", "po_number": "PO-MISSING", "employee_name": "Ada"}],
+        journal_entries=[{"internal_id": "J1", "amount": 5000.0, "account_code": "6000", "vendor_id": "V1"}],
+    )
+    report = asyncio.run(m.financial_audit(req))
+    assert report["signature_status"] == "signed"
+    assert report["verify_url"].endswith(report["record_hash"])
+    assert "Ada" not in str(report["findings"])           # egress redaction applied
+    v = asyncio.run(m.financial_audit_verify(report["record_hash"]))
+    assert v["verified"] is True

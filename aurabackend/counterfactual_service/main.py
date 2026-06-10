@@ -488,6 +488,48 @@ async def revoke_key(kid: str) -> Dict[str, str]:
     return {"status": "success", "revoked_kid": kid, "message": "Key has been soft revoked."}
 
 
+# ── S34a — Signed Financial Audit ─────────────────────────────────────
+
+class FinancialAuditRequest(BaseModel):
+    tenant_id: str
+    ledger: List[Dict[str, Any]] = Field(default_factory=list)
+    purchase_orders: List[Dict[str, Any]] = Field(default_factory=list)
+    invoices: List[Dict[str, Any]] = Field(default_factory=list)
+    journal_entries: List[Dict[str, Any]] = Field(default_factory=list)
+    historical_reports: List[Dict[str, Any]] = Field(default_factory=list)
+
+
+@app.post("/audit/financial")
+async def financial_audit(req: FinancialAuditRequest) -> Dict[str, Any]:
+    """Run the PCAOB checks on a ledger, sign an AS-1215 completion document with
+    the persistent ED25519 key, persist it to the hash-chained log, and return the
+    signed report (PII redacted at egress) with an independent verify URL."""
+    from agents.specialists.financial_auditor import FinancialAuditorAgent
+
+    from .financial_report import (
+        build_completion_document,
+        client_view,
+        dataset_fingerprint,
+        sign_and_persist,
+    )
+    agent = FinancialAuditorAgent(tenant_id=req.tenant_id)
+    result = await agent.run_full_audit(
+        req.ledger, req.purchase_orders, req.invoices, req.journal_entries, req.historical_reports)
+    fingerprint = dataset_fingerprint(req.ledger, req.purchase_orders, req.invoices, req.journal_entries)
+    doc = build_completion_document(req.tenant_id, result["findings"], fingerprint,
+                                    result["materiality_threshold"])
+    stored = sign_and_persist(doc)
+    view = client_view(stored)
+    view["verify_url"] = f"/audit/financial/verify/{stored['record_hash']}"
+    return view
+
+
+@app.get("/audit/financial/verify/{record_hash}")
+async def financial_audit_verify(record_hash: str) -> Dict[str, Any]:
+    from .financial_report import verify_report
+    return verify_report(record_hash)
+
+
 # ── Sprint 13 — Auditor bulk-replay ───────────────────────────────────
 
 class BulkReplayRequest(BaseModel):

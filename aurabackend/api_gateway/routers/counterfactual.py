@@ -18,6 +18,15 @@ from counterfactual_service.main import (
     AuditRequest,
 )
 from counterfactual_service.main import (
+    FinancialAuditRequest,
+)
+from counterfactual_service.main import (
+    financial_audit as _svc_financial_audit,
+)
+from counterfactual_service.main import (
+    financial_audit_verify as _svc_financial_audit_verify,
+)
+from counterfactual_service.main import (
     demo_scenarios as _svc_demo_scenarios,
 )
 from counterfactual_service.main import (
@@ -104,3 +113,13 @@ async def run_demo(scenario_id: str, fresh: bool = False) -> Dict[str, Any]:
 @router.post("/audit")
 async def run_audit(req: AuditRequest) -> Dict[str, Any]:
     return await _svc_run_audit(req)
+
+
+@router.post("/audit/financial")
+async def financial_audit(req: FinancialAuditRequest) -> Dict[str, Any]:
+    return await _svc_financial_audit(req)
+
+
+@router.get("/audit/financial/verify/{record_hash}")
+async def financial_audit_verify(record_hash: str) -> Dict[str, Any]:
+    return await _svc_financial_audit_verify(record_hash)
