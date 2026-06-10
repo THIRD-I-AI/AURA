@@ -21,6 +21,14 @@ except ImportError:  # pragma: no cover — fallback handled at runtime
     _SQLGLOT_AVAILABLE = False
 
 from agents.base import AgentContext, AgentResult, AgentStatus, BaseAgent, Severity
+from agents.dpc_verifier import (
+    dpc_enabled,
+    dpc_max_retries,
+    dpc_max_rows,
+    dpc_timeout,
+    extract_columns_rows,
+    verify_sql_result,
+)
 from agents.params import SQLGeneratorAgentParams
 
 logger = logging.getLogger("aura.agents.sql_generator")
@@ -130,7 +138,61 @@ class SQLGeneratorAgent(BaseAgent):
         result.artifacts["generated_sql"] = sql
         if explanation:
             result.artifacts["sql_explanation"] = explanation
+
+        # DPC: cross-check the executed SQL against an independent pandas
+        # computation. Best-effort + bounded — never blocks or breaks the answer.
+        if exec_result is not None and dpc_enabled():
+            sql, exec_result = await self._dpc_cross_check(
+                ctx.task_description, sql, exec_result, schema_text, result,
+            )
+
         return result
+
+    async def _dpc_cross_check(self, question, sql, exec_result, schema_text, result):
+        """Annotate result.output with a tri-state DPC verdict; one bounded retry
+        on mismatch. Returns the (possibly retried) (sql, exec_result)."""
+        cols, rows = extract_columns_rows(exec_result)
+        vr = await verify_sql_result(
+            question, sql, cols, rows, self.tools, self._llm,
+            timeout=dpc_timeout(), max_rows=dpc_max_rows(),
+        )
+        retries = dpc_max_retries()
+        while vr.status == "mismatch" and retries > 0:
+            retries -= 1
+            hint = (f"{question}\n\n(Note: a previous SQL `{sql[:200]}` disagreed with an "
+                    "independent computation — reconsider the aggregation, filter, or grouping.)")
+            new_sql, _ = await self._generate_sql(hint, schema_text)
+            if not new_sql:
+                break
+            new_sql = self._sanitise(new_sql)
+            if not await self._validate_sql(new_sql, result):
+                break
+            try:
+                new_exec = await self.tools.call("execute_sql", query=new_sql)
+            except Exception:
+                break
+            n_cols, n_rows = extract_columns_rows(new_exec)
+            vr = await verify_sql_result(
+                question, new_sql, n_cols, n_rows, self.tools, self._llm,
+                timeout=dpc_timeout(), max_rows=dpc_max_rows(),
+            )
+            sql, exec_result = new_sql, new_exec
+            # The retried SQL replaces the original; drop the now-stale explanation.
+            result.output["sql"] = sql
+            result.output["result_preview"] = str(exec_result)[:500]
+            result.output["explanation"] = None
+            result.artifacts["generated_sql"] = sql
+            if vr.status == "verified":
+                break
+
+        result.output["cross_verified"] = vr.verified
+        result.output["verification"] = {
+            "status": vr.status, "reason": vr.reason,
+            "pandas_expr": vr.pandas_expr, "method": vr.method,
+        }
+        result.add_step(action="dpc_verification",
+                        output_summary=f"{vr.status}: {vr.reason}")
+        return sql, exec_result
 
     # ------------------------------------------------------------------
     # Generation

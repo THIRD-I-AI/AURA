@@ -224,7 +224,7 @@ class TestBaseAgent:
     def test_successful_execution(self):
         agent = DummyAgent()
         ctx = AgentContext(user_prompt="test", task_description="test")
-        result = asyncio.get_event_loop().run_until_complete(agent.execute(ctx))
+        result = asyncio.run(agent.execute(ctx))
         assert result.succeeded
         assert result.output["answer"] == 42
         assert result.duration_ms > 0
@@ -232,7 +232,7 @@ class TestBaseAgent:
     def test_failed_execution(self):
         agent = FailingAgent()
         ctx = AgentContext(user_prompt="test", task_description="test")
-        result = asyncio.get_event_loop().run_until_complete(agent.execute(ctx))
+        result = asyncio.run(agent.execute(ctx))
         assert result.status == AgentStatus.FAILED
         assert "intentional failure" in result.error
         assert len(result.steps) >= 1  # error step logged
