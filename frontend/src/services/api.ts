@@ -15,11 +15,12 @@
  */
 export function sanitizeApiBase(candidate: string | null | undefined, fallback: string): string {
   if (!candidate) return fallback;
-  try {
-    const u = new URL(candidate);
-    if (u.protocol === 'http:' || u.protocol === 'https:') return candidate;
-  } catch { /* malformed URL → fall back */ }
-  return fallback;
+  // Sec-6 hotfix: a regex test is the barrier CodeQL actually recognizes.
+  // The previous URL()-parse round-tripped the tainted string unchanged, so
+  // alerts #50-52 stayed open against the hrefs built from API_BASE_URL.
+  // Conservative shape: scheme://host[:port][/path] only — no userinfo,
+  // query, fragment, quotes, or whitespace.
+  return /^https?:\/\/[\w.-]+(?::\d+)?(?:\/[\w./-]*)?$/i.test(candidate) ? candidate : fallback;
 }
 
 /**
