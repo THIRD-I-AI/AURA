@@ -22,6 +22,15 @@ export function sanitizeApiBase(candidate: string | null | undefined, fallback: 
   return fallback;
 }
 
+/**
+ * CodeQL #50-52 (js/xss-through-dom): audit record hashes arrive from remote
+ * job-status responses and are interpolated into anchor hrefs. Only a 64-char
+ * lowercase sha256 hex passes — the same boundary rule the backend applies in
+ * exception_queue._index_path.
+ */
+export const sanitizeRecordHash = (value: unknown): string | null =>
+  typeof value === 'string' && /^[0-9a-f]{64}$/.test(value) ? value : null;
+
 const _FALLBACK_BASE = (import.meta.env.VITE_API_URL as string) || 'http://localhost:8000';
 const _RAW_BASE = sanitizeApiBase(
   typeof localStorage !== 'undefined' ? localStorage.getItem('apiUrl') : null,
