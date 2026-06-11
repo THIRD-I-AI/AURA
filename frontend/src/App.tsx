@@ -28,6 +28,7 @@ const PipelinesPanel = lazy(() => import('./pages/PipelinesPanel'));
 const StreamingPanel = lazy(() => import('./pages/StreamingPanel'));
 const WebhooksPanel  = lazy(() => import('./pages/WebhooksPanel'));
 const Counterfactual = lazy(() => import('./pages/Counterfactual'));
+const ExceptionQueue = lazy(() => import('./components/HITL/ExceptionQueue'));
 const LiveDashboard  = lazy(() => import('./components/LiveDashboard'));
 
 const PageFallback = memo(function PageFallback() {
@@ -137,6 +138,7 @@ function AppInner() {
       case 'streaming': return <Suspense fallback={<PageFallback />}><StreamingPanel setCurrentPage={setCurrentPage} /></Suspense>;
       case 'webhooks':  return <Suspense fallback={<PageFallback />}><WebhooksPanel  setCurrentPage={setCurrentPage} /></Suspense>;
       case 'counterfactual': return <Suspense fallback={<PageFallback />}><Counterfactual /></Suspense>;
+      case 'audit-hitl': return <Suspense fallback={<PageFallback />}><ExceptionQueue /></Suspense>;
       case 'dashboard':
       default:
         return (

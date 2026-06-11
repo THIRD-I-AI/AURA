@@ -1,129 +1,250 @@
-import React, { useState } from 'react';
+/**
+ * HITL Exception Queue — PCAOB AS 1215 review workbench (S35).
+ *
+ * Live flow: run (or load) a signed financial audit → findings flagged
+ * requires_human_review appear here → the auditor approves or overrides each
+ * with a rationale → every decision becomes a signed HumanOverrideRecord +
+ * WORM audit entry on the backend and the queue shrinks. Decisions need an
+ * auditor/admin bearer token; in open auth mode we self-provision one. The
+ * auditor's identity is never sent in the body — the backend binds it to the
+ * verified JWT's `sub` claim (anti-impersonation, fail-closed).
+ */
+import { useCallback, useEffect, useState } from 'react';
+import Card, { CardHeader, CardBody } from '../ui/Card';
+import Button from '../ui/Button';
+import {
+  financialAuditService,
+  type AuditFinding,
+  type ExceptionQueueView,
+  type FinancialAuditReport,
+} from '../../services/api';
 
-// Mock types
-interface AuditException {
-  id: string;
-  pcaobStandard: string;
-  description: string;
-  riskLevel: 'Low' | 'Medium' | 'High' | 'Critical';
-  aiRecordHash: string;
+/** Canned ledger with one of each finding type — the investor demo batch.
+ *  Unmatched PO (AS 2201), duplicate + round-dollar JEs (AS 2401), and a
+ *  >$100k variance (AS 2305). PII here exercises the egress masking. */
+const SAMPLE_BATCH = {
+  tenant_id: 'demo-tenant',
+  ledger: [{ internal_id: 'L-1001', account_code: '4000', amount: 250000.0 }],
+  purchase_orders: [{ po_number: 'PO-7001' }],
+  invoices: [
+    { invoice_number: 'INV-9001', po_number: 'PO-MISSING', employee_name: 'Ada Lovelace', amount: 12400.5 },
+    { invoice_number: 'INV-9002', po_number: 'PO-7001', employee_name: 'Grace Hopper', amount: 980.0 },
+  ],
+  journal_entries: [
+    { internal_id: 'JE-1', amount: 5000.0, account_code: '6000', vendor_id: 'V-77' },
+    { internal_id: 'JE-2', amount: 5000.0, account_code: '6000', vendor_id: 'V-77' },
+  ],
+};
+
+const RISK_COLORS: Record<string, string> = {
+  Critical: 'var(--error, #ef4444)',
+  High: 'var(--warning, #f59e0b)',
+  Medium: 'var(--accent, #6366f1)',
+  Low: 'var(--text-tertiary, #9ca3af)',
+};
+
+function RiskBadge({ level }: { level: string }) {
+  return (
+    <span style={{
+      fontSize: 'var(--font-xs, 12px)',
+      fontWeight: 600,
+      color: RISK_COLORS[level] || 'var(--text-secondary)',
+      border: `1px solid ${RISK_COLORS[level] || 'var(--border-default)'}`,
+      borderRadius: 'var(--radius-full, 999px)',
+      padding: '2px 10px',
+      whiteSpace: 'nowrap',
+    }}>
+      {level} risk
+    </span>
+  );
 }
 
-const mockExceptions: AuditException[] = [
-  {
-    id: 'exc-001',
-    pcaobStandard: 'AS 2305',
-    description: 'Significant statistical variance detected for account 6001 (Marketing Expense). Amount: $150,000.',
-    riskLevel: 'High',
-    aiRecordHash: 'abc123hashvalue...',
-  },
-  {
-    id: 'exc-002',
-    pcaobStandard: 'AS 2401',
-    description: 'Suspicious round-dollar journal entry detected. Amount: $50,000.',
-    riskLevel: 'Critical',
-    aiRecordHash: 'def456hashvalue...',
-  }
-];
+export function ExceptionQueue() {
+  const [report, setReport] = useState<FinancialAuditReport | null>(null);
+  const [queue, setQueue] = useState<ExceptionQueueView | null>(null);
+  const [verified, setVerified] = useState<boolean | null>(null);
+  const [selected, setSelected] = useState<AuditFinding | null>(null);
+  const [rationale, setRationale] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [lastDecisionHash, setLastDecisionHash] = useState<string | null>(null);
 
-export const ExceptionQueue: React.FC<{ isShadowMode?: boolean }> = ({ isShadowMode = false }) => {
-  const [exceptions, setExceptions] = useState<AuditException[]>(mockExceptions);
-  const [rationale, setRationale] = useState<string>('');
-  const [selectedException, setSelectedException] = useState<AuditException | null>(null);
+  const refreshQueue = useCallback(async (recordHash: string) => {
+    const [q, v] = await Promise.all([
+      financialAuditService.getExceptions(recordHash),
+      financialAuditService.verify(recordHash),
+    ]);
+    setQueue(q);
+    setVerified(v.verified);
+  }, []);
 
-  const handleOverride = async (approved: boolean) => {
-    if (!selectedException || isShadowMode) return;
-    
-    // In production, this hits the backend which calls `audit_human_override`
-    // securing the PCAOB AS 1215 contradiction documentation. The auditor's
-    // identity is NOT sent in the body — the backend binds it to the
-    // verified JWT's `sub` claim (anti-impersonation, fail-closed).
-    console.log(`Submitting Override:`, {
-      aiRecordHash: selectedException.aiRecordHash,
-      rationale,
-      approved
-    });
+  const runSampleAudit = useCallback(async () => {
+    setBusy(true);
+    setError(null);
+    setSelected(null);
+    setLastDecisionHash(null);
+    try {
+      await financialAuditService.ensureAuditorToken();
+      const r = await financialAuditService.runAudit(SAMPLE_BATCH);
+      setReport(r);
+      await refreshQueue(r.record_hash);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }, [refreshQueue]);
 
-    // Remove from queue
-    setExceptions(prev => prev.filter(e => e.id !== selectedException.id));
-    setSelectedException(null);
-    setRationale('');
-  };
+  const submitDecision = useCallback(async (approved: boolean) => {
+    if (!queue || !selected || !rationale.trim()) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const d = await financialAuditService.decide(
+        queue.record_hash, selected.finding_id, rationale.trim(), approved,
+      );
+      setLastDecisionHash(d.record_hash);
+      setSelected(null);
+      setRationale('');
+      await refreshQueue(queue.record_hash);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }, [queue, selected, rationale, refreshQueue]);
+
+  // Self-provision the auditor bearer up front so the first decision
+  // doesn't pay the token round-trip (no-op when a token already exists).
+  useEffect(() => {
+    financialAuditService.ensureAuditorToken().catch(() => { /* surfaced on first action */ });
+  }, []);
 
   return (
-    <div className="p-6 bg-gray-900 text-white min-h-screen">
-      <div className="flex justify-between items-center mb-4">
-        <h1 className="text-3xl font-bold">Internal HITL Workbench</h1>
-        {isShadowMode && (
-          <div className="bg-yellow-600 text-white px-4 py-2 rounded font-bold shadow animate-pulse">
-            SHADOW MODE ACTIVE: READ-ONLY EMPIRICAL RECORD
+    <div style={{ display: 'grid', gap: 'var(--space-5, 20px)' }}>
+      <Card>
+        <CardHeader
+          title="PCAOB AS 1215 Exception Review"
+          subtitle="Every AI finding below requires documented human judgment. Decisions are ED25519-signed and chained into the WORM audit log."
+        />
+        <CardBody>
+          <div style={{ display: 'flex', gap: 'var(--space-3, 12px)', alignItems: 'center', flexWrap: 'wrap' }}>
+            <Button onClick={runSampleAudit} disabled={busy} variant="primary">
+              {busy ? 'Working…' : 'Run sample financial audit'}
+            </Button>
+            {report && (
+              <span style={{ fontSize: 'var(--font-sm, 13px)', color: 'var(--text-secondary)' }}>
+                Report <code>{report.record_hash.slice(0, 12)}…</code> · {report.signature_status} ·{' '}
+                {verified === null ? 'verifying…' : verified ? '✓ signature verified' : '✗ VERIFICATION FAILED'}
+              </span>
+            )}
           </div>
-        )}
-      </div>
-      <p className="text-gray-400 mb-8">PCAOB AS 1215 Exception Review Queue</p>
+          {error && (
+            <p role="alert" style={{ color: 'var(--error, #ef4444)', marginTop: 'var(--space-3, 12px)' }}>
+              {error}
+            </p>
+          )}
+          {lastDecisionHash && (
+            <p style={{ color: 'var(--success, #22c55e)', fontSize: 'var(--font-sm, 13px)', marginTop: 'var(--space-2, 8px)' }}>
+              Decision recorded as signed HumanOverrideRecord <code>{lastDecisionHash.slice(0, 12)}…</code>
+            </p>
+          )}
+        </CardBody>
+      </Card>
 
-      <div className="grid grid-cols-2 gap-8">
-        <div>
-          <h2 className="text-xl font-semibold mb-4">Pending Exceptions</h2>
-          {exceptions.map(exc => (
-            <div 
-              key={exc.id} 
-              className={`p-4 mb-4 border rounded cursor-pointer ${selectedException?.id === exc.id ? 'border-blue-500 bg-gray-800' : 'border-gray-700 bg-gray-800'}`}
-              onClick={() => setSelectedException(exc)}
-            >
-              <div className="flex justify-between">
-                <span className="font-bold text-blue-400">{exc.pcaobStandard}</span>
-                <span className={`px-2 py-1 text-xs rounded ${exc.riskLevel === 'Critical' ? 'bg-red-900 text-red-200' : 'bg-yellow-900 text-yellow-200'}`}>
-                  {exc.riskLevel} Risk
-                </span>
-              </div>
-              <p className="mt-2 text-sm">{exc.description}</p>
-            </div>
-          ))}
-          {exceptions.length === 0 && <p className="text-green-400">All exceptions cleared. Audit ready for ED25519 signature.</p>}
-        </div>
-
-        {selectedException && (
-          <div className="p-6 bg-gray-800 border border-gray-700 rounded h-fit">
-            <h2 className="text-xl font-semibold mb-4">Review Finding</h2>
-            <p className="mb-4 text-gray-300">{selectedException.description}</p>
-            
-            <div className="mb-4">
-              <label className="block text-sm font-medium mb-2 text-gray-400">Auditor Rationale (AS 1215 Contradiction Record)</label>
-              <textarea 
-                className="w-full p-2 bg-gray-900 border border-gray-700 rounded text-white"
-                rows={4}
-                value={rationale}
-                onChange={(e) => setRationale(e.target.value)}
-                placeholder="Explain why you are overriding or approving this AI finding..."
-              />
-            </div>
-
-            <div className="flex gap-4">
-              {isShadowMode ? (
-                <div className="p-4 bg-gray-700 rounded text-sm text-yellow-300 w-full">
-                  ⚠️ Action disabled in Shadow Mode. This anomaly is logged for Model Risk Management evaluation. 
-                </div>
-              ) : (
-                <>
-                  <button 
-                    onClick={() => handleOverride(true)}
-                    className="px-4 py-2 bg-green-700 hover:bg-green-600 rounded font-semibold transition"
-                  >
-                    Approve AI Finding
-                  </button>
-                  <button 
-                    onClick={() => handleOverride(false)}
-                    className="px-4 py-2 bg-red-700 hover:bg-red-600 rounded font-semibold transition"
-                  >
-                    Override AI Finding
-                  </button>
-                </>
+      {queue && (
+        <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr)', gap: 'var(--space-5, 20px)' }}>
+          <Card>
+            <CardHeader
+              title={`Pending exceptions (${queue.n_pending})`}
+              subtitle={`${queue.n_decided} decided · PII shown as deterministic tokens or [REDACTED]`}
+            />
+            <CardBody>
+              {queue.pending.length === 0 && (
+                <p style={{ color: 'var(--success, #22c55e)' }}>
+                  All exceptions cleared — the engagement file is complete.
+                </p>
               )}
-            </div>
-          </div>
-        )}
-      </div>
+              <div style={{ display: 'grid', gap: 'var(--space-3, 12px)' }}>
+                {queue.pending.map((f) => (
+                  <button
+                    key={f.finding_id}
+                    onClick={() => setSelected(f)}
+                    style={{
+                      textAlign: 'left',
+                      cursor: 'pointer',
+                      background: selected?.finding_id === f.finding_id ? 'var(--bg-elevated, #1f2230)' : 'var(--bg-surface)',
+                      border: `1px solid ${selected?.finding_id === f.finding_id ? 'var(--accent)' : 'var(--border-default)'}`,
+                      borderRadius: 'var(--radius-lg, 12px)',
+                      padding: 'var(--space-4, 16px)',
+                      color: 'var(--text-primary)',
+                    }}
+                  >
+                    <div style={{ display: 'flex', justifyContent: 'space-between', gap: 'var(--space-3, 12px)' }}>
+                      <strong style={{ color: 'var(--accent)' }}>{f.pcaob_standard}</strong>
+                      <RiskBadge level={f.risk_level} />
+                    </div>
+                    <p style={{ margin: 'var(--space-2, 8px) 0 0', fontSize: 'var(--font-sm, 13px)' }}>{f.description}</p>
+                  </button>
+                ))}
+              </div>
+            </CardBody>
+          </Card>
+
+          <Card>
+            <CardHeader title="Review finding" subtitle="AS 1215 contradiction record — rationale is mandatory" />
+            <CardBody>
+              {!selected && <p style={{ color: 'var(--text-tertiary)' }}>Select a pending exception to review.</p>}
+              {selected && (
+                <div style={{ display: 'grid', gap: 'var(--space-3, 12px)' }}>
+                  <p style={{ margin: 0 }}>{selected.description}</p>
+                  <pre style={{
+                    margin: 0,
+                    fontSize: 'var(--font-xs, 12px)',
+                    background: 'var(--bg-elevated, #1f2230)',
+                    border: '1px solid var(--border-default)',
+                    borderRadius: 'var(--radius-md, 8px)',
+                    padding: 'var(--space-3, 12px)',
+                    overflowX: 'auto',
+                  }}>
+                    {JSON.stringify(selected.evidence_payload, null, 2)}
+                  </pre>
+                  <label style={{ fontSize: 'var(--font-sm, 13px)', color: 'var(--text-secondary)' }}>
+                    Auditor rationale
+                    <textarea
+                      value={rationale}
+                      onChange={(e) => setRationale(e.target.value)}
+                      rows={4}
+                      placeholder="Explain why you are approving or overriding this AI finding…"
+                      style={{
+                        display: 'block',
+                        width: '100%',
+                        marginTop: 'var(--space-2, 8px)',
+                        background: 'var(--bg-surface)',
+                        color: 'var(--text-primary)',
+                        border: '1px solid var(--border-default)',
+                        borderRadius: 'var(--radius-md, 8px)',
+                        padding: 'var(--space-3, 12px)',
+                        resize: 'vertical',
+                      }}
+                    />
+                  </label>
+                  <div style={{ display: 'flex', gap: 'var(--space-3, 12px)' }}>
+                    <Button variant="success" disabled={busy || !rationale.trim()} onClick={() => submitDecision(true)}>
+                      Approve AI finding
+                    </Button>
+                    <Button variant="danger" disabled={busy || !rationale.trim()} onClick={() => submitDecision(false)}>
+                      Override AI finding
+                    </Button>
+                  </div>
+                </div>
+              )}
+            </CardBody>
+          </Card>
+        </div>
+      )}
     </div>
   );
-};
+}
+
+export default ExceptionQueue;
