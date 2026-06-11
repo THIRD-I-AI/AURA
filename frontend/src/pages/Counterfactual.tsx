@@ -2,7 +2,7 @@ import React, { useCallback, useMemo, useState } from 'react';
 import CounterfactualCard, {
   type CounterfactualOperatorView,
 } from '../components/CounterfactualCard';
-import { API_BASE_URL } from '../services/api';
+import { API_BASE_URL, sanitizeRecordHash } from '../services/api';
 
 type Audience = 'operator' | 'auditor' | 'analyst';
 
@@ -76,7 +76,7 @@ const Counterfactual: React.FC = () => {
         const status = await statusResp.json();
         if (status.state === 'succeeded') {
           setArtifact(status.artifact.rendered as CounterfactualOperatorView);
-          setRecordHash(status.artifact.audit_record_hash ?? null);
+          setRecordHash(sanitizeRecordHash(status.artifact.audit_record_hash));
           setProgress('Completed.');
           return;
         }
