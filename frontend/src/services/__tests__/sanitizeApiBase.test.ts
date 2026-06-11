@@ -21,4 +21,20 @@ describe('sanitizeApiBase', () => {
     expect(sanitizeApiBase('not a url', FALLBACK)).toBe(FALLBACK);
     expect(sanitizeApiBase('/relative/path', FALLBACK)).toBe(FALLBACK);
   });
+
+  it('accepts a base path segment', () => {
+    expect(sanitizeApiBase('https://api.aura.example/base', FALLBACK))
+      .toBe('https://api.aura.example/base');
+  });
+
+  // Sec-6 hotfix: URL()-parse let these through (it round-trips the tainted
+  // string, which is also why CodeQL never recognized it as a barrier for
+  // alerts #50-52). The regex barrier is conservative: scheme://host[:port]
+  // [/path] only — no userinfo, query, fragment, or whitespace.
+  it('rejects userinfo, query, fragment, and padded URLs', () => {
+    expect(sanitizeApiBase('https://user:pass@evil.example', FALLBACK)).toBe(FALLBACK);
+    expect(sanitizeApiBase('https://api.aura.example?q=1', FALLBACK)).toBe(FALLBACK);
+    expect(sanitizeApiBase('https://api.aura.example#frag', FALLBACK)).toBe(FALLBACK);
+    expect(sanitizeApiBase('  https://api.aura.example', FALLBACK)).toBe(FALLBACK);
+  });
 });
