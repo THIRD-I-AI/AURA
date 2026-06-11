@@ -11,14 +11,29 @@ from __future__ import annotations
 
 from typing import Any, Dict
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from fastapi.responses import Response
 
 from counterfactual_service.main import (
     AuditRequest,
+    ExceptionDecisionRequest,
+    FinancialAuditRequest,
+    _require_auditor,
 )
 from counterfactual_service.main import (
     demo_scenarios as _svc_demo_scenarios,
+)
+from counterfactual_service.main import (
+    financial_audit as _svc_financial_audit,
+)
+from counterfactual_service.main import (
+    financial_audit_decide as _svc_financial_audit_decide,
+)
+from counterfactual_service.main import (
+    financial_audit_exceptions as _svc_financial_audit_exceptions,
+)
+from counterfactual_service.main import (
+    financial_audit_verify as _svc_financial_audit_verify,
 )
 from counterfactual_service.main import (
     get_artifact as _svc_get_artifact,
@@ -104,3 +119,26 @@ async def run_demo(scenario_id: str, fresh: bool = False) -> Dict[str, Any]:
 @router.post("/audit")
 async def run_audit(req: AuditRequest) -> Dict[str, Any]:
     return await _svc_run_audit(req)
+
+
+@router.post("/audit/financial")
+async def financial_audit(req: FinancialAuditRequest) -> Dict[str, Any]:
+    return await _svc_financial_audit(req)
+
+
+@router.get("/audit/financial/verify/{record_hash}")
+async def financial_audit_verify(record_hash: str) -> Dict[str, Any]:
+    return await _svc_financial_audit_verify(record_hash)
+
+
+@router.get("/audit/financial/{record_hash}/exceptions")
+async def financial_audit_exceptions(record_hash: str) -> Dict[str, Any]:
+    return await _svc_financial_audit_exceptions(record_hash)
+
+
+@router.post("/audit/financial/{record_hash}/exceptions/{finding_id}/decision")
+async def financial_audit_decide(
+    record_hash: str, finding_id: str, req: ExceptionDecisionRequest,
+    user: Dict[str, Any] = Depends(_require_auditor),
+) -> Dict[str, Any]:
+    return await _svc_financial_audit_decide(record_hash, finding_id, req, user=user)

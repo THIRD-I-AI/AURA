@@ -20,13 +20,15 @@ import uuid
 from typing import Any, Dict, List, Literal, Optional
 
 import pandas as pd
-from fastapi import HTTPException
+from fastapi import Depends, HTTPException
 from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, Field
 
+from shared.auth import require_user
+from shared.exceptions import ForbiddenError
 from shared.service_factory import create_service
 
-from . import pdf_renderer, persistence, signing
+from . import cryptography, pdf_renderer, persistence, signing
 from .audit_worker import get_audit_pool, run_audit_subprocess
 from .demo_scenarios import get_scenario, list_scenarios
 from .engine import dowhy_available, run_job
@@ -460,6 +462,126 @@ async def get_public_key() -> Dict[str, Any]:
         # 501 — feature unavailable in this deployment, not transient.
         raise HTTPException(501, "signing unavailable — cryptography not installed")
     return {"public_key_pem": pem, "key_source": signing.signing_key_source()}
+
+@app.get("/jwks")
+async def jwks_endpoint() -> Dict[str, Any]:
+    """Returns the JSON Web Key Set (JWKS) for ED25519 public keys."""
+    try:
+        return cryptography.get_jwks()
+    except Exception as e:
+        logger.error(f"Error fetching JWKS: {e}")
+        raise HTTPException(status_code=500, detail="Internal Server Error")
+
+async def _require_admin(user: Dict[str, Any] = Depends(require_user)) -> Dict[str, Any]:
+    """Admin gate for privileged mutations. Requires a valid bearer token whose
+    claims carry role == "admin". Fails closed: without auth wired/token present,
+    the route 401s rather than allowing an anonymous key revocation."""
+    if (user or {}).get("role") != "admin":
+        raise ForbiddenError("admin role required to revoke signing keys")
+    return user
+
+
+@app.post("/counterfactual/admin/revoke-key", dependencies=[Depends(_require_admin)])
+async def revoke_key(kid: str) -> Dict[str, str]:
+    """Soft revokes an ED25519 key. Admin-only (see _require_admin)."""
+    cryptography.soft_revoke_key(kid)
+    return {"status": "success", "revoked_kid": kid, "message": "Key has been soft revoked."}
+
+
+# ── S34a — Signed Financial Audit ─────────────────────────────────────
+
+class FinancialAuditRequest(BaseModel):
+    tenant_id: str
+    ledger: List[Dict[str, Any]] = Field(default_factory=list)
+    purchase_orders: List[Dict[str, Any]] = Field(default_factory=list)
+    invoices: List[Dict[str, Any]] = Field(default_factory=list)
+    journal_entries: List[Dict[str, Any]] = Field(default_factory=list)
+    historical_reports: List[Dict[str, Any]] = Field(default_factory=list)
+
+
+@app.post("/audit/financial")
+async def financial_audit(req: FinancialAuditRequest) -> Dict[str, Any]:
+    """Run the PCAOB checks on a ledger, sign an AS-1215 completion document with
+    the persistent ED25519 key, persist it to the hash-chained log, and return the
+    signed report (PII redacted at egress) with an independent verify URL."""
+    from agents.specialists.financial_auditor import FinancialAuditorAgent
+
+    from .financial_report import (
+        build_completion_document,
+        client_view,
+        dataset_fingerprint,
+        sign_and_persist,
+    )
+    agent = FinancialAuditorAgent(tenant_id=req.tenant_id)
+    result = await agent.run_full_audit(
+        req.ledger, req.purchase_orders, req.invoices, req.journal_entries, req.historical_reports)
+    fingerprint = dataset_fingerprint(req.ledger, req.purchase_orders, req.invoices, req.journal_entries)
+    doc = build_completion_document(req.tenant_id, result["findings"], fingerprint,
+                                    result["materiality_threshold"])
+    stored = sign_and_persist(doc)
+    view = client_view(stored)
+    view["verify_url"] = f"/audit/financial/verify/{stored['record_hash']}"
+    return view
+
+
+@app.get("/audit/financial/verify/{record_hash}")
+async def financial_audit_verify(record_hash: str) -> Dict[str, Any]:
+    from .financial_report import verify_report
+    return verify_report(record_hash)
+
+
+# ── S34b — HITL exception queue ───────────────────────────────────────
+
+class ExceptionDecisionRequest(BaseModel):
+    # No identity field: ``human_auditor_id`` is bound to the verified
+    # token's ``sub`` so the signed AS 1215 record attests to who decided,
+    # not to a caller-supplied string.
+    rationale: str = Field(..., min_length=1)
+    approved: bool
+
+
+async def _require_auditor(user: Dict[str, Any] = Depends(require_user)) -> Dict[str, Any]:
+    """Gate for human audit decisions. Mirrors ``_require_admin``: valid
+    bearer token whose claims carry role auditor or admin. Fails closed —
+    without auth wired/token present the route 401s/403s rather than
+    accepting an anonymous (or impersonated) AS 1215 override."""
+    if (user or {}).get("role") not in ("auditor", "admin"):
+        raise ForbiddenError("auditor or admin role required to record decisions")
+    return user
+
+
+@app.get("/audit/financial/{record_hash}/exceptions")
+async def financial_audit_exceptions(record_hash: str) -> Dict[str, Any]:
+    """Findings of a signed completion document still awaiting a human
+    decision (PII redacted at egress)."""
+    from . import exception_queue
+    try:
+        return exception_queue.pending_exceptions(record_hash)
+    except (LookupError, ValueError) as exc:
+        raise HTTPException(404, str(exc))
+
+
+@app.post("/audit/financial/{record_hash}/exceptions/{finding_id}/decision")
+async def financial_audit_decide(record_hash: str, finding_id: str,
+                                 req: ExceptionDecisionRequest,
+                                 user: Dict[str, Any] = Depends(_require_auditor),
+                                 ) -> Dict[str, Any]:
+    """Record a human approve/override: WORM ``audit_human_override`` entry
+    plus a signed HumanOverrideRecord artifact (AS 1215 contradiction doc).
+    The decider's identity comes from the verified token, never the body."""
+    from . import exception_queue
+    if not req.rationale.strip():
+        raise HTTPException(422, "AS 1215 requires a non-blank rationale")
+    try:
+        stored = exception_queue.record_decision(
+            record_hash, finding_id, user["sub"], req.rationale, req.approved)
+    except exception_queue.AlreadyDecidedError as exc:
+        raise HTTPException(409, str(exc))
+    except (LookupError, ValueError) as exc:
+        # ValueError here = non-hex record_hash from the URL → not found.
+        raise HTTPException(404, str(exc))
+    stored["verify_url"] = f"/audit/financial/verify/{stored['record_hash']}"
+    return stored
 
 
 # ── Sprint 13 — Auditor bulk-replay ───────────────────────────────────

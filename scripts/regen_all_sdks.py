@@ -65,6 +65,7 @@ SERVICES: List[Tuple[str, str, str, str, str]] = [
     ("dar_service",             "dar_service.main",             "app",            "dar",             "aura_dar_client"),
     ("database",                "database.main",                "app",            "database",        "aura_database_client"),
     ("execution_sandbox",       "execution_sandbox.main",       "execution_app",  "execution-sandbox", "aura_execution_sandbox_client"),
+    ("ingestion_service",       "ingestion_service.main",       "app",            "ingestion",       "aura_ingestion_client"),
     ("insights",                "insights.main",                "app",            "insights",        "aura_insights_client"),
     ("knowledge_base",          "knowledge_base.main",          "kb_app",         "knowledge-base",  "aura_knowledge_base_client"),
     ("metadata_store",          "metadata_store.main",          "metadata_app",   "metadata-store",  "aura_metadata_store_client"),

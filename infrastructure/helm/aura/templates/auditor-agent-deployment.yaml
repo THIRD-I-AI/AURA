@@ -1,0 +1,30 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: aura-pcaob-auditor
+  labels:
+    app: aura-auditor
+spec:
+  replicas: 10 # High scale parallel node consumption
+  selector:
+    matchLabels:
+      app: aura-auditor
+  template:
+    metadata:
+      labels:
+        app: aura-auditor
+    spec:
+      containers:
+      - name: auditor-agent
+        image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+        # In shadow mode, this runs in Read-Only to generate the empirical MRM record.
+        command: ["python", "-m", "agents.specialists.financial_auditor"]
+        env:
+        - name: SHADOW_MODE_ENABLED
+          value: "true" # Forces anomalies to the Read-Only Exception Queue
+        - name: KAFKA_CONSUMER_GROUP
+          value: "aura-pcaob-auditors-v1"
+        resources:
+          requests:
+            cpu: "2000m"
+            memory: "4Gi"

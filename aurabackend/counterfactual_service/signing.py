@@ -201,3 +201,21 @@ def public_key_pem() -> Optional[str]:
     except Exception as exc:  # pragma: no cover
         logger.warning("public_key_pem failed: %s", exc)
         return None
+
+
+def public_key_raw_b64url() -> Optional[str]:
+    """Return the persistent public key as base64url (no padding) of its raw
+    32 bytes — the form a JWK ``x`` field requires. None if signing unavailable."""
+    pair = _resolve_key_pair()
+    if pair is None:
+        return None
+    _, public_key = pair
+    try:
+        raw = public_key.public_bytes(
+            encoding=serialization.Encoding.Raw,
+            format=serialization.PublicFormat.Raw,
+        )
+        return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+    except Exception as exc:  # pragma: no cover
+        logger.warning("raw public key export failed: %s", exc)
+        return None
