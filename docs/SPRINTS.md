@@ -124,23 +124,28 @@ graph TD
 
 ## Current status
 
-All 5 enterprise pillars are feature-complete. All deferred integration
-sprints (S18.1b, S18.1c, S20.1, S20.2) are shipped. Operational
-readiness sprints S25-S30 landed 2026-05-26 covering code health,
-observability, Docker tiering, CI expansion, integration testing, and
-CI/CD pipeline. Next sprint is S31 (analytic depth — TBD).
+All 5 enterprise pillars are feature-complete, and the **S34 AI-native
+finance-auditor pivot is fully shipped** (S34a signed AS-1215 audit core,
+S34b HITL exception queue with JWT-bound signed decisions, S34c ingestion
+hardening, S34d egress PII tokenization). Security posture as of
+2026-06-11: 0 open Dependabot alerts (Sec-5 pyarrow), CodeQL XSS #50-52
+closed (Sec-6). Open backlog: P-2b schema-context cache, P-2c lineage
+materialised view, P-3 sqlglot+pooling (performance audit burn-down);
+frontend HITL wiring of the exception queue (Rohith); ingestion
+raw-in-boundary vs perimeter-masking decision (see S34d spec).
 
 
 ## In flight (active)
 
 | Sprint | Owner | Branch | Started | Goal |
 |---|---|---|---|---|
-| **S34d** | Mounith | (next: fresh branch off main) | 2026-06-11 | PII tokenization policy — last S34 sub-sprint. Replace blanket `[REDACTED]` at egress with deterministic tokens so auditors can correlate entities across findings without seeing raw PII. |
+| *(none)* | | | | |
 
 ## Completed (newest first)
 
 | Sprint | Bundle (+ hotfix) | Subsystem | What it ships |
 |---|---|---|---|
+| **S34d** | squash-merge `80774ad` (PR #67, issue #66) | shared + counterfactual_service | **Deterministic HMAC-keyed PII tokens at egress** — closes the S34 pivot. Same (tenant, field, value) → same `PII-<12hex>` token (`HMAC-SHA256(AURA_PII_TOKEN_KEY, tenant\|field\|value)`), so auditors correlate one employee across findings/reports/exception-queue without raw PII. HMAC not plain hash (names are dictionary-invertible unkeyed); **no key configured → falls back to `[REDACTED]`** (never emits unkeyed deterministic output); tenant- and field-salted (no cross-tenant/cross-field linkage). `client_view` + `exception_queue.pending_exceptions` switched to `mask_pii_egress`; signed artifacts keep raw evidence, hash basis unchanged; ingestion perimeter middleware untouched (raw-in-boundary tension documented in the spec). 7 Tier A tests. Spec: `docs/superpowers/specs/2026-06-11-s34d-pii-tokenization-design.md`. |
 | **Sec-6** | squash-merge `e8c238e` (PR #65, issue #64) + hotfix (PR #69) | frontend | **Close CodeQL #50-52 (HIGH, `js/xss-through-dom`):** `audit_record_hash` from the remote job-status response fed three `<a href>`s in `Counterfactual.tsx` (PDF / artifact JSON / verify). New `sanitizeRecordHash` in `services/api.ts` cuts the response half of the taint path — 64-char lowercase sha256 hex only (same boundary rule as backend `exception_queue._index_path`), applied at `setRecordHash` so a non-conforming hash renders no links. **Hotfix (PR #69):** the alerts survived the first merge — the localStorage→`API_BASE_URL` half was guarded by a `new URL()`+protocol check that returns the tainted string unchanged, a pattern CodeQL does NOT model as a barrier (which is also why the alerts survived S31a's original `sanitizeApiBase`). Replaced with a regex `.test()` guard (recognized sanitizer): `scheme://host[:port][/path]`, no userinfo/query/fragment/whitespace. Lessons: multi-source taint paths need a barrier per source; a validator that round-trips its input is invisible to taint tracking — return-after-regex-test is the recognizable shape. |
 | **S34a–c** | squash-merge `05dad88` (PR #61, issue #60) | counterfactual_service + ingestion_service + agents | **AI-native finance-auditor pivot — signed audit core, HITL queue, ingestion hardening.** S34a: `run_full_audit` composes AS-2110/2305/2201/2401; AS-1215 Engagement Completion Document with 100%-population `dataset_fingerprint`; persistent-ED25519 `sign_and_persist` (refuses revoked kids → `unsigned`); tamper-detecting `/audit/financial/verify`; egress-only PII `client_view` (signed artifact keeps raw evidence); gateway proxies; `ingestion_service` registered in the S21d SDK codegen (12th typed client). S34b: per-finding `finding_id` under the report signature; `exception_queue.py` — pending view + decisions as signed `HumanOverrideRecord` artifacts + WORM `audit_human_override` (409 on double-decision); decision identity bound to verified JWT sub via `_require_auditor` (Rohith's fail-closed hardening `7b721d8`). S34c: tolerant Kafka producer (`KafkaUnavailableError`; broker-down degrades publishes, never boot), `on_event`→lifespan, auditable `ingestion_publish_failed` WORM event, `tests_contract/` added to the base CI lane. 24 new Tier A tests. Specs/plans: `docs/superpowers/{specs,plans}/2026-06-10-s34{a,b,c}-*`. CI lessons: CI ruff is stricter than the CLAUDE.md pre-push command; SDK schemas must be regenerated on a CI-matched fastapi (ValidationError gained `ctx`/`input`). |
 | **Sec-5** | squash-merge (PR #63, issue #62) | deps | **pyarrow `>=16.0,<19.0` → `>=23.0.1,<24`** in requirements.txt + pyproject.toml — closes the 2 HIGH Dependabot alerts (#34/#35: use-after-free reading IPC files with pre-buffering; patched 23.0.1). The old `<19` cap had no documented constraint and blocked the fix. Verified on 23.0.1: parquet roundtrip + file-service/upload suites green. |
