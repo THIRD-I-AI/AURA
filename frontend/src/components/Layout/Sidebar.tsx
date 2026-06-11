@@ -53,6 +53,44 @@ const Icons = {
       <path d="M1.5 11.5c1.5-4 3-6 4.5-6s3 4 4.5 4 3-6 4.5-6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
     </svg>
   ),
+  library: (
+    <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+      <path d="M3.5 2.5h8A1.5 1.5 0 0113 4v12.5l-3.5-2.5L6 16.5V4a1.5 1.5 0 00-1.5-1.5z" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" transform="translate(1.5 -0.5)"/>
+      <path d="M4 3.5v12" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+    </svg>
+  ),
+  dashboards: (
+    <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+      <rect x="1.5" y="1.5" width="15" height="15" rx="2" stroke="currentColor" strokeWidth="1.5"/>
+      <path d="M1.5 6.5h15M7 6.5v10" stroke="currentColor" strokeWidth="1.5"/>
+    </svg>
+  ),
+  lineage: (
+    <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+      <circle cx="4" cy="4" r="2" stroke="currentColor" strokeWidth="1.5"/>
+      <circle cx="14" cy="9" r="2" stroke="currentColor" strokeWidth="1.5"/>
+      <circle cx="4" cy="14" r="2" stroke="currentColor" strokeWidth="1.5"/>
+      <path d="M6 4.5l6 3.5M6 13.5l6-3.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+    </svg>
+  ),
+  cost: (
+    <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+      <circle cx="9" cy="9" r="7.5" stroke="currentColor" strokeWidth="1.5"/>
+      <path d="M11.5 6.5c-.5-.8-1.4-1.2-2.5-1.2-1.5 0-2.5.8-2.5 1.9 0 2.6 5 1.3 5 3.8 0 1.1-1 1.9-2.5 1.9-1.1 0-2-.4-2.5-1.2M9 4v1.3M9 12.9v1.3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+    </svg>
+  ),
+  webhooks: (
+    <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+      <path d="M7.5 4.5a2.5 2.5 0 115 0c0 1.2-.8 2-1.5 3l-2.5 4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+      <path d="M5 9.5a3.5 3.5 0 103.5 4h5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+      <circle cx="14" cy="13.5" r="2" stroke="currentColor" strokeWidth="1.5"/>
+    </svg>
+  ),
+  counterfactual: (
+    <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+      <path d="M2 9h4l2.5-7 3 14L14 9h2.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+    </svg>
+  ),
   settings: (
     <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
       <circle cx="9" cy="9" r="2.5" stroke="currentColor" strokeWidth="1.5"/>
@@ -76,9 +114,15 @@ const NAV_ICON_MAP: Record<string, React.ReactNode> = {
   chat:      Icons.chat,
   files:     Icons.files,
   queries:   Icons.queries,
+  library:   Icons.library,
+  dashboards: Icons.dashboards,
+  lineage:   Icons.lineage,
+  cost:      Icons.cost,
   agent:     Icons.agent,
   pipelines: Icons.pipelines,
   streaming: Icons.streaming,
+  webhooks:  Icons.webhooks,
+  counterfactual: Icons.counterfactual,
 };
 
 /* ── Types ────────────────────────────────────────────────────────── */

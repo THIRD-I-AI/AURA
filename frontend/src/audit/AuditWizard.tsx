@@ -78,9 +78,18 @@ export function AuditWizard() {
       ? mappingOk
       : false;
 
+  // Disabled state keeps a visible outline + muted text: on the dark theme
+  // a `--border-default` fill read as bare floating text (S35c).
   const btn = (testid: string, label: string, enabled: boolean, onClick: () => void) => (
     <button data-testid={testid} disabled={!enabled} onClick={onClick}
-      style={{ padding: 'var(--space-3) var(--space-6)', background: enabled ? 'var(--accent)' : 'var(--border-default)', color: '#fff', border: 'none', borderRadius: 'var(--radius-md)', cursor: enabled ? 'pointer' : 'not-allowed' }}>
+      style={{
+        padding: 'var(--space-3) var(--space-6)',
+        background: enabled ? 'var(--accent)' : 'transparent',
+        color: enabled ? '#fff' : 'var(--text-tertiary)',
+        border: enabled ? '1px solid transparent' : '1px solid var(--border-default)',
+        borderRadius: 'var(--radius-md)',
+        cursor: enabled ? 'pointer' : 'not-allowed',
+      }}>
       {label}
     </button>
   );

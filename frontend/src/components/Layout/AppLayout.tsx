@@ -6,6 +6,7 @@ import Sidebar from './Sidebar';
 import Header from './Header';
 import Button from '../ui/Button';
 import { useSystemHealth } from '../../hooks/useSystemHealth';
+import { NAV_ITEMS } from './nav';
 
 export type PageType =
   | 'dashboard'
@@ -45,22 +46,6 @@ const PAGE_META: Record<PageType, { title: string; subtitle: string }> = {
   webhooks:   { title: 'Webhooks',           subtitle: 'Outbound subscriptions & inbound HTTP triggers' },
   counterfactual: { title: 'Counterfactual',     subtitle: "What would have happened if X had been different — causal estimate, refutation tests, adversarial review, hash-sealed audit" },
 };
-
-const NAV_ITEMS = [
-  { id: 'dashboard', label: 'Dashboard', href: '#' },
-  { id: 'chat',      label: 'Chat',      href: '#' },
-  { id: 'files',     label: 'Files & Data', href: '#' },
-  { id: 'queries',   label: 'Query History', href: '#' },
-  { id: 'library',   label: 'Library',   href: '#' },
-  { id: 'dashboards',label: 'Dashboards', href: '#' },
-  { id: 'lineage',   label: 'Lineage',   href: '#' },
-  { id: 'cost',      label: 'LLM Cost',  href: '#' },
-  { id: 'agent',     label: 'Agent',     href: '#' },
-  { id: 'pipelines', label: 'ETL Pipelines', href: '#' },
-  { id: 'streaming', label: 'Streaming', href: '#' },
-  { id: 'webhooks',  label: 'Webhooks',  href: '#' },
-  { id: 'counterfactual', label: 'Counterfactual', href: '#' },
-];
 
 const AppLayout: React.FC<AppLayoutProps> = ({ children, currentPage, onPageChange }) => {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
