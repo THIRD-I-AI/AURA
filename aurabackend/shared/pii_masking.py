@@ -5,8 +5,6 @@ import logging
 import os
 from typing import Any
 
-from fastapi import Request
-from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.types import Message
 
 logger = logging.getLogger("aura.pii_masking")
@@ -70,35 +68,62 @@ def mask_pii_egress(data: Any, *, context: str = "") -> Any:
         return tokenize_pii(data, context=context)
     return redact_pii(data)
 
-async def set_body(request: Request, body: bytes):
-    async def receive() -> Message:
-        return {"type": "http.request", "body": body}
-    request._receive = receive
-
-class PIIMaskingMiddleware(BaseHTTPMiddleware):
+class PIIMaskingMiddleware:
     """
-    Perimeter Defense: Intercepts raw JSON bodies at the API Gateway level
-    and permanently redacts restricted PII fields before they are parsed by
-    Pydantic or routed to internal Kafka streams.
+    Perimeter Defense: masks restricted PII fields in inbound JSON bodies
+    before they are parsed by Pydantic or routed to internal Kafka streams.
+    With AURA_PII_TOKEN_KEY set the masking is deterministic tokenization
+    (same entity → same token), so downstream fraud correlation (AS 2401
+    duplicate/related-party patterns) survives while raw PII never enters
+    the stream; unkeyed it falls back to [REDACTED].
+
+    Implemented as a pure ASGI middleware that wraps ``receive``. The
+    previous BaseHTTPMiddleware version mutated ``request._receive``, which
+    current Starlette does NOT propagate through ``call_next`` — the
+    perimeter was silently a no-op (caught by tests/test_ingestion_security).
     """
-    async def dispatch(self, request: Request, call_next):
-        # We only care about modifying JSON payloads (e.g. POST /api/v1/ingest)
-        if request.method in ["POST", "PUT", "PATCH"] and "application/json" in request.headers.get("content-type", ""):
-            try:
-                body_bytes = await request.body()
-                if body_bytes:
-                    payload = json.loads(body_bytes)
-                    redacted_payload = redact_pii(payload)
 
-                    # Re-serialize and inject the cleansed body back into the request stream
-                    cleansed_bytes = json.dumps(redacted_payload).encode("utf-8")
-                    await set_body(request, cleansed_bytes)
+    def __init__(self, app) -> None:
+        self.app = app
 
-            except json.JSONDecodeError:
-                # If it's not valid JSON, we can't redact it. Let the downstream validation handle the 422.
-                pass
-            except Exception as e:
-                logger.error(f"PIIMaskingMiddleware error: {e}")
+    async def __call__(self, scope, receive, send) -> None:
+        if scope["type"] != "http" or scope.get("method") not in ("POST", "PUT", "PATCH"):
+            return await self.app(scope, receive, send)
+        headers = {k.decode("latin-1").lower(): v.decode("latin-1")
+                   for k, v in scope.get("headers", [])}
+        if "application/json" not in headers.get("content-type", ""):
+            return await self.app(scope, receive, send)
 
-        response = await call_next(request)
-        return response
+        body = b""
+        while True:
+            message: Message = await receive()
+            body += message.get("body", b"")
+            if not message.get("more_body", False):
+                break
+
+        try:
+            if body:
+                payload = json.loads(body)
+                context = str(payload.get("tenant_id", "")) if isinstance(payload, dict) else ""
+                body = json.dumps(mask_pii_egress(payload, context=context)).encode("utf-8")
+                # Masking changes the byte length — keep content-length honest.
+                scope["headers"] = [
+                    (k, v) if k != b"content-length" else (b"content-length", str(len(body)).encode())
+                    for k, v in scope.get("headers", [])
+                ]
+        except json.JSONDecodeError:
+            # Not valid JSON — pass through; downstream validation 422s.
+            pass
+        except Exception as exc:
+            logger.error(f"PIIMaskingMiddleware error: {exc}")
+
+        replayed = False
+
+        async def cleansed_receive() -> Message:
+            nonlocal replayed
+            if not replayed:
+                replayed = True
+                return {"type": "http.request", "body": body, "more_body": False}
+            return await receive()
+
+        await self.app(scope, cleansed_receive, send)
