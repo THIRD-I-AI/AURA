@@ -1,10 +1,11 @@
 import type { ColumnMapping } from '../types';
 import type { MappingErrors } from '../validateMapping';
 
-export function MapStep({ columns, mapping, errors, onChange }: {
+export function MapStep({ columns, mapping, errors, notes = {}, onChange }: {
   columns: string[];
   mapping: ColumnMapping;
   errors: MappingErrors;
+  notes?: MappingErrors;
   onChange: (next: ColumnMapping) => void;
 }) {
   const set = (patch: Partial<ColumnMapping>) => onChange({ ...mapping, ...patch });
@@ -28,6 +29,7 @@ export function MapStep({ columns, mapping, errors, onChange }: {
           {columns.map((c) => <option key={c} value={c}>{c}</option>)}
         </select>
         {errors.treatment && <span data-testid="err-treatment" style={{ color: 'var(--red)', fontSize: 'var(--font-xs)' }}>{errors.treatment}</span>}
+        {!errors.treatment && notes.treatment && <span data-testid="note-treatment" style={{ color: 'var(--text-tertiary)', fontSize: 'var(--font-xs)' }}>{notes.treatment}</span>}
       </label>
 
       <label style={{ display: 'block', marginBottom: 'var(--space-4)' }}>
@@ -37,6 +39,7 @@ export function MapStep({ columns, mapping, errors, onChange }: {
           {columns.map((c) => <option key={c} value={c}>{c}</option>)}
         </select>
         {errors.outcome && <span data-testid="err-outcome" style={{ color: 'var(--red)', fontSize: 'var(--font-xs)' }}>{errors.outcome}</span>}
+        {!errors.outcome && notes.outcome && <span data-testid="note-outcome" style={{ color: 'var(--text-tertiary)', fontSize: 'var(--font-xs)' }}>{notes.outcome}</span>}
       </label>
 
       <div style={{ marginBottom: 'var(--space-4)' }}>
@@ -53,6 +56,7 @@ export function MapStep({ columns, mapping, errors, onChange }: {
           ))}
         </div>
         {errors.confounders && <span data-testid="err-confounders" style={{ color: 'var(--red)', fontSize: 'var(--font-xs)' }}>{errors.confounders}</span>}
+        {!errors.confounders && notes.confounders && <span data-testid="note-confounders" style={{ display: 'block', color: 'var(--text-tertiary)', fontSize: 'var(--font-xs)' }}>{notes.confounders}</span>}
       </div>
 
       <label style={{ display: 'block', marginBottom: 'var(--space-4)' }}>
@@ -62,6 +66,7 @@ export function MapStep({ columns, mapping, errors, onChange }: {
           {columns.map((c) => <option key={c} value={c}>{c}</option>)}
         </select>
         {errors.instrument && <span data-testid="err-instrument" style={{ color: 'var(--red)', fontSize: 'var(--font-xs)' }}>{errors.instrument}</span>}
+        {!errors.instrument && notes.instrument && <span data-testid="note-instrument" style={{ color: 'var(--text-tertiary)', fontSize: 'var(--font-xs)' }}>{notes.instrument}</span>}
       </label>
     </div>
   );
