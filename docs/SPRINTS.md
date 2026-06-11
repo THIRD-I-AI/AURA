@@ -129,10 +129,12 @@ finance-auditor pivot is fully shipped** (S34a signed AS-1215 audit core,
 S34b HITL exception queue with JWT-bound signed decisions, S34c ingestion
 hardening, S34d egress PII tokenization). Security posture as of
 2026-06-11: 0 open Dependabot alerts (Sec-5 pyarrow), CodeQL XSS #50-52
-closed (Sec-6). Open backlog: P-2b schema-context cache, P-2c lineage
-materialised view, P-3 sqlglot+pooling (performance audit burn-down);
-frontend HITL wiring of the exception queue (Rohith); ingestion
-raw-in-boundary vs perimeter-masking decision (see S34d spec).
+closed (Sec-6). The performance audit burn-down is COMPLETE — all 8
+findings ✅ (see docs/AUDIT_BURN_DOWN.md; P-2b/P-2c/P-3 landed earlier
+as `3a9d195`/`27c088b`/PR #17). S35 shipped the HITL frontend wiring;
+Sec-7 (in flight, PR #75) closes the enterprise-deployment posture and
+the ingestion masking tension. Enterprise readiness: see ENTERPRISE.md
+→ Production Deployment Checklist; investor flow: docs/INVESTOR_DEMO.md.
 
 
 ## In flight (active)
