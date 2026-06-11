@@ -1,5 +1,8 @@
+import hashlib
+import hmac
 import json
 import logging
+import os
 from typing import Any
 
 from fastapi import Request
@@ -26,6 +29,46 @@ def redact_pii(data: Any) -> Any:
         return [redact_pii(item) for item in data]
     else:
         return data
+
+
+# ── S34d — deterministic keyed pseudonymization at egress ─────────────
+
+def _pii_token(field: str, value: Any, context: str) -> str:
+    """`PII-` + 12 hex of HMAC-SHA256(key, context|field|value).
+
+    HMAC (not a plain hash) because names/SSNs are low-entropy and an
+    unkeyed deterministic hash is dictionary-invertible. Context (tenant)
+    and field salting keep token equality from leaking across tenants or
+    across different PII fields of the same person.
+    """
+    key = os.environ["AURA_PII_TOKEN_KEY"]
+    msg = f"{context}|{field}|{value}"
+    digest = hmac.new(key.encode("utf-8"), msg.encode("utf-8"), hashlib.sha256)
+    return f"PII-{digest.hexdigest()[:12]}"
+
+
+def tokenize_pii(data: Any, *, context: str = "") -> Any:
+    """Like redact_pii, but the same (context, field, value) always maps to
+    the same token — auditors can correlate entities across findings
+    without seeing raw PII. Requires AURA_PII_TOKEN_KEY."""
+    if isinstance(data, dict):
+        return {
+            k: _pii_token(str(k).lower(), v, context)
+            if str(k).lower() in PII_KEYS else tokenize_pii(v, context=context)
+            for k, v in data.items()
+        }
+    elif isinstance(data, list):
+        return [tokenize_pii(item, context=context) for item in data]
+    return data
+
+
+def mask_pii_egress(data: Any, *, context: str = "") -> Any:
+    """Egress masking: correlatable tokens when AURA_PII_TOKEN_KEY is
+    configured, plain redaction otherwise. Fail-safe — without a key no
+    deterministic (invertible-by-dictionary) output is ever emitted."""
+    if os.getenv("AURA_PII_TOKEN_KEY"):
+        return tokenize_pii(data, context=context)
+    return redact_pii(data)
 
 async def set_body(request: Request, body: bytes):
     async def receive() -> Message:
