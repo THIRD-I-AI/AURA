@@ -304,6 +304,33 @@ Each sprint produces a (a) shippable feature behind a feature flag, (b) one new 
 
 ---
 
+## Production Deployment Checklist (Sec-7)
+
+The config layer fails closed: with `ENVIRONMENT=production` the gateway
+REFUSES to boot on an insecure posture rather than degrading silently.
+The Helm chart (`deploy/helm/aura/`) sets the production env by default;
+this checklist is what a platform team must provision.
+
+| # | Item | Where | Enforced by |
+|---|---|---|---|
+| 1 | `ENVIRONMENT=production` | chart default (`values.yaml: env`) | arms every gate below at boot |
+| 2 | `AURA_AUTH_MODE=password` | chart default | boot refuses `open` mode in production (open mode mints any-role JWTs — dev/demo only) |
+| 3 | `SECRET_KEY` (long random) | `aura-secrets` k8s Secret (`envSecretName`) | boot refuses the default value in production |
+| 4 | CORS origins (https only, no `*`) | `AURA_CORS_ORIGINS` | boot refuses wildcard / http origins in production |
+| 5 | `AURA_SIGNING_PRIVATE_KEY_HEX` | `aura-secrets` | persistent ED25519 report signatures survive pod reschedules |
+| 6 | `AURA_PII_TOKEN_KEY` | `aura-secrets` | PII egress + ingestion perimeter emit correlatable `PII-<hex>` tokens; **unset → blanket `[REDACTED]`** (never unkeyed hashes) |
+| 7 | `GEMINI_API_KEY`, `DATABASE_URL` | `aura-secrets` | LLM + external Postgres |
+| 8 | WORM StorageClass for the audit PVC + S3 Object Lock shipper | `values.yaml: audit.*` | hash-chained TRAIGA log gains physical immutability |
+| 9 | TLS at the ingress (`aura-tls`) | `values.yaml: ingress` | bearer tokens never traverse plaintext |
+| 10 | ERP connector service tokens | issued via `/api/v1/auth/token` (password mode) | ingestion endpoints are 401 fail-closed — an unauthenticated POST is ledger-injection |
+
+Security posture as shipped: 0 open Dependabot alerts, CodeQL clean,
+bandit lane green, rate limiting + security headers (Sec-4), AST-allowlisted
+LLM-code sandbox (S32), JWT-bound human audit decisions (S34b), keyed PII
+tokenization at both the egress and the ingestion perimeter (S34d/Sec-7).
+
+---
+
 ## FAQ
 
 **Q: Why not use [LangChain / LlamaIndex / commercial RAG platform]?**

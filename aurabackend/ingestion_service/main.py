@@ -9,6 +9,7 @@ from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from shared.audit_log import audit_event
+from shared.auth import require_user
 from shared.service_factory import create_service
 
 from .kafka_client import KafkaUnavailableError, kafka_producer
@@ -104,12 +105,16 @@ async def process_raw_batch_async(payload: RawIngestionPayload, system_origin: s
 async def ingest_netsuite_batch(
     payload: RawIngestionPayload,
     background_tasks: BackgroundTasks,
-    request: Request
+    request: Request,
+    user: Dict[str, Any] = Depends(require_user),
 ):
+    # Fail-closed (Sec-7): this endpoint feeds the financial ledger via
+    # Kafka — an unauthenticated POST here is ledger-injection.
     audit_event("ingestion_batch_received", {
         "batch_id": payload.batch_id,
         "system_origin": "NetSuite",
-        "entry_count": len(payload.entries)
+        "entry_count": len(payload.entries),
+        "sub": user.get("sub", ""),
     })
     background_tasks.add_task(process_raw_batch_async, payload, "NetSuite")
     return {"status": "accepted", "batch_id": payload.batch_id, "message": "NetSuite batch queued for normalization."}
@@ -118,18 +123,21 @@ async def ingest_netsuite_batch(
 async def ingest_workday_batch(
     payload: RawIngestionPayload,
     background_tasks: BackgroundTasks,
-    request: Request
+    request: Request,
+    user: Dict[str, Any] = Depends(require_user),
 ):
     audit_event("ingestion_batch_received", {
         "batch_id": payload.batch_id,
         "system_origin": "Workday",
-        "entry_count": len(payload.entries)
+        "entry_count": len(payload.entries),
+        "sub": user.get("sub", ""),
     })
     background_tasks.add_task(process_raw_batch_async, payload, "Workday")
     return {"status": "accepted", "batch_id": payload.batch_id, "message": "Workday batch queued for normalization."}
 
 @app.get("/api/v1/ingest/erc-map/{erc}")
-async def get_erc_mapping(erc: str, system: str):
+async def get_erc_mapping(erc: str, system: str,
+                          user: Dict[str, Any] = Depends(require_user)):
     """
     Utility endpoint to verify ERC mappings.
     """
