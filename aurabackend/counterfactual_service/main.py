@@ -533,9 +533,21 @@ async def financial_audit_verify(record_hash: str) -> Dict[str, Any]:
 # ── S34b — HITL exception queue ───────────────────────────────────────
 
 class ExceptionDecisionRequest(BaseModel):
-    human_auditor_id: str
+    # No identity field: ``human_auditor_id`` is bound to the verified
+    # token's ``sub`` so the signed AS 1215 record attests to who decided,
+    # not to a caller-supplied string.
     rationale: str = Field(..., min_length=1)
     approved: bool
+
+
+async def _require_auditor(user: Dict[str, Any] = Depends(require_user)) -> Dict[str, Any]:
+    """Gate for human audit decisions. Mirrors ``_require_admin``: valid
+    bearer token whose claims carry role auditor or admin. Fails closed —
+    without auth wired/token present the route 401s/403s rather than
+    accepting an anonymous (or impersonated) AS 1215 override."""
+    if (user or {}).get("role") not in ("auditor", "admin"):
+        raise ForbiddenError("auditor or admin role required to record decisions")
+    return user
 
 
 @app.get("/audit/financial/{record_hash}/exceptions")
@@ -551,15 +563,18 @@ async def financial_audit_exceptions(record_hash: str) -> Dict[str, Any]:
 
 @app.post("/audit/financial/{record_hash}/exceptions/{finding_id}/decision")
 async def financial_audit_decide(record_hash: str, finding_id: str,
-                                 req: ExceptionDecisionRequest) -> Dict[str, Any]:
+                                 req: ExceptionDecisionRequest,
+                                 user: Dict[str, Any] = Depends(_require_auditor),
+                                 ) -> Dict[str, Any]:
     """Record a human approve/override: WORM ``audit_human_override`` entry
-    plus a signed HumanOverrideRecord artifact (AS 1215 contradiction doc)."""
+    plus a signed HumanOverrideRecord artifact (AS 1215 contradiction doc).
+    The decider's identity comes from the verified token, never the body."""
     from . import exception_queue
     if not req.rationale.strip():
         raise HTTPException(422, "AS 1215 requires a non-blank rationale")
     try:
         stored = exception_queue.record_decision(
-            record_hash, finding_id, req.human_auditor_id, req.rationale, req.approved)
+            record_hash, finding_id, user["sub"], req.rationale, req.approved)
     except exception_queue.AlreadyDecidedError as exc:
         raise HTTPException(409, str(exc))
     except (LookupError, ValueError) as exc:

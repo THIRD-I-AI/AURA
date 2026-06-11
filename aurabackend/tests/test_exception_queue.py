@@ -148,9 +148,9 @@ def test_exception_endpoints_e2e(monkeypatch, tmp_path):
     assert "Ada" not in str(q["pending"])     # egress redaction
 
     fid = q["pending"][0]["finding_id"]
-    body = m.ExceptionDecisionRequest(
-        human_auditor_id="auditor-7", rationale="confirmed with vendor", approved=True)
-    decision = asyncio.run(m.financial_audit_decide(rh, fid, body))
+    auditor = {"sub": "auditor-7", "role": "auditor"}
+    body = m.ExceptionDecisionRequest(rationale="confirmed with vendor", approved=True)
+    decision = asyncio.run(m.financial_audit_decide(rh, fid, body, user=auditor))
     assert decision["document_type"] == "HumanOverrideRecord"
     assert decision["verify_url"].endswith(decision["record_hash"])
     # The decision verifies through the same generic verify endpoint.
@@ -160,11 +160,57 @@ def test_exception_endpoints_e2e(monkeypatch, tmp_path):
     assert q2["n_pending"] == 1 and q2["n_decided"] == 1
 
     with pytest.raises(HTTPException) as exc409:
-        asyncio.run(m.financial_audit_decide(rh, fid, body))
+        asyncio.run(m.financial_audit_decide(rh, fid, body, user=auditor))
     assert exc409.value.status_code == 409
     with pytest.raises(HTTPException) as exc404:
         asyncio.run(m.financial_audit_exceptions("0" * 64))
     assert exc404.value.status_code == 404
     with pytest.raises(HTTPException) as exc404b:
-        asyncio.run(m.financial_audit_decide(rh, "0" * 64, body))
+        asyncio.run(m.financial_audit_decide(rh, "0" * 64, body, user=auditor))
     assert exc404b.value.status_code == 404
+
+
+# ── S34b hardening: auditor identity bound to verified token ─────────
+
+
+def test_require_auditor_gate_fails_closed():
+    """role ∈ {auditor, admin} may decide; anyone else 403s; the gate
+    mirrors _require_admin (fail-closed without a valid token)."""
+    import counterfactual_service.main as m
+    from shared.exceptions import ForbiddenError
+
+    with pytest.raises(ForbiddenError):
+        asyncio.run(m._require_auditor(user={"sub": "u1", "role": "user"}))
+    with pytest.raises(ForbiddenError):
+        asyncio.run(m._require_auditor(user={"sub": "u1"}))  # no role claim
+    assert asyncio.run(m._require_auditor(user={"sub": "a1", "role": "auditor"}))["sub"] == "a1"
+    assert asyncio.run(m._require_auditor(user={"sub": "r1", "role": "admin"}))["sub"] == "r1"
+
+
+def test_decision_identity_comes_from_token_not_body(monkeypatch, tmp_path):
+    """The signed HumanOverrideRecord must carry the verified token's sub —
+    a caller cannot self-assert another auditor's identity via the body."""
+    monkeypatch.setenv("AURA_ARTIFACT_DIR", str(tmp_path))
+    _store(monkeypatch)
+
+    import counterfactual_service.main as m
+
+    report = asyncio.run(m.financial_audit(m.FinancialAuditRequest(
+        tenant_id="t1",
+        ledger=[{"internal_id": "L1", "account_code": "4000", "amount": 250000.0}],
+        purchase_orders=[{"po_number": "PO-1"}],
+        invoices=[{"invoice_number": "INV-9", "po_number": "PO-MISSING",
+                   "employee_name": "Ada"}],
+        journal_entries=[],
+    )))
+    rh = report["record_hash"]
+    fid = asyncio.run(m.financial_audit_exceptions(rh))["pending"][0]["finding_id"]
+
+    # The request body no longer accepts an identity field at all.
+    assert "human_auditor_id" not in m.ExceptionDecisionRequest.model_fields
+
+    decision = asyncio.run(m.financial_audit_decide(
+        rh, fid, m.ExceptionDecisionRequest(rationale="vendor confirmed", approved=True),
+        user={"sub": "auditor-jwt-9", "role": "auditor"}))
+    assert decision["human_auditor_id"] == "auditor-jwt-9"
+    assert asyncio.run(m.financial_audit_verify(decision["record_hash"]))["verified"] is True

@@ -35,10 +35,11 @@ export const ExceptionQueue: React.FC<{ isShadowMode?: boolean }> = ({ isShadowM
     if (!selectedException || isShadowMode) return;
     
     // In production, this hits the backend which calls `audit_human_override`
-    // securing the PCAOB AS 1215 contradiction documentation.
+    // securing the PCAOB AS 1215 contradiction documentation. The auditor's
+    // identity is NOT sent in the body — the backend binds it to the
+    // verified JWT's `sub` claim (anti-impersonation, fail-closed).
     console.log(`Submitting Override:`, {
       aiRecordHash: selectedException.aiRecordHash,
-      humanAuditorId: 'auditor-current-user',
       rationale,
       approved
     });

@@ -11,13 +11,14 @@ from __future__ import annotations
 
 from typing import Any, Dict
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from fastapi.responses import Response
 
 from counterfactual_service.main import (
     AuditRequest,
     ExceptionDecisionRequest,
     FinancialAuditRequest,
+    _require_auditor,
 )
 from counterfactual_service.main import (
     demo_scenarios as _svc_demo_scenarios,
@@ -138,5 +139,6 @@ async def financial_audit_exceptions(record_hash: str) -> Dict[str, Any]:
 @router.post("/audit/financial/{record_hash}/exceptions/{finding_id}/decision")
 async def financial_audit_decide(
     record_hash: str, finding_id: str, req: ExceptionDecisionRequest,
+    user: Dict[str, Any] = Depends(_require_auditor),
 ) -> Dict[str, Any]:
-    return await _svc_financial_audit_decide(record_hash, finding_id, req)
+    return await _svc_financial_audit_decide(record_hash, finding_id, req, user=user)
