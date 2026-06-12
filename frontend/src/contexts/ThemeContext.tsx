@@ -25,9 +25,10 @@ interface ThemeProviderProps {
 
 export const ThemeProvider: React.FC<ThemeProviderProps> = ({ children }) => {
   const [theme, setThemeState] = useState<Theme>(() => {
-    // Get theme from localStorage or default to 'light'
+    // S37: the product is dark-first (Terminal Authority); 'light'
+    // remains only as a legacy saved preference.
     const savedTheme = localStorage.getItem('aura-theme') as Theme;
-    return savedTheme || 'light';
+    return savedTheme || 'dark';
   });
 
   useEffect(() => {
