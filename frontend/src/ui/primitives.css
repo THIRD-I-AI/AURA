@@ -52,3 +52,16 @@
 .ui-card__subtitle { margin: var(--space-1) 0 0; font-size: var(--font-xs); color: var(--text-tertiary); }
 .ui-card__actions { display: flex; gap: var(--space-2); }
 .ui-card__body { padding: var(--space-5); }
+
+.ui-badge {
+  display: inline-flex; align-items: center; gap: var(--space-1);
+  font-family: var(--font-sans); font-size: var(--font-2xs); font-weight: 600;
+  letter-spacing: 0.04em; text-transform: uppercase;
+  padding: 2px var(--space-2); border-radius: var(--radius-full);
+  border: 1px solid;
+}
+.ui-badge--verified { color: var(--signal); border-color: var(--green-border); background: var(--green-dim); }
+.ui-badge--pending  { color: var(--text-secondary); border-color: var(--border-strong); background: var(--bg-raised); }
+.ui-badge--warn     { color: var(--warn); border-color: rgba(245, 158, 11, 0.4); background: rgba(245, 158, 11, 0.12); }
+.ui-badge--danger   { color: var(--danger); border-color: var(--red-border); background: var(--red-dim); }
+.ui-badge--neutral  { color: var(--text-tertiary); border-color: var(--border-default); background: transparent; }
