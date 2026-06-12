@@ -88,7 +88,7 @@ def test_run_full_audit_spans_standards(monkeypatch):
     result = asyncio.run(agent.run_full_audit(ledger, pos, invoices, jes))
     stds = {f.pcaob_standard for f in result["findings"]}
     assert {"AS 2305", "AS 2201", "AS 2401"}.issubset(stds)
-    assert result["materiality_threshold"] == 50000.0
+    assert result["materiality_threshold"] == 7500.0
 
 
 def test_run_full_audit_clean_batch_no_findings(monkeypatch):

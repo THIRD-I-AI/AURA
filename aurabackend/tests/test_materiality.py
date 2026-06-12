@@ -1,4 +1,4 @@
-"""S36 — calibrated materiality: AS-2110 computes thresholds from the
+"""S38 — calibrated materiality: AS-2110 computes thresholds from the
 population instead of the mock $50k constant; AS-2305 scans against
 performance materiality instead of a disconnected hardcoded $100k."""
 import asyncio
