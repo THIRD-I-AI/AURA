@@ -81,3 +81,16 @@
 .ui-hashchip__copy:hover { color: var(--accent); }
 .ui-hashchip__verify { color: var(--signal); text-decoration: underline; }
 .ui-hashchip--invalid { color: var(--danger); font-family: var(--font-sans); }
+
+.ui-stepper { display: flex; gap: var(--space-5); list-style: none; margin: 0; padding: 0; }
+.ui-step { display: flex; align-items: center; gap: var(--space-2); font-size: var(--font-xs); }
+.ui-step__marker {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 20px; height: 20px; border-radius: var(--radius-full);
+  font-family: var(--font-mono); font-size: var(--font-2xs); font-weight: 700;
+  border: 1px solid var(--border-strong); color: var(--text-tertiary);
+}
+.ui-step--done .ui-step__marker { background: var(--green-dim); border-color: var(--green-border); color: var(--signal); }
+.ui-step--current .ui-step__marker { border-color: var(--accent); color: var(--accent); }
+.ui-step--current .ui-step__label { color: var(--text-primary); font-weight: 600; }
+.ui-step--done .ui-step__label, .ui-step--todo .ui-step__label { color: var(--text-tertiary); }
