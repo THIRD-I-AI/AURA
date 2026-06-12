@@ -14,6 +14,8 @@
     "generate:api": "openapi-typescript ../aurabackend/openapi.json -o src/types/api.generated.ts"
   },
   "dependencies": {
+    "@fontsource/inter": "^5.2.8",
+    "@fontsource/jetbrains-mono": "^5.2.8",
     "@sentry/react": "^9.0.0",
     "axios": "^1.16.1",
     "baseline-browser-mapping": "^2.9.17",
