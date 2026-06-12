@@ -1,7 +1,8 @@
 import { render, screen } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 
-import { Badge, STATUS_GLYPHS } from '../Badge';
+import { Badge } from '../Badge';
+import { STATUS_GLYPHS } from '../status';
 
 describe('ui/Badge', () => {
   it('always pairs color with a glyph — color is never the only signal', () => {
