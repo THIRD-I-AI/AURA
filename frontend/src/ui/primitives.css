@@ -65,3 +65,19 @@
 .ui-badge--warn     { color: var(--warn); border-color: rgba(245, 158, 11, 0.4); background: rgba(245, 158, 11, 0.12); }
 .ui-badge--danger   { color: var(--danger); border-color: var(--red-border); background: var(--red-dim); }
 .ui-badge--neutral  { color: var(--text-tertiary); border-color: var(--border-default); background: transparent; }
+
+.ui-hashchip {
+  display: inline-flex; align-items: center; gap: var(--space-2);
+  font-family: var(--font-mono); font-size: var(--font-xs);
+  background: var(--bg-raised); border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm); padding: 2px var(--space-2);
+  color: var(--text-secondary);
+}
+.ui-hashchip__hash { color: var(--text-primary); }
+.ui-hashchip__copy {
+  background: none; border: none; cursor: pointer;
+  color: var(--text-tertiary); font-size: var(--font-xs); padding: 0;
+}
+.ui-hashchip__copy:hover { color: var(--accent); }
+.ui-hashchip__verify { color: var(--signal); text-decoration: underline; }
+.ui-hashchip--invalid { color: var(--danger); font-family: var(--font-sans); }
