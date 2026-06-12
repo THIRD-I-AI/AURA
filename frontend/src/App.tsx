@@ -13,7 +13,7 @@ import { KPISkeleton } from './components/ui/Skeleton';
 import ToastContainer from './components/ui/Toast';
 import { ToastProvider, useToast } from './contexts/ToastContext';
 import { healthService, type HealthStatus } from './services/api';
-import { useSystemHealth } from './hooks/useSystemHealth';
+import { healthHint, useSystemHealth } from './hooks/useSystemHealth';
 import { AuraProvider, useAuraStore } from './store';
 
 const FilesAndData   = lazy(() => import('./pages/FilesAndData'));
@@ -175,7 +175,7 @@ function AppInner() {
                     : healthStatus?.status === 'degraded' ? 'Degraded'
                     : 'Offline'
                   }
-                  hint={healthStatus?.status === 'healthy' ? 'All services operational' : 'Check services'}
+                  hint={healthHint(healthStatus?.status ?? 'down')}
                   accentColor={
                     healthStatus?.status === 'healthy' ? 'var(--green)'
                     : healthStatus?.status === 'degraded' ? 'var(--yellow)'

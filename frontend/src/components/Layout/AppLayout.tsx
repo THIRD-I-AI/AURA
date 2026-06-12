@@ -6,6 +6,7 @@ import Sidebar from './Sidebar';
 import Header from './Header';
 import Button from '../ui/Button';
 import { useSystemHealth } from '../../hooks/useSystemHealth';
+import { NAV_ITEMS } from './nav';
 
 export type PageType =
   | 'dashboard'
@@ -47,23 +48,6 @@ const PAGE_META: Record<PageType, { title: string; subtitle: string }> = {
   counterfactual: { title: 'Counterfactual',     subtitle: "What would have happened if X had been different — causal estimate, refutation tests, adversarial review, hash-sealed audit" },
   'audit-hitl': { title: 'Audit Workbench',   subtitle: 'PCAOB AS 1215 exception review — signed AI findings, human decisions, WORM-chained' },
 };
-
-const NAV_ITEMS = [
-  { id: 'dashboard', label: 'Dashboard', href: '#' },
-  { id: 'chat',      label: 'Chat',      href: '#' },
-  { id: 'files',     label: 'Files & Data', href: '#' },
-  { id: 'queries',   label: 'Query History', href: '#' },
-  { id: 'library',   label: 'Library',   href: '#' },
-  { id: 'dashboards',label: 'Dashboards', href: '#' },
-  { id: 'lineage',   label: 'Lineage',   href: '#' },
-  { id: 'cost',      label: 'LLM Cost',  href: '#' },
-  { id: 'agent',     label: 'Agent',     href: '#' },
-  { id: 'pipelines', label: 'ETL Pipelines', href: '#' },
-  { id: 'streaming', label: 'Streaming', href: '#' },
-  { id: 'webhooks',  label: 'Webhooks',  href: '#' },
-  { id: 'counterfactual', label: 'Counterfactual', href: '#' },
-  { id: 'audit-hitl', label: 'Audit Workbench', href: '#' },
-];
 
 const AppLayout: React.FC<AppLayoutProps> = ({ children, currentPage, onPageChange }) => {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);

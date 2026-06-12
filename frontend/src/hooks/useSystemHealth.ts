@@ -14,6 +14,20 @@ export interface SystemHealthState {
   retries: number;
 }
 
+/**
+ * Hint copy for the dashboard health card. The /health probe only proves
+ * the GATEWAY answered — it says nothing about the other services (the
+ * services card right below may show 1/8), so the copy must not claim
+ * "all services operational" (S35b).
+ */
+export function healthHint(status: SystemHealthState['status']): string {
+  switch (status) {
+    case 'healthy': return 'Gateway healthy';
+    case 'degraded': return 'Some services degraded';
+    default: return 'Gateway unreachable';
+  }
+}
+
 const INITIAL_STATE: SystemHealthState = {
   isOnline: true,
   status: 'healthy',
