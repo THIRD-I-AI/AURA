@@ -25,4 +25,17 @@ describe('ui/HashChip', () => {
     expect(screen.queryByRole('link')).toBeNull();
     expect(screen.getByText('invalid hash')).toBeInTheDocument();
   });
+
+  it('drops a malicious verifyHref even when the hash itself is clean', () => {
+    // The hash gate and the href are independent inputs — validate both.
+    for (const bad of ['javascript:alert(1)', 'data:text/html,x', '//evil.example/verify', '/\\evil', 'https://evil.example/verify']) {
+      const { unmount } = render(<HashChip hash={HASH} verifyHref={bad} />);
+      expect(screen.queryByRole('link')).toBeNull();
+      unmount();
+    }
+    // Relative same-origin path still renders.
+    const { unmount } = render(<HashChip hash={HASH} verifyHref={`/verify/${HASH}`} />);
+    expect(screen.getByRole('link', { name: /verify/i })).toBeInTheDocument();
+    unmount();
+  });
 });
