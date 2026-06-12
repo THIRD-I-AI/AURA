@@ -4,9 +4,14 @@
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/vite.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <!-- S37 §5.2: strict-by-default CSP. Fonts are self-hosted
+         (@fontsource) — no third-party origins. style-src keeps
+         'unsafe-inline' until legacy inline-styled panels migrate
+         (tracked in the spec); connect-src allows the dev gateway +
+         Vite HMR websocket. If VITE_SENTRY_DSN is enabled, its ingest
+         origin must be added to connect-src explicitly. -->
+    <meta http-equiv="Content-Security-Policy"
+          content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self' http://localhost:8000 ws: wss:; object-src 'none'; base-uri 'self'; form-action 'self'" />
     <title>AURA - Enterprise Data Analytics</title>
   </head>
   <body>
