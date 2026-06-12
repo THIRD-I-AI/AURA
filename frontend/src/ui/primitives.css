@@ -1,0 +1,35 @@
+/* S37 primitives — classes only, themed entirely by tokens.css vars. */
+
+.ui-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  font-family: var(--font-sans);
+  font-weight: 600;
+  border-radius: var(--radius-md);
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: background var(--dur-fast), border-color var(--dur-fast), color var(--dur-fast);
+}
+.ui-btn--sm { font-size: var(--font-xs); padding: var(--space-1) var(--space-3); min-height: var(--btn-height-sm); }
+.ui-btn--md { font-size: var(--font-sm); padding: var(--space-2) var(--space-5); min-height: var(--btn-height-md); }
+.ui-btn--lg { font-size: var(--font-md); padding: var(--space-3) var(--space-6); min-height: var(--btn-height-lg); }
+
+.ui-btn--primary { background: var(--accent); color: #06270f; }
+.ui-btn--primary:hover:not(:disabled) { background: var(--accent-hover); }
+.ui-btn--primary:active:not(:disabled) { background: var(--accent-active); }
+
+.ui-btn--secondary { background: transparent; color: var(--text-primary); border-color: var(--border-strong); }
+.ui-btn--secondary:hover:not(:disabled) { border-color: var(--accent-border); color: var(--accent); }
+
+.ui-btn--ghost { background: transparent; color: var(--text-secondary); }
+.ui-btn--ghost:hover:not(:disabled) { background: var(--bg-hover); color: var(--text-primary); }
+
+.ui-btn--danger { background: transparent; color: var(--danger); border-color: var(--red-border); }
+.ui-btn--danger:hover:not(:disabled) { background: var(--red-dim); }
+
+/* Disabled stays VISIBLE: outline + muted text, never a dark-on-dark fill. */
+.ui-btn:disabled { background: transparent; color: var(--text-tertiary); border-color: var(--border-default); cursor: not-allowed; }
+
+.ui-btn:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 2px; }
