@@ -18,7 +18,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict
 
 from shared.audit_log import audit_human_override
-from shared.pii_masking import redact_pii
+from shared.pii_masking import mask_pii_egress
 
 from . import persistence
 from .financial_report import _sign_document
@@ -72,9 +72,10 @@ def pending_exceptions(report_hash: str) -> Dict[str, Any]:
     ]
     return {
         "record_hash": report_hash,
-        # Deep-copy before redacting so the redaction never leaks back
+        # Deep-copy before masking so the masking never leaks back
         # into the persisted (and signed) report object.
-        "pending": redact_pii(json.loads(json.dumps(pending))),
+        "pending": mask_pii_egress(json.loads(json.dumps(pending)),
+                                   context=str(report.get("tenant_id", ""))),
         "n_pending": len(pending),
         "n_decided": len(decided),
     }

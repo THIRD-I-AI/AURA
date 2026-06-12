@@ -50,6 +50,26 @@ let _currentWorkspaceId: string =
   (typeof localStorage !== 'undefined' && localStorage.getItem(WORKSPACE_STORAGE_KEY)) || DEFAULT_WORKSPACE_ID;
 const _workspaceListeners = new Set<(id: string) => void>();
 
+// Bearer-token plumbing (S35). Role-gated endpoints (e.g. AS 1215 HITL
+// decisions) 401 fail-closed without it. The token only ever flows into the
+// Authorization header - never into DOM hrefs - so localStorage persistence
+// is not part of the Sec-6 taint surface.
+const AUTH_TOKEN_STORAGE_KEY = 'aura.authToken';
+let _authToken: string | null =
+  (typeof localStorage !== 'undefined' && localStorage.getItem(AUTH_TOKEN_STORAGE_KEY)) || null;
+
+export function setAuthToken(token: string | null): void {
+  _authToken = token;
+  try {
+    if (token) localStorage.setItem(AUTH_TOKEN_STORAGE_KEY, token);
+    else localStorage.removeItem(AUTH_TOKEN_STORAGE_KEY);
+  } catch { /* storage blocked */ }
+}
+
+export function getAuthToken(): string | null {
+  return _authToken;
+}
+
 export function getCurrentWorkspaceId(): string {
   return _currentWorkspaceId;
 }
@@ -206,6 +226,7 @@ class ApiClient {
           ...(options.body && typeof options.body === 'string'
             ? { 'Content-Type': 'application/json' }
             : {}),
+          ...(_authToken ? { Authorization: `Bearer ${_authToken}` } : {}),
           ...workspaceHeader,
           ...options.headers,
         },
@@ -1339,6 +1360,99 @@ export const streamingService = {
   /** Get available source/sink/window/transform schemas for dynamic forms */
   async schemas(): Promise<StreamingSchemas> {
     return client.get('/streaming/schemas');
+  },
+};
+
+// =============================================================================
+// Financial Audit + HITL (S34/S35)
+// =============================================================================
+
+export interface AuditFinding {
+  finding_id: string;
+  pcaob_standard: string;
+  risk_level: 'Low' | 'Medium' | 'High' | 'Critical' | string;
+  description: string;
+  evidence_payload: Record<string, unknown>;
+  requires_human_review: boolean;
+}
+
+export interface FinancialAuditReport {
+  record_hash: string;
+  signature_status: 'signed' | 'unsigned' | string;
+  n_findings: number;
+  findings: AuditFinding[];
+  verify_url?: string;
+  dataset_fingerprint?: string;
+  materiality_threshold?: number;
+  tenant_id?: string;
+}
+
+export interface ExceptionQueueView {
+  record_hash: string;
+  pending: AuditFinding[];
+  n_pending: number;
+  n_decided: number;
+}
+
+export interface HumanOverrideRecord {
+  record_hash: string;
+  document_type: string;
+  signature_status: string;
+  human_auditor_id: string;
+  finding_id: string;
+  approved: boolean;
+  verify_url?: string;
+}
+
+const _hex64 = (v: string, what: string): string => {
+  const ok = sanitizeRecordHash(v);
+  if (!ok) throw new Error(`invalid ${what}: expected 64-char sha256 hex`);
+  return ok;
+};
+
+export const financialAuditService = {
+  /** Mint an open-mode dev/demo token with the auditor role and install it
+   *  as the bearer for subsequent calls. In password mode use the real
+   *  login flow instead - this is the local/demo path only. */
+  async ensureAuditorToken(userId = 'auditor-demo'): Promise<void> {
+    if (getAuthToken()) return;
+    const resp = await client.post<{ access_token: string }>('/auth/token', {
+      user_id: userId,
+      role: 'auditor',
+    });
+    setAuthToken(resp.access_token);
+  },
+
+  async runAudit(payload: {
+    tenant_id: string;
+    ledger?: Array<Record<string, unknown>>;
+    purchase_orders?: Array<Record<string, unknown>>;
+    invoices?: Array<Record<string, unknown>>;
+    journal_entries?: Array<Record<string, unknown>>;
+  }): Promise<FinancialAuditReport> {
+    return client.post<FinancialAuditReport>('/counterfactual/audit/financial', payload);
+  },
+
+  async getExceptions(recordHash: string): Promise<ExceptionQueueView> {
+    return client.get<ExceptionQueueView>(
+      `/counterfactual/audit/financial/${_hex64(recordHash, 'record_hash')}/exceptions`,
+    );
+  },
+
+  async decide(
+    recordHash: string,
+    findingId: string,
+    rationale: string,
+    approved: boolean,
+  ): Promise<HumanOverrideRecord> {
+    return client.post<HumanOverrideRecord>(
+      `/counterfactual/audit/financial/${_hex64(recordHash, 'record_hash')}/exceptions/${_hex64(findingId, 'finding_id')}/decision`,
+      { rationale, approved },
+    );
+  },
+
+  async verify(recordHash: string): Promise<{ verified: boolean; record_hash: string }> {
+    return client.get(`/counterfactual/audit/financial/verify/${_hex64(recordHash, 'record_hash')}`);
   },
 };
 

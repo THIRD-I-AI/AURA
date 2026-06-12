@@ -91,6 +91,14 @@ const Icons = {
       <path d="M2 9h4l2.5-7 3 14L14 9h2.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
     </svg>
   ),
+  'audit-hitl': (
+    <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+      {/* Scales of justice — human decision over signed findings */}
+      <path d="M9 2v12M5 14.5h8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+      <path d="M4.5 4.5h9" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+      <path d="M4.5 4.5L2.5 9a2 2 0 004 0L4.5 4.5zM13.5 4.5L11.5 9a2 2 0 004 0l-2-4.5z" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round"/>
+    </svg>
+  ),
   settings: (
     <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
       <circle cx="9" cy="9" r="2.5" stroke="currentColor" strokeWidth="1.5"/>
@@ -123,6 +131,7 @@ const NAV_ICON_MAP: Record<string, React.ReactNode> = {
   streaming: Icons.streaming,
   webhooks:  Icons.webhooks,
   counterfactual: Icons.counterfactual,
+  'audit-hitl': Icons['audit-hitl'],
 };
 
 /* ── Types ────────────────────────────────────────────────────────── */

@@ -19,4 +19,5 @@ export const NAV_ITEMS = [
   { id: 'streaming', label: 'Streaming', href: '#' },
   { id: 'webhooks',  label: 'Webhooks',  href: '#' },
   { id: 'counterfactual', label: 'Counterfactual', href: '#' },
+  { id: 'audit-hitl', label: 'Audit Workbench', href: '#' },
 ];

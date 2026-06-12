@@ -22,7 +22,8 @@ export type PageType =
   | 'pipelines'
   | 'streaming'
   | 'webhooks'
-  | 'counterfactual';
+  | 'counterfactual'
+  | 'audit-hitl';
 
 interface AppLayoutProps {
   children: React.ReactNode;
@@ -45,6 +46,7 @@ const PAGE_META: Record<PageType, { title: string; subtitle: string }> = {
   streaming:  { title: 'Streaming',          subtitle: 'Real-time data streaming with live metrics' },
   webhooks:   { title: 'Webhooks',           subtitle: 'Outbound subscriptions & inbound HTTP triggers' },
   counterfactual: { title: 'Counterfactual',     subtitle: "What would have happened if X had been different — causal estimate, refutation tests, adversarial review, hash-sealed audit" },
+  'audit-hitl': { title: 'Audit Workbench',   subtitle: 'PCAOB AS 1215 exception review — signed AI findings, human decisions, WORM-chained' },
 };
 
 const AppLayout: React.FC<AppLayoutProps> = ({ children, currentPage, onPageChange }) => {

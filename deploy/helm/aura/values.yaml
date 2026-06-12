@@ -21,10 +21,29 @@ env:
   AURA_METRICS_ENABLED: "true"
   AURA_AGENT_TIMEOUT: "120"
   PYTHONUNBUFFERED: "1"
+  # Sec-7: production posture. ENVIRONMENT=production ARMS the Sec-4 boot
+  # gates — without it the config validators never fire on-cluster and a
+  # deploy silently runs with auth_mode=open (anyone can mint an admin
+  # token) and the default JWT secret. AURA_AUTH_MODE is pinned here so a
+  # chart upgrade can never fall back to the open token-minting mode.
+  ENVIRONMENT: production
+  AURA_AUTH_MODE: password
 
 # Secret values are read from a Kubernetes Secret you create out-of-band
 # (e.g. via sops, sealed-secrets, or an external-secrets operator). The
 # chart references it by name; do NOT bake credentials into values.yaml.
+#
+# REQUIRED keys in this Secret for a production deploy (boot fails closed
+# without the first two; the rest degrade features):
+#   SECRET_KEY                     - JWT signing secret (long random string;
+#                                    the default value is rejected at boot)
+#   GEMINI_API_KEY                 - LLM provider key
+#   AURA_SIGNING_PRIVATE_KEY_HEX   - persistent ED25519 report-signing key
+#                                    (else a key is generated per-volume)
+#   AURA_PII_TOKEN_KEY             - PII egress tokenization key (else
+#                                    findings fall back to [REDACTED] and
+#                                    auditors lose cross-finding correlation)
+#   DATABASE_URL                   - external Postgres DSN
 envSecretName: aura-secrets
 
 # ── Backend services ───────────────────────────────────────────────────────

@@ -122,10 +122,12 @@ def verify_report(record_hash: str) -> Dict[str, Any]:
 
 
 def client_view(report: Dict[str, Any]) -> Dict[str, Any]:
-    """Egress projection: a deep copy with PII redacted in the findings. The
-    signed/persisted artifact is never mutated — redaction is display-only and
-    must never feed back into the hash/signature."""
-    from shared.pii_masking import redact_pii
+    """Egress projection: a deep copy with PII masked in the findings —
+    correlatable HMAC tokens when AURA_PII_TOKEN_KEY is set, [REDACTED]
+    otherwise. The signed/persisted artifact is never mutated — masking is
+    display-only and must never feed back into the hash/signature."""
+    from shared.pii_masking import mask_pii_egress
     view = json.loads(json.dumps(report))
-    view["findings"] = redact_pii(view.get("findings", []))
+    view["findings"] = mask_pii_egress(
+        view.get("findings", []), context=str(report.get("tenant_id", "")))
     return view
