@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react';
+import './audit.css';
 
 /**
  * Chrome-free wrapper for the public audit-service surfaces. Deliberately
@@ -7,15 +8,14 @@ import type { ReactNode } from 'react';
  */
 export function PublicShell({ children }: { children: ReactNode }) {
   return (
-    <div data-testid="public-shell" style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column', background: 'var(--bg-base)', color: 'var(--text-primary)' }}>
-      <header style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)', padding: 'var(--space-4) var(--space-6)', borderBottom: '1px solid var(--border-default)' }}>
-        <span style={{ fontWeight: 700, letterSpacing: '-0.02em' }}>AURA</span>
-        <span style={{ fontSize: 'var(--font-xs)', color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: '0.08em' }}>Audit Service</span>
+    <div data-testid="public-shell" className="aud-shell">
+      <header className="aud-shell__header">
+        <span className="aud-shell__brand">AURA</span>
+        <span className="aud-shell__tag">Audit Service</span>
       </header>
-      <main style={{ flex: 1, width: '100%', maxWidth: 1100, margin: '0 auto', padding: 'var(--space-8) var(--space-6)' }}>
-        {children}
-      </main>
-      <footer style={{ padding: 'var(--space-4) var(--space-6)', borderTop: '1px solid var(--border-default)', fontSize: 'var(--font-xs)', color: 'var(--text-tertiary)' }}>
+      <main className="aud-shell__main">{children}</main>
+      <footer className="aud-shell__footer">
+        <span aria-hidden="true">⬢</span>
         Cryptographically-verifiable compliance audits · ED25519 signed
       </footer>
     </div>
