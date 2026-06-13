@@ -21,6 +21,11 @@ describe('Certificate', () => {
     expect(screen.getByTestId('cert-key-source')).toHaveTextContent('persisted_file');
   });
 
+  it('renders the certificate inside the light certificate theme island', () => {
+    render(<MemoryRouter><Certificate artifact={artifact} /></MemoryRouter>);
+    expect(screen.getByTestId('certificate').closest('[data-theme="certificate"]')).not.toBeNull();
+  });
+
   it('renders PDF + verify actions by default', () => {
     render(<MemoryRouter><Certificate artifact={artifact} /></MemoryRouter>);
     expect(screen.getByTestId('cert-download-pdf')).toBeInTheDocument();
