@@ -1,5 +1,6 @@
 import React from 'react';
 import './Sidebar.css';
+import { NAV_SECTIONS } from './nav';
 
 /* ── SVG Icon set ─────────────────────────────────────────────────── */
 
@@ -142,6 +143,8 @@ interface SidebarItem {
   icon?: React.ReactNode;
   href: string;
   badge?: number;
+  /** Auditor-workbench section header this item sits under (S37c). */
+  section?: string;
 }
 
 interface SidebarProps {
@@ -183,31 +186,40 @@ export const Sidebar: React.FC<SidebarProps> = ({
         )}
       </div>
 
-      {/* ── Nav ───────────────────────────────────────────────── */}
+      {/* ── Nav (grouped into the six auditor-workbench sections) ── */}
       <nav className="sidebar-nav">
-        {items.map((item) => {
-          const isActive = activeItem === item.id;
-          const icon = item.icon ?? NAV_ICON_MAP[item.id];
+        {NAV_SECTIONS.map((section) => {
+          const inSection = items.filter((it) => it.section === section);
+          if (inSection.length === 0) return null;
           return (
-            <button
-              key={item.id}
-              onClick={() => onItemClick(item.id)}
-              title={collapsed ? item.label : undefined}
-              aria-current={isActive ? 'page' : undefined}
-              className={[
-                'sidebar-nav-item',
-                isActive && 'sidebar-nav-item--active',
-                collapsed && 'sidebar-nav-item--collapsed',
-              ].filter(Boolean).join(' ')}
-            >
-              <span className="sidebar-nav-item__icon">{icon}</span>
-              {!collapsed && (
-                <span className="sidebar-nav-item__label">{item.label}</span>
-              )}
-              {!collapsed && item.badge != null && item.badge > 0 && (
-                <span className="sidebar-nav-item__badge">{item.badge}</span>
-              )}
-            </button>
+            <div key={section} className="sidebar-nav__group">
+              {!collapsed && <div className="sidebar-nav__heading">{section}</div>}
+              {inSection.map((item) => {
+                const isActive = activeItem === item.id;
+                const icon = item.icon ?? NAV_ICON_MAP[item.id];
+                return (
+                  <button
+                    key={item.id}
+                    onClick={() => onItemClick(item.id)}
+                    title={collapsed ? item.label : undefined}
+                    aria-current={isActive ? 'page' : undefined}
+                    className={[
+                      'sidebar-nav-item',
+                      isActive && 'sidebar-nav-item--active',
+                      collapsed && 'sidebar-nav-item--collapsed',
+                    ].filter(Boolean).join(' ')}
+                  >
+                    <span className="sidebar-nav-item__icon">{icon}</span>
+                    {!collapsed && (
+                      <span className="sidebar-nav-item__label">{item.label}</span>
+                    )}
+                    {!collapsed && item.badge != null && item.badge > 0 && (
+                      <span className="sidebar-nav-item__badge">{item.badge}</span>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
           );
         })}
       </nav>
