@@ -59,4 +59,13 @@ describe('AuditProgress', () => {
     renderAt('j');
     expect(screen.getByTestId('audit-failed')).toHaveTextContent('engine error');
   });
+
+  it('shows a stage timeline driven by job state', () => {
+    vi.spyOn(polling, 'useJobPolling').mockReturnValue({
+      snapshot: { job_id: 'j', state: 'running', artifact: { audit_record_hash: '', refutations: [], signature_status: '', signing_key_source: '', estimates: [] } },
+      error: null,
+    });
+    renderAt('j');
+    expect(screen.getByTestId('aud-stages')).toBeInTheDocument();
+  });
 });
