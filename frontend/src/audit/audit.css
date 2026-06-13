@@ -43,6 +43,7 @@
 .aud-cert__verdict { color: var(--text-secondary); margin: 0 0 var(--space-6); }
 .aud-cert__evidence { background: var(--bg-raised); border-radius: var(--radius-md); padding: var(--space-4); margin-bottom: var(--space-6); }
 .aud-cert__label { font-family: var(--font-mono); font-size: var(--font-2xs); text-transform: uppercase; letter-spacing: 0.1em; color: var(--text-tertiary); margin-bottom: var(--space-2); }
+.aud-cert__hash { font-family: var(--font-mono); font-size: var(--font-sm); word-break: break-all; color: var(--accent); }
 .aud-cert__keysrc { margin-top: var(--space-3); font-size: var(--font-sm); color: var(--text-tertiary); }
 .aud-cert__verifystatus { margin-bottom: var(--space-5); font-weight: 600; }
 .aud-cert__verifystatus--ok { color: var(--signal); }
