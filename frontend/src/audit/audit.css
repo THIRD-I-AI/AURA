@@ -51,3 +51,9 @@
 .aud-cert__pdf { padding: var(--space-2) var(--space-5); background: var(--accent); color: #06270f; border-radius: var(--radius-md); text-decoration: none; font-weight: 600; }
 .aud-cert__verify-link { text-decoration: none; }
 @media print { .aud-cert__actions { display: none; } }
+
+/* Wizard */
+.aud-wizard { max-width: 640px; margin: 0 auto; }
+.aud-wizard__steps { margin: var(--space-3) 0 var(--space-6); }
+.aud-wizard__err { color: var(--danger); }
+.aud-wizard__nav { display: flex; justify-content: space-between; margin-top: var(--space-6); }

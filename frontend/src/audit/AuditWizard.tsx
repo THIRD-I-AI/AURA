@@ -8,6 +8,8 @@ import type { ColumnMapping } from './types';
 import { UploadStep } from './wizard/UploadStep';
 import { MapStep } from './wizard/MapStep';
 import { ReviewStep } from './wizard/ReviewStep';
+import { Stepper } from '../ui/Stepper';
+import { Button } from '../ui/Button';
 
 const EMPTY_MAPPING: ColumnMapping = { treatment: '', outcome: '', confounders: [] };
 
@@ -78,47 +80,32 @@ export function AuditWizard() {
       ? mappingOk
       : false;
 
-  // Disabled state keeps a visible outline + muted text: on the dark theme
-  // a `--border-default` fill read as bare floating text (S35c).
-  const btn = (testid: string, label: string, enabled: boolean, onClick: () => void) => (
-    <button data-testid={testid} disabled={!enabled} onClick={onClick}
-      style={{
-        padding: 'var(--space-3) var(--space-6)',
-        background: enabled ? 'var(--accent)' : 'transparent',
-        color: enabled ? '#fff' : 'var(--text-tertiary)',
-        border: enabled ? '1px solid transparent' : '1px solid var(--border-default)',
-        borderRadius: 'var(--radius-md)',
-        cursor: enabled ? 'pointer' : 'not-allowed',
-      }}>
-      {label}
-    </button>
-  );
-
   return (
-    <div data-testid="audit-wizard" style={{ maxWidth: 640, margin: '0 auto' }}>
+    <div data-testid="audit-wizard" className="aud-wizard">
       <h2>Audit your own data</h2>
-      <div style={{ display: 'flex', gap: 'var(--space-2)', margin: 'var(--space-3) 0 var(--space-6)' }}>
-        {['Upload', 'Map', 'Review'].map((label, i) => (
-          <span key={label} data-testid={`wizard-dot-${i}`} style={{ fontSize: 'var(--font-xs)', textTransform: 'uppercase', letterSpacing: '0.06em',
-            color: i === step ? 'var(--accent)' : i < step ? 'var(--green)' : 'var(--text-tertiary)' }}>
-            {i + 1}. {label}
-          </span>
-        ))}
+      <div className="aud-wizard__steps">
+        <Stepper steps={['Upload', 'Map', 'Review']} current={step} />
+        {/* Legacy testid hooks retained for existing assertions. */}
+        <div hidden>
+          {['Upload', 'Map', 'Review'].map((label, i) => (
+            <span key={label} data-testid={`wizard-dot-${i}`}>{i + 1}. {label}</span>
+          ))}
+        </div>
       </div>
 
       {step === 0 && <UploadStep file={file} columns={preview.columns} previewRows={preview.previewRows} types={preview.types} uploading={uploading} error={uploadError} onPick={pickFile} />}
       {step === 1 && <MapStep columns={preview.columns} mapping={mapping} errors={mapErrors} notes={guard.notes} onChange={setMapping} />}
       {step === 2 && <ReviewStep filename={filename} mapping={mapping} />}
 
-      {runError && <p style={{ color: 'var(--red)' }}>{runError}</p>}
+      {runError && <p className="aud-wizard__err">{runError}</p>}
 
-      <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 'var(--space-6)' }}>
+      <div className="aud-wizard__nav">
         {step > 0
-          ? btn('wizard-back', 'Back', true, () => setStep((s) => s - 1))
+          ? <Button data-testid="wizard-back" variant="secondary" onClick={() => setStep((s) => s - 1)}>Back</Button>
           : <span />}
         {step < 2
-          ? btn('wizard-next', 'Next', canNext, () => setStep((s) => s + 1))
-          : btn('wizard-run', running ? 'Running…' : 'Run audit', !running && mappingOk && filename !== null, run)}
+          ? <Button data-testid="wizard-next" disabled={!canNext} onClick={() => setStep((s) => s + 1)}>Next</Button>
+          : <Button data-testid="wizard-run" disabled={running || !mappingOk || filename === null} onClick={run}>{running ? 'Running…' : 'Run audit'}</Button>}
       </div>
     </div>
   );

@@ -16,6 +16,11 @@ function csvFile() {
 describe('AuditWizard (audit your own data)', () => {
   afterEach(() => { vi.restoreAllMocks(); navigate.mockClear(); });
 
+  it('renders the Stepper with the current step marked', () => {
+    render(<MemoryRouter><AuditWizard /></MemoryRouter>);
+    expect(screen.getByText('Upload').closest('li')!.className).toContain('ui-step--current');
+  });
+
   it('uploads a CSV, maps columns, and runs the audit', async () => {
     vi.spyOn(auditApi, 'uploadDataset').mockResolvedValue({ filename: 'loans.csv' });
     const run = vi.spyOn(auditApi, 'runDataAudit').mockResolvedValue({ job_id: 'audit_42' });
