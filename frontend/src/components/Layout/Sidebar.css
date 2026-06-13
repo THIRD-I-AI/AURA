@@ -240,3 +240,12 @@
   letter-spacing: 0.1em; color: var(--text-tertiary);
   padding: var(--space-2) var(--space-3) var(--space-1);
 }
+
+/* S37c: below 1024px the shell narrows the rail to icon-width via CSS while
+   the React `collapsed` state stays false — hide the text so labels and
+   section headings don't clip into the 64px rail (icons-only, like collapsed). */
+@media (max-width: 1024px) {
+  .sidebar-nav-item__label,
+  .sidebar-nav__heading { display: none; }
+  .sidebar-nav__group { align-items: center; }
+}
