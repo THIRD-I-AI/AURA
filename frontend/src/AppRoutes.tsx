@@ -22,6 +22,9 @@ export function AppRoutes() {
       <Route path="/audit/:jobId" element={<PublicShell><AuditProgress /></PublicShell>} />
       <Route path="/certificate/:hash" element={<PublicShell><CertificatePage /></PublicShell>} />
       <Route path="/verify/:hash" element={<PublicShell><VerifyPage /></PublicShell>} />
+      {/* /app/* is auth-gated (ProtectedRoute); routing within (page
+          selection, deep links, /app → engagements default) is handled
+          inside App via app/routing.ts deriving the page from the URL. */}
       <Route path="/app/*" element={<ProtectedRoute><Suspense fallback={<div>Loading…</div>}><Dashboard /></Suspense></ProtectedRoute>} />
     </Routes>
   );
