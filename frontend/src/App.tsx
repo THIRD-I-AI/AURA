@@ -1,4 +1,6 @@
-import { useState, useEffect, lazy, Suspense, memo } from 'react';
+import { useState, useEffect, useCallback, lazy, Suspense, memo } from 'react';
+import { useLocation, useNavigate } from 'react-router-dom';
+import { pageToPath, pathToPage } from './app/routing';
 import './styles/design-system.css';
 import './styles/components.css';
 import './components/Layout/AppLayout.css';
@@ -93,7 +95,16 @@ const KPICard = memo(function KPICard({
 
 /* ── Main App inner ───────────────────────────────────────────────── */
 function AppInner() {
-  const [currentPage, setCurrentPage] = useState<PageType>('dashboard');
+  // currentPage is derived from the URL (deep-linkable, back-button correct).
+  // setCurrentPage keeps its callback signature for the 8 panels that take it,
+  // but navigates instead of mutating local state.
+  const location = useLocation();
+  const navigate = useNavigate();
+  const currentPage = pathToPage(location.pathname);
+  const setCurrentPage = useCallback(
+    (id: PageType) => navigate(pageToPath(id)),
+    [navigate],
+  );
   const [healthStatus, setHealthStatus] = useState<HealthStatus | null>(null);
 
   const toast = useToast();
