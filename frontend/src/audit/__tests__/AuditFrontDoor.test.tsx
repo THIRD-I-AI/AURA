@@ -39,4 +39,12 @@ describe('AuditFrontDoor', () => {
     render(<MemoryRouter><AuditFrontDoor /></MemoryRouter>);
     await waitFor(() => expect(screen.getByTestId('scenarios-error')).toBeInTheDocument());
   });
+
+  it('shows a static signed-verifiable trust band (no faked live hash)', async () => {
+    vi.spyOn(auditApi, 'listScenarios').mockResolvedValue([]);
+    render(<MemoryRouter><AuditFrontDoor /></MemoryRouter>);
+    const band = await screen.findByTestId('aud-trust-band');
+    expect(band.textContent).toMatch(/ED25519/i);
+    expect(band.textContent).toMatch(/verif/i);
+  });
 });
