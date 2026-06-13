@@ -9,7 +9,18 @@ logger = logging.getLogger("aura.agents.financial_auditor")
 
 # "Who performed the work" for PCAOB AS-1215 §.06 provenance — bump on any
 # change to the audit logic so the completion document records which model ran.
-FINANCIAL_AUDITOR_VERSION = "0.2.0"
+FINANCIAL_AUDITOR_VERSION = "0.3.0"
+
+# AS-2110 materiality calibration (S38). Benchmark = 1% of total ledger
+# activity (sum of |amount|, so credits count) — the conventional auditor
+# rule-of-thumb for a volume benchmark. Performance materiality takes the
+# standard 75% haircut so aggregation risk is covered. The floor stops a
+# tiny sample batch from producing an absurdly low threshold, and the
+# default applies when there is no financial basis to calibrate against.
+MATERIALITY_BENCHMARK_PCT = 0.01
+PERFORMANCE_HAIRCUT = 0.75
+MATERIALITY_FLOOR = 10_000.0
+DEFAULT_OVERALL_MATERIALITY = 50_000.0
 
 class AuditFinding(BaseModel):
     pcaob_standard: str = Field(..., description="The relevant PCAOB standard (e.g., 'AS 2305')")
@@ -27,39 +38,53 @@ class FinancialAuditorAgent:
     def __init__(self, tenant_id: str):
         self.tenant_id = tenant_id
 
-    async def execute_as2110_risk_assessment(self, historical_reports: List[Dict[str, Any]]) -> Dict[str, Any]:
+    async def execute_as2110_risk_assessment(self, historical_reports: List[Dict[str, Any]],
+                                             ledger: List[Dict[str, Any]] | None = None) -> Dict[str, Any]:
         """
         PCAOB AS 2110: Audit Planning and Risk Assessment.
-        Establishes baseline materiality thresholds before scanning ledgers.
+        Calibrates materiality from the population under audit: overall =
+        max(floor, 1% of total absolute ledger activity); the returned
+        ``materiality_threshold`` is PERFORMANCE materiality (75% of overall),
+        the operative scanning threshold for AS 2305.
         """
         logger.info(f"[{self.tenant_id}] Executing AS 2110 Risk Assessment")
 
-        # Mock logic for calculating materiality
-        materiality_threshold = 50000.00 # $50k threshold
+        basis = float(sum(abs(entry.get("amount", 0) or 0) for entry in (ledger or [])))
+        if basis > 0:
+            overall = max(MATERIALITY_FLOOR, basis * MATERIALITY_BENCHMARK_PCT)
+        else:
+            overall = DEFAULT_OVERALL_MATERIALITY
+        performance = overall * PERFORMANCE_HAIRCUT
 
         audit_event("as2110_risk_assessment_completed", {
             "tenant_id": self.tenant_id,
-            "materiality_threshold_usd": materiality_threshold,
+            "materiality_basis_usd": basis,
+            "overall_materiality_usd": overall,
+            "materiality_threshold_usd": performance,
             "historical_reports_analyzed": len(historical_reports)
         })
-        return {"status": "success", "materiality_threshold": materiality_threshold}
+        return {"status": "success", "materiality_threshold": performance,
+                "overall_materiality": overall, "materiality_basis": basis}
 
-    async def execute_as2305_analytical_procedures(self, ledger_batch: List[Dict[str, Any]]) -> List[AuditFinding]:
+    async def execute_as2305_analytical_procedures(self, ledger_batch: List[Dict[str, Any]],
+                                                   materiality_threshold: float) -> List[AuditFinding]:
         """
         PCAOB AS 2305: Substantive Analytical Procedures.
-        Uses UASR engine hooks to flag statistical variances.
+        Flags entries above the AS-2110 performance materiality; the threshold
+        each entry was judged against travels in the evidence payload so the
+        signed completion document is self-explanatory.
         """
         logger.info(f"[{self.tenant_id}] Executing AS 2305 Substantive Analytical Procedures")
         findings = []
 
         for entry in ledger_batch:
-            # Mock variance detection: Any entry > $100k triggers a variance alert
-            if entry.get("amount", 0) > 100000:
+            if entry.get("amount", 0) > materiality_threshold:
                 finding = AuditFinding(
                     pcaob_standard="AS 2305",
                     risk_level="High",
                     description=f"Significant statistical variance detected for account {entry.get('account_code')}.",
-                    evidence_payload={"entry_id": entry.get("internal_id"), "amount": entry.get("amount")}
+                    evidence_payload={"entry_id": entry.get("internal_id"), "amount": entry.get("amount"),
+                                      "materiality_threshold": materiality_threshold}
                 )
                 findings.append(finding)
 
@@ -134,9 +159,9 @@ class FinancialAuditorAgent:
                              historical_reports=None):
         """Run AS-2110/2305/2201/2401 over RAW inputs (fraud cross-checks need the
         real employee/vendor fields). Returns {findings, materiality_threshold}."""
-        risk = await self.execute_as2110_risk_assessment(historical_reports or [])
+        risk = await self.execute_as2110_risk_assessment(historical_reports or [], ledger=ledger)
         findings = []
-        findings += await self.execute_as2305_analytical_procedures(ledger)
+        findings += await self.execute_as2305_analytical_procedures(ledger, risk["materiality_threshold"])
         findings += await self.execute_as2201_internal_controls(purchase_orders, invoices)
         findings += await self.execute_as2401_fraud_detection(journal_entries)
         return {"findings": findings, "materiality_threshold": risk["materiality_threshold"]}
