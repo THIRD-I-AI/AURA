@@ -39,6 +39,7 @@ def forensic_demo_dataset() -> Dict[str, Any]:
     ]
     return {
         "tenant_id": "demo-tenant",
+        "journal_entries": journal_entries,
         "ledger": [
             # Above performance materiality -> AS-2305 absolute variance.
             {"internal_id": "L-1001", "account_code": "4000", "amount": 250000.0},
