@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import './Header.css';
 import './AppLayout.css';
 import WorkspacePicker from '../WorkspacePicker';
+import { UserMenu } from '../../auth/UserMenu';
 
 interface HeaderProps {
   title: string;
@@ -13,6 +14,7 @@ interface HeaderProps {
   notificationCount?: number;
   isOnline?: boolean;
   onMobileMenuClick?: () => void;
+  onSettingsClick?: () => void;
 }
 
 const BellIcon = () => (
@@ -44,6 +46,7 @@ export const Header: React.FC<HeaderProps> = ({
   notificationCount,
   isOnline = true,
   onMobileMenuClick,
+  onSettingsClick,
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
 
@@ -122,9 +125,7 @@ export const Header: React.FC<HeaderProps> = ({
             <div className="app-header__actions">{actions}</div>
           )}
 
-          <div className="app-header__avatar" title="User account">
-            AU
-          </div>
+          <UserMenu onSettingsClick={onSettingsClick} />
         </div>
       </div>
     </header>
