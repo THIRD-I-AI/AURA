@@ -37,11 +37,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }
 
+// Graceful logged-out default when no provider is mounted. Auth-aware
+// components (AuthNav, ProtectedRoute) can then render safely anywhere —
+// including in isolation tests — instead of crashing the tree. The mutating
+// actions still fail loudly if invoked without a provider, so a genuine
+// misuse (trying to log in with no AuthProvider) surfaces clearly.
+const NO_PROVIDER: AuthContextValue = {
+  user: null,
+  isAuthenticated: false,
+  login: async () => { throw new Error('Cannot log in: <AuthProvider> is not mounted'); },
+  register: async () => { throw new Error('Cannot register: <AuthProvider> is not mounted'); },
+  logout: () => {},
+};
+
 // eslint-disable-next-line react-refresh/only-export-components
 export function useAuth(): AuthContextValue {
-  const ctx = useContext(AuthContext);
-  if (ctx === null) {
-    throw new Error('useAuth must be used within an <AuthProvider>');
-  }
-  return ctx;
+  return useContext(AuthContext) ?? NO_PROVIDER;
 }
