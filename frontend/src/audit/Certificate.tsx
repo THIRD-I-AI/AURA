@@ -41,12 +41,15 @@ export function Certificate({ artifact, verifyResult, readOnly = false }: {
   const badge: { tone: 'ok' | 'bad' | 'neutral'; label: string } = verifyResult
     ? verifyResult.verified
       ? { tone: 'ok', label: '✓ ED25519 signed' }
-      : { tone: 'bad', label: '✕ signature ' + verifyResult.signature_status }
+      // A "signed" artifact that fails server verification is tampered or
+      // signed by the wrong key — say "invalid", not the misleading
+      // "✕ signature signed" that echoing signature_status produced.
+      : { tone: 'bad', label: verifyResult.signature_status === 'signed' ? '✕ signature invalid' : '✕ ' + verifyResult.signature_status }
     : readOnly
       ? { tone: 'neutral', label: 'signature not independently verified' }
       : artifact.signature_status === 'signed'
         ? { tone: 'ok', label: '✓ ED25519 signed' }
-        : { tone: 'bad', label: '✕ signature ' + artifact.signature_status };
+        : { tone: 'bad', label: '✕ ' + artifact.signature_status };
   const badgeColor = badge.tone === 'ok' ? 'var(--green)' : badge.tone === 'bad' ? 'var(--red)' : 'var(--text-tertiary)';
   const badgeBg = badge.tone === 'ok' ? 'var(--green-bg, rgba(76,175,80,0.15))' : badge.tone === 'bad' ? 'var(--red-bg, rgba(244,67,54,0.15))' : 'var(--bg-base)';
 
