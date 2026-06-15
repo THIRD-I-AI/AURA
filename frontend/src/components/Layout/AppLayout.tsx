@@ -88,6 +88,7 @@ const AppLayout: React.FC<AppLayoutProps> = ({ children, currentPage, onPageChan
           searchable
           isOnline={systemHealth.isOnline}
           onMobileMenuClick={() => setMobileSidebarOpen((v) => !v)}
+          onSettingsClick={() => onPageChange('settings')}
           actions={
             <Button
               size="sm"
