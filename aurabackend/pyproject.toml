@@ -15,7 +15,7 @@ authors = [
 
 dependencies = [
     # ── Web framework ─────────────────────────────────────────────────
-    "fastapi>=0.115,<1.0",
+    "fastapi>=0.115,<0.137",  # 0.137.0 breaks gateway include_router route-walk; see requirements.txt
     "uvicorn[standard]>=0.30,<1.0",
     "pydantic>=2.7,<3.0",
     "pydantic-settings>=2.3,<3.0",

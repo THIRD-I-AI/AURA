@@ -2,7 +2,12 @@
 # For full packaging metadata see pyproject.toml
 
 # Web framework
-fastapi>=0.115,<1.0
+# Cap below 0.137: FastAPI 0.137.0 (released 2026-06) changed include_router
+# to leave an internal `_IncludedRouter` object in app.routes that lacks a
+# `.path`, which breaks the gateway's in-process counterfactual mount route
+# resolution (tests/test_audit_endpoint.py::test_audit_reachable_through_gateway).
+# Revisit as a deliberate upgrade (likely needs a lockstep starlette bump).
+fastapi>=0.115,<0.137
 uvicorn[standard]>=0.30,<1.0
 pydantic>=2.7,<3.0
 pydantic-settings>=2.3,<3.0
