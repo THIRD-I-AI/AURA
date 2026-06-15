@@ -204,3 +204,28 @@ def test_run_full_audit_threads_goods_receipts_and_period_end(monkeypatch):
              if f.pcaob_standard == "AS 2401"}
     assert "three_way_match" in controls
     assert "period_end_cutoff" in tests
+
+
+# ── S40 — one-click demo dataset trips every technique ─────────────
+
+def test_forensic_demo_dataset_trips_every_technique(monkeypatch):
+    from counterfactual_service.forensic_demo import forensic_demo_dataset
+    agent = _agent(monkeypatch)
+    d = forensic_demo_dataset()
+    result = asyncio.run(agent.run_full_audit(
+        d["ledger"], d["purchase_orders"], d["invoices"], d["journal_entries"],
+        historical_reports=d["historical_reports"], goods_receipts=d["goods_receipts"],
+        period_end=d["period_end"]))
+    findings = result["findings"]
+
+    as2305 = {f.evidence_payload.get("test") for f in findings if f.pcaob_standard == "AS 2305"}
+    assert {"absolute_materiality", "expectation_deviation"} <= as2305
+
+    as2201 = {f.evidence_payload.get("control") for f in findings if f.pcaob_standard == "AS 2201"}
+    assert {"two_way_match", "three_way_match", "segregation_of_duties", "approval_authority"} <= as2201
+
+    as2401 = [f for f in findings if f.pcaob_standard == "AS 2401"]
+    descs = " ".join(f.description.lower() for f in as2401)
+    as2401_tests = {f.evidence_payload.get("test") for f in as2401}
+    assert "duplicate" in descs and "round-dollar" in descs
+    assert {"benford_first_digit", "period_end_cutoff"} <= as2401_tests

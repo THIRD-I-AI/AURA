@@ -529,6 +529,18 @@ async def financial_audit(req: FinancialAuditRequest) -> Dict[str, Any]:
     return view
 
 
+@app.get("/audit/financial/demo")
+async def financial_audit_demo() -> Dict[str, Any]:
+    """One-click forensic demo: audits a canned dataset engineered to trip
+    every implemented technique — AS-2401 Benford / duplicate / round-dollar /
+    period-end cutoff, AS-2201 two-way + three-way match + segregation of
+    duties + approval authority, AS-2305 absolute + expectation deviation —
+    and returns the same signed, independently-verifiable report as
+    ``/audit/financial``."""
+    from .forensic_demo import forensic_demo_dataset
+    return await financial_audit(FinancialAuditRequest(**forensic_demo_dataset()))
+
+
 @app.get("/audit/financial/verify/{record_hash}")
 async def financial_audit_verify(record_hash: str) -> Dict[str, Any]:
     from .financial_report import verify_report
