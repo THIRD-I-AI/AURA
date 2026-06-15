@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { auditApi } from './auditApi';
+import { AuthNav } from '../auth/AuthNav';
 import type { Scenario } from './types';
 
 export function AuditFrontDoor() {
@@ -28,6 +29,7 @@ export function AuditFrontDoor() {
 
   return (
     <div data-testid="audit-front-door">
+      <AuthNav />
       <h1 style={{ fontSize: 'var(--font-3xl)', fontWeight: 700, letterSpacing: '-0.03em' }}>
         Cryptographically-verifiable compliance audits
       </h1>
