@@ -3,8 +3,15 @@ import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { AuthProvider } from '../AuthContext';
 import { AuthForm } from '../AuthForm';
+import { AuthNav } from '../AuthNav';
 import { ProtectedRoute } from '../ProtectedRoute';
 import { setAuthToken } from '../../services/api';
+
+/** A decodable (unsigned) JWT-shaped token for tests — decodeAuthToken only
+ *  reads the claims segment, so this is enough to simulate a signed-in user. */
+function fakeToken(claims: Record<string, unknown>): string {
+  return `h.${btoa(JSON.stringify(claims))}.s`;
+}
 
 describe('AuthForm', () => {
   beforeEach(() => setAuthToken(null));
@@ -52,5 +59,36 @@ describe('ProtectedRoute', () => {
     );
     expect(screen.getByText('login page')).toBeTruthy();
     expect(screen.queryByText('secret dashboard')).toBeNull();
+  });
+});
+
+describe('AuthNav', () => {
+  beforeEach(() => setAuthToken(null));
+
+  it('offers a way in when logged out', () => {
+    render(
+      <MemoryRouter>
+        <AuthProvider>
+          <AuthNav />
+        </AuthProvider>
+      </MemoryRouter>,
+    );
+    expect(screen.getByTestId('auth-nav-login')).toBeTruthy();
+    expect(screen.getByTestId('auth-nav-signup')).toBeTruthy();
+    expect(screen.queryByTestId('auth-nav-logout')).toBeNull();
+  });
+
+  it('offers workspace + sign out when logged in', () => {
+    setAuthToken(fakeToken({ sub: 'u1', name: 'Ada', org_id: 'org-a' }));
+    render(
+      <MemoryRouter>
+        <AuthProvider>
+          <AuthNav />
+        </AuthProvider>
+      </MemoryRouter>,
+    );
+    expect(screen.getByTestId('auth-nav-workspace')).toBeTruthy();
+    expect(screen.getByTestId('auth-nav-logout')).toBeTruthy();
+    expect(screen.queryByTestId('auth-nav-login')).toBeNull();
   });
 });
