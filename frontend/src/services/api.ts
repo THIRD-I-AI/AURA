@@ -70,6 +70,62 @@ export function getAuthToken(): string | null {
   return _authToken;
 }
 
+// ── Authentication (SaaS Phase 2) ─────────────────────────────────────────
+// Real signup/login on top of the gateway's password-mode auth. The tenant
+// (org_id) and identity travel inside the signed JWT — we only read claims to
+// render "who am I", never to make trust decisions (the server re-verifies).
+
+export interface AuthUser {
+  sub: string;
+  email?: string;
+  name?: string;
+  role?: string;
+  org_id?: string;
+}
+
+/** Decode a JWT's claims for display. Returns null for malformed or expired
+ *  tokens so an expired session reads as logged-out rather than throwing. */
+function decodeAuthToken(token: string): AuthUser | null {
+  try {
+    const part = token.split('.')[1];
+    if (!part) return null;
+    const json = JSON.parse(atob(part.replace(/-/g, '+').replace(/_/g, '/')));
+    if (typeof json.exp === 'number' && Date.now() / 1000 >= json.exp) return null;
+    if (!json.sub) return null;
+    return { sub: json.sub, email: json.email, name: json.name, role: json.role, org_id: json.org_id };
+  } catch {
+    return null;
+  }
+}
+
+export const authService = {
+  async login(email: string, password: string): Promise<AuthUser> {
+    const resp = await client.post<{ access_token: string }>('/auth/token', { email, password });
+    setAuthToken(resp.access_token);
+    const user = decodeAuthToken(resp.access_token);
+    if (!user) {
+      setAuthToken(null);
+      throw new Error('Login failed: the server returned an invalid token.');
+    }
+    return user;
+  },
+
+  async register(name: string, email: string, password: string): Promise<AuthUser> {
+    await client.post('/auth/register', { name, email, password });
+    return authService.login(email, password);
+  },
+
+  logout(): void {
+    setAuthToken(null);
+  },
+
+  /** The current user from the stored token, or null if absent/expired. */
+  currentUser(): AuthUser | null {
+    const token = getAuthToken();
+    return token ? decodeAuthToken(token) : null;
+  },
+};
+
 export function getCurrentWorkspaceId(): string {
   return _currentWorkspaceId;
 }
