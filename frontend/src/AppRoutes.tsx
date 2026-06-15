@@ -7,6 +7,8 @@ import { AuditProgress } from './audit/AuditProgress';
 import { CertificatePage } from './audit/CertificatePage';
 import { VerifyPage } from './audit/VerifyPage';
 import { AuditWizard } from './audit/AuditWizard';
+import { AuthForm } from './auth/AuthForm';
+import { ProtectedRoute } from './auth/ProtectedRoute';
 
 const Dashboard = lazy(() => import('./App'));
 
@@ -14,11 +16,13 @@ export function AppRoutes() {
   return (
     <Routes>
       <Route path="/" element={<PublicShell><AuditFrontDoor /></PublicShell>} />
+      <Route path="/login" element={<PublicShell><AuthForm mode="login" /></PublicShell>} />
+      <Route path="/signup" element={<PublicShell><AuthForm mode="signup" /></PublicShell>} />
       <Route path="/audit/new" element={<PublicShell><AuditWizard /></PublicShell>} />
       <Route path="/audit/:jobId" element={<PublicShell><AuditProgress /></PublicShell>} />
       <Route path="/certificate/:hash" element={<PublicShell><CertificatePage /></PublicShell>} />
       <Route path="/verify/:hash" element={<PublicShell><VerifyPage /></PublicShell>} />
-      <Route path="/app/*" element={<Suspense fallback={<div>Loading…</div>}><Dashboard /></Suspense>} />
+      <Route path="/app/*" element={<ProtectedRoute><Suspense fallback={<div>Loading…</div>}><Dashboard /></Suspense></ProtectedRoute>} />
     </Routes>
   );
 }
