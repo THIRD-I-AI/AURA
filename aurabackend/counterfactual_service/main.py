@@ -497,6 +497,10 @@ class FinancialAuditRequest(BaseModel):
     invoices: List[Dict[str, Any]] = Field(default_factory=list)
     journal_entries: List[Dict[str, Any]] = Field(default_factory=list)
     historical_reports: List[Dict[str, Any]] = Field(default_factory=list)
+    # S39 — optional forensic inputs. Goods receipts enable the AS-2201
+    # three-way match; period_end enables AS-2401 cutoff testing.
+    goods_receipts: List[Dict[str, Any]] = Field(default_factory=list)
+    period_end: Optional[str] = None
 
 
 @app.post("/audit/financial")
@@ -514,7 +518,8 @@ async def financial_audit(req: FinancialAuditRequest) -> Dict[str, Any]:
     )
     agent = FinancialAuditorAgent(tenant_id=req.tenant_id)
     result = await agent.run_full_audit(
-        req.ledger, req.purchase_orders, req.invoices, req.journal_entries, req.historical_reports)
+        req.ledger, req.purchase_orders, req.invoices, req.journal_entries, req.historical_reports,
+        goods_receipts=req.goods_receipts or None, period_end=req.period_end)
     fingerprint = dataset_fingerprint(req.ledger, req.purchase_orders, req.invoices, req.journal_entries)
     doc = build_completion_document(req.tenant_id, result["findings"], fingerprint,
                                     result["materiality_threshold"])
