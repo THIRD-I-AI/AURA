@@ -84,7 +84,8 @@ async def _issue_token_open(body: TokenRequest) -> TokenResponse:
         raise ValidationError("user_id is required in open auth mode")
 
     logger.info("Token issued (open mode) for user_id=%s", body.user_id)
-    claims = {"sub": body.user_id, "role": body.role}
+    # Dev/demo: the tenant is the user itself (single-user org).
+    claims = {"sub": body.user_id, "role": body.role, "org_id": body.user_id}
     if body.email:
         claims["email"] = body.email
     if body.name:
@@ -119,6 +120,9 @@ async def _issue_token_password(body: TokenRequest) -> TokenResponse:
         "email": user.email,
         "name": user.name,
         "role": user.role or "user",
+        # Tenant boundary from the verified identity (Phase 1). Legacy rows
+        # with no org_id fall back to their own id so they stay isolated.
+        "org_id": user.org_id or user.id,
     }
     logger.info("Token issued (password mode) for email=%s", body.email)
     return TokenResponse(access_token=create_access_token(claims))
@@ -150,6 +154,9 @@ async def register_user(body: RegisterRequest):
             email=body.email,
             password_hash=hash_password(body.password),
             role=body.role,
+            # New users get their own org (single-user tenant); org invites
+            # that add members to an existing org come in a later phase.
+            org_id=str(uuid.uuid4()),
         )
         session.add(user)
         await session.commit()

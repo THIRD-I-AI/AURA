@@ -110,6 +110,19 @@ async def require_user(
     return user
 
 
+async def require_tenant(
+    user: Dict[str, Any] = Depends(require_user),
+) -> str:
+    """The caller's tenant (org) id, derived from the *verified* token.
+
+    SaaS Phase 1: tenant isolation keys on this, NOT on any client-supplied
+    workspace/tenant header (which a token holder could forge to read another
+    org's data). Falls back to the subject for tokens minted before ``org_id``
+    existed, so a single-user dev token still maps to a stable tenant.
+    """
+    return str(user.get("org_id") or user.get("sub"))
+
+
 async def require_role(
     *roles: str,
 ):
