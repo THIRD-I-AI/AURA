@@ -56,18 +56,42 @@ _seed_default()
 
 # ── Public helpers — used by other routers ──────────────────────────
 
-def current_workspace_id(request: Request) -> str:
-    """Extract the current workspace id from the request header.
+def _request_tenant(request: Request) -> Optional[str]:
+    """The caller's tenant (org) id from the verified principal that
+    ``JWTAuthMiddleware`` stashes on ``request.state.user`` — or ``None``
+    when the request is unauthenticated (dev/open mode)."""
+    user = getattr(request.state, "user", None)
+    if not isinstance(user, dict):
+        return None
+    tenant = user.get("org_id") or user.get("sub")
+    return str(tenant) if tenant else None
 
-    Never raises — unknown ids silently fall back to ``default`` so a
-    stale client doesn't brick the app. Callers that want strict mode
-    should check ``workspace_exists()`` themselves.
+
+def current_workspace_id(request: Request) -> str:
+    """The effective data-isolation key for the request.
+
+    SECURITY (Phase 1B — tenant isolation): when the request carries a
+    verified identity, the isolation boundary is the caller's TENANT
+    (``org_id`` from the token), **not** the client ``X-Workspace-Id``
+    header. A token holder must not be able to read another org's data by
+    naming its workspace. A within-tenant folder selected via the header is
+    namespaced *under* the tenant (``<tenant>::<folder>``) so it can never
+    escape the org; the default folder is the tenant itself.
+
+    Unauthenticated requests (dev/open mode, no JWT middleware) keep the
+    legacy header-scoped behaviour and never raise — an unknown id falls
+    back to ``default``.
     """
-    raw = request.headers.get(_HEADER) or ""
-    wsid = raw.strip() or DEFAULT_WORKSPACE_ID
-    with _workspaces_lock:
-        known = {w["id"] for w in _workspaces_store}
-    return wsid if wsid in known else DEFAULT_WORKSPACE_ID
+    raw = (request.headers.get(_HEADER) or "").strip()
+    tenant = _request_tenant(request)
+    if tenant is None:
+        wsid = raw or DEFAULT_WORKSPACE_ID
+        with _workspaces_lock:
+            known = {w["id"] for w in _workspaces_store}
+        return wsid if wsid in known else DEFAULT_WORKSPACE_ID
+    if not raw or raw == DEFAULT_WORKSPACE_ID:
+        return tenant
+    return f"{tenant}::{raw}"
 
 
 def workspace_exists(wsid: str) -> bool:
