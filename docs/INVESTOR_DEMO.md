@@ -45,8 +45,24 @@ signed PDF.
 Open **Audit Workbench** → *Run sample financial audit*. AURA's PCAOB-mapped
 auditor (AS 2110/2305/2201/2401) scans a ledger batch and produces a signed
 **AS 1215 Engagement Completion Document** over a fingerprint of 100% of the
-population — not a sample. Findings that require human judgment land in the
-exception queue:
+population — not a sample.
+
+The one-click demo (`GET /audit/financial/demo`, or the Workbench button) runs
+a fraud-laden books-and-records set through the full forensic suite, so every
+technique produces a concrete finding:
+
+- **AS 2401 — fraud:** a **Benford's-Law** first-digit test flags a population
+  of fabricated amounts that violates the natural `log10(1+1/d)` distribution
+  (Nigrini MAD); plus duplicate-payment, round-dollar, and **period-end cutoff**
+  (window-dressing) entries.
+- **AS 2201 — controls:** a **three-way match** (PO ↔ invoice ↔ goods receipt)
+  catches an invoice paid with no receipt; **segregation-of-duties** and
+  **approval-authority** checks catch a self-approved invoice and one above the
+  approver's limit.
+- **AS 2305 — analytics:** an entry above performance materiality, and one that
+  silently collapsed ~98% below its account's prior-period expectation.
+
+Findings that require human judgment land in the exception queue:
 
 1. PII appears as deterministic tokens — the auditor can see that *the same
    employee* is behind three flagged invoices without seeing who it is.
