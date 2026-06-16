@@ -413,3 +413,25 @@ code, pre, kbd {
     transition-duration: 0.01ms !important;
   }
 }
+
+/* ── Responsive two-pane (master / detail) layout ────────────────────
+   A fixed-width side pane next to a flexible one clips the content off
+   the right edge on narrow viewports. These collapse to a single column
+   below the md breakpoint. Pages pick the desktop shape via a modifier;
+   the stacking breakpoint lives here once instead of per-page. */
+.aura-split {
+  display: grid;
+  gap: var(--space-4);
+  align-items: flex-start;
+}
+.aura-split--aside  { grid-template-columns: 260px minmax(0, 1fr); }      /* fixed list + content */
+.aura-split--detail { grid-template-columns: minmax(0, 1fr) 320px; }      /* content + fixed detail */
+.aura-split--metric { grid-template-columns: minmax(160px, 1fr) 2fr; align-items: stretch; }
+@media (max-width: 768px) {
+  .aura-split--aside,
+  .aura-split--detail,
+  .aura-split--metric { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* Media never exceeds its container (defense-in-depth against h-overflow). */
+img, video, canvas { max-width: 100%; }

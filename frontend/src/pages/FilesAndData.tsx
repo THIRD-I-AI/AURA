@@ -167,7 +167,7 @@ const FilesAndData: React.FC<FilesAndDataProps> = ({ setCurrentPage }) => {
     <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-4)', height: '100%', minHeight: 0 }}>
 
       {/* ── KPI bar ────────────────────────────────────────────────── */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 'var(--space-3)', flexShrink: 0 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(140px, 100%), 1fr))', gap: 'var(--space-3)', flexShrink: 0 }}>
         <div style={kpiCardStyle}>
           <span style={kpiLabelStyle}>Datasets</span>
           <span style={kpiValueStyle}>{files.length}</span>

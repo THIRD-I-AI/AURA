@@ -548,7 +548,7 @@ const PipelinesPanel: React.FC<PipelinesPanelProps> = () => {
         const lastStatus = result?.status ?? aiRun?.status ?? null;
         const statusColor = lastStatus === 'success' ? '#34d399' : lastStatus === 'error' ? '#f87171' : 'var(--text-primary)';
         return (
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 'var(--space-3)', flexShrink: 0 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(140px, 100%), 1fr))', gap: 'var(--space-3)', flexShrink: 0 }}>
             {[
               { label: 'Source Files', value: String(sourceFiles.length), sub: 'available' },
               { label: 'Pipeline Steps', value: String(transforms.length), sub: 'build steps' },
@@ -621,7 +621,7 @@ const PipelinesPanel: React.FC<PipelinesPanelProps> = () => {
                   border: '1px solid var(--border, #2a2f3a)',
                   borderRadius: 8,
                   display: 'grid',
-                  gridTemplateColumns: 'repeat(2, minmax(180px, 1fr))',
+                  gridTemplateColumns: 'repeat(auto-fit, minmax(min(180px, 100%), 1fr))',
                   gap: 10,
                 }}
               >

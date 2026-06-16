@@ -50,7 +50,9 @@
 /* ── KPI bar (top of pipelines tab) ─────────────────────────────── */
 .streaming-kpi-bar {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  /* Ungreedy KPI row: wraps 4 → 2 → 1 as width shrinks; min(140px,100%)
+     keeps a single card from ever overflowing the viewport. */
+  grid-template-columns: repeat(auto-fit, minmax(min(140px, 100%), 1fr));
   gap: var(--space-3);
   flex-shrink: 0;
 }
@@ -288,7 +290,7 @@
 /* KPI metric grid inside detail */
 .streaming-kpi-grid {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(auto-fit, minmax(min(120px, 100%), 1fr));
   gap: 1px;
   background: var(--border-subtle);
   border-bottom: 1px solid var(--border-subtle);
