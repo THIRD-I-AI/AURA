@@ -281,7 +281,7 @@ function AppInner() {
 
   return (
     <AppLayout currentPage={currentPage} onPageChange={setCurrentPage}>
-      {renderPage()}
+      <div className="app-page">{renderPage()}</div>
       <ToastContainer />
       <CommandPalette onNavigate={setCurrentPage} />
     </AppLayout>

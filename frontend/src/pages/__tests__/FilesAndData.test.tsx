@@ -49,7 +49,7 @@ describe('FilesAndData', () => {
   it('renders KPI cards', () => {
     render(<FilesAndData />);
     expect(screen.getByText('Datasets')).toBeInTheDocument();
-    expect(screen.getByText('Total Rows')).toBeInTheDocument();
+    expect(screen.getByText('Formats')).toBeInTheDocument();
     expect(screen.getByText('Storage')).toBeInTheDocument();
   });
 

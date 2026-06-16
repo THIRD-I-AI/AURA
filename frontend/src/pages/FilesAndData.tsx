@@ -145,8 +145,15 @@ const FilesAndData: React.FC<FilesAndDataProps> = ({ setCurrentPage }) => {
   }, [files]);
 
   const readyCount  = files.filter(f => f.status === 'ready').length;
-  const totalRows   = files.reduce((s, f) => s + (f.rows || 0), 0);
   const totalSize   = files.reduce((s, f) => s + (f.sizeBytes || 0), 0);
+  // Distinct data formats present. Derivable from every file's name — unlike
+  // row counts, which the backend file-list API doesn't return (only files
+  // uploaded in-browser carry row metadata), so "Total Rows" read blank.
+  const DATA_EXTS = ['csv', 'xlsx', 'xls', 'json', 'parquet', 'txt', 'tsv'];
+  const formats = Array.from(new Set(
+    files.map(f => f.name.split('.').pop()?.toLowerCase())
+      .filter((e): e is string => !!e && DATA_EXTS.includes(e)),
+  )).map(e => e.toUpperCase()).sort();
 
   const handleAnalyze = () => {
     if (selectedFile) localStorage.setItem('active_dataset', JSON.stringify(selectedFile));
@@ -176,9 +183,11 @@ const FilesAndData: React.FC<FilesAndDataProps> = ({ setCurrentPage }) => {
           </span>
         </div>
         <div style={kpiCardStyle}>
-          <span style={kpiLabelStyle}>Total Rows</span>
-          <span style={kpiValueStyle}>{totalRows > 0 ? totalRows.toLocaleString() : '—'}</span>
-          <span style={{ fontSize: 'var(--font-xs)', color: 'var(--text-disabled)' }}>across all datasets</span>
+          <span style={kpiLabelStyle}>Formats</span>
+          <span style={kpiValueStyle}>{formats.length || '—'}</span>
+          <span style={{ fontSize: 'var(--font-xs)', color: 'var(--text-disabled)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {formats.length ? formats.join(' · ') : 'No data files'}
+          </span>
         </div>
         <div style={kpiCardStyle}>
           <span style={kpiLabelStyle}>Storage</span>
@@ -392,19 +401,48 @@ const FilesAndData: React.FC<FilesAndDataProps> = ({ setCurrentPage }) => {
               </div>
             </>
           ) : (
-            <div style={{
-              display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
-              gap: 'var(--space-3)', height: '100%', padding: 'var(--space-8)',
-            }}>
-              <div style={{ color: 'var(--text-disabled)' }}>
-                <FileTextIcon size={36} />
-              </div>
-              <div style={{ textAlign: 'center' }}>
-                <p style={{ margin: 0, fontSize: 'var(--font-sm)', color: 'var(--text-secondary)', fontWeight: 500 }}>
-                  No dataset selected
+            // No file picked yet — show a library overview instead of an empty
+            // box: summary line, a size-distribution chart across all datasets,
+            // and the click hint. Keeps the panel useful and height-matched.
+            <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+              <div style={{ padding: 'var(--space-4) var(--space-5)', borderBottom: '1px solid var(--border-subtle)' }}>
+                <p style={{ margin: 0, fontSize: 'var(--font-sm)', fontWeight: 600, color: 'var(--text-primary)' }}>
+                  Library overview
                 </p>
-                <p style={{ margin: 'var(--space-1) 0 0', fontSize: 'var(--font-xs)', color: 'var(--text-disabled)' }}>
-                  Click a file from the library to inspect its schema and stats
+                <p style={{ margin: '2px 0 0', fontSize: 'var(--font-xs)', color: 'var(--text-tertiary)' }}>
+                  {files.length} dataset{files.length !== 1 ? 's' : ''} · {formatFileSize(totalSize)} · {readyCount}/{files.length} ready
+                </p>
+              </div>
+
+              {chartData.length > 1 && (
+                <div style={{ padding: 'var(--space-4) var(--space-5)', borderBottom: '1px solid var(--border-subtle)' }}>
+                  <p style={{ margin: '0 0 var(--space-2)', fontSize: '10px', fontWeight: 600, color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: '0.07em' }}>
+                    Dataset sizes (KB)
+                  </p>
+                  <ResponsiveContainer width="100%" height={160}>
+                    <BarChart data={chartData} barCategoryGap="22%" margin={{ top: 0, right: 0, left: 0, bottom: 0 }}>
+                      <XAxis dataKey="name" tick={{ fontSize: 9, fill: 'var(--text-disabled)' }} axisLine={false} tickLine={false} interval={0} angle={-30} textAnchor="end" height={44} />
+                      <YAxis hide />
+                      <Tooltip
+                        contentStyle={{ background: 'var(--bg-elevated)', border: '1px solid var(--border-default)', borderRadius: 'var(--radius-md)', fontSize: 11, color: 'var(--text-primary)' }}
+                        formatter={(v) => [`${v} KB`, 'Size']}
+                        labelFormatter={(_, payload) => payload?.[0]?.payload?.fullName ?? ''}
+                      />
+                      <Bar dataKey="size" radius={[3, 3, 0, 0]} fill="var(--accent)" fillOpacity={0.55} />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              )}
+
+              <div style={{
+                flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center',
+                justifyContent: 'center', gap: 'var(--space-2)', padding: 'var(--space-6)', textAlign: 'center',
+              }}>
+                <div style={{ color: 'var(--text-disabled)' }}>
+                  <FileTextIcon size={28} />
+                </div>
+                <p style={{ margin: 0, fontSize: 'var(--font-xs)', color: 'var(--text-tertiary)' }}>
+                  Click a file to inspect its schema and stats
                 </p>
               </div>
             </div>
