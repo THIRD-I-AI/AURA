@@ -8,6 +8,7 @@
 
 .webhooks__tabs {
   display: flex;
+  flex-wrap: wrap;
   gap: 4px;
   align-items: center;
   border-bottom: 1px solid var(--border, #232936);
@@ -72,7 +73,10 @@
 
 .webhooks__form {
   display: grid;
-  grid-template-columns: repeat(2, minmax(220px, 1fr));
+  /* Ungreedy: columns shrink to fit the container (min(220px,100%)) and the
+     count collapses via auto-fit, so the form never clips off-screen on
+     narrow viewports instead of forcing a fixed 2×220px = 440px row. */
+  grid-template-columns: repeat(auto-fit, minmax(min(220px, 100%), 1fr));
   gap: 10px;
 }
 .webhooks__form label {

@@ -212,7 +212,7 @@ const Dashboards: React.FC = () => {
         </div>
       )}
 
-      <div style={{ display: 'grid', gridTemplateColumns: '260px 1fr', gap: 'var(--space-4)', alignItems: 'flex-start' }}>
+      <div className="aura-split aura-split--aside">
         {/* Dashboard list */}
         <aside style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-2)' }}>
           {dashboards.length === 0 ? (

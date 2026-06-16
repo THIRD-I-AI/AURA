@@ -167,7 +167,7 @@ const FilesAndData: React.FC<FilesAndDataProps> = ({ setCurrentPage }) => {
     <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-4)', height: '100%', minHeight: 0 }}>
 
       {/* ── KPI bar ────────────────────────────────────────────────── */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 'var(--space-3)', flexShrink: 0 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(140px, 100%), 1fr))', gap: 'var(--space-3)', flexShrink: 0 }}>
         <div style={kpiCardStyle}>
           <span style={kpiLabelStyle}>Datasets</span>
           <span style={kpiValueStyle}>{files.length}</span>
@@ -227,7 +227,7 @@ const FilesAndData: React.FC<FilesAndDataProps> = ({ setCurrentPage }) => {
                   </p>
                 </div>
                 <button
-                  onClick={() => setCurrentPage?.('upload')}
+                  onClick={() => setCurrentPage?.('dashboard')}
                   style={{
                     padding: 'var(--space-2) var(--space-5)', background: 'var(--accent)',
                     border: 'none', borderRadius: 'var(--radius-md)', color: '#fff',
@@ -355,8 +355,8 @@ const FilesAndData: React.FC<FilesAndDataProps> = ({ setCurrentPage }) => {
                       <YAxis hide />
                       <Tooltip
                         contentStyle={{ background: 'var(--bg-elevated)', border: '1px solid var(--border-default)', borderRadius: 'var(--radius-md)', fontSize: 11, color: 'var(--text-primary)' }}
-                        formatter={(v: number) => [`${v} KB`, 'Size']}
-                        labelFormatter={(_: unknown, payload: { payload?: { fullName?: string } }[]) => payload?.[0]?.payload?.fullName ?? ''}
+                        formatter={(v) => [`${v} KB`, 'Size']}
+                        labelFormatter={(_, payload) => payload?.[0]?.payload?.fullName ?? ''}
                       />
                       <Bar dataKey="size" radius={[3, 3, 0, 0]}>
                         {chartData.map((entry, i) => (

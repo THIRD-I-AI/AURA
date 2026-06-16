@@ -3,6 +3,10 @@ import { type PageType } from '../components/Layout/AppLayout';
 import {
   streamingService,
   type StreamPipelineDef,
+  type StreamPipelineSource,
+  type StreamPipelineSink,
+  type StreamWindowConfig,
+  type StreamTransform,
   type StreamPipelineMetrics,
   type StreamTemplate,
   type StreamingSchemas,
@@ -263,12 +267,15 @@ const StreamingPanel: React.FC<StreamingPanelProps> = () => {
     const payload = {
       name: formName.trim(),
       description: formDesc.trim(),
-      source: { type: formSourceType, config: formSourceConfig },
+      // The form builds source/window/sink/transform `type`s as free-form
+      // strings, but each is driven by a constrained select; assert the
+      // declared unions at this serialization boundary.
+      source: { type: formSourceType as StreamPipelineSource['type'], config: formSourceConfig },
       event_time_field: formEventTimeField,
       watermark_delay_seconds: formWatermarkDelay,
-      window: { type: formWindowType, ...formWindowConfig },
-      transforms: formTransforms,
-      sinks: sinkPayload,
+      window: { type: formWindowType, ...formWindowConfig } as StreamWindowConfig,
+      transforms: formTransforms as StreamTransform[],
+      sinks: sinkPayload as StreamPipelineSink[],
       checkpoint_interval_seconds: formCheckpointInterval,
     };
     try {

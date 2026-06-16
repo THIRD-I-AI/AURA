@@ -39,7 +39,7 @@ export function Skeleton({ width = '100%', height = '1rem', borderRadius = 'var(
 
 export function KPISkeleton() {
   return (
-    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 'var(--space-4)' }}>
+    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(140px, 100%), 1fr))', gap: 'var(--space-4)' }}>
       {Array.from({ length: 4 }).map((_, i) => (
         <div
           key={i}

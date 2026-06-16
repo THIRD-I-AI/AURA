@@ -133,7 +133,7 @@ const Lineage: React.FC = () => {
         </div>
       )}
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) 320px', gap: 'var(--space-4)', alignItems: 'flex-start' }}>
+      <div className="aura-split aura-split--detail">
         {/* Graph canvas */}
         <div
           role="img"

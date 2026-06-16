@@ -272,7 +272,7 @@ class ApiClient {
       // Inject X-Workspace-Id on every call except the public share endpoint
       // (which is intentionally unscoped — the token itself is the auth).
       const isPublic = endpoint.startsWith('/public/');
-      const workspaceHeader = !isPublic ? { 'X-Workspace-Id': _currentWorkspaceId } : {};
+      const workspaceHeader: Record<string, string> = !isPublic ? { 'X-Workspace-Id': _currentWorkspaceId } : {};
 
       const response = await fetch(url, {
         ...options,
@@ -1022,7 +1022,7 @@ export const etlService = {
 // =============================================================================
 
 export interface PipelineSourceDef {
-  type: 'file' | 'postgresql' | 'mysql' | 'bigquery' | 'duckdb';
+  type: 'file' | 'postgresql' | 'mysql' | 'bigquery' | 'duckdb' | 'kafka';
   file_name?: string;
   connection?: Record<string, any>;
   table?: string;

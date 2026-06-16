@@ -402,7 +402,12 @@ jobs:
         run: |
           python -m pytest tests/test_scheduler_distributed.py tests/test_scheduler_worker_integration.py -v --tb=short
 
-  # ── Frontend type-check ──────────────────────────────────────────────────
+  # ── Frontend build ───────────────────────────────────────────────────────
+  # Runs the REAL production build (tsc -b + vite build), identical to the
+  # frontend Dockerfile. A bare `tsc --noEmit` on the solution tsconfig does
+  # NOT follow project references, so it silently misses the strict
+  # (noUnusedLocals / noEmit-on-error) errors that `tsc -b` and the Docker
+  # image enforce — which is how a broken production build slipped past CI.
   frontend-typecheck:
     name: Frontend Type Check
     runs-on: ubuntu-latest
@@ -424,8 +429,8 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: TypeScript type check
-        run: npx tsc --noEmit
+      - name: Production build (tsc -b + vite build)
+        run: npm run build
 
   # ── Frontend tests ───────────────────────────────────────────────────────
   frontend-test:

@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect, useCallback, memo } from 'react';
 import '../styles/design-system.css';
 import '../styles/components.css';
 import Button from './ui/Button';
-import RechartsVisualization from './RechartsVisualization';
+import RechartsVisualization, { type ChartSpec } from './RechartsVisualization';
 import {
   chatService,
   executionService,
@@ -101,6 +101,9 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
         sessionStorage.removeItem('aura.library.openQuery');
         const parsed = JSON.parse(queued) as { id?: string; name?: string; sql?: string; prompt?: string | null };
         if (parsed?.sql) {
+          // Hoist the narrowed value: control-flow narrowing of `parsed.sql`
+          // is discarded inside the setMessages closure below.
+          const sql = parsed.sql;
           const userQuery = parsed.prompt || `Reopened: ${parsed.name ?? 'saved query'}`;
           setMessages((prev) => [
             ...prev,
@@ -108,9 +111,9 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
             {
               id: 'library-sql-' + Date.now(),
               type: 'sql',
-              content: parsed.sql,
+              content: sql,
               timestamp: new Date(),
-              metadata: { query: parsed.sql, userQuery, jobId: `lib_${parsed.id ?? Date.now()}` },
+              metadata: { query: sql, userQuery, jobId: `lib_${parsed.id ?? Date.now()}` },
             },
           ]);
         }
@@ -206,7 +209,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
     }
   };
 
-  const handleExecuteQuery = useCallback(async (query: string, jobId?: string, userQuery?: string) => {
+  const handleExecuteQuery = useCallback(async (query: string, _jobId?: string, userQuery?: string) => {
     setIsProcessing(true);
     const loadingId = 'exec-loading-' + Date.now();
     setMessages((prev) => [...prev, { id: loadingId, type: 'assistant', content: 'Executing…', timestamp: new Date(), loading: true }]);
@@ -552,7 +555,7 @@ const MessageBubble: React.FC<{
         {/* Chart */}
         {showChart && (
           <div style={{ borderRadius: 'var(--radius-md)', overflow: 'hidden' }}>
-            <RechartsVisualization data={result.data!} type="auto" userQuery={message.metadata?.userQuery} chartSpec={result.chart_spec} height={300} />
+            <RechartsVisualization data={result.data!} type="auto" userQuery={message.metadata?.userQuery} chartSpec={result.chart_spec as ChartSpec | undefined} height={300} />
           </div>
         )}
 

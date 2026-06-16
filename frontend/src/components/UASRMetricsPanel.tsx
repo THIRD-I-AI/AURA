@@ -7,7 +7,7 @@
  *   - resolution rate trend (line)
  *   - per-source healing contribution (top 5)
  */
-import React, { useCallback, useState } from 'react';
+import { useCallback, useState } from 'react';
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip,
   ResponsiveContainer, RadialBarChart, RadialBar, PolarAngleAxis,
@@ -85,12 +85,7 @@ export default function UASRMetricsPanel() {
           : 'Waiting for metrics…'}
       />
       <CardBody>
-        <div style={{
-          display: 'grid',
-          gridTemplateColumns: 'minmax(160px, 1fr) 2fr',
-          gap: 'var(--space-4)',
-          alignItems: 'stretch',
-        }}>
+        <div className="aura-split aura-split--metric">
           {/* Hᵤ gauge */}
           <div style={{ height: 180 }}>
             <ResponsiveContainer width="100%" height="100%">
