@@ -104,7 +104,9 @@ export const Header: React.FC<HeaderProps> = ({
 
         {/* Right: workspace + status + notifications + actions + avatar */}
         <div className="app-header__right">
-          <WorkspacePicker />
+          <div className="app-header__workspace">
+            <WorkspacePicker />
+          </div>
 
           <div className="app-header__status-badge">
             <span

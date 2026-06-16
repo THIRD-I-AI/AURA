@@ -276,6 +276,16 @@
 @media (max-width: 640px) {
   .dashboard-grid--kpis { grid-template-columns: 1fr 1fr; }
   .app-header__search-wrapper { display: none; }
+  /* Shed the workspace switcher so the page title isn't crushed to an
+     ellipsis ("En…") by the right-hand cluster on narrow screens. */
+  .app-header__workspace { display: none; }
+}
+@media (max-width: 520px) {
+  /* Below phone width, also drop the New button (reachable via the Files
+     tab) — keep only title · notifications · account so the header reads
+     cleanly instead of overflowing. */
+  .app-header__actions { display: none; }
+  .dashboard-grid--kpis { grid-template-columns: 1fr; }
 }
 
 /* ── Mobile sidebar ─────────────────────────────────────────────── */
