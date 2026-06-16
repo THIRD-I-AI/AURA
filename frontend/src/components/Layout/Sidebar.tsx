@@ -100,6 +100,13 @@ const Icons = {
       <path d="M4.5 4.5L2.5 9a2 2 0 004 0L4.5 4.5zM13.5 4.5L11.5 9a2 2 0 004 0l-2-4.5z" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round"/>
     </svg>
   ),
+  'audit-service': (
+    <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+      {/* Shield + check — a signed, verifiable audit certificate */}
+      <path d="M9 1.5l5.5 2.2v3.8c0 3.3-2.4 5.7-5.5 6.5-3.1-.8-5.5-3.2-5.5-6.5V3.7L9 1.5z" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round"/>
+      <path d="M6.4 8.8l1.7 1.7L11.8 6.7" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/>
+    </svg>
+  ),
   settings: (
     <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
       <circle cx="9" cy="9" r="2.5" stroke="currentColor" strokeWidth="1.5"/>
@@ -133,6 +140,7 @@ const NAV_ICON_MAP: Record<string, React.ReactNode> = {
   webhooks:  Icons.webhooks,
   counterfactual: Icons.counterfactual,
   'audit-hitl': Icons['audit-hitl'],
+  'audit-service': Icons['audit-service'],
 };
 
 /* ── Types ────────────────────────────────────────────────────────── */

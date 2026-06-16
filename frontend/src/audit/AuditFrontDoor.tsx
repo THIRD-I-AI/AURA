@@ -4,7 +4,7 @@ import { auditApi } from './auditApi';
 import { AuthNav } from '../auth/AuthNav';
 import type { Scenario } from './types';
 
-export function AuditFrontDoor() {
+export function AuditFrontDoor({ embedded = false }: { embedded?: boolean } = {}) {
   const navigate = useNavigate();
   const [scenarios, setScenarios] = useState<Scenario[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -29,7 +29,7 @@ export function AuditFrontDoor() {
 
   return (
     <div data-testid="audit-front-door">
-      <AuthNav />
+      {!embedded && <AuthNav />}
       <h1 className="aud-hero__title">Cryptographically-verifiable compliance audits</h1>
       <p className="aud-hero__sub">
         Pick a regulated-decision scenario. Watch the audit run. Get a signed

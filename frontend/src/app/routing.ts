@@ -4,7 +4,7 @@ import type { PageType } from '../components/Layout/AppLayout';
 export const PAGE_IDS: PageType[] = [
   'dashboard', 'chat', 'files', 'queries', 'library', 'dashboards',
   'lineage', 'cost', 'settings', 'agent', 'pipelines', 'streaming',
-  'webhooks', 'counterfactual', 'audit-hitl',
+  'webhooks', 'counterfactual', 'audit-hitl', 'audit-service',
 ];
 
 /** URL segment per page id. The dashboard home lives at the auditor-centric

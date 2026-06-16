@@ -85,10 +85,6 @@ export function UserMenu({ onSettingsClick }: { onSettingsClick?: () => void }) 
               Settings
             </button>
           )}
-          <button data-testid="user-menu-audit" role="menuitem" style={itemStyle}
-            onClick={() => go(() => navigate('/'))}>
-            Audit Service
-          </button>
           <button data-testid="user-menu-logout" role="menuitem"
             style={{ ...itemStyle, color: 'var(--red)', borderTop: '1px solid var(--border-default)' }}
             onClick={() => go(() => { logout(); navigate('/'); })}>

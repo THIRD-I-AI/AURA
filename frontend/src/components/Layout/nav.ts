@@ -35,6 +35,7 @@ export const NAV_ITEMS: NavItem[] = [
   { id: 'streaming',      label: 'Streaming',      href: '#', section: 'Evidence & Data' },
   { id: 'lineage',        label: 'Lineage',        href: '#', section: 'Evidence & Data' },
   { id: 'audit-hitl',     label: 'Exception Queue', href: '#', section: 'Findings' },
+  { id: 'audit-service',  label: 'Audit Service',  href: '#', section: 'Certificates' },
   { id: 'counterfactual', label: 'Counterfactual', href: '#', section: 'Certificates' },
   { id: 'dashboards',     label: 'Dashboards',     href: '#', section: 'Certificates' },
   { id: 'cost',           label: 'LLM Cost',       href: '#', section: 'Monitoring' },
