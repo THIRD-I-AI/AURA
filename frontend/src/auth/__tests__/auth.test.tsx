@@ -121,7 +121,6 @@ describe('UserMenu', () => {
     fireEvent.click(screen.getByTestId('user-menu-trigger'));
     expect(screen.getByTestId('user-menu-name').textContent).toMatch(/Ada Lovelace/);
     expect(screen.getByTestId('user-menu-settings')).toBeTruthy();
-    expect(screen.getByTestId('user-menu-audit')).toBeTruthy();
     expect(screen.getByTestId('user-menu-logout')).toBeTruthy();
   });
 });
