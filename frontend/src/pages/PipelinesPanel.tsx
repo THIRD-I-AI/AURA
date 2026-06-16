@@ -544,7 +544,7 @@ const PipelinesPanel: React.FC<PipelinesPanelProps> = () => {
 
       {/* ── KPI Stats Bar ── */}
       {(() => {
-        const outputRows = result?.output_rows ?? aiRun?.output_rows ?? null;
+        const outputRows = result?.output.row_count ?? aiRun?.rows_written ?? null;
         const lastStatus = result?.status ?? aiRun?.status ?? null;
         const statusColor = lastStatus === 'success' ? '#34d399' : lastStatus === 'error' ? '#f87171' : 'var(--text-primary)';
         return (

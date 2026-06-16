@@ -9,7 +9,7 @@
  *   - system:health  — periodic health snapshots from the backend
  *   - monitor:*      — alert events from MonitorAgent
  */
-import React, { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import {
   LineChart, Line, AreaChart, Area, RadialBarChart, RadialBar,
   XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
@@ -270,7 +270,7 @@ export default function LiveDashboard() {
                     iconSize={8}
                     wrapperStyle={{ fontSize: '11px', paddingTop: '8px' }}
                   />
-                  <Tooltip formatter={(v: number) => `${v}%`} />
+                  <Tooltip formatter={(v) => `${v}%`} />
                 </RadialBarChart>
               </ResponsiveContainer>
             )}
@@ -291,7 +291,7 @@ export default function LiveDashboard() {
                 <XAxis dataKey="time" tick={{ fontSize: 10 }} tickLine={false} />
                 <YAxis domain={[0, 100]} tick={{ fontSize: 10 }} tickLine={false} axisLine={false} unit="%" />
                 <Tooltip
-                  formatter={(v: number) => `${v}%`}
+                  formatter={(v) => `${v}%`}
                   contentStyle={{
                     background: 'var(--bg-primary)',
                     border: '1px solid var(--border-default)',

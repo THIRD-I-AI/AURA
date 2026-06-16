@@ -7,7 +7,7 @@
  *   - resolution rate trend (line)
  *   - per-source healing contribution (top 5)
  */
-import React, { useCallback, useState } from 'react';
+import { useCallback, useState } from 'react';
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip,
   ResponsiveContainer, RadialBarChart, RadialBar, PolarAngleAxis,

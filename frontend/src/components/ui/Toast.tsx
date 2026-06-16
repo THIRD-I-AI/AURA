@@ -4,7 +4,6 @@
  * Renders the toast queue from ToastContext in the bottom-right corner.
  * Import <ToastContainer /> once in App.tsx — it reads from the context.
  */
-import React from 'react';
 import { useToast, type Toast, type ToastVariant } from '../../contexts/ToastContext';
 
 const ICONS: Record<ToastVariant, string> = {

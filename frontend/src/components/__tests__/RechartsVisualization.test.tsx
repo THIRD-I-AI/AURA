@@ -7,7 +7,7 @@ beforeAll(() => {
   // Recharts' ResponsiveContainer measures the parent via ResizeObserver,
   // which jsdom doesn't ship. Stub a minimal implementation.
   if (typeof ResizeObserver === 'undefined') {
-    (global as unknown as { ResizeObserver: unknown }).ResizeObserver = class {
+    (globalThis as unknown as { ResizeObserver: unknown }).ResizeObserver = class {
       observe() {}
       unobserve() {}
       disconnect() {}
