@@ -1,0 +1,96 @@
+/* S37 primitives — classes only, themed entirely by tokens.css vars. */
+
+.ui-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  font-family: var(--font-sans);
+  font-weight: 600;
+  border-radius: var(--radius-md);
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: background var(--dur-fast), border-color var(--dur-fast), color var(--dur-fast);
+}
+.ui-btn--sm { font-size: var(--font-xs); padding: var(--space-1) var(--space-3); min-height: var(--btn-height-sm); }
+.ui-btn--md { font-size: var(--font-sm); padding: var(--space-2) var(--space-5); min-height: var(--btn-height-md); }
+.ui-btn--lg { font-size: var(--font-md); padding: var(--space-3) var(--space-6); min-height: var(--btn-height-lg); }
+
+.ui-btn--primary { background: var(--accent); color: #06270f; }
+.ui-btn--primary:hover:not(:disabled) { background: var(--accent-hover); }
+.ui-btn--primary:active:not(:disabled) { background: var(--accent-active); }
+
+.ui-btn--secondary { background: transparent; color: var(--text-primary); border-color: var(--border-strong); }
+.ui-btn--secondary:hover:not(:disabled) { border-color: var(--accent-border); color: var(--accent); }
+
+.ui-btn--ghost { background: transparent; color: var(--text-secondary); }
+.ui-btn--ghost:hover:not(:disabled) { background: var(--bg-hover); color: var(--text-primary); }
+
+.ui-btn--danger { background: transparent; color: var(--danger); border-color: var(--red-border); }
+.ui-btn--danger:hover:not(:disabled) { background: var(--red-dim); }
+
+/* Disabled stays VISIBLE: outline + muted text, never a dark-on-dark fill. */
+.ui-btn:disabled { background: transparent; color: var(--text-tertiary); border-color: var(--border-default); cursor: not-allowed; }
+
+.ui-btn:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 2px; }
+
+.ui-card {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-lg);
+}
+.ui-card--signal { border-left: 3px solid var(--signal); }
+.ui-card--warn   { border-left: 3px solid var(--warn); }
+.ui-card--danger { border-left: 3px solid var(--danger); }
+.ui-card--info   { border-left: 3px solid var(--info); }
+.ui-card__header {
+  display: flex; align-items: flex-start; justify-content: space-between;
+  padding: var(--space-4) var(--space-5);
+  border-bottom: 1px solid var(--border-subtle);
+}
+.ui-card__title { margin: 0; font-size: var(--font-md); font-weight: 600; color: var(--text-primary); }
+.ui-card__subtitle { margin: var(--space-1) 0 0; font-size: var(--font-xs); color: var(--text-tertiary); }
+.ui-card__actions { display: flex; gap: var(--space-2); }
+.ui-card__body { padding: var(--space-5); }
+
+.ui-badge {
+  display: inline-flex; align-items: center; gap: var(--space-1);
+  font-family: var(--font-sans); font-size: var(--font-2xs); font-weight: 600;
+  letter-spacing: 0.04em; text-transform: uppercase;
+  padding: 2px var(--space-2); border-radius: var(--radius-full);
+  border: 1px solid;
+}
+.ui-badge--verified { color: var(--signal); border-color: var(--green-border); background: var(--green-dim); }
+.ui-badge--pending  { color: var(--text-secondary); border-color: var(--border-strong); background: var(--bg-raised); }
+.ui-badge--warn     { color: var(--warn); border-color: rgba(245, 158, 11, 0.4); background: rgba(245, 158, 11, 0.12); }
+.ui-badge--danger   { color: var(--danger); border-color: var(--red-border); background: var(--red-dim); }
+.ui-badge--neutral  { color: var(--text-tertiary); border-color: var(--border-default); background: transparent; }
+
+.ui-hashchip {
+  display: inline-flex; align-items: center; gap: var(--space-2);
+  font-family: var(--font-mono); font-size: var(--font-xs);
+  background: var(--bg-raised); border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm); padding: 2px var(--space-2);
+  color: var(--text-secondary);
+}
+.ui-hashchip__hash { color: var(--text-primary); }
+.ui-hashchip__copy {
+  background: none; border: none; cursor: pointer;
+  color: var(--text-tertiary); font-size: var(--font-xs); padding: 0;
+}
+.ui-hashchip__copy:hover { color: var(--accent); }
+.ui-hashchip__verify { color: var(--signal); text-decoration: underline; }
+.ui-hashchip--invalid { color: var(--danger); font-family: var(--font-sans); }
+
+.ui-stepper { display: flex; gap: var(--space-5); list-style: none; margin: 0; padding: 0; }
+.ui-step { display: flex; align-items: center; gap: var(--space-2); font-size: var(--font-xs); }
+.ui-step__marker {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 20px; height: 20px; border-radius: var(--radius-full);
+  font-family: var(--font-mono); font-size: var(--font-2xs); font-weight: 700;
+  border: 1px solid var(--border-strong); color: var(--text-tertiary);
+}
+.ui-step--done .ui-step__marker { background: var(--green-dim); border-color: var(--green-border); color: var(--signal); }
+.ui-step--current .ui-step__marker { border-color: var(--accent); color: var(--accent); }
+.ui-step--current .ui-step__label { color: var(--text-primary); font-weight: 600; }
+.ui-step--done .ui-step__label, .ui-step--todo .ui-step__label { color: var(--text-tertiary); }

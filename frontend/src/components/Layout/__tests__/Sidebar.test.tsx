@@ -17,4 +17,11 @@ describe('Sidebar', () => {
       expect(btn.querySelector('svg'), `nav item "${item.id}" has no icon`).not.toBeNull();
     }
   });
+
+  it('groups nav items under the six auditor-workbench sections', () => {
+    render(<Sidebar items={NAV_ITEMS} activeItem="dashboard" onItemClick={() => {}} />);
+    for (const heading of ['Engagements', 'Evidence & Data', 'Findings', 'Certificates', 'Monitoring', 'Admin']) {
+      expect(screen.getByText(heading)).toBeInTheDocument();
+    }
+  });
 });

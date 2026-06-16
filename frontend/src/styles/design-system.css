@@ -3,7 +3,8 @@
    Inspired by Linear, Vercel, Grafana, and Datadog
    ============================================================================= */
 
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+/* S37: fonts are self-hosted via @fontsource (see main.tsx imports) —
+   no third-party font CDN (CSP font-src 'self', privacy). */
 
 :root {
   /* ── Fonts ─────────────────────────────────────────────────────── */

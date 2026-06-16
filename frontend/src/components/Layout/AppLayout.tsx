@@ -32,7 +32,7 @@ interface AppLayoutProps {
 }
 
 const PAGE_META: Record<PageType, { title: string; subtitle: string }> = {
-  dashboard:  { title: 'Dashboard',          subtitle: 'Platform overview & live metrics' },
+  dashboard:  { title: 'Engagements',        subtitle: 'Audit runs, signed certificates & live platform health' },
   chat:       { title: 'Chat',               subtitle: 'Ask questions about your data' },
   files:      { title: 'Files & Data',       subtitle: 'Manage uploaded files and data sources' },
   queries:    { title: 'Query History',      subtitle: 'View and replay previous SQL runs' },

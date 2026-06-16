@@ -30,43 +30,47 @@ export function AuditFrontDoor() {
   return (
     <div data-testid="audit-front-door">
       <AuthNav />
-      <h1 style={{ fontSize: 'var(--font-3xl)', fontWeight: 700, letterSpacing: '-0.03em' }}>
-        Cryptographically-verifiable compliance audits
-      </h1>
-      <p style={{ color: 'var(--text-tertiary)', marginBottom: 'var(--space-8)' }}>
-        Pick a regulated-decision scenario. Watch the audit run. Get a signed certificate anyone can verify.
+      <h1 className="aud-hero__title">Cryptographically-verifiable compliance audits</h1>
+      <p className="aud-hero__sub">
+        Pick a regulated-decision scenario. Watch the audit run. Get a signed
+        certificate anyone can verify.
       </p>
+      <div data-testid="aud-trust-band" className="aud-trust">
+        <span aria-hidden="true">⬢</span>
+        Every result is ED25519-signed and independently verifiable.
+      </div>
 
       {error && (
-        <div data-testid="scenarios-error" style={{ padding: 'var(--space-5)', border: '1px solid var(--border-strong)', borderRadius: 'var(--radius-lg)' }}>
-          Couldn't load scenarios. <button onClick={load}>Retry</button>
+        <div data-testid="scenarios-error" className="aud-scenario">
+          Couldn't load scenarios.{' '}
+          <button className="ui-btn ui-btn--secondary ui-btn--sm" onClick={load}>Retry</button>
         </div>
       )}
 
-      {!scenarios && !error && <p>Loading scenarios…</p>}
+      {!scenarios && !error && <p className="aud-scenario__desc">Loading scenarios…</p>}
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', gap: 'var(--space-5)' }}>
+      <div className="aud-scenarios">
         {scenarios?.map((s) => (
           <button
             key={s.id}
             data-testid={`scenario-card-${s.id}`}
+            className="aud-scenario"
             onClick={() => run(s.id)}
             disabled={launching !== null}
-            style={{ textAlign: 'left', background: 'var(--bg-surface)', border: '1px solid var(--border-default)', borderRadius: 'var(--radius-lg)', padding: 'var(--space-5)', cursor: 'pointer' }}
           >
-            <span style={{ fontSize: 'var(--font-xs)', textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--text-tertiary)' }}>{s.vertical}</span>
-            <h3 style={{ margin: 'var(--space-2) 0' }}>{s.title}</h3>
-            <p style={{ fontSize: 'var(--font-sm)', color: 'var(--text-secondary)' }}>{s.description}</p>
-            <span style={{ fontSize: 'var(--font-sm)', color: 'var(--accent)' }}>{launching === s.id ? 'Starting…' : 'Run audit →'}</span>
+            <span className="aud-scenario__vertical">{s.vertical}</span>
+            <h3 className="aud-scenario__title">{s.title}</h3>
+            <p className="aud-scenario__desc">{s.description}</p>
+            <span className="aud-scenario__cta">{launching === s.id ? 'Starting…' : 'Run audit →'}</span>
           </button>
         ))}
       </div>
 
-      <p style={{ marginTop: 'var(--space-8)', fontSize: 'var(--font-sm)' }}>
-        <Link to="/audit/new" style={{ color: 'var(--accent)' }}>Run a custom audit</Link>
-        {' · '}
+      <p className="aud-links">
+        <Link to="/audit/new" className="aud-link">Run a custom audit</Link>
+        <span aria-hidden="true">·</span>
         {/* Hard nav: intentionally exits the public shell to load the dashboard. */}
-        <a href="/app" style={{ color: 'var(--text-tertiary)' }}>Open dashboard</a>
+        <a href="/app" className="aud-link aud-link--muted">Open dashboard</a>
       </p>
     </div>
   );

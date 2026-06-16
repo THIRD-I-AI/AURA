@@ -141,7 +141,7 @@ the ingestion masking tension. Enterprise readiness: see ENTERPRISE.md
 
 | Sprint | Owner | Branch | Started | Goal |
 |---|---|---|---|---|
-| *(none — Rohith's PR #73 visual polish renumbered S36 to resolve the S35 collision; merging)* | | | | |
+| **S37** | Rohith | `feature/s37-terminal-authority` | 2026-06-11 | Terminal Authority enterprise redesign (issue #77): one design system over both surfaces — dark product UI + light certificate theme, auditor-workbench IA (Engagements / Evidence & Data / Findings / Certificates / Monitoring / Admin replacing the 14-item flat nav), FE security hardening (CSP, lint guards, identity chip on Mounith's S35 Bearer plumbing). Spec: `docs/superpowers/specs/2026-06-11-s37-frontend-redesign-design.md`. Big-bang branch, daily rebase, phase plans s37a–d (`docs/superpowers/plans/2026-06-11-s37a-design-system-foundation.md` is ready to execute). |
 
 ## Completed (newest first)
 
