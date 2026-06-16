@@ -23,15 +23,17 @@ describe('AppRoutes', () => {
     expect(screen.getByTestId('verify-page')).toBeInTheDocument();
   });
 
-  it('deep-links into an internal app page (lazy chunk mounts)', async () => {
+  it('gates an anonymous deep-link into /app behind login', async () => {
+    // /app/* is wrapped in ProtectedRoute (Mounith's SaaS auth). With no
+    // authenticated session, a deep link to an internal page must redirect
+    // to /login rather than mount the dashboard. (An authenticated deep-link
+    // mounting the right page is covered once an AuthProvider is in scope.)
     render(
       <MemoryRouter initialEntries={['/app/chat']}>
         <AppRoutes />
       </MemoryRouter>,
     );
-    // App is lazy; once it loads, the shell brand renders. Asserting the
-    // chunk mounts proves /app/* deep links resolve (panel-level behaviour
-    // is covered by the panel tests).
-    await waitFor(() => expect(screen.getAllByText('AURA').length).toBeGreaterThan(0), { timeout: 4000 });
+    await waitFor(() => expect(screen.getByTestId('auth-form')).toBeInTheDocument());
+    expect(screen.queryByTestId('audit-progress')).not.toBeInTheDocument();
   });
 });
