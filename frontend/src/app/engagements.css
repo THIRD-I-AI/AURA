@@ -1,0 +1,17 @@
+/* S37d — Engagements launchpad (auditor-workbench home). Tokens only. */
+.eng-launchpad { margin-bottom: var(--space-6); }
+.eng-launchpad__intro { margin-bottom: var(--space-4); }
+.eng-launchpad__title { margin: 0; font-size: var(--font-xl); font-weight: 700; letter-spacing: -0.02em; }
+.eng-launchpad__sub { margin: var(--space-1) 0 0; color: var(--text-secondary); font-size: var(--font-sm); max-width: 70ch; }
+.eng-launchpad__grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: var(--space-4); }
+.eng-tile {
+  display: flex; flex-direction: column; gap: var(--space-1); text-align: left; text-decoration: none;
+  background: var(--bg-surface); border: 1px solid var(--border-default); border-radius: var(--radius-lg);
+  padding: var(--space-5); cursor: pointer; transition: border-color var(--dur-fast), transform var(--dur-fast);
+  font-family: var(--font-sans);
+}
+.eng-tile:hover { border-color: var(--accent-border); transform: translateY(-2px); }
+.eng-tile__kicker { font-family: var(--font-mono); font-size: var(--font-2xs); text-transform: uppercase; letter-spacing: 0.1em; color: var(--signal); }
+.eng-tile__title { font-size: var(--font-md); font-weight: 600; color: var(--text-primary); }
+.eng-tile__desc { font-size: var(--font-sm); color: var(--text-secondary); }
+.eng-tile__cta { margin-top: var(--space-2); font-size: var(--font-sm); font-weight: 600; color: var(--accent); }
