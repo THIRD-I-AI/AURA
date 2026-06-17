@@ -5,6 +5,7 @@ export const PAGE_IDS: PageType[] = [
   'dashboard', 'chat', 'files', 'queries', 'library', 'dashboards',
   'lineage', 'cost', 'settings', 'agent', 'pipelines', 'streaming',
   'webhooks', 'counterfactual', 'audit-hitl', 'audit-service',
+  'healing-queue',
 ];
 
 /** URL segment per page id. The dashboard home lives at the auditor-centric

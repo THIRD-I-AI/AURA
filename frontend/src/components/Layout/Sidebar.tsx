@@ -107,6 +107,12 @@ const Icons = {
       <path d="M6.4 8.8l1.7 1.7L11.8 6.7" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/>
     </svg>
   ),
+  'healing-queue': (
+    <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+      {/* Heart — supervised self-healing */}
+      <path d="M9 15.3C9 15.3 2.6 11.7 2.6 7.1A3.1 3.1 0 019 4.7a3.1 3.1 0 016.4 2.4c0 4.6-6.4 8.2-6.4 8.2Z" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round"/>
+    </svg>
+  ),
   settings: (
     <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
       <circle cx="9" cy="9" r="2.5" stroke="currentColor" strokeWidth="1.5"/>
@@ -141,6 +147,7 @@ const NAV_ICON_MAP: Record<string, React.ReactNode> = {
   counterfactual: Icons.counterfactual,
   'audit-hitl': Icons['audit-hitl'],
   'audit-service': Icons['audit-service'],
+  'healing-queue': Icons['healing-queue'],
 };
 
 /* ── Types ────────────────────────────────────────────────────────── */

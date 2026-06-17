@@ -43,9 +43,28 @@ class RecoveryStatus(str, Enum):
     DIAGNOSING = "diagnosing"
     GENERATING_SHIM = "generating_shim"
     VALIDATING = "validating"
+    PENDING_APPROVAL = "pending_approval"  # S41: validated, held for human review
+    APPROVED = "approved"                  # S41: human approved → deploy
+    REJECTED = "rejected"                  # S41: human rejected
     DEPLOYED = "deployed"
+    ESCALATED = "escalated"                # S41: rejected/unhealable → needs a human
     FAILED = "failed"
     ROLLED_BACK = "rolled_back"
+
+
+class RecoveryMode(str, Enum):
+    """S41: how aggressively the recovery loop may deploy a validated shim.
+
+    AUTO         — the risk policy decides: only deterministic *template*
+                   shims at low/medium severity auto-deploy; everything else
+                   is held for human approval.
+    SUPERVISED   — every validated shim waits for human approval.
+    MONITOR_ONLY — never deploy; detect, diagnose, and recommend only.
+    """
+
+    AUTO = "auto"
+    SUPERVISED = "supervised"
+    MONITOR_ONLY = "monitor_only"
 
 
 # ────────────────────────────────────────────────────────────────────
@@ -73,14 +92,23 @@ class RecoveryRecord(Base):
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: uuid.uuid4().hex[:16])
     drift_event_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    # S41: denormalized so the approval queue can deploy the held shim back to
+    # the right source without re-joining the drift event.
+    source_id: Mapped[Optional[str]] = mapped_column(String(128), nullable=True, index=True)
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="detected")
     diagnosis: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     shim_code: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     shim_language: Mapped[str] = mapped_column(String(16), default="python")
+    # S41: drives the risk gate + shown in the approval queue.
+    generation_method: Mapped[str] = mapped_column(String(16), default="template")
     validation_passed: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
     post_kl_divergence: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     latency_seconds: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # S41: human decision on a held (PENDING_APPROVAL) recovery.
+    decided_by: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    decision_note: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    decided_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
     completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
@@ -179,6 +207,10 @@ class ShimResult(BaseModel):
     recovery_id: str
     shim_code: str = ""
     language: str = "python"
+    # S41: which generator produced the shim — drives the risk gate.
+    # "template" = deterministic (rename/coerce/rescale, auto-deployable);
+    # "llm" / "fallback" = always held for human approval.
+    generation_method: str = "template"
     validation_passed: bool = False
     post_kl_divergence: Optional[float] = None
     deployed: bool = False

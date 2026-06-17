@@ -29,6 +29,7 @@ from .models import (
     DriftDetectionResult,
     DriftType,
     RecoveryLoopResult,
+    RecoveryMode,
     RecoveryStatus,
     ShimResult,
 )
@@ -52,12 +53,21 @@ class RecoveryLoopConfig:
         # counterfactual expected-improvement, rather than deploying
         # the first validated shim greedily.
         use_causal_rl_evaluator: bool = False,
+        # S41: opt-in risk-tiered human-in-the-loop. When True, a validated
+        # shim auto-deploys ONLY if it's a deterministic template fix at
+        # low/medium severity (and mode is AUTO); everything else is held in
+        # PENDING_APPROVAL for human approve/reject. Default False preserves
+        # the pre-S41 greedy behavior, so existing call sites are unchanged.
+        risk_tiered: bool = False,
+        mode: RecoveryMode = RecoveryMode.AUTO,
     ) -> None:
         self.max_iterations = max_iterations
         self.kl_reduction_target = kl_reduction_target
         self.sandbox_timeout_seconds = sandbox_timeout_seconds
         self.auto_deploy = auto_deploy
         self.use_causal_rl_evaluator = use_causal_rl_evaluator
+        self.risk_tiered = risk_tiered
+        self.mode = mode
 
 
 class RecoveryLoop:
@@ -182,9 +192,11 @@ class RecoveryLoop:
                     )
                     continue
 
-                # ── Greedy path (original): deploy immediately ──────
-                if self._config.auto_deploy:
+                # ── Deploy or hold for approval (S41 risk gate) ─────
+                if self._should_deploy(shim, drift_result):
                     self._deploy_shim(loop_result, shim, drift_result, recovery_id, validation)
+                elif self._config.risk_tiered:
+                    self._hold_for_approval(loop_result, shim, drift_result, recovery_id)
                 else:
                     loop_result.status = RecoveryStatus.VALIDATING
                     logger.info("Shim validated but auto_deploy=False, awaiting manual deploy")
@@ -209,11 +221,16 @@ class RecoveryLoop:
             winner_shim, winner_val = await self._select_winner_via_evaluator(
                 validated_candidates, drift_result, original_batch, loop_result,
             )
-            if winner_shim is not None and self._config.auto_deploy:
-                self._deploy_shim(
-                    loop_result, winner_shim, drift_result,
-                    recovery_id, winner_val,
-                )
+            if winner_shim is not None:
+                if self._should_deploy(winner_shim, drift_result):
+                    self._deploy_shim(
+                        loop_result, winner_shim, drift_result,
+                        recovery_id, winner_val,
+                    )
+                elif self._config.risk_tiered:
+                    self._hold_for_approval(
+                        loop_result, winner_shim, drift_result, recovery_id,
+                    )
 
         loop_result.total_latency_seconds = time.perf_counter() - start_time
         return loop_result
@@ -385,6 +402,69 @@ class RecoveryLoop:
         if "post_kl" in validation:
             drift.drift_vector["prev_post_kl"] = validation["post_kl"]
         return drift
+
+    # ────────────────────────────────────────────────────────────────
+    # S41: risk-tiered deploy decision + human-in-the-loop hold
+    # ────────────────────────────────────────────────────────────────
+
+    def _should_deploy(
+        self,
+        shim: ShimResult,
+        drift_result: DriftDetectionResult,
+    ) -> bool:
+        """Whether a validated shim may deploy without a human.
+
+        risk_tiered=False (default) preserves pre-S41 behavior: deploy
+        whenever auto_deploy is on. risk_tiered=True applies the policy —
+        under AUTO mode only deterministic ``template`` shims at low/medium
+        severity self-deploy; SUPERVISED/MONITOR_ONLY always hold, and
+        LLM/fallback shims or high/critical severity always hold.
+        """
+        if not self._config.auto_deploy:
+            return False
+        if not self._config.risk_tiered:
+            return True
+        if self._config.mode != RecoveryMode.AUTO:
+            return False
+        if (shim.generation_method or "template") != "template":
+            return False
+        severity = (drift_result.severity or "medium").lower()
+        return severity in ("low", "medium")
+
+    def _hold_for_approval(
+        self,
+        loop_result: RecoveryLoopResult,
+        shim: ShimResult,
+        drift_result: DriftDetectionResult,
+        recovery_id: str,
+    ) -> None:
+        """Park a validated shim in PENDING_APPROVAL — fail-closed, no deploy."""
+        loop_result.status = RecoveryStatus.PENDING_APPROVAL
+        loop_result.shim = shim
+        logger.info(
+            "Shim held for human approval: recovery=%s, method=%s, severity=%s, mode=%s",
+            recovery_id, shim.generation_method, drift_result.severity,
+            self._config.mode.value,
+        )
+
+    def deploy_approved_shim(
+        self, source_id: str, shim_code: str, recovery_id: str,
+    ) -> None:
+        """S41: deploy a shim a human approved out of PENDING_APPROVAL.
+
+        Mirrors the registration + callback that ``_deploy_shim`` performs, so
+        an approved shim becomes active (and rollback-able) exactly like an
+        auto-deployed one.
+        """
+        self._deployed_shims.setdefault(source_id, []).append(shim_code)
+        if self._on_shim_deployed:
+            try:
+                self._on_shim_deployed(source_id, shim_code, recovery_id)
+            except Exception as exc:
+                logger.warning("on_shim_deployed callback failed: %s", exc)
+        logger.info(
+            "Approved shim deployed: recovery=%s, source=%s", recovery_id, source_id,
+        )
 
     # ────────────────────────────────────────────────────────────────
     # S18.1b: deployment helper + evaluator wiring
