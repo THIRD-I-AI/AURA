@@ -743,12 +743,8 @@ async def _execute_saved_query_sql(sql: str) -> Dict[str, Any]:
 
     from shared.data_utils import build_schema_context_cached
 
-    base = pathlib.Path(__file__).resolve().parent.parent.parent
-    upload_dirs = [
-        base / "data" / "uploads",
-        base / "api_gateway" / "uploads",
-        base.parent / "uploads",
-    ]
+    from .workspaces import default_upload_dir
+    upload_dirs = [pathlib.Path(default_upload_dir())]
 
     con = duckdb.connect(":memory:")
     try:

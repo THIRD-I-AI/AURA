@@ -146,6 +146,12 @@ def tenant_upload_dir(request) -> str:
     return _tenant_upload_dir_for(_UPLOADS_ROOT, _request_tenant(request))
 
 
+def default_upload_dir() -> str:
+    """The shared 'default' bucket for paths with no request/tenant
+    (e.g. the background scheduler). Mirrors pre-S42 behavior."""
+    return _tenant_upload_dir_for(_UPLOADS_ROOT, None)
+
+
 # ── Models ──────────────────────────────────────────────────────────
 
 class WorkspaceCreate(BaseModel):
