@@ -120,7 +120,7 @@ export default function HealingQueue() {
       <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
         {loading ? (
           <p style={{ color: 'var(--text-tertiary)', fontSize: 'var(--font-sm)' }}>Loading…</p>
-        ) : items.length === 0 ? (
+        ) : error ? null : items.length === 0 ? (
           <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 'var(--space-2)', color: 'var(--text-tertiary)', textAlign: 'center', padding: 'var(--space-8)' }}>
             <div style={{ fontSize: 28 }}>✓</div>
             <p style={{ margin: 0, fontSize: 'var(--font-sm)', color: 'var(--text-secondary)', fontWeight: 500 }}>Nothing awaiting approval</p>
