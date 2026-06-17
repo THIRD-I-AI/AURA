@@ -58,6 +58,26 @@ def get_supported_formats() -> Dict[str, Any]:
     }
 
 
+def _safe_upload_path(upload_dir: str, filename: Optional[str]) -> Optional[str]:
+    """Resolve a client-supplied filename to a path INSIDE ``upload_dir``.
+
+    The client controls the filename, so a value like
+    ``"../keys/signing_ed25519.pem"`` must not escape the upload dir and
+    overwrite arbitrary files. We strip to the basename and then assert the
+    resolved path stays contained (belt-and-suspenders). Returns the safe
+    absolute-ish path, or ``None`` for a degenerate name ("", ".", "..").
+    """
+    safe_name = os.path.basename((filename or "").replace("\\", "/")).strip()
+    # Reject degenerate names and a NUL byte (which would otherwise pass the
+    # containment check but blow up at open() with a messy 500 instead of 400).
+    if not safe_name or safe_name in (".", "..") or "\x00" in safe_name:
+        return None
+    file_path = os.path.join(upload_dir, safe_name)
+    if os.path.commonpath((os.path.abspath(file_path), os.path.abspath(upload_dir))) != os.path.abspath(upload_dir):
+        return None
+    return file_path
+
+
 @router.post("/upload")
 async def upload_universal(
     file: UploadFile = File(None),
@@ -83,6 +103,16 @@ async def upload_universal(
     upload_id = x_upload_id or uuid.uuid4().hex
     logger.info("Receiving file: %s (upload_id=%s)", target_file.filename, upload_id)
 
+    # Path-traversal guard — the client controls the filename (see
+    # _safe_upload_path). Without this a name like "../keys/signing_ed25519.pem"
+    # could escape the upload dir and overwrite arbitrary files.
+    upload_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "data", "uploads")
+    os.makedirs(upload_dir, exist_ok=True)
+    file_path = _safe_upload_path(upload_dir, target_file.filename)
+    if file_path is None:
+        raise HTTPException(status_code=400, detail="Invalid filename")
+    safe_name = os.path.basename(file_path)
+
     try:
         await streaming_manager.publish_progress(
             TOPIC_UPLOAD, upload_id,
@@ -90,10 +120,6 @@ async def upload_universal(
             extra={"stage": "receiving", "filename": target_file.filename},
         )
 
-        upload_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "data", "uploads")
-        os.makedirs(upload_dir, exist_ok=True)
-
-        file_path = os.path.join(upload_dir, target_file.filename)
         bytes_written = 0
         with open(file_path, "wb") as buffer:
             while True:
@@ -122,7 +148,7 @@ async def upload_universal(
 
         result = {
             "upload_id": upload_id,
-            "filename": target_file.filename,
+            "filename": safe_name,
             "bytes": bytes_written,
             "status": "success",
             "message": "File uploaded successfully",
