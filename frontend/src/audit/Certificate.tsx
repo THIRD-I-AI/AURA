@@ -98,6 +98,19 @@ export function Certificate({ artifact, verifyResult, readOnly = false }: {
           </div>
         )}
       </div>
+
+      {/* Always-present way back. The certificate + verify pages render inside
+          the chrome-free PublicShell, which has no navigation — without this a
+          generated cert can't return to the dashboard and the read-only verify
+          page is a dead end. */}
+      <nav
+        className="aud-cert__backnav"
+        aria-label="Audit navigation"
+        style={{ display: 'flex', gap: 12, justifyContent: 'center', flexWrap: 'wrap', marginTop: 20 }}
+      >
+        <Link data-testid="cert-run-another" to="/" className="ui-btn ui-btn--secondary ui-btn--md">Run another audit</Link>
+        <a data-testid="cert-back-dashboard" href="/app" className="ui-btn ui-btn--primary ui-btn--md">Back to dashboard →</a>
+      </nav>
     </CertificateTheme>
   );
 }
