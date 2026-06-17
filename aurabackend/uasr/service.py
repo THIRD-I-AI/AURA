@@ -39,6 +39,7 @@ from .models import (
     DriftSeverity,
     DriftType,
     HealingMetric,
+    RecoveryMode,
     RecoveryRecord,
     RecoveryStatus,
 )
@@ -60,9 +61,23 @@ _detector = DriftDetector()
 _matrix = ReferenceContextMatrix()
 _gateway = SemanticGateway(matrix=_matrix)
 _tracker = HealingMetricTracker()
+# S41: supervised self-healing is opt-in via env so existing deployments are
+# unchanged. UASR_RISK_TIERED=true holds risky shims for human approval;
+# UASR_RECOVERY_MODE=auto|supervised|monitor_only sets how aggressive AUTO is.
+_RISK_TIERED = os.getenv("UASR_RISK_TIERED", "false").lower() in ("1", "true", "yes")
+try:
+    _RECOVERY_MODE = RecoveryMode(os.getenv("UASR_RECOVERY_MODE", "auto").lower())
+except ValueError:
+    _RECOVERY_MODE = RecoveryMode.AUTO
+
 _loop = RecoveryLoop(
     detector=_detector,
-    config=RecoveryLoopConfig(max_iterations=3, auto_deploy=True),
+    config=RecoveryLoopConfig(
+        max_iterations=3,
+        auto_deploy=True,
+        risk_tiered=_RISK_TIERED,
+        mode=_RECOVERY_MODE,
+    ),
 )
 
 # Set on lifespan startup when UASR_MAPEK_ENABLED=true. Held at module
@@ -159,6 +174,18 @@ class RollbackRequest(BaseModel):
     source_id: str
 
 
+class ApprovalRequest(BaseModel):
+    """S41: a human approving a held recovery out of PENDING_APPROVAL."""
+    approver: str
+    note: Optional[str] = None
+
+
+class RejectionRequest(BaseModel):
+    """S41: a human rejecting a held recovery (escalates it)."""
+    approver: str
+    reason: str
+
+
 class GateCheckRequest(BaseModel):
     source_id: str
     batch_id: str = ""
@@ -187,13 +214,18 @@ def _serialize_recovery(rec: RecoveryRecord) -> Dict[str, Any]:
     return {
         "id": rec.id,
         "drift_event_id": rec.drift_event_id,
+        "source_id": rec.source_id,
         "status": rec.status,
         "diagnosis": rec.diagnosis,
         "shim_code": rec.shim_code,
+        "generation_method": rec.generation_method,
         "validation_passed": rec.validation_passed,
         "post_kl_divergence": rec.post_kl_divergence,
         "latency_seconds": rec.latency_seconds,
         "error": rec.error,
+        "decided_by": rec.decided_by,
+        "decision_note": rec.decision_note,
+        "decided_at": rec.decided_at.isoformat() if rec.decided_at else None,
         "created_at": rec.created_at.isoformat() if rec.created_at else None,
         "completed_at": rec.completed_at.isoformat() if rec.completed_at else None,
     }
@@ -252,13 +284,16 @@ async def ingest_batch(req: IngestRequest, db: AsyncSession = Depends(get_db)):
     recovery_rec = RecoveryRecord(
         id=loop_result.recovery_id,
         drift_event_id=event_id,
+        source_id=batch.source_id,
         status=loop_result.status.value,
         diagnosis=loop_result.diagnosis.hypothesis if loop_result.diagnosis else None,
         shim_code=loop_result.shim.shim_code if loop_result.shim else None,
+        generation_method=loop_result.shim.generation_method if loop_result.shim else "template",
         validation_passed=loop_result.shim.validation_passed if loop_result.shim else None,
         post_kl_divergence=loop_result.shim.post_kl_divergence if loop_result.shim else None,
         latency_seconds=loop_result.total_latency_seconds,
-        completed_at=datetime.now(timezone.utc),
+        # PENDING_APPROVAL holds stay open (no completed_at) until a human acts.
+        completed_at=None if loop_result.status == RecoveryStatus.PENDING_APPROVAL else datetime.now(timezone.utc),
     )
     db.add(recovery_rec)
     await db.commit()
@@ -357,6 +392,76 @@ async def list_recoveries_for_event(drift_event_id: str, db: AsyncSession = Depe
     )
     records = result.scalars().all()
     return {"recoveries": [_serialize_recovery(r) for r in records], "count": len(records)}
+
+
+# ── S41: human-in-the-loop approval queue ────────────────────────────
+
+@app.get("/uasr/recovery/pending")
+async def pending_approvals(limit: int = 50, db: AsyncSession = Depends(get_db)):
+    """List recoveries held in PENDING_APPROVAL, awaiting a human decision."""
+    result = await db.execute(
+        select(RecoveryRecord)
+        .where(RecoveryRecord.status == RecoveryStatus.PENDING_APPROVAL.value)
+        .order_by(RecoveryRecord.created_at.desc())
+        .limit(limit)
+    )
+    records = result.scalars().all()
+    return {"pending": [_serialize_recovery(r) for r in records], "count": len(records)}
+
+
+@app.post("/uasr/recovery/{recovery_id}/approve")
+async def approve_recovery(
+    recovery_id: str, req: ApprovalRequest, db: AsyncSession = Depends(get_db),
+):
+    """Approve a held recovery: deploy its shim and record the decision."""
+    result = await db.execute(
+        select(RecoveryRecord).where(RecoveryRecord.id == recovery_id)
+    )
+    rec = result.scalar_one_or_none()
+    if rec is None:
+        raise HTTPException(status_code=404, detail=f"Recovery '{recovery_id}' not found")
+    if rec.status != RecoveryStatus.PENDING_APPROVAL.value:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Recovery '{recovery_id}' is '{rec.status}', not pending approval",
+        )
+
+    # Deploy the human-approved shim back to its source (fail-closed until now).
+    if rec.source_id and rec.shim_code:
+        _loop.deploy_approved_shim(rec.source_id, rec.shim_code, recovery_id)
+
+    rec.status = RecoveryStatus.DEPLOYED.value
+    rec.decided_by = req.approver
+    rec.decision_note = req.note
+    rec.decided_at = datetime.now(timezone.utc)
+    rec.completed_at = rec.decided_at
+    await db.commit()
+    return {"status": "approved", "recovery": _serialize_recovery(rec)}
+
+
+@app.post("/uasr/recovery/{recovery_id}/reject")
+async def reject_recovery(
+    recovery_id: str, req: RejectionRequest, db: AsyncSession = Depends(get_db),
+):
+    """Reject a held recovery: escalate it for human intervention, no deploy."""
+    result = await db.execute(
+        select(RecoveryRecord).where(RecoveryRecord.id == recovery_id)
+    )
+    rec = result.scalar_one_or_none()
+    if rec is None:
+        raise HTTPException(status_code=404, detail=f"Recovery '{recovery_id}' not found")
+    if rec.status != RecoveryStatus.PENDING_APPROVAL.value:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Recovery '{recovery_id}' is '{rec.status}', not pending approval",
+        )
+
+    rec.status = RecoveryStatus.ESCALATED.value
+    rec.decided_by = req.approver
+    rec.decision_note = req.reason
+    rec.decided_at = datetime.now(timezone.utc)
+    await db.commit()
+    return {"status": "escalated", "recovery": _serialize_recovery(rec)}
 
 
 @app.get("/uasr/metrics")

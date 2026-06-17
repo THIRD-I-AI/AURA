@@ -92,14 +92,23 @@ class RecoveryRecord(Base):
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: uuid.uuid4().hex[:16])
     drift_event_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    # S41: denormalized so the approval queue can deploy the held shim back to
+    # the right source without re-joining the drift event.
+    source_id: Mapped[Optional[str]] = mapped_column(String(128), nullable=True, index=True)
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="detected")
     diagnosis: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     shim_code: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     shim_language: Mapped[str] = mapped_column(String(16), default="python")
+    # S41: drives the risk gate + shown in the approval queue.
+    generation_method: Mapped[str] = mapped_column(String(16), default="template")
     validation_passed: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
     post_kl_divergence: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     latency_seconds: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # S41: human decision on a held (PENDING_APPROVAL) recovery.
+    decided_by: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    decision_note: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    decided_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
     completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 

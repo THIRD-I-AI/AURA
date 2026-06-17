@@ -148,3 +148,23 @@ async def test_supervised_modes_always_hold(mode: RecoveryMode) -> None:
     cfg = RecoveryLoopConfig(risk_tiered=True, mode=mode)
     result = await _run(cfg, _shim("template"), _drift("low"))
     assert result.status == RecoveryStatus.PENDING_APPROVAL
+
+
+# ── Approval deploys the held shim (the human-acts path) ───────────
+
+def test_deploy_approved_shim_registers_and_is_rollbackable() -> None:
+    deployed: list = []
+    loop = RecoveryLoop(
+        detector=_FakeDetector(),
+        config=RecoveryLoopConfig(risk_tiered=True),
+        on_shim_deployed=lambda src, code, rid: deployed.append((src, code, rid)),
+    )
+    assert loop.get_deployed_shims("src") == []
+
+    loop.deploy_approved_shim("src", "return rows", "rec1")
+
+    assert loop.get_deployed_shims("src") == ["return rows"]
+    assert deployed == [("src", "return rows", "rec1")]
+    # an approved shim is rollback-able exactly like an auto-deployed one
+    assert loop.rollback_last_shim("src") is True
+    assert loop.get_deployed_shims("src") == []

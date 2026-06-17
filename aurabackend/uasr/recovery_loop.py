@@ -447,6 +447,25 @@ class RecoveryLoop:
             self._config.mode.value,
         )
 
+    def deploy_approved_shim(
+        self, source_id: str, shim_code: str, recovery_id: str,
+    ) -> None:
+        """S41: deploy a shim a human approved out of PENDING_APPROVAL.
+
+        Mirrors the registration + callback that ``_deploy_shim`` performs, so
+        an approved shim becomes active (and rollback-able) exactly like an
+        auto-deployed one.
+        """
+        self._deployed_shims.setdefault(source_id, []).append(shim_code)
+        if self._on_shim_deployed:
+            try:
+                self._on_shim_deployed(source_id, shim_code, recovery_id)
+            except Exception as exc:
+                logger.warning("on_shim_deployed callback failed: %s", exc)
+        logger.info(
+            "Approved shim deployed: recovery=%s, source=%s", recovery_id, source_id,
+        )
+
     # ────────────────────────────────────────────────────────────────
     # S18.1b: deployment helper + evaluator wiring
     # ────────────────────────────────────────────────────────────────
