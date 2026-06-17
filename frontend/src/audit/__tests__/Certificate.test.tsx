@@ -37,6 +37,16 @@ describe('Certificate', () => {
     expect(screen.queryByTestId('cert-download-pdf')).not.toBeInTheDocument();
   });
 
+  it('always offers a way back (dashboard + run-another) — never a dead end', () => {
+    const { rerender } = render(<MemoryRouter><Certificate artifact={artifact} /></MemoryRouter>);
+    expect(screen.getByTestId('cert-back-dashboard')).toBeInTheDocument();
+    expect(screen.getByTestId('cert-run-another')).toBeInTheDocument();
+    // the read-only public verify page must also have nav (regression: it had none)
+    rerender(<MemoryRouter><Certificate artifact={artifact} readOnly /></MemoryRouter>);
+    expect(screen.getByTestId('cert-back-dashboard')).toBeInTheDocument();
+    expect(screen.getByTestId('cert-run-another')).toBeInTheDocument();
+  });
+
   it('shows NOT-verified state when verifyResult says so', () => {
     render(<MemoryRouter><Certificate artifact={artifact} readOnly verifyResult={{ record_hash: 'a3f9c1deadbeef', verified: false, signature_status: 'bad', signing_key_source: 'persisted_file', reason: 'signature mismatch' }} /></MemoryRouter>);
     expect(screen.getByTestId('cert-verify-status')).toHaveTextContent(/not verified/i);
