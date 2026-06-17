@@ -27,16 +27,16 @@ bottom before writing code.
   primitives into the live operator loop). Distinct from S<N><letter>
   because the primitives must already be shipped.
 
-### Commit style
-
-* **One bundled commit per sprint.** Sweeping multi-area work goes in
-  a single commit — see `feedback_commit_style` in memory.
-* **Subject line:** `Land Sprint <id>: <one-line description>` or
-  `Sprint <id> hotfix: <one-line description>`.
+* **Conventional Commits are the current default** (e.g. `fix(frontend): …`,
+  `feat(saas): …`, `Sec-8: …`) — one focused commit per logical change, with a
+  PR per sprint or fix. This matches recent history (S37–Sec-8, PRs #88–#102).
+  The older single-bundled-commit **`Land Sprint <id>: …`** style remains
+  acceptable for sweeping multi-area sprints — see `feedback_commit_style`.
 * **Body:** anchors (papers / RFCs cited), subsystems landed, key
   non-obvious decisions, verification summary, roadmap state update.
-* **Co-author:** `Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>`
-  on every commit you author with Claude help.
+* **Co-author:** `Co-Authored-By: Claude <model> <noreply@anthropic.com>` on
+  every commit you author with Claude help — use the model that actually wrote
+  it (currently Claude Opus 4.8).
 
 ### Branching (active two-dev mode)
 
@@ -199,7 +199,9 @@ collaborators. If you discover something important, **write it into
 * `STREAMING_FOUNDATIONS.md` — formal math behind the streaming
   primitives (existing).
 
-Last updated 2026-05-26 by Mouni. CI expanded to 14 jobs (S28-S30).
+Last updated 2026-06-17 by Mouni. Commit-style + co-author conventions
+synced to actual practice (Conventional Commits; co-author = the authoring
+Claude model, currently Opus 4.8).
 Update the date when you make material changes to this file.
 
 <!-- SPECKIT START -->
