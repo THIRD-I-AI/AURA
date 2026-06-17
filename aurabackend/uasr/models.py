@@ -43,9 +43,28 @@ class RecoveryStatus(str, Enum):
     DIAGNOSING = "diagnosing"
     GENERATING_SHIM = "generating_shim"
     VALIDATING = "validating"
+    PENDING_APPROVAL = "pending_approval"  # S41: validated, held for human review
+    APPROVED = "approved"                  # S41: human approved → deploy
+    REJECTED = "rejected"                  # S41: human rejected
     DEPLOYED = "deployed"
+    ESCALATED = "escalated"                # S41: rejected/unhealable → needs a human
     FAILED = "failed"
     ROLLED_BACK = "rolled_back"
+
+
+class RecoveryMode(str, Enum):
+    """S41: how aggressively the recovery loop may deploy a validated shim.
+
+    AUTO         — the risk policy decides: only deterministic *template*
+                   shims at low/medium severity auto-deploy; everything else
+                   is held for human approval.
+    SUPERVISED   — every validated shim waits for human approval.
+    MONITOR_ONLY — never deploy; detect, diagnose, and recommend only.
+    """
+
+    AUTO = "auto"
+    SUPERVISED = "supervised"
+    MONITOR_ONLY = "monitor_only"
 
 
 # ────────────────────────────────────────────────────────────────────
@@ -179,6 +198,10 @@ class ShimResult(BaseModel):
     recovery_id: str
     shim_code: str = ""
     language: str = "python"
+    # S41: which generator produced the shim — drives the risk gate.
+    # "template" = deterministic (rename/coerce/rescale, auto-deployable);
+    # "llm" / "fallback" = always held for human approval.
+    generation_method: str = "template"
     validation_passed: bool = False
     post_kl_divergence: Optional[float] = None
     deployed: bool = False

@@ -58,14 +58,18 @@ class SynthesisActuatorAgent(BaseAgent):
 
         await self._report(f"Drift type: {drift_type}, generating shim…", 30)
 
-        # Try template-based generation first
+        # Try template-based generation first. Record which generator won —
+        # S41's risk gate auto-deploys only deterministic "template" shims.
+        generation_method = "template"
         shim_code = self._template_shim(drift_type, drift_vector, diagnosis)
 
         if not shim_code:
             await self._report("Using LLM for shim generation…", 50)
+            generation_method = "llm"
             shim_code = await self._llm_shim(drift_type, drift_vector, diagnosis)
 
         if not shim_code:
+            generation_method = "fallback"
             shim_code = self._fallback_shim(drift_type, diagnosis)
 
         await self._report("Shim generated successfully", 90)
@@ -74,6 +78,7 @@ class SynthesisActuatorAgent(BaseAgent):
             recovery_id=recovery_id,
             shim_code=shim_code,
             language="python",
+            generation_method=generation_method,
         )
 
         result.output = {
