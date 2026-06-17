@@ -15,7 +15,7 @@ from shared.error_handler import sanitize_error
 from shared.logging_config import get_logger
 from shared.streaming_manager import TOPIC_UPLOAD, streaming_manager
 
-from .workspaces import tenant_upload_dir
+from .workspaces import _request_tenant, tenant_dir_name, tenant_upload_dir
 
 logger = get_logger("aura.api_gateway.files")
 
@@ -209,13 +209,13 @@ async def upload_universal(
 
 
 @router.get("/files")
-async def list_files() -> Dict[str, Any]:
+async def list_files(request: Request) -> Dict[str, Any]:
     """List all uploaded files."""
     if file_service is None:
         return {"status": "error", "error": "File service not available"}
     try:
-        files = file_service.list_files()
-        return {"status": "success", "files": files}
+        sub = tenant_dir_name(_request_tenant(request))
+        return {"status": "success", "files": file_service.list_files(subdir=sub)}
     except Exception as e:
         return {"status": "error", "error": sanitize_error(e, logger=logger, context="list files")}
 
@@ -264,17 +264,17 @@ async def get_file_profile(file_id: str) -> Dict[str, Any]:
 
 
 @router.delete("/files/{file_id}")
-async def delete_file(file_id: str) -> Dict[str, Any]:
+async def delete_file(file_id: str, request: Request) -> Dict[str, Any]:
     """Delete a file and its processed data."""
     if file_service is None:
         return {"status": "error", "error": "File service not available"}
     try:
-        success = file_service.delete_file(file_id)
+        sub = tenant_dir_name(_request_tenant(request))
+        success = file_service.delete_file(file_id, subdir=sub)
         if success:
             await invalidate_schema_cache()
             return {"status": "success", "message": "File deleted successfully"}
-        else:
-            raise HTTPException(status_code=404, detail="File not found or deletion failed")
+        raise HTTPException(status_code=404, detail="File not found or deletion failed")
     except HTTPException:
         raise
     except Exception as e:
