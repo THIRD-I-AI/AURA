@@ -33,6 +33,7 @@ const Counterfactual = lazy(() => import('./pages/Counterfactual'));
 const AuditService   = lazy(() => import('./pages/AuditService'));
 const ExceptionQueue = lazy(() => import('./components/HITL/ExceptionQueue'));
 const LiveDashboard  = lazy(() => import('./components/LiveDashboard'));
+const HealingQueue   = lazy(() => import('./pages/HealingQueue'));
 
 const PageFallback = memo(function PageFallback() {
   return (
@@ -152,6 +153,7 @@ function AppInner() {
       case 'counterfactual': return <Suspense fallback={<PageFallback />}><Counterfactual /></Suspense>;
       case 'audit-service': return <Suspense fallback={<PageFallback />}><AuditService /></Suspense>;
       case 'audit-hitl': return <Suspense fallback={<PageFallback />}><ExceptionQueue /></Suspense>;
+      case 'healing-queue': return <Suspense fallback={<PageFallback />}><HealingQueue /></Suspense>;
       case 'dashboard':
       default:
         return (

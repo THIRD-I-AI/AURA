@@ -434,3 +434,26 @@ async def uasr_drift_status(source_id: str = None):
     async with httpx.AsyncClient(timeout=15) as client:
         resp = await client.get(f"{_UASR_URL}/uasr/drift/status", params=params)
         return resp.json()
+
+
+# ── S41: supervised self-healing approval queue (proxied to UASR) ────
+
+@router.get("/uasr/recovery/pending")
+async def uasr_pending_approvals(limit: int = 50):
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.get(f"{_UASR_URL}/uasr/recovery/pending", params={"limit": limit})
+        return resp.json()
+
+
+@router.post("/uasr/recovery/{recovery_id}/approve")
+async def uasr_approve_recovery(recovery_id: str, req: Dict[str, Any]):
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.post(f"{_UASR_URL}/uasr/recovery/{recovery_id}/approve", json=req)
+        return resp.json()
+
+
+@router.post("/uasr/recovery/{recovery_id}/reject")
+async def uasr_reject_recovery(recovery_id: str, req: Dict[str, Any]):
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.post(f"{_UASR_URL}/uasr/recovery/{recovery_id}/reject", json=req)
+        return resp.json()

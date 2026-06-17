@@ -1513,6 +1513,47 @@ export const financialAuditService = {
 };
 
 // =============================================================================
+// S41: Supervised self-healing — approval queue
+// =============================================================================
+
+export interface PendingRecovery {
+  id: string;
+  drift_event_id: string;
+  source_id: string | null;
+  status: string;
+  diagnosis: string | null;
+  shim_code: string | null;
+  generation_method: string;
+  validation_passed: boolean | null;
+  post_kl_divergence: number | null;
+  decided_by: string | null;
+  decision_note: string | null;
+  decided_at: string | null;
+  created_at: string | null;
+}
+
+export const healingService = {
+  async pending(): Promise<PendingRecovery[]> {
+    const res = await client.get<{ pending: PendingRecovery[]; count: number }>('/uasr/recovery/pending');
+    return res.pending ?? [];
+  },
+
+  async approve(recoveryId: string, approver: string, note?: string): Promise<{ status: string }> {
+    return client.post<{ status: string }>(`/uasr/recovery/${encodeURIComponent(recoveryId)}/approve`, {
+      approver,
+      note: note ?? null,
+    });
+  },
+
+  async reject(recoveryId: string, approver: string, reason: string): Promise<{ status: string }> {
+    return client.post<{ status: string }>(`/uasr/recovery/${encodeURIComponent(recoveryId)}/reject`, {
+      approver,
+      reason,
+    });
+  },
+};
+
+// =============================================================================
 // Exports
 // =============================================================================
 

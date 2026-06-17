@@ -39,6 +39,7 @@ export const NAV_ITEMS: NavItem[] = [
   { id: 'counterfactual', label: 'Counterfactual', href: '#', section: 'Certificates' },
   { id: 'dashboards',     label: 'Dashboards',     href: '#', section: 'Certificates' },
   { id: 'cost',           label: 'LLM Cost',       href: '#', section: 'Monitoring' },
+  { id: 'healing-queue',  label: 'Healing Queue',  href: '#', section: 'Monitoring' },
   { id: 'webhooks',       label: 'Webhooks',       href: '#', section: 'Admin' },
   { id: 'agent',          label: 'Agent',          href: '#', section: 'Admin' },
 ];
