@@ -130,7 +130,7 @@ def _tenant_upload_dir_for(uploads_root: str, tenant) -> str:
     return path
 
 
-_UPLOADS_ROOT = os.path.join(
+_UPLOADS_ROOT = os.getenv("AURA_UPLOADS_ROOT") or os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
     "data", "uploads",
 )
