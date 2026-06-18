@@ -28,6 +28,14 @@ env:
   # chart upgrade can never fall back to the open token-minting mode.
   ENVIRONMENT: production
   AURA_AUTH_MODE: password
+  # AURA_AUTH_MODE configures HOW credentials are validated; AURA_JWT_ENABLED
+  # is the master switch that actually INSTALLS JWTAuthMiddleware (see
+  # service_factory.create_service). It defaults to false in config.py and is
+  # NOT implied by ENVIRONMENT=production, so without this line a by-the-book
+  # prod install boots clean yet enforces no auth — and S42 tenant isolation
+  # collapses to the shared `default` bucket. Pinned on to match the prod
+  # compose (docker-compose.prod.yml) posture.
+  AURA_JWT_ENABLED: "true"
 
 # Secret values are read from a Kubernetes Secret you create out-of-band
 # (e.g. via sops, sealed-secrets, or an external-secrets operator). The
