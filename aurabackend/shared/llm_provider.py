@@ -490,15 +490,23 @@ class OpenAIProvider(LLMProvider):
         default_model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
         super().__init__(model=model or default_model, **kwargs)
         self._api_key = os.getenv("OPENAI_API_KEY") or _setting("openai_api_key")
+        # Point at any OpenAI-compatible server (vLLM, LM Studio, Azure, an
+        # on-prem inference box, a customer's gateway). AURA_LLM_BASE_URL is the
+        # vendor-neutral alias for OPENAI_BASE_URL.
+        self._base_url = os.getenv("OPENAI_BASE_URL") or os.getenv("AURA_LLM_BASE_URL") or ""
         self._client: Any = None
         self._init()
 
     def _init(self) -> None:
-        if not self._api_key:
+        # A base_url alone is enough: self-hosted endpoints often need no key.
+        if not self._api_key and not self._base_url:
             return
         try:
             import openai
-            self._client = openai.OpenAI(api_key=self._api_key)
+            opts: Dict[str, Any] = {"api_key": self._api_key or "not-needed"}
+            if self._base_url:
+                opts["base_url"] = self._base_url
+            self._client = openai.OpenAI(**opts)
         except Exception as exc:
             logger.warning("OpenAI init failed: %s", exc)
 
@@ -813,6 +821,8 @@ def get_llm(
 
     Args:
         provider: Force a specific provider ("ollama", "gemini", "openai").
+                  Falls back to the AURA_LLM_PROVIDER env var when omitted, so
+                  a deployment can pin one backend; an unknown value raises.
         model:    Override the default model name.
         force_new: Skip the singleton cache.
         **kwargs: Extra args passed to the provider constructor.
@@ -821,6 +831,10 @@ def get_llm(
         An LLMProvider instance. Call .is_available() to check if it's live.
     """
     global _cached_llm, _cached_key
+
+    # An explicit arg wins; otherwise a deployment can pin one backend with
+    # AURA_LLM_PROVIDER instead of relying on auto-detect priority.
+    provider = provider or os.getenv("AURA_LLM_PROVIDER")
 
     cache_key = f"{provider}:{model}"
     if not force_new and _cached_llm and _cached_key == cache_key:

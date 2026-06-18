@@ -312,15 +312,69 @@ class TestGeminiProvider:
 class TestOpenAIProvider:
     def test_no_api_key(self, monkeypatch):
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+        monkeypatch.delenv("AURA_LLM_BASE_URL", raising=False)
         with patch("shared.llm_provider._setting", return_value=None):
             p = OpenAIProvider()
         assert p.is_available() is False
 
     def test_generate_not_available(self, monkeypatch):
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+        monkeypatch.delenv("AURA_LLM_BASE_URL", raising=False)
         with patch("shared.llm_provider._setting", return_value=None):
             p = OpenAIProvider()
         assert p.generate("Hello") is None
+
+    def test_base_url_from_env(self, monkeypatch):
+        # An operator pointing AURA at any OpenAI-compatible server (vLLM,
+        # LM Studio, Azure, an on-prem box) sets OPENAI_BASE_URL.
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.delenv("AURA_LLM_BASE_URL", raising=False)
+        monkeypatch.setenv("OPENAI_BASE_URL", "http://localhost:8001/v1")
+        with patch("shared.llm_provider._setting", return_value=None):
+            p = OpenAIProvider()
+        assert p._base_url == "http://localhost:8001/v1"
+
+    def test_aura_llm_base_url_alias(self, monkeypatch):
+        # AURA_LLM_BASE_URL is the vendor-neutral alias for the same thing.
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+        monkeypatch.setenv("AURA_LLM_BASE_URL", "http://infra.internal:9000/v1")
+        with patch("shared.llm_provider._setting", return_value=None):
+            p = OpenAIProvider()
+        assert p._base_url == "http://infra.internal:9000/v1"
+
+    def test_base_url_enables_client_without_api_key(self, monkeypatch):
+        # A self-hosted endpoint often needs no key: base_url alone must be
+        # enough to build the client and point it at the custom server.
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.delenv("AURA_LLM_BASE_URL", raising=False)
+        monkeypatch.setenv("OPENAI_BASE_URL", "http://localhost:8001/v1")
+        fake_openai = MagicMock()
+        with patch("shared.llm_provider._setting", return_value=None), \
+                patch.dict(sys.modules, {"openai": fake_openai}):
+            p = OpenAIProvider()
+        assert p.is_available() is True
+        _, kwargs = fake_openai.OpenAI.call_args
+        assert kwargs["base_url"] == "http://localhost:8001/v1"
+        # api key is optional when a base_url is supplied (non-empty placeholder
+        # so the SDK constructor, which rejects an empty key, still builds).
+        assert kwargs["api_key"]
+
+    def test_no_base_url_omits_base_url_kwarg(self, monkeypatch):
+        # Default cloud OpenAI: no base_url kwarg, real api key forwarded.
+        monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+        monkeypatch.delenv("AURA_LLM_BASE_URL", raising=False)
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+        fake_openai = MagicMock()
+        with patch("shared.llm_provider._setting", return_value=None), \
+                patch.dict(sys.modules, {"openai": fake_openai}):
+            p = OpenAIProvider()
+        assert p.is_available() is True
+        _, kwargs = fake_openai.OpenAI.call_args
+        assert "base_url" not in kwargs
+        assert kwargs["api_key"] == "sk-test"
 
 
 # ── FallbackProvider ──────────────────────────────────────────────
@@ -404,6 +458,33 @@ class TestGetLlm:
             p1 = get_llm(provider="ollama", force_new=True)
             p2 = get_llm(provider="ollama", force_new=True)
         assert p1 is not p2
+
+    def test_aura_llm_provider_env_switch(self, monkeypatch):
+        # A deployment pins its backend with AURA_LLM_PROVIDER instead of
+        # relying on auto-detect priority.
+        _reset_cache()
+        monkeypatch.setenv("AURA_LLM_PROVIDER", "ollama")
+        with patch("shared.llm_provider._setting", return_value=None):
+            p = get_llm(force_new=True)
+        inner = getattr(p, "_inner", p)
+        assert isinstance(inner, OllamaProvider)
+
+    def test_aura_llm_provider_env_invalid(self, monkeypatch):
+        # A typo in the pinned provider must fail loudly, not silently
+        # auto-detect something else.
+        _reset_cache()
+        monkeypatch.setenv("AURA_LLM_PROVIDER", "bogus")
+        with pytest.raises(ValueError, match="Unknown LLM provider"):
+            get_llm(force_new=True)
+
+    def test_explicit_provider_overrides_env(self, monkeypatch):
+        # An explicit call argument wins over the env default.
+        _reset_cache()
+        monkeypatch.setenv("AURA_LLM_PROVIDER", "bogus")
+        with patch("shared.llm_provider._setting", return_value=None):
+            p = get_llm(provider="ollama", force_new=True)
+        inner = getattr(p, "_inner", p)
+        assert isinstance(inner, OllamaProvider)
 
 
 # ── available_providers ──────────────────────────────────────────
