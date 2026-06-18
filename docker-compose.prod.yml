@@ -1,6 +1,7 @@
 # ──────────────────────────────────────────────────────────────────────────
 # AURA Production Overrides
 # Usage: docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+# Requires: .env (copy from aurabackend/.env.prod.example and fill in values)
 # ──────────────────────────────────────────────────────────────────────────
 
 x-prod-common: &prod-common
@@ -19,7 +20,42 @@ x-prod-common: &prod-common
       max-size: "10m"
       max-file: "3"
 
+# Shared env injected onto every stateful backend service (gateway, metadata,
+# scheduler, uasr). Extend via <<: *backend-env in each service block.
+x-backend-env: &backend-env
+  PYTHONPATH: /app
+  ENVIRONMENT: production
+  DEBUG: "false"
+  LOG_LEVEL: warning
+  DATABASE_URL: postgresql+asyncpg://${DB_USER:-aura}:${DB_PASSWORD}@db:5432/${DB_NAME:-aura}
+  METADATA_DATABASE_URL: postgresql+asyncpg://${DB_USER:-aura}:${DB_PASSWORD}@db:5432/${DB_NAME:-aura}
+  SCHEDULER_DATABASE_URL: postgresql+asyncpg://${DB_USER:-aura}:${DB_PASSWORD}@db:5432/${DB_NAME:-aura}
+  AURA_JWT_ENABLED: "true"
+  AURA_AUTH_MODE: password
+  SECRET_KEY: ${SECRET_KEY}
+  AURA_UPLOADS_ROOT: /data/uploads
+  AURA_SIGNING_PRIVATE_KEY_HEX: ${AURA_SIGNING_PRIVATE_KEY_HEX}
+  AURA_PII_TOKEN_KEY: ${AURA_PII_TOKEN_KEY}
+  GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+  GROQ_API_KEY: ${GROQ_API_KEY:-}
+
 services:
+  # ── Postgres (durable named volume) ──────────────────────────────────
+  db:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${DB_USER:-aura}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD must be set in .env}
+      POSTGRES_DB: ${DB_NAME:-aura}
+    volumes:
+      - aura-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-aura}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
   # ── Frontend (nginx) ──────────────────────────────────────────────────
   frontend:
     build:
@@ -36,18 +72,19 @@ services:
   api_gateway:
     <<: *prod-common
     command: uvicorn api_gateway.main:app --host 0.0.0.0 --port 8000 --workers 4
-    volumes: []  # no hot-reload mount in prod
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - aura-uploads:/data/uploads
     environment:
-      - PYTHONPATH=/app
-      - ENVIRONMENT=production
-      - DEBUG=false
-      - LOG_LEVEL=warning
-      - ORCHESTRATION_SERVICE_URL=http://orchestration_service:8006/v1/orchestrations/query
-      - AURA_CODEGEN_URL=http://code_generation_service:8001
-      - AURA_CONNECTORS_URL=http://connector_service:8002
-      - AURA_SANDBOX_URL=http://execution_sandbox:8003
-      - AURA_SCHEDULER_URL=http://scheduler_service:8004
-      - AURA_INSIGHTS_URL=http://insights_service:8005
+      <<: *backend-env
+      ORCHESTRATION_SERVICE_URL: http://orchestration_service:8006/v1/orchestrations/query
+      AURA_CODEGEN_URL: http://code_generation_service:8001
+      AURA_CONNECTORS_URL: http://connector_service:8002
+      AURA_SANDBOX_URL: http://execution_sandbox:8003
+      AURA_SCHEDULER_URL: http://scheduler_service:8004
+      AURA_INSIGHTS_URL: http://insights_service:8005
 
   code_generation_service:
     <<: *prod-common
@@ -68,8 +105,14 @@ services:
   scheduler_service:
     <<: *prod-common
     command: uvicorn scheduler_service.main:scheduler_app --host 0.0.0.0 --port 8004 --workers 1
+    depends_on:
+      db:
+        condition: service_healthy
     volumes:
       - scheduler_data:/app/data
+    environment:
+      <<: *backend-env
+      DATABASE_SERVICE_URL: http://connector_service:8002
 
   insights_service:
     <<: *prod-common
@@ -84,9 +127,24 @@ services:
   metadata_store:
     <<: *prod-common
     command: uvicorn metadata_store.main:metadata_app --host 0.0.0.0 --port 8007 --workers 1
+    depends_on:
+      db:
+        condition: service_healthy
     volumes: []
+    environment:
+      <<: *backend-env
 
   uasr_service:
     <<: *prod-common
     command: uvicorn uasr.service:app --host 0.0.0.0 --port 8009 --workers 1
+    depends_on:
+      db:
+        condition: service_healthy
     volumes: []
+    environment:
+      <<: *backend-env
+
+volumes:
+  scheduler_data:
+  aura-pgdata:
+  aura-uploads:
