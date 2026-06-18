@@ -36,7 +36,9 @@ def upload_dir():
     """Create a temp upload directory with a sample CSV, yield its path,
     then clean up."""
     base = Path(__file__).resolve().parent.parent
-    uploads = base / "data" / "uploads"
+    # S42: an open-mode (no-JWT) request resolves to the 'default' tenant bucket,
+    # so the chat reader looks in data/uploads/default/ — put the fixture CSV there.
+    uploads = base / "data" / "uploads" / "default"
     uploads.mkdir(parents=True, exist_ok=True)
 
     csv_path = uploads / "_e2e_test_sales.csv"
