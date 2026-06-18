@@ -13,7 +13,7 @@ import time
 from typing import Any, Dict, List, Optional
 
 import duckdb
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from agents.base import AgentContext
@@ -22,6 +22,8 @@ from agents.specialists.intent_agent import IntentAgent
 from shared.data_utils import build_schema_context_cached
 from shared.logging_config import get_logger
 from shared.observability import CHAT_REQUESTS
+
+from .workspaces import tenant_upload_dir
 
 logger = get_logger("aura.api_gateway.chat")
 
@@ -142,7 +144,7 @@ async def _track_query(prompt: str, sql: str, status: str, rows: int, execution_
 # ── Endpoints ────────────────────────────────────────────────────────
 
 @router.post("/chat", response_model=ChatResponse, response_model_exclude_none=True)
-async def chat_endpoint(request: ChatRequest) -> ChatResponse:
+async def chat_endpoint(request: ChatRequest, http_request: Request) -> ChatResponse:
     """Unified chat endpoint: NL → SQL → Execute → Visualize in one call.
 
     1. Discovers available tables from uploaded files (DuckDB) with smart header detection.
@@ -156,12 +158,7 @@ async def chat_endpoint(request: ChatRequest) -> ChatResponse:
         raise HTTPException(status_code=400, detail="Message is required")
 
     # ── Step 1: Smart-load all tables with header inference ─────────
-    base = pathlib.Path(__file__).resolve().parent.parent.parent
-    upload_dirs = [
-        base / "data" / "uploads",
-        base / "api_gateway" / "uploads",
-        base.parent / "uploads",
-    ]
+    upload_dirs = [pathlib.Path(tenant_upload_dir(http_request))]
 
     con = duckdb.connect(":memory:")
     schema_result = await build_schema_context_cached(con, upload_dirs, use_llm=True)

@@ -20,7 +20,7 @@ import httpx
 from fastapi import APIRouter, HTTPException, Request, status
 from pydantic import BaseModel, Field
 
-from api_gateway.routers.workspaces import DEFAULT_WORKSPACE_ID, current_workspace_id
+from api_gateway.routers.workspaces import DEFAULT_WORKSPACE_ID, current_workspace_id, tenant_upload_dir
 from connectors import BigQueryConnector, ConnectorConfig, MySQLConnector, PostgreSQLConnector, SourceType
 from insights import InsightsEngine
 from safety import SQLSafetyValidator
@@ -229,7 +229,7 @@ class QueryRequest(BaseModel):
 # ── Execute endpoints ────────────────────────────────────────────────
 
 @router.post("/execute")
-async def execute_for_chat(req: _ChatExecuteRequest):
+async def execute_for_chat(req: _ChatExecuteRequest, request: Request):
     """Execute SQL from the chat interface.
 
     • If *connection_id* is provided, proxy to the execution sandbox.
@@ -301,12 +301,7 @@ async def execute_for_chat(req: _ChatExecuteRequest):
 
         from shared.data_utils import build_schema_context_cached
 
-        base = pathlib.Path(__file__).resolve().parent.parent.parent
-        upload_dirs = [
-            base / "data" / "uploads",
-            base / "api_gateway" / "uploads",
-            base.parent / "uploads",
-        ]
+        upload_dirs = [pathlib.Path(tenant_upload_dir(request))]
 
         con = duckdb.connect(":memory:")
         # Sprint P-2b: load files into DuckDB without LLM inference so
@@ -748,12 +743,8 @@ async def _execute_saved_query_sql(sql: str) -> Dict[str, Any]:
 
     from shared.data_utils import build_schema_context_cached
 
-    base = pathlib.Path(__file__).resolve().parent.parent.parent
-    upload_dirs = [
-        base / "data" / "uploads",
-        base / "api_gateway" / "uploads",
-        base.parent / "uploads",
-    ]
+    from .workspaces import default_upload_dir
+    upload_dirs = [pathlib.Path(default_upload_dir())]
 
     con = duckdb.connect(":memory:")
     try:

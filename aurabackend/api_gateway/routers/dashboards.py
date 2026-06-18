@@ -21,7 +21,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
-from api_gateway.routers.workspaces import DEFAULT_WORKSPACE_ID, current_workspace_id
+from api_gateway.routers.workspaces import DEFAULT_WORKSPACE_ID, current_workspace_id, tenant_upload_dir
 from shared.logging_config import get_logger
 
 logger = get_logger("aura.api_gateway.dashboards")
@@ -160,7 +160,7 @@ async def delete_dashboard(dashboard_id: str, request: Request):
 
 # ── Render: execute every tile ──────────────────────────────────────
 
-async def _run_tile(tile: Dict[str, Any], saved_queries: List[Dict[str, Any]]) -> Dict[str, Any]:
+async def _run_tile(tile: Dict[str, Any], saved_queries: List[Dict[str, Any]], request: Request) -> Dict[str, Any]:
     sq = next((q for q in saved_queries if q["id"] == tile["saved_query_id"]), None)
     if sq is None:
         return {
@@ -182,12 +182,7 @@ async def _run_tile(tile: Dict[str, Any], saved_queries: List[Dict[str, Any]]) -
 
     from shared.data_utils import build_schema_context_cached
 
-    base = pathlib.Path(__file__).resolve().parent.parent.parent
-    upload_dirs = [
-        base / "data" / "uploads",
-        base / "api_gateway" / "uploads",
-        base.parent / "uploads",
-    ]
+    upload_dirs = [pathlib.Path(tenant_upload_dir(request))]
 
     con = duckdb.connect(":memory:")
     started = time.perf_counter()
@@ -254,7 +249,7 @@ async def render_dashboard(dashboard_id: str, request: Request):
     saved_queries = await persistence.list_saved_queries(wsid)
 
     tile_results = await asyncio.gather(
-        *[_run_tile(t, saved_queries) for t in record.get("tiles", [])],
+        *[_run_tile(t, saved_queries, request) for t in record.get("tiles", [])],
         return_exceptions=False,
     )
     return {

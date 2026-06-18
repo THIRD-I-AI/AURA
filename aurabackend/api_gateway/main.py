@@ -43,9 +43,14 @@ async def _file_metadata_refresh_loop(stop_event: asyncio.Event) -> None:
     from pathlib import Path as _Path
 
     from api_gateway import persistence
+    from shared.upload_migration import migrate_flat_uploads_to_default
 
     base = _Path(__file__).resolve().parent.parent
     upload_dir = base / "data" / "uploads"
+    try:
+        migrate_flat_uploads_to_default(str(upload_dir))
+    except Exception as exc:
+        logger.warning("upload migration skipped (non-fatal): %s", exc)
     while not stop_event.is_set():
         try:
             stats = await persistence.refresh_stale_file_metadata(str(upload_dir))
@@ -53,15 +58,6 @@ async def _file_metadata_refresh_loop(stop_event: asyncio.Event) -> None:
                 logger.debug("file_metadata refresh: %s", stats)
         except Exception as exc:
             logger.debug("file_metadata refresh tick failed: %s", exc)
-        # Sprint P-2b: keep schema context in sync with the upload dir.
-        # Only rebuilds when the fingerprint (dir × file × mtime hash)
-        # differs from what's cached — idempotent on a quiet dir.
-        try:
-            fp = persistence.compute_schema_fingerprint([str(upload_dir)])
-            if fp and not await persistence.get_schema_context(fp):
-                await persistence.refresh_schema_context([str(upload_dir)])
-        except Exception as exc:
-            logger.debug("schema_context refresh tick failed: %s", exc)
         try:
             await asyncio.wait_for(
                 stop_event.wait(),

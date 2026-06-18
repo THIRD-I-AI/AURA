@@ -15,7 +15,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
@@ -23,6 +23,8 @@ from shared.error_handler import sanitize_error
 from shared.logging_config import get_logger
 from shared.safe_paths import PathTraversalError, safe_join
 from shared.streaming_manager import TOPIC_ETL, streaming_manager
+
+from .workspaces import tenant_upload_dir
 
 logger = get_logger("aura.api_gateway.etl")
 
@@ -250,7 +252,7 @@ def _build_transform_sql(table: str, steps: List[ETLTransformStep], con=None) ->
 # ── Endpoints ────────────────────────────────────────────────────────
 
 @router.post("/etl/preview-source")
-async def etl_preview_source(payload: Dict[str, Any]):
+async def etl_preview_source(payload: Dict[str, Any], request: Request):
     """Preview the schema + first N rows of a source file."""
     import duckdb
 
@@ -258,8 +260,7 @@ async def etl_preview_source(payload: Dict[str, Any]):
 
     source_file = payload.get("source_file", "")
     limit = payload.get("limit", 20)
-    base = Path(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-    upload_dirs = [base / "data" / "uploads"]
+    upload_dirs = [Path(tenant_upload_dir(request))]
 
     file_path = None
     for d in upload_dirs:
@@ -298,7 +299,7 @@ async def etl_preview_source(payload: Dict[str, Any]):
 
 
 @router.post("/etl/execute")
-async def etl_execute(pipeline: ETLPipelineRequest):
+async def etl_execute(pipeline: ETLPipelineRequest, request: Request):
     """Execute an ETL pipeline: load source → apply transforms → write destination."""
     import duckdb
 
@@ -311,7 +312,7 @@ async def etl_execute(pipeline: ETLPipelineRequest):
 
     t0 = time.perf_counter()
     base = Path(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-    upload_dir = base / "data" / "uploads"
+    upload_dir = Path(tenant_upload_dir(request))
     output_dir = base / "data" / "processed"
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -426,15 +427,14 @@ async def etl_download(filename: str):
 
 
 @router.post("/etl/natural-language")
-async def etl_from_natural_language(req: ETLNaturalLanguageRequest):
+async def etl_from_natural_language(req: ETLNaturalLanguageRequest, request: Request):
     """Use LLM to build transform steps from a natural language instruction."""
     import duckdb
 
     from shared.data_utils import smart_load_file
     from shared.llm_provider import get_llm
 
-    base = Path(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-    upload_dir = base / "data" / "uploads"
+    upload_dir = Path(tenant_upload_dir(request))
     # Sec-2 #39: source_file is user-supplied; sandbox under upload_dir.
     try:
         file_path = safe_join(upload_dir, req.source_file)

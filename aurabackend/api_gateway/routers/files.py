@@ -8,12 +8,14 @@ import os
 import uuid
 from typing import Any, Dict, Optional
 
-from fastapi import APIRouter, File, Header, HTTPException, UploadFile
+from fastapi import APIRouter, File, Header, HTTPException, Request, UploadFile
 
 from shared.data_utils import invalidate_schema_cache
 from shared.error_handler import sanitize_error
 from shared.logging_config import get_logger
 from shared.streaming_manager import TOPIC_UPLOAD, streaming_manager
+
+from .workspaces import _request_tenant, tenant_dir_name, tenant_upload_dir
 
 logger = get_logger("aura.api_gateway.files")
 
@@ -80,6 +82,7 @@ def _safe_upload_path(upload_dir: str, filename: Optional[str]) -> Optional[str]
 
 @router.post("/upload")
 async def upload_universal(
+    request: Request,
     file: UploadFile = File(None),
     upload_file: UploadFile = File(None),
     x_upload_id: Optional[str] = Header(None, alias="X-Upload-Id"),
@@ -106,8 +109,7 @@ async def upload_universal(
     # Path-traversal guard — the client controls the filename (see
     # _safe_upload_path). Without this a name like "../keys/signing_ed25519.pem"
     # could escape the upload dir and overwrite arbitrary files.
-    upload_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "data", "uploads")
-    os.makedirs(upload_dir, exist_ok=True)
+    upload_dir = tenant_upload_dir(request)  # per-tenant; creates the dir
     file_path = _safe_upload_path(upload_dir, target_file.filename)
     if file_path is None:
         raise HTTPException(status_code=400, detail="Invalid filename")
@@ -207,13 +209,13 @@ async def upload_universal(
 
 
 @router.get("/files")
-async def list_files() -> Dict[str, Any]:
+async def list_files(request: Request) -> Dict[str, Any]:
     """List all uploaded files."""
     if file_service is None:
         return {"status": "error", "error": "File service not available"}
     try:
-        files = file_service.list_files()
-        return {"status": "success", "files": files}
+        sub = tenant_dir_name(_request_tenant(request))
+        return {"status": "success", "files": file_service.list_files(subdir=sub)}
     except Exception as e:
         return {"status": "error", "error": sanitize_error(e, logger=logger, context="list files")}
 
@@ -262,17 +264,17 @@ async def get_file_profile(file_id: str) -> Dict[str, Any]:
 
 
 @router.delete("/files/{file_id}")
-async def delete_file(file_id: str) -> Dict[str, Any]:
+async def delete_file(file_id: str, request: Request) -> Dict[str, Any]:
     """Delete a file and its processed data."""
     if file_service is None:
         return {"status": "error", "error": "File service not available"}
     try:
-        success = file_service.delete_file(file_id)
+        sub = tenant_dir_name(_request_tenant(request))
+        success = file_service.delete_file(file_id, subdir=sub)
         if success:
             await invalidate_schema_cache()
             return {"status": "success", "message": "File deleted successfully"}
-        else:
-            raise HTTPException(status_code=404, detail="File not found or deletion failed")
+        raise HTTPException(status_code=404, detail="File not found or deletion failed")
     except HTTPException:
         raise
     except Exception as e:

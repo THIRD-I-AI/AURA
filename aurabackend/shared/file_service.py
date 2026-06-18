@@ -265,28 +265,30 @@ class FileService:
         # For now, we'll implement a simple file-based lookup
         pass
 
-    def list_files(self) -> List[Dict[str, Any]]:
-        """List all uploaded files"""
+    def list_files(self, subdir: str = "") -> List[Dict[str, Any]]:
+        """List uploaded files within an optional per-tenant subdir."""
         files = []
-        for file_path in self.uploads_path.glob("*"):
+        base = self.uploads_path / subdir if subdir else self.uploads_path
+        if not base.exists():
+            return files
+        for file_path in base.glob("*"):
             if file_path.is_file():
                 stat = file_path.stat()
                 files.append({
                     'filename': file_path.name,
                     'size': stat.st_size,
-                    'modified': datetime.fromtimestamp(stat.st_mtime).isoformat()
+                    'modified': datetime.fromtimestamp(stat.st_mtime).isoformat(),
                 })
         return files
 
-    def delete_file(self, file_id: str) -> bool:
-        """Delete file by ID"""
+    def delete_file(self, file_id: str, subdir: str = "") -> bool:
+        """Delete file (and its processed json) within an optional subdir."""
         try:
-            for file_path in self.uploads_path.glob(f"{file_id}.*"):
+            base = self.uploads_path / subdir if subdir else self.uploads_path
+            for file_path in base.glob(f"{file_id}.*"):
                 file_path.unlink()
-
             for file_path in self.processed_path.glob(f"{file_id}_processed.*"):
                 file_path.unlink()
-
             return True
         except Exception:
             return False

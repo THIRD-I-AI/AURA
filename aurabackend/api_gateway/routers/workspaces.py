@@ -14,6 +14,8 @@ own stores without duplicating the header plumbing.
 
 from __future__ import annotations
 
+import os
+import re
 import threading
 from datetime import datetime
 from typing import Any, Dict, List, Optional
@@ -97,6 +99,57 @@ def current_workspace_id(request: Request) -> str:
 def workspace_exists(wsid: str) -> bool:
     with _workspaces_lock:
         return any(w["id"] == wsid for w in _workspaces_store)
+
+
+# ── Tenant upload-directory helpers ─────────────────────────────────
+
+_TENANT_SLUG_RE = re.compile(r"[^A-Za-z0-9_-]")
+
+
+def tenant_dir_name(tenant) -> str:
+    """Filesystem-safe slug for a tenant id.
+
+    Strips anything outside [A-Za-z0-9_-] so a hostile org_id cannot
+    traverse the upload hierarchy; empty or None -> 'default'.
+    """
+    slug = _TENANT_SLUG_RE.sub("", str(tenant or "")).strip("-_")
+    return slug or "default"
+
+
+def _tenant_upload_dir_for(uploads_root: str, tenant) -> str:
+    """Resolve <uploads_root>/<slug>, asserting path containment.
+
+    Pure (no request object) so it is fully unit-testable; the
+    request-bound wrapper is tenant_upload_dir().
+    """
+    name = tenant_dir_name(tenant)
+    path = os.path.join(uploads_root, name)
+    if os.path.commonpath((os.path.abspath(path), os.path.abspath(uploads_root))) != os.path.abspath(uploads_root):
+        path = os.path.join(uploads_root, "default")
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
+_UPLOADS_ROOT = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+    "data", "uploads",
+)
+
+
+def tenant_upload_dir(request) -> str:
+    """Return the caller's per-tenant upload directory (request-bound).
+
+    Delegates to _tenant_upload_dir_for with the request's tenant id
+    (from the verified JWT via _request_tenant). Unauthenticated
+    requests fall back to the shared 'default' bucket.
+    """
+    return _tenant_upload_dir_for(_UPLOADS_ROOT, _request_tenant(request))
+
+
+def default_upload_dir() -> str:
+    """The shared 'default' bucket for paths with no request/tenant
+    (e.g. the background scheduler). Mirrors pre-S42 behavior."""
+    return _tenant_upload_dir_for(_UPLOADS_ROOT, None)
 
 
 # ── Models ──────────────────────────────────────────────────────────

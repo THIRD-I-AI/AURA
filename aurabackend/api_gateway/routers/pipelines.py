@@ -11,12 +11,14 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import httpx
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from shared.error_handler import sanitize_error
 from shared.logging_config import get_logger
 from shared.streaming_manager import TOPIC_PIPELINE, StreamEvent, streaming_manager
+
+from .workspaces import tenant_upload_dir
 
 logger = get_logger("aura.api_gateway.pipelines")
 
@@ -93,14 +95,14 @@ class SemanticModelPayload(BaseModel):
 # ── Pipeline endpoints ───────────────────────────────────────────────
 
 @router.post("/pipeline/generate")
-async def pipeline_generate(req: PipelineGenerateRequest):
+async def pipeline_generate(req: PipelineGenerateRequest, request: Request):
     """Convert a natural language prompt into a Pipeline definition."""
     logger.info("[Pipeline] Generate request: %s", req.prompt[:200])
     gen = _get_generator()
 
     schema_context = None
     available_files = None
-    upload_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "data", "uploads")
+    upload_dir = tenant_upload_dir(request)
     skip = {".gitkeep", ".DS_Store"}
     data_exts = {".csv", ".parquet", ".json", ".xlsx", ".tsv"}
     if os.path.isdir(upload_dir):
