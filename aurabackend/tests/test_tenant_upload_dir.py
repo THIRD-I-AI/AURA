@@ -19,3 +19,13 @@ def test_upload_dir_is_contained(tmp_path):
     assert os.path.commonpath((os.path.abspath(d), os.path.abspath(root))) == os.path.abspath(root)
     assert os.path.basename(d) == "org_1"
     assert os.path.basename(_tenant_upload_dir_for(root, None)) == "default"
+
+def test_uploads_root_honors_env(monkeypatch):
+    monkeypatch.setenv("AURA_UPLOADS_ROOT", "/srv/aura/uploads")
+    import importlib
+
+    from api_gateway.routers import workspaces
+    importlib.reload(workspaces)
+    assert workspaces._UPLOADS_ROOT == "/srv/aura/uploads"
+    monkeypatch.delenv("AURA_UPLOADS_ROOT")
+    importlib.reload(workspaces)  # restore default for other tests
