@@ -11,7 +11,7 @@
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.9-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-[Architecture](#architecture) · [Self-Healing Pipelines](#self-healing-pipelines-uasr) · [Audit Engine](#the-audit-engine) · [Financial Audit](#signed-financial-audits-pcaob) · [Security](#enterprise-security-posture) · [Getting Started](#getting-started) · [Enterprise Guide](./ENTERPRISE.md) · [Investor Demo](./docs/INVESTOR_DEMO.md)
+[Architecture](#architecture) · [Self-Healing Pipelines](#self-healing-pipelines-uasr) · [Audit Engine](#the-audit-engine) · [Financial Audit](#signed-financial-audits-pcaob) · [Security](#enterprise-security-posture) · [Getting Started](#getting-started) · [Deployment](./docs/DEPLOYMENT.md) · [Enterprise Guide](./ENTERPRISE.md) · [Investor Demo](./docs/INVESTOR_DEMO.md)
 
 </div>
 
@@ -274,6 +274,13 @@ done
 curl -s -X POST http://localhost:8012/demo -H "Content-Type: application/json" \
   -d '{"scenario": "fair_lending"}' | jq .confidence
 ```
+
+### Deploy to production
+
+The steps above are for local dev. To deploy a durable, authenticated instance —
+cloud SaaS, semi-cloud/hybrid (customer-hosted LLM), or fully on-prem/air-gapped
+(local Ollama) — follow **[docs/DEPLOYMENT.md](./docs/DEPLOYMENT.md)**, the
+hands-on Compose + Helm guide for all three targets.
 
 ---
 
