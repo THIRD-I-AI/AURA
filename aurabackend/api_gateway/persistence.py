@@ -719,6 +719,9 @@ async def index_file_metadata(file_path: str) -> Optional[Dict[str, Any]]:
     from pathlib import Path as _Path
 
     p = _Path(file_path)
+    # TODO(s3-mode): file-metadata indexing is filesystem-based; an
+    # s3:// duckdb_uri will not exist locally so stats won't populate
+    # under AURA_STORAGE_BACKEND=s3. Tracked as an S45 follow-up.
     if not p.exists() or not p.is_file():
         # File deleted between request and indexing — prune the
         # cached row if one exists.
