@@ -161,14 +161,20 @@ class TestSaveFile:
 # ── list_files / delete_file ──────────────────────────────────────
 
 class TestListAndDelete:
-    def test_list_files(self, tmp_path):
+    def test_list_files(self, tmp_path, monkeypatch):
+        # Point the storage backend at tmp_path so list_files picks up the
+        # files we create here.  The backend slugs "default" as the tenant,
+        # so files must live in tmp_path/default/.
+        monkeypatch.setenv("AURA_UPLOADS_ROOT", str(tmp_path))
+        from shared.storage import reset_storage_backend
+        reset_storage_backend()
+
+        tenant_dir = tmp_path / "default"
+        tenant_dir.mkdir(parents=True, exist_ok=True)
+        (tenant_dir / "file1.csv").write_text("data")
+        (tenant_dir / "file2.json").write_text("{}")
+
         svc = FileService()
-        svc.uploads_path = tmp_path
-
-        # Create dummy files
-        (tmp_path / "file1.csv").write_text("data")
-        (tmp_path / "file2.json").write_text("{}")
-
         files = svc.list_files()
         assert len(files) == 2
         names = {f["filename"] for f in files}
@@ -176,33 +182,53 @@ class TestListAndDelete:
         assert "file2.json" in names
         for f in files:
             assert "size" in f
-            assert "modified" in f
+            assert "modified" in f  # present (None) — key still in dict
 
-    def test_list_files_empty(self, tmp_path):
+        reset_storage_backend()
+
+    def test_list_files_empty(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("AURA_UPLOADS_ROOT", str(tmp_path))
+        from shared.storage import reset_storage_backend
+        reset_storage_backend()
+
         svc = FileService()
-        svc.uploads_path = tmp_path
         assert svc.list_files() == []
 
-    def test_delete_file(self, tmp_path):
+        reset_storage_backend()
+
+    def test_delete_file(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("AURA_UPLOADS_ROOT", str(tmp_path))
+        from shared.storage import reset_storage_backend
+        reset_storage_backend()
+
         svc = FileService()
-        svc.uploads_path = tmp_path
         svc.processed_path = tmp_path
 
         file_id = "test-id-123"
-        (tmp_path / f"{file_id}.csv").write_text("data")
+        # Write via the backend so list()/delete() can see the file.
+        from shared.storage import get_storage_backend
+        get_storage_backend().write("default", f"{file_id}.csv", b"data")
         (tmp_path / f"{file_id}_processed.json").write_text("{}")
 
         result = svc.delete_file(file_id)
         assert result is True
-        assert not (tmp_path / f"{file_id}.csv").exists()
+        assert not (tmp_path / "default" / f"{file_id}.csv").exists()
         assert not (tmp_path / f"{file_id}_processed.json").exists()
 
-    def test_delete_nonexistent(self, tmp_path):
+        reset_storage_backend()
+
+    def test_delete_nonexistent(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("AURA_UPLOADS_ROOT", str(tmp_path))
+        from shared.storage import reset_storage_backend
+        reset_storage_backend()
+
         svc = FileService()
-        svc.uploads_path = tmp_path
         svc.processed_path = tmp_path
+        # Nothing in the backend — delete returns False (nothing deleted).
         result = svc.delete_file("does-not-exist")
-        assert result is True  # No files matched, but no exception
+        assert result is False
+
+        reset_storage_backend()
 
     def test_get_file_info_returns_none(self):
         svc = FileService()
