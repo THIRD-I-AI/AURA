@@ -12,7 +12,6 @@ import re
 import time
 from typing import Any, Dict, List, Optional
 
-import duckdb
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
@@ -20,6 +19,7 @@ from agents.base import AgentContext
 from agents.langgraph_orchestrator import run_orchestrator
 from agents.specialists.intent_agent import IntentAgent
 from shared.data_utils import build_schema_context_cached
+from shared.duckdb_factory import new_connection
 from shared.logging_config import get_logger
 from shared.observability import CHAT_REQUESTS
 
@@ -160,7 +160,7 @@ async def chat_endpoint(request: ChatRequest, http_request: Request) -> ChatResp
     # ── Step 1: Smart-load all tables with header inference ─────────
     upload_dirs = [pathlib.Path(tenant_upload_dir(http_request))]
 
-    con = duckdb.connect(":memory:")
+    con = new_connection()
     schema_result = await build_schema_context_cached(con, upload_dirs, use_llm=True)
     all_tables = schema_result["tables"]
 

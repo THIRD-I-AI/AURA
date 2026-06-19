@@ -178,13 +178,12 @@ async def _run_tile(tile: Dict[str, Any], saved_queries: List[Dict[str, Any]], r
 
     import pathlib
 
-    import duckdb
-
     from shared.data_utils import build_schema_context_cached
+    from shared.duckdb_factory import new_connection
 
     upload_dirs = [pathlib.Path(tenant_upload_dir(request))]
 
-    con = duckdb.connect(":memory:")
+    con = new_connection()
     started = time.perf_counter()
     try:
         await build_schema_context_cached(con, upload_dirs, use_llm=False)
