@@ -11,6 +11,11 @@ from shared.config import get_settings
 from shared.storage.base import ObjectInfo, StorageBackend, safe_object_name, tenant_slug
 
 
+def _sql_lit(value: str) -> str:
+    """Escape a value for a single-quoted DuckDB SQL string literal."""
+    return str(value or "").replace("'", "''")
+
+
 class S3Backend(StorageBackend):
     def __init__(self) -> None:
         s = get_settings()
@@ -44,7 +49,7 @@ class S3Backend(StorageBackend):
         return self._client
 
     def _key(self, tenant: str, filename: str) -> str:
-        safe_object_name(filename)  # raises ValueError on traversal/separator/NUL
+        filename = safe_object_name(filename)  # raises ValueError on traversal/separator/NUL
         parts = [p for p in (self._prefix, tenant_slug(tenant), filename) if p]
         return "/".join(parts)
 
@@ -110,17 +115,17 @@ class S3Backend(StorageBackend):
         if self._endpoint_url:
             parsed = urlparse(self._endpoint_url)
             host = parsed.netloc or parsed.path
-            endpoint_clause = f", ENDPOINT '{host}'"
+            endpoint_clause = f", ENDPOINT '{_sql_lit(host)}'"
             use_ssl = parsed.scheme == "https"
         con.execute("INSTALL httpfs")
         con.execute("LOAD httpfs")
         con.execute(
             "CREATE OR REPLACE SECRET aura_s3 ("
             "TYPE S3, PROVIDER config, "
-            f"KEY_ID '{self._key_id or ''}', "
-            f"SECRET '{self._secret or ''}', "
-            f"REGION '{self._region}', "
-            f"URL_STYLE '{self._url_style}', "
+            f"KEY_ID '{_sql_lit(self._key_id)}', "
+            f"SECRET '{_sql_lit(self._secret)}', "
+            f"REGION '{_sql_lit(self._region)}', "
+            f"URL_STYLE '{_sql_lit(self._url_style)}', "
             f"USE_SSL {str(use_ssl).lower()}"
             f"{endpoint_clause})"
         )

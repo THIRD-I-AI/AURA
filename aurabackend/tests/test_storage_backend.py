@@ -144,3 +144,18 @@ class TestS3Backend:
         assert "httpfs" in sql
         assert "CREATE OR REPLACE SECRET" in sql
         assert "TYPE s3" in sql.lower() or "TYPE S3" in sql
+
+    def test_configure_duckdb_escapes_single_quotes(self, _s3_env, monkeypatch):
+        monkeypatch.setenv("AURA_S3_SECRET_ACCESS_KEY", "ab'cd")
+        from shared.config import reload_settings
+        reload_settings()
+        from shared.storage import reset_storage_backend
+        reset_storage_backend()
+        from unittest.mock import MagicMock
+
+        from shared.storage.s3 import S3Backend
+        con = MagicMock()
+        S3Backend().configure_duckdb(con)
+        sql = " ".join(call.args[0] for call in con.execute.call_args_list)
+        assert "ab''cd" in sql          # escaped
+        assert "ab'cd'" not in sql      # not the raw-broken form

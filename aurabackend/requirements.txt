@@ -108,4 +108,4 @@ aiokafka>=0.10.0
 
 # Object storage (S45) — boto3 for S3-compatible backends; moto for tests
 boto3>=1.34,<2.0
-moto>=5.0,<6.0
+moto[s3]>=5.0,<6.0
