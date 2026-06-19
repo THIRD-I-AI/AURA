@@ -279,5 +279,11 @@ def get_settings() -> AuraSettings:
     return AuraSettings()
 
 
+def reload_settings() -> AuraSettings:
+    """Rebuild the cached Settings from the current environment (tests/S45)."""
+    get_settings.cache_clear()
+    return get_settings()
+
+
 # Convenience alias — ``from shared.config import settings``
 settings = get_settings()
