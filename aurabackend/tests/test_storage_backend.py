@@ -70,3 +70,10 @@ def test_get_storage_backend_unknown_raises(monkeypatch):
     monkeypatch.setenv("AURA_STORAGE_BACKEND", "nope")
     with pytest.raises(ValueError, match="Unknown storage backend"):
         get_storage_backend()
+
+
+def test_local_rejects_traversal_filename(tmp_path):
+    b = LocalBackend(root=str(tmp_path))
+    for bad in ("../evil.csv", "a/b.csv", "a\\b.csv", "", ".", ".."):
+        with pytest.raises(ValueError):
+            b.write("acme", bad, b"x\n1\n")

@@ -5,7 +5,7 @@ import os
 from pathlib import Path
 from typing import List
 
-from shared.storage.base import ObjectInfo, StorageBackend, tenant_slug
+from shared.storage.base import ObjectInfo, StorageBackend, safe_object_name, tenant_slug
 
 _READ_EXTS = (".csv", ".parquet", ".json")
 
@@ -28,6 +28,7 @@ class LocalBackend(StorageBackend):
         return d
 
     def _path(self, tenant: str, filename: str) -> Path:
+        filename = safe_object_name(filename)
         return self._dir(tenant) / filename
 
     def write(self, tenant: str, filename: str, data: bytes) -> ObjectInfo:

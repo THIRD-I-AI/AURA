@@ -17,6 +17,19 @@ class ObjectInfo:
     duckdb_uri: str    # what read_csv_auto() consumes: local path or s3://...
 
 
+def safe_object_name(filename: str) -> str:
+    """Reject path-traversal / separator / NUL filenames (Sec-8 parity).
+
+    The tenant component is slugged separately; this guards the filename axis
+    so a raw caller cannot escape the tenant namespace. Returns the name
+    unchanged when safe; raises ValueError otherwise.
+    """
+    name = filename or ""
+    if name in ("", ".", "..") or "/" in name or "\\" in name or "\x00" in name:
+        raise ValueError(f"unsafe object filename: {filename!r}")
+    return name
+
+
 def tenant_slug(tenant: str) -> str:
     """Filesystem/key-safe tenant component (mirrors S42 tenant_dir_name).
 
