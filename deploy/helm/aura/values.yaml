@@ -226,6 +226,30 @@ persistence:
   # Service to mount the volume into. Must be a key in `backendServices`.
   service: metadata_store
 
+# ── Uploads (durable per-tenant dataset storage) ────────────────────────────
+# The api_gateway writes uploaded CSVs under AURA_UPLOADS_ROOT, per tenant
+# (S42: data/uploads/<tenant>/), and reads them back to build the DuckDB schema
+# context. The container root FS is read-only, so this MUST be a writable mount
+# or uploads fail at write time. Mirrors the `aura-uploads` volume in
+# docker-compose.prod.yml; when enabled, AURA_UPLOADS_ROOT is set to mountPath
+# automatically (see backend-configmap.yaml).
+#
+# SCALING NOTE: a ReadWriteOnce PVC binds to a single node. Because api_gateway
+# defaults to 2 replicas, a default install only works if both pods land on the
+# same node (RWO allows multiple pods per node) — otherwise the second replica
+# stays Pending unable to mount. For multi-node horizontal scale set
+# accessModes: [ReadWriteMany] with an RWX class (NFS/EFS/Filestore), OR run the
+# gateway at replicas: 1, OR (best, the tracked enterprise-scale item) move
+# uploads to object storage (S3/R2). See docs/DEPLOYMENT.md.
+uploads:
+  enabled: true
+  storageClass: ""        # "" = cluster default
+  accessModes: [ReadWriteOnce]
+  size: 10Gi
+  mountPath: /data/uploads
+  # Service that owns upload read/write. Must be a key in `backendServices`.
+  service: api_gateway
+
 # ── Prometheus Operator ServiceMonitors ────────────────────────────────────
 # When the Prometheus Operator is installed, enabling this renders one
 # ServiceMonitor per backend service that scrapes its `/metrics` endpoint.

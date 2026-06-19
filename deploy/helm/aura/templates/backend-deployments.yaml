@@ -87,6 +87,10 @@ spec:
             - name: data
               mountPath: {{ $root.Values.persistence.mountPath | quote }}
             {{- end }}
+            {{- if and $root.Values.uploads.enabled (eq $svcName $root.Values.uploads.service) }}
+            - name: uploads
+              mountPath: {{ $root.Values.uploads.mountPath | quote }}
+            {{- end }}
             {{- if $root.Values.audit.enabled }}
             - name: audit
               mountPath: {{ $root.Values.audit.mountPath | quote }}
@@ -150,6 +154,11 @@ spec:
         - name: data
           persistentVolumeClaim:
             claimName: {{ include "aura.fullname" $root }}-{{ $svcName | replace "_" "-" }}-data
+        {{- end }}
+        {{- if and $root.Values.uploads.enabled (eq $svcName $root.Values.uploads.service) }}
+        - name: uploads
+          persistentVolumeClaim:
+            claimName: {{ include "aura.fullname" $root }}-uploads
         {{- end }}
         {{- if $root.Values.audit.enabled }}
         - name: audit

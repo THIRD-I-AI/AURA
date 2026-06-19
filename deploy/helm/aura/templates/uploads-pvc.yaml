@@ -1,0 +1,20 @@
+{{- if .Values.uploads.enabled -}}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "aura.fullname" . }}-uploads
+  labels:
+    {{- include "aura.labels" . | nindent 4 }}
+    app.kubernetes.io/component: {{ .Values.uploads.service }}
+spec:
+  accessModes:
+    {{- range .Values.uploads.accessModes }}
+    - {{ . }}
+    {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.uploads.size | quote }}
+  {{- if .Values.uploads.storageClass }}
+  storageClassName: {{ .Values.uploads.storageClass | quote }}
+  {{- end }}
+{{- end }}

@@ -8,6 +8,10 @@ data:
 {{- range $k, $v := .Values.env }}
   {{ $k }}: {{ $v | quote }}
 {{- end }}
+{{- if .Values.uploads.enabled }}
+  # Durable per-tenant uploads root (auto-set to the mounted PVC path).
+  AURA_UPLOADS_ROOT: {{ .Values.uploads.mountPath | quote }}
+{{- end }}
 {{- if .Values.audit.enabled }}
   # TRAIGA audit overrides (auto-injected when audit.enabled=true).
 {{- range $k, $v := .Values.audit.env }}
