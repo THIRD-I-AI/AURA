@@ -16,7 +16,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import List, Optional
 
-from pydantic import Field, field_validator
+from pydantic import AliasChoices, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings
 
 
@@ -165,6 +165,29 @@ class AuraSettings(BaseSettings):
     access_token_expire_minutes: int = Field(30, alias="ACCESS_TOKEN_EXPIRE_MINUTES")
     jwt_enabled: bool = Field(False, alias="AURA_JWT_ENABLED")
     mcp_api_key: Optional[str] = Field(None, alias="MCP_API_KEY")
+
+    # ── Object storage (S45) ────────────────────────────────────────────
+    storage_backend: str = Field("local", alias="AURA_STORAGE_BACKEND")
+    s3_bucket: Optional[str] = Field(None, alias="AURA_S3_BUCKET")
+    s3_endpoint_url: Optional[str] = Field(None, alias="AURA_S3_ENDPOINT_URL")
+    s3_region: str = Field("us-east-1", alias="AURA_S3_REGION")
+    s3_access_key_id: Optional[str] = Field(
+        None, validation_alias=AliasChoices("AURA_S3_ACCESS_KEY_ID", "AWS_ACCESS_KEY_ID")
+    )
+    s3_secret_access_key: Optional[str] = Field(
+        None, validation_alias=AliasChoices("AURA_S3_SECRET_ACCESS_KEY", "AWS_SECRET_ACCESS_KEY")
+    )
+    # canonical: "path" (MinIO/most on-prem) | "vhost" (AWS). S3Backend maps
+    # to boto3 addressing_style (vhost->virtual) and passes verbatim to DuckDB.
+    s3_url_style: str = Field("path", alias="AURA_S3_URL_STYLE")
+    s3_prefix: str = Field("uploads", alias="AURA_S3_PREFIX")
+    s3_use_ssl: bool = Field(True, alias="AURA_S3_USE_SSL")
+
+    @model_validator(mode="after")
+    def _require_bucket_for_s3(self):
+        if self.storage_backend == "s3" and not self.s3_bucket:
+            raise ValueError("AURA_S3_BUCKET must be set when AURA_STORAGE_BACKEND=s3.")
+        return self
 
     # ── Primary Database (Connector / Sandbox default) ──────────────────
     db_host: str = Field("localhost", alias="DB_HOST")
