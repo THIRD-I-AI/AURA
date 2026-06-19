@@ -155,8 +155,15 @@ autoscaling:
 ```
 
 > Use an **external managed Postgres** (Neon, RDS, Cloud SQL) via `DATABASE_URL`
-> in the secret — keep `persistence.enabled: false`. The chart's optional PVC is
-> only for an embedded store, which production should not use.
+> in the secret — keep `persistence.enabled: false`. The chart's optional `persistence`
+> PVC is only for an embedded store, which production should not use.
+>
+> **Uploads:** the chart provisions a durable per-tenant uploads PVC by default
+> (`uploads.enabled: true`, mounted on `api_gateway` at `/data/uploads`). It is
+> `ReadWriteOnce`, so with the default 2 gateway replicas both pods must land on
+> one node. To scale the gateway across nodes, set `uploads.accessModes:
+> [ReadWriteMany]` with an RWX storage class, run `backendServices.api_gateway.replicas: 1`,
+> or move uploads to object storage (the tracked enterprise-scale item).
 
 The chart's default `values.env` already pins `ENVIRONMENT=production`,
 `AURA_AUTH_MODE=password`, and `AURA_JWT_ENABLED=true`, so the auth/tenant gates
