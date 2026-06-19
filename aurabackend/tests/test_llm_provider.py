@@ -192,6 +192,33 @@ class TestOllamaProvider:
         with patch("httpx.post", return_value=mock_resp):
             assert p.generate("Hi") is None
 
+    def _capture_payload(self, p):
+        captured = {}
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {"message": {"content": "ok"}}
+
+        def capture(url, **kwargs):
+            captured["payload"] = kwargs.get("json")
+            return mock_resp
+
+        with patch("httpx.post", side_effect=capture):
+            assert p.generate("hi") == "ok"
+        return captured["payload"]
+
+    def test_generate_sets_bounded_num_ctx(self, monkeypatch):
+        # Air-gap hardening: Ollama defaults a model to its full context window
+        # (llama3.1 = 128k), whose KV cache OOMs on constrained on-prem boxes.
+        # The provider must cap num_ctx so the model loads on real hardware.
+        monkeypatch.delenv("OLLAMA_NUM_CTX", raising=False)
+        payload = self._capture_payload(OllamaProvider(model="llama3.1:8b"))
+        assert payload["options"]["num_ctx"] == 8192
+
+    def test_generate_num_ctx_env_override(self, monkeypatch):
+        monkeypatch.setenv("OLLAMA_NUM_CTX", "2048")
+        payload = self._capture_payload(OllamaProvider(model="llama3.1:8b"))
+        assert payload["options"]["num_ctx"] == 2048
+
     def test_pick_model_uses_cached(self):
         p = OllamaProvider()
         p._resolved_model = "cached-model"

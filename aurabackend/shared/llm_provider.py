@@ -272,6 +272,12 @@ class OllamaProvider(LLMProvider):
                 "options": {
                     "temperature": kwargs.get("temperature", 0.2),
                     "num_predict": kwargs.get("max_tokens", _DEFAULT_MAX_TOKENS),
+                    # Cap the context window. Ollama otherwise loads a model at
+                    # its full trained context (llama3.1 = 128k), whose KV cache
+                    # needs ~16 GiB and OOMs on constrained on-prem / air-gapped
+                    # boxes. 8k is plenty for AURA's prompts; raise via env on
+                    # bigger hardware.
+                    "num_ctx": int(os.getenv("OLLAMA_NUM_CTX", "8192")),
                 },
             }
             timeout = float(os.getenv("AURA_LLM_TIMEOUT", "120"))

@@ -262,6 +262,10 @@ volumes:
 AURA_LLM_PROVIDER=ollama
 OLLAMA_BASE_URL=http://ollama:11434
 OLLAMA_MODEL=llama3.1
+# OLLAMA_NUM_CTX=8192   # default; AURA caps the context so the model loads on
+#                       # constrained boxes (Ollama otherwise opens a model at its
+#                       # full 128k window and the KV cache OOMs). Lower to 4096/2048
+#                       # on small/edge hardware; raise on a big GPU box.
 ```
 
 Bring it up with all three files:
