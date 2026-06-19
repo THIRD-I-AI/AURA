@@ -21,7 +21,12 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
-from api_gateway.routers.workspaces import DEFAULT_WORKSPACE_ID, current_workspace_id, tenant_upload_dir
+from api_gateway.routers.workspaces import (
+    DEFAULT_WORKSPACE_ID,
+    _request_tenant,
+    current_workspace_id,
+    tenant_upload_dir,
+)
 from shared.logging_config import get_logger
 
 logger = get_logger("aura.api_gateway.dashboards")
@@ -176,17 +181,14 @@ async def _run_tile(tile: Dict[str, Any], saved_queries: List[Dict[str, Any]], r
             "execution_time_ms": 0,
         }
 
-    import pathlib
-
     from shared.data_utils import build_schema_context_cached
     from shared.duckdb_factory import new_connection
 
-    upload_dirs = [pathlib.Path(tenant_upload_dir(request))]
-
+    tenant = _request_tenant(request)
     con = new_connection()
     started = time.perf_counter()
     try:
-        await build_schema_context_cached(con, upload_dirs, use_llm=False)
+        await build_schema_context_cached(con, tenant, use_llm=False)
 
         def _run() -> tuple[list[str], list[tuple]]:
             cur = con.execute(sq["sql"])
