@@ -146,6 +146,44 @@ backendServices:
       targetCPUUtilizationPercentage: 60
 ```
 
+## Object storage (recommended for multi-replica)
+
+By default the gateway writes uploaded CSVs to a local PVC (`uploads.enabled: true`,
+`ReadWriteOnce`). With two or more gateway replicas on different nodes the second pod
+cannot mount the same RWO volume and stays Pending.
+
+**For true multi-node scale use object storage (S45):**
+
+```yaml
+# values.s3.yaml
+env:
+  AURA_STORAGE_BACKEND: s3
+  AURA_S3_BUCKET: aura-uploads
+  AURA_S3_ENDPOINT_URL: ""        # blank for AWS S3; set for R2/MinIO/on-prem
+  AURA_S3_REGION: us-east-1
+  AURA_S3_URL_STYLE: path         # path for MinIO; vhost for AWS
+  AURA_S3_USE_SSL: "true"
+
+uploads:
+  enabled: false                  # PVC not needed — object storage is the durable store
+```
+
+Add `AURA_S3_ACCESS_KEY_ID` and `AURA_S3_SECRET_ACCESS_KEY` to the `aura-secrets`
+Secret (not in values.yaml). On EKS/GKE you can omit them and use IRSA/Workload Identity
+instead.
+
+**Air-gapped / on-prem MinIO:** the AURA image bundles the DuckDB `httpfs` extension
+(installed at build time — no outbound network call at runtime). Point
+`AURA_S3_ENDPOINT_URL` at an in-cluster or on-host MinIO service:
+
+```yaml
+env:
+  AURA_STORAGE_BACKEND: s3
+  AURA_S3_ENDPOINT_URL: http://minio.minio.svc.cluster.local:9000
+  AURA_S3_URL_STYLE: path
+  AURA_S3_USE_SSL: "false"
+```
+
 ## Roadmap
 
 v0.1 ships everything the Sprint 6 plan called for (Deployments, Services,
