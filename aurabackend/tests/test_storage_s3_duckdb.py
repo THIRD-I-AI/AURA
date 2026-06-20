@@ -6,8 +6,9 @@ Tier B (AURA_S3_TEST_ENDPOINT set) — spins up a boto3 client against a live Mi
 instance, writes a CSV via the S3Backend, builds schema context over tenant "acme",
 then asserts a GROUP BY query returns the expected aggregated values.
 
-CI lane: storage-s3 job in .github/workflows/ci.yml provisions bitnami/minio:latest
-as a service container and sets AURA_S3_TEST_ENDPOINT=http://localhost:9000.
+CI lane: storage-s3 job in .github/workflows/ci.yml starts minio/minio via
+`docker run` (official image; requires `server /data` command not available in
+a services: block) and sets AURA_S3_TEST_ENDPOINT=http://localhost:9000.
 
 Skip gate: AURA_S3_TEST_ENDPOINT is absent on the base backend-test lane so this
 module produces "1 skipped" without collection errors — matching the Tier-B pattern

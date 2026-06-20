@@ -406,11 +406,11 @@ jobs:
   # Sprint S45: tests/test_storage_s3_duckdb.py is a Tier-B test that
   # proves DuckDB reads CSVs from a real S3-compatible store end-to-end.
   # The base backend-test lane runs Tier A and silently skips Tier B
-  # (AURA_S3_TEST_ENDPOINT absent). This dedicated lane provisions
-  # bitnami/minio:latest as a service container (bitnami auto-starts the
-  # server; the official minio/minio image requires a `command` override
-  # which GitHub Actions services: blocks do not support), exports the
-  # AURA_S3_TEST_* vars, and runs the file so Tier B actually executes.
+  # (AURA_S3_TEST_ENDPOINT absent). This dedicated lane starts the
+  # official minio/minio image via `docker run` (MinIO's own recommended
+  # GitHub Actions pattern — a services: block cannot pass the required
+  # `server /data` command), exports the AURA_S3_TEST_* vars, and runs
+  # the file so Tier B actually executes.
   #
   # Avoids the silent-skip false-green pattern — same pattern as
   # scheduler-distributed-test (Postgres / Sprint 20b).
@@ -418,20 +418,20 @@ jobs:
     name: Storage S3 (MinIO integration)
     runs-on: ubuntu-latest
 
-    services:
-      minio:
-        image: bitnami/minio:latest
-        ports: ["9000:9000"]
-        env:
-          MINIO_ROOT_USER: test
-          MINIO_ROOT_PASSWORD: test12345
-
     defaults:
       run:
         working-directory: aurabackend
 
     steps:
       - uses: actions/checkout@v6
+
+      - name: Start MinIO
+        run: |
+          docker run -d --name minio \
+            -p 9000:9000 \
+            -e MINIO_ROOT_USER=test \
+            -e MINIO_ROOT_PASSWORD=test12345 \
+            minio/minio server /data
 
       - name: Set up Python 3.12
         uses: actions/setup-python@v6
