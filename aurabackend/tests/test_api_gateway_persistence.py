@@ -653,3 +653,63 @@ async def test_upsert_lineage_edges_no_tables(gateway_db) -> None:
     await persistence.insert_saved_query(_saved_query(1, sql="SELECT 1"))
     await persistence.upsert_lineage_edges("sq_1", "ws1", "SELECT 1")
     assert await persistence.list_lineage_edges("ws1") == []
+
+
+# ── refresh_schema_context tenant-arg regression (S45) ───────────────
+
+
+@pytest.mark.asyncio
+async def test_refresh_schema_context_passes_tenant_str_not_list(
+    gateway_db, tmp_path, monkeypatch,
+) -> None:
+    """S45 regression guard: refresh_schema_context must pass a str tenant to
+    build_schema_context_cached, NOT a List[Path].
+
+    Before the fix, ``_bsc(con, dirs, ...)`` passed the raw ``List[Path]`` as
+    the ``tenant`` positional arg; ``tenant_slug(list)`` stringified it to
+    garbage so ``backend.list(...)`` found nothing → empty/no schema context.
+    After the fix, the tenant is derived from ``Path(upload_dirs[0]).name``
+    (the dir's last component = the tenant slug) and passed as a str.
+    """
+    # Build a tenant upload dir with a CSV so the fingerprint is non-empty.
+    tenant_dir = tmp_path / "acme"
+    tenant_dir.mkdir()
+    (tenant_dir / "sales.csv").write_text("product,revenue\nwidgets,100\ngadgets,200\n")
+
+    # Point the local storage backend at tmp_path.
+    monkeypatch.setenv("AURA_UPLOADS_ROOT", str(tmp_path))
+    # Reset cached backend singleton so the new env-var is picked up.
+    from shared.storage import reset_storage_backend
+    reset_storage_backend()
+
+    # Spy on build_schema_context_cached to capture what tenant arg is received.
+    received_tenants: list = []
+
+    import shared.data_utils as _du
+
+    original_bsc = _du.build_schema_context_cached
+
+    async def spy_bsc(conn, tenant, use_llm=True):
+        received_tenants.append(tenant)
+        return await original_bsc(conn, tenant, use_llm=use_llm)
+
+    monkeypatch.setattr(_du, "build_schema_context_cached", spy_bsc)
+
+    result = await persistence.refresh_schema_context([str(tenant_dir)])
+
+    # The spy must have been called exactly once.
+    assert len(received_tenants) == 1, "build_schema_context_cached was not called"
+
+    tenant_arg = received_tenants[0]
+    # Core assertion: tenant MUST be a str (the slug "acme"), not a list.
+    assert isinstance(tenant_arg, str), (
+        f"Expected tenant to be str 'acme', got {type(tenant_arg).__name__}: {tenant_arg!r}. "
+        "This is the S45 regression: refresh_schema_context passed List[Path] as tenant."
+    )
+    assert tenant_arg == "acme", f"Expected 'acme', got {tenant_arg!r}"
+
+    # Behavioral assertion: returns True when files exist and context is stored.
+    assert result is True, (
+        "refresh_schema_context returned False — schema context was not stored. "
+        "Check that the tenant was resolved correctly and files were found."
+    )
