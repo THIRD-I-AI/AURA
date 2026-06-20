@@ -254,9 +254,8 @@ def _build_transform_sql(table: str, steps: List[ETLTransformStep], con=None) ->
 @router.post("/etl/preview-source")
 async def etl_preview_source(payload: Dict[str, Any], request: Request):
     """Preview the schema + first N rows of a source file."""
-    import duckdb
-
     from shared.data_utils import smart_load_file
+    from shared.duckdb_factory import new_connection
 
     source_file = payload.get("source_file", "")
     limit = payload.get("limit", 20)
@@ -273,7 +272,7 @@ async def etl_preview_source(payload: Dict[str, Any], request: Request):
         raise HTTPException(status_code=404, detail=f"Source file '{source_file}' not found in uploads")
 
     try:
-        con = duckdb.connect(":memory:")
+        con = new_connection()
         table_name = re.sub(r"[^A-Za-z0-9_]", "_", Path(source_file).stem)
         file_info = smart_load_file(con, file_path, table_name, use_llm=True)
 
@@ -301,9 +300,8 @@ async def etl_preview_source(payload: Dict[str, Any], request: Request):
 @router.post("/etl/execute")
 async def etl_execute(pipeline: ETLPipelineRequest, request: Request):
     """Execute an ETL pipeline: load source → apply transforms → write destination."""
-    import duckdb
-
     from shared.data_utils import smart_load_file
+    from shared.duckdb_factory import new_connection
 
     logger.info("ETL execute: pipeline='%s' source='%s' transforms=%d preview_only=%s", pipeline.name, pipeline.source_file, len(pipeline.transforms), pipeline.preview_only)
 
@@ -325,7 +323,7 @@ async def etl_execute(pipeline: ETLPipelineRequest, request: Request):
         raise HTTPException(status_code=404, detail="Source file not found")
 
     try:
-        con = duckdb.connect(":memory:")
+        con = new_connection()
         table_name = re.sub(r"[^A-Za-z0-9_]", "_", Path(pipeline.source_file).stem)
         await streaming_manager.publish_progress(TOPIC_ETL, run_id, f"Loading source file '{pipeline.source_file}'", 0.2)
         file_info = smart_load_file(con, str(file_path), table_name, use_llm=True)
@@ -429,9 +427,8 @@ async def etl_download(filename: str):
 @router.post("/etl/natural-language")
 async def etl_from_natural_language(req: ETLNaturalLanguageRequest, request: Request):
     """Use LLM to build transform steps from a natural language instruction."""
-    import duckdb
-
     from shared.data_utils import smart_load_file
+    from shared.duckdb_factory import new_connection
     from shared.llm_provider import get_llm
 
     upload_dir = Path(tenant_upload_dir(request))
@@ -444,7 +441,7 @@ async def etl_from_natural_language(req: ETLNaturalLanguageRequest, request: Req
         raise HTTPException(status_code=404, detail="Source file not found")
 
     try:
-        con = duckdb.connect(":memory:")
+        con = new_connection()
         table_name = re.sub(r"[^A-Za-z0-9_]", "_", Path(req.source_file).stem)
         file_info = smart_load_file(con, str(file_path), table_name, use_llm=True)
         schema_rows = [(c["name"], c["type"]) for c in file_info["columns"]]

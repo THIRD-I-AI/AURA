@@ -45,6 +45,10 @@ COPY . .
 RUN mkdir -p /app/data/uploads /app/data/db && chown -R aura:aura /app/data
 ENV PYTHONPATH=/app
 USER aura
+# Pre-install DuckDB httpfs so air-gapped s3:// reads work with no network.
+# Runs as the `aura` user (after USER directive) so the extension is written
+# to /home/aura/.duckdb/extensions — the same path DuckDB looks up at runtime.
+RUN python -c "import duckdb; duckdb.connect().execute('INSTALL httpfs')"
 EXPOSE 8000 8001 8002 8003 8004 8005 8006 8007
 CMD ["uvicorn", "api_gateway.main:app", "--host", "0.0.0.0", "--port", "8000"]
 
@@ -59,6 +63,8 @@ COPY . .
 RUN mkdir -p /app/data/uploads /app/data/db && chown -R aura:aura /app/data
 ENV PYTHONPATH=/app
 USER aura
+# Pre-install DuckDB httpfs so air-gapped s3:// reads work with no network.
+RUN python -c "import duckdb; duckdb.connect().execute('INSTALL httpfs')"
 EXPOSE 8000 8001 8002 8003 8004 8005 8006 8007
 CMD ["uvicorn", "counterfactual_service.main:app", "--host", "0.0.0.0", "--port", "8000"]
 
@@ -73,5 +79,7 @@ COPY . .
 RUN mkdir -p /app/data/uploads /app/data/db && chown -R aura:aura /app/data
 ENV PYTHONPATH=/app
 USER aura
+# Pre-install DuckDB httpfs so air-gapped s3:// reads work with no network.
+RUN python -c "import duckdb; duckdb.connect().execute('INSTALL httpfs')"
 EXPOSE 8000 8001 8002 8003 8004 8005 8006 8007
 CMD ["uvicorn", "uasr.service:app", "--host", "0.0.0.0", "--port", "8009"]

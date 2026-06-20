@@ -4,6 +4,7 @@ Files Router
 File upload, listing, profiling, deletion, and supported-formats endpoints.
 """
 
+import io
 import os
 import uuid
 from typing import Any, Dict, Optional
@@ -13,6 +14,7 @@ from fastapi import APIRouter, File, Header, HTTPException, Request, UploadFile
 from shared.data_utils import invalidate_schema_cache
 from shared.error_handler import sanitize_error
 from shared.logging_config import get_logger
+from shared.storage import get_storage_backend
 from shared.streaming_manager import TOPIC_UPLOAD, streaming_manager
 
 from .workspaces import _request_tenant, tenant_dir_name, tenant_upload_dir
@@ -60,19 +62,31 @@ def get_supported_formats() -> Dict[str, Any]:
     }
 
 
+def _safe_upload_name(filename: Optional[str]) -> Optional[str]:
+    """Sanitise a client-supplied filename to a bare name (no directory components).
+
+    Strips to the basename after normalising back-slashes so that a name like
+    ``"../keys/signing_ed25519.pem"`` becomes ``"signing_ed25519.pem"`` rather
+    than being silently accepted with a traversal component.  Returns ``None``
+    for degenerate names (empty, ``"."``, ``".."``, or containing NUL) — the
+    storage backend's ``safe_object_name`` guard handles the containment axis.
+    """
+    safe_name = os.path.basename((filename or "").replace("\\", "/")).strip()
+    if not safe_name or safe_name in (".", "..") or "\x00" in safe_name:
+        return None
+    return safe_name
+
+
 def _safe_upload_path(upload_dir: str, filename: Optional[str]) -> Optional[str]:
     """Resolve a client-supplied filename to a path INSIDE ``upload_dir``.
 
-    The client controls the filename, so a value like
-    ``"../keys/signing_ed25519.pem"`` must not escape the upload dir and
-    overwrite arbitrary files. We strip to the basename and then assert the
-    resolved path stays contained (belt-and-suspenders). Returns the safe
-    absolute-ish path, or ``None`` for a degenerate name ("", ".", "..").
+    Kept for backward compatibility with existing tests and callers.
+    New code should use ``_safe_upload_name`` and let the storage backend
+    handle containment.  Returns the safe absolute path, or ``None`` for a
+    degenerate name.
     """
-    safe_name = os.path.basename((filename or "").replace("\\", "/")).strip()
-    # Reject degenerate names and a NUL byte (which would otherwise pass the
-    # containment check but blow up at open() with a messy 500 instead of 400).
-    if not safe_name or safe_name in (".", "..") or "\x00" in safe_name:
+    safe_name = _safe_upload_name(filename)
+    if safe_name is None:
         return None
     file_path = os.path.join(upload_dir, safe_name)
     if os.path.commonpath((os.path.abspath(file_path), os.path.abspath(upload_dir))) != os.path.abspath(upload_dir):
@@ -107,13 +121,14 @@ async def upload_universal(
     logger.info("Receiving file: %s (upload_id=%s)", target_file.filename, upload_id)
 
     # Path-traversal guard — the client controls the filename (see
-    # _safe_upload_path). Without this a name like "../keys/signing_ed25519.pem"
-    # could escape the upload dir and overwrite arbitrary files.
-    upload_dir = tenant_upload_dir(request)  # per-tenant; creates the dir
-    file_path = _safe_upload_path(upload_dir, target_file.filename)
-    if file_path is None:
+    # _safe_upload_name). Strip to the basename so a name like
+    # "../keys/signing_ed25519.pem" becomes "signing_ed25519.pem"; truly
+    # degenerate names ("", ".", "..") are rejected with 400.
+    safe_name = _safe_upload_name(target_file.filename)
+    if safe_name is None:
         raise HTTPException(status_code=400, detail="Invalid filename")
-    safe_name = os.path.basename(file_path)
+
+    tenant = _request_tenant(request)
 
     try:
         await streaming_manager.publish_progress(
@@ -122,31 +137,34 @@ async def upload_universal(
             extra={"stage": "receiving", "filename": target_file.filename},
         )
 
+        buf = io.BytesIO()
         bytes_written = 0
-        with open(file_path, "wb") as buffer:
-            while True:
-                chunk = await target_file.read(1024 * 256)  # 256 KB
-                if not chunk:
-                    break
-                buffer.write(chunk)
-                bytes_written += len(chunk)
-                total = getattr(target_file, "size", None) or 0
-                if total > 0:
-                    pct = min(0.85, 0.10 + 0.75 * (bytes_written / total))
-                    await streaming_manager.publish_progress(
-                        TOPIC_UPLOAD, upload_id,
-                        f"Streaming {bytes_written // 1024} KB",
-                        pct,
-                        extra={"stage": "streaming", "bytes": bytes_written, "total": total},
-                    )
+        while True:
+            chunk = await target_file.read(1024 * 256)  # 256 KB
+            if not chunk:
+                break
+            buf.write(chunk)
+            bytes_written += len(chunk)
+            total = getattr(target_file, "size", None) or 0
+            if total > 0:
+                pct = min(0.85, 0.10 + 0.75 * (bytes_written / total))
+                await streaming_manager.publish_progress(
+                    TOPIC_UPLOAD, upload_id,
+                    f"Streaming {bytes_written // 1024} KB",
+                    pct,
+                    extra={"stage": "streaming", "bytes": bytes_written, "total": total},
+                )
+
+        data = buf.getvalue()
+        obj_info = get_storage_backend().write(tenant, safe_name, data)
 
         await streaming_manager.publish_progress(
             TOPIC_UPLOAD, upload_id,
-            "Saved to disk", 0.90,
-            extra={"stage": "saved", "path": file_path, "bytes": bytes_written},
+            "Saved to storage", 0.90,
+            extra={"stage": "saved", "uri": obj_info.duckdb_uri, "bytes": bytes_written},
         )
 
-        logger.info("File saved to %s (%d bytes)", file_path, bytes_written)
+        logger.info("File stored as %s (%d bytes)", obj_info.duckdb_uri, bytes_written)
 
         result = {
             "upload_id": upload_id,
@@ -163,10 +181,15 @@ async def upload_universal(
         # answer with exact (source, table, column, dtype) rows instead
         # of LIKE-grepping a free-text body. Backgrounded and best-effort:
         # never delays the upload response, never fails it.
+        # Pass the duckdb_uri (local path or s3://) so the indexer can
+        # read the file directly without depending on local disk presence.
         try:
             from shared.schema_indexer import index_uploaded_file
             from shared.tasks import fire_and_forget
-            fire_and_forget(index_uploaded_file(file_path), name=f"schema-index-{upload_id}")
+            fire_and_forget(
+                index_uploaded_file(obj_info.duckdb_uri),
+                name=f"schema-index-{upload_id}",
+            )
         except Exception as _idx_exc:
             logger.warning("schema_indexer dispatch failed (non-fatal): %s", _idx_exc)
 
@@ -179,7 +202,10 @@ async def upload_universal(
         try:
             from api_gateway.persistence import index_file_metadata
             from shared.tasks import fire_and_forget
-            fire_and_forget(index_file_metadata(file_path), name=f"file-meta-{upload_id}")
+            fire_and_forget(
+                index_file_metadata(obj_info.duckdb_uri),
+                name=f"file-meta-{upload_id}",
+            )
         except Exception as _meta_exc:
             logger.warning(
                 "file_metadata cache dispatch failed (non-fatal): %s", _meta_exc,
@@ -189,10 +215,16 @@ async def upload_universal(
         # with full LLM enrichment so future query executions read the
         # cached context instead of running LLM inference inline. Same
         # best-effort, non-blocking pattern as the file-metadata hook above.
+        # Pass the tenant's duckdb_uri directory (parent) so the refresh
+        # scans the same logical namespace as before.
         try:
             from api_gateway.persistence import refresh_schema_context
             from shared.tasks import fire_and_forget
-            fire_and_forget(refresh_schema_context([upload_dir]), name=f"schema-ctx-{upload_id}")
+            upload_dir = tenant_upload_dir(request)
+            fire_and_forget(
+                refresh_schema_context([upload_dir]),
+                name=f"schema-ctx-{upload_id}",
+            )
         except Exception as _ctx_exc:
             logger.warning(
                 "schema_context rebuild dispatch failed (non-fatal): %s", _ctx_exc,

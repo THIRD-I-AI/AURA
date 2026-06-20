@@ -719,6 +719,9 @@ async def index_file_metadata(file_path: str) -> Optional[Dict[str, Any]]:
     from pathlib import Path as _Path
 
     p = _Path(file_path)
+    # TODO(s3-mode): file-metadata indexing is filesystem-based; an
+    # s3:// duckdb_uri will not exist locally so stats won't populate
+    # under AURA_STORAGE_BACKEND=s3. Tracked as an S45 follow-up.
     if not p.exists() or not p.is_file():
         # File deleted between request and indexing — prune the
         # cached row if one exists.
@@ -976,20 +979,19 @@ async def refresh_schema_context(upload_dirs: List[str]) -> bool:
 
     def _build() -> Dict[str, Any]:
         try:
-            import duckdb as _duckdb
-
             from shared.data_utils import build_schema_context_cached as _bsc
+            from shared.duckdb_factory import new_connection
         except ImportError as exc:
             logger.warning("schema_context refresh skipped — missing dep: %s", exc)
             return {}
 
-        con = _duckdb.connect(":memory:")
+        tenant = _Path(upload_dirs[0]).name if upload_dirs else None
+        con = new_connection()
         try:
             import asyncio as _aio
             loop = _aio.new_event_loop()
             try:
-                dirs = [_Path(d) for d in upload_dirs]
-                return loop.run_until_complete(_bsc(con, dirs, use_llm=True))
+                return loop.run_until_complete(_bsc(con, tenant, use_llm=True))
             finally:
                 loop.close()
         except Exception as exc:

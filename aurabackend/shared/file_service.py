@@ -266,32 +266,42 @@ class FileService:
         pass
 
     def list_files(self, subdir: str = "") -> List[Dict[str, Any]]:
-        """List uploaded files within an optional per-tenant subdir."""
-        files = []
-        base = self.uploads_path / subdir if subdir else self.uploads_path
-        if not base.exists():
-            return files
-        for file_path in base.glob("*"):
-            if file_path.is_file():
-                stat = file_path.stat()
-                files.append({
-                    'filename': file_path.name,
-                    'size': stat.st_size,
-                    'modified': datetime.fromtimestamp(stat.st_mtime).isoformat(),
-                })
-        return files
+        """List uploaded files within an optional per-tenant subdir.
+
+        Delegates to the storage backend so the listing is correct in
+        both local and S3 modes.  ``subdir`` is passed directly as the
+        tenant argument — ``tenant_slug`` inside the backend is
+        idempotent, so an already-slugged value is safe.
+        """
+        from shared.storage import get_storage_backend
+        tenant = subdir or "default"
+        return [
+            {"filename": o.name, "size": o.size, "modified": None}
+            for o in get_storage_backend().list(tenant)
+        ]
 
     def delete_file(self, file_id: str, subdir: str = "") -> bool:
-        """Delete file (and its processed json) within an optional subdir."""
+        """Delete file (and its processed json) within an optional subdir.
+
+        Iterates the storage backend listing for the tenant and deletes any
+        object whose stem or full name matches ``file_id``.  Processed-data
+        artefacts on local disk are still cleaned up as before (they are a
+        local cache, not stored in the backend).
+        """
+        from shared.storage import get_storage_backend
+        tenant = subdir or "default"
+        backend = get_storage_backend()
+        deleted = False
+        for o in backend.list(tenant):
+            if o.name == file_id or os.path.splitext(o.name)[0] == file_id:
+                deleted = backend.delete(tenant, o.name) or deleted
+        # Clean up local processed-data artefacts (best-effort, harmless if missing).
         try:
-            base = self.uploads_path / subdir if subdir else self.uploads_path
-            for file_path in base.glob(f"{file_id}.*"):
-                file_path.unlink()
             for file_path in self.processed_path.glob(f"{file_id}_processed.*"):
                 file_path.unlink()
-            return True
         except Exception:
-            return False
+            pass
+        return deleted
 
     def _profile_dataframe(self, df: pd.DataFrame) -> Dict[str, Any]:
         """Create lightweight column-level profile for a dataframe."""

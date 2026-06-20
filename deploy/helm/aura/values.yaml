@@ -36,6 +36,24 @@ env:
   # collapses to the shared `default` bucket. Pinned on to match the prod
   # compose (docker-compose.prod.yml) posture.
   AURA_JWT_ENABLED: "true"
+  # ── Object storage (S45) — recommended for multi-replica deployments ────
+  # Default is local disk. Set AURA_STORAGE_BACKEND=s3 to make the gateway
+  # stateless so all replicas share one durable store (S3, R2, or MinIO).
+  # When s3 is set, disable the uploads PVC (uploads.enabled: false) — the
+  # PVC is unnecessary and its ReadWriteOnce binding can block multi-node pods.
+  #
+  # Non-secret config (set here or in your values overlay):
+  # AURA_STORAGE_BACKEND: s3
+  # AURA_S3_BUCKET: aura-uploads
+  # AURA_S3_ENDPOINT_URL: ""          # blank for AWS; set for R2/MinIO/on-prem
+  # AURA_S3_REGION: us-east-1
+  # AURA_S3_URL_STYLE: path           # path for MinIO/most on-prem; vhost for AWS
+  # AURA_S3_USE_SSL: "true"           # set "false" for an http:// MinIO
+  #
+  # Secret config — add these to the `aura-secrets` Secret (envSecretName),
+  # NOT here. Never commit credentials into values.yaml.
+  #   AURA_S3_ACCESS_KEY_ID     (or AWS_ACCESS_KEY_ID)
+  #   AURA_S3_SECRET_ACCESS_KEY (or AWS_SECRET_ACCESS_KEY)
 
 # Secret values are read from a Kubernetes Secret you create out-of-band
 # (e.g. via sops, sealed-secrets, or an external-secrets operator). The

@@ -38,6 +38,19 @@ x-backend-env: &backend-env
   AURA_PII_TOKEN_KEY: ${AURA_PII_TOKEN_KEY}
   GEMINI_API_KEY: ${GEMINI_API_KEY:-}
   GROQ_API_KEY: ${GROQ_API_KEY:-}
+  # ── Object storage (S45) — set AURA_STORAGE_BACKEND=s3 + the vars below
+  # to make the gateway stateless and scale across multiple nodes. The env
+  # values flow in via env_file: .env; listing them here documents intent.
+  # For a MinIO overlay, add a `minio` service to a separate compose file:
+  #   minio: { image: minio/minio, command: server /data, ... }
+  AURA_STORAGE_BACKEND: ${AURA_STORAGE_BACKEND:-local}
+  AURA_S3_BUCKET: ${AURA_S3_BUCKET:-}
+  AURA_S3_ENDPOINT_URL: ${AURA_S3_ENDPOINT_URL:-}
+  AURA_S3_REGION: ${AURA_S3_REGION:-us-east-1}
+  AURA_S3_ACCESS_KEY_ID: ${AURA_S3_ACCESS_KEY_ID:-}
+  AURA_S3_SECRET_ACCESS_KEY: ${AURA_S3_SECRET_ACCESS_KEY:-}
+  AURA_S3_URL_STYLE: ${AURA_S3_URL_STYLE:-path}
+  AURA_S3_USE_SSL: ${AURA_S3_USE_SSL:-true}
 
 services:
   # ── Postgres (durable named volume) ──────────────────────────────────

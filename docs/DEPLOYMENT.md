@@ -59,7 +59,7 @@ both in `values.env`. If you write your own overlay, do not drop them.
 | State of record | Backing | Notes |
 |-----------------|---------|-------|
 | Users, datasets metadata, gateway state, scheduler, UASR | **Postgres** | `DATABASE_URL` / `METADATA_DATABASE_URL` / `SCHEDULER_DATABASE_URL` (`postgresql+asyncpg://…`). S43 verified zero SQLite-isms. |
-| Uploaded CSVs | **Durable volume** at `AURA_UPLOADS_ROOT` (`/data/uploads`) | Per-tenant subdirs `data/uploads/<tenant>/` (S42). |
+| Uploaded CSVs | **Durable volume** at `AURA_UPLOADS_ROOT` (`/data/uploads`) | Per-tenant subdirs `data/uploads/<tenant>/` (S42). Or use object storage (S45) for true multi-node scale — see [Object storage](#object-storage-multi-node-scale). |
 | Audit certificates | Postgres + the **stable** signing key | Survives restarts → certs keep verifying. |
 | Query engine (DuckDB) | **In-memory by design** | Materializes the durable CSVs on the fly; not a store of record, needs no durability. |
 
@@ -163,7 +163,7 @@ autoscaling:
 > `ReadWriteOnce`, so with the default 2 gateway replicas both pods must land on
 > one node. To scale the gateway across nodes, set `uploads.accessModes:
 > [ReadWriteMany]` with an RWX storage class, run `backendServices.api_gateway.replicas: 1`,
-> or move uploads to object storage (the tracked enterprise-scale item).
+> or use object storage (S45 — see [Object storage](#object-storage-multi-node-scale) below).
 
 The chart's default `values.env` already pins `ENVIRONMENT=production`,
 `AURA_AUTH_MODE=password`, and `AURA_JWT_ENABLED=true`, so the auth/tenant gates
@@ -307,6 +307,46 @@ ingress:
 
 Use an on-prem/internal Postgres via `DATABASE_URL` in the secret, or the
 chart's PVC-backed embedded store if no Postgres is available on site.
+
+---
+
+## Object storage (multi-node scale)
+
+The default upload path writes CSVs to a local volume (`ReadWriteOnce`), which
+limits the gateway to one node when using multiple replicas. To make the gateway
+fully stateless and scale across nodes, switch to an S3-compatible store (S45):
+
+**Compose** — in `.env`:
+
+```dotenv
+AURA_STORAGE_BACKEND=s3
+AURA_S3_BUCKET=aura-uploads
+AURA_S3_ENDPOINT_URL=          # blank for AWS; set for R2/MinIO/on-prem
+AURA_S3_REGION=us-east-1
+AURA_S3_ACCESS_KEY_ID=...
+AURA_S3_SECRET_ACCESS_KEY=...
+AURA_S3_URL_STYLE=path         # path for MinIO; vhost for AWS S3
+AURA_S3_USE_SSL=true
+```
+
+**Helm** — `values.s3.yaml`:
+
+```yaml
+env:
+  AURA_STORAGE_BACKEND: s3
+  AURA_S3_BUCKET: aura-uploads
+  AURA_S3_ENDPOINT_URL: ""      # blank for AWS
+  AURA_S3_REGION: us-east-1
+  AURA_S3_URL_STYLE: path
+  AURA_S3_USE_SSL: "true"
+uploads:
+  enabled: false                # no PVC needed — object storage is the durable store
+```
+
+Add `AURA_S3_ACCESS_KEY_ID` / `AURA_S3_SECRET_ACCESS_KEY` to `aura-secrets` (not
+values.yaml). The AURA image bundles the DuckDB `httpfs` extension at build time, so
+`LOAD httpfs` works with no outbound network call — including air-gapped environments
+with an in-cluster or on-host MinIO (`AURA_S3_ENDPOINT_URL=http://minio:9000`).
 
 ---
 

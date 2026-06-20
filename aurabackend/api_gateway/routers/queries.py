@@ -20,7 +20,12 @@ import httpx
 from fastapi import APIRouter, HTTPException, Request, status
 from pydantic import BaseModel, Field
 
-from api_gateway.routers.workspaces import DEFAULT_WORKSPACE_ID, current_workspace_id, tenant_upload_dir
+from api_gateway.routers.workspaces import (
+    DEFAULT_WORKSPACE_ID,
+    _request_tenant,
+    current_workspace_id,
+    tenant_upload_dir,
+)
 from connectors import BigQueryConnector, ConnectorConfig, MySQLConnector, PostgreSQLConnector, SourceType
 from insights import InsightsEngine
 from safety import SQLSafetyValidator
@@ -297,19 +302,21 @@ async def execute_for_chat(req: _ChatExecuteRequest, request: Request):
     try:
         import pathlib
 
-        import duckdb
-
         from shared.data_utils import build_schema_context_cached
+        from shared.duckdb_factory import new_connection
 
+        # upload_dirs kept for compute_schema_fingerprint / refresh_schema_context
+        # (dir-path based, graceful no-op in s3 mode when dir is empty).
         upload_dirs = [pathlib.Path(tenant_upload_dir(request))]
+        tenant = _request_tenant(request)
 
-        con = duckdb.connect(":memory:")
+        con = new_connection()
         # Sprint P-2b: load files into DuckDB without LLM inference so
         # we never block a query on a potentially slow LLM call. The
         # enriched context (with use_llm=True) is built in a background
         # task after upload and persisted in gateway_schema_context; if
         # no cached context exists yet we kick off a rebuild here.
-        await build_schema_context_cached(con, upload_dirs, use_llm=False)
+        await build_schema_context_cached(con, tenant, use_llm=False)
         from api_gateway import persistence as _gw_persistence
         _fp = _gw_persistence.compute_schema_fingerprint(
             [str(d) for d in upload_dirs]
@@ -737,18 +744,13 @@ async def _execute_saved_query_sql(sql: str) -> Dict[str, Any]:
 
     Kept minimal — no LLM analysis, no chart spec. Returns summary fields.
     """
-    import pathlib
-
-    import duckdb
-
     from shared.data_utils import build_schema_context_cached
+    from shared.duckdb_factory import new_connection
 
-    from .workspaces import default_upload_dir
-    upload_dirs = [pathlib.Path(default_upload_dir())]
-
-    con = duckdb.connect(":memory:")
+    con = new_connection()
     try:
-        await build_schema_context_cached(con, upload_dirs, use_llm=False)
+        # tenant=None → backend slugs to "default", matching default_upload_dir()
+        await build_schema_context_cached(con, None, use_llm=False)
 
         def _run() -> tuple[list[str], list[tuple]]:
             cur = con.execute(sql)

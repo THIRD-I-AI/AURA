@@ -12,7 +12,6 @@ import re
 import time
 from typing import Any, Dict, List, Optional
 
-import duckdb
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
@@ -20,10 +19,11 @@ from agents.base import AgentContext
 from agents.langgraph_orchestrator import run_orchestrator
 from agents.specialists.intent_agent import IntentAgent
 from shared.data_utils import build_schema_context_cached
+from shared.duckdb_factory import new_connection
 from shared.logging_config import get_logger
 from shared.observability import CHAT_REQUESTS
 
-from .workspaces import tenant_upload_dir
+from .workspaces import _request_tenant, tenant_upload_dir
 
 logger = get_logger("aura.api_gateway.chat")
 
@@ -158,10 +158,9 @@ async def chat_endpoint(request: ChatRequest, http_request: Request) -> ChatResp
         raise HTTPException(status_code=400, detail="Message is required")
 
     # ── Step 1: Smart-load all tables with header inference ─────────
-    upload_dirs = [pathlib.Path(tenant_upload_dir(http_request))]
-
-    con = duckdb.connect(":memory:")
-    schema_result = await build_schema_context_cached(con, upload_dirs, use_llm=True)
+    tenant = _request_tenant(http_request)
+    con = new_connection()
+    schema_result = await build_schema_context_cached(con, tenant, use_llm=True)
     all_tables = schema_result["tables"]
 
     # ── Focus the schema context on a single table if the user clearly

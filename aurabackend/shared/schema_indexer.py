@@ -27,6 +27,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from metadata_store.db import get_session_factory
 from metadata_store.models import SchemaColumn
+from shared.duckdb_factory import new_connection
 
 logger = logging.getLogger("aura.shared.schema_indexer")
 
@@ -71,8 +72,6 @@ def _introspect_via_duckdb(file_path: str) -> List[Dict[str, Any]]:
 
     Runs on a worker thread (sync DuckDB API). Never holds the loop.
     """
-    import duckdb
-
     suffix = Path(file_path).suffix.lower()
     table_name = Path(file_path).stem
     safe_path = file_path.replace("'", "''")  # DuckDB single-quoted path
@@ -89,7 +88,7 @@ def _introspect_via_duckdb(file_path: str) -> List[Dict[str, Any]]:
         # here is preferable to indexing wrong / partial schemas.
         return []
 
-    con = duckdb.connect(":memory:")
+    con = new_connection()
     try:
         con.execute(f'CREATE VIEW "{table_name}" AS SELECT * FROM {loader}')
 
