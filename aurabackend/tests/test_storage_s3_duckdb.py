@@ -49,6 +49,7 @@ def test_duckdb_reads_csv_from_s3(monkeypatch):
     """End-to-end: write a CSV to MinIO via S3Backend, read it back through DuckDB httpfs."""
     _env(monkeypatch)
     import boto3
+
     from shared.storage import get_storage_backend
 
     b = get_storage_backend()
