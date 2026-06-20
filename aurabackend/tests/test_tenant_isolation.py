@@ -7,8 +7,12 @@ from shared.file_service import FileService
 
 
 def test_list_files_is_scoped_to_subdir(tmp_path, monkeypatch):
+    # S45: list_files now reads through the storage backend, which resolves
+    # its root from AURA_UPLOADS_ROOT (not the FileService.uploads_path attr).
+    monkeypatch.setenv("AURA_UPLOADS_ROOT", str(tmp_path))
+    from shared.storage import reset_storage_backend
+    reset_storage_backend()
     fs = FileService()
-    monkeypatch.setattr(fs, "uploads_path", tmp_path)
     (tmp_path / "orgA").mkdir()
     (tmp_path / "orgB").mkdir()
     (tmp_path / "orgA" / "a.csv").write_text("x")
@@ -26,17 +30,22 @@ import duckdb  # noqa: E402
 from shared.data_utils import build_schema_context_cached  # noqa: E402
 
 
-def test_schema_context_is_tenant_scoped(tmp_path):
+def test_schema_context_is_tenant_scoped(tmp_path, monkeypatch):
+    # S45: the reader takes a tenant (not a dir list) and enumerates datasets
+    # via the storage backend, rooted at AURA_UPLOADS_ROOT.
+    monkeypatch.setenv("AURA_UPLOADS_ROOT", str(tmp_path))
+    from shared.storage import reset_storage_backend
+    reset_storage_backend()
     (tmp_path / "orgA").mkdir()
     (tmp_path / "orgB").mkdir()
     (tmp_path / "orgA" / "sales.csv").write_text("id,amt\n1,10\n")
     (tmp_path / "orgB" / "secret.csv").write_text("id,ssn\n1,999\n")
 
-    async def run(d):
+    async def run(tenant):
         con = duckdb.connect(":memory:")
-        return await build_schema_context_cached(con, [pathlib.Path(d)], use_llm=False)
+        return await build_schema_context_cached(con, tenant, use_llm=False)
 
-    a = asyncio.run(run(tmp_path / "orgA"))
+    a = asyncio.run(run("orgA"))
     assert "sales" in a["tables"]
     assert "secret" not in a["tables"]
 
