@@ -7,6 +7,12 @@ Shared fixtures and path setup for all test modules.
 import os
 import sys
 
+# Force matplotlib's headless backend before any test imports DoWhy/matplotlib.
+# DoWhy's refuters call plt.show(), which opens a blocking GUI window on a dev
+# machine with a display and hangs the suite (CI is headless so it never hit
+# this). Must run at conftest import, before test modules are collected.
+os.environ.setdefault("MPLBACKEND", "Agg")
+
 import pytest
 
 # Add aurabackend to sys.path so tests can import modules directly
