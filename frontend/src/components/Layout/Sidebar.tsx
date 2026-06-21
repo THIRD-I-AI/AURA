@@ -133,6 +133,12 @@ const Icons = {
 
 const NAV_ICON_MAP: Record<string, React.ReactNode> = {
   dashboard: Icons.dashboard,
+  terminal: (
+    <svg width="var(--icon-lg)" height="var(--icon-lg)" viewBox="0 0 18 18" fill="none">
+      <rect x="1.5" y="2.5" width="15" height="13" rx="2" stroke="currentColor" strokeWidth="1.5"/>
+      <path d="M4.5 7l2.4 2-2.4 2M9 11h4.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+    </svg>
+  ),
   chat:      Icons.chat,
   files:     Icons.files,
   queries:   Icons.queries,

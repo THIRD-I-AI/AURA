@@ -30,10 +30,12 @@ export const DEFAULT_LAYOUTS: Record<
   (api: Pick<DockviewApi, 'addPanel'>) => void
 > = {
   analyst: (api) => {
-    api.addPanel({ id: 'query', component: 'query', title: 'Query' });
-    api.addPanel({ id: 'datasets', component: 'datasets', title: 'Datasets', position: { referencePanel: 'query', direction: 'right' } });
-    api.addPanel({ id: 'findings', component: 'findings', title: 'Findings', position: { referencePanel: 'query', direction: 'below' } });
-    api.addPanel({ id: 'livefeed', component: 'livefeed', title: 'Live Feed', position: { referencePanel: 'datasets', direction: 'below' } });
+    // Constellation leads — the interactive knowledge-graph is the centerpiece.
+    api.addPanel({ id: 'constellation', component: 'constellation', title: 'Constellation' });
+    api.addPanel({ id: 'datasets', component: 'datasets', title: 'Datasets', position: { referencePanel: 'constellation', direction: 'right' } });
+    api.addPanel({ id: 'query', component: 'query', title: 'Query', position: { referencePanel: 'constellation', direction: 'below' } });
+    api.addPanel({ id: 'findings', component: 'findings', title: 'Findings', position: { referencePanel: 'datasets', direction: 'below' } });
+    api.addPanel({ id: 'livefeed', component: 'livefeed', title: 'Live Feed', position: { referencePanel: 'findings', direction: 'below' } });
   },
   auditor: (api) => {
     api.addPanel({ id: 'findings', component: 'findings', title: 'Findings' });

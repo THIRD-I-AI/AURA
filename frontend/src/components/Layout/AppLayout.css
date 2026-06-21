@@ -160,6 +160,37 @@
   box-shadow: var(--accent-glow);
 }
 
+/* Terminal cockpit launcher — accent pill, the discoverable entry point */
+.app-header__terminal-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 30px;
+  padding: 0 12px;
+  background: var(--accent-dim);
+  border: 1px solid var(--accent-border);
+  border-radius: var(--radius-md);
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+  transition: all var(--dur-fast) var(--ease-out);
+  white-space: nowrap;
+}
+.app-header__terminal-btn:hover {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #04120a;
+  box-shadow: var(--accent-glow);
+}
+.app-header__terminal-btn:focus-visible { outline: none; box-shadow: var(--accent-glow); }
+/* on narrow widths the label hides, leaving the glyph (RWD-friendly) */
+@media (max-width: 720px) {
+  .app-header__terminal-btn span { display: none; }
+  .app-header__terminal-btn { padding: 0 8px; }
+}
+
 .app-header__notification-badge {
   position: absolute;
   top: 3px; right: 3px;

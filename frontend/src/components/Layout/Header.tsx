@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import './Header.css';
 import './AppLayout.css';
 import WorkspacePicker from '../WorkspacePicker';
@@ -49,6 +50,7 @@ export const Header: React.FC<HeaderProps> = ({
   onSettingsClick,
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
+  const navigate = useNavigate();
 
   return (
     <header className="app-header">
@@ -126,6 +128,19 @@ export const Header: React.FC<HeaderProps> = ({
           {actions && (
             <div className="app-header__actions">{actions}</div>
           )}
+
+          <button
+            className="app-header__terminal-btn"
+            onClick={() => navigate('/app/terminal')}
+            title="Open the Terminal cockpit"
+            aria-label="Open Terminal"
+          >
+            <svg width="14" height="14" viewBox="0 0 18 18" fill="none">
+              <rect x="1.5" y="2.5" width="15" height="13" rx="2" stroke="currentColor" strokeWidth="1.5"/>
+              <path d="M4.5 7l2.4 2-2.4 2M9 11h4.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+            </svg>
+            <span>Terminal</span>
+          </button>
 
           <UserMenu onSettingsClick={onSettingsClick} />
         </div>

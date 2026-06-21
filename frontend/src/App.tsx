@@ -104,7 +104,11 @@ function AppInner() {
   const navigate = useNavigate();
   const currentPage = pathToPage(location.pathname);
   const setCurrentPage = useCallback(
-    (id: PageType) => navigate(pageToPath(id)),
+    (id: PageType) => {
+      // 'terminal' is a sibling route (the full-viewport cockpit), not an in-shell page.
+      if ((id as string) === 'terminal') { navigate('/app/terminal'); return; }
+      navigate(pageToPath(id));
+    },
     [navigate],
   );
   const [healthStatus, setHealthStatus] = useState<HealthStatus | null>(null);
