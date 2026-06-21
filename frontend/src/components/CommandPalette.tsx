@@ -78,6 +78,15 @@ const CommandPalette: React.FC<CommandPaletteProps> = ({ onNavigate }) => {
       group: 'navigate',
       run: () => { onNavigate(p.page); close(); },
     }));
+    const actionCommands: Command[] = [
+      {
+        id: 'open-terminal',
+        label: 'Open Terminal',
+        hint: 'Launch the dockable multi-panel terminal cockpit',
+        group: 'action',
+        run: () => { window.location.assign('/app/terminal'); },
+      },
+    ];
     const savedCommands: Command[] = savedQueries.map((q) => ({
       id: `sq-${q.id}`,
       label: `Open: ${q.name}`,
@@ -93,7 +102,7 @@ const CommandPalette: React.FC<CommandPaletteProps> = ({ onNavigate }) => {
         close();
       },
     }));
-    return [...navCommands, ...savedCommands];
+    return [...navCommands, ...actionCommands, ...savedCommands];
   }, [savedQueries, onNavigate, close]);
 
   const ranked = useMemo(() => {
@@ -128,14 +137,11 @@ const CommandPalette: React.FC<CommandPaletteProps> = ({ onNavigate }) => {
   // Group dividers
   const groups: Array<{ label: string; items: Command[]; indexOffset: number }> = [];
   let offset = 0;
-  for (const g of ['navigate', 'saved'] as const) {
+  for (const g of ['navigate', 'action', 'saved'] as const) {
     const items = ranked.filter((c) => c.group === g);
     if (items.length === 0) continue;
-    groups.push({
-      label: g === 'navigate' ? 'Pages' : 'Saved queries',
-      items,
-      indexOffset: offset,
-    });
+    const label = g === 'navigate' ? 'Pages' : g === 'action' ? 'Actions' : 'Saved queries';
+    groups.push({ label, items, indexOffset: offset });
     offset += items.length;
   }
 

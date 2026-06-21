@@ -1,17 +1,18 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { persistLayout, restoreLayout, DEFAULT_LAYOUTS, LAYOUT_NAMES } from '../layoutStore';
 
-// Ensure localStorage is available in test environment
-if (!global.localStorage) {
+// Ensure localStorage is available in test environment (setup.ts also stubs it,
+// but this guard keeps the file self-contained when run in isolation).
+if (typeof globalThis.localStorage === 'undefined') {
   const store: Record<string, string> = {};
-  global.localStorage = {
+  globalThis.localStorage = {
     getItem: (key: string) => store[key] ?? null,
     setItem: (key: string, value: string) => { store[key] = value; },
     removeItem: (key: string) => { delete store[key]; },
     clear: () => { Object.keys(store).forEach(k => delete store[k]); },
     length: 0,
     key: () => null,
-  } as any;
+  } as Storage;
 }
 
 beforeEach(() => localStorage.clear());
