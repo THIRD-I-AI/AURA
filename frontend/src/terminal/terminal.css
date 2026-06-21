@@ -1,1 +1,403 @@
-/* AURA terminal cockpit theme — filled in a later task (S46). */
+/* ============================================================================
+   AURA Terminal Cockpit — high-density operational-intelligence theme (S46)
+   Scoped to .aura-terminal. Maps dockview's --dv-* vars onto AURA tokens and
+   styles the cockpit chrome + the four panels using their existing semantic
+   class names. Aesthetic: deep blue-black, sharp edges, JetBrains Mono data,
+   green = the "live / active" signal, risk-coded rows, faint scanline depth.
+   Nothing here leaks globally — every rule sits under .aura-terminal.
+   ============================================================================ */
+
+.aura-terminal {
+  /* ── local design surface (falls back if a token is renamed) ───────────── */
+  --t-bg:        var(--bg-base, #0a0e14);
+  --t-void:      var(--bg-sunken, #070a0f);
+  --t-surface:   var(--bg-surface, #0f141b);
+  --t-surface-2: var(--bg-surface-2, #131a23);
+  --t-raised:    var(--bg-elevated, #161d27);
+  --t-hover:     var(--bg-hover, #18202b);
+  --t-line:      var(--border-default, #1d2530);
+  --t-line-soft: var(--border-subtle, #161d27);
+  --t-line-hard: var(--border-strong, #2a3543);
+  --t-text:      var(--text-primary, #dbe4ee);
+  --t-dim:       var(--text-secondary, #8b97a8);
+  --t-faint:     var(--text-tertiary, #5a6675);
+  --t-live:      var(--accent, #22c55e);
+  --t-live-hi:   var(--accent-hover, #34d56e);
+  --t-live-glow: var(--accent-glow, rgba(34, 197, 94, 0.35));
+  --t-red:       var(--danger, #ef4444);
+  --t-amber:     #f5a623;
+  --t-blue:      var(--blue, #3b82f6);
+  --t-cyan:      var(--cyan, #22d3ee);
+  --t-mono:      var(--font-mono, 'JetBrains Mono', ui-monospace, Consolas, monospace);
+  --t-sans:      var(--font-sans, 'Inter', system-ui, sans-serif);
+  --t-row:       26px;
+
+  position: fixed;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--t-bg);
+  color: var(--t-text);
+  font-family: var(--t-sans);
+  font-size: 12px;
+  overflow: hidden;
+  /* faint horizontal scanlines for terminal atmosphere — barely there */
+  background-image: repeating-linear-gradient(
+    to bottom,
+    rgba(255, 255, 255, 0.012) 0,
+    rgba(255, 255, 255, 0.012) 1px,
+    transparent 1px,
+    transparent 3px
+  );
+}
+
+/* ── dockview engine remap → AURA tokens, sharp terminal edges ───────────── */
+.aura-terminal .dockview-theme-dark,
+.aura-terminal.dockview-theme-dark {
+  --dv-group-view-background-color: var(--t-surface);
+  --dv-tabs-and-actions-container-background-color: var(--t-void);
+  --dv-activegroup-visiblepanel-tab-background-color: var(--t-surface);
+  --dv-activegroup-visiblepanel-tab-color: var(--t-text);
+  --dv-inactivegroup-visiblepanel-tab-background-color: var(--t-void);
+  --dv-inactivegroup-visiblepanel-tab-color: var(--t-faint);
+  --dv-activegroup-hiddenpanel-tab-background-color: var(--t-void);
+  --dv-inactivegroup-hiddenpanel-tab-background-color: var(--t-void);
+  --dv-separator-border: var(--t-line);
+  --dv-tab-divider-color: var(--t-line-soft);
+  --dv-paneview-active-outline-color: var(--t-live);
+  --dv-active-sash-color: var(--t-live);
+  --dv-sash-color: transparent;
+  --dv-floating-group-border: 1px solid var(--t-line-hard);
+  --dv-floating-box-shadow: 0 18px 48px rgba(0, 0, 0, 0.6);
+  --dv-icon-hover-background-color: var(--t-hover);
+  --dv-border-radius: 0px;
+  --dv-tab-border-radius: 0px;
+  --dv-tabs-and-actions-container-font-size: 11px;
+  --dv-tab-font-size: 11px;
+}
+
+/* dockview fills the area under the top bar */
+.aura-terminal .dv-react-part,
+.aura-terminal .dockview-theme-dark {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+/* active tab carries the green underline — the "you are here" signal */
+.aura-terminal .dv-active-tab,
+.aura-terminal .tab.active-tab {
+  box-shadow: inset 0 -2px 0 var(--t-live);
+  letter-spacing: 0.04em;
+}
+.aura-terminal .tab {
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-family: var(--t-mono);
+}
+
+/* ── cockpit top bar — a thin status rail ────────────────────────────────── */
+.aura-terminal .cockpit-topbar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  height: 34px;
+  padding: 0 12px;
+  background: linear-gradient(to bottom, var(--t-raised), var(--t-void));
+  border-bottom: 1px solid var(--t-line);
+}
+.aura-terminal .cockpit-brand {
+  font-family: var(--t-mono);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--t-text);
+  white-space: nowrap;
+}
+.aura-terminal .cockpit-brand::before {
+  content: '';
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin-right: 8px;
+  border-radius: 50%;
+  background: var(--t-live);
+  box-shadow: 0 0 8px var(--t-live-glow);
+  animation: aura-pulse 2.4s ease-in-out infinite;
+  vertical-align: middle;
+}
+.aura-terminal .cockpit-layouts { display: flex; gap: 4px; }
+.aura-terminal .cockpit-actions { display: flex; gap: 4px; margin-left: auto; }
+
+.aura-terminal .cockpit-layouts button,
+.aura-terminal .cockpit-actions button {
+  height: 22px;
+  padding: 0 10px;
+  background: transparent;
+  border: 1px solid var(--t-line);
+  color: var(--t-dim);
+  font-family: var(--t-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: color 120ms ease, border-color 120ms ease, background 120ms ease;
+}
+.aura-terminal .cockpit-layouts button:hover,
+.aura-terminal .cockpit-actions button:hover {
+  color: var(--t-text);
+  border-color: var(--t-line-hard);
+  background: var(--t-hover);
+}
+.aura-terminal .cockpit-actions button:first-child { /* ⌘K */
+  color: var(--t-live);
+  border-color: color-mix(in srgb, var(--t-live) 35%, transparent);
+}
+
+/* ── generic panel shell ─────────────────────────────────────────────────── */
+.aura-terminal .aura-panel {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  background: var(--t-surface);
+  color: var(--t-text);
+  overflow: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--t-line-hard) transparent;
+}
+.aura-terminal .aura-panel::-webkit-scrollbar { width: 9px; height: 9px; }
+.aura-terminal .aura-panel::-webkit-scrollbar-thumb {
+  background: var(--t-line-hard); border: 2px solid var(--t-surface);
+}
+.aura-terminal .panel-loading {
+  padding: 16px;
+  font-family: var(--t-mono);
+  font-size: 11px;
+  color: var(--t-faint);
+}
+
+/* the cross-filter context chip — small, green, monospace */
+.aura-terminal .panel-context {
+  flex: 0 0 auto;
+  padding: 4px 10px;
+  font-family: var(--t-mono);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--t-live);
+  background: color-mix(in srgb, var(--t-live) 8%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--t-live) 22%, transparent);
+}
+
+/* error states */
+.aura-terminal .panel-error,
+.aura-terminal .panel-error-inline {
+  margin: 10px;
+  padding: 10px 12px;
+  font-family: var(--t-mono);
+  font-size: 11px;
+  color: var(--t-red);
+  background: color-mix(in srgb, var(--t-red) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--t-red) 35%, transparent);
+  border-left-width: 3px;
+}
+.aura-terminal .panel-error strong { display: block; margin-bottom: 4px; letter-spacing: 0.05em; }
+.aura-terminal .panel-error button {
+  margin-top: 8px; padding: 3px 10px;
+  background: transparent; color: var(--t-red);
+  border: 1px solid color-mix(in srgb, var(--t-red) 45%, transparent);
+  font-family: var(--t-mono); font-size: 10px; text-transform: uppercase; cursor: pointer;
+}
+
+/* ── dense data tables (query + datasets) ────────────────────────────────── */
+.aura-terminal .query-table,
+.aura-terminal .datasets-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: var(--t-mono);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+}
+.aura-terminal .query-table th,
+.aura-terminal .datasets-table th {
+  position: sticky; top: 0;
+  text-align: left;
+  padding: 5px 10px;
+  background: var(--t-void);
+  color: var(--t-faint);
+  font-weight: 600;
+  font-size: 10px;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  border-bottom: 1px solid var(--t-line);
+}
+.aura-terminal .query-table td,
+.aura-terminal .datasets-table td {
+  padding: 4px 10px;
+  height: var(--t-row);
+  border-bottom: 1px solid var(--t-line-soft);
+  white-space: nowrap;
+}
+.aura-terminal .query-table tbody tr:hover,
+.aura-terminal .datasets-table tbody tr:hover { background: var(--t-hover); }
+
+/* datasets: row select = the cross-filter source. active row glows green. */
+.aura-terminal .datasets-table tbody tr { cursor: pointer; }
+.aura-terminal .datasets-table tbody tr.is-active {
+  background: color-mix(in srgb, var(--t-live) 12%, transparent);
+  box-shadow: inset 2px 0 0 var(--t-live);
+  color: var(--t-live-hi);
+}
+
+/* ── query bar (the prompt) ──────────────────────────────────────────────── */
+.aura-terminal .query-bar {
+  display: flex; gap: 6px; padding: 8px 10px;
+  border-bottom: 1px solid var(--t-line-soft);
+}
+.aura-terminal .query-bar input {
+  flex: 1;
+  height: 26px; padding: 0 10px;
+  background: var(--t-void);
+  border: 1px solid var(--t-line);
+  color: var(--t-text);
+  font-family: var(--t-mono); font-size: 12px;
+  outline: none;
+}
+.aura-terminal .query-bar input:focus { border-color: var(--t-live); box-shadow: 0 0 0 1px var(--t-live-glow); }
+.aura-terminal .query-bar input::placeholder { color: var(--t-faint); }
+.aura-terminal .query-bar button {
+  height: 26px; padding: 0 14px;
+  background: color-mix(in srgb, var(--t-live) 16%, transparent);
+  border: 1px solid color-mix(in srgb, var(--t-live) 45%, transparent);
+  color: var(--t-live-hi);
+  font-family: var(--t-mono); font-size: 11px; letter-spacing: 0.06em;
+  text-transform: uppercase; cursor: pointer;
+}
+.aura-terminal .query-bar button:hover:not(:disabled) { background: color-mix(in srgb, var(--t-live) 26%, transparent); }
+.aura-terminal .query-bar button:disabled { opacity: 0.5; cursor: default; }
+.aura-terminal .query-sql {
+  margin: 0; padding: 8px 10px;
+  background: var(--t-void);
+  border-bottom: 1px solid var(--t-line-soft);
+  color: var(--t-cyan);
+  font-family: var(--t-mono); font-size: 11.5px; line-height: 1.5;
+  white-space: pre-wrap; word-break: break-word;
+}
+
+/* ── findings (risk-coded rows) ──────────────────────────────────────────── */
+.aura-terminal .findings-bar {
+  display: flex; align-items: center; gap: 10px; padding: 8px 10px;
+  border-bottom: 1px solid var(--t-line-soft);
+}
+.aura-terminal .findings-bar button {
+  height: 24px; padding: 0 12px;
+  background: var(--t-raised); border: 1px solid var(--t-line-hard);
+  color: var(--t-text); font-family: var(--t-mono); font-size: 10.5px;
+  letter-spacing: 0.05em; text-transform: uppercase; cursor: pointer;
+}
+.aura-terminal .findings-bar button:hover:not(:disabled) { border-color: var(--t-live); color: var(--t-live-hi); }
+.aura-terminal .findings-list { list-style: none; margin: 0; padding: 0; }
+.aura-terminal .findings-list .finding {
+  display: grid;
+  grid-template-columns: 84px 64px 1fr;
+  gap: 10px; align-items: baseline;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--t-line-soft);
+  border-left: 3px solid var(--t-faint);
+  font-size: 11.5px;
+}
+.aura-terminal .findings-list .finding:hover { background: var(--t-hover); }
+.aura-terminal .finding-std  { font-family: var(--t-mono); font-size: 10.5px; color: var(--t-dim); letter-spacing: 0.03em; }
+.aura-terminal .finding-risk { font-family: var(--t-mono); font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; }
+.aura-terminal .finding-desc { color: var(--t-text); line-height: 1.4; }
+/* severity left-rail + risk label color */
+.aura-terminal .finding.risk-critical { border-left-color: var(--t-red); }
+.aura-terminal .finding.risk-high     { border-left-color: var(--t-red); }
+.aura-terminal .finding.risk-medium   { border-left-color: var(--t-amber); }
+.aura-terminal .finding.risk-low      { border-left-color: var(--t-live); }
+.aura-terminal .finding.risk-critical .finding-risk,
+.aura-terminal .finding.risk-high     .finding-risk { color: var(--t-red); }
+.aura-terminal .finding.risk-medium   .finding-risk { color: var(--t-amber); }
+.aura-terminal .finding.risk-low      .finding-risk { color: var(--t-live); }
+
+/* ── live monitoring feed ────────────────────────────────────────────────── */
+.aura-terminal .feed-status {
+  flex: 0 0 auto;
+  display: flex; align-items: center; gap: 7px;
+  padding: 6px 10px;
+  font-family: var(--t-mono); font-size: 10px; letter-spacing: 0.08em;
+  text-transform: uppercase;
+  border-bottom: 1px solid var(--t-line-soft);
+}
+.aura-terminal .feed-status.is-on  { color: var(--t-live); }
+.aura-terminal .feed-status.is-off { color: var(--t-faint); }
+.aura-terminal .feed-status.is-on::before {
+  content: ''; width: 7px; height: 7px; border-radius: 50%;
+  background: var(--t-live); box-shadow: 0 0 8px var(--t-live-glow);
+  animation: aura-pulse 1.6s ease-in-out infinite;
+}
+.aura-terminal .feed-list { list-style: none; margin: 0; padding: 0; font-family: var(--t-mono); font-size: 11px; }
+.aura-terminal .feed-item {
+  display: grid; grid-template-columns: auto auto 1fr; gap: 8px;
+  padding: 3px 10px; border-bottom: 1px solid var(--t-line-soft);
+  white-space: nowrap;
+}
+.aura-terminal .feed-item:first-child { animation: aura-feed-in 360ms ease; }
+.aura-terminal .feed-ts      { color: var(--t-faint); }
+.aura-terminal .feed-topic   { color: var(--t-cyan); }
+.aura-terminal .feed-payload { color: var(--t-dim); overflow: hidden; text-overflow: ellipsis; }
+.aura-terminal .feed-item.type-error   .feed-topic { color: var(--t-red); }
+.aura-terminal .feed-item.type-complete .feed-topic { color: var(--t-live); }
+
+/* ── command palette ─────────────────────────────────────────────────────── */
+.aura-terminal .palette-overlay {
+  position: fixed; inset: 0; z-index: 50;
+  display: flex; align-items: flex-start; justify-content: center;
+  padding-top: 14vh;
+  background: rgba(3, 6, 10, 0.62);
+  backdrop-filter: blur(2px);
+  animation: aura-fade 120ms ease;
+}
+.aura-terminal .palette {
+  width: min(560px, 92vw);
+  background: var(--t-raised);
+  border: 1px solid var(--t-line-hard);
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.66);
+}
+.aura-terminal .palette input {
+  width: 100%; height: 42px; padding: 0 14px;
+  background: transparent; border: none; border-bottom: 1px solid var(--t-line);
+  color: var(--t-text); font-family: var(--t-mono); font-size: 14px; outline: none;
+}
+.aura-terminal .palette input::placeholder { color: var(--t-faint); }
+.aura-terminal .palette-list { list-style: none; margin: 0; padding: 4px; max-height: 50vh; overflow: auto; }
+.aura-terminal .palette-list li {
+  display: flex; align-items: center; gap: 10px;
+  padding: 7px 10px; cursor: pointer;
+  font-family: var(--t-mono); font-size: 12px; color: var(--t-text);
+}
+.aura-terminal .palette-list li.is-active { background: color-mix(in srgb, var(--t-live) 14%, transparent); box-shadow: inset 2px 0 0 var(--t-live); }
+.aura-terminal .palette-group {
+  font-size: 9px; letter-spacing: 0.08em; text-transform: uppercase;
+  color: var(--t-faint); border: 1px solid var(--t-line-hard); padding: 1px 5px;
+}
+
+/* ── keyframes ───────────────────────────────────────────────────────────── */
+@keyframes aura-pulse {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.35; }
+}
+@keyframes aura-feed-in {
+  from { background: color-mix(in srgb, var(--t-live) 18%, transparent); }
+  to   { background: transparent; }
+}
+@keyframes aura-fade { from { opacity: 0; } to { opacity: 1; } }
+
+/* respect reduced-motion */
+@media (prefers-reduced-motion: reduce) {
+  .aura-terminal .cockpit-brand::before,
+  .aura-terminal .feed-status.is-on::before { animation: none; }
+  .aura-terminal .feed-item:first-child,
+  .aura-terminal .palette-overlay { animation: none; }
+}
