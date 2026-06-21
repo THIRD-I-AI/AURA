@@ -1,7 +1,9 @@
-import { Suspense, useCallback, useMemo, useRef } from 'react';
+import { Suspense, useCallback, useMemo, useRef, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { DockviewReact, type DockviewReadyEvent, type IDockviewPanelProps, type DockviewApi } from 'dockview-react';
 import 'dockview-react/dist/styles/dockview.css';
 import { CockpitProvider } from './CockpitProvider';
+import { CockpitTopBar } from './CockpitTopBar';
 import { PanelErrorBoundary } from './PanelErrorBoundary';
 import { PANEL_REGISTRY, type PanelId } from './panels/registry';
 import { persistLayout, restoreLayout, DEFAULT_LAYOUTS } from './layoutStore';
@@ -29,6 +31,8 @@ function buildComponents(): Record<string, React.FC<IDockviewPanelProps>> {
 export function TerminalWorkspace() {
   const apiRef = useRef<DockviewApi | null>(null);
   const components = useMemo(buildComponents, []);
+  const navigate = useNavigate();
+  const [paletteOpen, setPaletteOpen] = useState(false);
 
   const onReady = useCallback((event: DockviewReadyEvent) => {
     apiRef.current = event.api;
@@ -39,7 +43,17 @@ export function TerminalWorkspace() {
 
   return (
     <CockpitProvider>
-      <div className="aura-terminal" data-testid="terminal-workspace">
+      <div className="aura-terminal" data-testid="terminal-workspace" data-palette-open={paletteOpen}>
+        <CockpitTopBar
+          onApplyLayout={(n) => {
+            if (apiRef.current) {
+              apiRef.current.clear();
+              DEFAULT_LAYOUTS[n](apiRef.current);
+            }
+          }}
+          onOpenPalette={() => setPaletteOpen(true)}
+          onBack={() => navigate('/app')}
+        />
         <DockviewReact
           className="dockview-theme-dark"
           components={components}
