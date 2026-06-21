@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { type PageType } from './Layout/AppLayout';
 import { savedQueryService, type SavedQuery } from '../services/api';
+import { fuzzyScore } from '../utils/fuzzyScore';
 
 interface Command {
   id: string;
@@ -30,24 +31,6 @@ const PAGE_COMMANDS: Array<{ id: string; label: string; page: PageType; hint: st
   { id: 'go-webhooks',   label: 'Go to Webhooks',      page: 'webhooks',   hint: 'Inbound + outbound HTTP triggers' },
   { id: 'go-settings',   label: 'Open Settings',       page: 'settings',   hint: 'Preferences and configuration' },
 ];
-
-const fuzzyScore = (haystack: string, needle: string): number => {
-  if (!needle) return 1;
-  const h = haystack.toLowerCase();
-  const n = needle.toLowerCase();
-  if (h === n) return 100;
-  if (h.startsWith(n)) return 80;
-  if (h.includes(n)) return 60;
-  let last = -1;
-  let runs = 0;
-  for (const ch of n) {
-    const idx = h.indexOf(ch, last + 1);
-    if (idx === -1) return 0;
-    if (idx === last + 1) runs += 1;
-    last = idx;
-  }
-  return Math.max(1, 30 + runs * 2 - (h.length - n.length) / 4);
-};
 
 const isMac = typeof navigator !== 'undefined' && /Mac|iPad|iPhone/.test(navigator.platform);
 const modKey = isMac ? '⌘' : 'Ctrl';
@@ -95,6 +78,15 @@ const CommandPalette: React.FC<CommandPaletteProps> = ({ onNavigate }) => {
       group: 'navigate',
       run: () => { onNavigate(p.page); close(); },
     }));
+    const actionCommands: Command[] = [
+      {
+        id: 'open-terminal',
+        label: 'Open Terminal',
+        hint: 'Launch the dockable multi-panel terminal cockpit',
+        group: 'action',
+        run: () => { window.location.assign('/app/terminal'); },
+      },
+    ];
     const savedCommands: Command[] = savedQueries.map((q) => ({
       id: `sq-${q.id}`,
       label: `Open: ${q.name}`,
@@ -110,7 +102,7 @@ const CommandPalette: React.FC<CommandPaletteProps> = ({ onNavigate }) => {
         close();
       },
     }));
-    return [...navCommands, ...savedCommands];
+    return [...navCommands, ...actionCommands, ...savedCommands];
   }, [savedQueries, onNavigate, close]);
 
   const ranked = useMemo(() => {
@@ -145,14 +137,11 @@ const CommandPalette: React.FC<CommandPaletteProps> = ({ onNavigate }) => {
   // Group dividers
   const groups: Array<{ label: string; items: Command[]; indexOffset: number }> = [];
   let offset = 0;
-  for (const g of ['navigate', 'saved'] as const) {
+  for (const g of ['navigate', 'action', 'saved'] as const) {
     const items = ranked.filter((c) => c.group === g);
     if (items.length === 0) continue;
-    groups.push({
-      label: g === 'navigate' ? 'Pages' : 'Saved queries',
-      items,
-      indexOffset: offset,
-    });
+    const label = g === 'navigate' ? 'Pages' : g === 'action' ? 'Actions' : 'Saved queries';
+    groups.push({ label, items, indexOffset: offset });
     offset += items.length;
   }
 
