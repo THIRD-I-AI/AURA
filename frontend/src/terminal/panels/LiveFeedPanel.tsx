@@ -17,8 +17,9 @@ export default function LiveFeedPanel(_props: IDockviewPanelProps) {
         {connected ? '● live' : '○ offline'}{error ? ' · error' : ''}
       </div>
       <ul className="feed-list">
-        {events.map((e) => (
-          <li key={e.id} className={`feed-item type-${e.type}`}>
+        {events.map((e, i) => (
+          /* SSE streams without id: lines yield id="" — index keeps keys unique */
+          <li key={`${e.id}-${i}`} className={`feed-item type-${e.type}`}>
             <span className="feed-ts">{e.timestamp}</span>
             <span className="feed-topic">{e.topic}</span>
             <span className="feed-payload">{JSON.stringify(e.payload)}</span>
