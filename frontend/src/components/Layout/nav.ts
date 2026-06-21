@@ -27,6 +27,9 @@ export const NAV_ITEMS: NavItem[] = [
   // Home: the dashboard becomes the auditor's engagements overview. Labeled
   // "Overview" (not "Engagements") so it doesn't collide with the section header.
   { id: 'dashboard',      label: 'Overview',       href: '#', section: 'Engagements' },
+  // The dockable command terminal — a sibling /app/terminal route (handled
+  // specially in App.setCurrentPage), surfaced here for discoverability.
+  { id: 'terminal',       label: 'Terminal',       href: '/app/terminal', section: 'Engagements' },
   { id: 'files',          label: 'Files & Data',   href: '#', section: 'Evidence & Data' },
   { id: 'chat',           label: 'Chat (NL→SQL)',  href: '#', section: 'Evidence & Data' },
   { id: 'queries',        label: 'Query History',  href: '#', section: 'Evidence & Data' },

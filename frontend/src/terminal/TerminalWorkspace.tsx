@@ -11,7 +11,10 @@ import { TerminalCommandPalette } from './TerminalCommandPalette';
 import { buildTerminalCommands } from './commands';
 import './terminal.css';
 
-const LAYOUT_KEY = 'default';
+// Bumped to v2 when the Constellation panel joined the default layout, so the
+// new constellation-led default surfaces once for everyone (old saved layouts
+// predate the panel). Custom layouts re-persist under this key thereafter.
+const LAYOUT_KEY = 'default.v2';
 
 function buildComponents(): Record<string, React.FC<IDockviewPanelProps>> {
   const out: Record<string, React.FC<IDockviewPanelProps>> = {};

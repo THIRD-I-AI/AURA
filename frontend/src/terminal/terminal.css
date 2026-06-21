@@ -405,10 +405,100 @@
 }
 @keyframes aura-fade { from { opacity: 0; } to { opacity: 1; } }
 
+/* ============================================================================
+   Constellation — the interactive knowledge-graph canvas (React Flow)
+   ============================================================================ */
+.aura-terminal .constellation-panel { padding: 0; overflow: hidden; }
+.aura-terminal .constellation-canvas {
+  position: relative; height: 100%; display: flex; flex-direction: column;
+  background:
+    radial-gradient(1200px 600px at 30% 18%, color-mix(in srgb, var(--t-live) 7%, transparent), transparent 60%),
+    var(--t-void);
+}
+.aura-terminal .constellation-empty,
+.aura-terminal .constellation-panel .panel-loading {
+  margin: auto; max-width: 32ch; text-align: center;
+  font-family: var(--t-mono); font-size: 11px; color: var(--t-faint); line-height: 1.6;
+}
+
+/* floating search bar over the canvas */
+.aura-terminal .constellation-search {
+  position: absolute; top: 8px; left: 8px; z-index: 6;
+  display: flex; gap: 6px; align-items: center;
+}
+.aura-terminal .constellation-search input {
+  height: 26px; width: 200px; padding: 0 10px;
+  background: color-mix(in srgb, var(--t-void) 86%, transparent);
+  border: 1px solid var(--t-line); color: var(--t-text);
+  font-family: var(--t-mono); font-size: 11px; outline: none;
+  backdrop-filter: blur(3px);
+}
+.aura-terminal .constellation-search input:focus { border-color: var(--t-live); box-shadow: 0 0 0 1px var(--t-live-glow); }
+.aura-terminal .constellation-search button {
+  height: 26px; padding: 0 8px; background: transparent; border: 1px solid var(--t-line);
+  color: var(--t-dim); font-family: var(--t-mono); font-size: 9.5px; letter-spacing: 0.05em;
+  text-transform: uppercase; cursor: pointer;
+}
+
+/* React Flow surface → AURA tokens */
+.aura-terminal .react-flow { background: transparent; }
+.aura-terminal .react-flow__background { color: var(--t-line); }
+.aura-terminal .react-flow__edge-path {
+  stroke: color-mix(in srgb, var(--t-live) 45%, var(--t-line-hard));
+  stroke-width: 1.4px;
+}
+.aura-terminal .react-flow__edge.is-dimmed { opacity: 0.12; }
+.aura-terminal .react-flow__edge.is-focused .react-flow__edge-path {
+  stroke: var(--t-live); stroke-width: 2px;
+  filter: drop-shadow(0 0 4px var(--t-live-glow));
+}
+.aura-terminal .react-flow__node { transition: opacity 180ms ease; }
+.aura-terminal .react-flow__node.is-dimmed { opacity: 0.18; }
+/* minimap + controls */
+.aura-terminal .react-flow__minimap {
+  background: color-mix(in srgb, var(--t-void) 88%, transparent);
+  border: 1px solid var(--t-line);
+}
+.aura-terminal .react-flow__minimap-mask { fill: color-mix(in srgb, var(--t-bg) 70%, transparent); }
+.aura-terminal .react-flow__controls { box-shadow: none; }
+.aura-terminal .react-flow__controls-button {
+  background: var(--t-raised); border-bottom: 1px solid var(--t-line);
+  color: var(--t-dim); fill: var(--t-dim);
+}
+.aura-terminal .react-flow__controls-button:hover { background: var(--t-hover); color: var(--t-text); fill: var(--t-text); }
+
+/* the glowing on-brand node */
+.aura-terminal .aura-node {
+  display: flex; flex-direction: column; align-items: center; gap: 5px;
+  cursor: pointer; user-select: none;
+}
+.aura-terminal .aura-node__disc {
+  display: grid; place-items: center; border-radius: 50%;
+  background: radial-gradient(circle at 35% 30%, color-mix(in srgb, var(--node-c) 55%, transparent), color-mix(in srgb, var(--node-c) 14%, var(--t-surface)));
+  border: 1.5px solid var(--node-c);
+  box-shadow: 0 0 14px color-mix(in srgb, var(--node-c) 40%, transparent), inset 0 0 10px color-mix(in srgb, var(--node-c) 18%, transparent);
+  transition: transform 140ms ease, box-shadow 140ms ease;
+}
+.aura-terminal .aura-node:hover .aura-node__disc { transform: scale(1.08); box-shadow: 0 0 22px color-mix(in srgb, var(--node-c) 60%, transparent); }
+.aura-terminal .aura-node.is-selected .aura-node__disc { outline: 2px solid var(--node-c); outline-offset: 3px; }
+.aura-terminal .aura-node__glyph { font-size: 13px; color: var(--node-c); line-height: 1; }
+.aura-terminal .aura-node__label {
+  font-family: var(--t-mono); font-size: 9.5px; letter-spacing: 0.02em;
+  color: var(--t-text); background: color-mix(in srgb, var(--t-void) 70%, transparent);
+  padding: 1px 5px; max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.aura-terminal .aura-node__handle { opacity: 0; width: 1px; height: 1px; border: 0; min-width: 0; min-height: 0; }
+/* per-kind accent (drives --node-c used above) */
+.aura-terminal .aura-node--table        { --node-c: var(--t-cyan); }
+.aura-terminal .aura-node--saved_query  { --node-c: var(--t-live); }
+.aura-terminal .aura-node--dashboard    { --node-c: var(--t-blue); }
+
 /* respect reduced-motion */
 @media (prefers-reduced-motion: reduce) {
   .aura-terminal .cockpit-brand::before,
   .aura-terminal .feed-status.is-on::before { animation: none; }
   .aura-terminal .feed-item:first-child,
   .aura-terminal .palette-overlay { animation: none; }
+  .aura-terminal .react-flow__edge.animated .react-flow__edge-path { animation: none; }
+  .aura-terminal .aura-node__disc { transition: none; }
 }
