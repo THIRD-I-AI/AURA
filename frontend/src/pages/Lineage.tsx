@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
   lineageService,
   subscribeWorkspace,
@@ -31,6 +32,7 @@ const Lineage: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [filter, setFilter] = useState<string>('');
+  const navigate = useNavigate();
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -127,6 +129,19 @@ const Lineage: React.FC = () => {
         )}
       </div>
 
+      {/* On phones the columnar SVG is a wide horizontal scroll; point to the
+          Constellation in the Terminal for a native pinch/pan/zoom view. Hidden
+          on desktop (see .lineage-mobile-hint in design-system.css). */}
+      <button
+        type="button"
+        className="lineage-mobile-hint"
+        onClick={() => navigate('/app/terminal')}
+      >
+        <span aria-hidden>✦</span>
+        Explore this graph interactively — open the Constellation in the Terminal
+        <span aria-hidden style={{ marginLeft: 'auto' }}>→</span>
+      </button>
+
       {error && (
         <div role="alert" style={{ padding: 12, background: 'rgba(239,68,68,0.08)', border: '1px solid #f87171', borderRadius: 8, color: '#f87171', fontSize: 13 }}>
           {error}
@@ -143,6 +158,7 @@ const Lineage: React.FC = () => {
             borderRadius: 'var(--radius-md)',
             background: 'var(--bg-surface)',
             overflow: 'auto',
+            WebkitOverflowScrolling: 'touch',
             maxHeight: 'calc(100vh - 220px)',
           }}
         >

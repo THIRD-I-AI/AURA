@@ -1,0 +1,99 @@
+/* ============================================================================
+   AURA Terminal — graceful small-screen state (S48)
+   Below 860px, TerminalWorkspace renders <MobileTerminalStack> instead of the
+   dockview grid (which can't reflow to a phone). These rules sit under
+   .aura-terminal so nothing leaks globally; the dockview theme is untouched.
+   ============================================================================ */
+
+/* On mobile the desktop-only cockpit chrome is meaningless: layout presets need
+   the multi-panel grid, and ⌘K needs a keyboard. Hide them; keep brand + Back.
+   (⌘K stays in the DOM so :first-child still targets it, not the Back button.) */
+.aura-terminal[data-mobile] .cockpit-layouts,
+.aura-terminal[data-mobile] .cockpit-actions [data-testid='open-palette'] {
+  display: none;
+}
+
+.terminal-mobile {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* "this is a desktop tool" banner */
+.terminal-mobile__banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 0;
+  padding: 8px 12px;
+  font-size: 11.5px;
+  line-height: 1.4;
+  color: var(--t-dim, #8b97a8);
+  background: linear-gradient(90deg, rgba(34, 197, 94, 0.1), transparent 70%);
+  border-bottom: 1px solid var(--t-line, #1d2530);
+}
+.terminal-mobile__banner-icon {
+  color: var(--t-live, #22c55e);
+  flex-shrink: 0;
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+/* horizontally scrollable tab strip — one panel per tab */
+.terminal-mobile__tabs {
+  display: flex;
+  gap: 2px;
+  padding: 6px 6px 0;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+  flex-shrink: 0;
+  background: var(--t-void, #070a0f);
+  border-bottom: 1px solid var(--t-line-hard, #2a3543);
+}
+.terminal-mobile__tabs::-webkit-scrollbar {
+  display: none;
+}
+
+.terminal-mobile__tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  padding: 7px 11px;
+  white-space: nowrap;
+  font-family: var(--t-mono, ui-monospace, monospace);
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  color: var(--t-faint, #5a6675);
+  background: transparent;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+  transition:
+    color 120ms ease,
+    border-color 120ms ease;
+}
+.terminal-mobile__tab:hover {
+  color: var(--t-dim, #8b97a8);
+}
+.terminal-mobile__tab.is-active {
+  color: var(--t-live, #22c55e);
+  border-bottom-color: var(--t-live, #22c55e);
+}
+.terminal-mobile__tab:focus-visible {
+  outline: none;
+  color: var(--t-text, #dbe4ee);
+  border-bottom-color: var(--t-text, #dbe4ee);
+}
+
+/* the single active panel fills the rest and scrolls on its own */
+.terminal-mobile__panel {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  -webkit-overflow-scrolling: touch;
+}

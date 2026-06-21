@@ -433,5 +433,26 @@ code, pre, kbd {
   .aura-split--metric { grid-template-columns: minmax(0, 1fr); }
 }
 
+/* Lineage → Constellation pointer: only useful on phones, where the columnar
+   SVG becomes a wide horizontal scroll. Hidden on desktop. */
+.lineage-mobile-hint { display: none; }
+@media (max-width: 768px) {
+  .lineage-mobile-hint {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    width: 100%;
+    padding: var(--space-2-5) var(--space-3);
+    font-family: var(--font-sans);
+    font-size: var(--font-sm);
+    text-align: left;
+    color: var(--accent);
+    background: var(--accent-dim, rgba(34, 197, 94, 0.08));
+    border: 1px solid var(--accent-border, rgba(34, 197, 94, 0.25));
+    border-radius: var(--radius-md);
+    cursor: pointer;
+  }
+}
+
 /* Media never exceeds its container (defense-in-depth against h-overflow). */
 img, video, canvas { max-width: 100%; }
