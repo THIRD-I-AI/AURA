@@ -338,8 +338,13 @@
 }
 .aura-terminal .feed-status.is-on  { color: var(--t-live); }
 .aura-terminal .feed-status.is-off { color: var(--t-faint); }
+/* single status dot — rendered by ::before only (no literal dot in the markup) */
+.aura-terminal .feed-status::before {
+  content: ''; flex: 0 0 auto;
+  width: 7px; height: 7px; border-radius: 50%;
+  background: var(--t-faint);
+}
 .aura-terminal .feed-status.is-on::before {
-  content: ''; width: 7px; height: 7px; border-radius: 50%;
   background: var(--t-live); box-shadow: 0 0 8px var(--t-live-glow);
   animation: aura-pulse 1.6s ease-in-out infinite;
 }
