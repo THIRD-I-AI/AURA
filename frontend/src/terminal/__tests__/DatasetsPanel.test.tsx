@@ -14,7 +14,7 @@ describe('DatasetsPanel', () => {
       { filename: 'sales.csv', size: 10, modified: 'now' },
       { filename: 'orders.csv', size: 20, modified: 'now' },
     ]);
-    render(<DatasetsPanel api={{} as never} params={{} as never} containerApi={{} as never} group={{} as never} />);
+    render(<DatasetsPanel api={{} as never} params={{} as never} containerApi={{} as never} />);
     await waitFor(() => expect(screen.getByText('sales.csv')).toBeInTheDocument());
     fireEvent.click(screen.getByTestId('dataset-row-sales.csv'));
     expect(setActiveDataset).toHaveBeenCalledWith('sales.csv');

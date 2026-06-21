@@ -13,7 +13,7 @@ describe('QueryPanel', () => {
       job_id: 'j1', status: 'Success', final_query: 'SELECT 1',
       execution_result: { success: true, columns: ['n'], rows: [[1]] },
     });
-    render(<QueryPanel api={{} as never} params={{} as never} containerApi={{} as never} group={{} as never} />);
+    render(<QueryPanel api={{} as never} params={{} as never} containerApi={{} as never} />);
     fireEvent.change(screen.getByTestId('query-input'), { target: { value: 'total revenue' } });
     fireEvent.click(screen.getByTestId('query-run'));
     await waitFor(() => expect(sendMessage).toHaveBeenCalledWith('total revenue', { uploadedFile: 'sales.csv' }));
