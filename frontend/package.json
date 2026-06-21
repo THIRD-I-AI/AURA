@@ -19,6 +19,7 @@
     "@sentry/react": "^9.0.0",
     "axios": "^1.16.1",
     "baseline-browser-mapping": "^2.9.17",
+    "dockview-react": "^6.6.1",
     "lucide-react": "^0.562.0",
     "react": "^19.1.1",
     "react-dom": "^19.1.1",
