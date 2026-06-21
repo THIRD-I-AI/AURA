@@ -16,6 +16,8 @@ describe('LiveFeedPanel', () => {
     const props = { api: {}, params: {}, containerApi: {} } as any;
     render(<LiveFeedPanel {...props} />);
     expect(screen.getByTestId('livefeed-panel')).toBeInTheDocument();
+    // status text is just "live" — the dot is a styled ::before, not a literal char
+    expect(screen.getByText('live').textContent).toBe('live');
     act(() => {
       capturedOnEvent?.({ id: '1', type: 'progress', topic: 'system:health', payload: { msg: 'healthy' }, timestamp: 't1' });
     });

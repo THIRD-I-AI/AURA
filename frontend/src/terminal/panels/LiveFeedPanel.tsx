@@ -14,7 +14,7 @@ export default function LiveFeedPanel(_props: IDockviewPanelProps) {
   return (
     <div data-testid="livefeed-panel" className="aura-panel livefeed-panel">
       <div className={`feed-status ${connected ? 'is-on' : 'is-off'}`}>
-        {connected ? '● live' : '○ offline'}{error ? ' · error' : ''}
+        {connected ? 'live' : 'offline'}{error ? ' · error' : ''}
       </div>
       <ul className="feed-list">
         {events.map((e, i) => (
