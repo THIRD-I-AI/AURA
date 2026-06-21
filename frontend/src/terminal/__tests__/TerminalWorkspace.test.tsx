@@ -9,6 +9,8 @@ vi.mock('dockview-react', () => ({
   DockviewReact: (props: { onReady: (e: unknown) => void }) => {
     const api = {
       addPanel: (o: { id: string }) => { added.push(o.id); return {}; },
+      getPanel: (_id: string) => undefined,
+      clear: () => {},
       fromJSON: () => {},
       toJSON: () => ({}),
       onDidLayoutChange: (cb: () => void) => { layoutChangeCb = cb; return { dispose() {} }; },
