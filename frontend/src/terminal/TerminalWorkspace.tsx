@@ -9,7 +9,7 @@ import { PANEL_REGISTRY, type PanelId } from './panels/registry';
 import { persistLayout, restoreLayout, DEFAULT_LAYOUTS, LAYOUT_NAMES } from './layoutStore';
 import { TerminalCommandPalette } from './TerminalCommandPalette';
 import { buildTerminalCommands } from './commands';
-import { useMediaQuery } from './useMediaQuery';
+import { useViewport } from '../shell/ViewportProvider';
 import { MobileTerminalStack } from './MobileTerminalStack';
 import './terminal.css';
 
@@ -40,9 +40,10 @@ export function TerminalWorkspace() {
   const components = useMemo(buildComponents, []);
   const navigate = useNavigate();
   const [paletteOpen, setPaletteOpen] = useState(false);
-  // dockview's multi-panel grid can't reflow to a phone; below this width we
-  // render a single-panel stacked fallback instead (see MobileTerminalStack).
-  const isMobile = useMediaQuery('(max-width: 860px)');
+  // dockview's multi-panel grid can't reflow to a phone; below the 'standard'
+  // viewport class we render a single-panel stacked fallback instead. Reads the
+  // app-wide viewport anchor so there is one source of truth (S49).
+  const isMobile = !useViewport().atLeast('standard');
 
   const onReady = useCallback((event: DockviewReadyEvent) => {
     apiRef.current = event.api;

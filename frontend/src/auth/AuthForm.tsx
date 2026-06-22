@@ -1,7 +1,9 @@
 import { useState, type FormEvent } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { Button } from '../components/ui/Button';
+import { useViewport } from '../shell/ViewportProvider';
 import { useAuth } from './AuthContext';
+import './AuthForm.css';
 
 type Mode = 'login' | 'signup';
 
@@ -33,6 +35,7 @@ export function AuthForm({ mode }: { mode: Mode }) {
   const { login, register } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
+  const wide = useViewport().atLeast('standard');
   const from = (location.state as { from?: string } | null)?.from ?? '/app';
 
   const [name, setName] = useState('');
@@ -66,7 +69,19 @@ export function AuthForm({ mode }: { mode: Mode }) {
   }
 
   return (
-    <div data-testid="auth-form" style={{ maxWidth: 420, margin: '0 auto' }}>
+    <div className={`auth-pane${wide ? ' auth-pane--split' : ''}`}>
+      {wide && (
+        <div className="auth-pane__brand">
+          <div className="auth-pane__brand-inner">
+            <h2 className="auth-pane__brandmark">AURA</h2>
+            <p className="auth-pane__valueprop">
+              Ask your data in plain English. Get signed, verifiable answers.
+            </p>
+          </div>
+        </div>
+      )}
+      <div className="auth-pane__form">
+        <div data-testid="auth-form" style={{ maxWidth: 420, margin: '0 auto', width: '100%' }}>
       <h1 style={{ fontSize: 'var(--font-2xl)', textAlign: 'center', marginBottom: 'var(--space-2)' }}>
         {isSignup ? 'Create your account' : 'Welcome back'}
       </h1>
@@ -133,6 +148,8 @@ export function AuthForm({ mode }: { mode: Mode }) {
           <>New here? <Link data-testid="auth-switch" to="/signup">Create an account</Link></>
         )}
       </p>
+        </div>
+      </div>
     </div>
   );
 }
