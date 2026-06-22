@@ -16,6 +16,7 @@ import { AppRoutes } from './AppRoutes'
 import { ErrorBoundary } from './components/ui/ErrorBoundary'
 import { ThemeProvider } from './contexts/ThemeContext'
 import { AuthProvider } from './auth/AuthContext'
+import { ViewportProvider } from './shell/ViewportProvider'
 
 // Sentry: opt-in via VITE_SENTRY_DSN. Dynamic import keeps the SDK out of
 // the main bundle when no DSN is configured.
@@ -46,7 +47,9 @@ createRoot(document.getElementById('root')!).render(
       <ThemeProvider>
         <BrowserRouter>
           <AuthProvider>
-            <AppRoutes />
+            <ViewportProvider>
+              <AppRoutes />
+            </ViewportProvider>
           </AuthProvider>
         </BrowserRouter>
       </ThemeProvider>
