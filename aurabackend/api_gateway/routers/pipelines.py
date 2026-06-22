@@ -14,11 +14,17 @@ import httpx
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
+from api_gateway.persistence import (
+    delete_pipeline,
+    get_pipeline,
+    list_pipelines,
+    save_pipeline,
+)
 from shared.error_handler import sanitize_error
 from shared.logging_config import get_logger
 from shared.streaming_manager import TOPIC_PIPELINE, StreamEvent, streaming_manager
 
-from .workspaces import tenant_upload_dir
+from .workspaces import current_workspace_id, tenant_upload_dir
 
 logger = get_logger("aura.api_gateway.pipelines")
 
@@ -252,43 +258,50 @@ async def pipeline_execute_async(req: PipelineExecuteRequest):
 
 
 @router.post("/pipeline/save")
-async def pipeline_save(req: PipelineSaveRequest):
-    """Save a pipeline definition for later use."""
+async def pipeline_save(req: PipelineSaveRequest, request: Request):
+    """Save a pipeline definition for later use (tenant-scoped, durable)."""
     try:
         pipeline = PipelineModel(**req.pipeline)
     except Exception as e:
         logger.warning("[Pipeline] Invalid pipeline on save: %s", e)
         raise HTTPException(status_code=400, detail="Invalid pipeline payload")
-    saved = _pipeline_engine.save(pipeline)
-    return {"status": "success", "pipeline_id": saved.id, "name": saved.name}
+    saved = await save_pipeline({
+        "id": pipeline.id,
+        "workspace_id": current_workspace_id(request),
+        "name": pipeline.name,
+        "description": pipeline.description,
+        "definition": pipeline.model_dump(),
+        "status": pipeline.status.value,
+        "source_label": pipeline.source.label(),
+        "sink_type": pipeline.sink.type.value,
+        "step_count": len(pipeline.steps or []),
+        "tags": pipeline.tags or [],
+        "created_at": pipeline.created_at,
+        "updated_at": pipeline.updated_at,
+    })
+    return {"status": "success", "pipeline_id": saved["id"], "name": saved["name"]}
 
 
 @router.get("/pipeline/list")
-async def pipeline_list():
-    """List all saved pipelines."""
-    pipelines = _pipeline_engine.list_all()
-    return {
-        "status": "success", "count": len(pipelines),
-        "pipelines": [
-            {"id": p.id, "name": p.name, "description": p.description, "source": p.source.label(), "steps": len(p.steps), "sink": p.sink.type.value, "status": p.status.value, "created_at": p.created_at, "tags": p.tags}
-            for p in pipelines
-        ],
-    }
+async def pipeline_list(request: Request):
+    """List the caller-tenant's saved pipelines."""
+    pipelines = await list_pipelines(current_workspace_id(request))
+    return {"status": "success", "count": len(pipelines), "pipelines": pipelines}
 
 
 @router.get("/pipeline/{pipeline_id}")
-async def pipeline_get(pipeline_id: str):
-    """Get a saved pipeline by ID."""
-    p = _pipeline_engine.get(pipeline_id)
-    if not p:
+async def pipeline_get(pipeline_id: str, request: Request):
+    """Get one of the caller-tenant's saved pipelines by ID."""
+    definition = await get_pipeline(pipeline_id, workspace_id=current_workspace_id(request))
+    if not definition:
         raise HTTPException(status_code=404, detail="Pipeline not found")
-    return {"status": "success", "pipeline": p.model_dump()}
+    return {"status": "success", "pipeline": definition}
 
 
 @router.delete("/pipeline/{pipeline_id}")
-async def pipeline_delete(pipeline_id: str):
-    """Delete a saved pipeline."""
-    deleted = _pipeline_engine.delete(pipeline_id)
+async def pipeline_delete(pipeline_id: str, request: Request):
+    """Delete one of the caller-tenant's saved pipelines."""
+    deleted = await delete_pipeline(pipeline_id, current_workspace_id(request))
     if not deleted:
         raise HTTPException(status_code=404, detail="Pipeline not found")
     return {"status": "success", "deleted": pipeline_id}

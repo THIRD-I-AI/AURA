@@ -18,12 +18,13 @@ from pydantic import BaseModel, Field
 from agents.base import AgentContext
 from agents.langgraph_orchestrator import run_orchestrator
 from agents.specialists.intent_agent import IntentAgent
+from api_gateway.persistence import insert_chat_message, list_chat_messages
 from shared.data_utils import build_schema_context_cached
 from shared.duckdb_factory import new_connection
 from shared.logging_config import get_logger
 from shared.observability import CHAT_REQUESTS
 
-from .workspaces import _request_tenant, tenant_upload_dir
+from .workspaces import _request_tenant, current_workspace_id, tenant_upload_dir
 
 logger = get_logger("aura.api_gateway.chat")
 
@@ -114,15 +115,11 @@ class SaveChatResponse(BaseModel):
     id: str
 
 
-# ── In-memory chat history ───────────────────────────────────────────
+# ── Chat history ─────────────────────────────────────────────────────
+# Durable + tenant-scoped (S50): persisted in gateway_chat_messages,
+# isolated per tenant. See api_gateway/persistence.py.
 
-import threading
-import uuid as _uuid
 from datetime import datetime
-
-_chat_history_lock = threading.Lock()
-_chat_history_store: Dict[str, List[Dict[str, Any]]] = {}  # session_id → messages
-
 
 # ── Shared helpers (imported by other routers too) ───────────────────
 
@@ -311,28 +308,29 @@ async def chat_endpoint(request: ChatRequest, http_request: Request) -> ChatResp
 
 
 @router.get("/chat/history/{session_id}", response_model=List[ChatHistoryEntry])
-async def get_chat_history(session_id: str) -> List[ChatHistoryEntry]:
-    """Get chat history for a session."""
-    with _chat_history_lock:
-        messages = _chat_history_store.get(session_id, [])
+async def get_chat_history(session_id: str, http_request: Request) -> List[ChatHistoryEntry]:
+    """Tenant-scoped chat history for a session.
+
+    SECURITY (S50): scopes on the caller's tenant (``current_workspace_id``),
+    closing the pre-S50 hole where this read had no auth/tenant check and a
+    guessed session id leaked another tenant's history."""
+    workspace_id = current_workspace_id(http_request)
+    messages = await list_chat_messages(workspace_id, session_id)
     return [ChatHistoryEntry(**m) for m in messages]
 
 
 @router.post("/chat/history/{session_id}", response_model=SaveChatResponse)
-async def save_chat_message(session_id: str, payload: Dict[str, Any]) -> SaveChatResponse:
-    """Save a chat message to session history."""
-    msg = {
-        "id": payload.get("id", str(_uuid.uuid4())[:12]),
+async def save_chat_message(
+    session_id: str, payload: Dict[str, Any], http_request: Request,
+) -> SaveChatResponse:
+    """Append a tenant-scoped chat message to durable session history."""
+    workspace_id = current_workspace_id(http_request)
+    saved = await insert_chat_message(workspace_id, {
+        "id": payload.get("id"),
+        "session_id": session_id,
         "type": payload.get("type", "user"),
         "content": payload.get("content", ""),
-        "timestamp": payload.get("timestamp", datetime.now().isoformat()),
+        "timestamp": payload.get("timestamp"),
         "metadata": payload.get("metadata"),
-    }
-    with _chat_history_lock:
-        if session_id not in _chat_history_store:
-            _chat_history_store[session_id] = []
-        _chat_history_store[session_id].append(msg)
-        # Keep last 100 messages per session
-        if len(_chat_history_store[session_id]) > 100:
-            _chat_history_store[session_id] = _chat_history_store[session_id][-100:]
-    return SaveChatResponse(success=True, id=msg["id"])
+    })
+    return SaveChatResponse(success=True, id=saved["id"])

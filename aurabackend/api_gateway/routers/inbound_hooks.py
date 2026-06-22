@@ -165,12 +165,17 @@ async def fire_hook(slug: str, request: Request) -> Dict[str, Any]:
 # ── Trigger helpers ────────────────────────────────────────────────
 
 async def _fire_pipeline(pipeline_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
-    from api_gateway.routers.pipelines import _pipeline_engine
+    from api_gateway.persistence import get_pipeline
+    from pipeline.engine import PipelineEngine
     from pipeline.models import Pipeline as PipelineModel
 
-    pipeline: Optional[PipelineModel] = _pipeline_engine.get(pipeline_id)
-    if not pipeline:
+    # Trusted internal path (the registered hook is the auth boundary), so the
+    # pipeline is fetched unscoped from the durable store and rebuilt (S50).
+    definition = await get_pipeline(pipeline_id)
+    if not definition:
         raise HTTPException(status_code=404, detail=f"Pipeline '{pipeline_id}' not found")
+    pipeline: PipelineModel = PipelineModel(**definition)
+    engine = PipelineEngine()
 
     run_id = uuid.uuid4().hex
     preview_only = bool(payload.get("preview_only", False))
@@ -192,7 +197,7 @@ async def _fire_pipeline(pipeline_id: str, payload: Dict[str, Any]) -> Dict[str,
                              "stage": "source", "consumed": consumed, "lag": lag},
                 ))
 
-            run = await _pipeline_engine.execute(
+            run = await engine.execute(
                 pipeline, preview_only=preview_only, source_progress_cb=_kafka_cb,
             )
             if run.status.value == "failed":
