@@ -5,6 +5,9 @@
    ============================================================================ */
 
 .context-rail {
+  /* Flex sibling of .app-shell__content; fluid width that grows with the
+     browser viewport (22vw) but caps so it never dominates the content. */
+  flex: 0 0 clamp(300px, 22vw, 460px);
   display: flex;
   flex-direction: column;
   min-height: 0;
@@ -14,6 +17,7 @@
   border-left: 1px solid var(--border-subtle);
 }
 .context-rail[data-collapsed='true'] {
+  flex-basis: 48px;
   width: 48px;
 }
 

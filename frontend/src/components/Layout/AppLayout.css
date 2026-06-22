@@ -279,16 +279,19 @@
   min-height: 0;
 }
 
-/* ── Dashboard grids ─────────────────────────────────────────────── */
+/* ── Dashboard grids (S49: fluid) ────────────────────────────────────
+   auto-FILL (not auto-fit) keeps tiles at a comfortable ~200/320px and packs as
+   many columns as fit — so 4 KPI tiles never balloon on a wide content column,
+   and the row simply wraps on narrow ones. No per-breakpoint column counts. */
 .dashboard-grid--kpis {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(auto-fill, minmax(min(200px, 100%), 1fr));
   gap: var(--space-4);
   margin-bottom: var(--space-6);
 }
 .dashboard-grid--panels {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(auto-fill, minmax(min(340px, 100%), 1fr));
   gap: var(--space-4);
   margin-bottom: var(--space-6);
 }
@@ -306,7 +309,6 @@
 
 /* ── Responsive ──────────────────────────────────────────────────── */
 @media (max-width: 1280px) {
-  .dashboard-grid--kpis { grid-template-columns: repeat(2, 1fr); }
   .dashboard-grid--workspace {
     grid-template-columns: 1fr;
     height: auto;
@@ -316,7 +318,6 @@
 @media (max-width: 1024px) {
   .app-shell__sidebar { width: var(--sidebar-width-collapsed); min-width: var(--sidebar-width-collapsed); }
   .app-shell__main-inner { padding: var(--space-4); }
-  .dashboard-grid--panels { grid-template-columns: 1fr; }
 }
 @media (max-width: 768px) {
   .dashboard-grid--kpis { gap: var(--space-3); }
@@ -325,7 +326,6 @@
   .app-header__status-badge { display: none; }
 }
 @media (max-width: 640px) {
-  .dashboard-grid--kpis { grid-template-columns: 1fr 1fr; }
   .app-header__search-wrapper { display: none; }
   /* Shed the workspace switcher so the page title isn't crushed to an
      ellipsis ("En…") by the right-hand cluster on narrow screens. */
@@ -336,32 +336,17 @@
      tab) — keep only title · notifications · account so the header reads
      cleanly instead of overflowing. */
   .app-header__actions { display: none; }
-  .dashboard-grid--kpis { grid-template-columns: 1fr; }
 }
 
-/* ── Wide / ultra-wide / big screens ──────────────────────────────────
-   Laptops and standard desktops stay full-width (an earlier 1440px cap was
-   removed because it stranded void on the ~1536–1680px screens in daily use).
-   But past standard-desktop width an unbounded data dashboard just stretches:
-   KPI tiles balloon to ~550px, quick-action rows open a vast gap between label
-   and chevron, and chat lines grow unreadably long. So above 1700px we center a
-   comfortable content column and widen the gutters — the premium, readable
-   big-screen treatment — without touching the screens that earlier decision was
-   about (the cap only actually binds past ~1840px viewport). */
-@media (min-width: 1700px) {
-  .app-shell__main-inner {
-    /* width:100% forces fill-to-max-width before centering; without it the
-       flex item shrinks to its intrinsic content width (margin:auto cancels
-       the column-flex cross-axis stretch), giving a jittery per-page column. */
-    width: 100%;
-    max-width: 1600px;
-    margin-inline: auto;
-    padding: var(--space-8) var(--space-10);
-  }
-}
-@media (min-width: 2600px) {
-  /* 4K / 5K — let the column breathe a little wider so it isn't lost in void. */
-  .app-shell__main-inner { max-width: 1880px; }
+/* ── Wide / ultra-wide / big screens (S49) ────────────────────────────
+   The S48 max-width cap was removed: it stranded a 720–1320px dead gap on wide
+   browsers. Instead the content fills its flex column at every width and the
+   reclaimed width becomes the <ContextRail> (rendered as a flex sibling when
+   useViewport().hasRail). Keyed off data-viewport (= the browser viewport size
+   class), the gutters just grow for breathing room on big windows. */
+.app-shell[data-viewport='wide'] .app-shell__main-inner,
+.app-shell[data-viewport='ultrawide'] .app-shell__main-inner {
+  padding: var(--space-8);
 }
 
 /* ── Mobile sidebar ─────────────────────────────────────────────── */
