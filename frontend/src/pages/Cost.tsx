@@ -96,7 +96,7 @@ const Cost: React.FC = () => {
       )}
 
       {/* KPI tiles */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(180px, 100%), 1fr))', gap: 12 }}>
         <KpiTile label="Prompt tokens" value={fmt(totals.prompt)} accent="#60a5fa" />
         <KpiTile label="Completion tokens" value={fmt(totals.completion)} accent="#34d399" />
         <KpiTile label="Cached (subset)" value={fmt(totals.cached_completion)} accent="#a78bfa" />

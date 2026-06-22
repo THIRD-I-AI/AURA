@@ -339,6 +339,31 @@
   .dashboard-grid--kpis { grid-template-columns: 1fr; }
 }
 
+/* ── Wide / ultra-wide / big screens ──────────────────────────────────
+   Laptops and standard desktops stay full-width (an earlier 1440px cap was
+   removed because it stranded void on the ~1536–1680px screens in daily use).
+   But past standard-desktop width an unbounded data dashboard just stretches:
+   KPI tiles balloon to ~550px, quick-action rows open a vast gap between label
+   and chevron, and chat lines grow unreadably long. So above 1700px we center a
+   comfortable content column and widen the gutters — the premium, readable
+   big-screen treatment — without touching the screens that earlier decision was
+   about (the cap only actually binds past ~1840px viewport). */
+@media (min-width: 1700px) {
+  .app-shell__main-inner {
+    /* width:100% forces fill-to-max-width before centering; without it the
+       flex item shrinks to its intrinsic content width (margin:auto cancels
+       the column-flex cross-axis stretch), giving a jittery per-page column. */
+    width: 100%;
+    max-width: 1600px;
+    margin-inline: auto;
+    padding: var(--space-8) var(--space-10);
+  }
+}
+@media (min-width: 2600px) {
+  /* 4K / 5K — let the column breathe a little wider so it isn't lost in void. */
+  .app-shell__main-inner { max-width: 1880px; }
+}
+
 /* ── Mobile sidebar ─────────────────────────────────────────────── */
 /* Hamburger button — shown only at mobile */
 .sidebar-mobile-toggle {

@@ -9,6 +9,8 @@ import { PANEL_REGISTRY, type PanelId } from './panels/registry';
 import { persistLayout, restoreLayout, DEFAULT_LAYOUTS, LAYOUT_NAMES } from './layoutStore';
 import { TerminalCommandPalette } from './TerminalCommandPalette';
 import { buildTerminalCommands } from './commands';
+import { useMediaQuery } from './useMediaQuery';
+import { MobileTerminalStack } from './MobileTerminalStack';
 import './terminal.css';
 
 // Bumped to v2 when the Constellation panel joined the default layout, so the
@@ -38,6 +40,9 @@ export function TerminalWorkspace() {
   const components = useMemo(buildComponents, []);
   const navigate = useNavigate();
   const [paletteOpen, setPaletteOpen] = useState(false);
+  // dockview's multi-panel grid can't reflow to a phone; below this width we
+  // render a single-panel stacked fallback instead (see MobileTerminalStack).
+  const isMobile = useMediaQuery('(max-width: 860px)');
 
   const onReady = useCallback((event: DockviewReadyEvent) => {
     apiRef.current = event.api;
@@ -86,17 +91,26 @@ export function TerminalWorkspace() {
 
   return (
     <CockpitProvider>
-      <div className="aura-terminal" data-testid="terminal-workspace" data-palette-open={paletteOpen}>
+      <div
+        className="aura-terminal"
+        data-testid="terminal-workspace"
+        data-palette-open={paletteOpen}
+        data-mobile={isMobile ? 'true' : undefined}
+      >
         <CockpitTopBar
           onApplyLayout={applyLayout}
           onOpenPalette={() => setPaletteOpen(true)}
           onBack={() => navigate('/app')}
         />
-        <DockviewReact
-          className="dockview-theme-dark"
-          components={components}
-          onReady={onReady}
-        />
+        {isMobile ? (
+          <MobileTerminalStack />
+        ) : (
+          <DockviewReact
+            className="dockview-theme-dark"
+            components={components}
+            onReady={onReady}
+          />
+        )}
         <TerminalCommandPalette
           open={paletteOpen}
           onClose={() => setPaletteOpen(false)}

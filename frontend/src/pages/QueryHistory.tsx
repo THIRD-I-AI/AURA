@@ -192,7 +192,9 @@ const QueryHistory: React.FC<QueryHistoryProps> = ({ setCurrentPage }) => {
       <div
         style={{
           display: 'grid',
-          gridTemplateColumns: '1fr 1fr 1fr 1fr auto',
+          // Wrap from a 5-up row down to 2-up / 1-up instead of crushing the
+          // four KPI tiles + pie into slivers on narrow screens.
+          gridTemplateColumns: 'repeat(auto-fit, minmax(min(160px, 100%), 1fr))',
           gap: 'var(--space-3)',
           alignItems: 'stretch',
           flexShrink: 0,

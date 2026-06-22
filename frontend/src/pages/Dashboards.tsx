@@ -285,7 +285,7 @@ const Dashboards: React.FC = () => {
                   This dashboard has no tiles yet. Click <strong>Edit</strong> to add one.
                 </div>
               ) : (
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: 'var(--space-3)' }}>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(320px, 100%), 1fr))', gap: 'var(--space-3)' }}>
                   {selected.tiles.map((tile) => {
                     const r = render?.tiles.find((x) => x.tile_id === tile.id);
                     return <TileCard key={tile.id} tile={tile} render={r} rendering={rendering} />;
