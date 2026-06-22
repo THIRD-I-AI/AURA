@@ -255,6 +255,60 @@ class LineageEdgeRow(Base):
     updated_at = Column(Float, nullable=False)
 
 
+class ChatMessageRow(Base):
+    """One chat message — tenant-scoped (S50), capped per (workspace, session).
+
+    Replaces the in-memory ``_chat_history_store`` dict in routers/chat.py:
+    durable across restarts, isolated per tenant (closing the cross-tenant
+    read hole), and shared across replicas. ``timestamp`` is the wire ISO
+    string; ``created_ts`` is numeric for ORDER BY.
+    """
+
+    __tablename__ = "gateway_chat_messages"
+
+    id = Column(String(64), primary_key=True)
+    workspace_id = Column(String(64), nullable=False, index=True)
+    session_id = Column(String(128), nullable=False)
+    type = Column(String(32), nullable=False, default="user")
+    content = Column(Text, nullable=False, default="")
+    metadata_json = Column(Text, nullable=True)
+    timestamp = Column(String(64), nullable=False)
+    created_ts = Column(Float, nullable=False)
+
+    __table_args__ = (
+        Index("ix_chat_ws_session_created", workspace_id, session_id, created_ts),
+    )
+
+
+class PipelineRow(Base):
+    """One saved pipeline — tenant-scoped (S50).
+
+    Replaces the in-memory ``PipelineEngine._pipelines`` dict.
+    ``definition_json`` is the full ``Pipeline.model_dump()``; the
+    denormalised columns drive the list view without parsing JSON per row.
+    """
+
+    __tablename__ = "gateway_pipelines"
+
+    id = Column(String(64), primary_key=True)
+    workspace_id = Column(String(64), nullable=False, index=True)
+    name = Column(String(255), nullable=False, default="")
+    description = Column(Text, nullable=True)
+    definition_json = Column(Text, nullable=False)
+    status = Column(String(32), nullable=False, default="draft")
+    source_label = Column(String(255), nullable=False, default="")
+    sink_type = Column(String(64), nullable=False, default="")
+    step_count = Column(Integer, nullable=False, default=0)
+    tags_json = Column(Text, nullable=True)
+    created_at = Column(String(64), nullable=False)
+    updated_at = Column(String(64), nullable=False)
+    created_ts = Column(Float, nullable=False)
+
+    __table_args__ = (
+        Index("ix_pipelines_ws_created", workspace_id, created_ts.desc()),
+    )
+
+
 # ── Engine + session factory ─────────────────────────────────────────
 
 
@@ -370,6 +424,9 @@ async def session_scope() -> AsyncIterator[AsyncSession]:
 # here so the repository owns the policy.
 QUERY_HISTORY_CAP = 200
 SAVED_QUERIES_PER_WORKSPACE_CAP = 500
+# S50: chat messages capped per (workspace, session); pipelines per workspace.
+CHAT_MESSAGES_PER_SESSION_CAP = 100
+PIPELINES_PER_WORKSPACE_CAP = 200
 
 
 def _row_to_history_dict(row: QueryHistoryRow) -> Dict[str, Any]:
@@ -1079,6 +1136,208 @@ async def list_lineage_edges(workspace_id: str) -> List[Dict[str, Any]]:
         ]
 
 
+# ── Chat messages (S50) ──
+
+
+import uuid as _uuid
+
+
+def _row_to_chat_dict(row: "ChatMessageRow") -> Dict[str, Any]:
+    """ORM row → wire dict (matches the historic ChatHistoryEntry shape)."""
+    out: Dict[str, Any] = {
+        "id": row.id,
+        "type": row.type,
+        "content": row.content,
+        "timestamp": row.timestamp,
+    }
+    if row.metadata_json:
+        try:
+            out["metadata"] = json.loads(row.metadata_json)
+        except json.JSONDecodeError:
+            logger.warning("chat_message %s has malformed metadata_json", row.id)
+    return out
+
+
+async def insert_chat_message(workspace_id: str, record: Dict[str, Any]) -> Dict[str, Any]:
+    """Persist one chat message; evict beyond the per-session cap."""
+    session_id = record["session_id"]
+    async with session_scope() as s:
+        row = ChatMessageRow(
+            id=record.get("id") or str(_uuid.uuid4())[:12],
+            workspace_id=workspace_id,
+            session_id=session_id,
+            type=record.get("type", "user"),
+            content=record.get("content", "") or "",
+            metadata_json=(
+                json.dumps(record["metadata"], separators=(",", ":"))
+                if record.get("metadata") is not None else None
+            ),
+            timestamp=record.get("timestamp") or datetime.now(timezone.utc).isoformat(),
+            created_ts=time.time(),
+        )
+        s.add(row)
+        await s.flush()
+        keep_ids = (await s.execute(
+            select(ChatMessageRow.id)
+            .where(ChatMessageRow.workspace_id == workspace_id)
+            .where(ChatMessageRow.session_id == session_id)
+            .order_by(ChatMessageRow.created_ts.desc())
+            .limit(CHAT_MESSAGES_PER_SESSION_CAP)
+        )).scalars().all()
+        if keep_ids:
+            await s.execute(
+                delete(ChatMessageRow)
+                .where(ChatMessageRow.workspace_id == workspace_id)
+                .where(ChatMessageRow.session_id == session_id)
+                .where(ChatMessageRow.id.notin_(keep_ids))
+            )
+        return _row_to_chat_dict(row)
+
+
+async def list_chat_messages(workspace_id: str, session_id: str) -> List[Dict[str, Any]]:
+    """Oldest-first messages for one (tenant, session)."""
+    async with session_scope() as s:
+        rows = (await s.execute(
+            select(ChatMessageRow)
+            .where(ChatMessageRow.workspace_id == workspace_id)
+            .where(ChatMessageRow.session_id == session_id)
+            .order_by(ChatMessageRow.created_ts.asc())
+        )).scalars().all()
+        return [_row_to_chat_dict(r) for r in rows]
+
+
+async def list_chat_sessions(workspace_id: str) -> List[Dict[str, Any]]:
+    """Distinct sessions for a tenant, most-recent-first. Answers
+    'where do the chats live' and enables a future conversation sidebar."""
+    async with session_scope() as s:
+        rows = (await s.execute(
+            select(
+                ChatMessageRow.session_id,
+                func.max(ChatMessageRow.created_ts).label("last_ts"),
+                func.count().label("n"),
+            )
+            .where(ChatMessageRow.workspace_id == workspace_id)
+            .group_by(ChatMessageRow.session_id)
+            .order_by(func.max(ChatMessageRow.created_ts).desc())
+        )).all()
+        return [
+            {"session_id": r[0], "last_ts": r[1], "message_count": r[2]}
+            for r in rows
+        ]
+
+
+# ── Pipelines (S50) ──
+
+
+def _row_to_pipeline_list_dict(row: "PipelineRow") -> Dict[str, Any]:
+    """ORM row → list-view dict (matches the historic /pipeline/list shape)."""
+    return {
+        "id": row.id,
+        "name": row.name,
+        "description": row.description,
+        "source": row.source_label,
+        "steps": row.step_count,
+        "sink": row.sink_type,
+        "status": row.status,
+        "created_at": row.created_at,
+        "tags": json.loads(row.tags_json) if row.tags_json else [],
+    }
+
+
+async def save_pipeline(record: Dict[str, Any]) -> Dict[str, Any]:
+    """Upsert a pipeline by id within its workspace; cap per workspace on insert."""
+    workspace_id = record["workspace_id"]
+    now = record.get("updated_at") or datetime.now(timezone.utc).isoformat()
+    async with session_scope() as s:
+        existing = (await s.execute(
+            select(PipelineRow)
+            .where(PipelineRow.id == record["id"])
+            .where(PipelineRow.workspace_id == workspace_id)
+        )).scalar_one_or_none()
+        fields = dict(
+            name=record.get("name", "") or "",
+            description=record.get("description"),
+            definition_json=json.dumps(record["definition"], separators=(",", ":")),
+            status=record.get("status", "draft"),
+            source_label=record.get("source_label", "") or "",
+            sink_type=record.get("sink_type", "") or "",
+            step_count=int(record.get("step_count", 0) or 0),
+            tags_json=json.dumps(record.get("tags") or []),
+            updated_at=now,
+        )
+        if existing is None:
+            s.add(PipelineRow(
+                id=record["id"],
+                workspace_id=workspace_id,
+                created_at=record.get("created_at") or now,
+                created_ts=time.time(),
+                **fields,
+            ))
+            await s.flush()
+            keep_ids = (await s.execute(
+                select(PipelineRow.id)
+                .where(PipelineRow.workspace_id == workspace_id)
+                .order_by(PipelineRow.created_ts.desc())
+                .limit(PIPELINES_PER_WORKSPACE_CAP)
+            )).scalars().all()
+            if keep_ids:
+                await s.execute(
+                    delete(PipelineRow)
+                    .where(PipelineRow.workspace_id == workspace_id)
+                    .where(PipelineRow.id.notin_(keep_ids))
+                )
+        else:
+            for k, v in fields.items():
+                setattr(existing, k, v)
+            await s.flush()
+        return {"id": record["id"], "name": fields["name"]}
+
+
+async def list_pipelines(workspace_id: str) -> List[Dict[str, Any]]:
+    """Newest-first list of the caller-tenant's pipelines (list-view shape)."""
+    async with session_scope() as s:
+        rows = (await s.execute(
+            select(PipelineRow)
+            .where(PipelineRow.workspace_id == workspace_id)
+            .order_by(PipelineRow.created_ts.desc())
+        )).scalars().all()
+        return [_row_to_pipeline_list_dict(r) for r in rows]
+
+
+async def get_pipeline(
+    pipeline_id: str, workspace_id: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    """Return the full pipeline definition dict. Scoped when ``workspace_id``
+    is set (private endpoints); unscoped when None (trusted webhook path) —
+    mirrors ``get_saved_query``."""
+    async with session_scope() as s:
+        stmt = select(PipelineRow).where(PipelineRow.id == pipeline_id)
+        if workspace_id is not None:
+            stmt = stmt.where(PipelineRow.workspace_id == workspace_id)
+        row = (await s.execute(stmt)).scalar_one_or_none()
+        if row is None:
+            return None
+        try:
+            return json.loads(row.definition_json)
+        except json.JSONDecodeError:
+            logger.warning("pipeline %s has malformed definition_json", pipeline_id)
+            return None
+
+
+async def delete_pipeline(pipeline_id: str, workspace_id: str) -> bool:
+    """Delete a pipeline within its workspace. False if not found there."""
+    async with session_scope() as s:
+        existing = (await s.execute(
+            select(PipelineRow.id)
+            .where(PipelineRow.id == pipeline_id)
+            .where(PipelineRow.workspace_id == workspace_id)
+        )).scalar_one_or_none()
+        if existing is None:
+            return False
+        await s.execute(delete(PipelineRow).where(PipelineRow.id == pipeline_id))
+        return True
+
+
 # ── Test-only helper ──
 
 
@@ -1129,5 +1388,16 @@ __all__ = [
     "refresh_schema_context",
     "upsert_lineage_edges",
     "list_lineage_edges",
+    "ChatMessageRow",
+    "PipelineRow",
+    "CHAT_MESSAGES_PER_SESSION_CAP",
+    "PIPELINES_PER_WORKSPACE_CAP",
+    "insert_chat_message",
+    "list_chat_messages",
+    "list_chat_sessions",
+    "save_pipeline",
+    "list_pipelines",
+    "get_pipeline",
+    "delete_pipeline",
     "reset_all_for_tests",
 ]
