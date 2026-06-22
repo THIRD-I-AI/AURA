@@ -4,7 +4,7 @@
 
 **Goal:** Replace the S48 1600px content cap with a screen-aware fluid shell — one `ViewportProvider` anchor drives a fluid grid layout and a page-aware right rail that reclaims the dead gap on wide screens.
 
-**Architecture:** A `ViewportProvider` context (the "anchor") derives a `ScreenClass` from viewport width and exposes `hasRail`/`sidebarMode`. `AppLayout` becomes a CSS grid keyed off `data-screen`/`data-rail` attributes; the formerly-capped width becomes a `<ContextRail>` column whose contents are page-aware via a registry. Content grids pack fluidly (capped `auto-fit`) instead of stretching.
+**Architecture:** A `ViewportProvider` context (the "anchor") derives a `ViewportClass` from viewport width and exposes `hasRail`/`sidebarMode`. `AppLayout` becomes a CSS grid keyed off `data-viewport`/`data-rail` attributes; the formerly-capped width becomes a `<ContextRail>` column whose contents are page-aware via a registry. Content grids pack fluidly (capped `auto-fit`) instead of stretching.
 
 **Tech Stack:** React 19, TypeScript, Vite, Vitest + @testing-library/react, plain CSS with design-system.css tokens.
 
@@ -28,7 +28,7 @@
 - Modify: `frontend/src/main.tsx` (wrap `<AppRoutes/>`)
 
 **Interfaces:**
-- Produces: `ScreenClass`, `BREAKPOINTS`, `Viewport` interface, `ViewportProvider` component, `useViewport(): Viewport`.
+- Produces: `ViewportClass`, `BREAKPOINTS`, `Viewport` interface, `ViewportProvider` component, `useViewport(): Viewport`.
 
 - [ ] **Step 1: Write the failing test** — `frontend/src/shell/ViewportProvider.test.tsx`
 
@@ -39,7 +39,7 @@ import { ViewportProvider, useViewport, classForWidth } from './ViewportProvider
 
 function Probe() {
   const v = useViewport();
-  return <span data-testid="v">{`${v.screen}|${v.hasRail}|${v.sidebarMode}`}</span>;
+  return <span data-testid="v">{`${v.size}|${v.hasRail}|${v.sidebarMode}`}</span>;
 }
 
 function setWidth(w: number) {
@@ -89,13 +89,13 @@ describe('useViewport', () => {
 ```tsx
 import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
 
-export type ScreenClass = 'compact' | 'cozy' | 'standard' | 'wide' | 'ultrawide';
+export type ViewportClass = 'compact' | 'cozy' | 'standard' | 'wide' | 'ultrawide';
 
 export const BREAKPOINTS = { cozy: 768, standard: 1200, wide: 1600, ultrawide: 2200 } as const;
 
-const ORDER: ScreenClass[] = ['compact', 'cozy', 'standard', 'wide', 'ultrawide'];
+const ORDER: ViewportClass[] = ['compact', 'cozy', 'standard', 'wide', 'ultrawide'];
 
-export function classForWidth(w: number): ScreenClass {
+export function classForWidth(w: number): ViewportClass {
   if (w >= BREAKPOINTS.ultrawide) return 'ultrawide';
   if (w >= BREAKPOINTS.wide) return 'wide';
   if (w >= BREAKPOINTS.standard) return 'standard';
@@ -106,10 +106,10 @@ export function classForWidth(w: number): ScreenClass {
 export interface Viewport {
   width: number;
   height: number;
-  screen: ScreenClass;
+  screen: ViewportClass;
   hasRail: boolean;
   sidebarMode: 'drawer' | 'rail' | 'full';
-  atLeast: (c: ScreenClass) => boolean;
+  atLeast: (c: ViewportClass) => boolean;
 }
 
 function deriveViewport(width: number, height: number): Viewport {
@@ -580,7 +580,7 @@ import { describe, it, expect, vi } from 'vitest';
 
 vi.mock('../../shell/ViewportProvider', async (orig) => {
   const real = await orig() as Record<string, unknown>;
-  return { ...real, useViewport: () => ({ width: 1900, height: 900, screen: 'wide', hasRail: true, sidebarMode: 'full', atLeast: () => true }) };
+  return { ...real, useViewport: () => ({ width: 1900, height: 900, size: 'wide', hasRail: true, sidebarMode: 'full', atLeast: () => true }) };
 });
 vi.mock('./Sidebar', () => ({ default: () => <div data-testid="sb" /> }));
 vi.mock('./Header', () => ({ default: () => <div data-testid="hd" /> }));
@@ -592,7 +592,7 @@ it('mounts the ContextRail and sets data-rail when hasRail', () => {
   render(<MemoryRouter><AppLayout currentPage="dashboard" onPageChange={() => {}}><div>body</div></AppLayout></MemoryRouter>);
   expect(screen.getByTestId('rail')).toHaveTextContent('dashboard');
   expect(document.querySelector('.app-shell')?.getAttribute('data-rail')).toBe('true');
-  expect(document.querySelector('.app-shell')?.getAttribute('data-screen')).toBe('wide');
+  expect(document.querySelector('.app-shell')?.getAttribute('data-viewport')).toBe('wide');
 });
 ```
 
@@ -607,7 +607,7 @@ import { ContextRail } from '../../shell/ContextRail';
 // inside the component, after systemHealth:
 const vp = useViewport();
 // change the root <div className="app-shell"> opening tag to:
-<div className="app-shell" data-screen={vp.screen} data-rail={vp.hasRail ? 'true' : undefined}>
+<div className="app-shell" data-viewport={vp.size} data-rail={vp.hasRail ? 'true' : undefined}>
 // after the closing </div> of .app-shell__content, before .app-shell closes, add:
 {vp.hasRail && <ContextRail page={currentPage} />}
 ```
@@ -629,8 +629,8 @@ Replace the `.app-shell` rule and DELETE the entire `@media (min-width: 1700px)`
   grid-template-columns: auto minmax(0, 1fr) var(--rail-w);
 }
 /* fluid gutters by tier (replaces the old fixed cap) */
-.app-shell[data-screen='wide'] .app-shell__main-inner,
-.app-shell[data-screen='ultrawide'] .app-shell__main-inner { padding: var(--space-8); }
+.app-shell[data-viewport='wide'] .app-shell__main-inner,
+.app-shell[data-viewport='ultrawide'] .app-shell__main-inner { padding: var(--space-8); }
 ```
 
 Also DELETE the `width: 100%; max-width: 1600px; margin-inline: auto;` lines (the whole S49-superseded S48 block). Keep the existing `<=1024/768/520` down-rules and the mobile-drawer rules.
@@ -840,6 +840,6 @@ git commit -m "feat(shell): two-pane login on wide screens (S49)"
 
 **Placeholder scan:** every code step has real code; commands have expected outcomes. No TBD/TODO.
 
-**Type consistency:** `Viewport`/`ScreenClass`/`classForWidth`/`useViewport` consistent T1→T4,T6,T7; `RAIL_CONTENT`/`railTitleFor` consistent T2→T4; `SavedQuery`/`savedQueryService.list`/`useAuraStore`/`lineageService.get` match verified `api.ts`/`store` signatures. `PageType` imported from `AppLayout` throughout.
+**Type consistency:** `Viewport`/`ViewportClass`/`classForWidth`/`useViewport` consistent T1→T4,T6,T7; `RAIL_CONTENT`/`railTitleFor` consistent T2→T4; `SavedQuery`/`savedQueryService.list`/`useAuraStore`/`lineageService.get` match verified `api.ts`/`store` signatures. `PageType` imported from `AppLayout` throughout.
 
 **Note:** `useViewport` returns a safe default outside a provider (Global Constraints) — this is what keeps isolated AppLayout/terminal/auth tests green without wrapping them, and is asserted by T1 step-1's third test.

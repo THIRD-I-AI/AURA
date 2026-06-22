@@ -50,15 +50,15 @@ viewport via a single `ResizeObserver` on `document.documentElement` plus a
 `resize` listener (rAF-throttled), and exposes:
 
 ```ts
-export type ScreenClass = 'compact' | 'cozy' | 'standard' | 'wide' | 'ultrawide';
+export type ViewportClass = 'compact' | 'cozy' | 'standard' | 'wide' | 'ultrawide';
 
 export interface Viewport {
   width: number;            // px, live
   height: number;           // px, live
-  screen: ScreenClass;      // derived from width via BREAKPOINTS
+  screen: ViewportClass;      // derived from width via BREAKPOINTS
   hasRail: boolean;         // screen === 'wide' || 'ultrawide'
   sidebarMode: 'drawer' | 'rail' | 'full';
-  atLeast: (c: ScreenClass) => boolean;  // ordered comparison helper
+  atLeast: (c: ViewportClass) => boolean;  // ordered comparison helper
 }
 
 export const BREAKPOINTS = { cozy: 768, standard: 1200, wide: 1600, ultrawide: 2200 } as const;
@@ -86,7 +86,7 @@ primitive; `ViewportProvider` uses the same guard pattern. The terminal's
 
 ### 2. The fluid shell — `AppLayout.tsx` + `AppLayout.css`
 
-`.app-shell` becomes a CSS grid driven by a `data-screen` / `data-rail`
+`.app-shell` becomes a CSS grid driven by a `data-viewport` / `data-rail`
 attribute set from `useViewport()` (so CSS and JS agree on the anchor):
 
 ```
@@ -104,11 +104,11 @@ attribute set from `useViewport()` (so CSS and JS agree on the anchor):
 - Column 3 (only when `data-rail='true'`): `<ContextRail>`.
 
 `.app-shell__main` keeps `overflow-y: auto` (independent scroll); the rail
-scrolls independently too. Padding grows by tier via `data-screen` (e.g.
+scrolls independently too. Padding grows by tier via `data-viewport` (e.g.
 `--space-4` compact → `--space-6` standard → `--space-8` wide+).
 
 The mobile drawer behavior (S48, `max-width: 767px`) is preserved but keyed off
-`data-screen='compact'`.
+`data-viewport='compact'`.
 
 ### 3. Fluid content — kill the stretch
 
@@ -197,7 +197,7 @@ frontend/src/terminal/TerminalWorkspace.tsx    — read useViewport instead of u
 ## Data Flow
 
 `ViewportProvider` (resize → rAF → setState) → `useViewport()` → `AppLayout`
-sets `data-screen`/`data-rail` on `.app-shell` and conditionally renders
+sets `data-viewport`/`data-rail` on `.app-shell` and conditionally renders
 `<ContextRail page={currentPage} />` → `ContextRail` looks up `RAIL_CONTENT[page]`
 and renders it (lazy + Suspense + error boundary) → rail components read existing
 services/stores. No prop-drilling of width; everything reads the anchor.

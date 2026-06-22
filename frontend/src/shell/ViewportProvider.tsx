@@ -1,13 +1,13 @@
 import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
 
-export type ScreenClass = 'compact' | 'cozy' | 'standard' | 'wide' | 'ultrawide';
+export type ViewportClass = 'compact' | 'cozy' | 'standard' | 'wide' | 'ultrawide';
 
 export const BREAKPOINTS = { cozy: 768, standard: 1200, wide: 1600, ultrawide: 2200 } as const;
 
-const ORDER: ScreenClass[] = ['compact', 'cozy', 'standard', 'wide', 'ultrawide'];
+const ORDER: ViewportClass[] = ['compact', 'cozy', 'standard', 'wide', 'ultrawide'];
 
 // eslint-disable-next-line react-refresh/only-export-components
-export function classForWidth(w: number): ScreenClass {
+export function classForWidth(w: number): ViewportClass {
   if (w >= BREAKPOINTS.ultrawide) return 'ultrawide';
   if (w >= BREAKPOINTS.wide) return 'wide';
   if (w >= BREAKPOINTS.standard) return 'standard';
@@ -16,24 +16,27 @@ export function classForWidth(w: number): ScreenClass {
 }
 
 export interface Viewport {
+  /** Browser viewport width (window.innerWidth), in CSS pixels — NOT the
+   *  physical screen. This is the real, already-stable space the app has. */
   width: number;
   height: number;
-  screen: ScreenClass;
+  /** Size class derived from the browser viewport width. */
+  size: ViewportClass;
   hasRail: boolean;
   sidebarMode: 'drawer' | 'rail' | 'full';
-  atLeast: (c: ScreenClass) => boolean;
+  atLeast: (c: ViewportClass) => boolean;
 }
 
 function deriveViewport(width: number, height: number): Viewport {
-  const screen = classForWidth(width);
-  const sidebarMode = screen === 'compact' ? 'drawer' : screen === 'cozy' ? 'rail' : 'full';
+  const size = classForWidth(width);
+  const sidebarMode = size === 'compact' ? 'drawer' : size === 'cozy' ? 'rail' : 'full';
   return {
     width,
     height,
-    screen,
-    hasRail: screen === 'wide' || screen === 'ultrawide',
+    size,
+    hasRail: size === 'wide' || size === 'ultrawide',
     sidebarMode,
-    atLeast: (c) => ORDER.indexOf(screen) >= ORDER.indexOf(c),
+    atLeast: (c) => ORDER.indexOf(size) >= ORDER.indexOf(c),
   };
 }
 

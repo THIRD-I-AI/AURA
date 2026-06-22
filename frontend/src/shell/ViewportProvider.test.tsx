@@ -4,7 +4,7 @@ import { ViewportProvider, useViewport, classForWidth } from './ViewportProvider
 
 function Probe() {
   const v = useViewport();
-  return <span data-testid="v">{`${v.screen}|${v.hasRail}|${v.sidebarMode}`}</span>;
+  return <span data-testid="v">{`${v.size}|${v.hasRail}|${v.sidebarMode}`}</span>;
 }
 
 function setWidth(w: number) {
