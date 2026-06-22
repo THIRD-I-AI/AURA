@@ -52,27 +52,13 @@ def _q(name: str) -> str:
 
 
 class PipelineEngine:
-    """Executes Pipeline definitions using DuckDB."""
+    """Executes Pipeline definitions using DuckDB.
 
-    def __init__(self) -> None:
-        self._pipelines: Dict[str, Pipeline] = {}  # in-memory store
-
-    # ── Pipeline CRUD ─────────────────────────────────────────────────
-
-    def save(self, pipeline: Pipeline) -> Pipeline:
-        from datetime import datetime, timezone
-        pipeline.updated_at = datetime.now(timezone.utc).isoformat()
-        self._pipelines[pipeline.id] = pipeline
-        return pipeline
-
-    def get(self, pipeline_id: str) -> Optional[Pipeline]:
-        return self._pipelines.get(pipeline_id)
-
-    def list_all(self) -> List[Pipeline]:
-        return list(self._pipelines.values())
-
-    def delete(self, pipeline_id: str) -> bool:
-        return self._pipelines.pop(pipeline_id, None) is not None
+    Stateless (S50): pipeline storage moved to the durable, tenant-scoped
+    gateway persistence layer (api_gateway/persistence.py). The engine only
+    executes a passed definition, so it is safe to instantiate per call and
+    correct across replicas.
+    """
 
     # ── Execute ───────────────────────────────────────────────────────
 
