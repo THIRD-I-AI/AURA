@@ -107,3 +107,30 @@ async def test_pipeline_upsert_updates_in_place(gateway_db) -> None:
     rows = await p.list_pipelines("orgA")
     assert len(rows) == 1
     assert rows[0]["name"] == "v2"
+
+
+# ── Endpoint scoping ─────────────────────────────────────────────────
+
+
+def _bare_request():
+    from fastapi import Request
+    return Request({"type": "http", "headers": [], "method": "POST", "query_string": b""})
+
+
+@pytest.mark.asyncio
+async def test_chat_history_endpoint_scopes_by_tenant(gateway_db, monkeypatch) -> None:
+    from api_gateway.routers import chat as chatmod
+    seen = {"ws": "orgA"}
+    monkeypatch.setattr(chatmod, "current_workspace_id", lambda req: seen["ws"])
+    req = _bare_request()
+
+    seen["ws"] = "orgA"
+    await chatmod.save_chat_message("s1", {"type": "user", "content": "from A"}, req)
+
+    seen["ws"] = "orgB"
+    out_b = await chatmod.get_chat_history("s1", req)
+    assert out_b == []  # B sees nothing of A's session
+
+    seen["ws"] = "orgA"
+    out_a = await chatmod.get_chat_history("s1", req)
+    assert [m.content for m in out_a] == ["from A"]
