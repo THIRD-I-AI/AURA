@@ -124,6 +124,29 @@ with open(".commit.out", "w", encoding="utf-8") as f:
 See `feedback_git_commit_tool_render_bug` for the full escalation
 ladder.
 
+### Dev-server staleness (vite + branch switching)
+
+**Switching git branches under a live `vite` dev server can break the running
+app** — dead buttons / no interactivity, blank pages, and (under browser
+automation) phantom file-chooser dialogs. Cause: vite holds its module graph in
+memory and hot-reloads file changes, but a branch switch that makes whole
+modules appear or disappear (e.g. a `frontend/src/shell/` folder present on one
+branch, absent on another) leaves that graph stale, so the browser is served a
+broken bundle. The backend and the on-disk code are fine; only the dev-server
+process is poisoned.
+
+* **Fix:** stop the dev server and restart clean: `cd frontend && npm run dev:fresh`
+  (`vite --force`, which also clears the dep-optimize cache). Then hard-reload the
+  browser.
+* **Prevention:** the committed `post-checkout` git hook
+  (`.github/hooks/post-checkout`, installed by `scripts/install-hooks.ps1`)
+  prints this reminder whenever a branch switch changes `frontend/`.
+* **Discipline (for Claude sessions):** do NOT churn the working-tree branch
+  while a dev server the human is actively using is running. If you must switch
+  branches for PR work, restart vite with `npm run dev:fresh` afterward and tell
+  the human to hard-reload. Backend-only branches don't need this; frontend ones
+  do.
+
 ## Where things live
 
 ### Repo structure (key paths)

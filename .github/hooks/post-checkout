@@ -1,0 +1,33 @@
+#!/bin/sh
+# Post-checkout hook: after a BRANCH switch that changes frontend/, remind the
+# dev to restart the vite dev server.
+#
+# Why: vite keeps its module graph in memory and hot-reloads on file changes,
+# but a git branch switch can make whole modules appear or disappear (e.g. a
+# new src/shell/ folder on one branch, gone on another). vite's in-memory graph
+# then goes stale and serves the browser a broken bundle — symptoms are dead
+# buttons / no interactivity and, under automation, phantom file-chooser dialogs.
+# A clean restart fixes it. See CLAUDE.md "Dev-server staleness".
+#
+# Install with: .\scripts\install-hooks.ps1
+# Git passes: $1 = previous HEAD, $2 = new HEAD, $3 = 1 for a branch checkout.
+
+prev_head="$1"
+new_head="$2"
+is_branch_checkout="$3"
+
+# Only act on a real branch switch (not a file checkout), and only if HEAD moved.
+[ "$is_branch_checkout" = "1" ] || exit 0
+[ "$prev_head" = "$new_head" ] && exit 0
+
+if ! git diff --quiet "$prev_head" "$new_head" -- frontend/ 2>/dev/null; then
+  printf '\n\033[33m============================================================\033[0m\n'
+  printf '\033[33m  frontend/ changed across this branch switch.\033[0m\n'
+  printf '  If a vite dev server is running, RESTART it — its HMR graph is\n'
+  printf '  now stale and will serve a broken app (dead buttons, phantom\n'
+  printf '  file dialogs). Stop the dev server and run:\n'
+  printf '\033[36m      cd frontend && npm run dev:fresh\033[0m\n'
+  printf '\033[33m============================================================\033[0m\n\n'
+fi
+
+exit 0
