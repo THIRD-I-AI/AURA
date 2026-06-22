@@ -134,3 +134,28 @@ async def test_chat_history_endpoint_scopes_by_tenant(gateway_db, monkeypatch) -
     seen["ws"] = "orgA"
     out_a = await chatmod.get_chat_history("s1", req)
     assert [m.content for m in out_a] == ["from A"]
+
+
+@pytest.mark.asyncio
+async def test_pipeline_endpoints_scope_by_tenant(gateway_db, monkeypatch) -> None:
+    from api_gateway.routers import pipelines as plmod
+    seen = {"ws": "orgA"}
+    monkeypatch.setattr(plmod, "current_workspace_id", lambda req: seen["ws"])
+    req = _bare_request()
+    pdef = {
+        "id": "pX", "name": "Endpoint pipe",
+        "source": {"type": "file", "file_name": "a.csv"},
+        "steps": [], "sink": {"type": "preview"}, "tags": [],
+    }
+
+    seen["ws"] = "orgA"
+    saved = await plmod.pipeline_save(plmod.PipelineSaveRequest(pipeline=pdef), req)
+    assert saved["pipeline_id"] == "pX"
+    listed = await plmod.pipeline_list(req)
+    assert any(x["id"] == "pX" for x in listed["pipelines"])
+    got = await plmod.pipeline_get("pX", req)
+    assert got["pipeline"]["name"] == "Endpoint pipe"
+
+    seen["ws"] = "orgB"
+    listed_b = await plmod.pipeline_list(req)
+    assert all(x["id"] != "pX" for x in listed_b["pipelines"])
