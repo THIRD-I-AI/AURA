@@ -1,0 +1,50 @@
+/* AuthForm two-pane (S49): on standard+ viewports the sparse login becomes a
+   balanced brand panel beside the form; below that it's just the centered form
+   (the brand pane is not rendered). */
+.auth-pane {
+  width: 100%;
+}
+
+.auth-pane--split {
+  display: grid;
+  grid-template-columns: 1.05fr 1fr;
+  gap: var(--space-8);
+  align-items: center;
+  max-width: 940px;
+  margin: 0 auto;
+}
+
+.auth-pane__brand {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-10) var(--space-8);
+  min-height: 48vh;
+  border-radius: var(--radius-2xl);
+  border: 1px solid var(--border-subtle);
+  background:
+    radial-gradient(130% 130% at 0% 0%, rgba(34, 197, 94, 0.12), transparent 58%),
+    var(--bg-surface);
+}
+.auth-pane__brand-inner {
+  max-width: 30ch;
+}
+.auth-pane__brandmark {
+  margin: 0 0 var(--space-3);
+  font-size: var(--font-4xl);
+  font-weight: var(--weight-bold);
+  letter-spacing: var(--tracking-widest);
+  color: var(--text-primary);
+}
+.auth-pane__valueprop {
+  margin: 0;
+  font-size: var(--font-lg);
+  line-height: var(--line-relaxed);
+  color: var(--text-secondary);
+}
+
+.auth-pane__form {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}

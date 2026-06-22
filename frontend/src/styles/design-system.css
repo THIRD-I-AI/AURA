@@ -454,5 +454,14 @@ code, pre, kbd {
   }
 }
 
+/* Fluid card grid (S49): tiles pack into as many columns as fit at a
+   comfortable size and wrap — never stretched to fill a wide column, never
+   clipped on a narrow one. auto-fill keeps the tile size stable. */
+.fluid-cards {
+  display: grid;
+  gap: var(--space-4);
+  grid-template-columns: repeat(auto-fill, minmax(min(240px, 100%), 1fr));
+}
+
 /* Media never exceeds its container (defense-in-depth against h-overflow). */
 img, video, canvas { max-width: 100%; }

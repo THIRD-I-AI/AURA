@@ -6,6 +6,8 @@ import Sidebar from './Sidebar';
 import Header from './Header';
 import Button from '../ui/Button';
 import { useSystemHealth } from '../../hooks/useSystemHealth';
+import { useViewport } from '../../shell/ViewportProvider';
+import { ContextRail } from '../../shell/ContextRail';
 import { NAV_ITEMS } from './nav';
 
 export type PageType =
@@ -57,6 +59,7 @@ const AppLayout: React.FC<AppLayoutProps> = ({ children, currentPage, onPageChan
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const systemHealth = useSystemHealth();
+  const vp = useViewport();
 
   const { title, subtitle } = PAGE_META[currentPage] ?? PAGE_META.dashboard;
 
@@ -66,7 +69,11 @@ const AppLayout: React.FC<AppLayoutProps> = ({ children, currentPage, onPageChan
   };
 
   return (
-    <div className="app-shell">
+    <div
+      className="app-shell"
+      data-viewport={vp.size}
+      data-rail={vp.hasRail ? 'true' : undefined}
+    >
       {/* Mobile scrim */}
       <div
         className={`sidebar-scrim${mobileSidebarOpen ? ' sidebar-scrim--visible' : ''}`}
@@ -115,6 +122,9 @@ const AppLayout: React.FC<AppLayoutProps> = ({ children, currentPage, onPageChan
           </div>
         </main>
       </div>
+
+      {/* The reclaimed wide-screen width: a page-aware context rail (S49). */}
+      {vp.hasRail && <ContextRail page={currentPage} />}
     </div>
   );
 };

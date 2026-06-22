@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { useViewport } from '../shell/ViewportProvider';
 import {
   lineageService,
   subscribeWorkspace,
@@ -33,6 +34,9 @@ const Lineage: React.FC = () => {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [filter, setFilter] = useState<string>('');
   const navigate = useNavigate();
+  // When the context rail is present it carries the inspector, so the canvas
+  // takes the full content width instead of the two-pane split.
+  const { hasRail } = useViewport();
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -148,7 +152,7 @@ const Lineage: React.FC = () => {
         </div>
       )}
 
-      <div className="aura-split aura-split--detail">
+      <div className={hasRail ? '' : 'aura-split aura-split--detail'}>
         {/* Graph canvas */}
         <div
           role="img"
@@ -243,20 +247,22 @@ const Lineage: React.FC = () => {
           )}
         </div>
 
-        {/* Inspector */}
-        <aside style={{
-          border: '1px solid var(--border-default)', borderRadius: 'var(--radius-md)',
-          background: 'var(--bg-surface)', padding: 'var(--space-4)',
-          position: 'sticky', top: 12, maxHeight: 'calc(100vh - 220px)', overflow: 'auto',
-        }}>
-          {!selected ? (
-            <div style={{ fontSize: 13, color: 'var(--text-tertiary)' }}>
-              Click any node to inspect it.
-            </div>
-          ) : (
-            <Inspector node={selected} graph={graph} onPick={setSelectedId} />
-          )}
-        </aside>
+        {/* Inspector — inline only when there's no context rail to host it. */}
+        {!hasRail && (
+          <aside style={{
+            border: '1px solid var(--border-default)', borderRadius: 'var(--radius-md)',
+            background: 'var(--bg-surface)', padding: 'var(--space-4)',
+            position: 'sticky', top: 12, maxHeight: 'calc(100vh - 220px)', overflow: 'auto',
+          }}>
+            {!selected ? (
+              <div style={{ fontSize: 13, color: 'var(--text-tertiary)' }}>
+                Click any node to inspect it.
+              </div>
+            ) : (
+              <Inspector node={selected} graph={graph} onPick={setSelectedId} />
+            )}
+          </aside>
+        )}
       </div>
     </div>
   );

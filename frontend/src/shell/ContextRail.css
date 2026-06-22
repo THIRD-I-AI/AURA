@@ -1,0 +1,180 @@
+/* ============================================================================
+   AURA Context Rail (S49) — the page-aware panel that fills the reclaimed width
+   on wide screens. Lives in grid column 3 of .app-shell; collapses to a thin
+   strip. Scoped under .context-rail; uses design-system tokens only.
+   ============================================================================ */
+
+.context-rail {
+  /* Flex sibling of .app-shell__content; fluid width that grows with the
+     browser viewport (22vw) but caps so it never dominates the content. */
+  flex: 0 0 clamp(300px, 22vw, 460px);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  height: 100vh;
+  overflow: hidden;
+  background: var(--bg-canvas);
+  border-left: 1px solid var(--border-subtle);
+}
+.context-rail[data-collapsed='true'] {
+  flex-basis: 48px;
+  width: 48px;
+}
+
+.context-rail__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: var(--header-height);
+  padding: 0 var(--space-3);
+  border-bottom: 1px solid var(--border-subtle);
+  flex-shrink: 0;
+}
+.context-rail__title {
+  font-size: var(--font-xs);
+  font-weight: var(--weight-semibold);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-wide);
+  color: var(--text-tertiary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.context-rail__toggle {
+  width: 26px;
+  height: 26px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: color var(--dur-fast) var(--ease-out), border-color var(--dur-fast) var(--ease-out);
+}
+.context-rail__toggle:hover {
+  color: var(--text-primary);
+  border-color: var(--border-default);
+}
+.context-rail__toggle:focus-visible {
+  outline: none;
+  box-shadow: var(--accent-glow);
+}
+
+.context-rail__body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+}
+
+/* ── Section primitives shared by all rail slots ───────────────────────────── */
+.rail-section__title {
+  margin: 0 0 var(--space-2);
+  font-size: var(--font-xs);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-wide);
+  color: var(--text-tertiary);
+}
+.rail-quick {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.rail-quick__btn {
+  padding: var(--space-2-5) var(--space-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--bg-surface-2);
+  color: var(--text-secondary);
+  font-size: var(--font-sm);
+  text-decoration: none;
+  transition: color var(--dur-fast) var(--ease-out), border-color var(--dur-fast) var(--ease-out);
+}
+.rail-quick__btn:hover {
+  color: var(--text-primary);
+  border-color: var(--accent-border);
+}
+.rail-pulse {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--font-sm);
+  color: var(--text-secondary);
+}
+.rail-pulse__dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--green);
+}
+.rail-pulse--off .rail-pulse__dot {
+  background: var(--red);
+}
+.rail-loading {
+  color: var(--text-tertiary);
+  font-size: var(--font-sm);
+}
+
+.rail-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+.rail-list__item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-1) 0;
+  font-size: var(--font-sm);
+  color: var(--text-secondary);
+  text-decoration: none;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.rail-list__item:hover {
+  color: var(--text-primary);
+}
+.rail-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: var(--text-tertiary);
+}
+.rail-dot--success {
+  background: var(--green);
+}
+.rail-dot--error {
+  background: var(--red);
+}
+.rail-stat {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-2);
+  font-size: var(--font-sm);
+  color: var(--text-secondary);
+}
+.rail-stat b {
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+}
+.rail-empty,
+.rail-hint {
+  font-size: var(--font-sm);
+  color: var(--text-tertiary);
+  margin: 0;
+}
