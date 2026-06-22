@@ -99,24 +99,43 @@ class TestFireAndForget:
         await asyncio.sleep(0)
         assert active_count() == baseline
 
-    async def test_exception_is_logged(self, caplog):
+    async def test_exception_is_logged(self):
+        # Capture at the source logger with a directly-attached handler rather
+        # than via pytest's ``caplog``. caplog only sees records that propagate
+        # to the root handler, but the full suite mutates global logging state
+        # (the first ``get_logger`` call triggers ``setup_logging()``, which
+        # re-configures the root logger's handlers + level). That made this
+        # assertion flaky — green in isolation, red under the suite. A handler
+        # bound to "aura.shared.tasks" is immune to that global state.
         import logging
-        caplog.set_level(logging.ERROR, logger="aura.shared.tasks")
 
-        async def boom():
-            raise RuntimeError("intentional")
+        captured: list[str] = []
 
-        task = fire_and_forget(boom(), name="boom-task")
-        # Wait for completion; the task will raise, but the done callback
-        # logs and swallows so awaiting the task surfaces the exception.
-        with pytest.raises(RuntimeError, match="intentional"):
-            await task
-        await asyncio.sleep(0)
-        # Verify the logger recorded the exception
-        assert any(
-            "background task" in rec.message and "boom-task" in rec.message
-            for rec in caplog.records
-        )
+        class _Capture(logging.Handler):
+            def emit(self, record: logging.LogRecord) -> None:
+                captured.append(record.getMessage())
+
+        tasks_logger = logging.getLogger("aura.shared.tasks")
+        handler = _Capture(level=logging.ERROR)
+        tasks_logger.addHandler(handler)
+        prev_level = tasks_logger.level
+        tasks_logger.setLevel(logging.ERROR)
+        try:
+            async def boom():
+                raise RuntimeError("intentional")
+
+            task = fire_and_forget(boom(), name="boom-task")
+            # The done callback logs + swallows; awaiting surfaces the exception.
+            with pytest.raises(RuntimeError, match="intentional"):
+                await task
+            await asyncio.sleep(0)
+            assert any(
+                "background task" in msg and "boom-task" in msg
+                for msg in captured
+            )
+        finally:
+            tasks_logger.removeHandler(handler)
+            tasks_logger.setLevel(prev_level)
 
     async def test_cancellation_is_silent(self, caplog):
         import logging
