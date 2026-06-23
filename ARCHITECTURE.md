@@ -54,9 +54,9 @@ flowchart TB
 | 8000 | API Gateway | `api_gateway.main:app` | Single front door — auth, rate limit, routing, SSE relay, audit middleware |
 | 8001 | Code Generation | `code_generation_service.main:code_gen_app` | NL→SQL generation + DPC dual-paradigm cross-check |
 | 8002 | Connectors / Vault | `connectors.main:app` | PostgreSQL, MySQL, BigQuery, DuckDB, FAISS vector, spatial; secret storage |
-| 8003 | Execution Sandbox | `execution_sandbox.main:execution_app` | Isolated code/query execution — sandbox failure can't crash the gateway |
+| 8003 | Execution Sandbox | `execution_sandbox_service.main:execution_app` | Isolated code/query execution — sandbox failure can't crash the gateway |
 | 8004 | Scheduler | `scheduler_service.main:scheduler_app` | Distributed job queue, cron/interval/DAG jobs, Postgres `LISTEN/NOTIFY` |
-| 8005 | Insights | `insights.main:app` | Analytics + insight surfaces |
+| 8005 | Insights | `insights_service.main:app` | Analytics + insight surfaces |
 | 8006 | Orchestration | `orchestration_service.main:app` | Generator/critic loop, parallel-wave task executor |
 | 8007 | Metadata Store | `metadata_store.main:metadata_app` | Central metadata, schema sidecar cache |
 | 8009 | UASR | `uasr.service:app` | Self-healing MAPE-K layer (HTTP API + opt-in Kafka worker) |

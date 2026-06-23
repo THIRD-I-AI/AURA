@@ -12,7 +12,7 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from insights.engine import (
+from insights_service.engine import (
     AlertGenerator,
     AnomalyDetector,
     ChartType,

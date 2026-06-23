@@ -10,7 +10,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import HTTPException, status
 from pydantic import BaseModel, Field
 
-from insights.engine import InsightsEngine
+from insights_service.engine import InsightsEngine
 from shared.logging_config import get_logger
 
 # Add parent directory to path for imports

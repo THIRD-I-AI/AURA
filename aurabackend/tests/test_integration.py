@@ -202,7 +202,7 @@ def test_sql_validator_dry_run_mode():
 
 def test_insights_engine_analysis(test_data):
     """Test insight generation from data"""
-    from insights import InsightsEngine
+    from insights_service import InsightsEngine
 
     engine = InsightsEngine()
     query = "SELECT * FROM sales"
@@ -218,7 +218,7 @@ def test_insights_engine_analysis(test_data):
 
 def test_insights_chart_generation(test_data):
     """Test automatic chart generation"""
-    from insights import ChartType, InsightsEngine
+    from insights_service import ChartType, InsightsEngine
 
     engine = InsightsEngine()
     analysis = engine.analyze("SELECT * FROM sales", test_data)
@@ -235,7 +235,7 @@ def test_insights_chart_generation(test_data):
 
 def test_anomaly_detector():
     """Test anomaly detection"""
-    from aurabackend.insights.engine import AnomalyDetector
+    from aurabackend.insights_service.engine import AnomalyDetector
 
     values = [10, 12, 11, 13, 100, 12, 11]  # 100 is an outlier
     anomalies = AnomalyDetector.detect_anomalies(values, threshold=2.0)
@@ -246,7 +246,7 @@ def test_anomaly_detector():
 
 def test_alert_generator():
     """Test alert generation from rules"""
-    from insights import AlertGenerator
+    from insights_service import AlertGenerator
 
     data = [
         {'temperature': 25.0},

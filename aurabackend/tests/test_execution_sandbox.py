@@ -69,37 +69,37 @@ class TestQueryResult:
 
 class TestInferChart:
     def test_date_first_column_returns_line(self):
-        from execution_sandbox.main import _infer_chart
+        from execution_sandbox_service.main import _infer_chart
         result = _infer_chart(["date_col", "amount"])
         assert result["type"] == "line"
 
     def test_time_first_column_returns_line(self):
-        from execution_sandbox.main import _infer_chart
+        from execution_sandbox_service.main import _infer_chart
         result = _infer_chart(["created_time", "value"])
         assert result["type"] == "line"
 
     def test_revenue_second_column_returns_bar(self):
-        from execution_sandbox.main import _infer_chart
+        from execution_sandbox_service.main import _infer_chart
         result = _infer_chart(["category", "total_revenue"])
         assert result["type"] == "bar"
 
     def test_count_second_column_returns_bar(self):
-        from execution_sandbox.main import _infer_chart
+        from execution_sandbox_service.main import _infer_chart
         result = _infer_chart(["region", "count"])
         assert result["type"] == "bar"
 
     def test_sum_second_column_returns_bar(self):
-        from execution_sandbox.main import _infer_chart
+        from execution_sandbox_service.main import _infer_chart
         result = _infer_chart(["product", "sum_amount"])
         assert result["type"] == "bar"
 
     def test_generic_columns_returns_table(self):
-        from execution_sandbox.main import _infer_chart
+        from execution_sandbox_service.main import _infer_chart
         result = _infer_chart(["id", "name", "email"])
         assert result["type"] == "table"
 
     def test_single_column_returns_table(self):
-        from execution_sandbox.main import _infer_chart
+        from execution_sandbox_service.main import _infer_chart
         result = _infer_chart(["value"])
         assert result["type"] == "table"
 
@@ -109,7 +109,7 @@ class TestInferChart:
 class TestExecuteSqlGuards:
     @pytest.fixture
     def client(self):
-        from execution_sandbox.main import execution_app
+        from execution_sandbox_service.main import execution_app
         return TestClient(execution_app, raise_server_exceptions=False)
 
     def test_unapproved_job_rejected(self, client):
