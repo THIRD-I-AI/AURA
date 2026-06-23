@@ -36,7 +36,12 @@ if not config.get_main_option("sqlalchemy.url"):
     config.set_main_option("sqlalchemy.url", DATABASE_URL)
 
 if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+    # disable_existing_loggers=False: the stdlib default (True) disables every
+    # already-created logger (e.g. "aura.shared.tasks") when alembic configures
+    # its logging. In a single-process pytest run that silently poisons later
+    # tests asserting on log output, and would drop app logs if migrations ever
+    # ran in the app's process.
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 target_metadata = Base.metadata
 
