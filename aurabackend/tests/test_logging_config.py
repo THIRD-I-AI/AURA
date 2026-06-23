@@ -193,3 +193,28 @@ def test_get_logger_triggers_setup():
         with patch.dict("sys.modules", {"shared.config": None}):
             lgr = lc.get_logger("fallback.test")
             assert lgr.name == "fallback.test"
+
+
+# ── alembic migration logging (regression guard) ────────────────────
+
+def test_alembic_env_preserves_existing_loggers():
+    """alembic/env.py must call fileConfig(..., disable_existing_loggers=False).
+
+    The stdlib default (True) disables every already-created logger when
+    alembic configures its logging — including app loggers like
+    "aura.shared.tasks". In a single-process pytest run that silently poisons
+    later tests asserting on log output (the root cause of an earlier
+    test_tasks flake), and would drop app logs if migrations ever ran
+    in-process. env.py runs migrations at import time and can't be imported
+    standalone, so assert the safety flag is present in the source.
+    """
+    from pathlib import Path
+
+    env_src = (
+        Path(__file__).resolve().parents[1] / "alembic" / "env.py"
+    ).read_text(encoding="utf-8")
+    assert "fileConfig(" in env_src, "expected a fileConfig() call in alembic/env.py"
+    assert "disable_existing_loggers=False" in env_src, (
+        "alembic/env.py must pass disable_existing_loggers=False to fileConfig "
+        "so migration logging setup does not disable app loggers"
+    )
