@@ -180,25 +180,48 @@ async def chat_endpoint(request: ChatRequest, http_request: Request) -> ChatResp
                 focus_name = tname
                 break
 
-    if focus_name:
+    # Prefer the FULL multi-table schema so cross-table joins resolve against
+    # real columns. A previous "focus on a single table" optimization made the
+    # model hallucinate columns on join partners (e.g. salesorder.amount when
+    # the real column is quantity) because it never saw the other table. Only
+    # fall back to a focused subset when the full context would blow the token
+    # budget — and then include the focused table's RELATED tables too, so
+    # joins across that subset still have real columns.
+    full_table_schemas = {
+        name: [c["name"] for c in info["columns"]]
+        for name, info in all_tables.items()
+    }
+    full_context_text = schema_result["context_text"]
+    max_schema_chars = int(os.getenv("AURA_MAX_SCHEMA_CONTEXT_CHARS", "16000"))
+
+    if not all_tables:
+        table_schemas = {}
+        schema_context = "No tables available. User needs to upload a file first."
+    elif len(full_context_text) <= max_schema_chars or not focus_name:
+        # Small enough (the common case) — give the model every table.
+        table_schemas = full_table_schemas
+        schema_context = full_context_text
+    else:
+        # Over budget AND the user named a table: focus on it + its directly
+        # related tables so joins across the subset still have real columns.
         from shared.data_utils import _format_context_for_llm
-        focused_tables = {focus_name: all_tables[focus_name]}
         focused_rels = [
             r for r in schema_result["relationships"]
             if r.get("from_table") == focus_name or r.get("to_table") == focus_name
         ]
+        related = {focus_name}
+        for r in focused_rels:
+            related.add(r.get("from_table"))
+            related.add(r.get("to_table"))
+        focused_tables = {n: all_tables[n] for n in related if n in all_tables}
         schema_context = _format_context_for_llm(focused_tables, focused_rels)
-        table_schemas = {focus_name: [c["name"] for c in all_tables[focus_name]["columns"]]}
-        logger.info("chat: focused schema context on table %s (of %d available)", focus_name, len(all_tables))
-    else:
         table_schemas = {
-            name: [c["name"] for c in info["columns"]]
-            for name, info in all_tables.items()
+            n: [c["name"] for c in all_tables[n]["columns"]] for n in focused_tables
         }
-        if table_schemas:
-            schema_context = schema_result["context_text"]
-        else:
-            schema_context = "No tables available. User needs to upload a file first."
+        logger.info(
+            "chat: schema over budget (%d chars) — focused on %s + %d related (of %d available)",
+            len(full_context_text), focus_name, len(focused_tables) - 1, len(all_tables),
+        )
 
     # Merge with any explicit context from the request
     full_context = schema_context
