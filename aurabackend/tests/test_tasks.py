@@ -99,24 +99,45 @@ class TestFireAndForget:
         await asyncio.sleep(0)
         assert active_count() == baseline
 
-    async def test_exception_is_logged(self, caplog):
-        import logging
-        caplog.set_level(logging.ERROR, logger="aura.shared.tasks")
+    async def test_exception_is_logged(self, monkeypatch):
+        # _on_task_done reports uncaught exceptions via the module-level
+        # logger. Assert against THAT logger directly (patched to a fake)
+        # instead of through Python's logging delivery path. The full suite
+        # leaves logging globally suppressed (logging.disable() and/or a
+        # disabled logger), which Logger.handle checks BEFORE any handler
+        # runs — so a handler-/caplog-based assertion is green in isolation
+        # but red under the suite (confirmed by reproduction). Patching the
+        # module logger tests the contract immune to that global state.
+        import shared.tasks as tasks_mod
+
+        error_calls: list[tuple] = []
+
+        class _FakeLogger:
+            def error(self, *args, **kwargs):
+                error_calls.append((args, kwargs))
+
+        monkeypatch.setattr(tasks_mod, "logger", _FakeLogger())
 
         async def boom():
             raise RuntimeError("intentional")
 
+        done = asyncio.Event()
         task = fire_and_forget(boom(), name="boom-task")
-        # Wait for completion; the task will raise, but the done callback
-        # logs and swallows so awaiting the task surfaces the exception.
+        # _on_task_done was registered first (inside fire_and_forget), so this
+        # second done-callback runs AFTER it; awaiting `done` therefore
+        # guarantees the exception has already been reported — no sleep race.
+        task.add_done_callback(lambda _t: done.set())
+        await done.wait()
+
+        # Surface + retrieve the task's exception so it isn't "never
+        # retrieved"; the done callback has already reported it.
         with pytest.raises(RuntimeError, match="intentional"):
             await task
-        await asyncio.sleep(0)
-        # Verify the logger recorded the exception
+
         assert any(
-            "background task" in rec.message and "boom-task" in rec.message
-            for rec in caplog.records
-        )
+            "background task" in str(args[0]) and "boom-task" in str(args)
+            for args, _ in error_calls
+        ), f"exception not reported to logger; error_calls={error_calls}"
 
     async def test_cancellation_is_silent(self, caplog):
         import logging

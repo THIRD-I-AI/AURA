@@ -6,6 +6,8 @@
 
 **A microservices platform where autonomous AI agents operate over mission-critical data — every decision cryptographically signed, deterministically replayable, statistically guaranteed, and running on pipelines that heal themselves when upstream data drifts.**
 
+📍 **New here? Start with the [Repository Map](docs/REPO_MAP.md)** — what every directory and service is, and where to find things.
+
 [![CI](https://github.com/THIRD-I-AI/AURA/actions/workflows/ci.yml/badge.svg)](https://github.com/THIRD-I-AI/AURA/actions/workflows/ci.yml)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-3776AB?logo=python&logoColor=white)](https://www.python.org/downloads/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.9-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)

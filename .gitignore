@@ -109,3 +109,16 @@ aurabackend/data/keys/
 aurabackend/data/demo_artifacts/
 # Superpowers brainstorming artifacts (never commit)
 .superpowers/
+
+# ── Runtime / scratch artifacts (repo-cleanup) ──────────────────────
+# Root-level streaming checkpoints (the aurabackend/ copy is ignored above;
+# a second copy accumulates at the repo root from dev runs).
+/data/checkpoints/
+# Stray duplicate virtualenv (the real one is .venv/).
+/venv/
+# Service + run logs.
+/logs/
+aurabackend/logs/
+# Loose stdout dumps (e.g. mc.out) + local scratch space.
+*.out
+/scratch/
