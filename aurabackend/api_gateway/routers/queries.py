@@ -928,46 +928,55 @@ async def get_llm_stats():
 # ── Dashboard Stats ──────────────────────────────────────────────────
 
 @router.get("/dashboard/stats")
-async def get_dashboard_stats():
-    """Real-time dashboard statistics.
+async def get_dashboard_stats(request: Request):
+    """Real-time dashboard statistics, scoped to the caller's workspace.
 
-    Sprint P-2a: replaced the per-request DuckDB-per-file COUNT(*)
-    scan (audit finding #2) with a single SELECT against the
-    ``gateway_file_metadata`` cache. The cache is populated on file
-    upload (background task in files.py) and refreshed every 60s by
-    the background tick. Falls back to the legacy in-line scan ONCE
-    if the cache is empty AND files exist on disk — guards the
-    cold-start case (e.g. a deploy that promoted a pre-existing
-    upload dir without an indexer pass)."""
+    ``file_sources`` is read DIRECTLY from the caller's per-tenant upload
+    dir (the same dir GET /files lists), so the Overview count is always
+    consistent with the file list and immune to the global metadata cache
+    (and to internal cache dirs like .aura_header_cache that sit beside the
+    workspace folders).
+
+    Row counts (the expensive part) come from the ``gateway_file_metadata``
+    cache, filtered to this tenant's files. The cache is populated on upload
+    + a 60s tick; on a cold/stale cache this endpoint indexes the tenant
+    dir synchronously (index_file_metadata offloads the COUNT(*) to a worker
+    thread, so awaiting blocks only this request, not the event loop)."""
     from api_gateway import persistence
+    from api_gateway.routers.workspaces import (
+        current_workspace_id,
+        tenant_upload_dir,
+    )
 
-    cached = await dashboard_cache.get("dashboard:stats")
+    workspace = current_workspace_id(request)
+    cache_key = f"dashboard:stats:{workspace}"
+    cached = await dashboard_cache.get(cache_key)
     if cached is not None:
         return cached
 
+    _tracked = {".csv", ".json", ".parquet", ".xlsx", ".xls"}
     file_count = 0
     total_file_rows = 0
     try:
-        rows = await persistence.list_file_metadata()
-        file_count = len(rows)
-        total_file_rows = sum(r["row_count"] for r in rows)
-
-        # Cold-start guard: if the cache is empty but files exist on
-        # disk, kick off a one-shot refresh so the next request
-        # benefits. Don't await its completion — we'd rather return
-        # zeros for one request than block the caller for several
-        # seconds during the first indexing pass.
-        if file_count == 0:
-            base = Path(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-            upload_dir = base / "data" / "uploads"
-            if upload_dir.exists() and any(upload_dir.iterdir()):
-                from shared.tasks import fire_and_forget
-                fire_and_forget(
-                    persistence.refresh_stale_file_metadata(str(upload_dir)),
-                    name="file-meta-bulk-refresh",
-                )
+        upload_dir = Path(tenant_upload_dir(request))
+        on_disk = (
+            [p for p in upload_dir.iterdir()
+             if p.is_file() and p.suffix.lower() in _tracked]
+            if upload_dir.exists() else []
+        )
+        file_count = len(on_disk)
+        if on_disk:
+            meta = {r["file_path"]: r["row_count"]
+                    for r in await persistence.list_file_metadata()}
+            # Cold/stale cache: index this tenant's dir synchronously so
+            # total_rows is correct on the first request, not after a tick.
+            if any(str(p.resolve()) not in meta for p in on_disk):
+                await persistence.refresh_stale_file_metadata(str(upload_dir))
+                meta = {r["file_path"]: r["row_count"]
+                        for r in await persistence.list_file_metadata()}
+            total_file_rows = sum(meta.get(str(p.resolve()), 0) for p in on_disk)
     except Exception as exc:
-        logger.warning("dashboard stats persistence read failed (non-fatal): %s", exc)
+        logger.warning("dashboard stats file scan failed (non-fatal): %s", exc)
 
     with _connections_lock:
         active_conns = sum(1 for c in _connections_store.values() if c.get("is_active"))
@@ -985,7 +994,7 @@ async def get_dashboard_stats():
         "system_health": "healthy",
         "uptime_percentage": 99.9,
     }
-    await dashboard_cache.set("dashboard:stats", result)
+    await dashboard_cache.set(cache_key, result)
     return result
 
 

@@ -10,7 +10,7 @@ import uuid as _uuid
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, Request, status
 from pydantic import BaseModel, Field
 
 from connectors import (
@@ -160,18 +160,26 @@ async def profile_table(connector_type: str, request: ProfileTableRequest) -> Di
 # ── Connection CRUD ──────────────────────────────────────────────────
 
 @router.get("/connections")
-async def get_connections():
+async def get_connections(request: Request):
     """List all registered data source connections."""
     from pathlib import Path
+
+    from api_gateway.routers.workspaces import tenant_upload_dir
 
     with _connections_lock:
         conns = list(_connections_store.values())
     file_sources = 0
     try:
-        base = Path(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-        upload_dir = base / "data" / "uploads"
+        # Count datasets in the CALLER's per-tenant upload dir (matches
+        # GET /files and the dashboard) — consistent + ignores the
+        # internal cache dirs beside the workspace folders.
+        _tracked = {".csv", ".json", ".parquet", ".xlsx", ".xls"}
+        upload_dir = Path(tenant_upload_dir(request))
         if upload_dir.exists():
-            file_sources = len([f for f in upload_dir.iterdir() if f.is_file()])
+            file_sources = sum(
+                1 for f in upload_dir.iterdir()
+                if f.is_file() and f.suffix.lower() in _tracked
+            )
     except Exception:
         pass
     return {"success": True, "connections": conns, "count": len(conns), "file_sources": file_sources}

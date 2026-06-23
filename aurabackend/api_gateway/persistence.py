@@ -881,10 +881,17 @@ async def refresh_stale_file_metadata(upload_dir: str) -> Dict[str, int]:
     if not upload_path.exists() or not upload_path.is_dir():
         return {"indexed": 0, "skipped": 0, "pruned": 0}
 
-    # Snapshot on-disk state once.
+    # Snapshot on-disk state once. Recurse: uploads are stored
+    # per-workspace at <upload_dir>/<workspace_id>/<file>, so a flat
+    # iterdir() would only see the workspace subdirectories and index
+    # nothing (the dashboard-stats "0 files" bug).
     on_disk: Dict[str, float] = {}
-    for f in upload_path.iterdir():
+    for f in upload_path.rglob("*"):
         if not f.is_file() or f.suffix.lower() not in _TRACKED_SUFFIXES:
+            continue
+        # Skip internal cache dirs (e.g. .aura_header_cache) — they hold
+        # derived artifacts, not user datasets, and must not inflate counts.
+        if any(part.startswith(".") for part in f.relative_to(upload_path).parts[:-1]):
             continue
         try:
             on_disk[str(f.resolve())] = f.stat().st_mtime

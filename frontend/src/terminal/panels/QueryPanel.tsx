@@ -12,12 +12,13 @@ export default function QueryPanel(_props: IDockviewPanelProps) {
 
   const run = async () => {
     if (!prompt.trim()) return;
+    if (!activeDataset) {
+      setError('Select a dataset in the Datasets panel first.');
+      return;
+    }
     setBusy(true); setError(null);
     try {
-      const res = await chatService.sendMessage(
-        prompt,
-        activeDataset ? { uploadedFile: activeDataset } : undefined,
-      );
+      const res = await chatService.sendMessage(prompt, { uploadedFile: activeDataset });
       setResult(res);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Query failed');
@@ -29,7 +30,11 @@ export default function QueryPanel(_props: IDockviewPanelProps) {
   const er = result?.execution_result;
   return (
     <div data-testid="query-panel" className="aura-panel query-panel">
-      {activeDataset && <div className="panel-context">dataset: {activeDataset}</div>}
+      <div className="panel-context" data-testid="query-context">
+        {activeDataset
+          ? <>dataset: {activeDataset}</>
+          : <>No dataset selected — pick one in the Datasets panel to query.</>}
+      </div>
       <div className="query-bar">
         <input data-testid="query-input" value={prompt}
                onChange={(e) => setPrompt(e.target.value)}
