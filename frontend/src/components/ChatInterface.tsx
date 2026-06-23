@@ -25,6 +25,7 @@ interface Message {
     executionResult?: ExecutionResult;
     userQuery?: string;
     sqlExplanation?: string;
+    action?: { type: string; pipeline_id?: string; name?: string };
   };
 }
 
@@ -180,6 +181,8 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
 
       if (response.status === 'Conversational') {
         setMessages((prev) => [...prev, { id: Date.now().toString(), type: 'assistant', content: response.message || 'How can I help?', timestamp: new Date() }]);
+      } else if (response.status === 'PipelineCreated') {
+        setMessages((prev) => [...prev, { id: Date.now().toString(), type: 'assistant', content: response.message || 'Pipeline created.', timestamp: new Date(), metadata: { action: response.action } }]);
       } else if (response.status === 'Success' || response.status === 'Fallback') {
         setMessages((prev) => [...prev, {
           id: Date.now().toString(), type: 'sql', content: response.final_query || '-- No query generated',
@@ -621,7 +624,16 @@ const MessageBubble: React.FC<{
             <span className="spinner" style={{ width: 12, height: 12, borderWidth: 1.5 }} />
             {message.content}
           </span>
-        ) : message.content}
+        ) : (
+          <>
+            {message.content}
+            {message.metadata?.action?.type === 'pipeline_created' && (
+              <a href="/app/pipelines" style={{ display: 'block', marginTop: 8, fontSize: 'var(--font-xs)', fontWeight: 600, color: 'var(--accent)', textDecoration: 'none' }}>
+                Open in ETL Pipelines →
+              </a>
+            )}
+          </>
+        )}
       </div>
 
       {isUser && (

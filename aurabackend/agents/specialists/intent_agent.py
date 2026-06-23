@@ -10,22 +10,33 @@ class IntentAgent(BaseAgent):
     """
 
     name = "IntentAgent"
-    description = "Classifies user intent as 'conversational' or 'sql'."
+    description = "Classifies user intent as 'sql', 'pipeline', or 'conversation'."
 
     async def _run(self, ctx: AgentContext, result: AgentResult) -> AgentResult:
         try:
             # Stringify context lightly to avoid overly massive prompt if many tables
             schema_keys = list(ctx.schema_context.keys()) if ctx.schema_context else []
 
-            intent_prompt = f"""You are AURA, an intelligent data assistant. Analyze the user's message and determine if it requires executing a SQL query against the database, or if it is a general conversational message (like a greeting, thanking, asking for help, or asking about the metadata/columns available).
+            intent_prompt = f"""You are AURA, an intelligent data assistant and command center. Classify the user's message into EXACTLY ONE intent:
+
+- "sql": a question about their data that is answered by querying it
+  (e.g. "top products by revenue", "how many customers", "sales by month").
+- "pipeline": a request to CREATE or BUILD an ETL / data pipeline / transformation
+  workflow (e.g. "create a pipeline that loads orders and filters by region",
+  "build an ETL job to clean the customer file", "ingest X then dedupe and
+  aggregate"). Verbs like create / build / make a pipeline, ETL, ingest,
+  transform, or workflow signal this — it is an ACTION, not a question.
+- "conversation": greetings, thanks, asking for help, or asking what
+  tables/columns are available — anything that does NOT query the data or
+  build a pipeline.
 
 Available Tables Context:
 {schema_keys}
 
 User's message: "{ctx.user_prompt}"
 
-Respond STRICTLY with a JSON object in this format (no markdown code blocks, just raw JSON):
-{{"intent": "sql" or "conversation", "message": "If conversation, put your helpful natural language response here. If sql, leave blank."}}
+Respond STRICTLY with a JSON object (no markdown code blocks, just raw JSON):
+{{"intent": "sql" | "pipeline" | "conversation", "message": "If conversation, put your helpful natural language response here; otherwise leave blank."}}
 """
             result.add_step(action="classify_intent", input_summary=f"User prompt: {ctx.user_prompt}")
             classifier_result = self.llm.generate_json(intent_prompt)

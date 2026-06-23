@@ -100,6 +100,9 @@ class ChatResponse(BaseModel):
     metadata: Optional[ChatMetadata] = None
     error_message: Optional[str] = None
     execution_result: Optional[ExecutionResult] = None
+    # Commander mode: a side-effect the chat performed that the UI should
+    # reflect (e.g. {"type": "pipeline_created", "pipeline_id": ..., "name": ...}).
+    action: Optional[Dict[str, Any]] = None
 
 
 class ChatHistoryEntry(BaseModel):
@@ -260,6 +263,64 @@ async def chat_endpoint(request: ChatRequest, http_request: Request) -> ChatResp
             execution_time_ms=round((time.perf_counter() - t0) * 1000, 1),
             available_tables=list(table_schemas.keys()),
         )
+
+    if intent == "pipeline":
+        # Commander mode: build a real ETL pipeline from the request and
+        # persist it so it appears in the ETL Pipelines tab — the chat
+        # dictates the app, it doesn't only answer questions.
+        con.close()
+        try:
+            from api_gateway.persistence import save_pipeline
+            from api_gateway.routers.pipelines import _get_generator
+            gen = _get_generator()
+            upload_dir = tenant_upload_dir(http_request)
+            data_exts = {".csv", ".parquet", ".json", ".xlsx", ".tsv"}
+            available_files = (
+                [f for f in sorted(os.listdir(upload_dir))
+                 if os.path.splitext(f)[1].lower() in data_exts]
+                if os.path.isdir(upload_dir) else []
+            )
+            pipeline = await gen.generate(
+                prompt=message, available_files=available_files, schema_context=None,
+            )
+            saved = await save_pipeline({
+                "id": pipeline.id,
+                "workspace_id": current_workspace_id(http_request),
+                "name": pipeline.name,
+                "description": pipeline.description,
+                "definition": pipeline.model_dump(),
+                "status": pipeline.status.value,
+                "source_label": pipeline.source.label(),
+                "sink_type": pipeline.sink.type.value,
+                "step_count": len(pipeline.steps or []),
+                "tags": pipeline.tags or [],
+                "created_at": pipeline.created_at,
+                "updated_at": pipeline.updated_at,
+            })
+            CHAT_REQUESTS.labels(status="pipeline").inc()
+            return ChatResponse(
+                status="PipelineCreated",
+                job_id=f"job_{session_id}",
+                message=(
+                    f"Built and saved the pipeline \"{saved['name']}\" "
+                    f"({pipeline.source.label()} → {pipeline.sink.type.value}, "
+                    f"{len(pipeline.steps or [])} transform step(s)). "
+                    f"Open it in ETL Pipelines to run or edit it."
+                ),
+                execution_time_ms=round((time.perf_counter() - t0) * 1000, 1),
+                available_tables=list(table_schemas.keys()),
+                action={"type": "pipeline_created", "pipeline_id": saved["id"], "name": saved["name"]},
+            )
+        except Exception as exc:
+            CHAT_REQUESTS.labels(status="pipeline_error").inc()
+            logger.warning("chat: pipeline creation failed: %s", exc)
+            return ChatResponse(
+                status="Error",
+                job_id=f"job_{session_id}",
+                message=f"I couldn't build that pipeline: {str(exc)[:200]}",
+                execution_time_ms=round((time.perf_counter() - t0) * 1000, 1),
+                available_tables=list(table_schemas.keys()),
+            )
 
     # 2. Run the canonical NL→SQL→Execute→Visualize→Analyze path through
     #    the LangGraph orchestrator. ``skip_planner=True`` because chat
