@@ -462,6 +462,26 @@ async def test_refresh_stale_walks_upload_dir(gateway_db, tmp_path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_refresh_stale_recurses_into_workspace_subdirs(
+    gateway_db, tmp_path,
+) -> None:
+    """Uploads are stored per-workspace at ``data/uploads/<workspace>/<file>``.
+    The refresh must recurse into those subdirs — scanning only the flat
+    upload root finds the workspace DIRECTORY (not a tracked file) and indexes
+    nothing, which is why the dashboard reported 0 files for real uploads."""
+    ws = tmp_path / "default"
+    ws.mkdir()
+    _write_csv(ws / "customer.csv", n_rows=5)
+    _write_csv(ws / "orders.csv", n_rows=9)
+
+    stats = await persistence.refresh_stale_file_metadata(str(tmp_path))
+    assert stats["indexed"] == 2, f"nested workspace files not indexed: {stats}"
+
+    rows = await persistence.list_file_metadata()
+    assert {r["file_name"] for r in rows} == {"customer.csv", "orders.csv"}
+
+
+@pytest.mark.asyncio
 async def test_refresh_stale_handles_missing_upload_dir(
     gateway_db, tmp_path,
 ) -> None:
