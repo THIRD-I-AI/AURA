@@ -27,7 +27,7 @@ from api_gateway.routers.workspaces import (
     tenant_upload_dir,
 )
 from connectors import BigQueryConnector, ConnectorConfig, MySQLConnector, PostgreSQLConnector, SourceType
-from insights import InsightsEngine
+from insights_service import InsightsEngine
 from safety import SQLSafetyValidator
 from shared.cache import dashboard_cache, query_cache
 from shared.circuit_breaker import get_breaker

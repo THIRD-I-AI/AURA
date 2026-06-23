@@ -68,7 +68,7 @@ $services = @(
     @{ Name = "Connectors-Vault";  Port = 8002; Mod = "connectors.main:app" }
     @{ Name = "Exec-Sandbox";      Port = 8003; Mod = "execution_sandbox_service.main:execution_app" }
     @{ Name = "Scheduler";         Port = 8004; Mod = "scheduler_service.main:scheduler_app" }
-    @{ Name = "Insights";          Port = 8005; Mod = "insights.main:app" }
+    @{ Name = "Insights";          Port = 8005; Mod = "insights_service.main:app" }
     @{ Name = "Orchestration";     Port = 8006; Mod = "orchestration_service.main:app" }
     @{ Name = "Metadata-Store";    Port = 8007; Mod = "metadata_store.main:metadata_app" }
     @{ Name = "UASR-Service";      Port = 8009; Mod = "uasr.service:app" }

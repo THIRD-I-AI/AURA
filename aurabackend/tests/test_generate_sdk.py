@@ -689,7 +689,7 @@ EXPECTED_CLIENTS = [
     ("aura_execution_sandbox_client", "execution_sandbox_service", 2),
     ("aura_gateway_client",           None,                      101),
     ("aura_ingestion_client",         "ingestion_service",       4),
-    ("aura_insights_client",          "insights",                4),
+    ("aura_insights_client",          "insights_service",                4),
     ("aura_metadata_store_client",    "metadata_store",          9),
     ("aura_orchestration_client",     "orchestration_service",   3),
     ("aura_scheduler_client",         "scheduler_service",       15),

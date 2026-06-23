@@ -42,7 +42,7 @@ SERVICES=(
   "Connectors-Vault|8002|connectors.main:app"
   "Exec-Sandbox|8003|execution_sandbox_service.main:execution_app"
   "Scheduler|8004|scheduler_service.main:scheduler_app"
-  "Insights|8005|insights.main:app"
+  "Insights|8005|insights_service.main:app"
   "Orchestration|8006|orchestration_service.main:app"
   "Metadata-Store|8007|metadata_store.main:metadata_app"
   "UASR-Service|8009|uasr.service:app"

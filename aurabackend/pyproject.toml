@@ -77,7 +77,7 @@ include = [
     "contracts*",
     "database*",
     "execution_sandbox_service*",
-    "insights*",
+    "insights_service*",
     "knowledge_base*",
     "mcp_core*",
     "metadata_store*",

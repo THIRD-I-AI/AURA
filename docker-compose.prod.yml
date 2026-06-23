@@ -129,7 +129,7 @@ services:
 
   insights_service:
     <<: *prod-common
-    command: uvicorn insights.main:app --host 0.0.0.0 --port 8005 --workers 2
+    command: uvicorn insights_service.main:app --host 0.0.0.0 --port 8005 --workers 2
     volumes: []
 
   orchestration_service:

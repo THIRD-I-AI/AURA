@@ -105,7 +105,7 @@ backendServices:
     workers: 1
     replicas: 1
   insights_service:
-    module: insights.main:app
+    module: insights_service.main:app
     port: 8005
     workers: 2
     replicas: 1
