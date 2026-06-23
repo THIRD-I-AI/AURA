@@ -31,7 +31,7 @@ Each is a FastAPI app with its own `main.py` and port. Launch them all with
 | `api_gateway/` | 8000 | The front door. Routers proxy/aggregate the other services + own the gateway DB (`persistence.py`). |
 | `code_generation_service/` | 8001 | LLM code generation. |
 | `connectors/` | 8002 | Data-source connectors (Postgres, MySQL, BigQuery, DuckDB, Kafka). Also imported as a **library**. |
-| `execution_sandbox/` | 8003 | Sandboxed code/query execution. |
+| `execution_sandbox_service/` | 8003 | Sandboxed code/query execution. |
 | `scheduler_service/` | 8004 | Distributed job queue + scheduling (Postgres LISTEN/NOTIFY). |
 | `insights/` | 8005 | Automated insight generation. |
 | `orchestration_service/` | 8006 | Cross-service workflow orchestration. |

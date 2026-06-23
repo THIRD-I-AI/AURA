@@ -111,7 +111,7 @@ services:
 
   execution_sandbox:
     <<: *prod-common
-    command: uvicorn execution_sandbox.main:execution_app --host 0.0.0.0 --port 8003 --workers 2
+    command: uvicorn execution_sandbox_service.main:execution_app --host 0.0.0.0 --port 8003 --workers 2
     volumes:
       - scheduler_data:/app/data
 

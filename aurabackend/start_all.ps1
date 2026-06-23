@@ -66,7 +66,7 @@ $services = @(
     @{ Name = "API-Gateway";       Port = 8000; Mod = "api_gateway.main:app" }
     @{ Name = "Code-Generation";   Port = 8001; Mod = "code_generation_service.main:code_gen_app" }
     @{ Name = "Connectors-Vault";  Port = 8002; Mod = "connectors.main:app" }
-    @{ Name = "Exec-Sandbox";      Port = 8003; Mod = "execution_sandbox.main:execution_app" }
+    @{ Name = "Exec-Sandbox";      Port = 8003; Mod = "execution_sandbox_service.main:execution_app" }
     @{ Name = "Scheduler";         Port = 8004; Mod = "scheduler_service.main:scheduler_app" }
     @{ Name = "Insights";          Port = 8005; Mod = "insights.main:app" }
     @{ Name = "Orchestration";     Port = 8006; Mod = "orchestration_service.main:app" }

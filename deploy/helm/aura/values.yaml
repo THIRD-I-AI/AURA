@@ -95,7 +95,7 @@ backendServices:
     workers: 2
     replicas: 1
   execution_sandbox:
-    module: execution_sandbox.main:execution_app
+    module: execution_sandbox_service.main:execution_app
     port: 8003
     workers: 2
     replicas: 1

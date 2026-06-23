@@ -40,7 +40,7 @@ SERVICES=(
   "API-Gateway|8000|api_gateway.main:app"
   "Code-Generation|8001|code_generation_service.main:code_gen_app"
   "Connectors-Vault|8002|connectors.main:app"
-  "Exec-Sandbox|8003|execution_sandbox.main:execution_app"
+  "Exec-Sandbox|8003|execution_sandbox_service.main:execution_app"
   "Scheduler|8004|scheduler_service.main:scheduler_app"
   "Insights|8005|insights.main:app"
   "Orchestration|8006|orchestration_service.main:app"

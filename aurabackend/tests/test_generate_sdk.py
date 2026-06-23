@@ -686,7 +686,7 @@ EXPECTED_CLIENTS = [
     ("aura_code_generation_client",   "code_generation_service", 2),
     ("aura_connectors_client",        "connectors",              14),
     ("aura_dar_client",               "dar_service",             7),
-    ("aura_execution_sandbox_client", "execution_sandbox",       2),
+    ("aura_execution_sandbox_client", "execution_sandbox_service", 2),
     ("aura_gateway_client",           None,                      101),
     ("aura_ingestion_client",         "ingestion_service",       4),
     ("aura_insights_client",          "insights",                4),
