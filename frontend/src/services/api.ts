@@ -164,11 +164,18 @@ export interface HealthStatus {
 
 export interface QueryResponse {
   job_id: string;
-  status: 'Success' | 'Fallback' | 'Error' | 'Conversational' | 'PipelineCreated';
+  status: 'Success' | 'Fallback' | 'Error' | 'Conversational' | 'PipelineCreated' | 'AuditCompleted';
   message?: string;
   final_query?: string;
   error_message?: string;
-  action?: { type: string; pipeline_id?: string; name?: string };
+  action?: {
+    type: string;
+    pipeline_id?: string;
+    name?: string;
+    record_hash?: string;
+    n_findings?: number;
+    signature_status?: string;
+  };
   execution_time_ms?: number;
   available_tables?: string[];
   execution_result?: ExecutionResult;
