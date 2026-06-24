@@ -26,9 +26,15 @@ class IntentAgent(BaseAgent):
   "build an ETL job to clean the customer file", "ingest X then dedupe and
   aggregate"). Verbs like create / build / make a pipeline, ETL, ingest,
   transform, or workflow signal this — it is an ACTION, not a question.
+- "audit": a request to AUDIT / forensically check a dataset for anomalies,
+  fraud, irregularities, Benford's-law deviation, duplicates, round-dollar
+  amounts, or to produce an audit certificate (e.g. "audit the salesorder
+  data", "check the invoices for anomalies", "run a forensic audit on
+  payments"). Verbs like audit / forensic / check for fraud-or-anomalies
+  signal this — it is an ACTION that runs the auditor, not a question.
 - "conversation": greetings, thanks, asking for help, or asking what
-  tables/columns are available — anything that does NOT query the data or
-  build a pipeline.
+  tables/columns are available — anything that does NOT query the data, build
+  a pipeline, or run an audit.
 
 Available Tables Context:
 {schema_keys}
@@ -36,7 +42,7 @@ Available Tables Context:
 User's message: "{ctx.user_prompt}"
 
 Respond STRICTLY with a JSON object (no markdown code blocks, just raw JSON):
-{{"intent": "sql" | "pipeline" | "conversation", "message": "If conversation, put your helpful natural language response here; otherwise leave blank."}}
+{{"intent": "sql" | "pipeline" | "audit" | "conversation", "message": "If conversation, put your helpful natural language response here; otherwise leave blank."}}
 """
             result.add_step(action="classify_intent", input_summary=f"User prompt: {ctx.user_prompt}")
             classifier_result = self.llm.generate_json(intent_prompt)

@@ -5,6 +5,7 @@ All chat-related endpoints: unified NL→SQL→Execute→Visualize pipeline,
 chat history management.
 """
 
+import asyncio
 import json
 import os
 import pathlib
@@ -139,6 +140,121 @@ async def _track_query(prompt: str, sql: str, status: str, rows: int, execution_
         await track_query(prompt, sql, status, rows, execution_time_ms)
     except Exception:
         pass
+
+
+# ── Commander helpers (audit intent) ─────────────────────────────────
+
+_AMOUNT_NAME_HINTS = (
+    "amount", "amt", "total", "value", "price", "cost", "revenue", "sales",
+    "balance", "sum", "debit", "credit", "net", "gross", "pay",
+)
+_NUMERIC_TYPE_HINTS = ("INT", "DOUBLE", "FLOAT", "DECIMAL", "NUMERIC", "REAL", "HUGEINT", "BIGINT")
+
+
+def _is_numeric_type(t: Any) -> bool:
+    return any(h in str(t or "").upper() for h in _NUMERIC_TYPE_HINTS)
+
+
+def _looks_like_id(name: str) -> bool:
+    """Identity/key columns are numeric but NOT monetary — auditing them (every
+    value unique/sequential) trips every check and yields garbage. Exclude them."""
+    n = name.lower()
+    return (
+        n in ("id", "idx", "index", "pk", "uuid", "guid", "year", "month", "day", "zip", "zipcode")
+        or n.endswith("_id") or n.endswith("_key") or n.endswith("_code") or n.endswith("_no")
+        or n.endswith("_uuid") or "uuid" in n or "guid" in n
+    )
+
+
+def _pick_amount_column(columns: List[Dict[str, Any]]) -> Optional[str]:
+    """Choose the monetary column to audit: a numeric column named like an
+    amount, else the first numeric non-identity column. Identity/key columns
+    (…_id, uuid, year, …) are excluded — auditing them yields meaningless
+    findings."""
+    numeric = [
+        c for c in columns
+        if _is_numeric_type(c.get("type")) and not _looks_like_id(str(c.get("name", "")))
+    ]
+    named = next(
+        (c["name"] for c in numeric if any(h in c["name"].lower() for h in _AMOUNT_NAME_HINTS)),
+        None,
+    )
+    return named or (numeric[0]["name"] if numeric else None)
+
+
+def _pick_audit_table(
+    uploaded_file: Optional[str], message: str, all_tables: Dict[str, Any],
+) -> Optional[str]:
+    """Pick which table to audit: the explicit uploaded_file, else a table named
+    in the message, else the table with the most numeric columns."""
+    if not all_tables:
+        return None
+    if uploaded_file:
+        stem = re.sub(r"[^A-Za-z0-9_]", "_", pathlib.PurePath(uploaded_file).stem)
+        if stem in all_tables:
+            return stem
+    msg = message.lower()
+    for tname in sorted(all_tables, key=len, reverse=True):
+        if tname and tname.lower() in msg:
+            return tname
+    best = max(
+        all_tables,
+        key=lambda t: sum(1 for c in all_tables[t]["columns"] if _is_numeric_type(c.get("type"))),
+    )
+    return best if any(_is_numeric_type(c.get("type")) for c in all_tables[best]["columns"]) else None
+
+
+def _forensic_findings(amounts: List[float]) -> List[Dict[str, Any]]:
+    """Population-level forensic checks on a numeric column. Returns a finding
+    ONLY for genuine anomalies (not one per row): Benford's-law conformity,
+    duplicate concentration, 3σ outliers, round-number excess. Thresholds follow
+    standard forensic-analytics practice, so clean data yields few/no findings."""
+    import statistics
+    from collections import Counter
+
+    from agents.specialists.financial_auditor import _benford_first_digit_mad
+
+    findings: List[Dict[str, Any]] = []
+    n = len(amounts)
+
+    mad, benford_n = _benford_first_digit_mad(amounts)
+    if mad is not None and benford_n >= 50:
+        if mad > 0.015:
+            findings.append({"finding_id": "benford", "pcaob_standard": "AS 2401", "risk_level": "High",
+                "description": f"Benford's-law nonconformity (first-digit MAD={mad:.4f} over {benford_n} values) — a classic indicator of fabricated or manipulated amounts.",
+                "evidence_payload": {"test": "benford_first_digit", "mad": round(mad, 5), "n": benford_n}, "requires_human_review": True})
+        elif mad > 0.012:
+            findings.append({"finding_id": "benford", "pcaob_standard": "AS 2401", "risk_level": "Medium",
+                "description": f"Marginal Benford's-law conformity (MAD={mad:.4f}); some amounts may not be naturally occurring.",
+                "evidence_payload": {"test": "benford_first_digit", "mad": round(mad, 5), "n": benford_n}, "requires_human_review": True})
+
+    counts = Counter(amounts)
+    dup_rows = sum(c - 1 for c in counts.values() if c > 1)
+    repeated = sum(1 for c in counts.values() if c > 1)
+    if n and dup_rows / n > 0.4 and repeated >= 3:
+        findings.append({"finding_id": "duplicates", "pcaob_standard": "AS 2401", "risk_level": "Medium",
+            "description": f"High duplicate concentration: {dup_rows} duplicate values across {repeated} repeated amounts ({dup_rows/n:.0%} of rows).",
+            "evidence_payload": {"test": "duplicate_amounts", "duplicate_rows": dup_rows, "repeated_values": repeated}, "requires_human_review": False})
+
+    if n >= 8:
+        mean = statistics.fmean(amounts)
+        std = statistics.pstdev(amounts)
+        if std > 0:
+            outliers = [a for a in amounts if abs(a - mean) > 3 * std]
+            if outliers:
+                worst = max(outliers, key=lambda a: abs(a - mean))
+                findings.append({"finding_id": "outliers", "pcaob_standard": "AS 2305",
+                    "risk_level": "High" if len(outliers) <= max(3, int(0.02 * n)) else "Medium",
+                    "description": f"{len(outliers)} value(s) beyond 3 standard deviations (largest: {worst:.2f}); material outliers warrant substantive testing.",
+                    "evidence_payload": {"test": "z_score_outlier", "count": len(outliers), "max_value": worst, "mean": round(mean, 2), "std": round(std, 2)}, "requires_human_review": True})
+
+    round_n = sum(1 for a in amounts if a and (a % 1000 == 0 or a % 100 == 0))
+    if n and round_n / n > 0.25 and round_n >= 5:
+        findings.append({"finding_id": "round_numbers", "pcaob_standard": "AS 2401", "risk_level": "Low",
+            "description": f"{round_n} round-number amounts ({round_n/n:.0%}); an unusually high share can indicate estimates or manual entries.",
+            "evidence_payload": {"test": "round_number", "count": round_n}, "requires_human_review": False})
+
+    return findings
 
 
 # ── Endpoints ────────────────────────────────────────────────────────
@@ -318,6 +434,102 @@ async def chat_endpoint(request: ChatRequest, http_request: Request) -> ChatResp
                 status="Error",
                 job_id=f"job_{session_id}",
                 message=f"I couldn't build that pipeline: {str(exc)[:200]}",
+                execution_time_ms=round((time.perf_counter() - t0) * 1000, 1),
+                available_tables=list(table_schemas.keys()),
+            )
+
+    if intent == "audit":
+        # Commander mode: run the REAL forensic auditor on the chosen dataset's
+        # monetary column and return a signed certificate the UI can open.
+        target = _pick_audit_table(request.uploaded_file, message, all_tables)
+        amount_col = _pick_amount_column(all_tables[target]["columns"]) if target else None
+        if not target or not amount_col:
+            con.close()
+            CHAT_REQUESTS.labels(status="audit_error").inc()
+            return ChatResponse(
+                status="Error",
+                job_id=f"job_{session_id}",
+                message=(
+                    "I need a dataset with a numeric/amount column to audit. "
+                    "Upload one (or name it in your request) and try again."
+                ),
+                execution_time_ms=round((time.perf_counter() - t0) * 1000, 1),
+                available_tables=list(table_schemas.keys()),
+            )
+        try:
+            def _read_amounts() -> List[float]:
+                cur = con.execute(f'SELECT "{amount_col}" FROM "{target}"')
+                out: List[float] = []
+                for (v,) in cur.fetchall():
+                    if v is None:
+                        continue
+                    try:
+                        out.append(float(v))
+                    except (TypeError, ValueError):
+                        continue
+                return out
+
+            amounts = await asyncio.to_thread(_read_amounts)
+            con.close()
+            if not amounts:
+                CHAT_REQUESTS.labels(status="audit_error").inc()
+                return ChatResponse(
+                    status="Error", job_id=f"job_{session_id}",
+                    message=f'No numeric values found in "{target}"."{amount_col}" to audit.',
+                    execution_time_ms=round((time.perf_counter() - t0) * 1000, 1),
+                    available_tables=list(table_schemas.keys()),
+                )
+            entries = [
+                {"id": f"{target}-{i}", "account": target, "amount": a}
+                for i, a in enumerate(amounts)
+            ]
+
+            from counterfactual_service.financial_report import (
+                build_completion_document,
+                client_view,
+                dataset_fingerprint,
+                sign_and_persist,
+            )
+            findings = await asyncio.to_thread(_forensic_findings, amounts)
+            doc = build_completion_document(
+                str(tenant), findings,
+                dataset_fingerprint(entries, [], [], entries),
+                0.0,
+            )
+            view = client_view(sign_and_persist(doc))
+            rhash = view.get("record_hash", "")
+            n = view.get("n_findings", len(findings))
+            sig = view.get("signature_status", "unsigned")
+
+            def _risk(f: Any) -> str:
+                return (f.get("risk_level") if isinstance(f, dict) else getattr(f, "risk_level", None)) or "Low"
+
+            highs = sum(1 for f in findings if _risk(f) == "High")
+            meds = sum(1 for f in findings if _risk(f) == "Medium")
+            lows = n - highs - meds
+            CHAT_REQUESTS.labels(status="audit").inc()
+            return ChatResponse(
+                status="AuditCompleted",
+                job_id=f"job_{session_id}",
+                message=(
+                    f'Forensic audit of "{target}" on "{amount_col}" ({len(amounts)} values): '
+                    f"{n} finding(s) — {highs} high, {meds} medium, {lows} low risk. "
+                    f"Certificate {sig}. Open the signed certificate to review the evidence."
+                ),
+                execution_time_ms=round((time.perf_counter() - t0) * 1000, 1),
+                available_tables=list(table_schemas.keys()),
+                action={"type": "audit_created", "record_hash": rhash, "n_findings": n, "signature_status": sig},
+            )
+        except Exception as exc:
+            try:
+                con.close()
+            except Exception:
+                pass
+            CHAT_REQUESTS.labels(status="audit_error").inc()
+            logger.warning("chat: audit failed: %s", exc)
+            return ChatResponse(
+                status="Error", job_id=f"job_{session_id}",
+                message=f"I couldn't run that audit: {str(exc)[:200]}",
                 execution_time_ms=round((time.perf_counter() - t0) * 1000, 1),
                 available_tables=list(table_schemas.keys()),
             )
