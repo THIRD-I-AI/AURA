@@ -743,15 +743,17 @@ def _count_rows_via_duckdb(file_path: str, suffix: str) -> int:
     try:
         import duckdb
 
-        normalised = file_path.replace("\\", "/")
+        from shared.sql_identifiers import quote_literal
+
+        path_lit = quote_literal(file_path.replace("\\", "/"))
         con = duckdb.connect(":memory:")
         try:
             if suffix == ".csv":
-                stmt = f"SELECT COUNT(*) FROM read_csv_auto('{normalised}')"
+                stmt = f"SELECT COUNT(*) FROM read_csv_auto({path_lit})"
             elif suffix == ".parquet":
-                stmt = f"SELECT COUNT(*) FROM read_parquet('{normalised}')"
+                stmt = f"SELECT COUNT(*) FROM read_parquet({path_lit})"
             elif suffix == ".json":
-                stmt = f"SELECT COUNT(*) FROM read_json_auto('{normalised}')"
+                stmt = f"SELECT COUNT(*) FROM read_json_auto({path_lit})"
             else:  # pragma: no cover — guarded by _COUNTABLE_SUFFIXES
                 return 0
             return int(con.execute(stmt).fetchone()[0])

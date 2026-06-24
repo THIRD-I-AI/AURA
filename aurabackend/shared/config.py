@@ -166,6 +166,25 @@ class AuraSettings(BaseSettings):
     jwt_enabled: bool = Field(False, alias="AURA_JWT_ENABLED")
     mcp_api_key: Optional[str] = Field(None, alias="MCP_API_KEY")
 
+    @field_validator("jwt_enabled", mode="after")
+    @classmethod
+    def _require_jwt_for_tenant_isolation_in_production(cls, v, info):
+        # Tenant data isolation is ENFORCED only when the JWT middleware is
+        # active: current_workspace_id() scopes every data store to the
+        # caller's org_id taken from request.state.user, which JWTAuthMiddleware
+        # sets only when AURA_JWT_ENABLED=true. With it false, every request
+        # collapses to the shared 'default' tenant — a cross-tenant read/write
+        # hole. Acceptable for single-user dev; a silent data breach in prod.
+        # Fail loud at startup, parallel to _reject_open_auth_in_production.
+        env = info.data.get("environment", "development")
+        if env.lower() == "production" and not v:
+            raise ValueError(
+                "AURA_JWT_ENABLED must be true in production. Without it, "
+                "tenant isolation is not enforced and all callers share the "
+                "'default' workspace (cross-tenant data exposure)."
+            )
+        return v
+
     # ── Object storage (S45) ────────────────────────────────────────────
     storage_backend: str = Field("local", alias="AURA_STORAGE_BACKEND")
     s3_bucket: Optional[str] = Field(None, alias="AURA_S3_BUCKET")

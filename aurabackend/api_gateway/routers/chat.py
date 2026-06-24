@@ -24,6 +24,7 @@ from shared.data_utils import build_schema_context_cached
 from shared.duckdb_factory import new_connection
 from shared.logging_config import get_logger
 from shared.observability import CHAT_REQUESTS
+from shared.sql_identifiers import quote_identifier
 
 from .workspaces import _request_tenant, current_workspace_id, tenant_upload_dir
 
@@ -458,7 +459,9 @@ async def chat_endpoint(request: ChatRequest, http_request: Request) -> ChatResp
             )
         try:
             def _read_amounts() -> List[float]:
-                cur = con.execute(f'SELECT "{amount_col}" FROM "{target}"')
+                cur = con.execute(
+                    f"SELECT {quote_identifier(amount_col)} FROM {quote_identifier(target)}"
+                )
                 out: List[float] = []
                 for (v,) in cur.fetchall():
                     if v is None:

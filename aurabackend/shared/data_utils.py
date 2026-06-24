@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from shared.cache import schema_cache
+from shared.sql_identifiers import quote_identifier, quote_literal
 
 logger = logging.getLogger("aura.data_utils")
 
@@ -247,18 +248,19 @@ def smart_load_csv(
     """
     file_path_str = str(file_path).replace("\\", "/")
     file_name = Path(file_path).name
+    qtable = quote_identifier(table_name)
 
     # Step 1: Load with read_csv_auto to let DuckDB detect
     conn.execute(
-        f'CREATE OR REPLACE TABLE "{table_name}" AS '
-        f"SELECT * FROM read_csv_auto('{file_path_str}')"
+        f"CREATE OR REPLACE TABLE {qtable} AS "
+        f"SELECT * FROM read_csv_auto({quote_literal(file_path_str)})"
     )
 
     # Get what DuckDB detected
-    cols = conn.execute(f'DESCRIBE "{table_name}"').fetchall()
+    cols = conn.execute(f"DESCRIBE {qtable}").fetchall()
     col_names = [c[0] for c in cols]
     col_types = [c[1] for c in cols]
-    row_count_result = conn.execute(f'SELECT COUNT(*) FROM "{table_name}"').fetchone()
+    row_count_result = conn.execute(f"SELECT COUNT(*) FROM {qtable}").fetchone()
     row_count = row_count_result[0] if row_count_result else 0
 
     # Check if headers are generic (column0, column1, ...)
@@ -291,7 +293,7 @@ def smart_load_csv(
             logger.info("File '%s' has no headers — inferring column names", file_name)
 
             # Get sample data for inference
-            sample = conn.execute(f'SELECT * FROM "{table_name}" LIMIT 20').fetchall()
+            sample = conn.execute(f"SELECT * FROM {qtable} LIMIT 20").fetchall()
 
             # Try LLM inference first
             if use_llm:
@@ -321,7 +323,8 @@ def smart_load_csv(
         for old_name, new_name in zip(col_names, inferred_names):
             if old_name != new_name:
                 conn.execute(
-                    f'ALTER TABLE "{table_name}" RENAME COLUMN "{old_name}" TO "{new_name}"'
+                    f"ALTER TABLE {qtable} RENAME COLUMN "
+                    f"{quote_identifier(old_name)} TO {quote_identifier(new_name)}"
                 )
 
         col_names = inferred_names
@@ -329,11 +332,11 @@ def smart_load_csv(
         result["headers_inferred"] = True
 
     # Get final column info
-    final_cols = conn.execute(f'DESCRIBE "{table_name}"').fetchall()
+    final_cols = conn.execute(f"DESCRIBE {qtable}").fetchall()
     result["columns"] = [{"name": c[0], "type": c[1]} for c in final_cols]
 
     # Sample data with actual column names
-    sample_rows = conn.execute(f'SELECT * FROM "{table_name}" LIMIT 5').fetchall()
+    sample_rows = conn.execute(f"SELECT * FROM {qtable} LIMIT 5").fetchall()
     final_col_names = [c[0] for c in final_cols]
     result["sample_data"] = [
         {col: _serialize(val) for col, val in zip(final_col_names, row)}
@@ -358,13 +361,14 @@ def smart_load_file(
         # Parquet, JSON — these always have proper column names
         file_path_str = str(file_path).replace("\\", "/")
         read_fn = {".parquet": "read_parquet", ".json": "read_json_auto"}.get(ext, "read_csv_auto")
+        qtable = quote_identifier(table_name)
         conn.execute(
-            f'CREATE OR REPLACE TABLE "{table_name}" AS '
-            f"SELECT * FROM {read_fn}('{file_path_str}')"
+            f"CREATE OR REPLACE TABLE {qtable} AS "
+            f"SELECT * FROM {read_fn}({quote_literal(file_path_str)})"
         )
-        cols = conn.execute(f'DESCRIBE "{table_name}"').fetchall()
-        row_count = conn.execute(f'SELECT COUNT(*) FROM "{table_name}"').fetchone()[0]
-        sample_rows = conn.execute(f'SELECT * FROM "{table_name}" LIMIT 5').fetchall()
+        cols = conn.execute(f"DESCRIBE {qtable}").fetchall()
+        row_count = conn.execute(f"SELECT COUNT(*) FROM {qtable}").fetchone()[0]
+        sample_rows = conn.execute(f"SELECT * FROM {qtable} LIMIT 5").fetchall()
         col_names = [c[0] for c in cols]
 
         return {
@@ -451,20 +455,22 @@ def detect_relationships(
                     if _columns_might_relate(c1_name, c2_name, c1_type, c2_type):
                         # Verify with value overlap
                         try:
+                            qc1, qt1 = quote_identifier(c1_name), quote_identifier(t1)
+                            qc2, qt2 = quote_identifier(c2_name), quote_identifier(t2)
                             overlap = conn.execute(f"""
                                 SELECT COUNT(*) FROM (
-                                    SELECT DISTINCT "{c1_name}" FROM "{t1}"
+                                    SELECT DISTINCT {qc1} FROM {qt1}
                                     INTERSECT
-                                    SELECT DISTINCT "{c2_name}" FROM "{t2}"
+                                    SELECT DISTINCT {qc2} FROM {qt2}
                                 ) sub
                             """).fetchone()[0]
                             if overlap > 0:
                                 # Determine which is PK (more unique values usually)
                                 cnt1 = conn.execute(
-                                    f'SELECT COUNT(DISTINCT "{c1_name}") FROM "{t1}"'
+                                    f"SELECT COUNT(DISTINCT {qc1}) FROM {qt1}"
                                 ).fetchone()[0]
                                 cnt2 = conn.execute(
-                                    f'SELECT COUNT(DISTINCT "{c2_name}") FROM "{t2}"'
+                                    f"SELECT COUNT(DISTINCT {qc2}) FROM {qt2}"
                                 ).fetchone()[0]
 
                                 if cnt1 >= cnt2:
@@ -602,14 +608,16 @@ def _replay_tables(conn: Any, loaders: List[Dict[str, Any]]) -> None:
         table_name = loader["table_name"]
         read_fn = loader["read_fn"]
         try:
+            qtable = quote_identifier(table_name)
             conn.execute(
-                f'CREATE OR REPLACE TABLE "{table_name}" AS '
-                f"SELECT * FROM {read_fn}('{uri}')"
+                f"CREATE OR REPLACE TABLE {qtable} AS "
+                f"SELECT * FROM {read_fn}({quote_literal(uri)})"
             )
             for old, new in loader.get("renames", []):
                 if old != new:
                     conn.execute(
-                        f'ALTER TABLE "{table_name}" RENAME COLUMN "{old}" TO "{new}"'
+                        f"ALTER TABLE {qtable} RENAME COLUMN "
+                        f"{quote_identifier(old)} TO {quote_identifier(new)}"
                     )
         except Exception as e:
             logger.warning("Cache replay failed for %s: %s", table_name, e)
@@ -640,7 +648,7 @@ def _build_schema_context_with_recipe(
             renames: List[Tuple[str, str]] = []
             if info.get("headers_inferred"):
                 sniff = conn.execute(
-                    f"DESCRIBE SELECT * FROM {read_fn}('{obj.duckdb_uri}')"
+                    f"DESCRIBE SELECT * FROM {read_fn}({quote_literal(obj.duckdb_uri)})"
                 ).fetchall()
                 original_cols = [r[0] for r in sniff]
                 final_cols = [c["name"] for c in info["columns"]]
