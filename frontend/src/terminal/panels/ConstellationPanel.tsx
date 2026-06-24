@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ReactFlow,
   ReactFlowProvider,
@@ -12,20 +12,66 @@ import {
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import type { IDockviewPanelProps } from 'dockview-react';
-import { lineageService, type LineageGraph } from '../../services/api';
+import { lineageService, uploadService, type LineageGraph, type LineageNode } from '../../services/api';
 import { useCockpit } from '../CockpitProvider';
 import { AuraNode } from '../constellation/AuraNode';
 import { computeConstellationLayout, neighborSet, type RFAuraNode } from '../constellation/layout';
 
 const nodeTypes = { aura: AuraNode };
 
+const stem = (name: string) => name.replace(/\.[^.]+$/, '');
+
+/**
+ * Merge the tenant's uploaded data files into the lineage graph as `table`
+ * nodes, so the constellation reflects the user's actual datasets even before
+ * any query/dashboard lineage exists. Dedupes against lineage tables by stem
+ * (a "customer" lineage node and a "customer.csv" upload are the same thing).
+ */
+function withDatasets(
+  lineage: LineageGraph,
+  files: Array<{ filename: string; size: number }>,
+): LineageGraph {
+  const lineageTableStems = new Set(
+    lineage.nodes.filter((n) => n.type === 'table').map((n) => stem(n.label).toLowerCase()),
+  );
+  const datasetNodes: LineageNode[] = files
+    .filter((f) => !lineageTableStems.has(stem(f.filename).toLowerCase()))
+    .map((f) => ({
+      id: `file:${f.filename}`,
+      type: 'table' as const,
+      label: f.filename,
+      metadata: { source: 'upload', size: f.size },
+    }));
+  if (!datasetNodes.length) return lineage;
+  return {
+    ...lineage,
+    nodes: [...datasetNodes, ...lineage.nodes],
+    summary: { ...lineage.summary, tables: lineage.summary.tables + datasetNodes.length },
+  };
+}
+
 /** Inner canvas — runs inside a ReactFlowProvider so it can use the flow API. */
 function Canvas({ graph }: { graph: LineageGraph }) {
-  const { setActiveDataset } = useCockpit();
+  const { activeDataset, setActiveDataset } = useCockpit();
   const { setCenter } = useReactFlow();
   const base = useMemo(() => computeConstellationLayout(graph), [graph]);
   const [focusId, setFocusId] = useState<string | null>(null);
   const [search, setSearch] = useState('');
+
+  // Bidirectional cross-filter: when a dataset is selected elsewhere (the
+  // Datasets panel, the chat), focus + centre its node here too.
+  useEffect(() => {
+    if (!activeDataset) return;
+    const needle = stem(activeDataset).toLowerCase();
+    const hit = base.nodes.find(
+      (n) => n.data.label.toLowerCase() === activeDataset.toLowerCase()
+        || stem(n.data.label).toLowerCase() === needle,
+    );
+    if (hit) {
+      setFocusId(hit.id);
+      setCenter(hit.position.x, hit.position.y, { zoom: 1.3, duration: 500 });
+    }
+  }, [activeDataset, base.nodes, setCenter]);
 
   const focus = useMemo(
     () => (focusId ? neighborSet(graph.edges, focusId) : null),
@@ -106,13 +152,42 @@ function Canvas({ graph }: { graph: LineageGraph }) {
 export default function ConstellationPanel(_props: IDockviewPanelProps) {
   const [graph, setGraph] = useState<LineageGraph | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const filesKeyRef = useRef<string>('');
 
   useEffect(() => {
     let alive = true;
-    lineageService.get()
-      .then((g) => { if (alive) setGraph(g); })
-      .catch((e) => { if (alive) setError(e instanceof Error ? e.message : 'Failed to load lineage'); });
-    return () => { alive = false; };
+
+    const build = async () => {
+      const [lineage, files] = await Promise.all([
+        lineageService.get(),
+        uploadService.getUploadedFiles().catch(() => []),
+      ]);
+      if (!alive) return;
+      filesKeyRef.current = files.map((f) => f.filename).sort().join('|');
+      setGraph(withDatasets(lineage, files));
+    };
+
+    build().catch((e) => {
+      if (alive) setError(e instanceof Error ? e.message : 'Failed to load lineage');
+    });
+
+    // Auto-populate newly uploaded datasets: poll the (cheap) file list and
+    // rebuild the graph only when the set actually changes, to avoid re-layout
+    // churn on every tick.
+    const iv = setInterval(async () => {
+      try {
+        const files = await uploadService.getUploadedFiles();
+        const key = files.map((f) => f.filename).sort().join('|');
+        if (!alive || key === filesKeyRef.current) return;
+        filesKeyRef.current = key;
+        const lineage = await lineageService.get();
+        if (alive) setGraph(withDatasets(lineage, files));
+      } catch {
+        /* transient — keep the current graph */
+      }
+    }, 8000);
+
+    return () => { alive = false; clearInterval(iv); };
   }, []);
 
   const shell = (inner: React.ReactNode) => (
@@ -124,7 +199,7 @@ export default function ConstellationPanel(_props: IDockviewPanelProps) {
   if (!graph.nodes.length) {
     return shell(
       <div className="constellation-empty">
-        No lineage yet — run queries and build dashboards to populate the graph.
+        No datasets yet — upload a file (or run queries) to populate the graph.
       </div>,
     );
   }
