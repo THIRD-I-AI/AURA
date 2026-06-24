@@ -14,19 +14,29 @@ import time
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from agents.base import AgentContext
+from agents.commander import ErrorEvent, run_commander
+from agents.commander_tools import build_default_registry
 from agents.langgraph_orchestrator import run_orchestrator
 from agents.specialists.intent_agent import IntentAgent
 from api_gateway.persistence import insert_chat_message, list_chat_messages
+from shared.config import settings
 from shared.data_utils import build_schema_context_cached
 from shared.duckdb_factory import new_connection
+from shared.llm_provider import get_llm
 from shared.logging_config import get_logger
 from shared.observability import CHAT_REQUESTS
 from shared.sql_identifiers import quote_identifier
 
 from .workspaces import _request_tenant, current_workspace_id, tenant_upload_dir
+
+# Commander Core (Subsystem A): the streaming POST /chat/stream loop, gated by
+# settings.commander_enabled. Built once; the registry is stateless.
+_COMMANDER_REGISTRY = build_default_registry()
+_STREAM_SENTINEL = object()
 
 logger = get_logger("aura.api_gateway.chat")
 
@@ -72,6 +82,14 @@ class ChatRequest(BaseModel):
     uploaded_file: Optional[str] = None
     columns: Optional[List[str]] = None
     auto_execute: bool = True
+
+
+class ChatStreamRequest(BaseModel):
+    """Commander streaming chat (POST /chat/stream)."""
+    message: str
+    context: Optional[str] = None
+    session_id: Optional[str] = None
+    uploaded_file: Optional[str] = None
 
 
 class ExecutionResult(BaseModel):
@@ -603,6 +621,72 @@ async def chat_endpoint(request: ChatRequest, http_request: Request) -> ChatResp
         ),
         error_message=error_message,
         execution_result=execution_result if (execution_result.success or execution_result.error or execution_result.sql_explanation) else None,
+    )
+
+
+async def _build_commander_session(http_request: Request, req: "ChatStreamRequest"):
+    """Build a tenant-scoped DuckDB connection + schema-context text, the same
+    way chat_endpoint does. ``build_schema_context_cached`` is async, so this
+    runs in the request coroutine; the returned ``con`` is then used ONLY by
+    the worker thread (access stays serialised — never concurrent)."""
+    tenant = _request_tenant(http_request)
+    con = new_connection()
+    schema_result = await build_schema_context_cached(con, tenant, use_llm=True)
+    context_text = schema_result.get("context_text") or "No tables available."
+    if req.context:
+        context_text = f"{req.context}\n\n{context_text}"
+    return con, context_text, (tenant or "default")
+
+
+@router.post("/chat/stream")
+async def chat_stream(req: ChatStreamRequest, http_request: Request) -> StreamingResponse:
+    """Commander streaming chat (coexists with POST /chat). 404 unless the
+    AURA_COMMANDER_ENABLED flag is on. Streams typed SSE events from the
+    agentic tool-loop; the blocking loop runs in a worker thread bridged to
+    the async response via an asyncio.Queue."""
+    if not settings.commander_enabled:
+        raise HTTPException(status_code=404, detail="commander disabled")
+    message = req.message.strip()
+    if not message:
+        raise HTTPException(status_code=400, detail="Message is required")
+
+    con, schema_context, tenant = await _build_commander_session(http_request, req)
+    queue: asyncio.Queue = asyncio.Queue()
+    loop = asyncio.get_running_loop()
+
+    def _worker() -> None:
+        try:
+            for ev in run_commander(
+                message, tenant=tenant, schema_context=schema_context,
+                registry=_COMMANDER_REGISTRY, llm=get_llm(), con=con,
+            ):
+                loop.call_soon_threadsafe(queue.put_nowait, ev)
+        except Exception as exc:  # never lose the stream on an unexpected error
+            loop.call_soon_threadsafe(queue.put_nowait, ErrorEvent(kind="internal", message=str(exc)))
+        finally:
+            loop.call_soon_threadsafe(queue.put_nowait, _STREAM_SENTINEL)
+            try:
+                con.close()
+            except Exception:
+                pass
+
+    async def _sse():
+        worker = loop.run_in_executor(None, _worker)
+        try:
+            while True:
+                ev = await queue.get()
+                if ev is _STREAM_SENTINEL:
+                    break
+                if await http_request.is_disconnected():
+                    break
+                yield ev.to_sse()
+        finally:
+            worker.cancel()
+
+    return StreamingResponse(
+        _sse(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "Connection": "keep-alive"},
     )
 
 
