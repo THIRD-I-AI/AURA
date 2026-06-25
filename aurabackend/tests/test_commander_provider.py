@@ -82,3 +82,42 @@ def test_unparseable_reply_yields_error_finish_reason():
 def test_none_reply_yields_error():
     turn = ScriptedProvider(None).complete_with_tools([{"role": "user", "content": "hi"}], _TOOLS)
     assert turn.finish_reason == "error"
+
+
+# ── tolerance for format variations capable models produce ──────────────────
+# Gemini (and others) flatten the action contract: the tool name lands in
+# "action" and the args at the top level, instead of the rigid
+# {"action":"tool","tool":NAME,"arguments":{...}}. The parser must accept these.
+
+def test_flattened_action_is_tool_name_with_arguments():
+    # Gemini-style: action == the tool name, args nested under "arguments"
+    p = ScriptedProvider('{"action": "run_sql", "arguments": {"sql": "SELECT 1"}}')
+    turn = p.complete_with_tools([{"role": "user", "content": "hi"}], _TOOLS)
+    assert turn.finish_reason == "tool_calls"
+    assert turn.tool_calls[0].name == "run_sql"
+    assert turn.tool_calls[0].arguments == {"sql": "SELECT 1"}
+
+
+def test_fully_flattened_args_at_top_level():
+    # Gemini's exact observed shape: {"action": "describe_table", "table": "sales"}
+    p = ScriptedProvider('{"action": "run_sql", "sql": "SELECT 2"}')
+    turn = p.complete_with_tools([{"role": "user", "content": "hi"}], _TOOLS)
+    assert turn.finish_reason == "tool_calls"
+    assert turn.tool_calls[0].name == "run_sql"
+    assert turn.tool_calls[0].arguments == {"sql": "SELECT 2"}
+
+
+def test_tool_key_without_action_wrapper():
+    p = ScriptedProvider('{"tool": "run_sql", "arguments": {"sql": "SELECT 3"}}')
+    turn = p.complete_with_tools([{"role": "user", "content": "hi"}], _TOOLS)
+    assert turn.tool_calls[0].name == "run_sql"
+    assert turn.tool_calls[0].arguments == {"sql": "SELECT 3"}
+
+
+def test_unknown_action_value_is_not_a_tool():
+    # an action that is neither "final"/"tool" nor a known tool name → error,
+    # not a phantom tool call
+    p = ScriptedProvider('{"action": "ponder", "thought": "hmm"}')
+    turn = p.complete_with_tools([{"role": "user", "content": "hi"}], _TOOLS)
+    assert turn.finish_reason == "error"
+    assert turn.tool_calls == []

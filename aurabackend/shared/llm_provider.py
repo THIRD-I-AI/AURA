@@ -289,13 +289,45 @@ class LLMProvider(ABC):
             return AssistantTurn(text=None, tool_calls=[], finish_reason="error")
         if not isinstance(obj, dict):
             return AssistantTurn(text=None, tool_calls=[], finish_reason="error")
+        return self._turn_from_action_obj(obj, tools)
+
+    def _turn_from_action_obj(self, obj: Dict[str, Any],
+                              tools: List[Dict[str, Any]]) -> AssistantTurn:
+        """Map a parsed action object onto an AssistantTurn, tolerating the
+        format variations capable models produce. Accepted tool shapes:
+          {"action":"tool","tool":NAME,"arguments":{...}}   (canonical)
+          {"action":NAME, ...top-level args...}              (Gemini flattens it)
+          {"action":NAME,"arguments":{...}}
+          {"tool"|"name":NAME,"arguments":{...}}             (no action wrapper)
+        Final answer: {"action":"final","text":...} or a bare {"text"|"answer":...}."""
+        tool_names = {t.get("name") for t in tools if t.get("name")}
         action = obj.get("action")
-        if action == "final":
-            return AssistantTurn(text=str(obj.get("text", "")), tool_calls=[], finish_reason="stop")
-        if action == "tool" and obj.get("tool"):
-            call = ToolCall(id=_uuid.uuid4().hex[:12], name=str(obj["tool"]),
-                            arguments=obj.get("arguments") or {})
-            return AssistantTurn(text=None, tool_calls=[call], finish_reason="tool_calls")
+
+        tool_name = None
+        if action == "tool":
+            tool_name = obj.get("tool") or obj.get("name")
+        elif action in tool_names:                     # action value IS the tool name
+            tool_name = action
+        elif obj.get("tool") in tool_names:
+            tool_name = obj.get("tool")
+        elif obj.get("name") in tool_names:
+            tool_name = obj.get("name")
+
+        if tool_name:
+            args = obj.get("arguments")
+            if not isinstance(args, dict):             # args flattened to top level
+                args = {k: v for k, v in obj.items()
+                        if k not in ("action", "tool", "name", "arguments")}
+            return AssistantTurn(
+                text=None,
+                tool_calls=[ToolCall(id=_uuid.uuid4().hex[:12], name=str(tool_name), arguments=args)],
+                finish_reason="tool_calls",
+            )
+
+        if action == "final" or obj.get("text") is not None or obj.get("answer") is not None:
+            text = obj.get("text") if obj.get("text") is not None else obj.get("answer", "")
+            return AssistantTurn(text=str(text), tool_calls=[], finish_reason="stop")
+
         return AssistantTurn(text=None, tool_calls=[], finish_reason="error")
 
     def __repr__(self) -> str:
