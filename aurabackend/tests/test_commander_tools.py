@@ -113,3 +113,47 @@ def test_specs_shape_is_model_ready():
     specs = reg.specs()
     spec = next(s for s in specs if s["name"] == "run_sql")
     assert spec["parameters"]["required"] == ["sql"]
+
+
+# ── schema-discovery tools (latency + correctness fix) ──────────────────────
+# The commander gives the model these instead of dumping every table's full
+# schema into the prompt — keeps each LLM call small (under provider TPM
+# limits → fast) and lets the model fetch only the columns it needs.
+
+def test_list_tables_returns_loaded_tables():
+    reg = build_default_registry()
+    con = _con()
+    con.execute("CREATE TABLE customers (id INTEGER, name VARCHAR)")
+    out = reg.execute("list_tables", {}, tenant="t1", con=con)
+    assert out.ok is True
+    assert set(out.value["tables"]) >= {"sales", "customers"}
+
+
+def test_describe_table_returns_columns_and_types():
+    reg = build_default_registry()
+    out = reg.execute("describe_table", {"table": "sales"}, tenant="t1", con=_con())
+    assert out.ok is True
+    cols = {c["name"]: c["type"] for c in out.value["columns"]}
+    assert set(cols) == {"id", "amount"}
+    assert "INT" in cols["amount"].upper()
+
+
+def test_describe_table_unknown_table_is_safe_and_empty():
+    reg = build_default_registry()
+    out = reg.execute("describe_table", {"table": "no_such_table"}, tenant="t1", con=_con())
+    # graceful: ok with no columns (model learns the table isn't there) — never raises
+    assert out.ok is True
+    assert out.value["columns"] == []
+
+
+def test_describe_table_injection_name_cannot_run_sql():
+    reg = build_default_registry()
+    con = _con()
+    reg.execute("describe_table", {"table": "sales\"; CREATE TABLE pwned AS SELECT 1; --"},
+                tenant="t1", con=con)
+    assert "pwned" not in _tables(con)
+
+
+def test_discovery_tools_in_specs():
+    names = {s["name"] for s in build_default_registry().specs()}
+    assert {"list_tables", "describe_table", "run_sql"} <= names

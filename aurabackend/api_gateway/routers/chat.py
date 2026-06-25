@@ -631,8 +631,13 @@ async def _build_commander_session(http_request: Request, req: "ChatStreamReques
     the worker thread (access stays serialised — never concurrent)."""
     tenant = _request_tenant(http_request)
     con = new_connection()
+    # Loads the tenant's datasets into `con` (side effect) — but we pass the
+    # commander only the compact table NAMES, not the verbose rich context.
+    # The model fetches columns on demand via describe_table, keeping each LLM
+    # turn small (the rich dump was ~3.2k tokens → provider rate-limit latency).
     schema_result = await build_schema_context_cached(con, tenant, use_llm=True)
-    context_text = schema_result.get("context_text") or "No tables available."
+    table_names = list(schema_result.get("tables", {}).keys())
+    context_text = ("Loaded tables: " + ", ".join(table_names)) if table_names else "No tables loaded yet."
     if req.context:
         context_text = f"{req.context}\n\n{context_text}"
     return con, context_text, (tenant or "default")

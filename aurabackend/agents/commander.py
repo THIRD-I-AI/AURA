@@ -83,10 +83,16 @@ class DoneEvent:
 
 
 def build_system_prompt(schema_context: str, registry: Any) -> str:
+    # Schema is discovered ON DEMAND via tools, not dumped into the prompt:
+    # dumping every table's full schema bloats each turn to thousands of
+    # tokens (hits provider rate limits → slow) and scales badly with many
+    # datasets. The model lists/describes only what it needs.
     return (
-        "You answer questions about the user's loaded datasets using the tools.\n\n"
-        "SCHEMA CONTEXT (use these exact table/column names):\n"
-        f"{schema_context or '(no datasets loaded)'}\n"
+        "You answer questions about the user's loaded datasets using the tools.\n"
+        "Workflow: use list_tables to see available datasets, describe_table to "
+        "get a table's exact columns, then run_sql (a single SELECT) to compute "
+        "the answer. NEVER guess table or column names — describe_table first.\n\n"
+        f"{schema_context or 'Call list_tables to see what data is loaded.'}\n"
     )
 
 

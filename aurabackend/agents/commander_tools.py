@@ -118,6 +118,52 @@ def _run_sql_handler(arguments: Dict[str, Any], *, tenant: str, con: Any) -> Too
     return ToolOutcome(ok=True, value={"columns": columns, "rows": rows, "row_count": len(rows)})
 
 
+def _list_tables_handler(arguments: Dict[str, Any], *, tenant: str, con: Any) -> ToolOutcome:
+    rows = con.execute(
+        "SELECT table_name FROM information_schema.tables "
+        "WHERE table_schema = 'main' ORDER BY table_name"
+    ).fetchall()
+    return ToolOutcome(ok=True, value={"tables": [r[0] for r in rows]})
+
+
+def _describe_table_handler(arguments: Dict[str, Any], *, tenant: str, con: Any) -> ToolOutcome:
+    table = str(arguments.get("table", "")).strip()
+    if not table:
+        return ToolOutcome(ok=False, error="table must be a non-empty string")
+    # Parameterized: the model-supplied name is a VALUE in the WHERE clause,
+    # never interpolated into SQL — no identifier injection is possible.
+    rows = con.execute(
+        "SELECT column_name, data_type FROM information_schema.columns "
+        "WHERE table_schema = 'main' AND table_name = ? ORDER BY ordinal_position",
+        [table],
+    ).fetchall()
+    return ToolOutcome(ok=True, value={
+        "table": table,
+        "columns": [{"name": r[0], "type": r[1]} for r in rows],
+    })
+
+
+_LIST_TABLES = CommanderTool(
+    name="list_tables",
+    description="List the names of all datasets/tables the user has loaded. "
+                "Call this first to discover what data is available.",
+    parameters={"type": "object", "properties": {}},
+    handler=_list_tables_handler,
+)
+
+_DESCRIBE_TABLE = CommanderTool(
+    name="describe_table",
+    description="Return the column names and types of one table. Call this for "
+                "the table(s) you need BEFORE writing run_sql — never guess column names.",
+    parameters={
+        "type": "object",
+        "properties": {"table": {"type": "string", "description": "exact table name"}},
+        "required": ["table"],
+    },
+    handler=_describe_table_handler,
+)
+
+
 _RUN_SQL = CommanderTool(
     name="run_sql",
     description=(
@@ -137,5 +183,7 @@ _RUN_SQL = CommanderTool(
 
 def build_default_registry() -> CommanderToolRegistry:
     reg = CommanderToolRegistry()
+    reg.register(_LIST_TABLES)
+    reg.register(_DESCRIBE_TABLE)
     reg.register(_RUN_SQL)
     return reg
