@@ -166,6 +166,11 @@ class AuraSettings(BaseSettings):
     jwt_enabled: bool = Field(False, alias="AURA_JWT_ENABLED")
     mcp_api_key: Optional[str] = Field(None, alias="MCP_API_KEY")
 
+    # Commander Core (Subsystem A): gates the streaming POST /chat/stream loop.
+    # Default off — the legacy DAG POST /chat path is unaffected; flip to true
+    # to expose the agentic tool-loop alongside it (coexistence-then-cutover).
+    commander_enabled: bool = Field(False, alias="AURA_COMMANDER_ENABLED")
+
     @field_validator("jwt_enabled", mode="after")
     @classmethod
     def _require_jwt_for_tenant_isolation_in_production(cls, v, info):

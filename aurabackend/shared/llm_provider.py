@@ -24,7 +24,9 @@ from __future__ import annotations
 import json
 import logging
 import os
+import uuid as _uuid
 from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Union
 
 logger = logging.getLogger(__name__)
@@ -36,6 +38,66 @@ _OLLAMA_HEALTH_TIMEOUT = int(os.getenv("OLLAMA_HEALTH_TIMEOUT", "3"))
 class LLMRateLimitError(Exception):
     """Raised when the LLM provider rejects the request due to rate/size limits."""
     pass
+
+
+# ────────────────────────────────────────────────────────────────────
+# Tool-calling value types (Commander Core, Subsystem A)
+# ────────────────────────────────────────────────────────────────────
+# One reasoning turn of the agentic loop. The provider answers a narrow
+# question — "final text, or a request to call tools?" — and the app's
+# commander loop owns orchestration/guardrails/streaming. Kept tiny and
+# provider-neutral so llm_provider.py never imports app-domain code.
+
+@dataclass
+class ToolCall:
+    id: str
+    name: str
+    arguments: Dict[str, Any]
+
+
+@dataclass
+class AssistantTurn:
+    text: Optional[str]
+    tool_calls: List["ToolCall"] = field(default_factory=list)
+    finish_reason: str = "stop"          # "stop" | "tool_calls" | "error"
+
+
+def _extract_first_json_object(text: str) -> Optional[str]:
+    """Return the first balanced ``{...}`` substring, or None.
+
+    Tolerates markdown fences and surrounding prose so a weaker local model
+    that wraps its JSON action in chatter still parses. String-aware: braces
+    inside JSON string literals don't change nesting depth."""
+    s = text.strip()
+    if s.startswith("```"):
+        s = s.split("\n", 1)[-1]
+        if s.endswith("```"):
+            s = s.rsplit("```", 1)[0]
+    start = s.find("{")
+    if start == -1:
+        return None
+    depth = 0
+    in_str = False
+    esc = False
+    for i in range(start, len(s)):
+        ch = s[i]
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return s[start:i + 1]
+    return None
 
 
 def _setting(attr: str) -> Optional[str]:
@@ -183,6 +245,90 @@ class LLMProvider(ABC):
                 msgs.append({"role": "user", "content": prompt[0]})
             return msgs
         return [{"role": "user", "content": prompt}]
+
+    # ── Agentic tool-loop seam (Commander Core, Subsystem A) ──────────
+    # One reasoning turn. The default is a ReAct/JSON contract over the
+    # existing sync generate(), so EVERY backend (incl. Ollama / air-gapped)
+    # gets tool-calling with no vendor feature. Providers with native
+    # function-calling may override complete_with_tools.
+
+    _REACT_CONTRACT = (
+        "You are AURA's data commander. Use the available tools to answer.\n"
+        "Reply with EXACTLY ONE JSON object and nothing else, in one of two forms:\n"
+        '  {"action": "tool", "tool": "<tool_name>", "arguments": { ... }}\n'
+        '  {"action": "final", "text": "<your answer to the user>"}\n'
+        "Do not wrap the JSON in markdown. Do not add commentary."
+    )
+
+    def _render_react_prompt(self, messages: List[Dict[str, Any]],
+                             tools: List[Dict[str, Any]]) -> List[str]:
+        catalog_lines = [
+            f"- {t['name']}: {t.get('description', '')} params={json.dumps(t.get('parameters', {}))}"
+            for t in tools
+        ]
+        system = "\n".join([self._REACT_CONTRACT, "", "TOOLS:", *catalog_lines])
+        convo = "\n".join(f"[{m.get('role', 'user')}] {m.get('content', '')}" for m in messages)
+        return [system, convo]
+
+    def complete_with_tools(self, messages: List[Dict[str, Any]],
+                            tools: List[Dict[str, Any]], **kwargs: Any) -> AssistantTurn:
+        """One reasoning turn. Default = ReAct/JSON over generate(). Never
+        raises for a bad reply — returns finish_reason='error' so the loop
+        surfaces it as an event rather than degrading to a silent empty."""
+        prompt = self._render_react_prompt(messages, tools)
+        kwargs.setdefault("temperature", 0)
+        raw = self.generate(prompt, **kwargs)
+        if not raw:
+            return AssistantTurn(text=None, tool_calls=[], finish_reason="error")
+        blob = _extract_first_json_object(raw)
+        if blob is None:
+            return AssistantTurn(text=None, tool_calls=[], finish_reason="error")
+        try:
+            obj = json.loads(blob)
+        except (json.JSONDecodeError, ValueError):
+            return AssistantTurn(text=None, tool_calls=[], finish_reason="error")
+        if not isinstance(obj, dict):
+            return AssistantTurn(text=None, tool_calls=[], finish_reason="error")
+        return self._turn_from_action_obj(obj, tools)
+
+    def _turn_from_action_obj(self, obj: Dict[str, Any],
+                              tools: List[Dict[str, Any]]) -> AssistantTurn:
+        """Map a parsed action object onto an AssistantTurn, tolerating the
+        format variations capable models produce. Accepted tool shapes:
+          {"action":"tool","tool":NAME,"arguments":{...}}   (canonical)
+          {"action":NAME, ...top-level args...}              (Gemini flattens it)
+          {"action":NAME,"arguments":{...}}
+          {"tool"|"name":NAME,"arguments":{...}}             (no action wrapper)
+        Final answer: {"action":"final","text":...} or a bare {"text"|"answer":...}."""
+        tool_names = {t.get("name") for t in tools if t.get("name")}
+        action = obj.get("action")
+
+        tool_name = None
+        if action == "tool":
+            tool_name = obj.get("tool") or obj.get("name")
+        elif action in tool_names:                     # action value IS the tool name
+            tool_name = action
+        elif obj.get("tool") in tool_names:
+            tool_name = obj.get("tool")
+        elif obj.get("name") in tool_names:
+            tool_name = obj.get("name")
+
+        if tool_name:
+            args = obj.get("arguments")
+            if not isinstance(args, dict):             # args flattened to top level
+                args = {k: v for k, v in obj.items()
+                        if k not in ("action", "tool", "name", "arguments")}
+            return AssistantTurn(
+                text=None,
+                tool_calls=[ToolCall(id=_uuid.uuid4().hex[:12], name=str(tool_name), arguments=args)],
+                finish_reason="tool_calls",
+            )
+
+        if action == "final" or obj.get("text") is not None or obj.get("answer") is not None:
+            text = obj.get("text") if obj.get("text") is not None else obj.get("answer", "")
+            return AssistantTurn(text=str(text), tool_calls=[], finish_reason="stop")
+
+        return AssistantTurn(text=None, tool_calls=[], finish_reason="error")
 
     def __repr__(self) -> str:
         return f"<{self.__class__.__name__} model={self.model!r}>"

@@ -481,6 +481,40 @@ const client = new ApiClient(API_BASE_URL, REQUEST_TIMEOUT);
  * Chat Service - Natural language → SQL → Execute → Visualize
  * Uses the unified /chat endpoint for single-call pipeline
  */
+// Commander streaming (Subsystem A). EventSource can't POST, so the
+// commander stream is consumed via fetch + a ReadableStream reader. This
+// pure helper splits an SSE buffer into complete {event,data} frames and
+// returns the unparsed remainder for the next chunk.
+export interface CommanderStreamEvent {
+  event: string;
+  data: any;
+}
+
+export function parseSSEBuffer(buffer: string): {
+  events: CommanderStreamEvent[];
+  rest: string;
+} {
+  const events: CommanderStreamEvent[] = [];
+  const frames = buffer.split('\n\n');
+  const rest = frames.pop() ?? '';
+  for (const frame of frames) {
+    let event = 'message';
+    let dataRaw = '';
+    for (const line of frame.split('\n')) {
+      if (line.startsWith(':')) continue; // heartbeat / comment
+      if (line.startsWith('event:')) event = line.slice(6).trim();
+      else if (line.startsWith('data:')) dataRaw += line.slice(5).trim();
+    }
+    if (!dataRaw) continue;
+    try {
+      events.push({ event, data: JSON.parse(dataRaw) });
+    } catch {
+      /* incomplete / non-JSON frame — skip */
+    }
+  }
+  return { events, rest };
+}
+
 export const chatService = {
   async sendMessage(
     message: string,
@@ -500,6 +534,44 @@ export const chatService = {
       columns: context?.columns || null,
       auto_execute: true,
     });
+  },
+
+  /**
+   * Commander streaming chat (POST /chat/stream, behind AURA_COMMANDER_ENABLED).
+   * Calls onEvent for each {event,data} frame as it arrives. Throws
+   * 'commander_disabled' on 404 so callers can fall back to sendMessage.
+   */
+  async streamMessage(
+    message: string,
+    opts: {
+      onEvent: (e: CommanderStreamEvent) => void;
+      sessionId?: string;
+      signal?: AbortSignal;
+    }
+  ): Promise<void> {
+    const res = await fetch(`${API_BASE_URL}/chat/stream`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(_authToken ? { Authorization: `Bearer ${_authToken}` } : {}),
+        'X-Workspace-Id': _currentWorkspaceId,
+      },
+      body: JSON.stringify({ message, session_id: opts.sessionId }),
+      signal: opts.signal,
+    });
+    if (res.status === 404) throw new Error('commander_disabled');
+    if (!res.ok || !res.body) throw new Error(`stream failed: ${res.status}`);
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const { events, rest } = parseSSEBuffer(buffer);
+      buffer = rest;
+      for (const e of events) opts.onEvent(e);
+    }
   },
 
   async getChatHistory(sessionId: string): Promise<ChatMessage[]> {
