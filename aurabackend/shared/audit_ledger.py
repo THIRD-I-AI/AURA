@@ -308,7 +308,68 @@ async def subject_history(tenant_id: str, subject_id: str) -> List[LedgerRecord]
     return [_row_to_record(r) for r in rows]
 
 
+# ── Merkle commitment over the durable store (RFC 6962) ──────────────────
+# The root is the cryptographic anchor an external party can publish/pin; an
+# auditor holding (record_hash, proof, root) verifies a record's inclusion in
+# the tenant's chain without trusting AURA. Computed on demand from the DB
+# (not per-append), so the hot path stays a single insert.
+
+async def _tenant_record_hashes(tenant_id: str) -> List[str]:
+    async with session_scope() as session:
+        return list((await session.execute(
+            select(AuditLedgerRow.record_hash)
+            .where(AuditLedgerRow.tenant_id == tenant_id)
+            .order_by(AuditLedgerRow.seq.asc())
+        )).scalars().all())
+
+
+async def merkle_root(tenant_id: str) -> Optional[Dict[str, Any]]:
+    """Merkle Tree Hash over a tenant's record hashes, or None if empty."""
+    from .merkle import build_tree_root, leaf_hash
+    hashes = await _tenant_record_hashes(tenant_id)
+    if not hashes:
+        return None
+    leaves = [leaf_hash(h.encode("utf-8")) for h in hashes]
+    return {
+        "tenant_id": tenant_id,
+        "tree_size": len(hashes),
+        "root_hash_hex": build_tree_root(leaves).hex(),
+    }
+
+
+async def inclusion_proof(tenant_id: str, cert_hash: str) -> Optional[Dict[str, Any]]:
+    """Merkle inclusion proof for the ledger record that certified ``cert_hash``.
+
+    Returns ``{tenant_id, tree_size, leaf_index, cert_hash, record_hash,
+    proof_hex, root_hash_hex}`` (proof ordered leaf→root, the order
+    ``merkle.verify_inclusion`` consumes), or None if no record certifies it."""
+    from .merkle import build_tree_root, leaf_hash
+    from .merkle import inclusion_proof as _mk_proof
+    async with session_scope() as session:
+        rows = (await session.execute(
+            select(AuditLedgerRow)
+            .where(AuditLedgerRow.tenant_id == tenant_id)
+            .order_by(AuditLedgerRow.seq.asc())
+        )).scalars().all()
+    idx = next((i for i, r in enumerate(rows) if r.cert_hash == cert_hash), None)
+    if idx is None:
+        return None
+    leaves = [leaf_hash(r.record_hash.encode("utf-8")) for r in rows]
+    proof = _mk_proof(leaves, idx)
+    root = build_tree_root(leaves)
+    return {
+        "tenant_id": tenant_id,
+        "tree_size": len(rows),
+        "leaf_index": idx,
+        "cert_hash": cert_hash,
+        "record_hash": rows[idx].record_hash,
+        "proof_hex": [p.hex() for p in proof],
+        "root_hash_hex": root.hex(),
+    }
+
+
 __all__ = [
     "AuditLedgerRow", "LedgerRecord", "append_audit", "verify_chain", "subject_history",
+    "merkle_root", "inclusion_proof",
     "session_scope", "init_database", "close_database", "database_url",
 ]

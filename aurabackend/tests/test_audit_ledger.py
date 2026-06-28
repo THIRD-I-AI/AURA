@@ -109,3 +109,32 @@ async def test_concurrent_appends_stay_gap_free_and_ordered(ledger_db):
 async def test_assignment_is_required(ledger_db):
     with pytest.raises(ValueError):
         await L.append_audit(**_fields(preparer_id=""))    # AS 1215: preparer mandatory
+
+
+@pytest.mark.asyncio
+async def test_merkle_inclusion_proof_independently_verifies(ledger_db):
+    from shared.merkle import leaf_hash, verify_inclusion
+    certs = [f"{i:064d}" for i in range(5)]
+    for c in certs:
+        await L.append_audit(**_fields(cert_hash=c))
+    root = await L.merkle_root("orgA")
+    assert root["tree_size"] == 5
+    # prove the 3rd cert and verify the proof against the root with no trust in AURA
+    proof = await L.inclusion_proof("orgA", certs[2])
+    assert proof["leaf_index"] == 2 and proof["cert_hash"] == certs[2]
+    ok = verify_inclusion(
+        leaf=leaf_hash(proof["record_hash"].encode("utf-8")),
+        index=proof["leaf_index"],
+        tree_size=proof["tree_size"],
+        proof=[bytes.fromhex(p) for p in proof["proof_hex"]],
+        root=bytes.fromhex(proof["root_hash_hex"]),
+    )
+    assert ok is True
+    assert proof["root_hash_hex"] == root["root_hash_hex"]
+
+
+@pytest.mark.asyncio
+async def test_inclusion_proof_unknown_cert_is_none(ledger_db):
+    await L.append_audit(**_fields())
+    assert await L.inclusion_proof("orgA", "d" * 64) is None
+    assert await L.merkle_root("orgB") is None      # empty tenant
