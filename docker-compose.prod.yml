@@ -42,6 +42,9 @@ x-backend-env: &backend-env
   AURA_PII_TOKEN_KEY: ${AURA_PII_TOKEN_KEY}
   GEMINI_API_KEY: ${GEMINI_API_KEY:-}
   GROQ_API_KEY: ${GROQ_API_KEY:-}
+  # Subsystem D — cloud (default) or onprem. Under onprem the startup guard
+  # rejects the external keys above (air-gapped: local Ollama only, no egress).
+  AURA_DEPLOYMENT_PROFILE: ${AURA_DEPLOYMENT_PROFILE:-cloud}
   # ── Object storage (S45) — set AURA_STORAGE_BACKEND=s3 + the vars below
   # to make the gateway stateless and scale across multiple nodes. The env
   # values flow in via env_file: .env; listing them here documents intent.

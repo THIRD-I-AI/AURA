@@ -36,6 +36,12 @@ env:
   # collapses to the shared `default` bucket. Pinned on to match the prod
   # compose (docker-compose.prod.yml) posture.
   AURA_JWT_ENABLED: "true"
+  # ── Deployment profile (Subsystem D) ──────────────────────────────────
+  # cloud (default) = hosted models + managed storage. For an air-gapped /
+  # on-prem secure install set "onprem": the startup guard then FAILS LOUD if
+  # any external LLM key (GROQ/GEMINI/OPENAI) is configured, forcing local
+  # models only (Ollama) with zero external egress.
+  AURA_DEPLOYMENT_PROFILE: cloud
   # ── Object storage (S45) — recommended for multi-replica deployments ────
   # Default is local disk. Set AURA_STORAGE_BACKEND=s3 to make the gateway
   # stateless so all replicas share one durable store (S3, R2, or MinIO).
