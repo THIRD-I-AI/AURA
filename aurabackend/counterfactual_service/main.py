@@ -501,6 +501,13 @@ class FinancialAuditRequest(BaseModel):
     # three-way match; period_end enables AS-2401 cutoff testing.
     goods_receipts: List[Dict[str, Any]] = Field(default_factory=list)
     period_end: Optional[str] = None
+    # Subsystem C — audit-grade identity. subject_id is the caller-supplied
+    # stable id of what's audited (a model / decision cohort / applicant) so
+    # repeated audits link in the ledger; preparer_id is the accountable
+    # human (AS 1215). Default to a per-tenant subject + system preparer.
+    subject_id: str = "default"
+    subject_type: str = "dataset"
+    preparer_id: str = "system"
 
 
 @app.post("/audit/financial")
@@ -520,10 +527,32 @@ async def financial_audit(req: FinancialAuditRequest) -> Dict[str, Any]:
     result = await agent.run_full_audit(
         req.ledger, req.purchase_orders, req.invoices, req.journal_entries, req.historical_reports,
         goods_receipts=req.goods_receipts or None, period_end=req.period_end)
-    fingerprint = dataset_fingerprint(req.ledger, req.purchase_orders, req.invoices, req.journal_entries)
-    doc = build_completion_document(req.tenant_id, result["findings"], fingerprint,
-                                    result["materiality_threshold"])
+    # Bind EVERY audited input in the signed fingerprint (the three-way-match,
+    # expectation, and cutoff inputs drive findings — they must be attested).
+    fingerprint = dataset_fingerprint(
+        req.ledger, req.purchase_orders, req.invoices, req.journal_entries,
+        goods_receipts=req.goods_receipts, historical_reports=req.historical_reports,
+        period_end=req.period_end)
+    doc = build_completion_document(
+        req.tenant_id, result["findings"], fingerprint, result["materiality_threshold"],
+        subject_id=req.subject_id, subject_type=req.subject_type, preparer_id=req.preparer_id)
     stored = sign_and_persist(doc)
+
+    # Always-on durable ledger: chain this signed audit into the tenant's
+    # tamper-evident history (Subsystem C). Never let a ledger hiccup fail the
+    # audit response, but surface it loudly — a missing chain link is reportable.
+    from shared import audit_ledger
+    try:
+        await audit_ledger.append_audit(
+            tenant_id=req.tenant_id, kind="financial_audit_completed",
+            subject_id=req.subject_id, subject_type=req.subject_type, preparer_id=req.preparer_id,
+            cert_hash=stored["record_hash"], input_fingerprint=fingerprint,
+            payload={"n_findings": stored.get("n_findings"),
+                     "signature_status": stored.get("signature_status"),
+                     "materiality_threshold": result["materiality_threshold"]})
+    except Exception as exc:                       # noqa: BLE001
+        logger.error("audit ledger append failed for %s: %s", stored["record_hash"], exc)
+
     view = client_view(stored)
     view["verify_url"] = f"/audit/financial/verify/{stored['record_hash']}"
     return view
@@ -545,6 +574,47 @@ async def financial_audit_demo() -> Dict[str, Any]:
 async def financial_audit_verify(record_hash: str) -> Dict[str, Any]:
     from .financial_report import verify_report
     return verify_report(record_hash)
+
+
+# ── Subsystem C — durable audit ledger verification surface ──────────────
+# Tenant-scoped: the chain, the Merkle inclusion proof, and a subject's audit
+# history. These are the artifacts an exam / auditor / opposing expert reads.
+
+@app.get("/audit/ledger/verify")
+async def audit_ledger_verify(tenant_id: str) -> Dict[str, Any]:
+    """Re-walk the tenant's hash chain; ``ok=false`` + the offending seqs if any
+    record was inserted, deleted, reordered, or edited."""
+    from shared import audit_ledger
+    return await audit_ledger.verify_chain(tenant_id)
+
+
+@app.get("/audit/ledger/proof/{cert_hash}")
+async def audit_ledger_proof(cert_hash: str, tenant_id: str) -> Dict[str, Any]:
+    """Merkle inclusion proof that ``cert_hash``'s audit is in the tenant's
+    chain — independently verifiable against the returned root."""
+    from shared import audit_ledger
+    proof = await audit_ledger.inclusion_proof(tenant_id, cert_hash)
+    if proof is None:
+        raise HTTPException(status_code=404, detail="no ledger record certifies that hash")
+    return proof
+
+
+@app.get("/audit/ledger/subject/{subject_id}")
+async def audit_ledger_subject_history(subject_id: str, tenant_id: str) -> Dict[str, Any]:
+    """Ordered audit history for one subject — every audit of this model /
+    cohort / applicant, with its preparer and signed cert."""
+    from shared import audit_ledger
+    records = await audit_ledger.subject_history(tenant_id, subject_id)
+    return {
+        "tenant_id": tenant_id, "subject_id": subject_id, "count": len(records),
+        "audits": [
+            {"seq": r.seq, "kind": r.kind, "subject_type": r.subject_type,
+             "preparer_id": r.preparer_id, "reviewer_id": r.reviewer_id,
+             "cert_hash": r.cert_hash, "input_fingerprint": r.input_fingerprint,
+             "ts": r.ts, "record_hash": r.record_hash}
+            for r in records
+        ],
+    }
 
 
 # ── S34b — HITL exception queue ───────────────────────────────────────
