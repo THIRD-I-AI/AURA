@@ -30,6 +30,10 @@ x-backend-env: &backend-env
   DATABASE_URL: postgresql+asyncpg://${DB_USER:-aura}:${DB_PASSWORD}@db:5432/${DB_NAME:-aura}
   METADATA_DATABASE_URL: postgresql+asyncpg://${DB_USER:-aura}:${DB_PASSWORD}@db:5432/${DB_NAME:-aura}
   SCHEDULER_DATABASE_URL: postgresql+asyncpg://${DB_USER:-aura}:${DB_PASSWORD}@db:5432/${DB_NAME:-aura}
+  # Subsystem C — the durable audit ledger MUST be on Postgres in prod, not the
+  # SQLite default: that's what makes its per-tenant hash chain multi-replica-safe
+  # (engages the pg_advisory_xact_lock serialization path).
+  AURA_LEDGER_DATABASE_URL: postgresql+asyncpg://${DB_USER:-aura}:${DB_PASSWORD}@db:5432/${DB_NAME:-aura}
   AURA_JWT_ENABLED: "true"
   AURA_AUTH_MODE: password
   SECRET_KEY: ${SECRET_KEY}
