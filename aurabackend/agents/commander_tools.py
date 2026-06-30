@@ -20,8 +20,10 @@ from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from safety import SQLSafetyValidator
+from shared.sql_identifiers import quote_identifier
 
 _DEFAULT_ROW_LIMIT = 1000
+_DATA_CARD_SAMPLES = 5
 
 
 @dataclass
@@ -143,6 +145,58 @@ def _describe_table_handler(arguments: Dict[str, Any], *, tenant: str, con: Any)
     })
 
 
+def _data_card_handler(arguments: Dict[str, Any], *, tenant: str, con: Any) -> ToolOutcome:
+    """Compact, AI-native summary of one table: row count + per-column type,
+    cardinality, null fraction, and a few sample values — enough for the model
+    to reason about each column's role without scanning the raw data."""
+    table = str(arguments.get("table", "")).strip()
+    if not table:
+        return ToolOutcome(ok=False, error="table must be a non-empty string")
+    # Validate existence + get the REAL column names via a parameterized query;
+    # the model-supplied table name is a bound value here, never interpolated.
+    cols = con.execute(
+        "SELECT column_name, data_type FROM information_schema.columns "
+        "WHERE table_schema = 'main' AND table_name = ? ORDER BY ordinal_position",
+        [table],
+    ).fetchall()
+    if not cols:
+        return ToolOutcome(ok=False, error=f"table '{table}' not found")
+
+    # The table exists, so its name and (DB-sourced) column names are now safe
+    # to quote and interpolate for the stats queries.
+    qtable = quote_identifier(table)
+    row_count = con.execute(f"SELECT count(*) FROM {qtable}").fetchone()[0]
+    card_cols: List[Dict[str, Any]] = []
+    for name, dtype in cols:
+        qcol = quote_identifier(name)
+        ndistinct, nnull = con.execute(
+            f"SELECT count(DISTINCT {qcol}), count(*) - count({qcol}) FROM {qtable}"
+        ).fetchone()
+        samples = [r[0] for r in con.execute(
+            f"SELECT DISTINCT {qcol} FROM {qtable} WHERE {qcol} IS NOT NULL LIMIT {_DATA_CARD_SAMPLES}"
+        ).fetchall()]
+        card_cols.append({
+            "name": name, "type": dtype, "distinct": ndistinct,
+            "null_frac": round(nnull / row_count, 3) if row_count else 0.0,
+            "samples": samples,
+        })
+    return ToolOutcome(ok=True, value={"table": table, "row_count": row_count, "columns": card_cols})
+
+
+_GET_DATA_CARD = CommanderTool(
+    name="get_data_card",
+    description="Get a compact semantic profile of one table — per-column type, "
+                "distinct-count, null fraction, and sample values. Use it to "
+                "understand what each column means before writing run_sql.",
+    parameters={
+        "type": "object",
+        "properties": {"table": {"type": "string", "description": "exact table name"}},
+        "required": ["table"],
+    },
+    handler=_data_card_handler,
+)
+
+
 _LIST_TABLES = CommanderTool(
     name="list_tables",
     description="List the names of all datasets/tables the user has loaded. "
@@ -185,5 +239,6 @@ def build_default_registry() -> CommanderToolRegistry:
     reg = CommanderToolRegistry()
     reg.register(_LIST_TABLES)
     reg.register(_DESCRIBE_TABLE)
+    reg.register(_GET_DATA_CARD)
     reg.register(_RUN_SQL)
     return reg
