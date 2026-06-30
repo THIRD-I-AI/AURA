@@ -43,7 +43,15 @@ echo "==> Running frontend type-check"
 if command -v make > /dev/null 2>&1; then
   make frontend-typecheck
 else
-  cd "$REPO_ROOT/frontend" && npx tsc --noEmit 2>&1 || true
+  # Call the LOCAL tsc binary directly. `npx tsc` hangs forever on a
+  # non-interactive "Need to install …? (y)" prompt in the push context,
+  # which froze the whole gate. (`|| true` keeps the type-check advisory,
+  # as before — pytest above is the blocking check.)
+  if [ -x "$REPO_ROOT/frontend/node_modules/.bin/tsc" ]; then
+    ( cd "$REPO_ROOT/frontend" && ./node_modules/.bin/tsc --noEmit ) || true
+  else
+    ( cd "$REPO_ROOT/frontend" && npx --no-install tsc --noEmit 2>&1 ) || true
+  fi
   cd "$REPO_ROOT"
 fi
 
