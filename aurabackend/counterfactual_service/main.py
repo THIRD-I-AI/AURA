@@ -291,6 +291,13 @@ class AuditRequest(BaseModel):
     outcome: str
     confounders: List[str] = []
     instrument: Optional[str] = None
+    # Subsystem C — audit-grade identity for the durable ledger. subject_id is
+    # the caller-supplied stable id of what's audited (a model / decision cohort
+    # / applicant); preparer_id is the accountable human (AS 1215).
+    tenant_id: str = "default"
+    subject_id: str = "default"
+    subject_type: str = "decision_model"
+    preparer_id: str = "system"
 
 
 # ``uploaded_file`` is user-controlled. A name like "../../etc/passwd" must never
@@ -323,12 +330,45 @@ def _csv_header_columns(path: pathlib.Path) -> list:
     return list(pd.read_csv(path, nrows=0).columns)
 
 
+def _result_field(result: Any, key: str, default: Any = None) -> Any:
+    """Read a field from the audit result whether it crossed the process pool
+    as a dict or as a model object."""
+    if isinstance(result, dict):
+        return result.get(key, default)
+    return getattr(result, key, default)
+
+
+async def _append_fairness_audit_to_ledger(result: Any, payload: Dict[str, Any]) -> None:
+    """Chain a completed causal-fairness audit into the durable, tamper-evident
+    ledger — the fair-lending product's exam-ready trail. A ledger hiccup is
+    logged loudly but never fails the audit; an unsigned result (no cert hash)
+    is not chained (there is no cert to commit to)."""
+    cert_hash = _result_field(result, "audit_record_hash")
+    if not cert_hash:
+        return
+    fingerprint = _result_field(result, "dataset_fingerprint", "") or cert_hash
+    from shared import audit_ledger
+    try:
+        await audit_ledger.append_audit(
+            tenant_id=payload.get("tenant_id") or "default",
+            kind="fairness_audit_completed",
+            subject_id=payload.get("subject_id") or "default",
+            subject_type=payload.get("subject_type") or "decision_model",
+            preparer_id=payload.get("preparer_id") or "system",
+            cert_hash=cert_hash, input_fingerprint=fingerprint,
+            payload={"treatment": payload.get("treatment"), "outcome": payload.get("outcome"),
+                     "signature_status": _result_field(result, "signature_status")})
+    except Exception as exc:  # noqa: BLE001 — never fail the audit on a ledger hiccup
+        logger.error("fairness audit ledger append failed for %s: %s", cert_hash, exc)
+
+
 async def _run_audit_job_async(job_id: str, payload: Dict[str, Any]) -> None:
     _jobs[job_id]["state"] = "running"
     loop = asyncio.get_event_loop()
     try:
         result = await loop.run_in_executor(get_audit_pool(), run_audit_subprocess, payload)
         _jobs[job_id].update(state="succeeded", artifact=result)
+        await _append_fairness_audit_to_ledger(result, payload)
     except Exception as exc:
         logger.exception("Audit job %s failed", job_id)
         _jobs[job_id].update(state="failed", error=f"{type(exc).__name__}: {exc}")
