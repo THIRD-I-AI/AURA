@@ -140,7 +140,7 @@ def test_exception_endpoints_e2e(monkeypatch, tmp_path):
         invoices=[{"invoice_number": "INV-9", "po_number": "PO-MISSING",
                    "employee_name": "Ada"}],
         journal_entries=[],
-    )))
+    ), user={"org_id": "t1", "sub": "t1"}))
     rh = report["record_hash"]
 
     q = asyncio.run(m.financial_audit_exceptions(rh))
@@ -202,7 +202,7 @@ def test_decision_identity_comes_from_token_not_body(monkeypatch, tmp_path):
         invoices=[{"invoice_number": "INV-9", "po_number": "PO-MISSING",
                    "employee_name": "Ada"}],
         journal_entries=[],
-    )))
+    ), user={"org_id": "t1", "sub": "t1"}))
     rh = report["record_hash"]
     fid = asyncio.run(m.financial_audit_exceptions(rh))["pending"][0]["finding_id"]
 

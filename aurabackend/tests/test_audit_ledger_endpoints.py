@@ -54,9 +54,11 @@ async def test_endpoint_binds_all_inputs_and_records_durable_ledger(ledger_env):
         financial_audit,
     )
 
-    r_plain = await financial_audit(FinancialAuditRequest(**_payload()))
+    # tenant now derives from the VERIFIED token, not the request body
+    _user = {"org_id": "orgX", "sub": "ada@bank.test"}
+    r_plain = await financial_audit(FinancialAuditRequest(**_payload()), user=_user)
     r_gr = await financial_audit(FinancialAuditRequest(
-        **_payload(goods_receipts=[{"po_number": "PO1", "qty": 5}])))
+        **_payload(goods_receipts=[{"po_number": "PO1", "qty": 5}])), user=_user)
 
     # SECURITY FIX: adding a previously-unbound input changes the signed fingerprint
     assert r_plain["dataset_fingerprint"] != r_gr["dataset_fingerprint"]

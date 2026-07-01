@@ -24,7 +24,17 @@ from fastapi import Depends, HTTPException
 from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, Field
 
-from shared.auth import require_user
+from shared.auth import get_current_user, require_user
+
+
+def _ledger_tenant(user: Optional[Dict[str, Any]]) -> str:
+    """The tenant an audit/review is recorded under — derived from the VERIFIED
+    token, never a client-supplied body value (which a token holder could forge
+    to pollute another org's chain; see shared.auth.require_tenant). Mirrors
+    require_tenant: org_id, else the subject; 'default' for anonymous/open calls."""
+    if not user:
+        return "default"
+    return str(user.get("org_id") or user.get("sub") or "default")
 from shared.exceptions import ForbiddenError
 from shared.service_factory import create_service
 
@@ -383,7 +393,7 @@ async def _append_review_to_ledger(*, tenant_id: str, audit_cert_hash: str,
             decided_at=datetime.now(timezone.utc).isoformat(),
             cert_hash=review_stored.get("record_hash") or audit_cert_hash,
             input_fingerprint=original.input_fingerprint or audit_cert_hash,
-            payload={"decision": "approved" if approved else "overridden",
+            payload={"action": "approved" if approved else "overridden",
                      "audit_cert_hash": audit_cert_hash})
     except Exception as exc:  # noqa: BLE001 — never fail the decision on a ledger hiccup
         logger.error("review ledger append failed for audit %s: %s", audit_cert_hash, exc)
@@ -402,7 +412,8 @@ async def _run_audit_job_async(job_id: str, payload: Dict[str, Any]) -> None:
 
 
 @app.post("/counterfactual/audit")
-async def run_audit(req: AuditRequest) -> Dict[str, Any]:
+async def run_audit(req: AuditRequest,
+                    user: Optional[Dict[str, Any]] = Depends(get_current_user)) -> Dict[str, Any]:
     """Audit the user's own uploaded data. Cheap pre-validation here; the heavy,
     GIL-bound fan-out runs out-of-process so the gateway never blocks."""
     path = _find_upload(req.uploaded_file)
@@ -418,8 +429,11 @@ async def run_audit(req: AuditRequest) -> Dict[str, Any]:
 
     job_id = f"audit_{uuid.uuid4().hex[:12]}"
     _jobs[job_id] = {"state": "queued", "artifact": None, "error": None}
+    # Ledger tenant comes from the VERIFIED token, never the body — overwrite
+    # the request's tenant_id before it reaches the ledger append.
+    payload = {**req.model_dump(), "tenant_id": _ledger_tenant(user)}
     _jobs[job_id]["_task"] = asyncio.create_task(
-        _run_audit_job_async(job_id, req.model_dump())
+        _run_audit_job_async(job_id, payload)
     )
     return {"job_id": job_id}
 
@@ -578,7 +592,8 @@ class FinancialAuditRequest(BaseModel):
 
 
 @app.post("/audit/financial")
-async def financial_audit(req: FinancialAuditRequest) -> Dict[str, Any]:
+async def financial_audit(req: FinancialAuditRequest,
+                          user: Optional[Dict[str, Any]] = Depends(get_current_user)) -> Dict[str, Any]:
     """Run the PCAOB checks on a ledger, sign an AS-1215 completion document with
     the persistent ED25519 key, persist it to the hash-chained log, and return the
     signed report (PII redacted at egress) with an independent verify URL."""
@@ -590,7 +605,10 @@ async def financial_audit(req: FinancialAuditRequest) -> Dict[str, Any]:
         dataset_fingerprint,
         sign_and_persist,
     )
-    agent = FinancialAuditorAgent(tenant_id=req.tenant_id)
+    # Tenant comes from the VERIFIED token, never req.tenant_id (a token holder
+    # could otherwise forge it to write into another org's audit chain).
+    tenant = _ledger_tenant(user)
+    agent = FinancialAuditorAgent(tenant_id=tenant)
     result = await agent.run_full_audit(
         req.ledger, req.purchase_orders, req.invoices, req.journal_entries, req.historical_reports,
         goods_receipts=req.goods_receipts or None, period_end=req.period_end)
@@ -601,7 +619,7 @@ async def financial_audit(req: FinancialAuditRequest) -> Dict[str, Any]:
         goods_receipts=req.goods_receipts, historical_reports=req.historical_reports,
         period_end=req.period_end)
     doc = build_completion_document(
-        req.tenant_id, result["findings"], fingerprint, result["materiality_threshold"],
+        tenant, result["findings"], fingerprint, result["materiality_threshold"],
         subject_id=req.subject_id, subject_type=req.subject_type, preparer_id=req.preparer_id)
     stored = sign_and_persist(doc)
 
@@ -611,7 +629,7 @@ async def financial_audit(req: FinancialAuditRequest) -> Dict[str, Any]:
     from shared import audit_ledger
     try:
         await audit_ledger.append_audit(
-            tenant_id=req.tenant_id, kind="financial_audit_completed",
+            tenant_id=tenant, kind="financial_audit_completed",
             subject_id=req.subject_id, subject_type=req.subject_type, preparer_id=req.preparer_id,
             cert_hash=stored["record_hash"], input_fingerprint=fingerprint,
             payload={"n_findings": stored.get("n_findings"),
@@ -634,7 +652,9 @@ async def financial_audit_demo() -> Dict[str, Any]:
     and returns the same signed, independently-verifiable report as
     ``/audit/financial``."""
     from .forensic_demo import forensic_demo_dataset
-    return await financial_audit(FinancialAuditRequest(**forensic_demo_dataset()))
+    # Internal call (not via FastAPI DI) → pass user explicitly. The demo is
+    # anonymous → its audit chains under the "default" tenant.
+    return await financial_audit(FinancialAuditRequest(**forensic_demo_dataset()), user=None)
 
 
 @app.get("/audit/financial/verify/{record_hash}")
@@ -737,7 +757,7 @@ async def financial_audit_decide(record_hash: str, finding_id: str,
     # Chain the human sign-off into the durable ledger too (AS-1215
     # preparer→reviewer). Additive + fail-safe: never affects the decision.
     await _append_review_to_ledger(
-        tenant_id=(user.get("org_id") or "default"), audit_cert_hash=record_hash,
+        tenant_id=_ledger_tenant(user), audit_cert_hash=record_hash,
         review_stored=stored, reviewer_id=user["sub"], approved=req.approved)
     stored["verify_url"] = f"/audit/financial/verify/{stored['record_hash']}"
     return stored

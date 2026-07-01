@@ -126,7 +126,7 @@ def test_financial_audit_endpoint_e2e(monkeypatch):
         invoices=[{"invoice_number": "INV-9", "po_number": "PO-MISSING", "employee_name": "Ada"}],
         journal_entries=[{"internal_id": "J1", "amount": 5000.0, "account_code": "6000", "vendor_id": "V1"}],
     )
-    report = asyncio.run(m.financial_audit(req))
+    report = asyncio.run(m.financial_audit(req, user={"org_id": "t1", "sub": "t1"}))
     assert report["signature_status"] == "signed"
     assert report["verify_url"].endswith(report["record_hash"])
     assert "Ada" not in str(report["findings"])           # egress redaction applied
