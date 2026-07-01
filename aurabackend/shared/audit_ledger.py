@@ -308,6 +308,20 @@ async def subject_history(tenant_id: str, subject_id: str) -> List[LedgerRecord]
     return [_row_to_record(r) for r in rows]
 
 
+async def record_for_cert(tenant_id: str, cert_hash: str) -> Optional[LedgerRecord]:
+    """Return the ledger record whose ``cert_hash`` matches (earliest, if a
+    cert somehow recurs), or None. Used to link a later record (e.g. a human
+    review) to the audit it decides, inheriting its subject + preparer."""
+    async with session_scope() as session:
+        row = (await session.execute(
+            select(AuditLedgerRow)
+            .where(AuditLedgerRow.tenant_id == tenant_id, AuditLedgerRow.cert_hash == cert_hash)
+            .order_by(AuditLedgerRow.seq.asc())
+            .limit(1)
+        )).scalar_one_or_none()
+    return _row_to_record(row) if row is not None else None
+
+
 # ── Merkle commitment over the durable store (RFC 6962) ──────────────────
 # The root is the cryptographic anchor an external party can publish/pin; an
 # auditor holding (record_hash, proof, root) verifies a record's inclusion in
@@ -370,6 +384,6 @@ async def inclusion_proof(tenant_id: str, cert_hash: str) -> Optional[Dict[str, 
 
 __all__ = [
     "AuditLedgerRow", "LedgerRecord", "append_audit", "verify_chain", "subject_history",
-    "merkle_root", "inclusion_proof",
+    "record_for_cert", "merkle_root", "inclusion_proof",
     "session_scope", "init_database", "close_database", "database_url",
 ]

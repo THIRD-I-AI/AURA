@@ -362,6 +362,33 @@ async def _append_fairness_audit_to_ledger(result: Any, payload: Dict[str, Any])
         logger.error("fairness audit ledger append failed for %s: %s", cert_hash, exc)
 
 
+async def _append_review_to_ledger(*, tenant_id: str, audit_cert_hash: str,
+                                   review_stored: Dict[str, Any], reviewer_id: str,
+                                   approved: bool) -> None:
+    """Chain a human sign-off into the durable ledger, inheriting the audited
+    subject + preparer from the original audit (looked up by its cert hash) so
+    the AS-1215 preparer→reviewer trail is exam-provable. Skips silently if the
+    audit isn't in this tenant's ledger (don't fabricate an orphan review); a
+    ledger hiccup is logged, never fails the decision."""
+    from shared import audit_ledger
+    try:
+        original = await audit_ledger.record_for_cert(tenant_id, audit_cert_hash)
+        if original is None:
+            return
+        from datetime import datetime, timezone
+        await audit_ledger.append_audit(
+            tenant_id=tenant_id, kind="human_review",
+            subject_id=original.subject_id, subject_type=original.subject_type,
+            preparer_id=original.preparer_id, reviewer_id=reviewer_id,
+            decided_at=datetime.now(timezone.utc).isoformat(),
+            cert_hash=review_stored.get("record_hash") or audit_cert_hash,
+            input_fingerprint=original.input_fingerprint or audit_cert_hash,
+            payload={"decision": "approved" if approved else "overridden",
+                     "audit_cert_hash": audit_cert_hash})
+    except Exception as exc:  # noqa: BLE001 — never fail the decision on a ledger hiccup
+        logger.error("review ledger append failed for audit %s: %s", audit_cert_hash, exc)
+
+
 async def _run_audit_job_async(job_id: str, payload: Dict[str, Any]) -> None:
     _jobs[job_id]["state"] = "running"
     loop = asyncio.get_event_loop()
@@ -707,6 +734,11 @@ async def financial_audit_decide(record_hash: str, finding_id: str,
     except (LookupError, ValueError) as exc:
         # ValueError here = non-hex record_hash from the URL → not found.
         raise HTTPException(404, str(exc))
+    # Chain the human sign-off into the durable ledger too (AS-1215
+    # preparer→reviewer). Additive + fail-safe: never affects the decision.
+    await _append_review_to_ledger(
+        tenant_id=(user.get("org_id") or "default"), audit_cert_hash=record_hash,
+        review_stored=stored, reviewer_id=user["sub"], approved=req.approved)
     stored["verify_url"] = f"/audit/financial/verify/{stored['record_hash']}"
     return stored
 
