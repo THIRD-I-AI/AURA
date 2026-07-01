@@ -24,7 +24,17 @@ from fastapi import Depends, HTTPException
 from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, Field
 
-from shared.auth import require_user
+from shared.auth import get_current_user, require_user
+
+
+def _ledger_tenant(user: Optional[Dict[str, Any]]) -> str:
+    """The tenant an audit/review is recorded under — derived from the VERIFIED
+    token, never a client-supplied body value (which a token holder could forge
+    to pollute another org's chain; see shared.auth.require_tenant). Mirrors
+    require_tenant: org_id, else the subject; 'default' for anonymous/open calls."""
+    if not user:
+        return "default"
+    return str(user.get("org_id") or user.get("sub") or "default")
 from shared.exceptions import ForbiddenError
 from shared.service_factory import create_service
 
@@ -291,6 +301,13 @@ class AuditRequest(BaseModel):
     outcome: str
     confounders: List[str] = []
     instrument: Optional[str] = None
+    # Subsystem C — audit-grade identity for the durable ledger. subject_id is
+    # the caller-supplied stable id of what's audited (a model / decision cohort
+    # / applicant); preparer_id is the accountable human (AS 1215).
+    tenant_id: str = "default"
+    subject_id: str = "default"
+    subject_type: str = "decision_model"
+    preparer_id: str = "system"
 
 
 # ``uploaded_file`` is user-controlled. A name like "../../etc/passwd" must never
@@ -323,19 +340,80 @@ def _csv_header_columns(path: pathlib.Path) -> list:
     return list(pd.read_csv(path, nrows=0).columns)
 
 
+def _result_field(result: Any, key: str, default: Any = None) -> Any:
+    """Read a field from the audit result whether it crossed the process pool
+    as a dict or as a model object."""
+    if isinstance(result, dict):
+        return result.get(key, default)
+    return getattr(result, key, default)
+
+
+async def _append_fairness_audit_to_ledger(result: Any, payload: Dict[str, Any]) -> None:
+    """Chain a completed causal-fairness audit into the durable, tamper-evident
+    ledger — the fair-lending product's exam-ready trail. A ledger hiccup is
+    logged loudly but never fails the audit; an unsigned result (no cert hash)
+    is not chained (there is no cert to commit to)."""
+    cert_hash = _result_field(result, "audit_record_hash")
+    if not cert_hash:
+        return
+    fingerprint = _result_field(result, "dataset_fingerprint", "") or cert_hash
+    from shared import audit_ledger
+    try:
+        await audit_ledger.append_audit(
+            tenant_id=payload.get("tenant_id") or "default",
+            kind="fairness_audit_completed",
+            subject_id=payload.get("subject_id") or "default",
+            subject_type=payload.get("subject_type") or "decision_model",
+            preparer_id=payload.get("preparer_id") or "system",
+            cert_hash=cert_hash, input_fingerprint=fingerprint,
+            payload={"treatment": payload.get("treatment"), "outcome": payload.get("outcome"),
+                     "signature_status": _result_field(result, "signature_status")})
+    except Exception as exc:  # noqa: BLE001 — never fail the audit on a ledger hiccup
+        logger.error("fairness audit ledger append failed for %s: %s", cert_hash, exc)
+
+
+async def _append_review_to_ledger(*, tenant_id: str, audit_cert_hash: str,
+                                   review_stored: Dict[str, Any], reviewer_id: str,
+                                   approved: bool) -> None:
+    """Chain a human sign-off into the durable ledger, inheriting the audited
+    subject + preparer from the original audit (looked up by its cert hash) so
+    the AS-1215 preparer→reviewer trail is exam-provable. Skips silently if the
+    audit isn't in this tenant's ledger (don't fabricate an orphan review); a
+    ledger hiccup is logged, never fails the decision."""
+    from shared import audit_ledger
+    try:
+        original = await audit_ledger.record_for_cert(tenant_id, audit_cert_hash)
+        if original is None:
+            return
+        from datetime import datetime, timezone
+        await audit_ledger.append_audit(
+            tenant_id=tenant_id, kind="human_review",
+            subject_id=original.subject_id, subject_type=original.subject_type,
+            preparer_id=original.preparer_id, reviewer_id=reviewer_id,
+            decided_at=datetime.now(timezone.utc).isoformat(),
+            cert_hash=review_stored.get("record_hash") or audit_cert_hash,
+            input_fingerprint=original.input_fingerprint or audit_cert_hash,
+            payload={"action": "approved" if approved else "overridden",
+                     "audit_cert_hash": audit_cert_hash})
+    except Exception as exc:  # noqa: BLE001 — never fail the decision on a ledger hiccup
+        logger.error("review ledger append failed for audit %s: %s", audit_cert_hash, exc)
+
+
 async def _run_audit_job_async(job_id: str, payload: Dict[str, Any]) -> None:
     _jobs[job_id]["state"] = "running"
     loop = asyncio.get_event_loop()
     try:
         result = await loop.run_in_executor(get_audit_pool(), run_audit_subprocess, payload)
         _jobs[job_id].update(state="succeeded", artifact=result)
+        await _append_fairness_audit_to_ledger(result, payload)
     except Exception as exc:
         logger.exception("Audit job %s failed", job_id)
         _jobs[job_id].update(state="failed", error=f"{type(exc).__name__}: {exc}")
 
 
 @app.post("/counterfactual/audit")
-async def run_audit(req: AuditRequest) -> Dict[str, Any]:
+async def run_audit(req: AuditRequest,
+                    user: Optional[Dict[str, Any]] = Depends(get_current_user)) -> Dict[str, Any]:
     """Audit the user's own uploaded data. Cheap pre-validation here; the heavy,
     GIL-bound fan-out runs out-of-process so the gateway never blocks."""
     path = _find_upload(req.uploaded_file)
@@ -351,8 +429,11 @@ async def run_audit(req: AuditRequest) -> Dict[str, Any]:
 
     job_id = f"audit_{uuid.uuid4().hex[:12]}"
     _jobs[job_id] = {"state": "queued", "artifact": None, "error": None}
+    # Ledger tenant comes from the VERIFIED token, never the body — overwrite
+    # the request's tenant_id before it reaches the ledger append.
+    payload = {**req.model_dump(), "tenant_id": _ledger_tenant(user)}
     _jobs[job_id]["_task"] = asyncio.create_task(
-        _run_audit_job_async(job_id, req.model_dump())
+        _run_audit_job_async(job_id, payload)
     )
     return {"job_id": job_id}
 
@@ -501,10 +582,18 @@ class FinancialAuditRequest(BaseModel):
     # three-way match; period_end enables AS-2401 cutoff testing.
     goods_receipts: List[Dict[str, Any]] = Field(default_factory=list)
     period_end: Optional[str] = None
+    # Subsystem C — audit-grade identity. subject_id is the caller-supplied
+    # stable id of what's audited (a model / decision cohort / applicant) so
+    # repeated audits link in the ledger; preparer_id is the accountable
+    # human (AS 1215). Default to a per-tenant subject + system preparer.
+    subject_id: str = "default"
+    subject_type: str = "dataset"
+    preparer_id: str = "system"
 
 
 @app.post("/audit/financial")
-async def financial_audit(req: FinancialAuditRequest) -> Dict[str, Any]:
+async def financial_audit(req: FinancialAuditRequest,
+                          user: Optional[Dict[str, Any]] = Depends(get_current_user)) -> Dict[str, Any]:
     """Run the PCAOB checks on a ledger, sign an AS-1215 completion document with
     the persistent ED25519 key, persist it to the hash-chained log, and return the
     signed report (PII redacted at egress) with an independent verify URL."""
@@ -516,14 +605,39 @@ async def financial_audit(req: FinancialAuditRequest) -> Dict[str, Any]:
         dataset_fingerprint,
         sign_and_persist,
     )
-    agent = FinancialAuditorAgent(tenant_id=req.tenant_id)
+    # Tenant comes from the VERIFIED token, never req.tenant_id (a token holder
+    # could otherwise forge it to write into another org's audit chain).
+    tenant = _ledger_tenant(user)
+    agent = FinancialAuditorAgent(tenant_id=tenant)
     result = await agent.run_full_audit(
         req.ledger, req.purchase_orders, req.invoices, req.journal_entries, req.historical_reports,
         goods_receipts=req.goods_receipts or None, period_end=req.period_end)
-    fingerprint = dataset_fingerprint(req.ledger, req.purchase_orders, req.invoices, req.journal_entries)
-    doc = build_completion_document(req.tenant_id, result["findings"], fingerprint,
-                                    result["materiality_threshold"])
+    # Bind EVERY audited input in the signed fingerprint (the three-way-match,
+    # expectation, and cutoff inputs drive findings — they must be attested).
+    fingerprint = dataset_fingerprint(
+        req.ledger, req.purchase_orders, req.invoices, req.journal_entries,
+        goods_receipts=req.goods_receipts, historical_reports=req.historical_reports,
+        period_end=req.period_end)
+    doc = build_completion_document(
+        tenant, result["findings"], fingerprint, result["materiality_threshold"],
+        subject_id=req.subject_id, subject_type=req.subject_type, preparer_id=req.preparer_id)
     stored = sign_and_persist(doc)
+
+    # Always-on durable ledger: chain this signed audit into the tenant's
+    # tamper-evident history (Subsystem C). Never let a ledger hiccup fail the
+    # audit response, but surface it loudly — a missing chain link is reportable.
+    from shared import audit_ledger
+    try:
+        await audit_ledger.append_audit(
+            tenant_id=tenant, kind="financial_audit_completed",
+            subject_id=req.subject_id, subject_type=req.subject_type, preparer_id=req.preparer_id,
+            cert_hash=stored["record_hash"], input_fingerprint=fingerprint,
+            payload={"n_findings": stored.get("n_findings"),
+                     "signature_status": stored.get("signature_status"),
+                     "materiality_threshold": result["materiality_threshold"]})
+    except Exception as exc:                       # noqa: BLE001
+        logger.error("audit ledger append failed for %s: %s", stored["record_hash"], exc)
+
     view = client_view(stored)
     view["verify_url"] = f"/audit/financial/verify/{stored['record_hash']}"
     return view
@@ -538,13 +652,56 @@ async def financial_audit_demo() -> Dict[str, Any]:
     and returns the same signed, independently-verifiable report as
     ``/audit/financial``."""
     from .forensic_demo import forensic_demo_dataset
-    return await financial_audit(FinancialAuditRequest(**forensic_demo_dataset()))
+    # Internal call (not via FastAPI DI) → pass user explicitly. The demo is
+    # anonymous → its audit chains under the "default" tenant.
+    return await financial_audit(FinancialAuditRequest(**forensic_demo_dataset()), user=None)
 
 
 @app.get("/audit/financial/verify/{record_hash}")
 async def financial_audit_verify(record_hash: str) -> Dict[str, Any]:
     from .financial_report import verify_report
     return verify_report(record_hash)
+
+
+# ── Subsystem C — durable audit ledger verification surface ──────────────
+# Tenant-scoped: the chain, the Merkle inclusion proof, and a subject's audit
+# history. These are the artifacts an exam / auditor / opposing expert reads.
+
+@app.get("/audit/ledger/verify")
+async def audit_ledger_verify(tenant_id: str) -> Dict[str, Any]:
+    """Re-walk the tenant's hash chain; ``ok=false`` + the offending seqs if any
+    record was inserted, deleted, reordered, or edited."""
+    from shared import audit_ledger
+    return await audit_ledger.verify_chain(tenant_id)
+
+
+@app.get("/audit/ledger/proof/{cert_hash}")
+async def audit_ledger_proof(cert_hash: str, tenant_id: str) -> Dict[str, Any]:
+    """Merkle inclusion proof that ``cert_hash``'s audit is in the tenant's
+    chain — independently verifiable against the returned root."""
+    from shared import audit_ledger
+    proof = await audit_ledger.inclusion_proof(tenant_id, cert_hash)
+    if proof is None:
+        raise HTTPException(status_code=404, detail="no ledger record certifies that hash")
+    return proof
+
+
+@app.get("/audit/ledger/subject/{subject_id}")
+async def audit_ledger_subject_history(subject_id: str, tenant_id: str) -> Dict[str, Any]:
+    """Ordered audit history for one subject — every audit of this model /
+    cohort / applicant, with its preparer and signed cert."""
+    from shared import audit_ledger
+    records = await audit_ledger.subject_history(tenant_id, subject_id)
+    return {
+        "tenant_id": tenant_id, "subject_id": subject_id, "count": len(records),
+        "audits": [
+            {"seq": r.seq, "kind": r.kind, "subject_type": r.subject_type,
+             "preparer_id": r.preparer_id, "reviewer_id": r.reviewer_id,
+             "cert_hash": r.cert_hash, "input_fingerprint": r.input_fingerprint,
+             "ts": r.ts, "record_hash": r.record_hash}
+            for r in records
+        ],
+    }
 
 
 # ── S34b — HITL exception queue ───────────────────────────────────────
@@ -597,6 +754,11 @@ async def financial_audit_decide(record_hash: str, finding_id: str,
     except (LookupError, ValueError) as exc:
         # ValueError here = non-hex record_hash from the URL → not found.
         raise HTTPException(404, str(exc))
+    # Chain the human sign-off into the durable ledger too (AS-1215
+    # preparer→reviewer). Additive + fail-safe: never affects the decision.
+    await _append_review_to_ledger(
+        tenant_id=_ledger_tenant(user), audit_cert_hash=record_hash,
+        review_stored=stored, reviewer_id=user["sub"], approved=req.approved)
     stored["verify_url"] = f"/audit/financial/verify/{stored['record_hash']}"
     return stored
 

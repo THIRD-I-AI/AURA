@@ -36,6 +36,12 @@ env:
   # collapses to the shared `default` bucket. Pinned on to match the prod
   # compose (docker-compose.prod.yml) posture.
   AURA_JWT_ENABLED: "true"
+  # ── Deployment profile (Subsystem D) ──────────────────────────────────
+  # cloud (default) = hosted models + managed storage. For an air-gapped /
+  # on-prem secure install set "onprem": the startup guard then FAILS LOUD if
+  # any external LLM key (GROQ/GEMINI/OPENAI) is configured, forcing local
+  # models only (Ollama) with zero external egress.
+  AURA_DEPLOYMENT_PROFILE: cloud
   # ── Object storage (S45) — recommended for multi-replica deployments ────
   # Default is local disk. Set AURA_STORAGE_BACKEND=s3 to make the gateway
   # stateless so all replicas share one durable store (S3, R2, or MinIO).
@@ -331,6 +337,12 @@ audit:
     AURA_AUDIT_ENABLED: "true"
     AURA_AUDIT_DIR: /var/log/aura/audit
     AURA_AUDIT_MAX_FIELD_BYTES: "16384"
+    # Subsystem C — the durable, tamper-evident audit ledger (shared/audit_ledger.py).
+    # MUST point at the shared Postgres in prod: the per-tenant hash chain is only
+    # multi-replica-safe on Postgres (pg_advisory_xact_lock + UNIQUE(tenant,seq)).
+    # The SQLite default is single-node ONLY. Set this in the env secret
+    # (envSecretName) alongside DATABASE_URL — e.g.
+    #   AURA_LEDGER_DATABASE_URL=postgresql+asyncpg://USER:PASS@HOST:5432/DB
 
   # TRAIGA WORM shipper — runs alongside every backend pod, streams the
   # hash-chained audit log to S3 Object Lock (bucket-default COMPLIANCE

@@ -19,7 +19,12 @@ kubectl create secret generic aura-secrets \
   --from-literal=GROQ_API_KEY=... \
   --from-literal=GEMINI_API_KEY=... \
   --from-literal=DATABASE_URL=postgresql://... \
+  --from-literal=AURA_LEDGER_DATABASE_URL=postgresql+asyncpg://... \
   -n aura
+# AURA_LEDGER_DATABASE_URL is REQUIRED for a multi-replica deploy: the durable
+# audit ledger's per-tenant hash chain is only tamper-safe across replicas on
+# Postgres (advisory lock + UNIQUE constraint). Omitting it falls back to a
+# node-local SQLite file — safe only for a single replica.
 
 # 2. Install the chart.
 helm install aura ./deploy/helm/aura \

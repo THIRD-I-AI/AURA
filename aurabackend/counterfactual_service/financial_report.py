@@ -25,12 +25,18 @@ def _as_dict(f: Any) -> Dict[str, Any]:
     return f if isinstance(f, dict) else f.model_dump()
 
 
-def dataset_fingerprint(ledger, purchase_orders, invoices, journal_entries) -> str:
+def dataset_fingerprint(ledger, purchase_orders, invoices, journal_entries,
+                        goods_receipts=None, historical_reports=None, period_end=None) -> str:
     """SHA-256 over the canonical-JSON of ALL audited inputs — AS-1215 §.10
-    proof of the exact (100%) population analysed."""
+    proof of the exact (100%) population analysed. Binds every input that
+    drives a finding (three-way match needs goods_receipts; expectation
+    analytics needs historical_reports; cutoff testing needs period_end)."""
     blob = canonical_dumps({
         "ledger": ledger, "purchase_orders": purchase_orders,
         "invoices": invoices, "journal_entries": journal_entries,
+        "goods_receipts": goods_receipts or [],
+        "historical_reports": historical_reports or [],
+        "period_end": period_end or "",
     })
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
@@ -45,8 +51,15 @@ def _finding_id(index: int, finding: Dict[str, Any]) -> str:
 
 
 def build_completion_document(tenant_id: str, findings: List[Any], fingerprint: str,
-                              materiality: float) -> Dict[str, Any]:
-    """Assemble the AS-1215 §.12 Engagement Completion Document."""
+                              materiality: float, subject_id: str = "default",
+                              subject_type: str = "dataset",
+                              preparer_id: str = "system") -> Dict[str, Any]:
+    """Assemble the AS-1215 §.12 Engagement Completion Document.
+
+    ``subject_id``/``subject_type`` identify what was audited (a model, a
+    decision cohort, an applicant) so repeated audits of the same subject
+    link in the ledger; ``assignment.preparer_id`` is the AS-1215 §.6
+    accountable preparer. Both ride INSIDE the signed bytes."""
     risk_counts: Dict[str, int] = {}
     for f in findings:
         lvl = _risk_level(f)
@@ -55,6 +68,9 @@ def build_completion_document(tenant_id: str, findings: List[Any], fingerprint: 
         "document_type": "EngagementCompletionDocument",
         "pcaob_standard": "AS 1215",
         "tenant_id": tenant_id,
+        "subject_id": subject_id,
+        "subject_type": subject_type,
+        "assignment": {"preparer_id": preparer_id},
         "dataset_fingerprint": fingerprint,
         "materiality_threshold": materiality,
         "findings": [

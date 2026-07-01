@@ -30,6 +30,10 @@ x-backend-env: &backend-env
   DATABASE_URL: postgresql+asyncpg://${DB_USER:-aura}:${DB_PASSWORD}@db:5432/${DB_NAME:-aura}
   METADATA_DATABASE_URL: postgresql+asyncpg://${DB_USER:-aura}:${DB_PASSWORD}@db:5432/${DB_NAME:-aura}
   SCHEDULER_DATABASE_URL: postgresql+asyncpg://${DB_USER:-aura}:${DB_PASSWORD}@db:5432/${DB_NAME:-aura}
+  # Subsystem C — the durable audit ledger MUST be on Postgres in prod, not the
+  # SQLite default: that's what makes its per-tenant hash chain multi-replica-safe
+  # (engages the pg_advisory_xact_lock serialization path).
+  AURA_LEDGER_DATABASE_URL: postgresql+asyncpg://${DB_USER:-aura}:${DB_PASSWORD}@db:5432/${DB_NAME:-aura}
   AURA_JWT_ENABLED: "true"
   AURA_AUTH_MODE: password
   SECRET_KEY: ${SECRET_KEY}
@@ -38,6 +42,9 @@ x-backend-env: &backend-env
   AURA_PII_TOKEN_KEY: ${AURA_PII_TOKEN_KEY}
   GEMINI_API_KEY: ${GEMINI_API_KEY:-}
   GROQ_API_KEY: ${GROQ_API_KEY:-}
+  # Subsystem D — cloud (default) or onprem. Under onprem the startup guard
+  # rejects the external keys above (air-gapped: local Ollama only, no egress).
+  AURA_DEPLOYMENT_PROFILE: ${AURA_DEPLOYMENT_PROFILE:-cloud}
   # ── Object storage (S45) — set AURA_STORAGE_BACKEND=s3 + the vars below
   # to make the gateway stateless and scale across multiple nodes. The env
   # values flow in via env_file: .env; listing them here documents intent.
