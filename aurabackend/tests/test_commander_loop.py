@@ -56,6 +56,16 @@ def _types(events):
     return [type(e).__name__ for e in events]
 
 
+def test_system_prompt_demands_self_contained_answers():
+    """The final answer must NAME the entities from the results ("West region:
+    300"), not point at them vaguely ("that region sold 300") — the user never
+    sees the intermediate SQL rows."""
+    from agents.commander import build_system_prompt
+    p = build_system_prompt("", FakeRegistry(ToolOutcome(True, {})))
+    assert "self-contained" in p
+    assert "name" in p.lower()
+
+
 def test_answer_without_tools():
     llm = FakeProvider([AssistantTurn(text="42", tool_calls=[], finish_reason="stop")])
     events = list(run_commander("q", tenant="t1", schema_context="",
