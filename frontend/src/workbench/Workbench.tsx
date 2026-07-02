@@ -5,7 +5,7 @@
    /audit/ledger/verify); design seed data elsewhere so every panel renders.
    Additive: the classic /app shell is untouched and reachable from stubs. */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { chatService } from '../services/api';
+import { authService, chatService } from '../services/api';
 import './workbench.css';
 
 type Msg = { q: string; sql?: string; critic?: string; columns?: string[]; rows?: string[][]; answer?: string };
@@ -109,6 +109,7 @@ export default function Workbench() {
   const cf = { id: 'cf_8812', question: "What would Q3 revenue have been if we hadn't raised prices in May?", effect: -1.9, ciLo: -2.4, ciHi: -1.5, evalue: 3.2, hash: '9f3c…a1e2' };
   const chatInput = useRef<HTMLInputElement>(null);
   const emailInput = useRef<HTMLInputElement>(null);
+  const passInput = useRef<HTMLInputElement>(null);
   const paletteInput = useRef<HTMLInputElement>(null);
   const feedTimer = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -161,9 +162,18 @@ export default function Workbench() {
     return () => window.removeEventListener('keydown', onKey);
   }, []);
 
-  const signIn = () => {
+  /* Email/password = REAL auth (JWT via /auth/token, same session as the
+     classic app). SSO buttons remain the design's demo path. */
+  const signIn = async () => {
     const email = emailInput.current?.value.trim() ?? '';
+    const pass = passInput.current?.value ?? '';
     if (!email || !email.includes('@')) { setLoginError('Enter a valid corporate email address.'); return; }
+    try {
+      await authService.login(email, pass);
+    } catch (e) {
+      setLoginError(e instanceof Error ? e.message : 'Sign-in failed — check your credentials.');
+      return;
+    }
     setLoginError(null); setBootIdx(0); setView('boot');
   };
 
@@ -284,7 +294,7 @@ export default function Workbench() {
               <div style={{ display: 'flex', alignItems: 'center', gap: 10, color: 'var(--text3)', fontSize: 11 }}><span style={{ flex: 1, height: 1, background: 'var(--hair)' }} />or with email<span style={{ flex: 1, height: 1, background: 'var(--hair)' }} /></div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
                 <label style={{ fontSize: 12, fontWeight: 600 }}>Work email<input ref={emailInput} onKeyDown={(e) => e.key === 'Enter' && signIn()} placeholder="you@acme.com" className="aw-input" style={{ marginTop: 6, width: '100%', boxSizing: 'border-box', padding: '10px 14px', fontSize: 13 }} /></label>
-                <label style={{ fontSize: 12, fontWeight: 600 }}>Password<input type="password" onKeyDown={(e) => e.key === 'Enter' && signIn()} placeholder="••••••••••••" className="aw-input" style={{ marginTop: 6, width: '100%', boxSizing: 'border-box', padding: '10px 14px', fontSize: 13 }} /></label>
+                <label style={{ fontSize: 12, fontWeight: 600 }}>Password<input ref={passInput} type="password" onKeyDown={(e) => e.key === 'Enter' && signIn()} placeholder="••••••••••••" className="aw-input" style={{ marginTop: 6, width: '100%', boxSizing: 'border-box', padding: '10px 14px', fontSize: 13 }} /></label>
                 {loginError && <div style={{ fontSize: 12, color: 'var(--danger)' }}>{loginError}</div>}
                 <button onClick={signIn} className="aw-btn-accent" style={{ textAlign: 'center', fontSize: 13.5, padding: 12 }}>Continue</button>
               </div>

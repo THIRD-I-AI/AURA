@@ -4,8 +4,10 @@ import { describe, expect, it, vi, beforeEach } from 'vitest';
 
 vi.mock('../services/api', () => ({
   chatService: { streamMessage: vi.fn().mockResolvedValue(undefined) },
+  authService: { login: vi.fn() },
 }));
 
+import { authService } from '../services/api';
 import Workbench from './Workbench';
 
 beforeEach(() => {
@@ -17,6 +19,24 @@ describe('Workbench', () => {
     render(<Workbench />);
     expect(screen.getByTestId('wb-login')).toBeInTheDocument();
     expect(screen.getByText('Analytics your auditors can replay.')).toBeInTheDocument();
+  });
+
+  it('email sign-in calls the REAL auth service; failure shows the error', async () => {
+    vi.mocked(authService.login).mockRejectedValueOnce(new Error('Invalid credentials'));
+    render(<Workbench />);
+    fireEvent.change(screen.getByPlaceholderText('you@acme.com'), { target: { value: 'a@b.co' } });
+    fireEvent.change(screen.getByPlaceholderText('••••••••••••'), { target: { value: 'pw' } });
+    fireEvent.click(screen.getByText('Continue'));
+    expect(await screen.findByText('Invalid credentials')).toBeInTheDocument();
+    expect(authService.login).toHaveBeenCalledWith('a@b.co', 'pw');
+  });
+
+  it('email sign-in success enters the boot sequence', async () => {
+    vi.mocked(authService.login).mockResolvedValueOnce({} as never);
+    render(<Workbench />);
+    fireEvent.change(screen.getByPlaceholderText('you@acme.com'), { target: { value: 'a@b.co' } });
+    fireEvent.click(screen.getByText('Continue'));
+    expect(await screen.findByTestId('wb-boot')).toBeInTheDocument();
   });
 
   it('rejects an invalid email, then boots into the cockpit via SSO', async () => {
