@@ -37,3 +37,19 @@ def _reset_storage_backend_singleton():
         reset_storage_backend()
     except Exception:
         pass
+
+
+def pytest_sessionfinish(session, exitstatus):
+    """Shut down joblib/loky's reusable process pool explicitly.
+
+    Root-caused via a thread-dump probe: after "1791 passed" the interpreter
+    sometimes hangs in threading._shutdown joining loky's NON-DAEMON
+    ExecutorManagerThread (spawned by sklearn/econml n_jobs work; loky's own
+    atexit hook loses a race under load — the cause of the pre-push gate's
+    exit-hang). Killing the pool here removes the thread before exit.
+    """
+    try:
+        from joblib.externals.loky import get_reusable_executor
+        get_reusable_executor().shutdown(kill_workers=True)
+    except Exception:
+        pass
