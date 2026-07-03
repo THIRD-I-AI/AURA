@@ -13,5 +13,19 @@
       "Bash(npm ci)",
       "Bash(npm run*)"
     ]
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "awk '/^## DIGEST/{f=1;next} /^## /{f=0} f' docs/workbench/STATE.md 2>/dev/null || true",
+            "timeout": 10,
+            "statusMessage": "Loading workbench state digest"
+          }
+        ]
+      }
+    ]
   }
 }

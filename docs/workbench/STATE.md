@@ -79,6 +79,29 @@ OFFLINE shown); classic-page visual mismatch is the loudest complaint.
 6. Boot stages → real /health probes; Terminal in-shell (dockview); Certificates/Scheduler/
    Metadata Store views designed then built.
 
+## ENTERPRISE ROADMAP (user decisions, 2026-07-03 — binding)
+
+User-confirmed direction ("we both have to make this work"):
+1. **Deploy:** Cloud SaaS multi-tenant FIRST; on-prem/air-gapped profile stays a premium tier.
+2. **Collaboration v1 = signed approval chains:** N-of-M Ed25519-signed sign-offs on pipeline
+   deployments, healing actions, and audit findings, chained into the per-tenant ledger.
+   Builds directly on the S41 HITL + audit_ledger machinery. Real-time presence = later.
+3. **Connectors = universal layers, not bespoke list** (user: "work with anything"):
+   ① SQLAlchemy-dialect connector → any SQL database via URL (Postgres/MySQL/BigQuery/
+   Snowflake/Redshift/Oracle/MSSQL/…) ② generic REST/OpenAPI connector (auth profiles:
+   OAuth2/API-key/basic) → most SaaS incl. Salesforce/NetSuite as CONFIGURATIONS not code
+   ③ files/object storage ④ Kafka/webhooks (exist) ⑤ connector SDK for the long tail;
+   evaluate wrapping an open-source connector catalog (e.g. Airbyte protocol) for breadth.
+4. **Auth = every corporate IdP** (user: "login with anything their company provides"):
+   generic OIDC + SAML 2.0 + SCIM provisioning ≈ Entra/Okta/Google/Ping/Auth0/Keycloak/….
+   MFA + passkeys on the password path. Wire real IdP flows behind the existing login visuals.
+
+**Enterprise scorecard (honest, 2026-07-03):** ~70% — security/audit/tenancy/self-healing/
+deploy = STRONG (the differentiated core is built + tested); missing = SSO (visual only),
+RBAC beyond admin/auditor, approval chains, universal connectors, observability/SLOs,
+load testing. All known-quantity engineering. Reliability bar: every new system ships
+with tests + CI lane + failure-mode handling (fail-closed), per repo convention.
+
 ## How to resume in a fresh session
 
 Read this file first. Then: `git log --oneline -10` on `feature/workbench-redesign`,
