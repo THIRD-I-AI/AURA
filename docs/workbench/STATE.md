@@ -95,6 +95,12 @@ User-confirmed direction ("we both have to make this work"):
 4. **Auth = every corporate IdP** (user: "login with anything their company provides"):
    generic OIDC + SAML 2.0 + SCIM provisioning ≈ Entra/Okta/Google/Ping/Auth0/Keycloak/….
    MFA + passkeys on the password path. Wire real IdP flows behind the existing login visuals.
+   → **OIDC SLICE 1 SHIPPED (2026-07-03, branch `feature/enterprise-oidc`):** `shared/oidc.py`
+   (PKCE S256, single-use TTL state, JWKS signature verification, org mapping claim→tid/hd→
+   email-domain) + `/auth/oidc/{status,login,callback}` in the auth router + frontend
+   `/auth/sso` fragment handoff + status-aware workbench SSO buttons. 6 backend tests.
+   Configure via AURA_OIDC_ISSUER/CLIENT_ID/CLIENT_SECRET/REDIRECT_URI. KNOWN LIMIT:
+   in-process state store = single replica; Postgres state store + SAML + SCIM = next.
 
 **Enterprise scorecard (honest, 2026-07-03):** ~70% — security/audit/tenancy/self-healing/
 deploy = STRONG (the differentiated core is built + tested); missing = SSO (visual only),

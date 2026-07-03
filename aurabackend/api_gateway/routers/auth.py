@@ -171,6 +171,64 @@ async def register_user(body: RegisterRequest):
     )
 
 
+# ── Enterprise SSO — generic OIDC (authorization-code + PKCE) ───────────
+# One integration covers every standards-compliant IdP (Entra, Okta, Google,
+# Ping, Auth0, Keycloak). See shared/oidc.py for the security posture.
+
+@router.get("/oidc/status")
+async def oidc_status():
+    """Whether SSO is configured — the frontend shows/hides SSO buttons on this."""
+    from shared import oidc
+    return {"enabled": oidc.is_configured(), "issuer": settings.oidc_issuer or None}
+
+
+@router.get("/oidc/login")
+async def oidc_login():
+    """Redirect the browser to the IdP's authorization endpoint (PKCE S256)."""
+    from fastapi.responses import RedirectResponse
+
+    from shared import oidc
+    if not oidc.is_configured():
+        raise ValidationError("SSO is not configured on this deployment")
+    return RedirectResponse(await oidc.build_auth_url(), status_code=302)
+
+
+@router.get("/oidc/callback")
+async def oidc_callback(code: str, state: str):
+    """IdP redirects here. Verify state (single-use), exchange the code,
+    signature-verify the id_token, then mint an AURA JWT whose org_id keys
+    tenant isolation and the audit ledger. Token is handed to the frontend
+    in the URL FRAGMENT (never sent to servers or logged)."""
+    from fastapi.responses import RedirectResponse
+
+    from shared import oidc
+    if not oidc.is_configured():
+        raise ValidationError("SSO is not configured on this deployment")
+    verifier = oidc.pop_state(state)
+    if verifier is None:
+        raise AuthenticationError("Unknown or expired SSO state — restart sign-in")
+
+    tokens = await oidc.exchange_code(code, verifier)
+    id_token = tokens.get("id_token")
+    if not id_token:
+        raise AuthenticationError("IdP response carried no id_token")
+    claims = await oidc.validate_id_token(id_token)
+
+    aura_claims = {
+        "sub": str(claims.get("sub")),
+        "role": "user",
+        "org_id": oidc.map_org(claims),
+    }
+    if claims.get("email"):
+        aura_claims["email"] = claims["email"]
+    if claims.get("name"):
+        aura_claims["name"] = claims["name"]
+    logger.info("Token issued (oidc) for sub=%s org=%s", aura_claims["sub"], aura_claims["org_id"])
+    token = create_access_token(aura_claims)
+    return RedirectResponse(
+        f"{settings.oidc_post_login_redirect}#token={token}", status_code=302)
+
+
 @router.get("/me", response_model=UserInfo)
 async def current_user(user: dict = Depends(require_user)):
     """Return the claims of the authenticated user."""

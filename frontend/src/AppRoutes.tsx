@@ -8,6 +8,7 @@ import { CertificatePage } from './audit/CertificatePage';
 import { VerifyPage } from './audit/VerifyPage';
 import { AuditWizard } from './audit/AuditWizard';
 import { AuthForm } from './auth/AuthForm';
+import { SsoCallback } from './auth/SsoCallback';
 import { ProtectedRoute } from './auth/ProtectedRoute';
 
 const Dashboard = lazy(() => import('./App'));
@@ -20,6 +21,8 @@ export function AppRoutes() {
       <Route path="/" element={<PublicShell><AuditFrontDoor /></PublicShell>} />
       <Route path="/login" element={<PublicShell><AuthForm mode="login" /></PublicShell>} />
       <Route path="/signup" element={<PublicShell><AuthForm mode="signup" /></PublicShell>} />
+      {/* OIDC fragment handoff — gateway redirects here after SSO */}
+      <Route path="/auth/sso" element={<SsoCallback />} />
       <Route path="/audit/new" element={<PublicShell><AuditWizard /></PublicShell>} />
       <Route path="/audit/:jobId" element={<PublicShell><AuditProgress /></PublicShell>} />
       <Route path="/certificate/:hash" element={<PublicShell><CertificatePage /></PublicShell>} />

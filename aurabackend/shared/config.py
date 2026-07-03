@@ -178,6 +178,17 @@ class AuraSettings(BaseSettings):
     # to expose the agentic tool-loop alongside it (coexistence-then-cutover).
     commander_enabled: bool = Field(False, alias="AURA_COMMANDER_ENABLED")
 
+    # Enterprise SSO — generic OIDC (authorization-code + PKCE). One
+    # standards-compliant integration covers Entra/Okta/Google/Ping/Auth0/
+    # Keycloak. Enabled when issuer+client_id+redirect_uri are all set.
+    oidc_issuer: str = Field("", alias="AURA_OIDC_ISSUER")
+    oidc_client_id: str = Field("", alias="AURA_OIDC_CLIENT_ID")
+    oidc_client_secret: str = Field("", alias="AURA_OIDC_CLIENT_SECRET")
+    oidc_redirect_uri: str = Field("", alias="AURA_OIDC_REDIRECT_URI")
+    oidc_org_claim: str = Field("org_id", alias="AURA_OIDC_ORG_CLAIM")
+    oidc_post_login_redirect: str = Field(
+        "http://localhost:5173/auth/sso", alias="AURA_OIDC_POST_LOGIN_REDIRECT")
+
     @field_validator("jwt_enabled", mode="after")
     @classmethod
     def _require_jwt_for_tenant_isolation_in_production(cls, v, info):

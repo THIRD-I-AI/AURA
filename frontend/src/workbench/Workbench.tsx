@@ -98,6 +98,16 @@ export default function Workbench() {
   const [pipelines, setPipelines] = useState<Array<{ name: string; status: string }> | null>(null);
   const [gatewayUp, setGatewayUp] = useState<boolean | null>(null);
   const [ledgerDown, setLedgerDown] = useState(false);
+  const [ssoEnabled, setSsoEnabled] = useState(false);
+
+  /* Real enterprise SSO when the deployment configures OIDC; buttons fall
+     back to the demo boot flow otherwise. */
+  useEffect(() => {
+    fetch(`${API_BASE_URL}/auth/oidc/status`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((j) => setSsoEnabled(Boolean(j?.enabled)))
+      .catch(() => undefined);
+  }, []);
   const chatInput = useRef<HTMLInputElement>(null);
   const emailInput = useRef<HTMLInputElement>(null);
   const passInput = useRef<HTMLInputElement>(null);
@@ -357,7 +367,7 @@ export default function Workbench() {
                 <div style={{ marginTop: 6, fontSize: 13, color: 'var(--text2)' }}>Use your corporate identity to continue to <strong>acme-corp</strong>.</div>
               </div>
               {['Okta', 'Microsoft Entra ID', 'Google Workspace'].map((sso) => (
-                <div key={sso} onClick={() => { setBootIdx(0); setView('boot'); }} className="aw-hover-accent-bd" style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 10, border: '1px solid var(--border)', borderRadius: 8, padding: '11px 14px', fontSize: 13.5, fontWeight: 600 }}>
+                <div key={sso} onClick={() => { if (ssoEnabled) { window.location.href = `${API_BASE_URL}/auth/oidc/login`; } else { setBootIdx(0); setView('boot'); } }} className="aw-hover-accent-bd" style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 10, border: '1px solid var(--border)', borderRadius: 8, padding: '11px 14px', fontSize: 13.5, fontWeight: 600 }}>
                   <span className="aw-mono" style={{ width: 18, height: 18, display: 'grid', placeItems: 'center', background: 'var(--raised)', borderRadius: 4, fontSize: 9 }}>{sso[0]}</span>
                   Continue with {sso}
                 </div>
