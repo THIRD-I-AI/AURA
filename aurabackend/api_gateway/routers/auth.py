@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import uuid
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Cookie, Depends
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 
@@ -182,28 +182,49 @@ async def oidc_status():
     return {"enabled": oidc.is_configured(), "issuer": settings.oidc_issuer or None}
 
 
+class ExchangeRequest(BaseModel):
+    """Redeem a single-use SSO handoff code for the AURA JWT."""
+    code: str
+
+
 @router.get("/oidc/login")
 async def oidc_login():
-    """Redirect the browser to the IdP's authorization endpoint (PKCE S256)."""
+    """Redirect the browser to the IdP's authorization endpoint (PKCE S256).
+    The state is also bound to THIS browser via an HttpOnly cookie so a
+    forged callback cannot ride another session (login-CSRF hardening)."""
     from fastapi.responses import RedirectResponse
 
     from shared import oidc
     if not oidc.is_configured():
         raise ValidationError("SSO is not configured on this deployment")
-    return RedirectResponse(await oidc.build_auth_url(), status_code=302)
+    url, state = await oidc.build_auth_url()
+    resp = RedirectResponse(url, status_code=302)
+    resp.set_cookie("aura_oidc_state", state, max_age=600, httponly=True, samesite="lax")
+    return resp
 
 
 @router.get("/oidc/callback")
-async def oidc_callback(code: str, state: str):
-    """IdP redirects here. Verify state (single-use), exchange the code,
-    signature-verify the id_token, then mint an AURA JWT whose org_id keys
-    tenant isolation and the audit ledger. Token is handed to the frontend
-    in the URL FRAGMENT (never sent to servers or logged)."""
+async def oidc_callback(code: str, state: str,
+                        oidc_state: str | None = Cookie(default=None, alias="aura_oidc_state")):
+    """IdP redirects here. Verify state (single-use AND cookie-bound to this
+    browser), exchange the code, signature-verify the id_token, then mint an
+    AURA JWT whose org_id keys tenant isolation and the audit ledger.
+
+    Security (ECC + commit-review findings): the JWT itself never appears in
+    any URL — the browser receives a 60s single-use handoff CODE in the
+    fragment and redeems it via POST /auth/oidc/exchange, so proxy/access
+    logs of the Location header can never capture a live token. The redirect
+    destination must be an absolute http(s) URL from deployment config."""
     from fastapi.responses import RedirectResponse
 
     from shared import oidc
     if not oidc.is_configured():
         raise ValidationError("SSO is not configured on this deployment")
+    dest = settings.oidc_post_login_redirect or ""
+    if not (dest.startswith("http://") or dest.startswith("https://")):
+        raise ValidationError("AURA_OIDC_POST_LOGIN_REDIRECT must be an absolute http(s) URL")
+    if oidc_state != state:
+        raise AuthenticationError("SSO state does not match this browser — restart sign-in")
     verifier = oidc.pop_state(state)
     if verifier is None:
         raise AuthenticationError("Unknown or expired SSO state — restart sign-in")
@@ -217,16 +238,28 @@ async def oidc_callback(code: str, state: str):
     aura_claims = {
         "sub": str(claims.get("sub")),
         "role": "user",
-        "org_id": oidc.map_org(claims),
+        "org_id": oidc.map_org(claims),   # fail-closed tenant mapping
     }
     if claims.get("email"):
         aura_claims["email"] = claims["email"]
     if claims.get("name"):
         aura_claims["name"] = claims["name"]
     logger.info("Token issued (oidc) for sub=%s org=%s", aura_claims["sub"], aura_claims["org_id"])
-    token = create_access_token(aura_claims)
-    return RedirectResponse(
-        f"{settings.oidc_post_login_redirect}#token={token}", status_code=302)
+    handoff = oidc.new_handoff(create_access_token(aura_claims))
+    resp = RedirectResponse(f"{dest}#code={handoff}", status_code=302)
+    resp.delete_cookie("aura_oidc_state")
+    return resp
+
+
+@router.post("/oidc/exchange", response_model=TokenResponse)
+async def oidc_exchange(body: ExchangeRequest):
+    """Redeem the single-use handoff code for the AURA JWT (response body —
+    tokens never transit URLs or logs)."""
+    from shared import oidc
+    token = oidc.pop_handoff(body.code)
+    if token is None:
+        raise AuthenticationError("Unknown or expired SSO code — restart sign-in")
+    return TokenResponse(access_token=token)
 
 
 @router.get("/me", response_model=UserInfo)

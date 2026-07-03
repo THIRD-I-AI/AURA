@@ -32,8 +32,12 @@ from urllib.parse import urlencode
 from shared.config import settings
 
 STATE_TTL_SECONDS = 600
+HANDOFF_TTL_SECONDS = 60
+DISCOVERY_TTL_SECONDS = 3600
 _state_store: Dict[str, Tuple[str, float]] = {}
-_discovery_cache: Optional[Dict[str, Any]] = None
+_handoff_store: Dict[str, Tuple[str, float]] = {}
+_discovery_cache: Optional[Tuple[Dict[str, Any], float]] = None
+_jwk_client: Optional[Any] = None
 
 
 def is_configured() -> bool:
@@ -68,20 +72,45 @@ def pop_state(state: str) -> Optional[str]:
     return verifier if exp >= time.time() else None
 
 
+def new_handoff(token: str) -> str:
+    """Store a minted AURA JWT behind a short-lived single-use code so the
+    JWT itself never appears in any URL (redirect Location headers can be
+    logged by proxies — ECC security-review finding)."""
+    now = time.time()
+    for k in [k for k, (_, exp) in _handoff_store.items() if exp < now]:
+        _handoff_store.pop(k, None)
+    code = secrets.token_urlsafe(32)
+    _handoff_store[code] = (token, now + HANDOFF_TTL_SECONDS)
+    return code
+
+
+def pop_handoff(code: str) -> Optional[str]:
+    entry = _handoff_store.pop(code, None)
+    if entry is None:
+        return None
+    token, exp = entry
+    return token if exp >= time.time() else None
+
+
 async def discover() -> Dict[str, Any]:
-    """Fetch (and cache) the issuer's OIDC discovery document."""
+    """Fetch the issuer's OIDC discovery document; cached with a TTL so IdP
+    key/endpoint rotation is picked up without a process restart."""
     global _discovery_cache
-    if _discovery_cache is None:
+    now = time.time()
+    if _discovery_cache is None or _discovery_cache[1] < now:
         import httpx
         url = settings.oidc_issuer.rstrip("/") + "/.well-known/openid-configuration"
         async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.get(url)
             resp.raise_for_status()
-            _discovery_cache = resp.json()
-    return _discovery_cache
+            _discovery_cache = (resp.json(), now + DISCOVERY_TTL_SECONDS)
+    return _discovery_cache[0]
 
 
-async def build_auth_url() -> str:
+async def build_auth_url() -> Tuple[str, str]:
+    """Returns (authorization_url, state) — the caller binds state to the
+    browser via a cookie so a forged callback cannot ride another session
+    (login-CSRF / session-fixation hardening)."""
     doc = await discover()
     state, _verifier, challenge = new_state()
     params = {
@@ -93,7 +122,7 @@ async def build_auth_url() -> str:
         "code_challenge": challenge,
         "code_challenge_method": "S256",
     }
-    return f"{doc['authorization_endpoint']}?{urlencode(params)}"
+    return f"{doc['authorization_endpoint']}?{urlencode(params)}", state
 
 
 async def exchange_code(code: str, verifier: str) -> Dict[str, Any]:
@@ -115,32 +144,49 @@ async def exchange_code(code: str, verifier: str) -> Dict[str, Any]:
 
 
 async def validate_id_token(id_token: str) -> Dict[str, Any]:
-    """Verify the id_token signature against the issuer JWKS; enforce iss/aud."""
+    """Verify the id_token signature against the issuer JWKS; enforce iss/aud.
+
+    The blocking JWKS fetch runs off the event loop (to_thread) with a
+    timeout, and the client caches the key set with a short lifespan so
+    routine IdP key rotation is picked up without a restart and a slow IdP
+    cannot stall concurrent requests (ECC review findings).
+    """
+    import asyncio
+
     import jwt as pyjwt
+    global _jwk_client
     doc = await discover()
-    jwk_client = pyjwt.PyJWKClient(doc["jwks_uri"])
-    signing_key = jwk_client.get_signing_key_from_jwt(id_token)
-    return pyjwt.decode(
-        id_token,
-        signing_key.key,
-        algorithms=["RS256", "ES256"],
-        audience=settings.oidc_client_id,
-        issuer=settings.oidc_issuer,
-    )
+    if _jwk_client is None or getattr(_jwk_client, "uri", None) != doc["jwks_uri"]:
+        _jwk_client = pyjwt.PyJWKClient(
+            doc["jwks_uri"], cache_jwk_set=True, lifespan=300, timeout=10)
+    signing_key = await asyncio.to_thread(_jwk_client.get_signing_key_from_jwt, id_token)
+    return await asyncio.to_thread(
+        lambda: pyjwt.decode(
+            id_token,
+            signing_key.key,
+            algorithms=["RS256", "ES256"],
+            audience=settings.oidc_client_id,
+            issuer=settings.oidc_issuer,
+        ))
 
 
 def map_org(claims: Dict[str, Any]) -> str:
-    """Tenant mapping: configured claim → tid/hd → email domain → sub.
+    """Tenant mapping: configured claim → tid/hd → VERIFIED-email domain.
 
-    Same-company users land in the same org so collaboration and the
-    per-tenant audit ledger work out of the box.
+    Fail-closed (tenant-impersonation hardening): with no org claim and no
+    ``email_verified: true``, the login is refused rather than letting a
+    self-asserted email place the user inside another company's tenant.
+    Operators of shared/multi-tenant IdPs should set AURA_OIDC_ORG_CLAIM.
     """
+    from shared.exceptions import AuthenticationError
     configured = getattr(settings, "oidc_org_claim", "org_id") or "org_id"
     for key in (configured, "tid", "hd"):
         v = claims.get(key)
         if v:
             return str(v)
-    email = claims.get("email") or ""
-    if "@" in email:
-        return email.split("@", 1)[1].lower()
-    return str(claims.get("sub", "default"))
+    if claims.get("email_verified") is True:
+        email = claims.get("email") or ""
+        if "@" in email:
+            return email.split("@", 1)[1].lower()
+    raise AuthenticationError(
+        "IdP returned no tenant identifier — an org claim or a verified email domain is required")

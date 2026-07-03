@@ -101,6 +101,11 @@ User-confirmed direction ("we both have to make this work"):
    `/auth/sso` fragment handoff + status-aware workbench SSO buttons. 6 backend tests.
    Configure via AURA_OIDC_ISSUER/CLIENT_ID/CLIENT_SECRET/REDIRECT_URI. KNOWN LIMIT:
    in-process state store = single replica; Postgres state store + SAML + SCIM = next.
+   **HARDENED (5 review findings fixed, 8 tests):** JWT never in URLs (60s single-use
+   handoff code + POST /auth/oidc/exchange); state cookie-bound to browser (login-CSRF);
+   redirect dest must be absolute http(s); JWKS fetch off-loop w/ timeout + 300s key cache
+   (rotation-safe) + 1h discovery TTL; tenant mapping FAIL-CLOSED (org claim or
+   email_verified-only domain — unverified email cannot choose a tenant).
 
 **Enterprise scorecard (honest, 2026-07-03):** ~70% — security/audit/tenancy/self-healing/
 deploy = STRONG (the differentiated core is built + tested); missing = SSO (visual only),
