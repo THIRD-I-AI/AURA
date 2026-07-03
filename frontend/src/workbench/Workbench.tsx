@@ -15,7 +15,8 @@ import {
   streamingService,
   uploadService,
 } from '../services/api';
-import { VIEW_REGISTRY, ViewHost } from './views';
+import { VIEW_REGISTRY } from './viewRegistry';
+import { ViewHost } from './views';
 import './workbench.css';
 
 type Msg = { q: string; sql?: string; critic?: string; columns?: string[]; rows?: string[][]; answer?: string };

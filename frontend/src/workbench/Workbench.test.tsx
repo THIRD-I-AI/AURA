@@ -27,8 +27,11 @@ vi.mock('../services/api', () => ({
 
 /* The classic-page registry is mocked so jsdom doesn't load every page chunk;
    integration of the real pages is covered by their own suites. */
-vi.mock('./views', () => ({
+vi.mock('./viewRegistry', () => ({
   VIEW_REGISTRY: { Dashboards: { component: () => null } },
+  PAGE_ID_TO_NAV: {},
+}));
+vi.mock('./views', () => ({
   ViewHost: ({ nav }: { nav: string }) => <div data-testid="wb-view">mounted:{nav}</div>,
 }));
 
