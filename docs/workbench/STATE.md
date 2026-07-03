@@ -120,6 +120,24 @@ RBAC beyond admin/auditor, approval chains, universal connectors, observability/
 load testing. All known-quantity engineering. Reliability bar: every new system ships
 with tests + CI lane + failure-mode handling (fail-closed), per repo convention.
 
+## USER DIRECTIVES 2026-07-03 (binding, from "full and working model" message)
+
+1. **Deps:** dependabot = 6 alerts, ALL undici <7.28.0 (transitive, frontend lockfile) →
+   npm override `"undici": ">=7.28.0"`, regenerate lock. (in flight)
+2. **Frontend polish:** Terminal + Constellation must feel Obsidian-grade responsive
+   (instant pan/zoom, no jank). **Dynamic tiles:** cockpit tiles auto-rearrange and
+   FILL GAPS when one extends — dashboard-grid behavior (CSS `grid-auto-flow: dense`
+   first; react-grid-layout if drag/resize needed). Design source of truth stays
+   docs/design/aura-workbench/.
+3. **Real-life validation program (trust the engines):** e2e that MONITORS a live
+   pipeline, injects real drift, watches UASR MAPE-K detect + propose + heal it
+   (tests_e2e/simulate_drift_stream.py scratch exists — formalize); engine trust
+   audit = run EVERY engine (7 causal estimators, refuters, TMLE, ForestDR, conformal,
+   E-value/sensitivity, forensic AS-checks, DPC cross-check) against known ground
+   truth, record recovered-vs-true in a signed report. "All engines mentioned must
+   work and be trusted."
+4. **Goal restated:** scale to 100% enterprise; full WORKING model — not a prototype.
+
 ## How to resume in a fresh session
 
 Read this file first. Then: `git log --oneline -10` on `feature/workbench-redesign`,
