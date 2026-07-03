@@ -100,11 +100,15 @@ export default function Workbench() {
   const emailInput = useRef<HTMLInputElement>(null);
   const passInput = useRef<HTMLInputElement>(null);
   const paletteInput = useRef<HTMLInputElement>(null);
+  const cfBusy = useRef(false);
 
+  const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const showToast = useCallback((t: string) => {
+    if (toastTimer.current) clearTimeout(toastTimer.current);
     setToast(t);
-    setTimeout(() => setToast(null), 2600);
+    toastTimer.current = setTimeout(() => setToast(null), 2600);
   }, []);
+  useEffect(() => () => { if (toastTimer.current) clearTimeout(toastTimer.current); }, []);
 
   const pushFeed = useCallback((k: string, color: string, t: string) => {
     setFeed((f) => [{ time: now(), k, color, t }, ...f].slice(0, 8));
@@ -239,7 +243,10 @@ export default function Workbench() {
   /* Runs the REAL one-click forensic audit (signed report → ledger). The
      stage list animates only while the real request is in flight. */
   const runCf = async () => {
-    if (cf.status === 'running') return;
+    // Ref guard, not a `cf` closure read: the palette memo holds a stale
+    // runCf reference, so the in-flight check must not rely on captured state.
+    if (cfBusy.current) return;
+    cfBusy.current = true;
     setCf({ status: 'running', stageIdx: 0 });
     const t = setInterval(() => {
       setCf((c) => (c.status === 'running' && c.stageIdx < CF_STAGES.length - 1 ? { status: 'running', stageIdx: c.stageIdx + 1 } : c));
@@ -263,6 +270,7 @@ export default function Workbench() {
       setCf({ status: 'error', message: e instanceof Error ? e.message : 'audit service unreachable' });
     } finally {
       clearInterval(t);
+      cfBusy.current = false;
     }
   };
 
