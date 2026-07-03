@@ -5,11 +5,20 @@
    /audit/ledger/verify); design seed data elsewhere so every panel renders.
    Additive: the classic /app shell is untouched and reachable from stubs. */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { authService, chatService } from '../services/api';
+import {
+  API_BASE_URL,
+  analyticsService,
+  authService,
+  chatService,
+  getCurrentWorkspaceId,
+  healingService,
+  streamingService,
+  uploadService,
+} from '../services/api';
 import './workbench.css';
 
 type Msg = { q: string; sql?: string; critic?: string; columns?: string[]; rows?: string[][]; answer?: string };
-type Heal = { id: number; title: string; method: string; safe: boolean; sub: string; state: 'pending' | 'deployed' | 'rejected'; resolution?: string };
+type Heal = { id: string; title: string; method: string; safe: boolean; sub: string; state: 'pending' | 'deployed' | 'rejected'; resolution?: string };
 type FeedEv = { time: string; k: string; color: string; t: string };
 
 const NAV_GROUPS: [string, string[]][] = [
@@ -56,17 +65,12 @@ const BOOT_STAGES = [
   'Subscribing to live streams (kafka erp.*)',
   'Restoring cockpit layout',
 ];
-const FEED_POOL: Omit<FeedEv, 'time'>[] = [
-  { k: 'INGEST', color: 'var(--blue)', t: 'atomic parquet load lake.fact_revenue +18,240 rows' },
-  { k: 'HEAL', color: 'var(--warn)', t: 'MAPE-K analyze: no drift on workday.hcm' },
-  { k: 'AUDIT', color: 'var(--accent)', t: 'ledger append · sha256 chained · ED25519 ok' },
-  { k: 'QUERY', color: 'var(--text2)', t: 'sandbox run: revenue rollup preview (0.8s, $0.01)' },
-  { k: 'PII', color: 'var(--purple)', t: 'masked 4 fields in netsuite.gl_feed batch' },
-  { k: 'INGEST', color: 'var(--blue)', t: 'kafka erp.hcm.v1 offset +512 · idempotent' },
-];
-
 const now = () => new Date().toTimeString().slice(0, 5);
-const fmtM = (v: number) => '−$' + Math.abs(v).toFixed(1) + 'M';
+type CfState =
+  | { status: 'idle' }
+  | { status: 'running'; stageIdx: number }
+  | { status: 'done'; nFindings: number | null; materiality: string | null; hash: string | null; verifyUrl: string | null; raw: string }
+  | { status: 'error'; message: string };
 
 export default function Workbench() {
   const [view, setView] = useState<'login' | 'boot' | 'app'>('login');
@@ -78,67 +82,93 @@ export default function Workbench() {
   const [loginError, setLoginError] = useState<string | null>(null);
   const [bootIdx, setBootIdx] = useState(0);
   const [audience, setAudience] = useState<'operator' | 'auditor' | 'analyst'>('operator');
-  const [messages, setMessages] = useState<Msg[]>([{
-    q: 'Why did APAC churn spike in March?',
-    sql: "SELECT region, month, churn_rate,\n  churn_rate - LAG(churn_rate) OVER (PARTITION BY region ORDER BY month) AS delta\nFROM metrics.churn_monthly\nWHERE region = 'APAC' AND month BETWEEN '2026-01' AND '2026-04';",
-    critic: 'Critic pass 2/2 — joins verified against metadata store · row-count sanity ✓ · PII scan clean',
-    columns: ['MONTH', 'CHURN_RATE', 'DELTA'],
-    rows: [['2026-01', '3.1%', '—'], ['2026-02', '3.2%', '+0.1'], ['2026-03', '5.3%', '+2.1']],
-    answer: 'March churn rose +2.1pp. The causal engine attributes it to the March 3 price change (DoWhy GCM root-cause, E-value 3.2) — finding signed and filed to the ledger.',
-  }]);
+  /* NO seeded/dummy data: every panel below starts empty and fills from the
+     platform's real APIs (or shows an honest empty/offline state). */
+  const [messages, setMessages] = useState<Msg[]>([]);
   const [thinking, setThinking] = useState<string | null>(null);
-  const [healing, setHealing] = useState<Heal[]>([
-    { id: 1, title: 'orders.customer_id → cust_id', method: 'TEMPLATE', safe: true, sub: 'schema rename drift · shim sandbox-validated ✓ · risk tier T1', state: 'pending' },
-    { id: 2, title: 'netsuite.gl_feed date format', method: 'LLM', safe: false, sub: 'MM/DD → ISO drift · held by risk policy · awaiting reviewer', state: 'pending' },
-  ]);
-  const [cfRunning, setCfRunning] = useState(false);
-  const [cfStageIdx, setCfStageIdx] = useState(-1);
-  const [feed, setFeed] = useState<FeedEv[]>([
-    { time: '09:41', k: 'AUDIT', color: 'var(--accent)', t: 'ledger append #4,182 · sha256 chained' },
-    { time: '09:40', k: 'INGEST', color: 'var(--blue)', t: 'kafka erp.gl.v2 offset +1,024 · idempotent' },
-    { time: '09:39', k: 'PII', color: 'var(--purple)', t: 'perimeter masked 12 fields in workday.hcm batch' },
-    { time: '09:38', k: 'QUERY', color: 'var(--text2)', t: 'sandbox run: churn cohort scan (2.1s, $0.03)' },
-  ]);
-  const [history, setHistory] = useState([
-    { time: '09:41', q: 'Why did APAC churn spike in March?', engine: 'DuckDB', status: 'verified', cost: '$0.04', dur: '3.2s', by: 'jm' },
-    { time: '09:12', q: 'SELECT sum(amount) FROM lake.fact_revenue …', engine: 'BigQuery', status: 'verified', cost: '$0.11', dur: '8.4s', by: 'rk' },
-    { time: '08:57', q: 'Counterfactual job cf_8812 — May price change', engine: 'sandbox', status: 'signed', cost: '$0.32', dur: '84s', by: 'DAR' },
-    { time: '06:00', q: 'Nightly full audit replay — FY26 Q2 ledger', engine: 'ledger', status: 'signed', cost: '—', dur: '14m', by: 'sched' },
-  ]);
-  const [ledger, setLedger] = useState({ no: '#4,182', hash: '9f3c…a1e2', intact: true });
-  const cf = { id: 'cf_8812', question: "What would Q3 revenue have been if we hadn't raised prices in May?", effect: -1.9, ciLo: -2.4, ciHi: -1.5, evalue: 3.2, hash: '9f3c…a1e2' };
+  const [healing, setHealing] = useState<Heal[]>([]);
+  const [cf, setCf] = useState<CfState>({ status: 'idle' });
+  const [feed, setFeed] = useState<FeedEv[]>([]);
+  const [history, setHistory] = useState<Array<{ time: string; q: string; engine: string; status: string; cost: string; dur: string; by: string }>>([]);
+  const [ledger, setLedger] = useState<{ no: string; hash: string; intact: boolean } | null>(null);
+  const [health, setHealth] = useState<{ up: number; total: number } | null>(null);
+  const [files, setFiles] = useState<number | null>(null);
+  const [pipelines, setPipelines] = useState<Array<{ name: string; status: string }> | null>(null);
+  const [gatewayUp, setGatewayUp] = useState<boolean | null>(null);
+  const [ledgerDown, setLedgerDown] = useState(false);
   const chatInput = useRef<HTMLInputElement>(null);
   const emailInput = useRef<HTMLInputElement>(null);
   const passInput = useRef<HTMLInputElement>(null);
   const paletteInput = useRef<HTMLInputElement>(null);
-  const feedTimer = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const showToast = useCallback((t: string) => {
     setToast(t);
     setTimeout(() => setToast(null), 2600);
   }, []);
 
-  /* Live ledger chip — real chain state when the gateway is up, seed otherwise. */
+  const pushFeed = useCallback((k: string, color: string, t: string) => {
+    setFeed((f) => [{ time: now(), k, color, t }, ...f].slice(0, 8));
+  }, []);
+
+  /* Real data, fetched once the app view mounts. Every failure degrades to an
+     honest empty/offline state — nothing is fabricated. */
   useEffect(() => {
-    fetch('/api/v1/counterfactual/audit/ledger/verify')
+    if (view !== 'app') return;
+    const root = API_BASE_URL.replace(/\/api\/v1$/, '');
+    fetch(`${API_BASE_URL}/counterfactual/audit/ledger/verify`)
       .then((r) => (r.ok ? r.json() : null))
       .then((j) => {
         if (j && typeof j.count === 'number') {
-          setLedger({ no: '#' + j.count.toLocaleString(), hash: (j.merkle_root || '').slice(0, 4) + '…' + (j.merkle_root || '').slice(-4), intact: !!j.ok });
+          const mr = String(j.merkle_root || '');
+          setLedger({ no: '#' + j.count.toLocaleString(), hash: mr ? mr.slice(0, 4) + '…' + mr.slice(-4) : '—', intact: !!j.ok });
+          pushFeed('AUDIT', 'var(--accent)', `ledger verified · ${j.count} records · chain ${j.ok ? 'intact' : 'BROKEN'}`);
+        } else {
+          setLedgerDown(true);
         }
       })
+      .catch(() => setLedgerDown(true));
+    fetch(`${root}/health`)
+      .then((r) => { setGatewayUp(r.ok); return r.ok ? r.json() : null; })
+      .then((j) => {
+        if (!j) return;
+        const src = j.services ?? j.components ?? j.checks;
+        const svcs = src && typeof src === 'object' ? Object.values(src) : [];
+        const up = svcs.filter((s: unknown) => /health|ok|up/i.test(String((s as { status?: string })?.status ?? s))).length;
+        if (svcs.length > 0) setHealth({ up, total: svcs.length });
+      })
+      .catch(() => setGatewayUp(false));
+    uploadService.getUploadedFiles().then((f) => setFiles(f.length)).catch(() => undefined);
+    analyticsService.getQueryHistory()
+      .then((rows: unknown) => {
+        const list = Array.isArray(rows) ? rows : (rows as { history?: unknown[] })?.history ?? [];
+        setHistory((list as Array<Record<string, unknown>>).slice(0, 8).map((r) => ({
+          time: String(r.timestamp ?? r.time ?? '').slice(11, 16) || '—',
+          q: String(r.query ?? r.sql ?? r.question ?? '(query)').slice(0, 64),
+          engine: String(r.engine ?? 'DuckDB'),
+          status: String(r.status ?? 'completed'),
+          cost: String(r.cost ?? '—'),
+          dur: r.duration_ms ? `${((r.duration_ms as number) / 1000).toFixed(1)}s` : '—',
+          by: String(r.user ?? r.by ?? '—'),
+        })));
+      })
       .catch(() => undefined);
-  }, []);
-
-  /* Live feed ticker, like the prototype. */
-  useEffect(() => {
-    if (view !== 'app') return;
-    feedTimer.current = setInterval(() => {
-      const ev = FEED_POOL[Math.floor(Math.random() * FEED_POOL.length)];
-      setFeed((f) => [{ ...ev, time: now() }, ...f].slice(0, 8));
-    }, 6000);
-    return () => { if (feedTimer.current) clearInterval(feedTimer.current); };
-  }, [view]);
+    healingService.pending()
+      .then((pending) => setHealing(pending.map((p) => ({
+        id: p.id,
+        title: p.source_id || p.drift_event_id,
+        method: (p.generation_method || 'template').toUpperCase(),
+        safe: p.validation_passed === true,
+        sub: p.diagnosis || 'data-contract drift · awaiting reviewer',
+        state: 'pending' as const,
+      }))))
+      .catch(() => undefined);
+    streamingService.list()
+      .then((r) => setPipelines((r.pipelines ?? []).slice(0, 6).map((p) => ({
+        name: (p as { name?: string; pipeline_id?: string }).name ?? (p as { pipeline_id?: string }).pipeline_id ?? 'pipeline',
+        status: String((p as { state?: string; status?: string }).state ?? (p as { status?: string }).status ?? 'unknown'),
+      }))))
+      .catch(() => setPipelines(null));
+  }, [view, pushFeed]);
 
   /* Boot sequence. */
   useEffect(() => {
@@ -202,42 +232,68 @@ export default function Workbench() {
       const last = m[m.length - 1];
       return [...m.slice(0, -1), { ...last, sql, critic, answer: answer || '(no answer)' }];
     });
-    setHistory((h) => [{ time: now(), q: q.length > 52 ? q.slice(0, 52) + '…' : q, engine: 'DuckDB', status: 'verified', cost: '$0.02', dur: '1.4s', by: 'you' }, ...h]);
+    pushFeed('QUERY', 'var(--text2)', `commander run: ${q.slice(0, 48)}`);
+    setHistory((h) => [{ time: now(), q: q.length > 52 ? q.slice(0, 52) + '…' : q, engine: 'DuckDB', status: sql ? 'executed' : 'answered', cost: '—', dur: '—', by: 'you' }, ...h]);
   };
 
-  const runCf = () => {
-    if (cfRunning) return;
-    setCfRunning(true); setCfStageIdx(0);
+  /* Runs the REAL one-click forensic audit (signed report → ledger). The
+     stage list animates only while the real request is in flight. */
+  const runCf = async () => {
+    if (cf.status === 'running') return;
+    setCf({ status: 'running', stageIdx: 0 });
     const t = setInterval(() => {
-      setCfStageIdx((i) => {
-        if (i + 1 >= CF_STAGES.length) { clearInterval(t); setCfRunning(false); showToast('Counterfactual re-verified — record signed to ledger'); return -1; }
-        return i + 1;
+      setCf((c) => (c.status === 'running' && c.stageIdx < CF_STAGES.length - 1 ? { status: 'running', stageIdx: c.stageIdx + 1 } : c));
+    }, 700);
+    try {
+      const r = await fetch(`${API_BASE_URL}/counterfactual/audit/financial/demo`);
+      if (!r.ok) throw new Error(`audit service replied ${r.status}`);
+      const j = await r.json();
+      const hash = typeof j.record_hash === 'string' ? j.record_hash : null;
+      setCf({
+        status: 'done',
+        nFindings: typeof j.n_findings === 'number' ? j.n_findings : Array.isArray(j.findings) ? j.findings.length : null,
+        materiality: j.materiality_threshold != null ? String(j.materiality_threshold) : null,
+        hash,
+        verifyUrl: hash ? `/verify/${hash}` : null,
+        raw: JSON.stringify({ record_hash: j.record_hash, n_findings: j.n_findings, signature_status: j.signature_status, dataset_fingerprint: j.dataset_fingerprint }, null, 1),
       });
-    }, 650);
+      pushFeed('AUDIT', 'var(--accent)', `signed forensic audit → ledger · ${String(j.record_hash ?? '').slice(0, 12)}…`);
+      showToast('Audit complete — record signed to ledger');
+    } catch (e) {
+      setCf({ status: 'error', message: e instanceof Error ? e.message : 'audit service unreachable' });
+    } finally {
+      clearInterval(t);
+    }
   };
 
-  const decideHeal = (id: number, ok: boolean) => {
-    setHealing((hs) => hs.map((h) => h.id === id ? {
-      ...h, state: ok ? 'deployed' : 'rejected',
-      resolution: ok ? '✓ deployed — override signed to WORM log' : '✕ rejected — pipeline paused, incident opened',
-    } : h));
-    showToast(ok ? 'Shim approved — deploying upstream' : 'Healing proposal rejected');
+  /* Real S41 HITL decisions — approve deploys the shim, reject pauses it.
+     Both are recorded server-side (signed override). */
+  const decideHeal = async (id: string, ok: boolean) => {
+    try {
+      if (ok) await healingService.approve(id, 'workbench-ui'); else await healingService.reject(id, 'workbench-ui', 'rejected from workbench');
+      setHealing((hs) => hs.map((h) => h.id === id ? {
+        ...h, state: ok ? 'deployed' : 'rejected',
+        resolution: ok ? '✓ approved — shim deploying, override signed' : '✕ rejected — recovery halted',
+      } : h));
+      pushFeed('HEAL', 'var(--warn)', `${ok ? 'approved' : 'rejected'} recovery ${id.slice(0, 10)}`);
+      showToast(ok ? 'Shim approved — deploying upstream' : 'Healing proposal rejected');
+    } catch (e) {
+      showToast(`Decision failed: ${e instanceof Error ? e.message : 'service unreachable'}`);
+    }
   };
 
   const pendingCount = healing.filter((h) => h.state === 'pending').length;
+  const dash = { value: '—', subColor: 'var(--text3)' };
   const stats = [
-    { label: 'Streams healthy', value: '12/13', sub: '1 healing (UASR)', subColor: 'var(--warn)' },
-    { label: 'Kafka lag p95', value: '240ms', sub: 'idempotent producer', subColor: 'var(--text3)' },
-    { label: 'DLQ depth', value: '3', sub: 'oldest 41m', subColor: 'var(--text3)' },
-    { label: 'Sandbox runs today', value: '148', sub: '0 policy violations', subColor: 'var(--text3)' },
-    { label: 'Audit coverage', value: '94.7%', sub: 'replayable GL lines', subColor: 'var(--accent)' },
-    { label: 'Spend MTD', value: '$1,284', sub: '−12% vs May', subColor: 'var(--text3)' },
+    { label: 'Services healthy', value: health ? `${health.up}/${health.total}` : gatewayUp ? '✓' : dash.value, sub: gatewayUp === false ? 'gateway offline' : gatewayUp ? 'gateway up' : 'checking…', subColor: gatewayUp === false ? 'var(--danger)' : gatewayUp ? 'var(--accent)' : 'var(--text3)' },
+    { label: 'Datasets loaded', value: files != null ? String(files) : dash.value, sub: 'workspace uploads', subColor: 'var(--text3)' },
+    { label: 'Ledger records', value: ledger ? ledger.no.replace('#', '') : dash.value, sub: ledger ? `chain ${ledger.intact ? 'intact' : 'BROKEN'}` : ledgerDown ? 'ledger service offline' : 'verifying…', subColor: ledger?.intact === false ? 'var(--danger)' : ledgerDown ? 'var(--warn)' : 'var(--accent)' },
+    { label: 'Recent queries', value: String(history.length), sub: 'this workspace', subColor: 'var(--text3)' },
+    { label: 'Pending approvals', value: String(pendingCount), sub: pendingCount > 0 ? 'healing queue' : 'queue clear', subColor: pendingCount > 0 ? 'var(--warn)' : 'var(--accent)' },
+    { label: 'Pipelines', value: pipelines ? String(pipelines.length) : dash.value, sub: pipelines?.length ? 'streaming' : 'none defined', subColor: 'var(--text3)' },
   ];
-  const runs = [
-    { name: 'revenue_daily_rollup', status: 'success', color: 'var(--accent)', time: '42s', rows: '1.2M' },
-    { name: 'churn_features', status: 'running', color: 'var(--blue)', time: '1m 04s', rows: '—' },
-    { name: 'gl_reconciliation', status: 'retrying', color: 'var(--danger)', time: '3m 12s', rows: '804K' },
-  ];
+  const runColors: Record<string, string> = { running: 'var(--blue)', active: 'var(--blue)', completed: 'var(--accent)', success: 'var(--accent)', failed: 'var(--danger)', error: 'var(--danger)' };
+  const runs = (pipelines ?? []).map((p) => ({ name: p.name, status: p.status, color: runColors[p.status.toLowerCase()] ?? 'var(--text2)', time: '—', rows: '—' }));
 
   const showChat = nav === 'Cockpit' || nav === 'Ask AURA';
   const showCf = nav === 'Cockpit' || nav === 'Counterfactuals' || nav === 'Audit Workbench';
@@ -277,7 +333,7 @@ export default function Workbench() {
                 ))}
               </div>
             </div>
-            <div className="aw-mono" style={{ fontSize: 10, fontWeight: 500, color: 'var(--text3)' }}>LEDGER {ledger.no} · {ledger.intact ? 'CHAIN INTACT' : 'CHAIN CHECK'} · sha256 {ledger.hash}</div>
+            <div className="aw-mono" style={{ fontSize: 10, fontWeight: 500, color: 'var(--text3)' }}>{ledger ? `LEDGER ${ledger.no} · ${ledger.intact ? 'CHAIN INTACT' : 'CHAIN CHECK'} · sha256 ${ledger.hash}` : 'ED25519-SIGNED · TAMPER-EVIDENT AUDIT LEDGER'}</div>
           </div>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 40 }}>
             <div style={{ width: 380, display: 'flex', flexDirection: 'column', gap: 18 }}>
@@ -327,22 +383,20 @@ export default function Workbench() {
 
   /* ── app ── */
   return (
-    <div className="aw" data-theme={theme} data-testid="wb-app">
+    /* height (not min-height) bounds the shell so topbar+nav stay pinned and
+       ONLY the main column scrolls — the design's cockpit scroll model. */
+    <div className="aw" data-theme={theme} data-testid="wb-app" style={{ height: '100vh', overflow: 'hidden' }}>
       {/* topbar */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 16, height: 54, padding: '0 24px', background: 'var(--surface)', borderBottom: '1px solid var(--border)', flex: 'none' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}><span style={{ width: 8, height: 8, background: 'var(--accent)', borderRadius: 2 }} /><span className="aw-display" style={{ fontWeight: 700, fontSize: 15, letterSpacing: '.1em' }}>AURA</span></div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 7, fontSize: 12.5, color: 'var(--text2)', border: '1px solid var(--border)', borderRadius: 6, padding: '5px 10px' }}>Acme Corp <span style={{ color: 'var(--text3)' }}>· FY26 Q2</span></div>
-        <div className="aw-mono" style={{ fontSize: 9.5, fontWeight: 600, letterSpacing: '.08em', color: 'var(--blue)', background: 'var(--sunken)', border: '1px solid var(--border)', borderRadius: 4, padding: '3px 7px' }}>DEMO DATA</div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 7, fontSize: 12.5, color: 'var(--text2)', border: '1px solid var(--border)', borderRadius: 6, padding: '5px 10px' }}>{getCurrentWorkspaceId()}</div>
+        {gatewayUp === false && <div className="aw-mono" style={{ fontSize: 9.5, fontWeight: 600, letterSpacing: '.08em', color: 'var(--danger)', background: 'var(--sunken)', border: '1px solid var(--border)', borderRadius: 4, padding: '3px 7px' }}>GATEWAY OFFLINE</div>}
         <div style={{ flex: 1 }} />
         <div onClick={() => { setPaletteOpen(true); setTimeout(() => paletteInput.current?.focus(), 30); }} className="aw-mono aw-hover-accent-bd" style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 8, fontSize: 11, fontWeight: 500, color: 'var(--text2)', border: '1px solid var(--border)', borderRadius: 6, padding: '5px 10px' }}>
           Search, ask, or run a command <span style={{ background: 'var(--sunken)', borderRadius: 3, padding: '1px 5px' }}>⌘K</span>
         </div>
         <div onClick={() => setTheme((t) => t === 'dark' ? 'light' : 'dark')} style={{ cursor: 'pointer', fontSize: 11.5, fontWeight: 600, color: 'var(--text2)', border: '1px solid var(--border)', borderRadius: 6, padding: '5px 11px' }}>{theme === 'dark' ? '☾ Dark' : '☀ Light'}</div>
-        <div style={{ display: 'flex' }}>
-          {[['JM', 'var(--text2)', 'var(--raised)'], ['RK', 'var(--text2)', 'var(--raised)'], ['DAR', 'var(--accent)', 'var(--accent-dim)']].map(([t, c, b], i) => (
-            <span key={t} className="aw-mono" style={{ width: 26, height: 26, borderRadius: '50%', background: b, border: '2px solid var(--surface)', display: 'grid', placeItems: 'center', fontSize: 9, fontWeight: 600, color: c, marginLeft: i ? -8 : 0 }}>{t}</span>
-          ))}
-        </div>
+        <a href="/app" style={{ fontSize: 11.5, fontWeight: 600, color: 'var(--text2)', border: '1px solid var(--border)', borderRadius: 6, padding: '5px 11px', textDecoration: 'none' }}>Classic app</a>
       </div>
 
       <div style={{ display: 'flex', flex: 1, minHeight: 0 }}>
@@ -366,7 +420,7 @@ export default function Workbench() {
             </div>
           ))}
           <div className="aw-mono" style={{ marginTop: 'auto', padding: '14px 12px 0', borderTop: '1px solid var(--border)', fontSize: 9.5, fontWeight: 500, color: 'var(--text3)', lineHeight: 1.9 }}>
-            LEDGER {ledger.no}<br /><span style={{ color: 'var(--accent)' }}>● {ledger.intact ? 'CHAIN INTACT' : 'VERIFYING…'}</span><br />sha256 {ledger.hash}
+            {ledger ? (<>LEDGER {ledger.no}<br /><span style={{ color: ledger.intact ? 'var(--accent)' : 'var(--danger)' }}>● {ledger.intact ? 'CHAIN INTACT' : 'CHAIN BROKEN'}</span><br />sha256 {ledger.hash}</>) : (<>LEDGER —<br /><span style={ledgerDown ? { color: 'var(--warn)' } : undefined}>● {ledgerDown ? 'SERVICE OFFLINE' : 'VERIFYING…'}</span></>)}
           </div>
         </div>
 
@@ -402,6 +456,12 @@ export default function Workbench() {
                   <div style={{ fontSize: 11, color: 'var(--text3)' }}>DuckDB lake</div>
                 </div>
                 <div style={{ padding: '16px 18px', display: 'flex', flexDirection: 'column', gap: 14, maxHeight: 560, overflowY: 'auto' }}>
+                  {messages.length === 0 && !thinking && (
+                    <div style={{ fontSize: 12.5, color: 'var(--text3)', lineHeight: 1.7, padding: '10px 0' }}>
+                      No conversation yet. Ask about your loaded datasets — the commander generates SQL,
+                      executes it in the sandbox, and streams the verified answer here.
+                    </div>
+                  )}
                   {messages.map((m, i) => (
                     <div key={i} style={{ display: 'flex', flexDirection: 'column', gap: 10, animation: 'awup .25s ease' }}>
                       <div style={{ alignSelf: 'flex-end', maxWidth: '70%', background: 'var(--raised)', border: '1px solid var(--border)', borderRadius: '10px 10px 3px 10px', padding: '9px 14px', fontSize: 13 }}>{m.q}</div>
@@ -428,8 +488,8 @@ export default function Workbench() {
             {showCf && (
               <div className="aw-panel" data-testid="wb-cf">
                 <div className="aw-panel-head" style={{ padding: '14px 18px' }}>
-                  <div style={{ fontSize: 14, fontWeight: 600 }}>Counterfactual audit</div>
-                  <div className="aw-mono" style={{ fontSize: 10, fontWeight: 500, color: 'var(--text3)' }}>{cf.id}</div>
+                  <div style={{ fontSize: 14, fontWeight: 600 }}>Forensic audit</div>
+                  <div className="aw-mono" style={{ fontSize: 10, fontWeight: 500, color: 'var(--text3)' }}>{cf.status === 'done' && cf.hash ? cf.hash.slice(0, 12) + '…' : 'AS-2401 · AS-2201 · AS-2305'}</div>
                   <div style={{ flex: 1 }} />
                   <div className="aw-mono" style={{ display: 'flex', fontSize: 10, fontWeight: 600, border: '1px solid var(--border)', borderRadius: 6, overflow: 'hidden' }}>
                     {(['operator', 'auditor', 'analyst'] as const).map((a) => (
@@ -438,49 +498,45 @@ export default function Workbench() {
                   </div>
                 </div>
                 <div style={{ padding: '16px 18px', display: 'flex', flexDirection: 'column', gap: 13 }}>
-                  <div style={{ fontSize: 13, lineHeight: 1.5, color: 'var(--text2)', fontStyle: 'italic' }}>"{cf.question}"</div>
-                  {cfRunning ? (
+                  <div style={{ fontSize: 13, lineHeight: 1.5, color: 'var(--text2)', fontStyle: 'italic' }}>
+                    "Run the full forensic sweep — Benford, cutoff, three-way match, segregation of duties,
+                    expectation analytics — and sign the findings to the ledger."
+                  </div>
+                  {cf.status === 'running' && (
                     <div style={{ display: 'flex', flexDirection: 'column', gap: 7, padding: '6px 0' }}>
                       {CF_STAGES.map((label, i) => (
-                        <div key={label} className="aw-mono" style={{ display: 'flex', alignItems: 'center', gap: 9, fontSize: 11, fontWeight: 500, color: i < cfStageIdx ? 'var(--accent)' : i === cfStageIdx ? 'var(--text)' : 'var(--text3)' }}>
-                          <span style={{ width: 14, textAlign: 'center' }}>{i < cfStageIdx ? '✓' : i === cfStageIdx ? '◌' : '·'}</span>{label}
+                        <div key={label} className="aw-mono" style={{ display: 'flex', alignItems: 'center', gap: 9, fontSize: 11, fontWeight: 500, color: i < cf.stageIdx ? 'var(--accent)' : i === cf.stageIdx ? 'var(--text)' : 'var(--text3)' }}>
+                          <span style={{ width: 14, textAlign: 'center' }}>{i < cf.stageIdx ? '✓' : i === cf.stageIdx ? '◌' : '·'}</span>{label}
                         </div>
                       ))}
                     </div>
-                  ) : (
+                  )}
+                  {cf.status === 'error' && (
+                    <div style={{ fontSize: 12, color: 'var(--danger)', lineHeight: 1.6 }}>
+                      Audit service unreachable — {cf.message}. Start the counterfactual service and retry.
+                    </div>
+                  )}
+                  {cf.status === 'done' && (
                     <>
                       <div style={{ display: 'flex', alignItems: 'baseline', gap: 12 }}>
-                        <div className="aw-mono" style={{ fontWeight: 600, fontSize: 30, color: 'var(--danger)' }}>{fmtM(cf.effect)}</div>
-                        <div style={{ fontSize: 12, color: 'var(--text3)' }}>revenue foregone</div>
+                        <div className="aw-mono" style={{ fontWeight: 600, fontSize: 30, color: cf.nFindings ? 'var(--danger)' : 'var(--accent)' }}>{cf.nFindings ?? '—'}</div>
+                        <div style={{ fontSize: 12, color: 'var(--text3)' }}>findings, signed &amp; ledger-chained</div>
                       </div>
-                      <div className="aw-mono" style={{ fontSize: 11, fontWeight: 500, color: 'var(--text2)' }}>95% conformal CI [{fmtM(cf.ciLo)}, {fmtM(cf.ciHi)}] · E-value {cf.evalue}</div>
-                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
-                        <div style={{ background: 'var(--sunken)', border: '1px solid var(--hair)', borderRadius: 7, padding: '9px 12px' }}><div style={{ fontSize: 10.5, color: 'var(--text3)' }}>Estimators agree</div><div className="aw-mono" style={{ fontWeight: 600, fontSize: 14, color: 'var(--accent)', marginTop: 3 }}>7/7</div></div>
-                        <div style={{ background: 'var(--sunken)', border: '1px solid var(--hair)', borderRadius: 7, padding: '9px 12px' }}><div style={{ fontSize: 10.5, color: 'var(--text3)' }}>Refuters passed</div><div className="aw-mono" style={{ fontWeight: 600, fontSize: 14, color: 'var(--accent)', marginTop: 3 }}>4/4</div></div>
-                      </div>
-                      <div style={{ fontSize: 11.5, color: 'var(--text3)' }}>Adversarial critic: 3 challenges raised, 0 upheld</div>
-                      {audience === 'auditor' && (
-                        <div className="aw-mono" style={{ border: '1px solid var(--hair)', borderRadius: 8, overflow: 'hidden', fontSize: 10.5 }}>
-                          <div className="aw-table-head" style={{ display: 'grid', gridTemplateColumns: '1.6fr 1fr' }}><div style={{ padding: '6px 12px' }}>ESTIMATOR</div><div style={{ padding: '6px 12px' }}>EFFECT</div></div>
-                          {[['backdoor.linear_reg', fmtM(cf.effect + 0.04)], ['psm', fmtM(cf.effect - 0.02)], ['dml', fmtM(cf.effect - 0.04)], ['ipw', fmtM(cf.effect + 0.01)]].map(([n, e]) => (
-                            <div key={n} style={{ display: 'grid', gridTemplateColumns: '1.6fr 1fr', borderTop: '1px solid var(--hair)' }}><div style={{ padding: '5px 12px' }}>{n}</div><div style={{ padding: '5px 12px' }}>{e}</div></div>
-                          ))}
-                          <div style={{ display: 'grid', gridTemplateColumns: '1.6fr 1fr', borderTop: '1px solid var(--hair)', color: 'var(--accent)' }}><div style={{ padding: '5px 12px' }}>refute: placebo · rand-cause · subset · unobs-confound</div><div style={{ padding: '5px 12px' }}>4/4 ✓</div></div>
-                        </div>
+                      {cf.materiality && <div className="aw-mono" style={{ fontSize: 11, fontWeight: 500, color: 'var(--text2)' }}>AS-2110 materiality threshold {cf.materiality}</div>}
+                      {(audience === 'auditor' || audience === 'analyst') && (
+                        <div className="aw-mono" style={{ background: 'var(--sunken)', border: '1px solid var(--hair)', borderRadius: 8, padding: '11px 13px', fontSize: 10.5, lineHeight: 1.7, color: 'var(--text2)', whiteSpace: 'pre-wrap', maxHeight: 180, overflowY: 'auto' }}>{cf.raw}</div>
                       )}
-                      {audience === 'analyst' && (
-                        <div className="aw-mono" style={{ background: 'var(--sunken)', border: '1px solid var(--hair)', borderRadius: 8, padding: '11px 13px', fontSize: 10.5, lineHeight: 1.7, color: 'var(--text2)', whiteSpace: 'pre-wrap' }}>
-                          {`{"artifact": {"effect": ${Math.round(cf.effect * 1e6)},\n "ci": [${Math.round(cf.ciLo * 1e6)}, ${Math.round(cf.ciHi * 1e6)}],\n "e_value": ${cf.evalue}, "estimators": 7,\n "audit_record_hash": "${cf.hash}"}}`}
-                        </div>
-                      )}
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, paddingTop: 4, borderTop: '1px solid var(--hair)' }}>
-                        <div className="aw-mono" style={{ fontSize: 10, fontWeight: 500, color: 'var(--text3)', background: 'var(--sunken)', border: '1px solid var(--hair)', borderRadius: 5, padding: '3px 8px' }}>record {cf.hash} · ED25519 ✓</div>
-                        <div style={{ flex: 1 }} />
-                        <button onClick={runCf} className="aw-btn-accent" style={{ fontSize: 11.5, padding: '5px 11px', borderRadius: 6 }}>Re-run audit</button>
-                        <div style={{ fontSize: 11.5, fontWeight: 600, color: 'var(--text2)', border: '1px solid var(--border)', borderRadius: 6, padding: '5px 11px', cursor: 'pointer' }}>Signed PDF</div>
-                      </div>
                     </>
                   )}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, paddingTop: 4, borderTop: '1px solid var(--hair)' }}>
+                    {cf.status === 'done' && cf.hash && (
+                      <a href={cf.verifyUrl ?? '#'} className="aw-mono" style={{ fontSize: 10, fontWeight: 500, color: 'var(--accent)', background: 'var(--sunken)', border: '1px solid var(--hair)', borderRadius: 5, padding: '3px 8px', textDecoration: 'none' }}>record {cf.hash.slice(0, 10)}… · verify ↗</a>
+                    )}
+                    <div style={{ flex: 1 }} />
+                    <button onClick={runCf} disabled={cf.status === 'running'} className="aw-btn-accent" style={{ fontSize: 11.5, padding: '5px 11px', borderRadius: 6, opacity: cf.status === 'running' ? 0.6 : 1 }}>
+                      {cf.status === 'idle' ? 'Run signed audit' : cf.status === 'running' ? 'Running…' : 'Re-run audit'}
+                    </button>
+                  </div>
                 </div>
               </div>
             )}
@@ -496,6 +552,11 @@ export default function Workbench() {
                     : <div className="aw-chip aw-pill-accent" style={{ fontWeight: 600 }}>QUEUE CLEAR</div>}
                 </div>
                 <div style={{ padding: '6px 16px 14px' }}>
+                  {healing.length === 0 && (
+                    <div style={{ padding: '14px 0', fontSize: 12, color: 'var(--text3)', lineHeight: 1.6 }}>
+                      No pending recoveries — the MAPE-K loop is nominal. Drift proposals appear here for signed approval.
+                    </div>
+                  )}
                   {healing.map((h) => (
                     <div key={h.id} style={{ padding: '11px 0', borderBottom: '1px solid var(--hair)' }}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -512,7 +573,7 @@ export default function Workbench() {
                       {h.resolution && <div className="aw-mono" style={{ marginTop: 8, fontSize: 10.5, fontWeight: 500, color: h.state === 'deployed' ? 'var(--accent)' : 'var(--danger)' }}>{h.resolution}</div>}
                     </div>
                   ))}
-                  <div style={{ paddingTop: 10, fontSize: 10.5, color: 'var(--text3)' }}>4 auto-healed this week · every override signed to WORM log</div>
+                  <div style={{ paddingTop: 10, fontSize: 10.5, color: 'var(--text3)' }}>every approve/reject is a signed override in the WORM audit log</div>
                 </div>
               </div>
             )}
@@ -526,11 +587,14 @@ export default function Workbench() {
                 </div>
                 <div style={{ padding: '12px 16px 14px', display: 'flex', flexDirection: 'column', gap: 10 }}>
                   <div className="aw-mono" style={{ display: 'flex', gap: 8, fontSize: 10.5, fontWeight: 500, flexWrap: 'wrap' }}>
-                    {[['NetSuite', 'var(--accent)'], ['Workday', 'var(--accent)'], ['kafka:erp.gl DLQ 3', 'var(--warn)']].map(([t, c]) => (
-                      <div key={t} style={{ display: 'flex', alignItems: 'center', gap: 6, border: '1px solid var(--hair)', borderRadius: 6, padding: '5px 10px', color: 'var(--text2)' }}><span style={{ width: 5, height: 5, borderRadius: '50%', background: c }} />{t}</div>
-                    ))}
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, border: '1px solid var(--hair)', borderRadius: 6, padding: '5px 10px', color: 'var(--text2)' }}><span style={{ width: 5, height: 5, borderRadius: '50%', background: pipelines?.length ? 'var(--accent)' : 'var(--text3)' }} />{pipelines ? `${pipelines.length} pipeline${pipelines.length === 1 ? '' : 's'} defined` : 'pipelines unavailable'}</div>
                   </div>
-                  <div style={{ border: '1px solid var(--hair)', borderRadius: 7, overflow: 'hidden', fontSize: 11.5 }}>
+                  {runs.length === 0 && (
+                    <div style={{ fontSize: 12, color: 'var(--text3)', lineHeight: 1.6 }}>
+                      No streaming pipelines yet — <a href="/app" style={{ color: 'var(--accent)' }}>create one in the classic app</a> and it appears here.
+                    </div>
+                  )}
+                  {runs.length > 0 && <div style={{ border: '1px solid var(--hair)', borderRadius: 7, overflow: 'hidden', fontSize: 11.5 }}>
                     <div className="aw-table-head" style={{ display: 'grid', gridTemplateColumns: '1.6fr .9fr .7fr .8fr' }}><div style={{ padding: '6px 12px' }}>RUN</div><div style={{ padding: '6px 12px' }}>STATUS</div><div style={{ padding: '6px 12px' }}>TIME</div><div style={{ padding: '6px 12px' }}>ROWS</div></div>
                     {runs.map((r) => (
                       <div key={r.name} style={{ display: 'grid', gridTemplateColumns: '1.6fr .9fr .7fr .8fr', borderTop: '1px solid var(--hair)', alignItems: 'center' }}>
@@ -540,7 +604,7 @@ export default function Workbench() {
                         <div className="aw-cell">{r.rows}</div>
                       </div>
                     ))}
-                  </div>
+                  </div>}
                   <div style={{ fontSize: 10.5, color: 'var(--text3)' }}>Transforms: filter · aggregate · dedupe · cast · custom SQL → CSV / Parquet / JSON</div>
                 </div>
               </div>
@@ -548,16 +612,14 @@ export default function Workbench() {
 
             {showLineage && (
               <div className="aw-panel" data-testid="wb-lineage">
-                <div className="aw-panel-head"><div className="aw-panel-title">Lineage — net_revenue</div></div>
-                <div style={{ padding: '14px 16px', display: 'flex', flexDirection: 'column', gap: 8 }}>
-                  {['netsuite.gl_feed', 'kafka: erp.gl.v2', 'lake.fact_revenue'].map((t) => (
-                    <div key={t}>
-                      <div className="aw-mono" style={{ fontSize: 10.5, fontWeight: 500, color: 'var(--text2)', background: 'var(--sunken)', border: '1px solid var(--hair)', borderRadius: 6, padding: '7px 10px' }}>{t}</div>
-                      <div style={{ color: 'var(--text3)', paddingLeft: 12 }}>↓</div>
-                    </div>
-                  ))}
-                  <div className="aw-mono" style={{ fontSize: 10.5, fontWeight: 600, color: 'var(--accent)', background: 'var(--accent-dim)', border: '1px solid var(--accent-bd)', borderRadius: 6, padding: '7px 10px' }}>metric: net_revenue ✓</div>
-                  <div style={{ marginTop: 4, fontSize: 10.5, color: 'var(--text3)', lineHeight: 1.6 }}>Atomic Parquet load · replayable from ledger {ledger.no} · UASR shim v3 active upstream</div>
+                <div className="aw-panel-head"><div className="aw-panel-title">Lineage &amp; provenance</div></div>
+                <div style={{ padding: '14px 16px', display: 'flex', flexDirection: 'column', gap: 10 }}>
+                  <div style={{ fontSize: 12, color: 'var(--text2)', lineHeight: 1.65 }}>
+                    Dataset-to-finding lineage renders live in the <strong>Constellation</strong> graph —
+                    uploaded datasets, derived metrics, and signed findings as a navigable graph.
+                  </div>
+                  <a href="/app" className="aw-mono" style={{ alignSelf: 'flex-start', fontSize: 10.5, fontWeight: 600, color: 'var(--accent)', border: '1px solid var(--accent-bd)', borderRadius: 6, padding: '6px 12px', textDecoration: 'none' }}>Open Constellation →</a>
+                  {ledger && <div style={{ fontSize: 10.5, color: 'var(--text3)', lineHeight: 1.6 }}>Every signed artifact is replayable from ledger {ledger.no}.</div>}
                 </div>
               </div>
             )}
@@ -568,6 +630,7 @@ export default function Workbench() {
               <div className="aw-panel-head"><div className="aw-panel-title">Query history</div><div style={{ flex: 1 }} /><div style={{ fontSize: 11, color: 'var(--text3)' }}>this session + today</div></div>
               <div style={{ fontSize: 11.5 }}>
                 <div className="aw-table-head" style={{ display: 'grid', gridTemplateColumns: '.55fr 2.6fr .8fr .7fr .55fr .6fr .7fr' }}>{['TIME', 'QUERY', 'ENGINE', 'STATUS', 'COST', 'DUR', 'BY'].map((h) => <div key={h} style={{ padding: '7px 16px' }}>{h}</div>)}</div>
+                {history.length === 0 && <div style={{ padding: '12px 16px', fontSize: 12, color: 'var(--text3)' }}>No queries recorded yet in this workspace.</div>}
                 {history.map((hq, i) => (
                   <div key={i} style={{ display: 'grid', gridTemplateColumns: '.55fr 2.6fr .8fr .7fr .55fr .6fr .7fr', borderTop: '1px solid var(--hair)', alignItems: 'center' }}>
                     <div className="aw-mono" style={{ padding: '8px 16px', fontSize: 11, color: 'var(--text3)' }}>{hq.time}</div>
@@ -585,7 +648,8 @@ export default function Workbench() {
 
           {nav === 'Cockpit' && (
             <div className="aw-panel" data-testid="wb-feed">
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '12px 16px' }}><span style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--accent)', animation: 'awpulse 1.6s infinite' }} /><div className="aw-panel-title">Live Feed</div><div style={{ flex: 1 }} /><div style={{ fontSize: 10.5, color: 'var(--text3)' }}>kafka · UASR · ledger</div></div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '12px 16px' }}><span style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--accent)', animation: 'awpulse 1.6s infinite' }} /><div className="aw-panel-title">Session events</div><div style={{ flex: 1 }} /><div style={{ fontSize: 10.5, color: 'var(--text3)' }}>real actions only — queries · audits · approvals</div></div>
+              {feed.length === 0 && <div style={{ padding: '10px 16px', borderTop: '1px solid var(--hair)', fontSize: 11.5, color: 'var(--text3)' }}>No events yet — run a query or an audit and it lands here.</div>}
               {feed.map((ev, i) => (
                 <div key={i} className="aw-mono" style={{ display: 'flex', gap: 10, alignItems: 'baseline', padding: '6px 16px', borderTop: '1px solid var(--hair)', fontSize: 10.5 }}>
                   <span style={{ color: 'var(--text3)', flex: 'none' }}>{ev.time}</span>
