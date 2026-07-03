@@ -86,6 +86,13 @@ User-confirmed direction ("we both have to make this work"):
 2. **Collaboration v1 = signed approval chains:** N-of-M Ed25519-signed sign-offs on pipeline
    deployments, healing actions, and audit findings, chained into the per-tenant ledger.
    Builds directly on the S41 HITL + audit_ledger machinery. Real-time presence = later.
+   → **SLICE 1 SHIPPED (2026-07-03, `feature/enterprise-oidc`):** `shared/approval_chains.py`
+   (N distinct approvers to approve; ANY reject fails closed; one vote per approver;
+   requester cannot vote — SoD/AS-2201; tenant-scoped lookups; every request+vote chained
+   into the audit ledger, verify_chain green) + gateway `/api/v1/approvals`
+   {POST create, GET pending, GET {id}, POST {id}/decide} (identity from token). 6 TDD
+   tests. NEXT: wire into UASR healing deploys + workbench approvals UI; Postgres
+   row-lock for multi-replica; Ed25519-sign each vote payload.
 3. **Connectors = universal layers, not bespoke list** (user: "work with anything"):
    ① SQLAlchemy-dialect connector → any SQL database via URL (Postgres/MySQL/BigQuery/
    Snowflake/Redshift/Oracle/MSSQL/…) ② generic REST/OpenAPI connector (auth profiles:
