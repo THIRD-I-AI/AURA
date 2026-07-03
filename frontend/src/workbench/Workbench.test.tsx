@@ -25,6 +25,13 @@ vi.mock('../services/api', () => ({
   uploadService: { getUploadedFiles: vi.fn().mockResolvedValue([{ filename: 'a.csv', size: 1, modified: '' }]) },
 }));
 
+/* The classic-page registry is mocked so jsdom doesn't load every page chunk;
+   integration of the real pages is covered by their own suites. */
+vi.mock('./views', () => ({
+  VIEW_REGISTRY: { Dashboards: { component: () => null } },
+  ViewHost: ({ nav }: { nav: string }) => <div data-testid="wb-view">mounted:{nav}</div>,
+}));
+
 import { healingService } from '../services/api';
 import Workbench from './Workbench';
 
@@ -96,12 +103,20 @@ describe('Workbench', () => {
     vi.useRealTimers();
   });
 
-  it('nav switches to a stub view that links back to the classic app', async () => {
+  it('a registered nav mounts the full classic module inside the shell', async () => {
     vi.useFakeTimers();
     await boot();
-    fireEvent.click(screen.getByText('Connectors'));
+    fireEvent.click(screen.getByText('Dashboards'));
+    expect(screen.getByTestId('wb-view')).toHaveTextContent('mounted:Dashboards');
+    expect(screen.queryByTestId('wb-stub')).not.toBeInTheDocument();
+    vi.useRealTimers();
+  });
+
+  it('an unregistered nav still gets the honest stub', async () => {
+    vi.useFakeTimers();
+    await boot();
+    fireEvent.click(screen.getByText('Scheduler'));
     expect(screen.getByTestId('wb-stub')).toBeInTheDocument();
-    expect(screen.getByText('Open in classic app →')).toHaveAttribute('href', '/app');
     vi.useRealTimers();
   });
 });

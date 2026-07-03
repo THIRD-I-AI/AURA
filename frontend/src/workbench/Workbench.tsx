@@ -15,6 +15,7 @@ import {
   streamingService,
   uploadService,
 } from '../services/api';
+import { VIEW_REGISTRY, ViewHost } from './views';
 import './workbench.css';
 
 type Msg = { q: string; sql?: string; critic?: string; columns?: string[]; rows?: string[][]; answer?: string };
@@ -303,13 +304,18 @@ export default function Workbench() {
   const runColors: Record<string, string> = { running: 'var(--blue)', active: 'var(--blue)', completed: 'var(--accent)', success: 'var(--accent)', failed: 'var(--danger)', error: 'var(--danger)' };
   const runs = (pipelines ?? []).map((p) => ({ name: p.name, status: p.status, color: runColors[p.status.toLowerCase()] ?? 'var(--text2)', time: '—', rows: '—' }));
 
-  const showChat = nav === 'Cockpit' || nav === 'Ask AURA';
-  const showCf = nav === 'Cockpit' || nav === 'Counterfactuals' || nav === 'Audit Workbench';
-  const showHealing = nav === 'Cockpit' || nav === 'Healing Queue' || nav === 'Exception Queue';
-  const showPipes = nav === 'Cockpit' || nav === 'Pipelines' || nav === 'Streaming';
-  const showLineage = nav === 'Cockpit' || nav === 'Pipelines' || nav === 'Streaming' || nav === 'Lineage';
-  const showHistory = nav === 'Cockpit' || nav === 'Query History';
-  const showStub = !(showChat || showCf || showHealing || showPipes || showLineage || showHistory);
+  /* ONE app: the cockpit is the live board; every other nav mounts the full
+     classic module inside this shell (views.tsx registry). Stubs remain only
+     for modules that don't exist anywhere yet. */
+  const isCockpit = nav === 'Cockpit';
+  const hasView = !isCockpit && Boolean(VIEW_REGISTRY[nav]);
+  const showChat = isCockpit;
+  const showCf = isCockpit;
+  const showHealing = isCockpit;
+  const showPipes = isCockpit;
+  const showLineage = isCockpit;
+  const showHistory = isCockpit;
+  const showStub = !isCockpit && !hasView;
 
   const commands = useMemo(() => {
     const q = paletteQ.toLowerCase();
@@ -667,6 +673,8 @@ export default function Workbench() {
               ))}
             </div>
           )}
+
+          {hasView && <ViewHost nav={nav} onNavigate={setNav} />}
 
           {showStub && (
             <div style={{ background: 'var(--surface)', border: '1px dashed var(--border)', borderRadius: 10, padding: 36, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10, textAlign: 'center' }} data-testid="wb-stub">
