@@ -6,6 +6,7 @@ Shared fixtures and path setup for all test modules.
 
 import os
 import sys
+import tempfile as _tempfile
 
 # Force matplotlib's headless backend before any test imports DoWhy/matplotlib.
 # DoWhy's refuters call plt.show(), which opens a blocking GUI window on a dev
@@ -19,7 +20,6 @@ os.environ.setdefault("MPLBACKEND", "Agg")
 # "readonly database"; an ext4 temp dir avoids both the hygiene problem and
 # the WSL limitation. setdefault preserves an explicit override (e.g. CI
 # pointing at Postgres).
-import tempfile as _tempfile
 _gateway_test_db = os.path.join(_tempfile.gettempdir(), "aura_gateway_test.db")
 os.environ.setdefault(
     "GATEWAY_DATABASE_URL", f"sqlite+aiosqlite:///{_gateway_test_db}"
