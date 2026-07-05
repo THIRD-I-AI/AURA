@@ -1,7 +1,7 @@
 # ──────────────────────────────────────────────────────────────────────────
 # AURA Platform — Developer Shortcuts
 # ──────────────────────────────────────────────────────────────────────────
-.PHONY: help up down build logs test lint fmt clean frontend dev dev-backend types
+.PHONY: help up down build logs test lint fmt clean frontend dev dev-backend types setup setup-dev verify
 
 help: ## Show available targets
 	@grep -E '^[a-zA-Z_-]+:.*##' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*##"}; {printf "  \033[36m%-15s\033[0m %s\n", $$1, $$2}'
@@ -31,6 +31,26 @@ ps: ## Show running containers
 
 restart-%: ## Restart a specific service (e.g., make restart-api_gateway)
 	docker compose restart $*
+
+# ── Setup ─────────────────────────────────────────────────────────────────
+
+setup: ## One-command dev setup: venv + all backend deps (run from repo root)
+	cd aurabackend && python -m venv .venv
+	cd aurabackend && . .venv/bin/activate 2>/dev/null || cd aurabackend; \
+		pip install -U pip && \
+		pip install -r requirements.txt && \
+		pip install -r requirements-causal.txt && \
+		pip install -r requirements-streaming.txt && \
+		pip install -r requirements-multimodal.txt
+	@echo "✓ Backend deps installed. Next: cp aurabackend/.env.example aurabackend/.env"
+
+setup-dev: setup ## Dev setup + test/lint tooling (pytest, ruff, moto)
+	cd aurabackend && . .venv/bin/activate 2>/dev/null; pip install -e ".[dev]"
+	@echo "✓ Dev tooling installed. Verify with: make verify"
+
+verify: ## Smoke-check the install: import core deps + run the UASR test suite
+	cd aurabackend && python -c "import fastapi, pandas, numpy, sqlalchemy, duckdb, langgraph; print('core imports OK')"
+	cd aurabackend && python -m pytest tests/ -q -k "uasr or recovery_loop or mapek" --tb=short
 
 # ── Backend ────────────────────────────────────────────────────────────────
 

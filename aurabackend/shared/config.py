@@ -56,6 +56,13 @@ class AuraSettings(BaseSettings):
     openai_api_key: str = Field("", alias="OPENAI_API_KEY")
     openai_model: str = Field("gpt-4o-mini", alias="OPENAI_MODEL")
 
+    # ── Deployment profile (Subsystem D) ────────────────────────────────
+    # cloud  = hosted models + managed multi-tenant storage (default).
+    # onprem = air-gapped / secure install: LOCAL models only (Ollama), zero
+    #          external LLM egress. The guard below fails loud if an external
+    #          provider key is configured under onprem.
+    deployment_profile: str = Field("cloud", alias="AURA_DEPLOYMENT_PROFILE")
+
     # ── Service Ports ───────────────────────────────────────────────────
     api_gateway_port: int = Field(8000, alias="API_GATEWAY_PORT")
     code_generation_port: int = Field(8001, alias="CODE_GENERATION_SERVICE_PORT")
@@ -166,6 +173,41 @@ class AuraSettings(BaseSettings):
     jwt_enabled: bool = Field(False, alias="AURA_JWT_ENABLED")
     mcp_api_key: Optional[str] = Field(None, alias="MCP_API_KEY")
 
+    # Commander Core (Subsystem A): gates the streaming POST /chat/stream loop.
+    # Default off — the legacy DAG POST /chat path is unaffected; flip to true
+    # to expose the agentic tool-loop alongside it (coexistence-then-cutover).
+    commander_enabled: bool = Field(False, alias="AURA_COMMANDER_ENABLED")
+
+    # Enterprise SSO — generic OIDC (authorization-code + PKCE). One
+    # standards-compliant integration covers Entra/Okta/Google/Ping/Auth0/
+    # Keycloak. Enabled when issuer+client_id+redirect_uri are all set.
+    oidc_issuer: str = Field("", alias="AURA_OIDC_ISSUER")
+    oidc_client_id: str = Field("", alias="AURA_OIDC_CLIENT_ID")
+    oidc_client_secret: str = Field("", alias="AURA_OIDC_CLIENT_SECRET")
+    oidc_redirect_uri: str = Field("", alias="AURA_OIDC_REDIRECT_URI")
+    oidc_org_claim: str = Field("org_id", alias="AURA_OIDC_ORG_CLAIM")
+    oidc_post_login_redirect: str = Field(
+        "http://localhost:5173/auth/sso", alias="AURA_OIDC_POST_LOGIN_REDIRECT")
+
+    @field_validator("jwt_enabled", mode="after")
+    @classmethod
+    def _require_jwt_for_tenant_isolation_in_production(cls, v, info):
+        # Tenant data isolation is ENFORCED only when the JWT middleware is
+        # active: current_workspace_id() scopes every data store to the
+        # caller's org_id taken from request.state.user, which JWTAuthMiddleware
+        # sets only when AURA_JWT_ENABLED=true. With it false, every request
+        # collapses to the shared 'default' tenant — a cross-tenant read/write
+        # hole. Acceptable for single-user dev; a silent data breach in prod.
+        # Fail loud at startup, parallel to _reject_open_auth_in_production.
+        env = info.data.get("environment", "development")
+        if env.lower() == "production" and not v:
+            raise ValueError(
+                "AURA_JWT_ENABLED must be true in production. Without it, "
+                "tenant isolation is not enforced and all callers share the "
+                "'default' workspace (cross-tenant data exposure)."
+            )
+        return v
+
     # ── Object storage (S45) ────────────────────────────────────────────
     storage_backend: str = Field("local", alias="AURA_STORAGE_BACKEND")
     s3_bucket: Optional[str] = Field(None, alias="AURA_S3_BUCKET")
@@ -188,6 +230,34 @@ class AuraSettings(BaseSettings):
         if self.storage_backend == "s3" and not self.s3_bucket:
             raise ValueError("AURA_S3_BUCKET must be set when AURA_STORAGE_BACKEND=s3.")
         return self
+
+    @model_validator(mode="after")
+    def _enforce_deployment_profile(self):
+        """Air-gapped guarantee: an on-prem profile must make ZERO external LLM
+        calls, so configuring any external-provider key under onprem is a hard
+        fail (fail-loud, like the production auth/jwt guards) rather than a
+        silent prompt egress to a cloud vendor."""
+        profile = (self.deployment_profile or "cloud").strip().lower()
+        if profile not in ("cloud", "onprem"):
+            raise ValueError(
+                f"AURA_DEPLOYMENT_PROFILE must be 'cloud' or 'onprem', got {self.deployment_profile!r}.")
+        if profile == "onprem":
+            external = [name for name, val in (
+                ("GROQ_API_KEY", self.groq_api_key),
+                ("GEMINI_API_KEY", self.gemini_api_key),
+                ("OPENAI_API_KEY", self.openai_api_key),
+            ) if val]
+            if external:
+                raise ValueError(
+                    "on-prem / air-gapped profile forbids external LLM provider keys "
+                    f"({', '.join(external)}) — it must use a local model (Ollama) with no "
+                    "external egress. Unset those keys, or set AURA_DEPLOYMENT_PROFILE=cloud.")
+        return self
+
+    @property
+    def is_onprem(self) -> bool:
+        """True when running the air-gapped / on-prem deployment profile."""
+        return (self.deployment_profile or "cloud").strip().lower() == "onprem"
 
     # ── Primary Database (Connector / Sandbox default) ──────────────────
     db_host: str = Field("localhost", alias="DB_HOST")

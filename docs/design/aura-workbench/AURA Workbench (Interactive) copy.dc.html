@@ -1,0 +1,978 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet data-dc-atomics>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Instrument+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+@keyframes awspin{to{transform:rotate(360deg)}}
+@keyframes awpulse{0%,100%{opacity:1}50%{opacity:.35}}
+@keyframes awup{from{transform:translateY(8px)}to{transform:none}}
+@keyframes awshimmer{from{background-position:-800px 0}to{background-position:800px 0}}
+.aw[data-theme='dark']{--bg:#0a0e14;--surface:#0f141b;--raised:#161d27;--sunken:#070a0f;--border:#1d2530;--hair:#131a23;--text:#e6e9ef;--text2:#9aa4b2;--text3:#7d8590;--accent:#22c55e;--accent-dim:rgba(34,197,94,.12);--accent-bd:rgba(34,197,94,.4);--on-accent:#07100a;--warn:#f59e0b;--warn-dim:rgba(245,158,11,.12);--danger:#ef4444;--danger-dim:rgba(239,68,68,.12);--blue:#3b82f6;--purple:#a78bfa;--shadow:none;--overlay:rgba(2,4,8,.6)}
+.aw[data-theme='light']{--bg:#f4f6f8;--surface:#ffffff;--raised:#eef1f5;--sunken:#eceff3;--border:#dfe5ec;--hair:#e9edf2;--text:#16202b;--text2:#55636f;--text3:#8593a0;--accent:#178a4e;--accent-dim:rgba(23,138,78,.1);--accent-bd:rgba(23,138,78,.35);--on-accent:#ffffff;--warn:#b45309;--warn-dim:rgba(180,83,9,.1);--danger:#dc2626;--danger-dim:rgba(220,38,38,.08);--blue:#2563eb;--purple:#7c5cd6;--shadow:0 1px 2px rgba(23,32,43,.05);--overlay:rgba(23,32,43,.35)}
+</style>
+</helmet>
+<div class="aw" data-theme="{{ theme }}" style="min-height:100vh;background:var(--bg);color:var(--text);font-family:'Instrument Sans',system-ui,sans-serif;display:flex;flex-direction:column">
+  <!-- login -->
+  <sc-if value="{{ isLogin }}" hint-placeholder-val="{{ false }}">
+    <div style="flex:1;display:flex;min-height:100vh">
+      <div style="flex:1.15;background:var(--sunken);border-right:1px solid var(--border);display:flex;flex-direction:column;justify-content:space-between;padding:52px 64px">
+        <div style="display:flex;align-items:center;gap:10px"><span style="width:10px;height:10px;background:var(--accent);border-radius:2px"></span><span style="font:700 18px 'Space Grotesk',sans-serif;letter-spacing:.1em">AURA</span></div>
+        <div>
+          <div style="font:600 40px/1.15 'Space Grotesk',sans-serif;max-width:540px;text-wrap:balance">Analytics your auditors can replay.</div>
+          <div style="margin-top:18px;font-size:15px;color:var(--text2);max-width:470px;line-height:1.65">Autonomous agents over mission-critical data — every conclusion signed, every pipeline self-healing.</div>
+          <div style="margin-top:38px;display:flex;flex-direction:column;gap:14px">
+            <div style="display:flex;align-items:center;gap:11px;font-size:13.5px;color:var(--text2)"><span style="width:6px;height:6px;border-radius:50%;background:var(--accent);flex:none"></span>ED25519-signed conclusions · deterministic replay</div>
+            <div style="display:flex;align-items:center;gap:11px;font-size:13.5px;color:var(--text2)"><span style="width:6px;height:6px;border-radius:50%;background:var(--accent);flex:none"></span>Self-healing streams — NetSuite, Workday, Kafka (MAPE-K)</div>
+            <div style="display:flex;align-items:center;gap:11px;font-size:13.5px;color:var(--text2)"><span style="width:6px;height:6px;border-radius:50%;background:var(--accent);flex:none"></span>Fail-closed auth · PII perimeter masking · WORM audit log</div>
+          </div>
+        </div>
+        <div style="font:500 10px 'JetBrains Mono',monospace;color:var(--text3);letter-spacing:.05em">LEDGER #4,182 · CHAIN INTACT · sha256 9f3c…a1e2</div>
+      </div>
+      <div style="flex:1;display:flex;align-items:center;justify-content:center;padding:40px">
+        <div style="width:380px;display:flex;flex-direction:column;gap:20px">
+          <div>
+            <div style="font:600 22px 'Space Grotesk',sans-serif">Sign in</div>
+            <div style="margin-top:6px;font-size:13px;color:var(--text2)">Use your corporate identity to continue to <strong>acme-corp</strong>.</div>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:9px">
+            <div onClick="{{ ssoSignIn }}" style="cursor:pointer;display:flex;align-items:center;gap:11px;border:1px solid var(--border);border-radius:8px;padding:11px 14px;font-size:13px;font-weight:600;background:var(--surface)" style-hover="border-color: var(--accent-bd)"><span style="width:20px;height:20px;border-radius:5px;background:var(--raised);display:grid;place-items:center;font:700 10px 'JetBrains Mono',monospace;color:var(--text2)">O</span>Continue with Okta</div>
+            <div onClick="{{ ssoSignIn }}" style="cursor:pointer;display:flex;align-items:center;gap:11px;border:1px solid var(--border);border-radius:8px;padding:11px 14px;font-size:13px;font-weight:600;background:var(--surface)" style-hover="border-color: var(--accent-bd)"><span style="width:20px;height:20px;border-radius:5px;background:var(--raised);display:grid;place-items:center;font:700 10px 'JetBrains Mono',monospace;color:var(--text2)">M</span>Continue with Microsoft Entra ID</div>
+            <div onClick="{{ ssoSignIn }}" style="cursor:pointer;display:flex;align-items:center;gap:11px;border:1px solid var(--border);border-radius:8px;padding:11px 14px;font-size:13px;font-weight:600;background:var(--surface)" style-hover="border-color: var(--accent-bd)"><span style="width:20px;height:20px;border-radius:5px;background:var(--raised);display:grid;place-items:center;font:700 10px 'JetBrains Mono',monospace;color:var(--text2)">G</span>Continue with Google Workspace</div>
+          </div>
+          <div style="display:flex;align-items:center;gap:12px;color:var(--text3);font-size:11px"><span style="flex:1;height:1px;background:var(--border)"></span>or with email<span style="flex:1;height:1px;background:var(--border)"></span></div>
+          <div style="display:flex;flex-direction:column;gap:12px">
+            <div style="display:flex;flex-direction:column;gap:6px">
+              <label style="font-size:11.5px;font-weight:600;color:var(--text2)">Work email</label>
+              <input ref="{{ loginEmailRef }}" onKeyDown="{{ onLoginKey }}" placeholder="you@acme.com" style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:11px 14px;font:400 13px 'Instrument Sans',sans-serif;color:var(--text);outline:none" style-focus="border-color: var(--accent-bd)">
+            </div>
+            <div style="display:flex;flex-direction:column;gap:6px">
+              <label style="font-size:11.5px;font-weight:600;color:var(--text2)">Password</label>
+              <input ref="{{ loginPassRef }}" onKeyDown="{{ onLoginKey }}" type="password" placeholder="••••••••••••" style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:11px 14px;font:400 13px 'Instrument Sans',sans-serif;color:var(--text);outline:none" style-focus="border-color: var(--accent-bd)">
+            </div>
+            <sc-if value="{{ loginError }}" hint-placeholder-val="{{ false }}">
+              <div style="font-size:12px;color:var(--danger)">{{ loginError }}</div>
+            </sc-if>
+            <div onClick="{{ signIn }}" style="cursor:pointer;text-align:center;font-size:13.5px;font-weight:600;color:var(--on-accent);background:var(--accent);border-radius:8px;padding:12px">Continue</div>
+          </div>
+          <div style="font-size:11px;color:var(--text3);line-height:1.6">SSO is enforced for production workspaces. Sessions are JWT-scoped and expire after 12 hours.<br>Trouble signing in? Contact your workspace admin.</div>
+        </div>
+      </div>
+    </div>
+  </sc-if>
+
+  <!-- boot -->
+  <sc-if value="{{ isBoot }}" hint-placeholder-val="{{ false }}">
+    <div style="flex:1;min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:30px">
+      <div style="display:flex;align-items:center;gap:10px"><span style="width:10px;height:10px;background:var(--accent);border-radius:2px;animation:awpulse 1.4s infinite"></span><span style="font:700 18px 'Space Grotesk',sans-serif;letter-spacing:.1em">AURA</span></div>
+      <div style="width:340px;display:flex;flex-direction:column;gap:10px">
+        <sc-for list="{{ bootStages }}" as="b" hint-placeholder-count="5">
+          <div style="display:flex;align-items:center;gap:10px;font:500 11px 'JetBrains Mono',monospace;color: {{ b.color }}"><span style="width:14px;text-align:center">{{ b.icon }}</span>{{ b.label }}</div>
+        </sc-for>
+      </div>
+      <div style="width:340px;height:3px;background:var(--raised);border-radius:2px;overflow:hidden"><div style="height:100%;background:var(--accent);border-radius:2px;transition:width .45s ease;width: {{ bootPct }}"></div></div>
+    </div>
+  </sc-if>
+
+  <sc-if value="{{ isApp }}" hint-placeholder-val="{{ true }}">
+  <!-- topbar -->
+  <div style="display:flex;align-items:center;gap:16px;height:54px;padding:0 24px;background:var(--surface);border-bottom:1px solid var(--border);flex:none">
+    <div style="display:flex;align-items:center;gap:9px"><span style="width:8px;height:8px;background:var(--accent);border-radius:2px"></span><span style="font:700 15px 'Space Grotesk',sans-serif;letter-spacing:.1em">AURA</span></div>
+    <div style="display:flex;align-items:center;gap:7px;font-size:12.5px;color:var(--text2);border:1px solid var(--border);border-radius:6px;padding:5px 10px">Acme Corp <span style="color:var(--text3)">· FY26 Q2</span> <span style="font-size:9px;color:var(--text3)">▾</span></div>
+    <div style="font:600 9.5px 'JetBrains Mono',monospace;letter-spacing:.08em;color:var(--blue);background:var(--sunken);border:1px solid var(--border);border-radius:4px;padding:3px 7px">DEMO DATA</div>
+    <div style="flex:1"></div>
+    <div onClick="{{ openPalette }}" style="cursor:pointer;display:flex;align-items:center;gap:8px;font:500 11px 'JetBrains Mono',monospace;color:var(--text2);border:1px solid var(--border);border-radius:6px;padding:5px 10px" style-hover="border-color: var(--accent-bd)">Search, ask, or run a command <span style="background:var(--sunken);border-radius:3px;padding:1px 5px">⌘K</span></div>
+    <div onClick="{{ toggleTheme }}" style="cursor:pointer;font-size:11.5px;font-weight:600;color:var(--text2);border:1px solid var(--border);border-radius:6px;padding:5px 11px">{{ themeBtnLabel }}</div>
+    <div style="display:flex">
+      <div style="width:26px;height:26px;border-radius:50%;background:var(--raised);border:2px solid var(--surface);display:grid;place-items:center;font-size:10px;font-weight:600;color:var(--text2)">JM</div>
+      <div style="width:26px;height:26px;border-radius:50%;background:var(--raised);border:2px solid var(--surface);display:grid;place-items:center;font-size:10px;font-weight:600;color:var(--text2);margin-left:-8px">RK</div>
+      <div style="width:26px;height:26px;border-radius:50%;background:var(--accent-dim);border:2px solid var(--surface);display:grid;place-items:center;font:600 9px 'JetBrains Mono',monospace;color:var(--accent);margin-left:-8px">DAR</div>
+    </div>
+  </div>
+  <div style="display:flex;flex:1;min-height:0">
+    <!-- nav -->
+    <div style="width:204px;flex:none;border-right:1px solid var(--border);background:var(--surface);padding:16px 10px 20px;display:flex;flex-direction:column;gap:18px;overflow-y:auto">
+      <sc-for list="{{ navGroups }}" as="grp" hint-placeholder-count="4">
+        <div>
+          <div style="font:600 9.5px 'JetBrains Mono',monospace;letter-spacing:.14em;color:var(--text3);padding:0 12px 6px">{{ grp.label }}</div>
+          <div style="display:flex;flex-direction:column;gap:1px">
+            <sc-for list="{{ grp.items }}" as="item" hint-placeholder-count="4">
+              <div onClick="{{ item.go }}" style="padding:7px 12px;font-size:12.5px;border-radius:6px;cursor:pointer;display:flex;justify-content:space-between;align-items:center;color: {{ item.color }};background: {{ item.bg }};font-weight: {{ item.weight }}" style-hover="background: var(--raised)">
+                <span style="display:flex;align-items:center;gap:8px"><sc-if value="{{ item.active }}" hint-placeholder-val="{{ false }}"><span style="width:5px;height:5px;border-radius:50%;background:var(--accent)"></span></sc-if>{{ item.name }}</span>
+                <sc-if value="{{ item.badge }}" hint-placeholder-val="{{ false }}"><span style="font:600 9.5px 'JetBrains Mono',monospace;color:var(--warn);background:var(--warn-dim);border-radius:99px;padding:1px 6px">{{ item.badge }}</span></sc-if>
+              </div>
+            </sc-for>
+          </div>
+        </div>
+      </sc-for>
+      <div style="margin-top:auto;padding:14px 12px 0;border-top:1px solid var(--border);font:500 9.5px 'JetBrains Mono',monospace;color:var(--text3);line-height:1.9">LEDGER {{ ledgerNo }}<br><span style="color:var(--accent)">● CHAIN INTACT</span><br>sha256 {{ ledgerHash }}</div>
+    </div>
+    <!-- main -->
+    <div style="flex:1;min-width:0;padding:24px 26px 28px;display:flex;flex-direction:column;gap:16px;overflow-y:auto">
+      <div style="display:flex;align-items:center;gap:14px">
+        <div style="font:600 22px 'Space Grotesk',sans-serif">{{ activeNav }}</div>
+        <div style="display:flex;align-items:center;gap:6px;padding:3px 10px;background:var(--accent-dim);border:1px solid var(--accent-bd);border-radius:99px;color:var(--accent);font:600 9.5px 'JetBrains Mono',monospace;letter-spacing:.08em"><span style="width:5px;height:5px;border-radius:50%;background:var(--accent);animation:awpulse 2.4s infinite"></span>ALL SYSTEMS VERIFIED</div>
+        <div style="flex:1"></div>
+        <div style="font-size:12px;color:var(--text3)">Last full audit replay 06:00 UTC · scheduler on time</div>
+      </div>
+
+      <sc-if value="{{ showSkeleton }}" hint-placeholder-val="{{ false }}">
+        <div style="display:grid;grid-template-columns:repeat(6,1fr);gap:12px">
+          <div style="height:74px;border:1px solid var(--border);border-radius:8px;background:linear-gradient(90deg,var(--raised) 25%,var(--surface) 50%,var(--raised) 75%);background-size:800px 100%;animation:awshimmer 1.1s linear infinite"></div>
+          <div style="height:74px;border:1px solid var(--border);border-radius:8px;background:linear-gradient(90deg,var(--raised) 25%,var(--surface) 50%,var(--raised) 75%);background-size:800px 100%;animation:awshimmer 1.1s linear infinite"></div>
+          <div style="height:74px;border:1px solid var(--border);border-radius:8px;background:linear-gradient(90deg,var(--raised) 25%,var(--surface) 50%,var(--raised) 75%);background-size:800px 100%;animation:awshimmer 1.1s linear infinite"></div>
+          <div style="height:74px;border:1px solid var(--border);border-radius:8px;background:linear-gradient(90deg,var(--raised) 25%,var(--surface) 50%,var(--raised) 75%);background-size:800px 100%;animation:awshimmer 1.1s linear infinite"></div>
+          <div style="height:74px;border:1px solid var(--border);border-radius:8px;background:linear-gradient(90deg,var(--raised) 25%,var(--surface) 50%,var(--raised) 75%);background-size:800px 100%;animation:awshimmer 1.1s linear infinite"></div>
+          <div style="height:74px;border:1px solid var(--border);border-radius:8px;background:linear-gradient(90deg,var(--raised) 25%,var(--surface) 50%,var(--raised) 75%);background-size:800px 100%;animation:awshimmer 1.1s linear infinite"></div>
+        </div>
+        <div style="display:grid;grid-template-columns:1.45fr 1fr;gap:16px">
+          <div style="height:320px;border:1px solid var(--border);border-radius:10px;background:linear-gradient(90deg,var(--raised) 25%,var(--surface) 50%,var(--raised) 75%);background-size:800px 100%;animation:awshimmer 1.1s linear infinite"></div>
+          <div style="height:320px;border:1px solid var(--border);border-radius:10px;background:linear-gradient(90deg,var(--raised) 25%,var(--surface) 50%,var(--raised) 75%);background-size:800px 100%;animation:awshimmer 1.1s linear infinite"></div>
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:16px">
+          <div style="height:180px;border:1px solid var(--border);border-radius:10px;background:linear-gradient(90deg,var(--raised) 25%,var(--surface) 50%,var(--raised) 75%);background-size:800px 100%;animation:awshimmer 1.1s linear infinite"></div>
+          <div style="height:180px;border:1px solid var(--border);border-radius:10px;background:linear-gradient(90deg,var(--raised) 25%,var(--surface) 50%,var(--raised) 75%);background-size:800px 100%;animation:awshimmer 1.1s linear infinite"></div>
+          <div style="height:180px;border:1px solid var(--border);border-radius:10px;background:linear-gradient(90deg,var(--raised) 25%,var(--surface) 50%,var(--raised) 75%);background-size:800px 100%;animation:awshimmer 1.1s linear infinite"></div>
+        </div>
+      </sc-if>
+
+      <sc-if value="{{ showStats }}" hint-placeholder-val="{{ true }}">
+        <div style="display:grid;grid-template-columns:repeat(6,1fr);gap:12px">
+          <sc-for list="{{ stats }}" as="st" hint-placeholder-count="6">
+            <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:12px 14px;box-shadow:var(--shadow)">
+              <div style="font-size:11px;color:var(--text3);margin-bottom:6px">{{ st.label }}</div>
+              <div style="font:600 18px 'JetBrains Mono',monospace">{{ st.value }}</div>
+              <div style="font-size:10.5px;margin-top:3px;color: {{ st.subColor }}">{{ st.sub }}</div>
+            </div>
+          </sc-for>
+        </div>
+      </sc-if>
+
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(470px,1fr));gap:16px;align-items:start">
+      <sc-if value="{{ showChat }}" hint-placeholder-val="{{ true }}">
+        <div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;box-shadow:var(--shadow);display:flex;flex-direction:column">
+          <div style="display:flex;align-items:center;gap:10px;padding:14px 18px;border-bottom:1px solid var(--hair)">
+            <div style="font-size:14px;font-weight:600">Ask AURA</div>
+            <div style="font:500 9.5px 'JetBrains Mono',monospace;color:var(--text3);border:1px solid var(--border);border-radius:99px;padding:2px 8px">generator ⇄ critic</div>
+            <div style="font:500 9.5px 'JetBrains Mono',monospace;color:var(--accent);background:var(--accent-dim);border-radius:99px;padding:2px 8px">DPC cross-check</div>
+            <div style="flex:1"></div>
+            <div style="font-size:11px;color:var(--text3)">DuckDB lake</div>
+          </div>
+          <div style="padding:16px 18px;display:flex;flex-direction:column;gap:14px;max-height:560px;overflow-y:auto">
+            <sc-for list="{{ messages }}" as="m" hint-placeholder-count="1">
+              <div style="display:flex;flex-direction:column;gap:10px;animation:awup .25s ease">
+                <div style="align-self:flex-end;max-width:70%;background:var(--raised);border:1px solid var(--border);border-radius:10px 10px 3px 10px;padding:9px 14px;font-size:13px">{{ m.q }}</div>
+                <sc-if value="{{ m.sql }}" hint-placeholder-val="{{ true }}">
+                  <div style="background:var(--sunken);border:1px solid var(--hair);border-radius:8px;padding:12px 14px;font:400 11.5px/1.65 'JetBrains Mono',monospace;color:var(--text2);white-space:pre-wrap">{{ m.sql }}</div>
+                </sc-if>
+                <sc-if value="{{ m.critic }}" hint-placeholder-val="{{ true }}">
+                  <div style="font-size:11px;color:var(--text3)">{{ m.critic }}</div>
+                </sc-if>
+                <sc-if value="{{ m.hasTable }}" hint-placeholder-val="{{ true }}">
+                  <div style="border:1px solid var(--hair);border-radius:8px;overflow:hidden">
+                    <div style="display:flex;background:var(--raised)">
+                      <sc-for list="{{ m.columns }}" as="col" hint-placeholder-count="3"><div style="flex:1;padding:7px 14px;font:600 10px 'JetBrains Mono',monospace;color:var(--text3);letter-spacing:.06em">{{ col }}</div></sc-for>
+                    </div>
+                    <sc-for list="{{ m.rows }}" as="row" hint-placeholder-count="3">
+                      <div style="display:flex;border-top:1px solid var(--hair)">
+                        <sc-for list="{{ row }}" as="cell" hint-placeholder-count="3"><div style="flex:1;padding:7px 14px;font:400 11.5px 'JetBrains Mono',monospace">{{ cell }}</div></sc-for>
+                      </div>
+                    </sc-for>
+                  </div>
+                </sc-if>
+                <sc-if value="{{ m.answer }}" hint-placeholder-val="{{ true }}">
+                  <div style="font-size:13px;line-height:1.55">{{ m.answer }}</div>
+                </sc-if>
+              </div>
+            </sc-for>
+            <sc-if value="{{ thinking }}" hint-placeholder-val="{{ false }}">
+              <div style="display:flex;align-items:center;gap:10px;font:500 11px 'JetBrains Mono',monospace;color:var(--text3)">
+                <span style="width:12px;height:12px;border:2px solid var(--accent);border-top-color:transparent;border-radius:50%;animation:awspin .8s linear infinite;flex:none"></span>{{ thinking }}
+              </div>
+            </sc-if>
+          </div>
+          <div style="padding:12px 18px 16px;border-top:1px solid var(--hair);display:flex;gap:8px">
+            <input ref="{{ chatInputRef }}" onKeyDown="{{ onChatKey }}" placeholder="Ask anything about your data — SQL is generated, checked, and signed" style="flex:1;background:var(--sunken);border:1px solid var(--border);border-radius:8px;padding:10px 14px;font:400 13px 'Instrument Sans',sans-serif;color:var(--text);outline:none" style-focus="border-color: var(--accent-bd)">
+            <div onClick="{{ ask }}" style="cursor:pointer;font-size:12.5px;font-weight:600;color:var(--on-accent);background:var(--accent);border-radius:8px;padding:10px 18px;display:flex;align-items:center">Ask</div>
+          </div>
+        </div>
+      </sc-if>
+
+      <sc-if value="{{ showCf }}" hint-placeholder-val="{{ true }}">
+        <div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;box-shadow:var(--shadow)">
+          <div style="display:flex;align-items:center;gap:10px;padding:14px 18px;border-bottom:1px solid var(--hair)">
+            <div style="font-size:14px;font-weight:600">Counterfactual audit</div>
+            <div style="font:500 10px 'JetBrains Mono',monospace;color:var(--text3)">{{ cfId }}</div>
+            <div style="flex:1"></div>
+            <div style="display:flex;font:600 10px 'JetBrains Mono',monospace;border:1px solid var(--border);border-radius:6px;overflow:hidden">
+              <sc-for list="{{ audiences }}" as="a" hint-placeholder-count="3">
+                <div onClick="{{ a.go }}" style="cursor:pointer;padding:4px 9px;color: {{ a.color }};background: {{ a.bg }}">{{ a.label }}</div>
+              </sc-for>
+            </div>
+          </div>
+          <div style="padding:16px 18px;display:flex;flex-direction:column;gap:13px">
+            <div style="font-size:13px;line-height:1.5;color:var(--text2);font-style:italic">"{{ cfQuestion }}"</div>
+            <sc-if value="{{ cfRunning }}" hint-placeholder-val="{{ false }}">
+              <div style="display:flex;flex-direction:column;gap:7px;padding:6px 0">
+                <sc-for list="{{ cfStages }}" as="stg" hint-placeholder-count="4">
+                  <div style="display:flex;align-items:center;gap:9px;font:500 11px 'JetBrains Mono',monospace;color: {{ stg.color }}">
+                    <span style="width:14px;text-align:center">{{ stg.icon }}</span>{{ stg.label }}
+                  </div>
+                </sc-for>
+              </div>
+            </sc-if>
+            <sc-if value="{{ cfDone }}" hint-placeholder-val="{{ true }}">
+              <div style="display:flex;align-items:baseline;gap:12px">
+                <div style="font:600 30px 'JetBrains Mono',monospace;color:var(--danger)">{{ cfEffect }}</div>
+                <div style="font-size:12px;color:var(--text3)">revenue foregone</div>
+              </div>
+              <div style="font:500 11px 'JetBrains Mono',monospace;color:var(--text2)">95% conformal CI {{ cfCi }} · E-value {{ cfEvalue }}</div>
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+                <div style="background:var(--sunken);border:1px solid var(--hair);border-radius:7px;padding:9px 12px"><div style="font-size:10.5px;color:var(--text3)">Estimators agree</div><div style="font:600 14px 'JetBrains Mono',monospace;color:var(--accent);margin-top:3px">7/7</div></div>
+                <div style="background:var(--sunken);border:1px solid var(--hair);border-radius:7px;padding:9px 12px"><div style="font-size:10.5px;color:var(--text3)">Refuters passed</div><div style="font:600 14px 'JetBrains Mono',monospace;color:var(--accent);margin-top:3px">4/4</div></div>
+              </div>
+              <div style="font-size:11.5px;color:var(--text3)">Adversarial critic: 3 challenges raised, 0 upheld</div>
+              <sc-if value="{{ isAuditor }}" hint-placeholder-val="{{ false }}">
+                <div style="border:1px solid var(--hair);border-radius:8px;overflow:hidden;font:400 10.5px 'JetBrains Mono',monospace">
+                  <div style="display:grid;grid-template-columns:1.6fr 1fr;background:var(--raised);color:var(--text3);font-weight:600;letter-spacing:.05em"><div style="padding:6px 12px">ESTIMATOR</div><div style="padding:6px 12px">EFFECT</div></div>
+                  <sc-for list="{{ cfEstimators }}" as="e" hint-placeholder-count="4">
+                    <div style="display:grid;grid-template-columns:1.6fr 1fr;border-top:1px solid var(--hair)"><div style="padding:5px 12px">{{ e.name }}</div><div style="padding:5px 12px">{{ e.effect }}</div></div>
+                  </sc-for>
+                  <div style="display:grid;grid-template-columns:1.6fr 1fr;border-top:1px solid var(--hair);color:var(--accent)"><div style="padding:5px 12px">refute: placebo · rand-cause · subset · unobs-confound</div><div style="padding:5px 12px">4/4 ✓</div></div>
+                </div>
+              </sc-if>
+              <sc-if value="{{ isAnalyst }}" hint-placeholder-val="{{ false }}">
+                <div style="background:var(--sunken);border:1px solid var(--hair);border-radius:8px;padding:11px 13px;font:400 10.5px/1.7 'JetBrains Mono',monospace;color:var(--text2);white-space:pre-wrap">{{ cfJson }}</div>
+              </sc-if>
+              <div style="display:flex;align-items:center;gap:8px;padding-top:4px;border-top:1px solid var(--hair)">
+                <div style="font:500 10px 'JetBrains Mono',monospace;color:var(--text3);background:var(--sunken);border:1px solid var(--hair);border-radius:5px;padding:3px 8px">record {{ cfHash }} · ED25519 ✓</div>
+                <div style="flex:1"></div>
+                <div onClick="{{ runCf }}" style="cursor:pointer;font-size:11.5px;font-weight:600;color:var(--on-accent);background:var(--accent);border-radius:6px;padding:5px 11px">Re-run audit</div>
+                <div style="font-size:11.5px;font-weight:600;color:var(--text2);border:1px solid var(--border);border-radius:6px;padding:5px 11px;cursor:pointer">Signed PDF</div>
+              </div>
+            </sc-if>
+          </div>
+        </div>
+      </sc-if>
+      </div>
+
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(380px,1fr));gap:16px;align-items:start">
+      <sc-if value="{{ showHealing }}" hint-placeholder-val="{{ true }}">
+        <div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;box-shadow:var(--shadow)">
+          <div style="display:flex;align-items:center;gap:10px;padding:13px 16px;border-bottom:1px solid var(--hair)">
+            <div style="font-size:13.5px;font-weight:600">Healing queue</div>
+            <sc-if value="{{ pendingCount }}" hint-placeholder-val="{{ true }}"><div style="font:600 9.5px 'JetBrains Mono',monospace;color:var(--warn);background:var(--warn-dim);border-radius:99px;padding:2px 8px">{{ pendingCount }} PENDING_APPROVAL</div></sc-if>
+            <sc-if value="{{ queueClear }}" hint-placeholder-val="{{ false }}"><div style="font:600 9.5px 'JetBrains Mono',monospace;color:var(--accent);background:var(--accent-dim);border-radius:99px;padding:2px 8px">QUEUE CLEAR</div></sc-if>
+          </div>
+          <div style="padding:6px 16px 14px">
+            <sc-for list="{{ healing }}" as="h" hint-placeholder-count="2">
+              <div style="padding:11px 0;border-bottom:1px solid var(--hair)">
+                <div style="display:flex;align-items:center;gap:8px"><div style="font:500 11.5px 'JetBrains Mono',monospace">{{ h.title }}</div><div style="font:700 9px 'JetBrains Mono',monospace;border-radius:99px;padding:1px 7px;color: {{ h.mColor }};background: {{ h.mBg }};border:1px solid {{ h.mColor }}">{{ h.method }}</div></div>
+                <div style="margin-top:5px;font-size:11px;color:var(--text3)">{{ h.sub }}</div>
+                <sc-if value="{{ h.pending }}" hint-placeholder-val="{{ true }}">
+                  <div style="margin-top:8px;display:flex;gap:7px">
+                    <div onClick="{{ h.approve }}" style="cursor:pointer;font-size:11px;font-weight:600;color:var(--accent);background:var(--accent-dim);border:1px solid var(--accent-bd);border-radius:5px;padding:4px 12px">Approve &amp; deploy</div>
+                    <div onClick="{{ h.reject }}" style="cursor:pointer;font-size:11px;font-weight:600;color:var(--danger);background:var(--danger-dim);border:1px solid var(--danger);border-radius:5px;padding:4px 12px">Reject</div>
+                  </div>
+                </sc-if>
+                <sc-if value="{{ h.resolution }}" hint-placeholder-val="{{ false }}">
+                  <div style="margin-top:8px;font:500 10.5px 'JetBrains Mono',monospace;color: {{ h.rColor }}">{{ h.resolution }}</div>
+                </sc-if>
+              </div>
+            </sc-for>
+            <div style="padding-top:10px;font-size:10.5px;color:var(--text3)">{{ healedNote }}</div>
+          </div>
+        </div>
+      </sc-if>
+
+      <sc-if value="{{ showPipes }}" hint-placeholder-val="{{ true }}">
+        <div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;box-shadow:var(--shadow)">
+          <div style="display:flex;align-items:center;gap:10px;padding:13px 16px;border-bottom:1px solid var(--hair)">
+            <div style="font-size:13.5px;font-weight:600">Pipelines &amp; streaming</div>
+            <div style="flex:1"></div>
+            <div style="font:500 9.5px 'JetBrains Mono',monospace;color:var(--accent)">PII MASKING ON</div>
+          </div>
+          <div style="padding:12px 16px 14px;display:flex;flex-direction:column;gap:10px">
+            <div style="display:flex;gap:8px;font:500 10.5px 'JetBrains Mono',monospace;flex-wrap:wrap">
+              <div style="display:flex;align-items:center;gap:6px;border:1px solid var(--hair);border-radius:6px;padding:5px 10px;color:var(--text2)"><span style="width:5px;height:5px;border-radius:50%;background:var(--accent)"></span>NetSuite</div>
+              <div style="display:flex;align-items:center;gap:6px;border:1px solid var(--hair);border-radius:6px;padding:5px 10px;color:var(--text2)"><span style="width:5px;height:5px;border-radius:50%;background:var(--accent)"></span>Workday</div>
+              <div style="display:flex;align-items:center;gap:6px;border:1px solid var(--hair);border-radius:6px;padding:5px 10px;color:var(--text2)"><span style="width:5px;height:5px;border-radius:50%;background: {{ dlqDotColor }}"></span>kafka:erp.gl DLQ {{ dlq }}</div>
+            </div>
+            <div style="border:1px solid var(--hair);border-radius:7px;overflow:hidden;font-size:11.5px">
+              <div style="display:grid;grid-template-columns:1.6fr .9fr .7fr .8fr;background:var(--raised);font:600 9.5px 'JetBrains Mono',monospace;color:var(--text3);letter-spacing:.05em"><div style="padding:6px 12px">RUN</div><div style="padding:6px 12px">STATUS</div><div style="padding:6px 12px">TIME</div><div style="padding:6px 12px">ROWS</div></div>
+              <sc-for list="{{ runs }}" as="r" hint-placeholder-count="3">
+                <div style="display:grid;grid-template-columns:1.6fr .9fr .7fr .8fr;border-top:1px solid var(--hair);align-items:center">
+                  <div style="padding:7px 12px;font:400 11px 'JetBrains Mono',monospace">{{ r.name }}</div>
+                  <div style="padding:7px 12px;font-weight:600;color: {{ r.color }}">{{ r.status }}</div>
+                  <div style="padding:7px 12px;font:400 11px 'JetBrains Mono',monospace">{{ r.time }}</div>
+                  <div style="padding:7px 12px;font:400 11px 'JetBrains Mono',monospace">{{ r.rows }}</div>
+                </div>
+              </sc-for>
+            </div>
+            <div style="font-size:10.5px;color:var(--text3)">Transforms: filter · aggregate · dedupe · cast · custom SQL → CSV / Parquet / JSON</div>
+          </div>
+        </div>
+      </sc-if>
+
+      <sc-if value="{{ showLineage }}" hint-placeholder-val="{{ true }}">
+        <div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;box-shadow:var(--shadow)">
+          <div style="padding:13px 16px;border-bottom:1px solid var(--hair);font-size:13.5px;font-weight:600">Lineage — net_revenue</div>
+          <div style="padding:14px 16px;display:flex;flex-direction:column;gap:8px">
+            <div style="font:500 10.5px 'JetBrains Mono',monospace;color:var(--text2);background:var(--sunken);border:1px solid var(--hair);border-radius:6px;padding:7px 10px">netsuite.gl_feed</div>
+            <div style="color:var(--text3);padding-left:12px">↓</div>
+            <div style="font:500 10.5px 'JetBrains Mono',monospace;color:var(--text2);background:var(--sunken);border:1px solid var(--hair);border-radius:6px;padding:7px 10px">kafka: erp.gl.v2</div>
+            <div style="color:var(--text3);padding-left:12px">↓</div>
+            <div style="font:500 10.5px 'JetBrains Mono',monospace;color:var(--text2);background:var(--sunken);border:1px solid var(--hair);border-radius:6px;padding:7px 10px">lake.fact_revenue</div>
+            <div style="color:var(--text3);padding-left:12px">↓</div>
+            <div style="font:600 10.5px 'JetBrains Mono',monospace;color:var(--accent);background:var(--accent-dim);border:1px solid var(--accent-bd);border-radius:6px;padding:7px 10px">metric: net_revenue ✓</div>
+            <div style="margin-top:4px;font-size:10.5px;color:var(--text3);line-height:1.6">Atomic Parquet load · replayable from ledger {{ ledgerNo }} · {{ shimNote }}</div>
+          </div>
+        </div>
+      </sc-if>
+      </div>
+
+      <sc-if value="{{ showHistory }}" hint-placeholder-val="{{ true }}">
+        <div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;box-shadow:var(--shadow)">
+          <div style="display:flex;align-items:center;padding:13px 16px;border-bottom:1px solid var(--hair)"><div style="font-size:13.5px;font-weight:600">Query history</div><div style="flex:1"></div><div style="font-size:11px;color:var(--text3)">this session + today</div></div>
+          <div style="font-size:11.5px">
+            <div style="display:grid;grid-template-columns:.55fr 2.6fr .8fr .7fr .55fr .6fr .7fr;font:600 9.5px 'JetBrains Mono',monospace;color:var(--text3);letter-spacing:.05em;background:var(--raised)"><div style="padding:7px 16px">TIME</div><div style="padding:7px 16px">QUERY</div><div style="padding:7px 16px">ENGINE</div><div style="padding:7px 16px">STATUS</div><div style="padding:7px 16px">COST</div><div style="padding:7px 16px">DUR</div><div style="padding:7px 16px">BY</div></div>
+            <sc-for list="{{ history }}" as="hq" hint-placeholder-count="4">
+              <div style="display:grid;grid-template-columns:.55fr 2.6fr .8fr .7fr .55fr .6fr .7fr;border-top:1px solid var(--hair);align-items:center">
+                <div style="padding:8px 16px;font:400 11px 'JetBrains Mono',monospace;color:var(--text3)">{{ hq.time }}</div>
+                <div style="padding:8px 16px">{{ hq.q }}</div>
+                <div style="padding:8px 16px;font:400 11px 'JetBrains Mono',monospace">{{ hq.engine }}</div>
+                <div style="padding:8px 16px;font-weight:600;color: {{ hq.statusColor }}">{{ hq.status }}</div>
+                <div style="padding:8px 16px;font:400 11px 'JetBrains Mono',monospace">{{ hq.cost }}</div>
+                <div style="padding:8px 16px;font:400 11px 'JetBrains Mono',monospace">{{ hq.dur }}</div>
+                <div style="padding:8px 16px;color:var(--text3)">{{ hq.by }}</div>
+              </div>
+            </sc-for>
+          </div>
+        </div>
+      </sc-if>
+
+      <sc-if value="{{ showTerminal }}" hint-placeholder-val="{{ false }}">
+        <div style="display:grid;grid-template-columns:1.9fr 1fr;gap:16px;align-items:stretch">
+          <div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;box-shadow:var(--shadow);display:flex;flex-direction:column">
+            <div style="display:flex;align-items:center;gap:10px;padding:12px 16px;border-bottom:1px solid var(--hair)">
+              <div style="font-size:13.5px;font-weight:600">Constellation</div>
+              <div style="font:500 9.5px 'JetBrains Mono',monospace;color:var(--text3)">lineage + datasets · click a node to focus</div>
+              <div style="flex:1"></div>
+              <sc-if value="{{ constHasFocus }}" hint-placeholder-val="{{ false }}"><div onClick="{{ clearFocus }}" style="cursor:pointer;font:600 10px 'JetBrains Mono',monospace;color:var(--text2);border:1px solid var(--border);border-radius:5px;padding:3px 9px">clear focus</div></sc-if>
+              <input onInput="{{ onConstInput }}" onKeyDown="{{ onConstKey }}" placeholder="Find a node…" style="width:150px;background:var(--sunken);border:1px solid var(--border);border-radius:6px;padding:5px 10px;font:400 11px 'Instrument Sans',sans-serif;color:var(--text);outline:none" style-focus="border-color: var(--accent-bd)">
+            </div>
+            <div style="overflow-x:auto">
+            <div onClick="{{ clearFocus }}" style="position:relative;height:540px;min-width:1000px;background-image:radial-gradient(var(--hair) 1px, transparent 1px);background-size:22px 22px">
+              <svg viewBox="0 0 1000 520" preserveAspectRatio="none" style="position:absolute;inset:0;width:100%;height:100%">
+                <sc-for list="{{ constEdges }}" as="e" hint-placeholder-count="0">
+                  <line x1="{{ e.x1 }}" y1="{{ e.y1 }}" x2="{{ e.x2 }}" y2="{{ e.y2 }}" style="stroke: {{ e.stroke }};stroke-width:1.2;opacity: {{ e.opacity }};transition:all .2s"></line>
+                </sc-for>
+              </svg>
+              <sc-for list="{{ constNodes }}" as="n" hint-placeholder-count="0">
+                <div onClick="{{ n.click }}" style="position:absolute;left: {{ n.left }};top: {{ n.top }};transform:translate(-50%,-50%);cursor:pointer;display:flex;align-items:center;gap:6px;padding:4px 9px;background:var(--surface);border:1px solid {{ n.border }};border-radius:6px;font:500 10px 'JetBrains Mono',monospace;color: {{ n.color }};opacity: {{ n.opacity }};transition:opacity .2s;z-index:2;white-space:nowrap">
+                  <span style="width:6px;height:6px;border-radius:50%;background: {{ n.dot }};flex:none"></span>{{ n.label }}
+                </div>
+              </sc-for>
+              <div style="position:absolute;left:14px;bottom:12px;display:flex;gap:12px;font:500 9px 'JetBrains Mono',monospace;color:var(--text3);z-index:2">
+                <span style="display:flex;align-items:center;gap:5px"><span style="width:6px;height:6px;border-radius:50%;background:var(--blue)"></span>SOURCE</span>
+                <span style="display:flex;align-items:center;gap:5px"><span style="width:6px;height:6px;border-radius:50%;background:var(--purple)"></span>TOPIC</span>
+                <span style="display:flex;align-items:center;gap:5px"><span style="width:6px;height:6px;border-radius:50%;background:var(--text2)"></span>TABLE</span>
+                <span style="display:flex;align-items:center;gap:5px"><span style="width:6px;height:6px;border-radius:50%;background:var(--accent)"></span>METRIC</span>
+                <span style="display:flex;align-items:center;gap:5px"><span style="width:6px;height:6px;border-radius:50%;background:var(--warn)"></span>OUTPUT</span>
+              </div>
+            </div>
+            </div>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:16px">
+            <div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;box-shadow:var(--shadow)">
+              <div style="padding:12px 16px;font-size:13.5px;font-weight:600">Datasets</div>
+              <sc-for list="{{ datasets }}" as="d" hint-placeholder-count="5">
+                <div onClick="{{ d.go }}" style="cursor:pointer;display:flex;justify-content:space-between;align-items:center;gap:10px;padding:9px 16px;border-top:1px solid var(--hair);background: {{ d.bg }}" style-hover="background: var(--raised)">
+                  <span style="font:500 11px 'JetBrains Mono',monospace">{{ d.label }}</span>
+                  <span style="font:400 10.5px 'JetBrains Mono',monospace;color:var(--text3);flex:none">{{ d.rows }} · {{ d.size }}</span>
+                </div>
+              </sc-for>
+            </div>
+            <div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;box-shadow:var(--shadow)">
+              <div style="padding:12px 16px;font-size:13.5px;font-weight:600">Findings</div>
+              <sc-for list="{{ findingsList }}" as="f" hint-placeholder-count="3">
+                <div onClick="{{ f.go }}" style="cursor:pointer;padding:10px 16px;border-top:1px solid var(--hair)" style-hover="background: var(--raised)">
+                  <div style="font-size:12.5px;line-height:1.45">{{ f.t }}</div>
+                  <div style="margin-top:4px;font:500 10px 'JetBrains Mono',monospace;color: {{ f.mColor }}">{{ f.m }}</div>
+                </div>
+              </sc-for>
+            </div>
+          </div>
+        </div>
+        <div style="display:grid;grid-template-columns:1.4fr 1fr;gap:16px;align-items:start">
+          <div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;box-shadow:var(--shadow)">
+            <div style="display:flex;align-items:center;gap:8px;padding:12px 16px"><span style="width:6px;height:6px;border-radius:50%;background:var(--accent);animation:awpulse 1.6s infinite"></span><div style="font-size:13.5px;font-weight:600">Live Feed</div><div style="flex:1"></div><div style="font-size:10.5px;color:var(--text3)">kafka · UASR · ledger</div></div>
+            <sc-for list="{{ feed }}" as="ev" hint-placeholder-count="6">
+              <div style="display:flex;gap:10px;align-items:baseline;padding:6px 16px;border-top:1px solid var(--hair);font:400 10.5px 'JetBrains Mono',monospace">
+                <span style="color:var(--text3);flex:none">{{ ev.time }}</span>
+                <span style="flex:none;font-weight:700;font-size:9px;letter-spacing:.06em;color: {{ ev.color }}">{{ ev.k }}</span>
+                <span style="color:var(--text2)">{{ ev.t }}</span>
+              </div>
+            </sc-for>
+          </div>
+          <div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;box-shadow:var(--shadow)">
+            <div style="display:flex;align-items:center;padding:12px 16px;border-bottom:1px solid var(--hair)"><div style="font-size:13.5px;font-weight:600">Query</div><div style="flex:1"></div><div style="font-size:10.5px;color:var(--text3)">DuckDB lake · sandboxed</div></div>
+            <div style="padding:12px 16px;display:flex;flex-direction:column;gap:10px">
+              <div style="display:flex;gap:8px">
+                <input ref="{{ queryInputRef }}" placeholder="SELECT segment, SUM(amount) FROM lake.fact_revenue GROUP BY 1" style="flex:1;background:var(--sunken);border:1px solid var(--border);border-radius:7px;padding:9px 12px;font:400 11px 'JetBrains Mono',monospace;color:var(--text);outline:none" style-focus="border-color: var(--accent-bd)">
+                <div onClick="{{ runQuery }}" style="cursor:pointer;font-size:12px;font-weight:600;color:var(--on-accent);background:var(--accent);border-radius:7px;padding:9px 16px;display:flex;align-items:center">Run</div>
+              </div>
+              <sc-if value="{{ queryRunning }}" hint-placeholder-val="{{ false }}">
+                <div style="display:flex;align-items:center;gap:9px;font:500 10.5px 'JetBrains Mono',monospace;color:var(--text3)"><span style="width:11px;height:11px;border:2px solid var(--accent);border-top-color:transparent;border-radius:50%;animation:awspin .8s linear infinite;flex:none"></span>sandbox executing…</div>
+              </sc-if>
+              <sc-if value="{{ hasQueryOut }}" hint-placeholder-val="{{ false }}">
+                <div style="border:1px solid var(--hair);border-radius:7px;overflow:hidden">
+                  <div style="display:flex;background:var(--raised)">
+                    <sc-for list="{{ queryOut.columns }}" as="col" hint-placeholder-count="3"><div style="flex:1;padding:6px 12px;font:600 9.5px 'JetBrains Mono',monospace;color:var(--text3);letter-spacing:.05em">{{ col }}</div></sc-for>
+                  </div>
+                  <sc-for list="{{ queryOut.rows }}" as="row" hint-placeholder-count="3">
+                    <div style="display:flex;border-top:1px solid var(--hair)">
+                      <sc-for list="{{ row }}" as="cell" hint-placeholder-count="3"><div style="flex:1;padding:6px 12px;font:400 11px 'JetBrains Mono',monospace">{{ cell }}</div></sc-for>
+                    </div>
+                  </sc-for>
+                </div>
+                <div style="font-size:10.5px;color:var(--text3)">critic verified · result signed to ledger</div>
+              </sc-if>
+            </div>
+          </div>
+        </div>
+      </sc-if>
+
+      <sc-if value="{{ showStub }}" hint-placeholder-val="{{ false }}">
+        <div style="background:var(--surface);border:1px dashed var(--border);border-radius:10px;padding:36px;display:flex;flex-direction:column;align-items:center;gap:10px;text-align:center">
+          <div style="font:600 13px 'Space Grotesk',sans-serif">{{ activeNav }}</div>
+          <div style="font-size:12.5px;color:var(--text2);max-width:460px;line-height:1.6">{{ stubDesc }}</div>
+          <div style="font:500 10.5px 'JetBrains Mono',monospace;color:var(--text3)">Not yet built in this prototype — ask me to design this module next.</div>
+        </div>
+      </sc-if>
+    </div>
+  </div>
+  </sc-if>
+
+  <!-- command palette -->
+  <sc-if value="{{ paletteOpen }}" hint-placeholder-val="{{ false }}">
+    <div onClick="{{ closePalette }}" style="position:fixed;inset:0;background:var(--overlay);z-index:100;display:flex;justify-content:center;padding-top:120px">
+      <div onClick="{{ stop }}" style="width:520px;height:fit-content;background:var(--surface);border:1px solid var(--border);border-radius:12px;box-shadow:0 24px 60px rgba(0,0,0,.35);overflow:hidden;animation:awup .18s ease">
+        <input ref="{{ paletteInputRef }}" onInput="{{ onPaletteInput }}" onKeyDown="{{ onPaletteKey }}" placeholder="Type a command or destination…" style="width:100%;box-sizing:border-box;background:transparent;border:none;border-bottom:1px solid var(--hair);padding:14px 18px;font:400 14px 'Instrument Sans',sans-serif;color:var(--text);outline:none">
+        <div style="max-height:320px;overflow-y:auto;padding:6px">
+          <sc-for list="{{ commands }}" as="c" hint-placeholder-count="5">
+            <div onClick="{{ c.run }}" style="cursor:pointer;display:flex;justify-content:space-between;align-items:center;padding:9px 12px;border-radius:7px;font-size:13px" style-hover="background: var(--raised)">
+              <span>{{ c.title }}</span><span style="font:500 9.5px 'JetBrains Mono',monospace;color:var(--text3)">{{ c.hint }}</span>
+            </div>
+          </sc-for>
+        </div>
+      </div>
+    </div>
+  </sc-if>
+
+  <!-- toast -->
+  <sc-if value="{{ toast }}" hint-placeholder-val="{{ false }}">
+    <div style="position:fixed;bottom:26px;left:50%;transform:translateX(-50%);z-index:200;background:var(--raised);border:1px solid var(--accent-bd);color:var(--text);font:500 12px 'Instrument Sans',sans-serif;border-radius:8px;padding:10px 18px;box-shadow:0 8px 30px rgba(0,0,0,.3);animation:awup .2s ease;display:flex;align-items:center;gap:8px"><span style="color:var(--accent)">✓</span>{{ toast }}</div>
+  </sc-if>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;theme&quot;: {&quot;editor&quot;: &quot;enum&quot;, &quot;options&quot;: [&quot;dark&quot;, &quot;light&quot;], &quot;default&quot;: &quot;dark&quot;, &quot;tsType&quot;: &quot;'dark' | 'light'&quot;, &quot;section&quot;: &quot;Theme&quot;}, &quot;cfAudience&quot;: {&quot;editor&quot;: &quot;enum&quot;, &quot;options&quot;: [&quot;operator&quot;, &quot;auditor&quot;, &quot;analyst&quot;], &quot;default&quot;: &quot;operator&quot;, &quot;tsType&quot;: &quot;'operator' | 'auditor' | 'analyst'&quot;, &quot;section&quot;: &quot;Counterfactual card&quot;}, &quot;skipLogin&quot;: {&quot;editor&quot;: &quot;boolean&quot;, &quot;default&quot;: false, &quot;tsType&quot;: &quot;boolean&quot;, &quot;section&quot;: &quot;Auth&quot;}}">
+class Component extends DCLogic {
+  chatInput = React.createRef();
+  paletteInput = React.createRef();
+
+  state = {
+    activeNav: 'Cockpit',
+    themeOverride: null,
+    audience: null,
+    paletteOpen: false,
+    paletteQ: '',
+    toast: null,
+    focusId: null,
+    activeDataset: null,
+    constQ: '',
+    queryRunning: false,
+    queryOut: null,
+    view: null,
+    bootIdx: 0,
+    loginError: null,
+    navLoading: false,
+    feed: [
+      { time: '09:41', k: 'AUDIT', color: 'var(--accent)', t: 'ledger append #4,182 · sha256 chained' },
+      { time: '09:40', k: 'INGEST', color: 'var(--blue)', t: 'kafka erp.gl.v2 offset +1,024 · idempotent' },
+      { time: '09:39', k: 'PII', color: 'var(--purple)', t: 'perimeter masked 12 fields in workday.hcm batch' },
+      { time: '09:38', k: 'QUERY', color: 'var(--text2)', t: 'sandbox run: churn cohort scan (2.1s, $0.03)' },
+    ],
+    thinking: null,
+    messages: [{
+      q: 'Why did APAC churn spike in March?',
+      sql: "SELECT region, month, churn_rate,\n  churn_rate - LAG(churn_rate) OVER (PARTITION BY region ORDER BY month) AS delta\nFROM metrics.churn_monthly\nWHERE region = 'APAC' AND month BETWEEN '2026-01' AND '2026-04';",
+      critic: 'Critic pass 2/2 — joins verified against metadata store · row-count sanity ✓ · PII scan clean',
+      hasTable: true,
+      columns: ['MONTH', 'CHURN_RATE', 'DELTA'],
+      rows: [['2026-01', '3.1%', '—'], ['2026-02', '3.2%', '+0.1'], ['2026-03', '5.3%', '+2.1']],
+      answer: 'March churn rose +2.1pp. The causal engine attributes it to the March 3 price change (DoWhy GCM root-cause, E-value 3.2) — finding signed and filed to the ledger.',
+    }],
+    healing: [
+      { id: 1, title: 'orders.customer_id → cust_id', method: 'TEMPLATE', safe: true, sub: 'schema rename drift · shim sandbox-validated ✓ · risk tier T1', state: 'pending' },
+      { id: 2, title: 'netsuite.gl_feed date format', method: 'LLM', safe: false, sub: 'MM/DD → ISO drift · held by risk policy · awaiting reviewer', state: 'pending' },
+    ],
+    healedCount: 4,
+    cf: { id: 'cf_8812', question: "What would Q3 revenue have been if we hadn't raised prices in May?", effect: -1.9, ciLo: -2.4, ciHi: -1.5, evalue: 3.2, hash: '9f3c…a1e2' },
+    cfRunning: false,
+    cfStageIdx: -1,
+    kafka: 240, dlq: 3, sandboxRuns: 148, streamsOk: 12, streamsTotal: 13, spend: 1284,
+    runs: [
+      { name: 'revenue_daily_rollup', status: 'success', secs: 42, rows: '1.2M' },
+      { name: 'churn_features', status: 'running', secs: 64, rows: null },
+      { name: 'gl_reconciliation', status: 'retrying', secs: 192, rows: '804K' },
+    ],
+    history: [
+      { time: '09:41', q: 'Why did APAC churn spike in March?', engine: 'DuckDB', status: 'verified', cost: '$0.04', dur: '3.2s', by: 'jm' },
+      { time: '09:12', q: 'SELECT sum(amount) FROM lake.fact_revenue …', engine: 'BigQuery', status: 'verified', cost: '$0.11', dur: '8.4s', by: 'rk' },
+      { time: '08:57', q: 'Counterfactual job cf_8812 — May price change', engine: 'sandbox', status: 'signed', cost: '$0.32', dur: '84s', by: 'DAR' },
+      { time: '06:00', q: 'Nightly full audit replay — FY26 Q2 ledger', engine: 'ledger', status: 'signed', cost: '—', dur: '14m', by: 'sched' },
+    ],
+  };
+
+  CF_STAGES = ['Submitting job to counterfactual service…', 'Estimators 1–4: backdoor.linear_reg · psm · dml · ipw…', 'Estimators 5–7: frontdoor · iv · gcm…', 'Refuters: placebo · random-cause · subset · unobserved-confound…', 'Adversarial critic reviewing challenges…', 'Conformal CI + E-value…', 'Signing record (ED25519) → ledger…'];
+
+  queryInput = React.createRef();
+
+  GRAPH = {
+    nodes: [
+      { id: 'ns', label: 'netsuite.gl_feed', kind: 'source', x: 75, y: 80 },
+      { id: 'wd', label: 'workday.hcm', kind: 'source', x: 75, y: 190 },
+      { id: 'up', label: 'sales_2025.csv', kind: 'source', x: 75, y: 300 },
+      { id: 'kg', label: 'erp.gl.v2', kind: 'topic', x: 270, y: 80 },
+      { id: 'kh', label: 'erp.hcm.v1', kind: 'topic', x: 270, y: 190 },
+      { id: 'or', label: 'orders', kind: 'table', x: 270, y: 410 },
+      { id: 'fr', label: 'lake.fact_revenue', kind: 'table', x: 480, y: 110 },
+      { id: 'de', label: 'lake.dim_employee', kind: 'table', x: 480, y: 220 },
+      { id: 'cm', label: 'metrics.churn_monthly', kind: 'table', x: 480, y: 330 },
+      { id: 'nr', label: 'net_revenue', kind: 'metric', x: 690, y: 110 },
+      { id: 'hc', label: 'headcount_cost', kind: 'metric', x: 690, y: 220 },
+      { id: 'cr', label: 'churn_rate', kind: 'metric', x: 690, y: 330 },
+      { id: 'ct', label: 'cert FY26-Q2', kind: 'output', x: 880, y: 46 },
+      { id: 'db', label: 'Revenue Assurance', kind: 'output', x: 880, y: 170 },
+      { id: 'fd', label: 'finding: APAC churn', kind: 'output', x: 880, y: 330 },
+    ],
+    edges: [['ns', 'kg'], ['kg', 'fr'], ['fr', 'nr'], ['nr', 'db'], ['nr', 'ct'], ['wd', 'kh'], ['kh', 'de'], ['de', 'hc'], ['hc', 'db'], ['up', 'cm'], ['or', 'cm'], ['cm', 'cr'], ['cr', 'fd'], ['cr', 'db']],
+  };
+
+  DATASETS = [
+    { label: 'sales_2025.csv', node: 'up', rows: '48,112', size: '6.2 MB' },
+    { label: 'lake.fact_revenue', node: 'fr', rows: '8.4M', size: '1.1 GB' },
+    { label: 'metrics.churn_monthly', node: 'cm', rows: '1,248', size: '88 KB' },
+    { label: 'orders', node: 'or', rows: '2.1M', size: '412 MB' },
+    { label: 'lake.dim_employee', node: 'de', rows: '4,802', size: '1.2 MB' },
+  ];
+
+  FINDINGS = [
+    { t: 'APAC churn +2.1pp ← March 3 price change', m: 'E-VALUE 3.2 · 7/7 ESTIMATORS · SIGNED', mColor: 'var(--accent)', node: 'fd' },
+    { t: 'Logistics cost spike ← carrier-mix shift', m: 'PLACEBO REFUTED · SIGNED', mColor: 'var(--accent)', node: 'db' },
+    { t: 'EMEA headcount cost drift', m: 'E-VALUE 1.9 · PENDING REVIEW', mColor: 'var(--warn)', node: 'hc' },
+  ];
+
+  FEED_POOL = [
+    { k: 'INGEST', color: 'var(--blue)', t: 'atomic parquet load lake.fact_revenue +18,240 rows' },
+    { k: 'HEAL', color: 'var(--warn)', t: 'MAPE-K analyze: no drift on workday.hcm' },
+    { k: 'AUDIT', color: 'var(--accent)', t: 'ledger append · sha256 chained · ED25519 ok' },
+    { k: 'QUERY', color: 'var(--text2)', t: 'sandbox run: revenue rollup preview (0.8s, $0.01)' },
+    { k: 'PII', color: 'var(--purple)', t: 'masked 4 fields in netsuite.gl_feed batch' },
+    { k: 'INGEST', color: 'var(--blue)', t: 'kafka erp.hcm.v1 offset +512 · idempotent' },
+  ];
+
+  neighborSet(id) {
+    const set = new Set([id]);
+    this.GRAPH.edges.forEach(([a, b]) => { if (a === id) set.add(b); if (b === id) set.add(a); });
+    return set;
+  }
+  clickNode(n, e) {
+    if (e) e.stopPropagation();
+    this.setState({ focusId: n.id, activeDataset: (n.kind === 'table' || n.kind === 'source') ? n.label : null });
+  }
+  clearFocus = () => this.setState({ focusId: null, activeDataset: null });
+  onConstInput = (e) => this.setState({ constQ: e.target.value });
+  onConstKey = (e) => {
+    if (e.key !== 'Enter') return;
+    const q = this.state.constQ.trim().toLowerCase();
+    if (!q) return;
+    const hit = this.GRAPH.nodes.find((n) => n.label.toLowerCase().includes(q));
+    if (hit) this.clickNode(hit);
+  };
+  selectDataset(d) { this.setState({ activeDataset: d.label, focusId: d.node }); }
+
+  runQuery = () => {
+    if (this.state.queryRunning) return;
+    const el = this.queryInput.current;
+    const q = (el && el.value.trim()) || 'SELECT segment, SUM(amount) AS revenue FROM lake.fact_revenue GROUP BY 1;';
+    this.setState({ queryRunning: true, queryOut: null });
+    setTimeout(() => {
+      this.setState((s) => ({
+        queryRunning: false,
+        queryOut: { columns: ['SEGMENT', 'REVENUE', 'ΔMOM'], rows: [['Enterprise', '$5.1M', '+8%'], ['Mid-market', '$2.9M', '+3%'], ['SMB', '$1.7M', '0%']] },
+        history: [{ time: this.now(), q: q.length > 52 ? q.slice(0, 52) + '…' : q, engine: 'DuckDB', status: 'verified', cost: '$0.02', dur: '1.4s', by: 'you' }, ...s.history],
+      }));
+      this.showToast('Query verified — result signed');
+    }, 900);
+  };
+
+  loginEmail = React.createRef();
+  loginPass = React.createRef();
+
+  BOOT_STAGES = ['Authenticating — JWT issued (12h scope)', 'Loading workspace acme-corp', 'Verifying ledger chain #4,182 (sha256)', 'Subscribing to live streams (kafka erp.*)', 'Restoring cockpit layout'];
+
+  curView() { return this.state.view ?? ((this.props.skipLogin ?? false) ? 'app' : 'login'); }
+
+  signIn = () => {
+    const el = this.loginEmail.current;
+    const email = el ? el.value.trim() : '';
+    if (!email || !email.includes('@')) { this.setState({ loginError: 'Enter a valid corporate email address.' }); return; }
+    this.startBoot();
+  };
+  ssoSignIn = () => this.startBoot();
+  onLoginKey = (e) => { if (e.key === 'Enter') this.signIn(); };
+  startBoot() {
+    this.setState({ view: 'boot', bootIdx: 0, loginError: null });
+    clearInterval(this._bootT);
+    this._bootT = setInterval(() => {
+      this.setState((s) => {
+        const n = s.bootIdx + 1;
+        if (n > this.BOOT_STAGES.length) {
+          clearInterval(this._bootT);
+          this.showToast('Signed in — workspace acme-corp · session expires in 12h');
+          return { view: 'app', bootIdx: 0 };
+        }
+        return { bootIdx: n };
+      });
+    }, 520);
+  }
+  signOut = () => { clearInterval(this._bootT); this.setState({ view: 'login', paletteOpen: false }); };
+
+  componentDidMount() {
+    this._key = (e) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); this.openPalette(); }
+      if (e.key === 'Escape') this.setState({ paletteOpen: false });
+    };
+    window.addEventListener('keydown', this._key);
+    this._tick = setInterval(() => this.tick(), 2000);
+  }
+  componentWillUnmount() {
+    window.removeEventListener('keydown', this._key);
+    clearInterval(this._tick);
+    clearTimeout(this._toastT);
+    clearInterval(this._bootT);
+    clearTimeout(this._navT);
+  }
+
+  tick() {
+    this.setState((s) => {
+      const next = { kafka: 200 + Math.round(Math.random() * 90) };
+      if (Math.random() < 0.4) next.sandboxRuns = s.sandboxRuns + 1;
+      next.runs = s.runs.map((r) => {
+        if (r.status === 'running') {
+          const secs = r.secs + 2;
+          if (secs >= 78) { this.showToast('Pipeline churn_features completed — 2.4M rows'); return { ...r, status: 'success', secs, rows: '2.4M' }; }
+          return { ...r, secs };
+        }
+        if (r.status === 'retrying') {
+          const secs = r.secs + 2;
+          if (secs >= 210) { next.dlq = 0; this.showToast('gl_reconciliation recovered — DLQ drained'); return { ...r, status: 'success', secs, rows: '811K' }; }
+          return { ...r, secs };
+        }
+        return r;
+      });
+      this._feedIdx = (this._feedIdx || 0) + 1;
+      if (this._feedIdx % 2 === 0) {
+        const ev = this.FEED_POOL[(this._feedIdx / 2) % this.FEED_POOL.length];
+        next.feed = [{ time: this.now(), ...ev }, ...s.feed].slice(0, 9);
+      }
+      return next;
+    });
+  }
+
+  showToast(msg) {
+    clearTimeout(this._toastT);
+    this.setState({ toast: msg });
+    this._toastT = setTimeout(() => this.setState({ toast: null }), 2800);
+  }
+
+  now() { const d = new Date(); return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0'); }
+
+  ask = () => {
+    const el = this.chatInput.current;
+    const q = el && el.value.trim();
+    if (!q || this.state.thinking) return;
+    el.value = '';
+    this.setState({ thinking: 'Generator drafting SQL against lake catalog…' });
+    const t0 = Date.now();
+    const finish = (msg) => {
+      this.setState({ thinking: 'Critic pass — cross-checking with DPC…' });
+      setTimeout(() => {
+        const dur = ((Date.now() - t0) / 1000).toFixed(1) + 's';
+        this.setState((s) => ({
+          thinking: null,
+          messages: [...s.messages, msg],
+          history: [{ time: this.now(), q, engine: 'DuckDB', status: 'verified', cost: '$0.0' + (2 + Math.floor(Math.random() * 7)), dur, by: 'you' }, ...s.history],
+        }));
+        this.showToast('Answer verified & filed to ledger');
+      }, 900);
+    };
+    const fallback = () => finish({
+      q,
+      sql: "-- generated against lake catalog\nSELECT segment, month, SUM(amount) AS revenue\nFROM lake.fact_revenue\nGROUP BY segment, month\nORDER BY month DESC\nLIMIT 12;",
+      critic: 'Critic pass 2/2 — joins verified · row-count sanity ✓ · PII scan clean',
+      hasTable: false,
+      answer: 'Ran against the demo lake. Revenue is concentrated in Enterprise ($5.1M in June, 52% of total) and growing +8% MoM; SMB is flat. Result signed and filed to the ledger.',
+    });
+    const prompt = 'You are AURA, an auditable analytics agent over a DuckDB lake with tables: metrics.churn_monthly(region TEXT, month TEXT, churn_rate FLOAT), lake.fact_revenue(region TEXT, segment TEXT, month TEXT, amount FLOAT), ops.pipeline_runs(name TEXT, status TEXT, started_at TS, rows BIGINT), audit.findings(id TEXT, summary TEXT, e_value FLOAT). The business: B2B SaaS, FY26, APAC churn spiked in March after a price change; June net revenue $9.7M. User question: "' + q + '". Reply with STRICT JSON only, no markdown: {"sql": "<one plausible SQL query>", "columns": ["A","B"], "rows": [["v","v"],["v","v"],["v","v"]], "answer": "<2-sentence answer with concrete plausible numbers consistent with the business context>"}';
+    if (window.claude && window.claude.complete) {
+      window.claude.complete(prompt).then((txt) => {
+        try {
+          const m = txt.match(/\{[\s\S]*\}/);
+          const j = JSON.parse(m ? m[0] : txt);
+          finish({ q, sql: j.sql, critic: 'Critic pass 2/2 — joins verified against metadata store · row-count sanity ✓ · PII scan clean', hasTable: Array.isArray(j.rows) && j.rows.length > 0, columns: j.columns || [], rows: (j.rows || []).slice(0, 4).map((r) => r.map(String)), answer: j.answer });
+        } catch (e) { fallback(); }
+      }).catch(fallback);
+    } else { fallback(); }
+  };
+
+  onChatKey = (e) => { if (e.key === 'Enter') this.ask(); };
+
+  runCf = () => {
+    if (this.state.cfRunning) return;
+    this.setState({ cfRunning: true, cfStageIdx: 0 });
+    let i = 0;
+    const step = () => {
+      i += 1;
+      if (i < this.CF_STAGES.length) {
+        this.setState({ cfStageIdx: i });
+        this._cfT = setTimeout(step, 650 + Math.random() * 500);
+      } else {
+        const effect = -(1.7 + Math.random() * 0.4);
+        const hash = Array.from({ length: 4 }, () => Math.floor(Math.random() * 16).toString(16)).join('') + '…' + Array.from({ length: 4 }, () => Math.floor(Math.random() * 16).toString(16)).join('');
+        const id = 'cf_' + (9000 + Math.floor(Math.random() * 900));
+        this.setState((s) => ({
+          cfRunning: false, cfStageIdx: -1,
+          cf: { ...s.cf, id, effect, ciLo: effect - 0.5, ciHi: effect + 0.4, evalue: (2.8 + Math.random() * 0.8).toFixed(1), hash },
+          history: [{ time: this.now(), q: 'Counterfactual job ' + id + ' — May price change', engine: 'sandbox', status: 'signed', cost: '$0.3' + Math.floor(Math.random() * 9), dur: Math.round(60 + Math.random() * 40) + 's', by: 'you' }, ...s.history],
+        }));
+        this.showToast('Counterfactual signed & filed — record intact');
+      }
+    };
+    this._cfT = setTimeout(step, 700);
+  };
+
+  approveHeal(id) {
+    this.setState((s) => {
+      const healing = s.healing.map((h) => h.id === id ? { ...h, state: 'deployed', resolution: 'shim deployed · signed by you · WORM #' + (7710 + id) } : h);
+      const extra = id === 2 ? { streamsOk: 13, dlq: 0 } : {};
+      return { healing, healedCount: s.healedCount + 1, ...extra };
+    });
+    this.showToast('Shim deployed — override signed to WORM log');
+  }
+  rejectHeal(id) {
+    this.setState((s) => ({ healing: s.healing.map((h) => h.id === id ? { ...h, state: 'escalated', resolution: 'rejected · escalated to data engineering on-call' } : h) }));
+    this.showToast('Recovery rejected — escalation filed');
+  }
+
+  openPalette = () => { if (this.curView() !== 'app') return; this.setState({ paletteOpen: true, paletteQ: '' }); setTimeout(() => { if (this.paletteInput.current) this.paletteInput.current.focus(); }, 40); };
+  closePalette = () => this.setState({ paletteOpen: false });
+  stop = (e) => e.stopPropagation();
+  onPaletteInput = (e) => this.setState({ paletteQ: e.target.value });
+  onPaletteKey = (e) => { if (e.key === 'Enter') { const c = this.buildCommands()[0]; if (c) c.run(); } };
+  toggleTheme = () => this.setState((s) => ({ themeOverride: (s.themeOverride ?? this.props.theme ?? 'dark') === 'dark' ? 'light' : 'dark' }));
+
+  go(name) {
+    if (this.state.activeNav === name) { this.setState({ paletteOpen: false }); return; }
+    clearTimeout(this._navT);
+    this.setState({ activeNav: name, paletteOpen: false, navLoading: true });
+    this._navT = setTimeout(() => this.setState({ navLoading: false }), 520);
+  }
+
+  buildCommands() {
+    const q = this.state.paletteQ.toLowerCase();
+    const navs = ['Cockpit', 'Terminal', 'Ask AURA', 'Dashboards', 'Library', 'Query History', 'Audit Workbench', 'Counterfactuals', 'Certificates', 'Exception Queue', 'Pipelines', 'Streaming', 'Healing Queue', 'Scheduler', 'Webhooks', 'Cost', 'Connectors', 'Files & Data', 'Lineage', 'Metadata Store'];
+    const all = [
+      ...navs.map((n) => ({ title: 'Go to ' + n, hint: 'NAV', run: () => this.go(n) })),
+      { title: 'Toggle light / dark theme', hint: 'THEME', run: () => { this.toggleTheme(); this.closePalette(); } },
+      { title: 'Run counterfactual audit', hint: 'JOB', run: () => { this.go('Counterfactuals'); this.runCf(); } },
+      { title: 'Sign out', hint: 'AUTH', run: () => this.signOut() },
+    ];
+    return all.filter((c) => c.title.toLowerCase().includes(q)).slice(0, 9);
+  }
+
+  fmtSecs(secs) { return secs >= 60 ? Math.floor(secs / 60) + 'm ' + String(secs % 60).padStart(2, '0') + 's' : secs + 's'; }
+
+  renderVals() {
+    const s = this.state;
+    const theme = s.themeOverride ?? this.props.theme ?? 'dark';
+    const audience = s.audience ?? this.props.cfAudience ?? 'operator';
+    const nav = s.activeNav;
+    const pendingCount = s.healing.filter((h) => h.state === 'pending').length;
+    const badge = pendingCount > 0 ? String(pendingCount) : null;
+
+    const groups = [
+      ['WORKSPACE', ['Cockpit', 'Terminal', 'Ask AURA', 'Dashboards', 'Library', 'Query History']],
+      ['AUDIT', ['Audit Workbench', 'Counterfactuals', 'Certificates', 'Exception Queue']],
+      ['OPERATE', ['Pipelines', 'Streaming', 'Healing Queue', 'Scheduler', 'Webhooks', 'Cost']],
+      ['DATA', ['Connectors', 'Files & Data', 'Lineage', 'Metadata Store']],
+    ];
+    const navGroups = groups.map(([label, items]) => ({
+      label,
+      items: items.map((name) => {
+        const active = name === nav;
+        return {
+          name, active,
+          badge: (name === 'Exception Queue' || name === 'Healing Queue') ? badge : null,
+          color: active ? 'var(--text)' : 'var(--text2)',
+          bg: active ? 'var(--accent-dim)' : 'transparent',
+          weight: active ? '600' : '400',
+          go: () => this.go(name),
+        };
+      }),
+    }));
+
+    const showTerminal = nav === 'Terminal';
+    const showChat = nav === 'Cockpit' || nav === 'Ask AURA';
+    const showCf = nav === 'Cockpit' || nav === 'Counterfactuals' || nav === 'Audit Workbench';
+    const showHealing = nav === 'Cockpit' || nav === 'Healing Queue' || nav === 'Exception Queue';
+    const showPipes = nav === 'Cockpit' || nav === 'Pipelines' || nav === 'Streaming';
+    const showLineage = nav === 'Cockpit' || nav === 'Pipelines' || nav === 'Streaming' || nav === 'Lineage';
+    const showHistory = nav === 'Cockpit' || nav === 'Query History';
+    const showStub = !(showTerminal || showChat || showCf || showHealing || showPipes || showLineage || showHistory);
+
+    const stubDescs = {
+      'Dashboards': 'Saved-query tiles rendered as live charts (Recharts), workspace-scoped, with presence indicators for collaborators.',
+      'Library': 'Saved queries and reusable analysis snippets shared across the workspace.',
+      'Certificates': 'Signed audit certificates (PCAOB-style) with public verify links and ED25519 signatures.',
+      'Scheduler': 'Distributed job queue (LISTEN/NOTIFY) — cron-style schedules for pipelines, audits, and DAR research runs.',
+      'Webhooks': 'Outbound event subscriptions: pipeline completions, healing events, signed findings.',
+      'Cost': 'Per-service and per-query spend, budgets, and anomaly alerts on cost drift.',
+      'Connectors': 'PostgreSQL · MySQL · BigQuery · DuckDB · FAISS · spatial — credential vault + health checks.',
+      'Files & Data': 'Uploads, datasets, and the DuckDB analytics lake with atomic Parquet loads.',
+      'Metadata Store': 'Schema registry and catalog the critic validates every generated query against.',
+    };
+
+    const streams = s.streamsOk + '/' + s.streamsTotal;
+    const stats = [
+      { label: 'Streams healthy', value: streams, sub: s.streamsOk < s.streamsTotal ? '1 healing (UASR)' : 'all nominal', subColor: s.streamsOk < s.streamsTotal ? 'var(--warn)' : 'var(--accent)' },
+      { label: 'Kafka lag p95', value: s.kafka + 'ms', sub: 'idempotent producer', subColor: 'var(--text3)' },
+      { label: 'DLQ depth', value: String(s.dlq), sub: s.dlq > 0 ? 'oldest 41m' : 'drained', subColor: s.dlq > 0 ? 'var(--text3)' : 'var(--accent)' },
+      { label: 'Sandbox runs today', value: String(s.sandboxRuns), sub: '0 policy violations', subColor: 'var(--text3)' },
+      { label: 'Audit coverage', value: '94.7%', sub: 'replayable GL lines', subColor: 'var(--accent)' },
+      { label: 'Spend MTD', value: '$' + s.spend.toLocaleString(), sub: '−12% vs May', subColor: 'var(--text3)' },
+    ];
+
+    const healing = s.healing.map((h) => ({
+      ...h,
+      pending: h.state === 'pending',
+      mColor: h.safe ? 'var(--accent)' : 'var(--warn)',
+      mBg: h.safe ? 'var(--accent-dim)' : 'var(--warn-dim)',
+      rColor: h.state === 'deployed' ? 'var(--accent)' : 'var(--danger)',
+      resolution: h.resolution || null,
+      approve: () => this.approveHeal(h.id),
+      reject: () => this.rejectHeal(h.id),
+    }));
+
+    const runColors = { success: 'var(--accent)', running: 'var(--blue)', retrying: 'var(--danger)' };
+    const runs = s.runs.map((r) => ({ name: r.name, status: r.status, color: runColors[r.status] || 'var(--text2)', time: this.fmtSecs(r.secs), rows: r.rows || '—' }));
+
+    const audiences = ['operator', 'auditor', 'analyst'].map((a) => ({
+      label: a.toUpperCase(),
+      bg: a === audience ? 'var(--accent-dim)' : 'transparent',
+      color: a === audience ? 'var(--accent)' : 'var(--text3)',
+      go: () => this.setState({ audience: a }),
+    }));
+
+    const cfStages = s.cfRunning ? this.CF_STAGES.map((label, i) => ({
+      label,
+      icon: i < s.cfStageIdx ? '✓' : (i === s.cfStageIdx ? '◌' : '·'),
+      color: i < s.cfStageIdx ? 'var(--accent)' : (i === s.cfStageIdx ? 'var(--text)' : 'var(--text3)'),
+    })) : [];
+
+    const fm = (v) => '−$' + Math.abs(v).toFixed(1) + 'M';
+    const cf = s.cf;
+
+    const focus = s.focusId ? this.neighborSet(s.focusId) : null;
+    const kindDot = { source: 'var(--blue)', topic: 'var(--purple)', table: 'var(--text2)', metric: 'var(--accent)', output: 'var(--warn)' };
+    const constNodes = this.GRAPH.nodes.map((n) => {
+      const dim = focus && !focus.has(n.id);
+      const isF = s.focusId === n.id;
+      return {
+        label: n.label,
+        left: (n.x / 10) + '%', top: (n.y / 5.2) + '%',
+        dot: kindDot[n.kind],
+        border: isF ? 'var(--accent-bd)' : 'var(--border)',
+        color: dim ? 'var(--text3)' : 'var(--text)',
+        opacity: dim ? '0.3' : '1',
+        click: (e) => this.clickNode(n, e),
+      };
+    });
+    const nodeById = Object.fromEntries(this.GRAPH.nodes.map((n) => [n.id, n]));
+    const constEdges = this.GRAPH.edges.map(([a, b]) => {
+      const na = nodeById[a], nb = nodeById[b];
+      const lit = focus && focus.has(a) && focus.has(b);
+      return { x1: na.x, y1: na.y, x2: nb.x, y2: nb.y, stroke: lit ? 'var(--accent)' : 'var(--border)', opacity: focus && !lit ? '0.15' : '1' };
+    });
+    const datasets = this.DATASETS.map((d) => ({ ...d, bg: s.activeDataset === d.label ? 'var(--accent-dim)' : 'transparent', go: () => this.selectDataset(d) }));
+    const findingsList = this.FINDINGS.map((f) => ({ ...f, go: () => this.setState({ focusId: f.node, activeDataset: null }) }));
+    const view = this.curView();
+    const L = s.navLoading;
+    const bootStages = this.BOOT_STAGES.map((label, i) => ({
+      label,
+      icon: i < s.bootIdx ? '✓' : (i === s.bootIdx ? '◌' : '·'),
+      color: i < s.bootIdx ? 'var(--accent)' : (i === s.bootIdx ? 'var(--text)' : 'var(--text3)'),
+    }));
+    const bootPct = Math.min(100, Math.round((s.bootIdx / this.BOOT_STAGES.length) * 100)) + '%';
+
+    return {
+      theme, activeNav: nav, navGroups,
+      showTerminal: showTerminal && !L, constNodes, constEdges, constHasFocus: !!s.focusId,
+      isLogin: view === 'login', isBoot: view === 'boot', isApp: view === 'app',
+      bootStages, bootPct, showSkeleton: L,
+      signIn: this.signIn, ssoSignIn: this.ssoSignIn, onLoginKey: this.onLoginKey,
+      loginEmailRef: this.loginEmail, loginPassRef: this.loginPass, loginError: s.loginError,
+      clearFocus: this.clearFocus, onConstInput: this.onConstInput, onConstKey: this.onConstKey,
+      datasets, findingsList, feed: s.feed,
+      queryInputRef: this.queryInput, runQuery: this.runQuery, queryRunning: s.queryRunning, queryOut: s.queryOut, hasQueryOut: !!s.queryOut,
+      themeBtnLabel: theme === 'dark' ? '☾ Dark' : '☀ Light',
+      ledgerNo: '#4,182', ledgerHash: '9f3c…a1e2',
+      showStats: nav === 'Cockpit' && !L, stats,
+      showChat: showChat && !L, showCf: showCf && !L, showHealing: showHealing && !L, showPipes: showPipes && !L, showLineage: showLineage && !L, showHistory: showHistory && !L, showStub: showStub && !L,
+      stubDesc: stubDescs[nav] || 'Module from the AURA platform.',
+      messages: s.messages, thinking: s.thinking,
+      chatInputRef: this.chatInput, onChatKey: this.onChatKey, ask: this.ask,
+      cfId: cf.id, cfQuestion: cf.question, cfRunning: s.cfRunning, cfDone: !s.cfRunning, cfStages,
+      cfEffect: fm(cf.effect), cfCi: '[' + fm(cf.ciLo) + ', ' + fm(cf.ciHi) + ']', cfEvalue: String(cf.evalue), cfHash: cf.hash,
+      cfEstimators: [
+        { name: 'backdoor.linear_reg', effect: fm(cf.effect + 0.04) }, { name: 'psm', effect: fm(cf.effect - 0.02) },
+        { name: 'dml', effect: fm(cf.effect - 0.04) }, { name: 'ipw', effect: fm(cf.effect + 0.01) },
+      ],
+      cfJson: '{"artifact": {"effect": ' + Math.round(cf.effect * 1e6) + ',\n "ci": [' + Math.round(cf.ciLo * 1e6) + ', ' + Math.round(cf.ciHi * 1e6) + '],\n "e_value": ' + cf.evalue + ', "estimators": 7,\n "audit_record_hash": "' + cf.hash + '"}}',
+      isAuditor: audience === 'auditor', isAnalyst: audience === 'analyst',
+      audiences, runCf: this.runCf,
+      healing, pendingCount: badge, queueClear: pendingCount === 0,
+      healedNote: s.healedCount + ' auto-healed this week · every override signed to WORM log',
+      runs, dlq: String(s.dlq), dlqDotColor: s.dlq > 0 ? 'var(--warn)' : 'var(--accent)',
+      shimNote: s.healing[0].state === 'deployed' ? 'UASR shim v4 deployed upstream' : 'UASR shim v3 active upstream',
+      history: s.history,
+      paletteOpen: s.paletteOpen, openPalette: this.openPalette, closePalette: this.closePalette, stop: this.stop,
+      paletteInputRef: this.paletteInput, onPaletteInput: this.onPaletteInput, onPaletteKey: this.onPaletteKey,
+      commands: this.buildCommands(),
+      toast: s.toast, toggleTheme: this.toggleTheme,
+    };
+  }
+}
+</script>
+</body>
+</html>

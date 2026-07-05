@@ -234,6 +234,7 @@ app = create_service(
 
 _API_V1 = "/api/v1"
 
+from api_gateway.routers.approvals import router as approvals_router
 from api_gateway.routers.auth import router as auth_router
 from api_gateway.routers.chat import router as chat_router
 from api_gateway.routers.collab import router as collab_router
@@ -251,6 +252,7 @@ from api_gateway.routers.webhooks import router as webhooks_router
 from api_gateway.routers.workspaces import router as workspaces_router
 
 app.include_router(auth_router, prefix=_API_V1)
+app.include_router(approvals_router, prefix=_API_V1)
 app.include_router(workspaces_router, prefix=_API_V1)
 app.include_router(chat_router, prefix=_API_V1)
 app.include_router(files_router, prefix=_API_V1)

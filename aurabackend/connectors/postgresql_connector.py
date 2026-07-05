@@ -8,7 +8,10 @@ import os
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-import asyncpg
+try:
+    import asyncpg
+except ImportError:  # pragma: no cover - exercised only when driver absent
+    asyncpg = None
 
 from .base import BaseConnector, ConnectorConfig
 
@@ -20,10 +23,15 @@ class PostgreSQLConnector(BaseConnector):
 
     def __init__(self, config: ConnectorConfig):
         super().__init__(config)
-        self.pool: Optional[asyncpg.pool.Pool] = None
+        self.pool: "Optional[asyncpg.pool.Pool]" = None
 
     async def connect(self) -> bool:
         """Establish connection to PostgreSQL"""
+        if asyncpg is None:
+            raise RuntimeError(
+                "PostgreSQL connector requires the 'asyncpg' driver, which is "
+                "not installed. Install it with: pip install asyncpg"
+            )
         try:
             self.pool = await asyncpg.create_pool(
                 user=self.config.username or "postgres",

@@ -28,6 +28,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from metadata_store.db import get_session_factory
 from metadata_store.models import SchemaColumn
 from shared.duckdb_factory import new_connection
+from shared.sql_identifiers import quote_identifier, quote_literal
 
 logger = logging.getLogger("aura.shared.schema_indexer")
 
@@ -74,14 +75,15 @@ def _introspect_via_duckdb(file_path: str) -> List[Dict[str, Any]]:
     """
     suffix = Path(file_path).suffix.lower()
     table_name = Path(file_path).stem
-    safe_path = file_path.replace("'", "''")  # DuckDB single-quoted path
+    qtable = quote_identifier(table_name)
+    safe_path = quote_literal(file_path)  # DuckDB single-quoted path literal
 
     if suffix in {".csv", ".tsv", ".txt"}:
-        loader = f"read_csv_auto('{safe_path}', sample_size=-1)"
+        loader = f"read_csv_auto({safe_path}, sample_size=-1)"
     elif suffix == ".parquet":
-        loader = f"read_parquet('{safe_path}')"
+        loader = f"read_parquet({safe_path})"
     elif suffix in {".json", ".jsonl", ".ndjson"}:
-        loader = f"read_json_auto('{safe_path}')"
+        loader = f"read_json_auto({safe_path})"
     else:
         # Excel and other formats aren't first-class in DuckDB; let the
         # caller handle them through their own loader path. Skipping
@@ -90,11 +92,11 @@ def _introspect_via_duckdb(file_path: str) -> List[Dict[str, Any]]:
 
     con = new_connection()
     try:
-        con.execute(f'CREATE VIEW "{table_name}" AS SELECT * FROM {loader}')
+        con.execute(f"CREATE VIEW {qtable} AS SELECT * FROM {loader}")
 
         # Pull column metadata in ordinal order via DESCRIBE — the
         # information_schema view doesn't include views in DuckDB <= 1.0.
-        descr = con.execute(f'DESCRIBE "{table_name}"').fetchall()
+        descr = con.execute(f"DESCRIBE {qtable}").fetchall()
         # DESCRIBE columns: column_name, column_type, null, key, default, extra
         col_meta = [
             {
@@ -108,7 +110,7 @@ def _introspect_via_duckdb(file_path: str) -> List[Dict[str, Any]]:
 
         # Pull sample rows once, then slice per column. Avoids one query
         # per column on big files.
-        sample_cur = con.execute(f'SELECT * FROM "{table_name}" LIMIT ?', [_SAMPLE_LIMIT])
+        sample_cur = con.execute(f"SELECT * FROM {qtable} LIMIT ?", [_SAMPLE_LIMIT])
         sample_cols = [d[0] for d in sample_cur.description]
         sample_rows = sample_cur.fetchall()
         samples_by_col: Dict[str, List[Any]] = {c: [] for c in sample_cols}

@@ -27,12 +27,14 @@ class TestAuraSettings:
         assert s.api_gateway_port == 8000
 
     # Sec-4 added two more production-mode validators (auth_mode and
-    # CORS http-rejection). Every test that instantiates a production
-    # Settings must now supply valid AURA_AUTH_MODE + HTTPS-only CORS
-    # origins, otherwise it would cascade-fail on those defaults before
-    # exercising the assertion target.
+    # CORS http-rejection); the SQL-hardening pass added a third
+    # (AURA_JWT_ENABLED, required for tenant isolation). Every test that
+    # instantiates a *valid* production Settings must supply all three,
+    # otherwise it would cascade-fail on those defaults before exercising
+    # the assertion target.
     _PROD_VALID = {
         "AURA_AUTH_MODE": "password",
+        "AURA_JWT_ENABLED": "true",
         "CORS_ALLOWED_ORIGINS": "https://app.example.com",
     }
 
@@ -111,6 +113,7 @@ class TestAuraSettings:
             ENVIRONMENT="production",
             SECRET_KEY="real-secret",
             AURA_AUTH_MODE="password",
+            AURA_JWT_ENABLED="true",
             CORS_ALLOWED_ORIGINS="https://api.example.com",
         )
         assert s.cors_origins == ["https://api.example.com"]
@@ -146,10 +149,31 @@ class TestAuraSettings:
             _env_file=None,
             ENVIRONMENT="production",
             SECRET_KEY="real-secret",
-            AURA_AUTH_MODE="password",
-            CORS_ALLOWED_ORIGINS="https://app.example.com",
+            **self._PROD_VALID,
         )
         assert s.auth_mode == "password"
+
+    def test_production_rejects_jwt_disabled(self):
+        # SQL-hardening pass: tenant isolation is enforced only with the JWT
+        # middleware active. A production deploy with AURA_JWT_ENABLED=false
+        # silently shares all data under the 'default' tenant — fail at startup.
+        from shared.config import AuraSettings
+        with pytest.raises(ValueError, match="AURA_JWT_ENABLED must be true"):
+            AuraSettings(
+                _env_file=None,
+                ENVIRONMENT="production",
+                SECRET_KEY="real-secret",
+                AURA_AUTH_MODE="password",
+                AURA_JWT_ENABLED="false",
+                CORS_ALLOWED_ORIGINS="https://app.example.com",
+            )
+
+    def test_development_allows_jwt_disabled(self):
+        # The default (jwt disabled) stays valid outside production so local
+        # single-user dev keeps working without auth wiring.
+        from shared.config import AuraSettings
+        s = AuraSettings(_env_file=None, ENVIRONMENT="development", SECRET_KEY="x")
+        assert s.jwt_enabled is False
 
     def test_trust_forwarded_for_defaults_false(self):
         # Sec-4: X-Forwarded-For is spoofable; only honour when

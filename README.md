@@ -255,6 +255,19 @@ AURA_SIGNING_PRIVATE_KEY_HEX=<64 hex>   # persistent report-signing key
 AURA_PII_TOKEN_KEY=<long random>        # keyed PII tokenization at egress
 ```
 
+### WSL / Windows note
+
+If you run the backend from **WSL** against a repo checked out on the Windows
+drive (`/mnt/c/...`), SQLite writes to tracked files on the `drvfs` mount can
+fail with `attempt to write a readonly database`. The test suite avoids this
+by pointing the gateway DB at an ext4 temp dir automatically. For the running
+app, either keep the checkout on the Linux filesystem (e.g. `~/AURA`) or set
+`GATEWAY_DATABASE_URL` to a path under `/tmp` or `$HOME`:
+
+```bash
+export GATEWAY_DATABASE_URL="sqlite+aiosqlite:///$HOME/aura_gateway.db"
+```
+
 ### Run
 
 ```powershell

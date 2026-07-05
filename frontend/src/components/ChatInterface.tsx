@@ -25,7 +25,7 @@ interface Message {
     executionResult?: ExecutionResult;
     userQuery?: string;
     sqlExplanation?: string;
-    action?: { type: string; pipeline_id?: string; name?: string };
+    action?: { type: string; pipeline_id?: string; name?: string; record_hash?: string; n_findings?: number; signature_status?: string };
   };
 }
 
@@ -159,6 +159,47 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
     } catch { /* ignore */ }
   }, []);
 
+  // Commander streaming (Subsystem A), behind VITE_COMMANDER_ENABLED. Streams
+  // the agentic tool-loop into a single assistant message, updating it as
+  // tool_call/tool_result/text events arrive. Returns true if it handled the
+  // turn; false to fall back to the DAG path (server flag off, or no events).
+  const runCommanderStream = async (userInput: string, loadingId: string): Promise<boolean> => {
+    const streamId = 'cmd-' + Date.now();
+    let started = false;
+    let answer = '';
+    const steps: string[] = [];
+    const render = () =>
+      setMessages((prev) => prev.map((m) => (m.id === streamId ? { ...m, content: answer || steps.join('\n') || 'Working…' } : m)));
+    try {
+      await chatService.streamMessage(userInput, {
+        sessionId,
+        onEvent: (ev) => {
+          if (!started) {
+            started = true;
+            setMessages((prev) => [
+              ...prev.filter((m) => m.id !== loadingId),
+              { id: streamId, type: 'assistant', content: 'Working…', timestamp: new Date() },
+            ]);
+          }
+          if (ev.event === 'tool_call') steps.push(`▶ ${ev.data.name}(${ev.data.arguments?.sql ?? ''})`);
+          else if (ev.event === 'tool_result') steps.push(`✓ ${ev.data.name}: ${ev.data.result?.row_count ?? 0} rows`);
+          else if (ev.event === 'tool_error') steps.push(`✕ ${ev.data.name}: ${ev.data.message}`);
+          else if (ev.event === 'text') answer = ev.data.text;
+          else if (ev.event === 'error') answer = `Error: ${ev.data.message}`;
+          render();
+        },
+      });
+      return started; // no events at all → fall back rather than leave a blank
+    } catch (err) {
+      if (err instanceof Error && err.message === 'commander_disabled') return false;
+      setMessages((prev) => [
+        ...prev.filter((m) => m.id !== loadingId && m.id !== streamId),
+        { id: 'error-' + Date.now(), type: 'assistant', content: `Error: ${err instanceof Error ? err.message : 'stream failed'}`, timestamp: new Date() },
+      ]);
+      return true;
+    }
+  };
+
   const handleSendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!input.trim() || isProcessing) return;
@@ -172,6 +213,9 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
     setMessages((prev) => [...prev, { id: loadingId, type: 'assistant', content: 'Analyzing and generating SQL…', timestamp: new Date(), loading: true }]);
 
     try {
+      if (import.meta.env.VITE_COMMANDER_ENABLED === 'true' && (await runCommanderStream(userInput, loadingId))) {
+        return;
+      }
       const response: QueryResponse = await chatService.sendMessage(userInput, {
         sessionId,
         uploadedFile: activeFile?.name,
@@ -183,6 +227,8 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
         setMessages((prev) => [...prev, { id: Date.now().toString(), type: 'assistant', content: response.message || 'How can I help?', timestamp: new Date() }]);
       } else if (response.status === 'PipelineCreated') {
         setMessages((prev) => [...prev, { id: Date.now().toString(), type: 'assistant', content: response.message || 'Pipeline created.', timestamp: new Date(), metadata: { action: response.action } }]);
+      } else if (response.status === 'AuditCompleted') {
+        setMessages((prev) => [...prev, { id: Date.now().toString(), type: 'assistant', content: response.message || 'Audit complete.', timestamp: new Date(), metadata: { action: response.action } }]);
       } else if (response.status === 'Success' || response.status === 'Fallback') {
         setMessages((prev) => [...prev, {
           id: Date.now().toString(), type: 'sql', content: response.final_query || '-- No query generated',
@@ -630,6 +676,11 @@ const MessageBubble: React.FC<{
             {message.metadata?.action?.type === 'pipeline_created' && (
               <a href="/app/pipelines" style={{ display: 'block', marginTop: 8, fontSize: 'var(--font-xs)', fontWeight: 600, color: 'var(--accent)', textDecoration: 'none' }}>
                 Open in ETL Pipelines →
+              </a>
+            )}
+            {message.metadata?.action?.type === 'audit_created' && message.metadata.action.record_hash && (
+              <a href={`/certificate/${message.metadata.action.record_hash}`} style={{ display: 'block', marginTop: 8, fontSize: 'var(--font-xs)', fontWeight: 600, color: 'var(--accent)', textDecoration: 'none' }}>
+                View signed certificate →
               </a>
             )}
           </>
