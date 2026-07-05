@@ -13,6 +13,18 @@ import sys
 # this). Must run at conftest import, before test modules are collected.
 os.environ.setdefault("MPLBACKEND", "Agg")
 
+# Point the API gateway at a throwaway SQLite DB for the whole test session
+# so tests never write the committed dev DB (data/gateway.db). Under WSL,
+# writing that tracked file on the /mnt/c drvfs mount also fails with
+# "readonly database"; an ext4 temp dir avoids both the hygiene problem and
+# the WSL limitation. setdefault preserves an explicit override (e.g. CI
+# pointing at Postgres).
+import tempfile as _tempfile
+_gateway_test_db = os.path.join(_tempfile.gettempdir(), "aura_gateway_test.db")
+os.environ.setdefault(
+    "GATEWAY_DATABASE_URL", f"sqlite+aiosqlite:///{_gateway_test_db}"
+)
+
 import pytest
 
 # Add aurabackend to sys.path so tests can import modules directly
