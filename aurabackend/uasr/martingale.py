@@ -202,6 +202,9 @@ class WassersteinMartingaleDetector:
         baseline_window: int = 100,
         increment_max: float = 1.0,
         alarm_persistence: int = 1,
+        auto_calibrate_increment: bool = True,
+        increment_calibration_quantile: float = 1.0,
+        increment_calibration_scale: float = 1.0,
     ) -> None:
         if alpha <= 0.0 or alpha >= 1.0:
             raise ValueError(f"alpha must be in (0, 1); got {alpha}")
@@ -210,10 +213,32 @@ class WassersteinMartingaleDetector:
                 f"baseline_window must be >= 10 for the E[D_W] estimate "
                 f"to be meaningful; got {baseline_window}"
             )
+        if not (0.0 < increment_calibration_quantile <= 1.0):
+            raise ValueError(
+                f"increment_calibration_quantile must be in (0, 1]; "
+                f"got {increment_calibration_quantile}"
+            )
+        if increment_calibration_scale <= 0.0:
+            raise ValueError(
+                f"increment_calibration_scale must be positive; "
+                f"got {increment_calibration_scale}"
+            )
         self._alpha = alpha
         self._baseline_window = baseline_window
+        # ``increment_max`` is the *fallback* / configured bound. When
+        # auto-calibration is on it is replaced per (source, column) by a
+        # data-driven bound derived from the baseline-window Wasserstein
+        # distances (see ``_calibrate_increment_max``).  The static default of
+        # 1.0 is 15-30x looser than real null W1 increments (~0.03, p99~0.07),
+        # which makes the Azuma-Hoeffding threshold ε(t)=√(2·ln(1/α)·t·c²) so
+        # wide the martingale can never cross it — i.e. the detector is silent.
         self._increment_max = increment_max
         self._alarm_persistence = max(1, alarm_persistence)
+        self._auto_calibrate = auto_calibrate_increment
+        self._cal_quantile = increment_calibration_quantile
+        self._cal_scale = increment_calibration_scale
+        # Per (source_id, column) calibrated increment bound.
+        self._increment_max_cal: Dict[str, Dict[str, float]] = {}
 
         # Per (source_id, column) state:
         #   baseline samples, distances seen so far, martingale M_t,
@@ -237,6 +262,7 @@ class WassersteinMartingaleDetector:
         self._martingale.setdefault(source_id, {})
         self._steps.setdefault(source_id, {})
         self._crossings.setdefault(source_id, {})
+        self._increment_max_cal.setdefault(source_id, {})
         for col in baselines:
             self._distances[source_id].setdefault(col, [])
             self._martingale[source_id].setdefault(col, 0.0)
@@ -248,7 +274,7 @@ class WassersteinMartingaleDetector:
         recovery, so the next baseline learning period starts fresh."""
         for d in (
             self._baselines, self._distances, self._martingale,
-            self._steps, self._crossings,
+            self._steps, self._crossings, self._increment_max_cal,
         ):
             d.pop(source_id, None)
 
@@ -272,8 +298,47 @@ class WassersteinMartingaleDetector:
         return azuma_hoeffding_bound(
             n_steps=active_steps,
             alpha=self._alpha,
-            increment_max=self._increment_max,
+            increment_max=self._effective_increment_max(source_id, column),
         )
+
+    def _effective_increment_max(self, source_id: str, column: str) -> float:
+        """Calibrated per-column bound if available, else the configured one."""
+        cal = self._increment_max_cal.get(source_id, {}).get(column)
+        if cal is not None and cal > 0.0:
+            return cal
+        return self._increment_max
+
+    def _calibrate_increment_max(self, source_id: str, column: str) -> None:
+        """Derive the increment bound from baseline-window W1 dispersion.
+
+        Called once, at the transition from the baseline-learning window to
+        the active phase.  ``c`` is set to a quantile (default the max) of the
+        absolute deviations ``|d_τ − Ê[D_W]|`` observed while learning, times a
+        safety scale.  This ties the Azuma-Hoeffding increment bound to the
+        stream's own null variability instead of a static 1.0, so ε(t) is
+        tight enough for the martingale to actually cross under real drift
+        while keeping the false-positive rate controlled.  A degenerate
+        (constant) baseline falls back to the configured ``increment_max``.
+        """
+        if not self._auto_calibrate:
+            return
+        distances = self._distances.get(source_id, {}).get(column, [])
+        learn = distances[: self._baseline_window]
+        if len(learn) < self._baseline_window:
+            return
+        e_dw = sum(learn) / len(learn)
+        devs = sorted(abs(d - e_dw) for d in learn)
+        if self._cal_quantile >= 1.0:
+            c = devs[-1]
+        else:
+            # nearest-rank quantile of the absolute deviations
+            import math as _math
+            rank = max(1, _math.ceil(self._cal_quantile * len(devs)))
+            c = devs[rank - 1]
+        c *= self._cal_scale
+        if c > 0.0:
+            self._increment_max_cal.setdefault(source_id, {})[column] = c
+        # else: leave unset → _effective_increment_max falls back
 
     def update(
         self,
@@ -313,8 +378,13 @@ class WassersteinMartingaleDetector:
         step = self._steps[source_id][column]
 
         if step <= self._baseline_window:
-            # Still learning E[D_W]; no alarm.
+            # Still learning E[D_W]; no alarm. On the final learning step,
+            # derive the per-column increment bound from observed dispersion.
+            if step == self._baseline_window:
+                self._calibrate_increment_max(source_id, column)
             return False
+
+        inc_max = self._effective_increment_max(source_id, column)
 
         # Active phase — compute the martingale increment + update M_t
         e_dw = sum(distances[: self._baseline_window]) / self._baseline_window
@@ -323,17 +393,17 @@ class WassersteinMartingaleDetector:
         # pathological batch can't drag M_t past the bound
         # immediately. Azuma-Hoeffding assumes bounded increments;
         # we enforce the assumption.
-        if increment > self._increment_max:
-            increment = self._increment_max
-        elif increment < -self._increment_max:
-            increment = -self._increment_max
+        if increment > inc_max:
+            increment = inc_max
+        elif increment < -inc_max:
+            increment = -inc_max
         self._martingale[source_id][column] += increment
 
         # ε(t) at the current active step
         threshold = azuma_hoeffding_bound(
             n_steps=step - self._baseline_window,
             alpha=self._alpha,
-            increment_max=self._increment_max,
+            increment_max=inc_max,
         )
         crossed = abs(self._martingale[source_id][column]) >= threshold
         if crossed:
@@ -364,6 +434,7 @@ class WassersteinMartingaleDetector:
             "threshold": threshold if threshold is not None else -1.0,
             "e_dw": e_dw if e_dw is not None else -1.0,
             "crossings": float(self._crossings.get(source_id, {}).get(column, 0)),
+            "increment_max": self._effective_increment_max(source_id, column),
         }
 
 

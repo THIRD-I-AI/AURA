@@ -270,7 +270,9 @@ class MAPEKWorker:
                                 initial_weight=self._cfg.shim_router_canary_initial_weight,
                             )
                             await self._execute_persist(batch)
-                            await self._knowledge_update(batch, drift, recovery)
+                            await self._knowledge_update(
+                                batch, drift, recovery, batch_healed=False
+                            )
                             await self._emit(
                                 "canary_deployed",
                                 f"shim {version} deployed as canary (weight={self._cfg.shim_router_canary_initial_weight})",
@@ -292,7 +294,9 @@ class MAPEKWorker:
                             batch.rows = healed
                             batch.columns = list(healed[0].keys()) if healed else batch.columns
                             await self._execute_persist(batch)
-                            await self._knowledge_update(batch, drift, recovery)
+                            await self._knowledge_update(
+                                batch, drift, recovery, batch_healed=True
+                            )
                             self.resume()
                         else:
                             await self._emit(
@@ -526,12 +530,30 @@ class MAPEKWorker:
         batch: BatchPayload,
         drift: DriftDetectionResult,
         recovery: Optional[RecoveryLoopResult],
+        batch_healed: bool = False,
     ) -> None:
-        # If recovery succeeded, the post-shim batch is the new normal —
-        # snapshot its distributions so the next batch's drift detection
-        # compares against the corrected baseline rather than the stale one.
-        if recovery and recovery.status == RecoveryStatus.DEPLOYED:
-            self._detector.register_baseline(batch.source_id, batch)
+        # Re-baseline ONLY when we are handed a confirmed post-shim batch
+        # (``batch_healed=True``).  Two hazards this guards against:
+        #
+        #   1. Baseline poisoning — in the canary-deploy path the persisted
+        #      ``batch`` is the *raw drifted* data (the shim runs at low weight
+        #      in the router, not inline), so snapshotting it would register
+        #      drift as the new normal and mask subsequent real drift.  The
+        #      statistical baseline should advance when a shim is *promoted*
+        #      from canary to primary, not at canary-deploy time.
+        #   2. Channel clobbering — registering via the ``BatchPayload`` path
+        #      recomputes and overwrites the schema and reference-embedding
+        #      baselines every cycle (baseline creep).  We instead snapshot
+        #      only the statistical distributions via the dict path, leaving
+        #      the schema and semantic reference baselines intact.
+        if (
+            recovery is not None
+            and recovery.status == RecoveryStatus.DEPLOYED
+            and batch_healed
+        ):
+            dists = self._detector._compute_distributions(batch)
+            if dists:
+                self._detector.register_baseline(batch.source_id, dists)
 
         # Feed the healing tracker so /uasr/metrics dashboards update.
         # Only emit on actual recovery cycles — happy-path batches without drift

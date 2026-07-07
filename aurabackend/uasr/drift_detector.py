@@ -22,6 +22,8 @@ from collections import Counter
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
+import numpy as np
+
 from .models import (
     BatchPayload,
     ColumnDistribution,
@@ -428,23 +430,24 @@ class DriftDetector:
 
             dist = ColumnDistribution(column_name=col, sample_size=len(values))
 
-            # Numeric vs categorical
-            numeric_vals = []
-            for v in values:
-                try:
-                    numeric_vals.append(float(v))
-                except (ValueError, TypeError):
-                    break
+            # Numeric vs categorical: attempt a single vectorized float cast.
+            # np.asarray(..., dtype=float) raises if ANY value is non-numeric,
+            # preserving the previous all-or-nothing type detection while
+            # replacing three O(n) Python passes (per-element float(),
+            # sum-of-squares, set()) with GIL-releasing numpy kernels.
+            numeric_arr = None
+            try:
+                numeric_arr = np.asarray(values, dtype=float)
+            except (ValueError, TypeError):
+                numeric_arr = None
 
-            if len(numeric_vals) == len(values) and numeric_vals:
-                # Numeric distribution
-                dist.mean = sum(numeric_vals) / len(numeric_vals)
-                dist.std = math.sqrt(
-                    sum((x - dist.mean) ** 2 for x in numeric_vals) / max(len(numeric_vals), 1)
-                )
+            if numeric_arr is not None and numeric_arr.size:
+                # Numeric distribution (population std, ddof=0 — matches prior)
+                dist.mean = float(numeric_arr.mean())
+                dist.std = float(numeric_arr.std())
                 dist.null_rate = 1.0 - len(values) / max(len(batch.rows), 1)
-                dist.distinct_count = len(set(numeric_vals))
-                dist.histogram = self._build_numeric_histogram(numeric_vals)
+                dist.distinct_count = int(np.unique(numeric_arr).size)
+                dist.histogram = self._build_numeric_histogram(numeric_arr)
             else:
                 # Categorical distribution
                 str_vals = [str(v) for v in values]
@@ -458,24 +461,28 @@ class DriftDetector:
         return result
 
     @staticmethod
-    def _build_numeric_histogram(values: List[float], bins: int = _DEFAULT_BINS) -> Dict[str, Any]:
-        """Build a simple equal-width histogram."""
-        if not values:
+    def _build_numeric_histogram(values, bins: int = _DEFAULT_BINS) -> Dict[str, Any]:
+        """Build a simple equal-width histogram.
+
+        Accepts a list or a numpy array. Mirrors the previous binning
+        ``min(int((v - min) / width), bins - 1)`` exactly via np.bincount,
+        so counts are bit-for-bit identical to the pure-Python loop while
+        avoiding a per-element Python pass.
+        """
+        arr = np.asarray(values, dtype=float)
+        if arr.size == 0:
             return {"bins": [], "counts": []}
 
-        min_val = min(values)
-        max_val = max(values)
+        min_val = float(arr.min())
+        max_val = float(arr.max())
 
         if min_val == max_val:
-            return {"bins": [min_val], "counts": [len(values)]}
+            return {"bins": [min_val], "counts": [int(arr.size)]}
 
         bin_width = (max_val - min_val) / bins
         bin_edges = [min_val + i * bin_width for i in range(bins + 1)]
-        counts = [0] * bins
-
-        for v in values:
-            idx = min(int((v - min_val) / bin_width), bins - 1)
-            counts[idx] += 1
+        idx = np.minimum(((arr - min_val) / bin_width).astype(np.int64), bins - 1)
+        counts = np.bincount(idx, minlength=bins)[:bins].astype(int).tolist()
 
         return {"bins": bin_edges, "counts": counts}
 
@@ -483,19 +490,65 @@ class DriftDetector:
     # Batch embedding (hash-projection, no external API needed)
     # ────────────────────────────────────────────────────────────────
 
+    def _categorical_columns(self, batch: BatchPayload) -> List[str]:
+        """Return columns whose values are *not* fully numeric.
+
+        A column counts as categorical/textual when at least one non-null
+        value fails to parse as ``float``.  Fully-numeric columns are
+        excluded from the semantic embedding (see ``_compute_batch_embedding``)
+        because hashing ``col:value`` for continuous data yields a unique
+        token per row.  This mirrors the numeric-vs-categorical split used by
+        ``_compute_distributions`` so the two channels agree on column type.
+        """
+        if not batch.rows:
+            return []
+        columns = batch.columns or list(batch.rows[0].keys())
+        categorical: List[str] = []
+        for col in columns:
+            saw_value = False
+            is_numeric = True
+            for row in batch.rows:
+                val = row.get(col)
+                if val is None:
+                    continue
+                saw_value = True
+                try:
+                    float(val)
+                except (ValueError, TypeError):
+                    is_numeric = False
+                    break
+            if saw_value and not is_numeric:
+                categorical.append(col)
+        return categorical
+
     def _compute_batch_embedding(self, batch: BatchPayload, dim: int = 256) -> Optional[List[float]]:
         """
         Compute a lightweight embedding for the entire batch using
         feature hashing (random projection). No external model needed.
+
+        Only *categorical / textual* columns contribute to the embedding.
+        Continuous numeric columns are excluded: hashing ``col:value`` for
+        floating-point data yields a unique token per row, so any two batches
+        share almost no dimensions and the cosine distance is ~1.0 regardless
+        of whether the underlying distribution actually drifted.  Feeding such
+        columns to the semantic channel produced constant false-positive
+        SEMANTIC/CRITICAL alarms on healthy numeric streams.  When a batch has
+        no categorical columns this returns ``None`` and the caller skips the
+        semantic channel entirely.
         """
         if not batch.rows:
+            return None
+
+        categorical_cols = self._categorical_columns(batch)
+        if not categorical_cols:
             return None
 
         vector = [0.0] * dim
         row_count = 0
 
         for row in batch.rows:
-            for col, val in row.items():
+            for col in categorical_cols:
+                val = row.get(col)
                 if val is None:
                     continue
                 # Hash column+value to get a dimension index
@@ -510,6 +563,8 @@ class DriftDetector:
         if row_count > 0:
             norm = math.sqrt(sum(x * x for x in vector)) or 1.0
             vector = [x / norm for x in vector]
+        else:
+            return None
 
         return vector
 
