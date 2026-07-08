@@ -153,12 +153,21 @@ class MAPEKWorker:
         recovery_loop: Optional[RecoveryLoop] = None,
         metrics: Optional[HealingMetricTracker] = None,
         progress_cb: Optional[ProgressCb] = None,
+        repair_scheduler: Optional[Any] = None,
     ) -> None:
         self._cfg = config
         self._detector = detector or DriftDetector()
         self._loop = recovery_loop or RecoveryLoop(self._detector)
         self._metrics = metrics or HealingMetricTracker()
         self._progress_cb = progress_cb
+
+        # R4 — optional global repair scheduler. When multiple pipelines share
+        # one process, injecting a shared ``RepairScheduler`` bounds the total
+        # number of concurrent recoveries hitting the shared backend (LLM +
+        # sandbox) and admits them in drift-severity priority order. When None
+        # (the default, one-worker-per-process), recovery is awaited directly
+        # with identical behaviour to before.
+        self._repair_scheduler = repair_scheduler
 
         # Sprint S18.1 — lazily initialise the WassersteinMartingaleDetector
         # ONLY when the flag is on. Keeps the import + state allocation
@@ -538,6 +547,15 @@ class MAPEKWorker:
             f"invoking LLM recovery for {drift.drift_type} drift on {drift.affected_columns}",
             {"batch_id": batch.batch_id},
         )
+        if self._repair_scheduler is not None:
+            # Submit through the global scheduler: bounded concurrency + severity
+            # priority across all co-resident pipelines. ``submit`` awaits the
+            # same coroutine, so the result/exception contract is unchanged.
+            return await self._repair_scheduler.submit(
+                batch.source_id,
+                drift.severity,
+                lambda: self._loop.run(drift, batch),
+            )
         return await self._loop.run(drift, batch)
 
     # ── Execute ───────────────────────────────────────────────────────
