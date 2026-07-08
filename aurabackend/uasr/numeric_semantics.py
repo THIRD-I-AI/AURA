@@ -198,6 +198,24 @@ class NumericDriftSignal:
     proposal: Optional[HealProposal] = None
 
 
+def best_transform(column, baseline: NumericBaseline):
+    """Return ``(name, factor, z_before, z_after)`` for the transform in
+    ``TRANSFORMS`` that most reduces the column's z-distance to ``baseline``.
+
+    ``name`` is ``"none"`` / ``factor`` is ``1.0`` when no transform beats the
+    identity. Shared by the single-batch heal proposer and the Phase-2
+    sequential-verification controller so both rank candidates identically.
+    """
+    col = np.asarray(column, dtype=float)
+    z0 = baseline.z_distance(col)
+    best_name, best_factor, best_z = "none", 1.0, z0
+    for name, factor in TRANSFORMS.items():
+        zz = baseline.z_distance(col * factor)
+        if zz < best_z:
+            best_z, best_name, best_factor = zz, name, factor
+    return best_name, best_factor, z0, best_z
+
+
 class NumericSemanticAnalyzer:
     """Inference-only numeric semantic layer.
 
@@ -232,12 +250,7 @@ class NumericSemanticAnalyzer:
     # -- inference --
     def _propose_heal(self, column, baseline: NumericBaseline) -> HealProposal:
         col = np.asarray(column, dtype=float)
-        z0 = baseline.z_distance(col)
-        best_name, best_factor, best_z = "none", 1.0, z0
-        for name, factor in TRANSFORMS.items():
-            zz = baseline.z_distance(col * factor)
-            if zz < best_z:
-                best_z, best_name, best_factor = zz, name, factor
+        best_name, best_factor, z0, best_z = best_transform(col, baseline)
         accepted = (best_z <= self._accept_ratio * z0
                     and best_z <= self._drift_k * max(baseline.healthy_z, 1e-9))
         if not accepted:

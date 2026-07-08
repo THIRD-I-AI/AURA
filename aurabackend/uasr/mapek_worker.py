@@ -48,6 +48,7 @@ from .models import (
     RecoveryLoopResult,
     RecoveryStatus,
 )
+from .numeric_heal_controller import HealState, NumericHealController
 from .numeric_semantics import (
     NumericSemanticAnalyzer,
     numeric_columns_from_rows,
@@ -118,6 +119,21 @@ class MAPEKConfig:
     use_numeric_semantics: bool = False
     numeric_baseline_batches: int = 15
 
+    # ── Phase-2 opt-in: verified numeric auto-heal ────────────────
+    # When True (and ``use_numeric_semantics`` is also True), an accepted
+    # heal proposal is routed through the NumericHealController's
+    # sequential-verification + two-sided-commit gate. A transform is
+    # applied to the batch ONLY after it re-earns acceptance on
+    # ``numeric_heal_k_confirm`` consecutive batches, and is auto-reverted
+    # once the raw stream is healthy again for ``numeric_heal_revert_patience``
+    # batches. A legitimate regime change never passes the gate, so it is
+    # alerted but never healed. Every commit/abort/revert writes a
+    # SHA-256 audit record. Default OFF — Phase 1b stays observe-only unless
+    # this is explicitly enabled.
+    numeric_auto_heal: bool = False
+    numeric_heal_k_confirm: int = 3
+    numeric_heal_revert_patience: int = 3
+
 
 # ── Progress callback signature ───────────────────────────────────────
 # (phase, message, payload) → awaitable
@@ -170,6 +186,18 @@ class MAPEKWorker:
         self._numeric_healthy_buffer: Dict[str, List[Any]] = {}
         if self._cfg.use_numeric_semantics:
             self._numeric_analyzer = NumericSemanticAnalyzer()
+
+        # Phase-2 — verified numeric auto-heal. Only instantiated when both
+        # ``use_numeric_semantics`` and ``numeric_auto_heal`` are on. The
+        # controller shares the analyzer's per-source ``NumericBaseline``s
+        # (mirrored in on baseline registration) and gates every repair
+        # through sequential verification + two-sided commit.
+        self._numeric_healer: Optional[NumericHealController] = None
+        if self._cfg.use_numeric_semantics and self._cfg.numeric_auto_heal:
+            self._numeric_healer = NumericHealController(
+                k_confirm=self._cfg.numeric_heal_k_confirm,
+                revert_patience=self._cfg.numeric_heal_revert_patience,
+            )
 
         self._consumer: Any = None
         self._duckdb_con: Any = None
@@ -581,6 +609,11 @@ class MAPEKWorker:
         for col_name, values in columns.items():
             key = f"{batch.source_id}:{col_name}"
             if analyzer.has_baseline(key):
+                # Phase-2 — run the verified auto-heal gate on the RAW column.
+                # Runs on every batch (not only drifted ones) so a committed
+                # transform's two-sided revert check sees healthy batches too.
+                if self._numeric_healer is not None:
+                    await self._auto_heal_column(batch, col_name, values)
                 sig = analyzer.analyze_column(values, key=key, column_name=col_name)
                 if sig.drifted:
                     proposal = sig.proposal
@@ -613,12 +646,64 @@ class MAPEKWorker:
                 if len(buf) >= self._cfg.numeric_baseline_batches:
                     analyzer.register_baseline(key, buf)
                     self._numeric_healthy_buffer.pop(key, None)
+                    # Phase-2 — mirror the freshly-fit baseline into the healer
+                    # so its gate has the same reference to score against.
+                    if self._numeric_healer is not None:
+                        bl = analyzer.get_baseline(key)
+                        if bl is not None:
+                            self._numeric_healer.load_baseline(
+                                batch.source_id, col_name, bl,
+                            )
                     await self._emit(
                         "numeric_semantics",
                         f"baseline registered for '{col_name}' "
                         f"({self._cfg.numeric_baseline_batches} healthy batches)",
                         {"source_id": batch.source_id, "column": col_name},
                     )
+
+    async def _auto_heal_column(
+        self, batch: BatchPayload, col_name: str, values: List[Any],
+    ) -> None:
+        """Phase-2 — advance the verified auto-heal gate for one column.
+
+        Observes the RAW column, emits an audit event on any state transition
+        (canary_open / commit / abort / revert), and — when the column is
+        COMMITTED — writes the healed values back into ``batch.rows`` so the
+        corrected data flows downstream. Only cells whose value coerces to float
+        are rewritten; nulls and non-numeric cells are left untouched.
+        """
+        healer = self._numeric_healer
+        if healer is None:
+            return
+        decision = healer.observe(batch.source_id, col_name, values)
+        if decision.audit is not None:
+            a = decision.audit
+            await self._emit(
+                "numeric_heal",
+                f"{a.event} on '{col_name}': transform={a.transform} "
+                f"factor={a.factor}",
+                {
+                    "batch_id": batch.batch_id,
+                    "source_id": batch.source_id,
+                    "column": col_name,
+                    "event": a.event,
+                    "transform": a.transform,
+                    "factor": a.factor,
+                    "state": decision.state.value,
+                    "record_id": a.record_id,
+                    "audit_record_hash": a.audit_record_hash,
+                },
+            )
+        # Apply the committed transform to the batch in place.
+        if decision.state is HealState.COMMITTED and decision.applied_factor != 1.0:
+            factor = decision.applied_factor
+            for row in batch.rows:
+                if col_name not in row or row[col_name] is None:
+                    continue
+                try:
+                    row[col_name] = float(row[col_name]) * factor
+                except (TypeError, ValueError):
+                    continue
 
     async def _knowledge_update(
         self,
