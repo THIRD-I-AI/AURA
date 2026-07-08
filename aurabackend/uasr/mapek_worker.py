@@ -48,6 +48,10 @@ from .models import (
     RecoveryLoopResult,
     RecoveryStatus,
 )
+from .numeric_semantics import (
+    NumericSemanticAnalyzer,
+    numeric_columns_from_rows,
+)
 from .recovery_loop import RecoveryLoop, RecoveryLoopConfig
 
 logger = logging.getLogger("uasr.mapek_worker")
@@ -102,6 +106,18 @@ class MAPEKConfig:
     use_shim_router: bool = False
     shim_router_canary_initial_weight: float = 0.1
 
+    # ── Phase-1b opt-in: numeric semantic drift channel ───────────
+    # When True, each batch's numeric columns are analyzed by the
+    # NumericSemanticAnalyzer as a SEPARATE, inference-only channel.
+    # It emits a numeric-drift signal (and an un-applied heal proposal
+    # for detected unit/scale errors) but NEVER mutates data and NEVER
+    # participates in the pause/recovery decision — Phase 1 is
+    # observe-only. A per-source baseline is auto-registered from the
+    # first ``numeric_baseline_batches`` batches the primary detector
+    # deems healthy (no drift). Default OFF.
+    use_numeric_semantics: bool = False
+    numeric_baseline_batches: int = 15
+
 
 # ── Progress callback signature ───────────────────────────────────────
 # (phase, message, payload) → awaitable
@@ -146,6 +162,14 @@ class MAPEKWorker:
         if self._cfg.use_shim_router:
             from .shim_router import ShimRouter
             self._shim_router = ShimRouter()
+
+        # Phase-1b — numeric semantic analyzer (inference-only channel).
+        # ``_numeric_healthy_buffer`` accumulates healthy-batch column
+        # samples per "source_id:column" key until a baseline is fit.
+        self._numeric_analyzer: Optional[NumericSemanticAnalyzer] = None
+        self._numeric_healthy_buffer: Dict[str, List[Any]] = {}
+        if self._cfg.use_numeric_semantics:
+            self._numeric_analyzer = NumericSemanticAnalyzer()
 
         self._consumer: Any = None
         self._duckdb_con: Any = None
@@ -249,6 +273,16 @@ class MAPEKWorker:
                     f"drift={drift.drift_detected} type={drift.drift_type} severity={drift.severity}",
                     {"batch_id": batch.batch_id, "row_count": len(batch.rows)},
                 )
+
+                # Phase-1b — numeric semantic channel (inference-only).
+                # Runs AFTER the primary detector and does not influence the
+                # pause/recovery decision below. Guarded so a bug here can
+                # never take down the loop.
+                if self._numeric_analyzer is not None:
+                    try:
+                        await self._analyze_numeric_semantics(batch, drift)
+                    except Exception as exc:  # pragma: no cover
+                        logger.debug("numeric-semantics channel skipped: %s", exc)
 
                 if drift.drift_detected and self._should_pause(drift):
                     if self._shim_router is not None:
@@ -524,6 +558,67 @@ class MAPEKWorker:
             raise
 
     # ── Knowledge ─────────────────────────────────────────────────────
+
+    async def _analyze_numeric_semantics(
+        self, batch: BatchPayload, drift: DriftDetectionResult,
+    ) -> None:
+        """Phase-1b numeric semantic channel — INFERENCE ONLY.
+
+        For each numeric column: if a per-source baseline exists, analyze it and
+        emit a numeric-drift signal (plus an un-applied heal *proposal* for
+        detected unit/scale errors). Otherwise accumulate healthy-batch samples
+        (only when the primary detector saw no drift) and fit a baseline once
+        ``numeric_baseline_batches`` have been collected.
+
+        This never mutates ``batch`` and never feeds the pause/recovery decision.
+        The proposal it emits is for an operator/downstream gate to act on, not
+        for this worker to apply.
+        """
+        analyzer = self._numeric_analyzer
+        if analyzer is None:
+            return
+        columns = numeric_columns_from_rows(batch.rows)
+        for col_name, values in columns.items():
+            key = f"{batch.source_id}:{col_name}"
+            if analyzer.has_baseline(key):
+                sig = analyzer.analyze_column(values, key=key, column_name=col_name)
+                if sig.drifted:
+                    proposal = sig.proposal
+                    payload: Dict[str, Any] = {
+                        "batch_id": batch.batch_id,
+                        "source_id": batch.source_id,
+                        "column": col_name,
+                        "tier": sig.tier,
+                        "z_distance": round(sig.z_distance, 4),
+                    }
+                    if proposal is not None and proposal.transform != "none":
+                        payload["proposed_transform"] = proposal.transform
+                        payload["proposed_factor"] = proposal.factor
+                        payload["confidence"] = round(proposal.confidence, 4)
+                        msg = (
+                            f"numeric drift on '{col_name}': proposed "
+                            f"{proposal.transform} (conf={proposal.confidence:.2f}) "
+                            f"— NOT applied"
+                        )
+                    else:
+                        msg = (
+                            f"numeric drift on '{col_name}': no inverse transform "
+                            f"clears the gate (likely regime change) — alert only"
+                        )
+                    await self._emit("numeric_semantics", msg, payload)
+            elif not drift.drift_detected:
+                # Accumulate only demonstrably-healthy batches into the baseline.
+                buf = self._numeric_healthy_buffer.setdefault(key, [])
+                buf.append(list(values))
+                if len(buf) >= self._cfg.numeric_baseline_batches:
+                    analyzer.register_baseline(key, buf)
+                    self._numeric_healthy_buffer.pop(key, None)
+                    await self._emit(
+                        "numeric_semantics",
+                        f"baseline registered for '{col_name}' "
+                        f"({self._cfg.numeric_baseline_batches} healthy batches)",
+                        {"source_id": batch.source_id, "column": col_name},
+                    )
 
     async def _knowledge_update(
         self,
