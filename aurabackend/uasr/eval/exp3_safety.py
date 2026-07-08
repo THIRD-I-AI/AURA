@@ -36,7 +36,8 @@ def exp_revert(seeds=200):
         for i in range(8):
             dec = ctrl.observe("s", "c", rng.normal(50, 5, 200))
             if dec.state is HealState.OBSERVING:
-                did = True; break
+                did = True
+                break
         reverted += int(did)
     return {"experiment": "auto_revert", "revert_rate": round(reverted / seeds, 4), "seeds": seeds}
 
@@ -54,7 +55,8 @@ def exp_regime_refusal(seeds=200):
             for i in range(10):
                 dec = ctrl.observe("s", "c", rng.normal(50, 5, 200) + shift)
                 if dec.state is HealState.COMMITTED and dec.applied_transform != "none":
-                    committed = True; break
+                    committed = True
+                    break
             false_commit += int(committed)
         rows.append({"experiment": "regime_refusal", "k_confirm": k,
                      "false_commit_rate": round(false_commit / seeds, 4), "seeds": seeds})
@@ -74,11 +76,13 @@ def exp_audit_completeness(seeds=100):
         for i in range(4):
             dec = ctrl.observe("s", "c", rng.normal(50, 5, 200) * 100.0)
             if dec.state is not prev:
-                total_transitions += 1; prev = dec.state
+                total_transitions += 1
+                prev = dec.state
         for i in range(8):
             dec = ctrl.observe("s", "c", rng.normal(50, 5, 200))
             if dec.state is not prev:
-                total_transitions += 1; prev = dec.state
+                total_transitions += 1
+                prev = dec.state
         for rec in ctrl.audit_log:
             record_ids.append(rec.record_id)
             content_hashes.add(rec.audit_record_hash)

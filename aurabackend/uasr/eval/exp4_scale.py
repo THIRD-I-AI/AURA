@@ -83,7 +83,9 @@ def exp_detect_cost(sizes=(1000, 5000, 20000, 100000, 200000), reps=5):
         ts = []
         for _ in range(reps):
             b = make_batch("s", "x", {"v": healthy_numeric(rng, n=sz)})
-            t0 = time.perf_counter(); d.detect(b); ts.append((time.perf_counter() - t0) * 1e3)
+            t0 = time.perf_counter()
+            d.detect(b)
+            ts.append((time.perf_counter() - t0) * 1e3)
         rows.append({"experiment": "detect_cost", "batch_rows": sz,
                      "detect_ms_median": round(float(np.median(ts)), 3)})
     return rows

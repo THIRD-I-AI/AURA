@@ -38,9 +38,11 @@ def exp_fpr(seeds=200, healthy_batches=30):
         for i in range(healthy_batches):
             r = d.detect(make_batch("s", f"h{i}", {"v": healthy_numeric(rng)}))
             if i < 5:
-                cold += int(r.drift_detected); cold_n += 1
+                cold += int(r.drift_detected)
+                cold_n += 1
             else:
-                steady += int(r.drift_detected); steady_n += 1
+                steady += int(r.drift_detected)
+                steady_n += 1
     return {"experiment": "fpr", "cold_start_fpr": round(cold / cold_n, 4),
             "steady_state_fpr": round(steady / steady_n, 4),
             "cold_n": cold_n, "steady_n": steady_n, "seeds": seeds}
@@ -71,7 +73,8 @@ def exp_latency(seeds=200, max_batches=20):
         for i in range(max_batches):
             r = d.detect(make_batch("s", f"c{i}", {"v": healthy_numeric(rng) * 1.5}))
             if r.drift_detected:
-                lat = i + 1; break
+                lat = i + 1
+                break
         lats.append(lat if lat is not None else max_batches + 1)
     arr = np.array(lats)
     return {"experiment": "latency", "median_batches": float(np.median(arr)),

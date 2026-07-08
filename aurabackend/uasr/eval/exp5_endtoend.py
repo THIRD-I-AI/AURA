@@ -53,9 +53,12 @@ def main(seeds=100):
     for s in range(seeds):
         e_ctrl, _, onset = _run(3000 + s, heal=False)
         e_heal, rec, _ = _run(3000 + s, heal=True)
-        peak_ctrl += e_ctrl[onset:].max(); peak_heal += e_heal[onset:].max()
-        ss_ctrl += e_ctrl[-5:].mean(); ss_heal += e_heal[-5:].mean()
-        auc_ctrl += e_ctrl[onset:].sum(); auc_heal += e_heal[onset:].sum()
+        peak_ctrl += e_ctrl[onset:].max()
+        peak_heal += e_heal[onset:].max()
+        ss_ctrl += e_ctrl[-5:].mean()
+        ss_heal += e_heal[-5:].mean()
+        auc_ctrl += e_ctrl[onset:].sum()
+        auc_heal += e_heal[onset:].sum()
         if rec is not None:
             ttr.append(rec)
         rows.append({"seed": s, "peak_ctrl": round(float(e_ctrl[onset:].max()), 4),
