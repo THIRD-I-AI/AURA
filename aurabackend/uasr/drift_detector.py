@@ -31,6 +31,7 @@ from .models import (
     DriftSeverity,
     DriftType,
 )
+from .state_store import InMemoryStateStore, SourceState, StateStore
 
 logger = logging.getLogger("uasr.drift_detector")
 
@@ -56,23 +57,73 @@ class DriftDetector:
         default_zeta: float = 0.15,
         schema_strict: bool = True,
         semantic_threshold: float = 0.25,
+        state_store: Optional[StateStore] = None,
     ) -> None:
         # ζ — KL-divergence threshold.  Adapted dynamically per source.
         self._default_zeta = default_zeta
         self._schema_strict = schema_strict
         self._semantic_threshold = semantic_threshold
 
-        # In-memory baselines: source_id → {column_name → ColumnDistribution}
-        self._baselines: Dict[str, Dict[str, ColumnDistribution]] = {}
+        # Per-source state (baselines, KL history, schema baselines,
+        # reference embeddings) lives behind a pluggable StateStore so the
+        # detector can scale horizontally.  The default is an unbounded
+        # in-process store, which is BIT-IDENTICAL to the original four
+        # loose dicts.  Pass ``InMemoryStateStore(capacity=N)`` to bound
+        # memory with LRU eviction, or ``RedisStateStore(...)`` to share
+        # state across worker replicas (resolves the cross-replica
+        # cold-miss on Kafka partition rebalance).
+        # NB: explicit ``is None`` — an empty InMemoryStateStore is falsy
+        # (it defines __len__), so ``state_store or ...`` would discard a
+        # caller-supplied empty store.
+        self._store: StateStore = (
+            state_store if state_store is not None else InMemoryStateStore()
+        )
 
-        # Historical KL values for dynamic threshold: source_id → [kl_values]
-        self._kl_history: Dict[str, List[float]] = {}
+    # ────────────────────────────────────────────────────────────────
+    # Back-compat read-only views
+    # ------------------------------------------------------------------
+    # Historically the detector exposed four public-ish dicts
+    # (``_baselines`` etc.).  A handful of callers (health/list endpoints
+    # in service.py, poisoning tests) read them.  We keep those working by
+    # rebuilding read-only snapshots from the store.  Reads use ``peek`` so
+    # they do NOT perturb LRU recency.  These are VIEWS — mutate state via
+    # register_baseline / detect, not through these.
+    # ────────────────────────────────────────────────────────────────
+    @property
+    def _baselines(self) -> Dict[str, Dict[str, ColumnDistribution]]:
+        out: Dict[str, Dict[str, ColumnDistribution]] = {}
+        for sid in self._store.source_ids():
+            st = self._store.peek(sid)
+            if st.baseline is not None:
+                out[sid] = st.baseline
+        return out
 
-        # Schema baselines: source_id → {column_name → dtype_str}
-        self._schema_baselines: Dict[str, Dict[str, str]] = {}
+    @property
+    def _schema_baselines(self) -> Dict[str, Dict[str, str]]:
+        out: Dict[str, Dict[str, str]] = {}
+        for sid in self._store.source_ids():
+            st = self._store.peek(sid)
+            if st.schema is not None:
+                out[sid] = st.schema
+        return out
 
-        # Reference embeddings: source_id → List[List[float]]
-        self._reference_embeddings: Dict[str, List[List[float]]] = {}
+    @property
+    def _reference_embeddings(self) -> Dict[str, List[List[float]]]:
+        out: Dict[str, List[List[float]]] = {}
+        for sid in self._store.source_ids():
+            st = self._store.peek(sid)
+            if st.embeddings:
+                out[sid] = st.embeddings
+        return out
+
+    @property
+    def _kl_history(self) -> Dict[str, List[float]]:
+        out: Dict[str, List[float]] = {}
+        for sid in self._store.source_ids():
+            st = self._store.peek(sid)
+            if st.kl_history:
+                out[sid] = st.kl_history
+        return out
 
     # ────────────────────────────────────────────────────────────────
     # Baseline management
@@ -104,14 +155,18 @@ class DriftDetector:
         else:
             distributions = distributions_or_batch
 
-        self._baselines[source_id] = distributions
+        st = self._store.load(source_id)
+        st.baseline = distributions
         if schema:
-            self._schema_baselines[source_id] = schema
+            st.schema = schema
+        self._store.save(source_id, st)
         logger.info("Registered baseline for source=%s (%d columns)", source_id, len(distributions))
 
     def register_reference_embedding(self, source_id: str, embedding: List[float]) -> None:
         """Add a reference embedding vector to the source's context matrix."""
-        self._reference_embeddings.setdefault(source_id, []).append(embedding)
+        st = self._store.load(source_id)
+        st.embeddings.append(embedding)
+        self._store.save(source_id, st)
 
     # ────────────────────────────────────────────────────────────────
     # Main detection
@@ -124,8 +179,17 @@ class DriftDetector:
             batch_id=batch.batch_id,
         )
 
+        # Load this source's state ONCE per batch (single store round-trip,
+        # single LRU touch), thread it through the checks, and persist ONCE
+        # at the end.  ``dirty`` tracks whether any check mutated the state
+        # (first-seen schema baseline, appended KL sample) so we avoid a
+        # redundant write on read-only batches.
+        st = self._store.load(batch.source_id)
+        dirty = False
+
         # 1. Schema drift
-        schema_drift = self._check_schema_drift(batch)
+        schema_drift, d1 = self._check_schema_drift(batch, st)
+        dirty = dirty or d1
         if schema_drift:
             result.drift_detected = True
             result.drift_type = DriftType.SCHEMA
@@ -133,10 +197,13 @@ class DriftDetector:
             result.affected_columns = schema_drift["affected_columns"]
             result.drift_vector = schema_drift
             result.details = schema_drift.get("details", "")
+            if dirty:
+                self._store.save(batch.source_id, st)
             return result
 
         # 2. Statistical drift (KL-Divergence)
-        stat_drift = self._check_statistical_drift(batch)
+        stat_drift, d2 = self._check_statistical_drift(batch, st)
+        dirty = dirty or d2
         if stat_drift:
             result.drift_detected = True
             result.drift_type = DriftType.STATISTICAL
@@ -145,10 +212,12 @@ class DriftDetector:
             result.affected_columns = stat_drift["affected_columns"]
             result.drift_vector = stat_drift
             result.details = stat_drift.get("details", "")
+            if dirty:
+                self._store.save(batch.source_id, st)
             return result
 
         # 3. Semantic drift (embedding distance) — only if embeddings registered
-        sem_drift = self._check_semantic_drift(batch)
+        sem_drift = self._check_semantic_drift(batch, st)
         if sem_drift:
             result.drift_detected = True
             result.drift_type = DriftType.SEMANTIC
@@ -156,8 +225,12 @@ class DriftDetector:
             result.cosine_distance = sem_drift["cosine_distance"]
             result.drift_vector = sem_drift
             result.details = sem_drift.get("details", "")
+            if dirty:
+                self._store.save(batch.source_id, st)
             return result
 
+        if dirty:
+            self._store.save(batch.source_id, st)
         result.details = "No drift detected"
         return result
 
@@ -165,15 +238,20 @@ class DriftDetector:
     # Schema drift
     # ────────────────────────────────────────────────────────────────
 
-    def _check_schema_drift(self, batch: BatchPayload) -> Optional[Dict[str, Any]]:
-        baseline_schema = self._schema_baselines.get(batch.source_id)
+    def _check_schema_drift(
+        self, batch: BatchPayload, st: SourceState
+    ) -> Tuple[Optional[Dict[str, Any]], bool]:
+        """Returns ``(drift_or_None, state_was_mutated)``."""
+        baseline_schema = st.schema
         if not baseline_schema:
             # First time — treat batch schema as baseline
             if batch.schema_snapshot:
-                self._schema_baselines[batch.source_id] = batch.schema_snapshot
+                st.schema = batch.schema_snapshot
+                return None, True
             elif batch.columns:
-                self._schema_baselines[batch.source_id] = {c: "unknown" for c in batch.columns}
-            return None
+                st.schema = {c: "unknown" for c in batch.columns}
+                return None, True
+            return None, False
 
         current_cols = set(batch.columns) if batch.columns else set()
         if batch.schema_snapshot:
@@ -199,8 +277,8 @@ class DriftDetector:
                         "details": f"Type changed in columns: {type_changes}",
                         "old_types": {c: baseline_schema[c] for c in type_changes},
                         "new_types": {c: batch.schema_snapshot[c] for c in type_changes},
-                    }
-            return None
+                    }, False
+            return None, False
 
         severity = DriftSeverity.HIGH if removed else DriftSeverity.MEDIUM
         if len(removed) > len(baseline_cols) * 0.5:
@@ -213,23 +291,26 @@ class DriftDetector:
             "affected_columns": list(added | removed),
             "severity": severity,
             "details": f"Added: {list(added)}, Removed: {list(removed)}",
-        }
+        }, False
 
     # ────────────────────────────────────────────────────────────────
     # Statistical drift — KL-Divergence
     # ────────────────────────────────────────────────────────────────
 
-    def _check_statistical_drift(self, batch: BatchPayload) -> Optional[Dict[str, Any]]:
-        baseline = self._baselines.get(batch.source_id)
+    def _check_statistical_drift(
+        self, batch: BatchPayload, st: SourceState
+    ) -> Tuple[Optional[Dict[str, Any]], bool]:
+        """Returns ``(drift_or_None, state_was_mutated)``."""
+        baseline = st.baseline
         if not baseline or not batch.rows:
-            return None
+            return None, False
 
         batch_dists = self._compute_distributions(batch)
         drifted_cols: List[str] = []
         kl_values: Dict[str, float] = {}
         max_kl = 0.0
 
-        zeta = self._dynamic_threshold(batch.source_id)
+        zeta = self._dynamic_threshold(st.kl_history)
 
         for col_name, batch_dist in batch_dists.items():
             if col_name not in baseline:
@@ -259,14 +340,17 @@ class DriftDetector:
                 max_kl = max(max_kl, kl)
 
         # Record for dynamic threshold adaptation
+        mutated = False
         if kl_values:
             avg_kl = sum(kl_values.values()) / len(kl_values)
-            self._kl_history.setdefault(batch.source_id, []).append(avg_kl)
+            st.kl_history.append(avg_kl)
             # Keep last 200 samples
-            self._kl_history[batch.source_id] = self._kl_history[batch.source_id][-200:]
+            if len(st.kl_history) > 200:
+                del st.kl_history[:-200]
+            mutated = True
 
         if not drifted_cols:
-            return None
+            return None, mutated
 
         severity = DriftSeverity.LOW
         if max_kl > zeta * 3:
@@ -287,14 +371,16 @@ class DriftDetector:
                 f"KL divergence exceeded ζ={zeta:.4f} in {len(drifted_cols)} column(s). "
                 f"Max D_KL={max_kl:.4f}"
             ),
-        }
+        }, mutated
 
     # ────────────────────────────────────────────────────────────────
     # Semantic drift — embedding cosine distance
     # ────────────────────────────────────────────────────────────────
 
-    def _check_semantic_drift(self, batch: BatchPayload) -> Optional[Dict[str, Any]]:
-        refs = self._reference_embeddings.get(batch.source_id)
+    def _check_semantic_drift(
+        self, batch: BatchPayload, st: SourceState
+    ) -> Optional[Dict[str, Any]]:
+        refs = st.embeddings
         if not refs:
             return None
 
@@ -395,12 +481,11 @@ class DriftDetector:
     # Dynamic threshold
     # ────────────────────────────────────────────────────────────────
 
-    def _dynamic_threshold(self, source_id: str) -> float:
+    def _dynamic_threshold(self, history: List[float]) -> float:
         """
         Adaptive ζ based on historical KL variance.
         ζ = mean(D_KL) + 2·std(D_KL), floored at the default.
         """
-        history = self._kl_history.get(source_id, [])
         if len(history) < 5:
             return self._default_zeta
 
