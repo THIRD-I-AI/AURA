@@ -609,12 +609,17 @@ class MAPEKWorker:
         for attempt in range(max_attempts):
             con.execute("BEGIN TRANSACTION")
             try:
-                if not self._table_ready:
-                    con.execute(
-                        f'CREATE TABLE IF NOT EXISTS "{tbl}" AS '
-                        f"SELECT * FROM read_parquet(?) WHERE 1=0",
-                        [parquet_path],
-                    )
+                # Always issue the idempotent CREATE IF NOT EXISTS. Each retry
+                # runs in a fresh transaction whose snapshot sees any table a
+                # peer has already committed, so the CREATE is a cheap no-op —
+                # but issuing it unconditionally guarantees the table is visible
+                # to *this* connection before the INSERT, even on the first
+                # attempt of a worker that lost the CREATE race.
+                con.execute(
+                    f'CREATE TABLE IF NOT EXISTS "{tbl}" AS '
+                    f"SELECT * FROM read_parquet(?) WHERE 1=0",
+                    [parquet_path],
+                )
                 con.execute(
                     f'INSERT INTO "{tbl}" BY NAME SELECT * FROM read_parquet(?)',
                     [parquet_path],
@@ -627,11 +632,17 @@ class MAPEKWorker:
                     con.execute("ROLLBACK")
                 except Exception:  # pragma: no cover — rollback on dead txn
                     pass
-                # A catalog/transaction write-write conflict means another
-                # worker committed first; the table now exists, so skip CREATE
-                # and retry the INSERT. Any other error is a real failure.
-                if "conflict" in str(exc).lower() and attempt < max_attempts - 1:
-                    self._table_ready = True
+                # Two transient, retryable races under concurrent writers:
+                #  • "conflict"        — write-write conflict on concurrent
+                #    catalog CREATE; a peer committed the table first.
+                #  • "does not exist"  — this txn's snapshot predates the peer's
+                #    committed CREATE; a fresh retry snapshot will see it.
+                # Never latch _table_ready on failure — only a successful commit
+                # proves the table is visible to this connection. Any other
+                # error is a real failure and propagates.
+                msg = str(exc).lower()
+                retryable = "conflict" in msg or "does not exist" in msg
+                if retryable and attempt < max_attempts - 1:
                     backoff = min(0.05, 0.002 * (2 ** attempt))
                     time.sleep(backoff + random.random() * 0.002)
                     continue
