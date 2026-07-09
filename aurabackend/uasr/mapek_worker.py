@@ -31,6 +31,7 @@ import asyncio
 import json
 import logging
 import os
+import random
 import tempfile
 import time
 import uuid
@@ -47,6 +48,11 @@ from .models import (
     DriftType,
     RecoveryLoopResult,
     RecoveryStatus,
+)
+from .numeric_heal_controller import HealState, NumericHealController
+from .numeric_semantics import (
+    NumericSemanticAnalyzer,
+    numeric_columns_from_rows,
 )
 from .recovery_loop import RecoveryLoop, RecoveryLoopConfig
 
@@ -102,6 +108,33 @@ class MAPEKConfig:
     use_shim_router: bool = False
     shim_router_canary_initial_weight: float = 0.1
 
+    # ── Phase-1b opt-in: numeric semantic drift channel ───────────
+    # When True, each batch's numeric columns are analyzed by the
+    # NumericSemanticAnalyzer as a SEPARATE, inference-only channel.
+    # It emits a numeric-drift signal (and an un-applied heal proposal
+    # for detected unit/scale errors) but NEVER mutates data and NEVER
+    # participates in the pause/recovery decision — Phase 1 is
+    # observe-only. A per-source baseline is auto-registered from the
+    # first ``numeric_baseline_batches`` batches the primary detector
+    # deems healthy (no drift). Default OFF.
+    use_numeric_semantics: bool = False
+    numeric_baseline_batches: int = 15
+
+    # ── Phase-2 opt-in: verified numeric auto-heal ────────────────
+    # When True (and ``use_numeric_semantics`` is also True), an accepted
+    # heal proposal is routed through the NumericHealController's
+    # sequential-verification + two-sided-commit gate. A transform is
+    # applied to the batch ONLY after it re-earns acceptance on
+    # ``numeric_heal_k_confirm`` consecutive batches, and is auto-reverted
+    # once the raw stream is healthy again for ``numeric_heal_revert_patience``
+    # batches. A legitimate regime change never passes the gate, so it is
+    # alerted but never healed. Every commit/abort/revert writes a
+    # SHA-256 audit record. Default OFF — Phase 1b stays observe-only unless
+    # this is explicitly enabled.
+    numeric_auto_heal: bool = False
+    numeric_heal_k_confirm: int = 3
+    numeric_heal_revert_patience: int = 3
+
 
 # ── Progress callback signature ───────────────────────────────────────
 # (phase, message, payload) → awaitable
@@ -120,12 +153,21 @@ class MAPEKWorker:
         recovery_loop: Optional[RecoveryLoop] = None,
         metrics: Optional[HealingMetricTracker] = None,
         progress_cb: Optional[ProgressCb] = None,
+        repair_scheduler: Optional[Any] = None,
     ) -> None:
         self._cfg = config
         self._detector = detector or DriftDetector()
         self._loop = recovery_loop or RecoveryLoop(self._detector)
         self._metrics = metrics or HealingMetricTracker()
         self._progress_cb = progress_cb
+
+        # R4 — optional global repair scheduler. When multiple pipelines share
+        # one process, injecting a shared ``RepairScheduler`` bounds the total
+        # number of concurrent recoveries hitting the shared backend (LLM +
+        # sandbox) and admits them in drift-severity priority order. When None
+        # (the default, one-worker-per-process), recovery is awaited directly
+        # with identical behaviour to before.
+        self._repair_scheduler = repair_scheduler
 
         # Sprint S18.1 — lazily initialise the WassersteinMartingaleDetector
         # ONLY when the flag is on. Keeps the import + state allocation
@@ -147,8 +189,34 @@ class MAPEKWorker:
             from .shim_router import ShimRouter
             self._shim_router = ShimRouter()
 
+        # Phase-1b — numeric semantic analyzer (inference-only channel).
+        # ``_numeric_healthy_buffer`` accumulates healthy-batch column
+        # samples per "source_id:column" key until a baseline is fit.
+        self._numeric_analyzer: Optional[NumericSemanticAnalyzer] = None
+        self._numeric_healthy_buffer: Dict[str, List[Any]] = {}
+        if self._cfg.use_numeric_semantics:
+            self._numeric_analyzer = NumericSemanticAnalyzer()
+
+        # Phase-2 — verified numeric auto-heal. Only instantiated when both
+        # ``use_numeric_semantics`` and ``numeric_auto_heal`` are on. The
+        # controller shares the analyzer's per-source ``NumericBaseline``s
+        # (mirrored in on baseline registration) and gates every repair
+        # through sequential verification + two-sided commit.
+        self._numeric_healer: Optional[NumericHealController] = None
+        if self._cfg.use_numeric_semantics and self._cfg.numeric_auto_heal:
+            self._numeric_healer = NumericHealController(
+                k_confirm=self._cfg.numeric_heal_k_confirm,
+                revert_patience=self._cfg.numeric_heal_revert_patience,
+            )
+
         self._consumer: Any = None
         self._duckdb_con: Any = None
+        # Whether the sink table has been created this process. Guards against
+        # re-running CREATE TABLE on every batch, which reopens a catalog
+        # write-write conflict window whenever multiple workers share one
+        # DuckDB file (concurrent multi-pipeline healing). See
+        # _write_duckdb_atomic.
+        self._table_ready: bool = False
 
         # Lifecycle gates
         self._running = False
@@ -250,6 +318,16 @@ class MAPEKWorker:
                     {"batch_id": batch.batch_id, "row_count": len(batch.rows)},
                 )
 
+                # Phase-1b — numeric semantic channel (inference-only).
+                # Runs AFTER the primary detector and does not influence the
+                # pause/recovery decision below. Guarded so a bug here can
+                # never take down the loop.
+                if self._numeric_analyzer is not None:
+                    try:
+                        await self._analyze_numeric_semantics(batch, drift)
+                    except Exception as exc:  # pragma: no cover
+                        logger.debug("numeric-semantics channel skipped: %s", exc)
+
                 if drift.drift_detected and self._should_pause(drift):
                     if self._shim_router is not None:
                         # ── S18.1c: canary-deploy (no pause) ──────────
@@ -270,7 +348,9 @@ class MAPEKWorker:
                                 initial_weight=self._cfg.shim_router_canary_initial_weight,
                             )
                             await self._execute_persist(batch)
-                            await self._knowledge_update(batch, drift, recovery)
+                            await self._knowledge_update(
+                                batch, drift, recovery, batch_healed=False
+                            )
                             await self._emit(
                                 "canary_deployed",
                                 f"shim {version} deployed as canary (weight={self._cfg.shim_router_canary_initial_weight})",
@@ -292,7 +372,9 @@ class MAPEKWorker:
                             batch.rows = healed
                             batch.columns = list(healed[0].keys()) if healed else batch.columns
                             await self._execute_persist(batch)
-                            await self._knowledge_update(batch, drift, recovery)
+                            await self._knowledge_update(
+                                batch, drift, recovery, batch_healed=True
+                            )
                             self.resume()
                         else:
                             await self._emit(
@@ -465,6 +547,15 @@ class MAPEKWorker:
             f"invoking LLM recovery for {drift.drift_type} drift on {drift.affected_columns}",
             {"batch_id": batch.batch_id},
         )
+        if self._repair_scheduler is not None:
+            # Submit through the global scheduler: bounded concurrency + severity
+            # priority across all co-resident pipelines. ``submit`` awaits the
+            # same coroutine, so the result/exception contract is unchanged.
+            return await self._repair_scheduler.submit(
+                batch.source_id,
+                drift.severity,
+                lambda: self._loop.run(drift, batch),
+            )
         return await self._loop.run(drift, batch)
 
     # ── Execute ───────────────────────────────────────────────────────
@@ -501,37 +592,211 @@ class MAPEKWorker:
     def _write_duckdb_atomic(self, parquet_path: str) -> None:
         con = self._duckdb_con
         tbl = self._cfg.table_name
-        # CREATE-IF-NOT-EXISTS off the parquet schema, then INSERT inside a
-        # transaction. DuckDB rolls back on connection loss / process kill.
-        con.execute("BEGIN TRANSACTION")
-        try:
-            con.execute(
-                f'CREATE TABLE IF NOT EXISTS "{tbl}" AS '
-                f"SELECT * FROM read_parquet(?) WHERE 1=0",
-                [parquet_path],
-            )
-            con.execute(
-                f'INSERT INTO "{tbl}" BY NAME SELECT * FROM read_parquet(?)',
-                [parquet_path],
-            )
-            con.execute("COMMIT")
-        except Exception:
-            con.execute("ROLLBACK")
-            raise
+        # Multi-pipeline correctness: DuckDB uses optimistic concurrency
+        # control, so running ``CREATE TABLE IF NOT EXISTS`` on *every* batch
+        # reopens a catalog write-write conflict window each time multiple
+        # workers share one DuckDB file — and a losing worker's transaction
+        # aborts, silently dropping the batch (~3% loss measured at 4–16
+        # concurrent writers). Concurrent INSERTs into an *existing* table do
+        # not conflict. So we create the table at most once per process
+        # (``_table_ready``), then INSERT-only, and retry with a small jittered
+        # backoff if the first-batch CREATE races another worker.
+        # Retry budget is generous because a write-write conflict is transient
+        # (another worker committed first) and losing a batch is a correctness
+        # failure, not just a latency hit. Exponential backoff capped at ~50ms
+        # keeps tail latency bounded even under heavy multi-pipeline contention.
+        max_attempts = 12
+        for attempt in range(max_attempts):
+            con.execute("BEGIN TRANSACTION")
+            try:
+                # Always issue the idempotent CREATE IF NOT EXISTS. Each retry
+                # runs in a fresh transaction whose snapshot sees any table a
+                # peer has already committed, so the CREATE is a cheap no-op —
+                # but issuing it unconditionally guarantees the table is visible
+                # to *this* connection before the INSERT, even on the first
+                # attempt of a worker that lost the CREATE race.
+                con.execute(
+                    f'CREATE TABLE IF NOT EXISTS "{tbl}" AS '
+                    f"SELECT * FROM read_parquet(?) WHERE 1=0",
+                    [parquet_path],
+                )
+                con.execute(
+                    f'INSERT INTO "{tbl}" BY NAME SELECT * FROM read_parquet(?)',
+                    [parquet_path],
+                )
+                con.execute("COMMIT")
+                self._table_ready = True
+                return
+            except Exception as exc:
+                try:
+                    con.execute("ROLLBACK")
+                except Exception:  # pragma: no cover — rollback on dead txn
+                    pass
+                # Two transient, retryable races under concurrent writers:
+                #  • "conflict"        — write-write conflict on concurrent
+                #    catalog CREATE; a peer committed the table first.
+                #  • "does not exist"  — this txn's snapshot predates the peer's
+                #    committed CREATE; a fresh retry snapshot will see it.
+                # Never latch _table_ready on failure — only a successful commit
+                # proves the table is visible to this connection. Any other
+                # error is a real failure and propagates.
+                msg = str(exc).lower()
+                retryable = "conflict" in msg or "does not exist" in msg
+                if retryable and attempt < max_attempts - 1:
+                    backoff = min(0.05, 0.002 * (2 ** attempt))
+                    time.sleep(backoff + random.random() * 0.002)
+                    continue
+                raise
 
     # ── Knowledge ─────────────────────────────────────────────────────
+
+    async def _analyze_numeric_semantics(
+        self, batch: BatchPayload, drift: DriftDetectionResult,
+    ) -> None:
+        """Phase-1b numeric semantic channel — INFERENCE ONLY.
+
+        For each numeric column: if a per-source baseline exists, analyze it and
+        emit a numeric-drift signal (plus an un-applied heal *proposal* for
+        detected unit/scale errors). Otherwise accumulate healthy-batch samples
+        (only when the primary detector saw no drift) and fit a baseline once
+        ``numeric_baseline_batches`` have been collected.
+
+        This never mutates ``batch`` and never feeds the pause/recovery decision.
+        The proposal it emits is for an operator/downstream gate to act on, not
+        for this worker to apply.
+        """
+        analyzer = self._numeric_analyzer
+        if analyzer is None:
+            return
+        columns = numeric_columns_from_rows(batch.rows)
+        for col_name, values in columns.items():
+            key = f"{batch.source_id}:{col_name}"
+            if analyzer.has_baseline(key):
+                # Phase-2 — run the verified auto-heal gate on the RAW column.
+                # Runs on every batch (not only drifted ones) so a committed
+                # transform's two-sided revert check sees healthy batches too.
+                if self._numeric_healer is not None:
+                    await self._auto_heal_column(batch, col_name, values)
+                sig = analyzer.analyze_column(values, key=key, column_name=col_name)
+                if sig.drifted:
+                    proposal = sig.proposal
+                    payload: Dict[str, Any] = {
+                        "batch_id": batch.batch_id,
+                        "source_id": batch.source_id,
+                        "column": col_name,
+                        "tier": sig.tier,
+                        "z_distance": round(sig.z_distance, 4),
+                    }
+                    if proposal is not None and proposal.transform != "none":
+                        payload["proposed_transform"] = proposal.transform
+                        payload["proposed_factor"] = proposal.factor
+                        payload["confidence"] = round(proposal.confidence, 4)
+                        msg = (
+                            f"numeric drift on '{col_name}': proposed "
+                            f"{proposal.transform} (conf={proposal.confidence:.2f}) "
+                            f"— NOT applied"
+                        )
+                    else:
+                        msg = (
+                            f"numeric drift on '{col_name}': no inverse transform "
+                            f"clears the gate (likely regime change) — alert only"
+                        )
+                    await self._emit("numeric_semantics", msg, payload)
+            elif not drift.drift_detected:
+                # Accumulate only demonstrably-healthy batches into the baseline.
+                buf = self._numeric_healthy_buffer.setdefault(key, [])
+                buf.append(list(values))
+                if len(buf) >= self._cfg.numeric_baseline_batches:
+                    analyzer.register_baseline(key, buf)
+                    self._numeric_healthy_buffer.pop(key, None)
+                    # Phase-2 — mirror the freshly-fit baseline into the healer
+                    # so its gate has the same reference to score against.
+                    if self._numeric_healer is not None:
+                        bl = analyzer.get_baseline(key)
+                        if bl is not None:
+                            self._numeric_healer.load_baseline(
+                                batch.source_id, col_name, bl,
+                            )
+                    await self._emit(
+                        "numeric_semantics",
+                        f"baseline registered for '{col_name}' "
+                        f"({self._cfg.numeric_baseline_batches} healthy batches)",
+                        {"source_id": batch.source_id, "column": col_name},
+                    )
+
+    async def _auto_heal_column(
+        self, batch: BatchPayload, col_name: str, values: List[Any],
+    ) -> None:
+        """Phase-2 — advance the verified auto-heal gate for one column.
+
+        Observes the RAW column, emits an audit event on any state transition
+        (canary_open / commit / abort / revert), and — when the column is
+        COMMITTED — writes the healed values back into ``batch.rows`` so the
+        corrected data flows downstream. Only cells whose value coerces to float
+        are rewritten; nulls and non-numeric cells are left untouched.
+        """
+        healer = self._numeric_healer
+        if healer is None:
+            return
+        decision = healer.observe(batch.source_id, col_name, values)
+        if decision.audit is not None:
+            a = decision.audit
+            await self._emit(
+                "numeric_heal",
+                f"{a.event} on '{col_name}': transform={a.transform} "
+                f"factor={a.factor}",
+                {
+                    "batch_id": batch.batch_id,
+                    "source_id": batch.source_id,
+                    "column": col_name,
+                    "event": a.event,
+                    "transform": a.transform,
+                    "factor": a.factor,
+                    "state": decision.state.value,
+                    "record_id": a.record_id,
+                    "audit_record_hash": a.audit_record_hash,
+                },
+            )
+        # Apply the committed transform to the batch in place.
+        if decision.state is HealState.COMMITTED and decision.applied_factor != 1.0:
+            factor = decision.applied_factor
+            for row in batch.rows:
+                if col_name not in row or row[col_name] is None:
+                    continue
+                try:
+                    row[col_name] = float(row[col_name]) * factor
+                except (TypeError, ValueError):
+                    continue
 
     async def _knowledge_update(
         self,
         batch: BatchPayload,
         drift: DriftDetectionResult,
         recovery: Optional[RecoveryLoopResult],
+        batch_healed: bool = False,
     ) -> None:
-        # If recovery succeeded, the post-shim batch is the new normal —
-        # snapshot its distributions so the next batch's drift detection
-        # compares against the corrected baseline rather than the stale one.
-        if recovery and recovery.status == RecoveryStatus.DEPLOYED:
-            self._detector.register_baseline(batch.source_id, batch)
+        # Re-baseline ONLY when we are handed a confirmed post-shim batch
+        # (``batch_healed=True``).  Two hazards this guards against:
+        #
+        #   1. Baseline poisoning — in the canary-deploy path the persisted
+        #      ``batch`` is the *raw drifted* data (the shim runs at low weight
+        #      in the router, not inline), so snapshotting it would register
+        #      drift as the new normal and mask subsequent real drift.  The
+        #      statistical baseline should advance when a shim is *promoted*
+        #      from canary to primary, not at canary-deploy time.
+        #   2. Channel clobbering — registering via the ``BatchPayload`` path
+        #      recomputes and overwrites the schema and reference-embedding
+        #      baselines every cycle (baseline creep).  We instead snapshot
+        #      only the statistical distributions via the dict path, leaving
+        #      the schema and semantic reference baselines intact.
+        if (
+            recovery is not None
+            and recovery.status == RecoveryStatus.DEPLOYED
+            and batch_healed
+        ):
+            dists = self._detector._compute_distributions(batch)
+            if dists:
+                self._detector.register_baseline(batch.source_id, dists)
 
         # Feed the healing tracker so /uasr/metrics dashboards update.
         # Only emit on actual recovery cycles — happy-path batches without drift

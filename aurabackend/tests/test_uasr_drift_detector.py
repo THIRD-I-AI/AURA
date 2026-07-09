@@ -261,3 +261,143 @@ class TestDetectIntegration:
         batch = self._make_batch("unknown", ["x"], [{"x": 1}])
         result = det.detect(batch)
         assert result.drift_detected is False
+
+
+# ── Regression: numeric-semantic false alarm (fix 3a) ─────────────
+
+class TestSemanticChannelColumnTyping:
+    """Fix 3a — the batch embedding must ignore continuous numeric columns.
+
+    Hashing ``col:value`` for floating-point data yields a unique token per
+    row, so any two numeric batches share almost no dimensions and the cosine
+    distance is ~1.0.  Before the fix this produced constant false-positive
+    SEMANTIC/CRITICAL drift on healthy numeric streams.
+    """
+
+    def _numeric_batch(self, source_id, batch_id, n=200, loc=10.0, scale=2.0):
+        import random
+        rnd = random.Random(f"{source_id}:{batch_id}")
+        return BatchPayload(
+            source_id=source_id,
+            batch_id=batch_id,
+            rows=[{"value": rnd.gauss(loc, scale)} for _ in range(n)],
+        )
+
+    def _categorical_batch(self, source_id, batch_id, dominant, n=200):
+        import random
+        rnd = random.Random(f"{source_id}:{batch_id}:{dominant}")
+        rows = []
+        for _ in range(n):
+            r = rnd.random()
+            cat = dominant if r < 0.8 else ("B" if r < 0.9 else "C")
+            rows.append({"cat": cat})
+        return BatchPayload(source_id=source_id, batch_id=batch_id, rows=rows)
+
+    def test_numeric_batch_yields_no_embedding(self):
+        det = DriftDetector()
+        emb = det._compute_batch_embedding(self._numeric_batch("num", "b0"))
+        assert emb is None
+
+    def test_numeric_stream_no_semantic_false_alarm(self):
+        det = DriftDetector()
+        det.register_baseline("num", self._numeric_batch("num", "base"))
+        semantic_fires = 0
+        for i in range(50):
+            res = det.detect(self._numeric_batch("num", f"b{i}"))
+            if res.drift_detected and res.drift_type == DriftType.SEMANTIC:
+                semantic_fires += 1
+        assert semantic_fires == 0
+
+    def test_categorical_batch_yields_embedding(self):
+        det = DriftDetector()
+        emb = det._compute_batch_embedding(self._categorical_batch("cat", "b0", "A"))
+        assert emb is not None
+        assert len(emb) == 256
+
+    def test_categorical_drift_still_detected(self):
+        det = DriftDetector()
+        det.register_baseline("cat", self._categorical_batch("cat", "base", "A"))
+        # Same categorical distribution → no drift
+        same = det.detect(self._categorical_batch("cat", "same", "A"))
+        assert same.drift_detected is False
+        # Dominant category flips A→Z → drift must be caught
+        drifted = det.detect(self._categorical_batch("cat", "drift", "Z"))
+        assert drifted.drift_detected is True
+
+    def test_mixed_batch_embeds_only_categorical(self):
+        det = DriftDetector()
+        import random
+        rnd = random.Random("mixed")
+        rows = [{"value": rnd.gauss(10, 2), "cat": rnd.choice(["A", "B"])}
+                for _ in range(200)]
+        batch = BatchPayload(source_id="mix", batch_id="b0", rows=rows)
+        emb = det._compute_batch_embedding(batch)
+        assert emb is not None  # categorical column present
+        assert det._categorical_columns(batch) == ["cat"]
+
+
+class TestVectorizedDistributionIdentity:
+    """detect() was vectorized with numpy; distributions and histogram bin
+    counts must remain bit-for-bit identical to the pure-Python reference,
+    because those counts feed KL divergence and severity classification."""
+
+    _BINS = 50
+
+    @staticmethod
+    def _py_reference(values, bins=50):
+        """Pure-Python distribution computation (pre-vectorization logic)."""
+        mean = sum(values) / len(values)
+        std = (sum((x - mean) ** 2 for x in values) / max(len(values), 1)) ** 0.5
+        distinct = len(set(values))
+        mn, mx = min(values), max(values)
+        if mn == mx:
+            hist = {"bins": [mn], "counts": [len(values)]}
+        else:
+            bw = (mx - mn) / bins
+            edges = [mn + i * bw for i in range(bins + 1)]
+            counts = [0] * bins
+            for v in values:
+                counts[min(int((v - mn) / bw), bins - 1)] += 1
+            hist = {"bins": edges, "counts": counts}
+        return mean, std, distinct, hist
+
+    def test_numeric_distribution_matches_reference(self):
+        import random
+        rnd = random.Random("vec-identity")
+        det = DriftDetector()
+        for _ in range(5):
+            vals = [rnd.gauss(10, 2) for _ in range(5000)]
+            rows = [{"value": v} for v in vals]
+            batch = BatchPayload(source_id="s", batch_id="b", rows=rows)
+            dist = det._compute_distributions(batch)["value"]
+            pm, ps, pd, ph = self._py_reference(vals)
+            assert abs(dist.mean - pm) < 1e-9
+            assert abs(dist.std - ps) < 1e-9
+            assert dist.distinct_count == pd
+            assert dist.histogram["counts"] == ph["counts"]
+            assert sum(dist.histogram["counts"]) == len(vals)
+
+    def test_constant_column_histogram(self):
+        det = DriftDetector()
+        rows = [{"value": 5.0} for _ in range(100)]
+        batch = BatchPayload(source_id="s", batch_id="b", rows=rows)
+        dist = det._compute_distributions(batch)["value"]
+        assert dist.histogram["counts"] == [100]
+        assert dist.std == 0.0
+
+    def test_histogram_accepts_list_and_array(self):
+        import numpy as np
+        det = DriftDetector()
+        vals = [float(x) for x in np.random.default_rng(0).normal(0, 1, 1000)]
+        as_list = det._build_numeric_histogram(vals)
+        as_array = det._build_numeric_histogram(np.asarray(vals, dtype=float))
+        assert as_list["counts"] == as_array["counts"]
+
+    def test_non_numeric_falls_back_to_categorical(self):
+        det = DriftDetector()
+        rows = [{"value": "A"}, {"value": "B"}, {"value": "A"}]
+        batch = BatchPayload(source_id="s", batch_id="b", rows=rows)
+        dist = det._compute_distributions(batch)["value"]
+        assert "categories" in dist.histogram
+        assert dist.histogram["categories"] == {"A": 2, "B": 1}
+

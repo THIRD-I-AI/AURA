@@ -1,0 +1,10 @@
+experiment,cold_start_fpr,steady_state_fpr,cold_n,steady_n,seeds,unit_factor,detection_rate,median_batches,p95_batches,detected_within_window
+fpr,0.893,0.0754,1000,5000,200,,,,,
+detection_rate,,,,,200,1.05,0.075,,,
+detection_rate,,,,,200,1.1,0.075,,,
+detection_rate,,,,,200,1.25,1.0,,,
+detection_rate,,,,,200,1.5,1.0,,,
+detection_rate,,,,,200,2.0,1.0,,,
+detection_rate,,,,,200,10.0,1.0,,,
+detection_rate,,,,,200,100.0,1.0,,,
+latency,,,,,200,,,1.0,1.0,1.0

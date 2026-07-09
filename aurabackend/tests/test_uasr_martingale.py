@@ -229,3 +229,73 @@ class TestDetector:
             else:
                 break
         assert crossings_before_alarm >= 2
+
+
+# ── Regression: increment_max auto-calibration (fix 3c) ───────────
+
+class TestIncrementAutoCalibration:
+    """Fix 3c — a static ``increment_max=1.0`` is 15-30x looser than real
+    null W1 increments, making ε(t) so wide the martingale never crosses it
+    (silent detector).  Auto-calibration derives the bound per (source,
+    column) from baseline-window dispersion.
+    """
+
+    def _stream(self, det, shift, n_active=200, baseline_window=30, seed=0):
+        import random
+        rnd = random.Random(seed)
+        baseline = [rnd.gauss(10, 2) for _ in range(200)]
+        det.register_baseline("s", {"v": baseline})
+        fired_at = None
+        for t in range(baseline_window + n_active):
+            loc = 10.0 if t < baseline_window else 10.0 + shift
+            samples = [rnd.gauss(loc, 2) for _ in range(100)]
+            if det.update("s", "v", samples) and fired_at is None:
+                fired_at = t - baseline_window
+        return fired_at
+
+    def test_calibrated_bound_is_set_and_small(self):
+        det = WassersteinMartingaleDetector(
+            alpha=0.01, baseline_window=30, auto_calibrate_increment=True
+        )
+        self._stream(det, shift=0.0, n_active=5, baseline_window=30, seed=1)
+        c = det.diagnostics("s", "v")["increment_max"]
+        # Calibrated well below the silent default of 1.0
+        assert 0.0 < c < 0.6
+
+    def test_default_bound_is_silent_under_drift(self):
+        det = WassersteinMartingaleDetector(
+            alpha=0.01, baseline_window=30, increment_max=1.0,
+            auto_calibrate_increment=False,
+        )
+        fired = self._stream(det, shift=0.30, baseline_window=30, seed=2)
+        assert fired is None  # static 1.0 bound → no alarm even under real drift
+
+    def test_calibrated_detects_drift(self):
+        det = WassersteinMartingaleDetector(
+            alpha=0.05, baseline_window=30, auto_calibrate_increment=True
+        )
+        fired = self._stream(det, shift=0.50, baseline_window=30, seed=3)
+        assert fired is not None  # auto-calibrated bound recovers detection
+
+    def test_calibrated_null_no_alarm(self):
+        det = WassersteinMartingaleDetector(
+            alpha=0.001, baseline_window=30, auto_calibrate_increment=True
+        )
+        fired = self._stream(det, shift=0.0, baseline_window=30, seed=4)
+        assert fired is None  # tight α → no false alarm on a null stream
+
+    def test_reset_clears_calibration(self):
+        det = WassersteinMartingaleDetector(
+            alpha=0.01, baseline_window=30, auto_calibrate_increment=True
+        )
+        self._stream(det, shift=0.0, n_active=5, baseline_window=30, seed=5)
+        det.reset_source("s")
+        assert "s" not in det._increment_max_cal
+
+    def test_invalid_calibration_params_rejected(self):
+        with pytest.raises(ValueError):
+            WassersteinMartingaleDetector(increment_calibration_quantile=0.0)
+        with pytest.raises(ValueError):
+            WassersteinMartingaleDetector(increment_calibration_quantile=1.5)
+        with pytest.raises(ValueError):
+            WassersteinMartingaleDetector(increment_calibration_scale=0.0)

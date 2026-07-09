@@ -1,0 +1,7 @@
+experiment,revert_rate,seeds,k_confirm,false_commit_rate,transitions,audit_records,unique_hashes
+auto_revert,1.0,200,,,,,
+regime_refusal,,200,1,0.0,,,
+regime_refusal,,200,2,0.0,,,
+regime_refusal,,200,3,0.0,,,
+regime_refusal,,200,5,0.0,,,
+audit,,100,,,300,300,248
