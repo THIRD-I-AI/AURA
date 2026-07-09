@@ -18,7 +18,7 @@ import random
 import pytest
 
 from uasr.drift_detector import DriftDetector
-from uasr.models import BatchPayload
+from uasr.models import BatchPayload, ColumnDistribution
 from uasr.state_store import (
     InMemoryStateStore,
     RedisStateStore,
@@ -215,5 +215,90 @@ class TestRedisStateStore:
         a = DriftDetector(state_store=shared)
         b = DriftDetector(state_store=shared)
         a.register_baseline("orders", _mkbatch("orders", mu=0.0))
+        res = b.detect(_mkbatch("orders", mu=3.0))
+        assert res.drift_detected is True
+
+
+# ────────────────────────────────────────────────────────────────────
+# RedisStateStore against real Redis command semantics (fakeredis)
+# ────────────────────────────────────────────────────────────────────
+# The _FakeRedis stand-in above proves RedisStateStore calls the right
+# method *names*.  These tests run the store against ``fakeredis``, a
+# high-fidelity in-process Redis that implements actual command
+# semantics — bytes-valued GET returns, real TTL/PTTL expiry, and glob
+# KEYS matching — so the JSON wire format and key handling are exercised
+# the way a live server would exercise them.  Skips cleanly if fakeredis
+# is not installed (keeps CI green without the optional dep).
+class TestRedisStateStoreIntegration:
+    def _client(self):
+        fakeredis = pytest.importorskip("fakeredis")
+        return fakeredis.FakeStrictRedis()
+
+    def _rich_state(self):
+        cd = ColumnDistribution(
+            column_name="value", mean=3.14, std=1.2, null_rate=0.01,
+            distinct_count=42, sample_size=200,
+            histogram={"bins": [1, 2, 3], "counts": [10, 20, 30]},
+        )
+        return cd, SourceState(
+            baseline={"value": cd}, schema={"value": "float"},
+            kl_history=[0.1, 0.2, 0.3], embeddings=[[0.5, 0.6], [0.7, 0.8]],
+        )
+
+    def test_get_returns_bytes_and_full_roundtrip(self):
+        r = self._client()
+        store = RedisStateStore(client=r)
+        _, st = self._rich_state()
+        store.save("srcA", st)
+        # Real redis GET returns bytes; the store must decode + rebuild.
+        assert isinstance(r.get("uasr:state:srcA"), bytes)
+        back = store.load("srcA")
+        assert back.baseline["value"].mean == 3.14
+        assert back.baseline["value"].histogram == {"bins": [1, 2, 3], "counts": [10, 20, 30]}
+        assert back.schema == {"value": "float"}
+        assert back.kl_history == [0.1, 0.2, 0.3]
+        assert back.embeddings == [[0.5, 0.6], [0.7, 0.8]]
+
+    def test_contains_delete_and_empty_on_miss(self):
+        store = RedisStateStore(client=self._client())
+        _, st = self._rich_state()
+        store.save("srcA", st)
+        assert store.contains("srcA") is True
+        assert store.contains("absent") is False
+        store.delete("srcA")
+        assert store.contains("srcA") is False
+        assert store.load("srcA").is_empty()
+
+    def test_source_ids_via_real_keys_glob(self):
+        store = RedisStateStore(client=self._client())
+        for sid in ("p1", "p2", "p3"):
+            store.save(sid, SourceState(schema={"c": "int"}))
+        assert sorted(store.source_ids()) == ["p1", "p2", "p3"]
+
+    def test_ttl_is_actually_applied(self):
+        r = self._client()
+        store = RedisStateStore(client=r, ttl_seconds=100)
+        store.save("ephemeral", SourceState(schema={"x": "int"}))
+        pttl = r.pttl("uasr:state:ephemeral")
+        # PTTL in ms; must be a positive value bounded by the configured TTL.
+        assert 0 < pttl <= 100_000
+
+    def test_cross_replica_cold_miss_fix(self):
+        # Two stores share one backend = two worker replicas on one Redis.
+        r = self._client()
+        cd, _ = self._rich_state()
+        replica1 = RedisStateStore(client=r)
+        replica2 = RedisStateStore(client=r)
+        replica1.save("shared_src", SourceState(baseline={"v": cd}))
+        seen = replica2.load("shared_src")
+        assert seen.baseline is not None
+        assert seen.baseline["v"].mean == 3.14
+
+    def test_detectors_share_state_over_real_redis(self):
+        shared = RedisStateStore(client=self._client())
+        a = DriftDetector(state_store=shared)
+        b = DriftDetector(state_store=shared)
+        a.register_baseline("orders", _mkbatch("orders", mu=0.0))
+        # b never saw the baseline in-process; it must read it from Redis.
         res = b.detect(_mkbatch("orders", mu=3.0))
         assert res.drift_detected is True
