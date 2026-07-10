@@ -75,6 +75,36 @@ spec:
               app.kubernetes.io/name: {{ include "aura.name" . }}
               app.kubernetes.io/instance: {{ .Release.Name }}
               app.kubernetes.io/component: api_gateway
+{{- if .Values.redis.enabled }}
+---
+# UASR (and any backend using the shared cache) → bundled Redis on 6379.
+# The allow-internal rule above only admits api_gateway as an ingress source,
+# so without this the self-healing pods cannot reach Redis under the
+# default-deny policy.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "aura.fullname" . }}-allow-redis
+  labels:
+    {{- include "aura.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "aura.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: redis
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: {{ include "aura.name" . }}
+              app.kubernetes.io/instance: {{ .Release.Name }}
+      ports:
+        - protocol: TCP
+          port: 6379
+{{- end }}
 {{- if .Values.networkPolicy.allowAllEgress }}
 ---
 # Permissive egress — kept for dev clusters only. TRAIGA deployments must
