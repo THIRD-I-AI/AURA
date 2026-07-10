@@ -374,10 +374,13 @@ class RecoveryLoop:
         import logging as _logging
         allowed_globals["logging"] = _logging
 
-        namespace: Dict[str, Any] = {}
-        exec(shim_code, allowed_globals, namespace)  # noqa: S102
+        # Single namespace: module-level shim constants (e.g. _CLIP_MAX) must
+        # live in the same dict that is transform().__globals__, otherwise names
+        # referenced from inside transform() do not resolve. Separate
+        # globals/locals dicts break that (classic two-dict exec gotcha).
+        exec(shim_code, allowed_globals)  # noqa: S102
 
-        transform_fn = namespace.get("transform")
+        transform_fn = allowed_globals.get("transform")
         if not callable(transform_fn):
             raise ValueError("Shim does not define a callable `transform` function")
 

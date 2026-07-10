@@ -723,3 +723,17 @@ async def mapek_resume() -> Dict[str, Any]:
         return {"resumed": False, "reason": "worker was not paused"}
     _mapek_worker.resume()
     return {"resumed": True}
+
+# âââ Operator dashboard (static single-page console) âââ
+@app.get("/", include_in_schema=False)
+@app.get("/dashboard", include_in_schema=False)
+async def uasr_dashboard() -> Any:
+    """Serve the self-contained operator console (polls the REST API)."""
+    from pathlib import Path
+
+    from fastapi.responses import HTMLResponse
+
+    html_path = Path(__file__).parent / "static" / "dashboard.html"
+    if not html_path.is_file():
+        raise HTTPException(status_code=404, detail="dashboard not found")
+    return HTMLResponse(html_path.read_text(encoding="utf-8"))

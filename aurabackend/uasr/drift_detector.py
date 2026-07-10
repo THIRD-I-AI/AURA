@@ -308,6 +308,7 @@ class DriftDetector:
         batch_dists = self._compute_distributions(batch)
         drifted_cols: List[str] = []
         kl_values: Dict[str, float] = {}
+        col_stats: Dict[str, Dict[str, Any]] = {}
         max_kl = 0.0
 
         zeta = self._dynamic_threshold(st.kl_history)
@@ -334,6 +335,14 @@ class DriftDetector:
                     kl = max(kl, loc_shift * zeta)
 
             kl_values[col_name] = round(kl, 6)
+
+            # Preserve location/scale so the actuator can build a
+            # deterministic rescale shim for unit-bug drift.
+            col_stats[col_name] = {
+                "baseline_mean": ref_dist.mean,
+                "batch_mean": batch_dist.mean,
+                "baseline_std": ref_dist.std,
+            }
 
             if kl > zeta:
                 drifted_cols.append(col_name)
@@ -364,6 +373,7 @@ class DriftDetector:
             "type": "statistical",
             "affected_columns": drifted_cols,
             "kl_values": kl_values,
+            "col_stats": col_stats,
             "max_kl": round(max_kl, 6),
             "threshold_zeta": round(zeta, 6),
             "severity": severity,

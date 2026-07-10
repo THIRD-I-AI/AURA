@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>UASR — Self-Healing Operator Console</title>
+<style>
+  :root {
+    --bg: #0e1116; --panel: #171b22; --panel2: #1e242d; --border: #2a313c;
+    --fg: #e6edf3; --muted: #8b949e; --accent: #2f81f7; --focal: #2166AC;
+    --ok: #3fb950; --warn: #d29922; --crit: #f85149; --comp: #B2182B;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    font-size: 14px; line-height: 1.5;
+  }
+  header {
+    display: flex; align-items: center; gap: 16px;
+    padding: 14px 22px; background: var(--panel); border-bottom: 1px solid var(--border);
+    position: sticky; top: 0; z-index: 10;
+  }
+  header h1 { font-size: 16px; margin: 0; font-weight: 600; letter-spacing: 0.2px; }
+  header .tag { color: var(--muted); font-size: 12px; font-family: var(--mono); }
+  .dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; margin-right: 6px; }
+  .dot.ok { background: var(--ok); } .dot.down { background: var(--crit); }
+  .conn { margin-left: auto; font-size: 12px; color: var(--muted); font-family: var(--mono); }
+  main { padding: 20px 22px; max-width: 1400px; margin: 0 auto; }
+  .grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin-bottom: 18px; }
+  .card {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 9px;
+    padding: 14px 16px;
+  }
+  .card .label { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; }
+  .card .value { font-size: 26px; font-weight: 600; margin-top: 4px; font-family: var(--mono); }
+  .card .sub { color: var(--muted); font-size: 11px; margin-top: 2px; }
+  .section { background: var(--panel); border: 1px solid var(--border); border-radius: 9px; margin-bottom: 18px; }
+  .section h2 { font-size: 13px; margin: 0; padding: 12px 16px; border-bottom: 1px solid var(--border);
+    text-transform: uppercase; letter-spacing: 0.5px; color: var(--muted); font-weight: 600; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 9px 16px; border-bottom: 1px solid var(--border); font-size: 13px; }
+  th { color: var(--muted); font-weight: 500; font-size: 11px; text-transform: uppercase; letter-spacing: 0.4px; }
+  td { font-family: var(--mono); }
+  tr:last-child td { border-bottom: none; }
+  .pill { padding: 2px 8px; border-radius: 20px; font-size: 11px; font-weight: 600; font-family: var(--mono); }
+  .pill.low { background: rgba(63,185,80,0.15); color: var(--ok); }
+  .pill.medium { background: rgba(210,153,34,0.15); color: var(--warn); }
+  .pill.high { background: rgba(248,81,73,0.15); color: var(--crit); }
+  .pill.critical { background: var(--crit); color: #fff; }
+  .pill.clean { background: rgba(63,185,80,0.15); color: var(--ok); }
+  .btn {
+    background: var(--panel2); border: 1px solid var(--border); color: var(--fg);
+    padding: 5px 12px; border-radius: 6px; font-size: 12px; cursor: pointer; font-family: inherit;
+  }
+  .btn:hover { border-color: var(--accent); }
+  .btn.approve { color: var(--ok); } .btn.reject { color: var(--crit); }
+  .empty { padding: 20px 16px; color: var(--muted); font-style: italic; }
+  .muted { color: var(--muted); }
+  .flash { animation: flash 1s ease; }
+  @keyframes flash { 0% { background: rgba(47,129,247,0.25); } 100% { background: transparent; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>UASR</h1>
+  <span class="tag">Self-Healing Operator Console</span>
+  <span class="conn"><span id="cdot" class="dot down"></span><span id="cstate">connecting…</span> · <span id="clock"></span></span>
+</header>
+<main>
+  <div class="grid" id="kpis">
+    <div class="card"><div class="label">Health H<sub>u</sub></div><div class="value" id="k-hu">—</div><div class="sub" id="k-hu-sub">resolution × latency</div></div>
+    <div class="card"><div class="label">Sources</div><div class="value" id="k-sources">—</div><div class="sub" id="k-sources-sub">with active baseline</div></div>
+    <div class="card"><div class="label">Pending Recoveries</div><div class="value" id="k-pending">—</div><div class="sub">awaiting operator</div></div>
+    <div class="card"><div class="label">Deployment</div><div class="value" id="k-deploy" style="font-size:15px;">—</div><div class="sub" id="k-deploy-sub">state · repair</div></div>
+  </div>
+
+  <div class="section">
+    <h2>Pending Recoveries — Human Gate</h2>
+    <table><thead><tr><th>Recovery</th><th>Source</th><th>Type</th><th>Severity</th><th>Detected</th><th>Actions</th></tr></thead>
+    <tbody id="pending-body"><tr><td colspan="6" class="empty">loading…</td></tr></tbody></table>
+  </div>
+
+  <div class="section">
+    <h2>Sources</h2>
+    <table><thead><tr><th>Source</th><th>Baseline</th><th>Deployed Shims</th><th>Last Drift</th></tr></thead>
+    <tbody id="sources-body"><tr><td colspan="4" class="empty">loading…</td></tr></tbody></table>
+  </div>
+
+  <div class="section">
+    <h2>Recent Alerts</h2>
+    <table><thead><tr><th>Time</th><th>Source</th><th>Severity</th><th>Message</th></tr></thead>
+    <tbody id="alerts-body"><tr><td colspan="4" class="empty">loading…</td></tr></tbody></table>
+  </div>
+</main>
+<script>
+const BASE = "";  // same-origin
+let lastPending = new Set();
+
+function fmt(v, d=3) { return (v===null||v===undefined||isNaN(v)) ? "—" : Number(v).toFixed(d); }
+function esc(s) { return String(s==null?"":s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+
+async function get(path) {
+  const r = await fetch(BASE + path, {headers: {"accept":"application/json"}});
+  if (!r.ok) throw new Error(path + " -> " + r.status);
+  return r.json();
+}
+async function post(path, body) {
+  const r = await fetch(BASE + path, {method:"POST", headers:{"content-type":"application/json"}, body: JSON.stringify(body||{})});
+  if (!r.ok) throw new Error(path + " -> " + r.status);
+  return r.json();
+}
+
+function setConn(ok) {
+  document.getElementById("cdot").className = "dot " + (ok ? "ok" : "down");
+  document.getElementById("cstate").textContent = ok ? "connected" : "service down";
+}
+
+async function refresh() {
+  document.getElementById("clock").textContent = new Date().toLocaleTimeString();
+  try {
+    const [deploy, sources, metrics, pending, alerts] = await Promise.all([
+      get("/uasr/deployment").catch(()=>({})),
+      get("/uasr/sources").catch(()=>({})),
+      get("/uasr/metrics").catch(()=>({})),
+      get("/uasr/recovery/pending").catch(()=>({})),
+      get("/uasr/metrics/alerts").catch(()=>({})),
+    ]);
+    setConn(true);
+    renderKpis(deploy, sources, metrics, pending);
+    renderPending(pending);
+    renderSources(sources);
+    renderAlerts(alerts);
+  } catch (e) {
+    setConn(false);
+  }
+}
+
+function asList(x, key) {
+  if (Array.isArray(x)) return x;
+  if (x && Array.isArray(x[key])) return x[key];
+  return [];
+}
+
+function renderKpis(deploy, sources, metrics, pending) {
+  const hu = metrics.hu ?? metrics.H_u ?? metrics.health ?? (metrics.metrics && metrics.metrics.hu);
+  document.getElementById("k-hu").textContent = fmt(hu, 3);
+  const srcs = asList(sources, "sources");
+  const active = srcs.filter(s => s.has_active_baseline).length;
+  document.getElementById("k-sources").textContent = srcs.length;
+  document.getElementById("k-sources-sub").textContent = active + " with active baseline";
+  const pend = asList(pending, "pending").length || asList(pending, "recoveries").length;
+  document.getElementById("k-pending").textContent = pend;
+  const sb = deploy.state_backend || "?", rb = deploy.repair_backend || "?";
+  document.getElementById("k-deploy").textContent = sb + " · " + rb;
+  document.getElementById("k-deploy-sub").textContent = (deploy.mapek_enabled ? "MAPE-K on" : "MAPE-K off") + (deploy.node_id ? " · " + deploy.node_id : "");
+}
+
+function sevPill(s) { s = (s||"").toLowerCase(); return '<span class="pill '+esc(s)+'">'+esc(s||"—")+'</span>'; }
+
+function renderPending(pending) {
+  const rows = asList(pending, "pending").length ? asList(pending, "pending") : asList(pending, "recoveries");
+  const body = document.getElementById("pending-body");
+  if (!rows.length) { body.innerHTML = '<tr><td colspan="6" class="empty">No recoveries awaiting approval.</td></tr>'; lastPending = new Set(); return; }
+  const now = new Set(rows.map(r => r.recovery_id || r.id));
+  body.innerHTML = rows.map(r => {
+    const rid = r.recovery_id || r.id || "—";
+    const isNew = !lastPending.has(rid);
+    return '<tr class="'+(isNew?"flash":"")+'">'
+      + '<td>'+esc(rid).slice(0,12)+'</td>'
+      + '<td>'+esc(r.source_id)+'</td>'
+      + '<td>'+esc(r.drift_type||"—")+'</td>'
+      + '<td>'+sevPill(r.severity)+'</td>'
+      + '<td class="muted">'+esc(r.detected_at||r.created_at||"—")+'</td>'
+      + '<td><button class="btn approve" onclick="approve(\''+esc(rid)+'\')">approve</button> '
+      + '<button class="btn reject" onclick="reject(\''+esc(rid)+'\')">reject</button></td></tr>';
+  }).join("");
+  lastPending = now;
+}
+
+function renderSources(sources) {
+  const rows = asList(sources, "sources");
+  const body = document.getElementById("sources-body");
+  if (!rows.length) { body.innerHTML = '<tr><td colspan="4" class="empty">No sources registered.</td></tr>'; return; }
+  body.innerHTML = rows.map(s =>
+    '<tr><td>'+esc(s.source_id)+'</td>'
+    + '<td>'+(s.has_active_baseline ? '<span class="pill clean">active</span>' : '<span class="muted">none</span>')+'</td>'
+    + '<td>'+esc(s.deployed_shims ?? 0)+'</td>'
+    + '<td class="muted">'+esc(s.last_drift_type || s.last_severity || "—")+'</td></tr>'
+  ).join("");
+}
+
+function renderAlerts(alerts) {
+  const rows = asList(alerts, "alerts");
+  const body = document.getElementById("alerts-body");
+  if (!rows.length) { body.innerHTML = '<tr><td colspan="4" class="empty">No recent alerts.</td></tr>'; return; }
+  body.innerHTML = rows.slice(0,20).map(a =>
+    '<tr><td class="muted">'+esc(a.timestamp||a.time||a.created_at||"—")+'</td>'
+    + '<td>'+esc(a.source_id||"—")+'</td>'
+    + '<td>'+sevPill(a.severity)+'</td>'
+    + '<td class="muted" style="font-family:inherit">'+esc(a.message||a.description||"—")+'</td></tr>'
+  ).join("");
+}
+
+window.approve = async function(rid) {
+  const who = prompt("Approver name:", "operator"); if (who===null) return;
+  try { await post("/uasr/recovery/"+rid+"/approve", {approver: who, note: "via console"}); refresh(); }
+  catch(e) { alert("approve failed: "+e.message); }
+};
+window.reject = async function(rid) {
+  const who = prompt("Approver name:", "operator"); if (who===null) return;
+  const why = prompt("Reason for rejection:", ""); if (why===null) return;
+  try { await post("/uasr/recovery/"+rid+"/reject", {approver: who, reason: why}); refresh(); }
+  catch(e) { alert("reject failed: "+e.message); }
+};
+
+refresh();
+setInterval(refresh, 3000);
+</script>
+</body>
+</html>
