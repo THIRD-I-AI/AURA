@@ -58,11 +58,20 @@ class DriftDetector:
         schema_strict: bool = True,
         semantic_threshold: float = 0.25,
         state_store: Optional[StateStore] = None,
+        warmup_batches: int = 5,
     ) -> None:
         # ζ — KL-divergence threshold.  Adapted dynamically per source.
         self._default_zeta = default_zeta
         self._schema_strict = schema_strict
         self._semantic_threshold = semantic_threshold
+        # Cold-start suppression: the adaptive ζ needs ≥5 KL samples before
+        # it reflects a source's real noise floor.  Until then, a 50-bin
+        # histogram estimated off ~500 rows carries enough Poisson bin-noise
+        # to push KL past the flat default ζ and fire false alarms.  For the
+        # first ``warmup_batches`` numeric batches per source we still RECORD
+        # the KL sample (so the window fills) but SUPPRESS the statistical
+        # alert.  Set to 0 to disable and restore the original behaviour.
+        self._warmup_batches = max(0, int(warmup_batches))
 
         # Per-source state (baselines, KL history, schema baselines,
         # reference embeddings) lives behind a pluggable StateStore so the
@@ -310,6 +319,7 @@ class DriftDetector:
         kl_values: Dict[str, float] = {}
         col_stats: Dict[str, Dict[str, Any]] = {}
         max_kl = 0.0
+        max_loc_shift = 0.0
 
         zeta = self._dynamic_threshold(st.kl_history)
 
@@ -330,6 +340,7 @@ class DriftDetector:
             ):
                 scale = ref_dist.std if ref_dist.std > 0 else 1.0
                 loc_shift = abs(batch_dist.mean - ref_dist.mean) / scale
+                max_loc_shift = max(max_loc_shift, loc_shift)
                 # Treat a >2-sigma shift as additional KL
                 if loc_shift > 2.0:
                     kl = max(kl, loc_shift * zeta)
@@ -368,6 +379,26 @@ class DriftDetector:
             severity = DriftSeverity.HIGH
         elif max_kl > zeta * 1.5:
             severity = DriftSeverity.MEDIUM
+
+        # Cold-start warmup: for the first ``warmup_batches`` numeric batches
+        # per source the adaptive-ζ window is not yet full, so ζ is the flat
+        # default and a 50-bin histogram estimated off ~500 rows carries
+        # Poisson bin-noise large enough to push KL past ζ on a perfectly
+        # healthy stream.  These false alarms are distinguishable from real
+        # drift by a robust statistic: the healthy noise leaves the column
+        # LOCATION unmoved (empirically <0.2σ), whereas a genuine unit bug or
+        # regime change shifts the mean by many σ.  During warmup we therefore
+        # still RECORD the KL sample (so the window fills) but SUPPRESS the
+        # alert unless the location has genuinely moved (>2σ) — trusting the
+        # robust location/scale statistic over the noisy per-bin KL while the
+        # histogram is under-sampled.  Steady-state drift fires normally once
+        # the window fills.  Set warmup_batches=0 to restore original behaviour.
+        if (
+            self._warmup_batches
+            and len(st.kl_history) <= self._warmup_batches
+            and max_loc_shift <= 2.0
+        ):
+            return None, mutated
 
         return {
             "type": "statistical",
