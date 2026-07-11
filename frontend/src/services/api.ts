@@ -32,12 +32,20 @@ export function sanitizeApiBase(candidate: string | null | undefined, fallback: 
 export const sanitizeRecordHash = (value: unknown): string | null =>
   typeof value === 'string' && /^[0-9a-f]{64}$/.test(value) ? value : null;
 
-const _FALLBACK_BASE = (import.meta.env.VITE_API_URL as string) || 'http://localhost:8000';
+// Same-origin by default. An unset (or empty) VITE_API_URL -- the production
+// build served behind the nginx reverse proxy -- yields an empty base, so
+// API_BASE_URL resolves to the relative '/api/v1' and every request targets
+// whatever host served the app. That makes the bundle cloud-agnostic: the same
+// image works on any domain without a rebuild. Dev sets VITE_API_URL=
+// http://localhost:8000 explicitly (the cross-origin Vite dev server), and a
+// localStorage('apiUrl') override still wins in both cases.
+const _ENV_BASE = import.meta.env.VITE_API_URL as string | undefined;
+const _FALLBACK_BASE = !_ENV_BASE ? '' : _ENV_BASE;
 const _RAW_BASE = sanitizeApiBase(
   typeof localStorage !== 'undefined' ? localStorage.getItem('apiUrl') : null,
   _FALLBACK_BASE,
 );
-const ROOT_BASE_URL = _RAW_BASE.replace(/\/+$/, '');              // For non-versioned endpoints (e.g. /health)
+export const ROOT_BASE_URL = _RAW_BASE.replace(/\/+$/, '');              // For non-versioned endpoints (e.g. /health)
 export const API_BASE_URL = `${ROOT_BASE_URL}/api/v1`;            // All domain endpoints are versioned
 const REQUEST_TIMEOUT = 300000; // 300 seconds (5 minutes) to allow massive agent queries
 const HEALTH_CHECK_INTERVAL = Number(import.meta.env.VITE_HEALTH_CHECK_INTERVAL) || 10000; // 10 seconds for faster detection

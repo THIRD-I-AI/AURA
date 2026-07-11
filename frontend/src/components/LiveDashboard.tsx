@@ -10,6 +10,7 @@
  *   - monitor:*      — alert events from MonitorAgent
  */
 import { useState, useEffect, useCallback } from 'react';
+import { ROOT_BASE_URL } from '../services/api';
 import {
   LineChart, Line, AreaChart, Area, RadialBarChart, RadialBar,
   XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
@@ -90,8 +91,7 @@ export default function LiveDashboard() {
 
   // Bootstrap — fetch current health immediately
   useEffect(() => {
-    const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000';
-    fetch(`${API_BASE}/system/health`)
+    fetch(`${ROOT_BASE_URL}/system/health`)
       .then((r) => r.json())
       .then((data) => {
         const snap: HealthSnapshot = {

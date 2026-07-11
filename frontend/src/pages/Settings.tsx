@@ -92,7 +92,8 @@ const SectionHeader: React.FC<{
 // ─────────────────────────────────────────────────────────────────────────────
 
 const Settings: React.FC<SettingsProps> = () => {
-  const [apiUrl, setApiUrl] = useState(import.meta.env.VITE_API_URL || 'http://localhost:8000');
+  // Empty = same-origin (production default). The placeholder shows the dev URL.
+  const [apiUrl, setApiUrl] = useState((import.meta.env.VITE_API_URL as string) || '');
   const [health, setHealth] = useState<HealthStatus | null>(null);
   const [checking, setChecking] = useState(false);
   const [saved, setSaved] = useState(false);

@@ -4,9 +4,10 @@
  */
 import { useState, useCallback, useRef } from 'react';
 import { useSSE, type SSEEvent } from './useSSE';
+import { API_BASE_URL } from '../services/api';
 
-const _RAW = localStorage.getItem('apiUrl') || 'http://localhost:8000';
-const API_BASE = `${_RAW.replace(/\/+$/, '')}/api/v1`;
+// Centralized base (same-origin in prod, localStorage('apiUrl') override wins).
+const API_BASE = API_BASE_URL;
 
 // ── Types ────────────────────────────────────────────────────────────
 

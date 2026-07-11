@@ -14,9 +14,10 @@
  *   const { lastEvent } = useSSE({ topic: `query:${jobId}`, enabled: !!jobId });
  */
 import { useState, useEffect, useRef, useCallback } from 'react';
+import { API_BASE_URL } from '../services/api';
 
-const _RAW = (import.meta.env.VITE_API_URL || 'http://localhost:8000') as string;
-const API_BASE = `${_RAW.replace(/\/+$/, '')}/api/v1`;
+// Centralized base (same-origin in prod, localStorage('apiUrl') override wins).
+const API_BASE = API_BASE_URL;
 
 export interface SSEEvent<T = unknown> {
   id: string;
