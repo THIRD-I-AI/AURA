@@ -7,10 +7,11 @@ This document describes the new enterprise-grade frontend UI system built for th
 ## Design System Foundation
 
 ### Location
-- **Design System**: `src/styles/design-system.css` (350+ lines)
-- **Component Styles**: `src/styles/components.css` (500+ lines)
-- **Entry Point**: `src/main.tsx` imports both CSS files
-- **Main App**: `src/AppNew.tsx` (new main application)
+- **Design System**: `src/styles/design-system.css` — theme-neutral structural tokens (fonts, spacing, radii, durations)
+- **Component Styles**: `src/styles/components.css`
+- **Color Tokens (source of truth)**: `src/styles/tokens.css` — loads AFTER design-system.css; owns the Terminal Authority palette and the `[data-theme='certificate']` light island
+- **Entry Point**: `src/main.tsx` → `BrowserRouter` → `src/AppRoutes.tsx`
+- **Main App**: `src/AppRoutes.tsx` (route table; pages under `src/pages/` and `src/app/`)
 
 ### Key Features
 
@@ -356,8 +357,8 @@ Example Usage:
 
 ## Main Application
 
-### AppNew.tsx
-**Location**: `src/AppNew.tsx`
+### AppRoutes.tsx
+**Location**: `src/AppRoutes.tsx`
 
 3-view application with:
 
@@ -638,7 +639,8 @@ test('renders button with text', () => {
 ```
 frontend/src/
 ├── styles/
-│   ├── design-system.css      # Design tokens (150+ variables)
+│   ├── design-system.css      # Structural tokens (fonts, spacing, radii)
+│   ├── tokens.css             # Color palette — source of truth (loads last)
 │   └── components.css          # Component styles (500+ lines)
 ├── components/
 │   ├── ui/
@@ -654,7 +656,7 @@ frontend/src/
 │   │   └── AppLayout.tsx       # Main layout container
 │   ├── ChatInterface.tsx       # Chat UI
 │   └── FileUploadPro.tsx       # File upload
-├── AppNew.tsx                  # New main app (3 views)
+├── AppRoutes.tsx               # Route table (17+ pages)
 ├── main.tsx                    # Entry point (updated)
 └── index.css                   # Global reset styles
 ```

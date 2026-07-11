@@ -45,16 +45,6 @@ const MoonIcon = () => (
   </svg>
 );
 
-const SunIcon = () => (
-  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-    <circle cx="12" cy="12" r="5"/>
-    <line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/>
-    <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/>
-    <line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/>
-    <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>
-  </svg>
-);
-
 const CheckIcon = () => (
   <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#34d399" strokeWidth="2.5" strokeLinecap="round">
     <polyline points="20 6 9 17 4 12"/>
@@ -97,7 +87,6 @@ const Settings: React.FC<SettingsProps> = () => {
   const [health, setHealth] = useState<HealthStatus | null>(null);
   const [checking, setChecking] = useState(false);
   const [saved, setSaved] = useState(false);
-  const isDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
 
   useEffect(() => {
     const stored = localStorage.getItem('apiUrl');
@@ -250,7 +239,7 @@ const Settings: React.FC<SettingsProps> = () => {
             <p className="settings-row__hint">Follows your OS preference automatically. Dark mode is always active.</p>
           </div>
           <div className="settings-row__control" style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 'var(--font-sm)', fontWeight: 600, color: 'var(--text-secondary)' }}>
-            {isDark ? <><MoonIcon /> Dark</> : <><SunIcon /> Light</>}
+            <MoonIcon /> Dark
           </div>
         </div>
 
