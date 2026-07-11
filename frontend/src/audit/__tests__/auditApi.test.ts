@@ -46,7 +46,11 @@ describe('auditApi', () => {
   });
 
   it('pdfUrl and verifyPath build correct hrefs without fetching', () => {
-    expect(auditApi.pdfUrl('h')).toBe(`${API_BASE_URL}/counterfactual/artifacts/h/report.pdf`);
+    // pdfUrl normalizes through `new URL(..., origin).href` as a CodeQL XSS barrier,
+    // so the result is always an absolute, origin-qualified href -- regardless of
+    // whether API_BASE_URL is same-origin relative ('/api/v1') or an absolute base.
+    const expected = new URL(`${API_BASE_URL}/counterfactual/artifacts/h/report.pdf`, window.location.origin).href;
+    expect(auditApi.pdfUrl('h')).toBe(expected);
   });
 
   it('uploadDataset POSTs multipart to /upload and returns the filename', async () => {
