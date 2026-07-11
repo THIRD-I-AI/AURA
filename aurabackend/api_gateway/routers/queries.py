@@ -26,7 +26,7 @@ from api_gateway.routers.workspaces import (
     current_workspace_id,
     tenant_upload_dir,
 )
-from connectors import BigQueryConnector, ConnectorConfig, MySQLConnector, PostgreSQLConnector, SourceType
+from connectors import ConnectorConfig, SourceType, build_connector
 from insights_service import InsightsEngine
 from safety import SQLSafetyValidator
 from shared.cache import dashboard_cache, query_cache
@@ -370,14 +370,9 @@ async def execute_query_with_insights(request: ExecuteQueryRequest):
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Query validation failed: {validation.errors}")
 
         connector_config = ConnectorConfig(source_type=SourceType(request.connector_type), name=f"exec-{request.connector_type}", **request.connector_config)
-        if request.connector_type == "postgresql":
-            connector = PostgreSQLConnector(connector_config)
-        elif request.connector_type == "mysql":
-            connector = MySQLConnector(connector_config)
-        elif request.connector_type == "bigquery":
-            connector = BigQueryConnector(connector_config)
-        else:
-            raise ValueError(f"Unknown connector type: {request.connector_type}")
+        connector = build_connector(request.connector_type, connector_config)
+        if connector is None:
+            raise ValueError(f"Unknown or unavailable connector type: {request.connector_type}")
 
         start_time = time.perf_counter()
         if request.connector_type == "postgresql":

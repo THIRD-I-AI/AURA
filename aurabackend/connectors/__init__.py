@@ -35,6 +35,7 @@ from .registry import (  # noqa: E402  — must be imported after the connector 
     ConnectorField,
     ConnectorSpec,
     available_connectors,
+    build_connector,
     get_connector,
     register_connector,
 )
@@ -53,6 +54,7 @@ __all__ = [
     "ConnectorField",
     "ConnectorSpec",
     "available_connectors",
+    "build_connector",
     "get_connector",
     "register_connector",
 ]

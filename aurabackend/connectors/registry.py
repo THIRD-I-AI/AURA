@@ -24,7 +24,7 @@ from __future__ import annotations
 import logging
 import threading
 from dataclasses import asdict, dataclass, field
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Callable, Dict, List, Literal, Optional
 
 _log = logging.getLogger("aura.connectors.registry")
 ENTRY_POINT_GROUP = "aura.connectors"
@@ -59,9 +59,14 @@ class ConnectorSpec:
     available: bool = True
     unavailable_reason: Optional[str] = None
     docs_url: Optional[str] = None
+    # Not part of the wire contract: a callable ``(config) -> connector``
+    # instance, consumed by ``build_connector``. Excluded from ``to_dict``
+    # so the spec stays JSON-serialisable for the frontend form.
+    factory: Optional[Callable[[Any], Any]] = field(default=None, compare=False)
 
     def to_dict(self) -> Dict[str, Any]:
         d = asdict(self)
+        d.pop("factory", None)
         # Backwards-compat shim — older clients read ``config_required``.
         d["config_required"] = [f["key"] for f in d["fields"] if f.get("required")]
         return d
@@ -100,6 +105,20 @@ def available_connectors(*, include_unavailable: bool = True) -> List[ConnectorS
     return specs
 
 
+def build_connector(connector_id: str, config: Any) -> Optional[Any]:
+    """Instantiate a live connector for a registered id.
+
+    DB-agnostic entry point used by the gateway instead of a hardcoded
+    ``type -> class`` switch. Returns ``None`` when the id is unknown or
+    its spec carries no factory (e.g. the driver isn't installed), so
+    callers keep their existing ``if connector is None`` handling.
+    """
+    spec = get_connector(connector_id)
+    if spec is None or spec.factory is None:
+        return None
+    return spec.factory(config)
+
+
 # ── Built-in connector specs ────────────────────────────────────────
 
 _DB_FIELDS = [
@@ -136,6 +155,7 @@ def _seed_builtins() -> None:
         icon="🐘",
         capabilities=["sql", "vector", "spatial"],
         fields=list(_DB_FIELDS) + [ConnectorField("port", "Port", "number", required=True, default=5432)],
+        factory=(lambda cfg: PostgreSQLConnector(cfg)) if PostgreSQLConnector else None,
         available=PostgreSQLConnector is not None,
         unavailable_reason=None if PostgreSQLConnector else "asyncpg driver not installed",
     ))
@@ -147,6 +167,7 @@ def _seed_builtins() -> None:
         icon="🐬",
         capabilities=["sql"],
         fields=list(_DB_FIELDS) + [ConnectorField("port", "Port", "number", required=True, default=3306)],
+        factory=(lambda cfg: MySQLConnector(cfg)) if MySQLConnector else None,
         available=MySQLConnector is not None,
         unavailable_reason=None if MySQLConnector else "aiomysql driver not installed",
     ))
@@ -163,6 +184,7 @@ def _seed_builtins() -> None:
             ConnectorField("credentials_json", "Service Account JSON", "textarea", required=True,
                            help="Paste the service account key JSON. Stored encrypted."),
         ],
+        factory=(lambda cfg: BigQueryConnector(cfg)) if BigQueryConnector else None,
         available=BigQueryConnector is not None,
         unavailable_reason=None if BigQueryConnector else "google-cloud-bigquery not installed",
     ))
@@ -176,6 +198,7 @@ def _seed_builtins() -> None:
         fields=[
             ConnectorField("database", "DB file (or :memory:)", "string", default=":memory:"),
         ],
+        factory=(lambda cfg: DuckDBConnector(cfg)) if DuckDBConnector else None,
         available=DuckDBConnector is not None,
     ))
     # Sprint 17 — Multi-Modal Fabric (Pillar 2). DuckDB-spatial is the
@@ -196,6 +219,7 @@ def _seed_builtins() -> None:
         fields=[
             ConnectorField("database", "DB file (or :memory:)", "string", default=":memory:"),
         ],
+        factory=(lambda cfg: DuckDBConnector(cfg)) if DuckDBConnector else None,
         available=DuckDBConnector is not None,
         unavailable_reason=(
             None if DuckDBConnector
@@ -230,6 +254,7 @@ def _seed_builtins() -> None:
                 help="flat_ip (cosine, exact), l2 (Euclidean), hnsw (approx).",
             ),
         ],
+        factory=(lambda cfg: FAISSConnector(cfg)) if FAISSConnector else None,
         available=FAISSConnector is not None,
         unavailable_reason=(
             None if FAISSConnector

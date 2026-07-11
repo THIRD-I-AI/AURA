@@ -14,13 +14,10 @@ from fastapi import APIRouter, HTTPException, Request, status
 from pydantic import BaseModel, Field
 
 from connectors import (
-    BigQueryConnector,
     ConnectorConfig,
-    DuckDBConnector,
-    MySQLConnector,
-    PostgreSQLConnector,
     SourceType,
     available_connectors,
+    build_connector,
     get_connector,
 )
 from shared.error_handler import sanitize_error
@@ -38,16 +35,13 @@ _connections_store: Dict[str, Dict[str, Any]] = {}  # id → connection dict
 
 
 def _make_connector(conn_type: str, config: ConnectorConfig):
-    """Factory for creating the right connector from type string."""
-    if conn_type in ("duckdb", "duckdb_spatial"):
-        return DuckDBConnector(config)
-    if conn_type == "postgresql":
-        return PostgreSQLConnector(config)
-    elif conn_type == "mysql":
-        return MySQLConnector(config)
-    elif conn_type == "bigquery":
-        return BigQueryConnector(config)
-    return None
+    """Construct a connector via the central registry.
+
+    DB-agnostic: any connector registered with a ``factory`` — built-in
+    or a third-party ``aura.connectors`` entry-point plugin — is built
+    the same way, with no hardcoded type->class switch to keep in sync.
+    """
+    return build_connector(conn_type, config)
 
 
 # ── Models ───────────────────────────────────────────────────────────
