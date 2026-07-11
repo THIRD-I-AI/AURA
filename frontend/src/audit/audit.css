@@ -22,6 +22,12 @@
 .aud-link { color: var(--accent); text-decoration: none; }
 .aud-link--muted { color: var(--text-tertiary); }
 
+/* Capability band — always-on value statement below the fold. */
+.aud-caps { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(240px, 100%), 1fr)); gap: var(--space-5); margin-top: var(--space-8); padding-top: var(--space-6); border-top: 1px solid var(--border-subtle); }
+.aud-cap { border-top: 2px solid var(--accent-border); padding-top: var(--space-3); }
+.aud-cap__k { display: block; font-family: var(--font-mono); font-size: var(--font-2xs); text-transform: uppercase; letter-spacing: 0.1em; color: var(--signal); font-weight: 600; }
+.aud-cap__t { font-size: var(--font-sm); color: var(--text-secondary); line-height: 1.6; margin: var(--space-2) 0 0; }
+
 /* Progress timeline */
 .aud-progress__stages { display: flex; gap: var(--space-4); margin: var(--space-5) 0; font-family: var(--font-mono); font-size: var(--font-xs); }
 .aud-stage { display: flex; align-items: center; gap: var(--space-2); color: var(--text-tertiary); }

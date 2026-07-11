@@ -3,9 +3,6 @@
   "private": true,
   "version": "0.0.0",
   "type": "module",
-  "overrides": {
-    "undici": ">=7.28.0"
-  },
   "scripts": {
     "dev": "vite",
     "dev:fresh": "vite --force",
@@ -55,6 +52,7 @@
     "vitest": "^4.1.4"
   },
   "overrides": {
+    "undici": ">=7.28.0",
     "flatted": "^3.4.2",
     "socket.io-parser": "^4.2.6",
     "minimatch": "^9.0.5",

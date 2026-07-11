@@ -58,7 +58,7 @@ describe('Workbench', () => {
   it('starts at the login screen with the design headline', () => {
     render(<Workbench />);
     expect(screen.getByTestId('wb-login')).toBeInTheDocument();
-    expect(screen.getByText('Analytics your auditors can replay.')).toBeInTheDocument();
+    expect(screen.getByText('Analysis your auditors can replay.')).toBeInTheDocument();
   });
 
   it('email sign-in calls the REAL auth service; failure shows the error', async () => {

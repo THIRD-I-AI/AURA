@@ -72,6 +72,21 @@ export function AuditFrontDoor({ embedded = false }: { embedded?: boolean } = {}
         {/* Hard nav: intentionally exits the public shell to load the dashboard. */}
         <a href="/app" className="aud-link aud-link--muted">Open dashboard</a>
       </p>
+
+      {/* Capability band: always renders, so the page states its value even
+          when the scenario list is empty or the gateway is unreachable. */}
+      <div className="aud-caps" aria-label="Platform capabilities">
+        {[
+          { k: 'Signed & replayable', t: 'Every conclusion is ED25519-signed and deterministically replayable — auditors re-run the exact decision, not a screenshot of it.' },
+          { k: 'Self-healing data', t: 'Pipelines detect drift and repair themselves (MAPE-K) across NetSuite, Workday, and Kafka — every human override signed to a WORM log.' },
+          { k: 'Fail-closed by design', t: 'PII perimeter masking, tamper-evident audit ledger, and fail-closed auth. Nothing crosses the boundary unsigned or unmasked.' },
+        ].map((c) => (
+          <div key={c.k} className="aud-cap">
+            <span className="aud-cap__k">{c.k}</span>
+            <p className="aud-cap__t">{c.t}</p>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
