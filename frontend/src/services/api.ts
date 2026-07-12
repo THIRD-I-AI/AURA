@@ -1004,6 +1004,36 @@ export const healthService = {
     client.stopHealthMonitoring(callback),
 };
 
+/**
+ * Aggregated system health — the gateway polls every microservice and returns
+ * a unified per-service report (GET /system/health, at the ROOT, not /api/v1).
+ * `checkHealth()` above only proves the gateway answered; this call is what the
+ * pipeline cockpit uses to colour each node.
+ */
+export interface SystemHealth {
+  overall: 'healthy' | 'degraded' | 'critical';
+  healthy_services: number;
+  total_services: number;
+  services: Record<string, { status: 'healthy' | 'degraded' | 'down'; error?: string; http_status?: number }>;
+  hu_score: number | null;
+  circuit_breakers: Record<string, unknown>;
+}
+
+export const systemService = {
+  /** Unified per-service health report (served at the root path). */
+  async health(): Promise<SystemHealth> {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 5000);
+    try {
+      const response = await fetch(`${ROOT_BASE_URL}/system/health`, { signal: controller.signal });
+      if (!response.ok) throw new Error(response.statusText);
+      return await response.json();
+    } finally {
+      clearTimeout(timeoutId);
+    }
+  },
+};
+
 // =============================================================================
 // ETL Pipeline Types & Service
 // =============================================================================

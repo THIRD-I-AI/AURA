@@ -38,11 +38,18 @@ describe('layoutStore', () => {
     expect(ok).toBe(false);
   });
 
-  it('every default layout builder adds the four panels', () => {
+  it('every default layout builds a coherent panel set (query/findings/livefeed common to all)', () => {
     for (const name of LAYOUT_NAMES) {
       const ids: string[] = [];
       DEFAULT_LAYOUTS[name]({ addPanel: (o: { id: string }) => { ids.push(o.id); return {} as never; } } as never);
-      expect(ids).toEqual(expect.arrayContaining(['query', 'datasets', 'findings', 'livefeed']));
+      expect(ids.length).toBeGreaterThanOrEqual(4);
+      expect(ids).toEqual(expect.arrayContaining(['query', 'findings', 'livefeed']));
     }
+  });
+
+  it('the ops layout leads with the pipeline command deck', () => {
+    const ids: string[] = [];
+    DEFAULT_LAYOUTS.ops({ addPanel: (o: { id: string }) => { ids.push(o.id); return {} as never; } } as never);
+    expect(ids[0]).toBe('pipeline');
   });
 });

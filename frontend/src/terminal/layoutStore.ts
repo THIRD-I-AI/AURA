@@ -44,9 +44,10 @@ export const DEFAULT_LAYOUTS: Record<
     api.addPanel({ id: 'livefeed', component: 'livefeed', title: 'Live Feed', position: { referencePanel: 'datasets', direction: 'below' } });
   },
   ops: (api) => {
-    api.addPanel({ id: 'livefeed', component: 'livefeed', title: 'Live Feed' });
+    // Pipeline command deck leads — the live service DAG is the ops centerpiece.
+    api.addPanel({ id: 'pipeline', component: 'pipeline', title: 'Pipeline' });
+    api.addPanel({ id: 'livefeed', component: 'livefeed', title: 'Live Feed', position: { referencePanel: 'pipeline', direction: 'below' } });
     api.addPanel({ id: 'findings', component: 'findings', title: 'Findings', position: { referencePanel: 'livefeed', direction: 'right' } });
-    api.addPanel({ id: 'query', component: 'query', title: 'Query', position: { referencePanel: 'livefeed', direction: 'below' } });
-    api.addPanel({ id: 'datasets', component: 'datasets', title: 'Datasets', position: { referencePanel: 'findings', direction: 'below' } });
+    api.addPanel({ id: 'query', component: 'query', title: 'Query', position: { referencePanel: 'pipeline', direction: 'right' } });
   },
 };
