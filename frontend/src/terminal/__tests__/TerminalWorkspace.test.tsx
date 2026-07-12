@@ -30,4 +30,25 @@ describe('TerminalWorkspace', () => {
     expect(added).toEqual(expect.arrayContaining(['query', 'datasets', 'findings', 'livefeed']));
     expect(layoutChangeCb).toBeTypeOf('function'); // persistence wired
   });
+
+  it('deep-links ?panel=pipeline to open the pipeline command deck', () => {
+    added.length = 0;
+    render(
+      <MemoryRouter initialEntries={['/app/terminal?panel=pipeline']}>
+        <TerminalWorkspace />
+      </MemoryRouter>,
+    );
+    // getPanel returns undefined in the mock, so the requested panel is added.
+    expect(added).toContain('pipeline');
+  });
+
+  it('ignores an unknown ?panel= value', () => {
+    added.length = 0;
+    render(
+      <MemoryRouter initialEntries={['/app/terminal?panel=not-a-panel']}>
+        <TerminalWorkspace />
+      </MemoryRouter>,
+    );
+    expect(added).not.toContain('not-a-panel');
+  });
 });

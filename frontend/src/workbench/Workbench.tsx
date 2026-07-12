@@ -24,7 +24,7 @@ type Heal = { id: string; title: string; method: string; safe: boolean; sub: str
 type FeedEv = { time: string; k: string; color: string; t: string };
 
 const NAV_GROUPS: [string, string[]][] = [
-  ['WORKSPACE', ['Cockpit', 'Terminal', 'Ask AURA', 'Dashboards', 'Library', 'Query History']],
+  ['WORKSPACE', ['Cockpit', 'Terminal', 'Pipeline', 'Ask AURA', 'Dashboards', 'Library', 'Query History']],
   ['AUDIT', ['Audit Workbench', 'Counterfactuals', 'Certificates', 'Exception Queue']],
   ['OPERATE', ['Pipelines', 'Streaming', 'Healing Queue', 'Scheduler', 'Webhooks', 'Cost']],
   ['DATA', ['Connectors', 'Files & Data', 'Lineage', 'Metadata Store']],
@@ -42,11 +42,12 @@ const STUB_DESCS: Record<string, string> = {
   'Files & Data': 'Uploads, datasets, and the DuckDB analytics lake with atomic Parquet loads.',
   'Metadata Store': 'Schema registry and catalog the critic validates every generated query against.',
   Terminal: 'The dockview multi-panel command terminal (S46).',
+  Pipeline: 'Palantir-style live pipeline command deck — the service DAG, streaming logs, and one-click start/stop plus UASR recovery approvals, inside the terminal cockpit.',
   'Ask AURA': 'Full-page conversational analytics over your datasets.',
   'Audit Workbench': 'HITL exception review with signed decisions.',
 };
 const STUB_LINKS: Record<string, string> = {
-  Terminal: '/app/terminal', Dashboards: '/app', Library: '/app', Certificates: '/app',
+  Terminal: '/app/terminal', Pipeline: '/app/terminal?panel=pipeline', Dashboards: '/app', Library: '/app', Certificates: '/app',
   Scheduler: '/app', Webhooks: '/app', Cost: '/app', Connectors: '/app',
   'Files & Data': '/app', 'Metadata Store': '/app', 'Audit Workbench': '/app', 'Ask AURA': '/app',
 };
