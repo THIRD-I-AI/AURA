@@ -48,7 +48,9 @@ function statusFrom(raw: unknown): NodeStatus {
   if (raw === 'healthy') return 'healthy';
   if (raw === 'degraded') return 'degraded';
   if (raw === 'down') return 'down';
-  return 'unmonitored';
+  // Present in /system/health = a monitored service; an unrecognised value
+  // means we simply don't know yet — not that it's unmonitored.
+  return 'unknown';
 }
 
 export function usePipelineTelemetry(pollMs = 8000): PipelineTelemetry {
@@ -172,8 +174,12 @@ export function usePipelineTelemetry(pollMs = 8000): PipelineTelemetry {
   }), [serviceStatus, overall, healthyServices, totalServices, huScore, pipelines, events, connected, lastUpdate]);
 }
 
-/** Resolve a node's live status from its healthKey (null → unmonitored). */
+/**
+ * Resolve a node's live status from its healthKey. No healthKey → the node is
+ * genuinely unmonitored (infra/client). A healthKey with no reading yet →
+ * 'unknown' (monitored, awaiting data) — never conflate the two.
+ */
 export function nodeStatus(healthKey: HealthKey, status: Record<string, NodeStatus>): NodeStatus {
   if (!healthKey) return 'unmonitored';
-  return status[healthKey] ?? 'unmonitored';
+  return status[healthKey] ?? 'unknown';
 }

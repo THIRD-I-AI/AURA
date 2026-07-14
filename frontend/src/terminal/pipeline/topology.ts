@@ -184,11 +184,12 @@ export function computePipelineLayout(
 }
 
 /** Health status a node can be in, derived from telemetry. */
-export type NodeStatus = 'healthy' | 'degraded' | 'down' | 'unmonitored';
+export type NodeStatus = 'healthy' | 'degraded' | 'down' | 'unknown' | 'unmonitored';
 
 export const STATUS_GLYPH: Record<NodeStatus, string> = {
   healthy: '●',
   degraded: '◐',
   down: '○',
+  unknown: '◌',
   unmonitored: '·',
 };

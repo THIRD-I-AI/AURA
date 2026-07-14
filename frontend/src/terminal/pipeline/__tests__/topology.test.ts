@@ -80,7 +80,7 @@ describe('pipeline topology', () => {
   });
 
   it('exposes a glyph for every status', () => {
-    const statuses: NodeStatus[] = ['healthy', 'degraded', 'down', 'unmonitored'];
+    const statuses: NodeStatus[] = ['healthy', 'degraded', 'down', 'unknown', 'unmonitored'];
     for (const s of statuses) {
       expect(typeof STATUS_GLYPH[s]).toBe('string');
       expect(STATUS_GLYPH[s].length).toBeGreaterThan(0);
