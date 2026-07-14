@@ -440,6 +440,14 @@
 .aura-terminal .cst-count-edges { color: var(--t-faint); }
 .aura-terminal .cst-head-spacer { flex: 1 1 auto; }
 .aura-terminal .cst-head-ts { color: var(--t-faint); font-size: 10px; }
+.aura-terminal .cst-actions { display: flex; gap: 6px; }
+.aura-terminal .cst-btn {
+  font-family: var(--t-mono); font-size: 11px; color: var(--t-dim);
+  background: var(--t-raised); border: 1px solid var(--t-line-hard);
+  border-radius: 2px; padding: 2px 8px; cursor: pointer; line-height: 1.4;
+}
+.aura-terminal .cst-btn:hover:not(:disabled) { color: var(--t-text); border-color: var(--t-live); }
+.aura-terminal .cst-btn:disabled { opacity: 0.5; cursor: default; }
 
 .aura-terminal .constellation-canvas {
   position: relative; height: 100%; display: flex; flex-direction: column;

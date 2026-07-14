@@ -49,13 +49,16 @@ test.describe('pipeline command deck renders with real layout', () => {
     expect(box!.width).toBeGreaterThan(50);
     expect(box!.height).toBeGreaterThan(50);
 
-    // The SVG must fit inside its scroll container, not overflow into a
-    // clipped fixed-px canvas (the original 1280x632 in a ~660px box).
+    // Fit-to-width: the DAG spans (nearly) the full wrap width, never the old
+    // fixed 1280px overflow. It is responsive, not a clipped fixed-px canvas.
     const wrap = page.locator('.pl-graph-wrap');
     const wrapBox = await wrap.boundingBox();
     expect(wrapBox).not.toBeNull();
     expect(box!.width).toBeLessThanOrEqual(wrapBox!.width + 2);
-    expect(box!.height).toBeLessThanOrEqual(wrapBox!.height + 2);
+    // fills the wrap width (minus padding) or its native max — not a floating letterbox
+    expect(box!.width).toBeGreaterThanOrEqual(Math.min(wrapBox!.width - 40, 1200));
+    // Vertical scroll is allowed by design (LtR flow read at a readable size),
+    // so the height may exceed the wrap; we only require a real layout box.
   });
 
   test('status glyphs are honest: monitored-but-offline services never read as unmonitored', async ({ page }) => {

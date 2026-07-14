@@ -97,6 +97,8 @@ export default function PipelinePanel(_props: IDockviewPanelProps) {
             viewBox={`0 0 ${LAYOUT.width} ${LAYOUT.height}`}
             width={LAYOUT.width}
             height={LAYOUT.height}
+            style={{ maxWidth: LAYOUT.width }}
+            preserveAspectRatio="xMidYMid meet"
             role="img"
             aria-label="AURA service pipeline"
           >

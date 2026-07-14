@@ -52,20 +52,22 @@
 }
 .aura-terminal .pl-graph-wrap {
   flex: 1 1 auto;
-  overflow: hidden;
+  overflow: auto;
   padding: 14px;
   min-width: 0;
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: center;
   /* faint command-deck canvas grid */
   background-image: radial-gradient(var(--t-line-soft) 0.7px, transparent 0.7px);
   background-size: 22px 22px;
   background-position: -1px -1px;
 }
-/* The SVG carries a viewBox, so width/height 100% + preserveAspectRatio 'meet'
-   scales the whole DAG to fit its panel — no more fixed 1280px overflow. */
-.aura-terminal .pl-graph { display: block; width: 100%; height: 100%; }
+/* Fit-to-width: the DAG scales to the panel width (up to its native size) and
+   keeps its aspect ratio, so it reads at a comfortable size instead of
+   letterboxing small in short/wide panels. Taller-than-panel scrolls
+   vertically in .pl-graph-wrap — never the old fixed-px invisible overflow. */
+.aura-terminal .pl-graph { display: block; width: 100%; height: auto; margin: auto 0; }
 
 /* edges */
 .aura-terminal .pl-edge {
