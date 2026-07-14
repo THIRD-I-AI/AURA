@@ -15,7 +15,15 @@ import type { IDockviewPanelProps } from 'dockview-react';
 import { lineageService, uploadService, type LineageGraph, type LineageNode } from '../../services/api';
 import { useCockpit } from '../CockpitProvider';
 import { AuraNode } from '../constellation/AuraNode';
-import { computeConstellationLayout, neighborSet, type RFAuraNode } from '../constellation/layout';
+import { computeConstellationLayout, neighborSet, type RFAuraNode, type ConstellationKind } from '../constellation/layout';
+import {
+  constellationStats,
+  KIND_GLYPH,
+  KIND_LABEL,
+  CONNECTION_GLYPH,
+  type ConnectionState,
+  type ConstellationStats,
+} from '../constellation/deckModel';
 
 const nodeTypes = { aura: AuraNode };
 
@@ -149,9 +157,54 @@ function Canvas({ graph }: { graph: LineageGraph }) {
   );
 }
 
+/** Command-deck header: honest live node/edge tallies + connection state. */
+function ConstellationDeckHead({
+  stats,
+  connection,
+  lastUpdate,
+}: {
+  stats: ConstellationStats;
+  connection: ConnectionState;
+  lastUpdate: string | null;
+}) {
+  const cells: Array<{ k: ConstellationKind; n: number }> = [
+    { k: 'table', n: stats.tables },
+    { k: 'saved_query', n: stats.queries },
+    { k: 'dashboard', n: stats.dashboards },
+  ];
+  const shown = cells.filter((c) => c.n !== 0);
+  return (
+    <div className="cst-head">
+      <div className="cst-head-title">
+        <span className="cst-head-glyph">✦</span>
+        <span>Constellation</span>
+      </div>
+      <div className={`cst-conn cst-conn-${connection}`}>
+        <span className="cst-conn-glyph">{CONNECTION_GLYPH[connection]}</span>
+        <span>{connection}</span>
+      </div>
+      <div className="cst-head-counts">
+        <span className="cst-count cst-count-total">{stats.total} nodes</span>
+        {shown.map((c) => (
+          <span key={c.k} className={`cst-count cst-count-${c.k}`}>
+            <span className="cst-count-glyph">{KIND_GLYPH[c.k]}</span>
+            {c.n} {KIND_LABEL[c.k]}
+          </span>
+        ))}
+        <span className="cst-count cst-count-edges">{stats.edges} edges</span>
+      </div>
+      <span className="cst-head-spacer" />
+      {lastUpdate ? (
+        <span className="cst-head-ts">{new Date(lastUpdate).toLocaleTimeString()}</span>
+      ) : null}
+    </div>
+  );
+}
+
 export default function ConstellationPanel(_props: IDockviewPanelProps) {
   const [graph, setGraph] = useState<LineageGraph | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [lastUpdate, setLastUpdate] = useState<string | null>(null);
   const filesKeyRef = useRef<string>('');
 
   useEffect(() => {
@@ -165,6 +218,7 @@ export default function ConstellationPanel(_props: IDockviewPanelProps) {
       if (!alive) return;
       filesKeyRef.current = files.map((f) => f.filename).sort().join('|');
       setGraph(withDatasets(lineage, files));
+      setLastUpdate(new Date().toISOString());
     };
 
     build().catch((e) => {
@@ -181,7 +235,7 @@ export default function ConstellationPanel(_props: IDockviewPanelProps) {
         if (!alive || key === filesKeyRef.current) return;
         filesKeyRef.current = key;
         const lineage = await lineageService.get();
-        if (alive) setGraph(withDatasets(lineage, files));
+        if (alive) { setGraph(withDatasets(lineage, files)); setLastUpdate(new Date().toISOString()); }
       } catch {
         /* transient — keep the current graph */
       }
@@ -204,9 +258,15 @@ export default function ConstellationPanel(_props: IDockviewPanelProps) {
     );
   }
 
+  const stats = constellationStats(graph);
   return shell(
-    <ReactFlowProvider>
-      <Canvas graph={graph} />
-    </ReactFlowProvider>,
+    <div className="cst-deck">
+      <ConstellationDeckHead stats={stats} connection="live" lastUpdate={lastUpdate} />
+      <div className="cst-canvas-wrap">
+        <ReactFlowProvider>
+          <Canvas graph={graph} />
+        </ReactFlowProvider>
+      </div>
+    </div>,
   );
 }

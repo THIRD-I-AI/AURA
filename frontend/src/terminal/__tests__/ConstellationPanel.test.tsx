@@ -73,6 +73,20 @@ describe('ConstellationPanel', () => {
     expect(setActiveDataset).not.toHaveBeenCalled();
   });
 
+  it('command-deck header shows honest live tallies derived from the graph', async () => {
+    captured = {};
+    lineageGet.mockResolvedValue(GRAPH);
+    getUploadedFiles.mockResolvedValue([]);
+    const { container } = render(<ConstellationPanel {...props} />);
+    await waitFor(() => expect(screen.getByTestId('rf-mock')).toBeInTheDocument());
+    // header present, connection is 'live' only after a real graph arrives
+    expect(container.querySelector('.cst-conn-live')).not.toBeNull();
+    expect(container.querySelector('.cst-conn-loading')).toBeNull();
+    // 2 nodes / 1 edge from GRAPH — counted from real nodes, not summary
+    expect(screen.getByText('2 nodes')).toBeInTheDocument();
+    expect(screen.getByText('1 edges')).toBeInTheDocument();
+  });
+
   it('merges uploaded datasets in as table nodes (deduped against lineage by stem)', async () => {
     captured = {};
     lineageGet.mockResolvedValue(GRAPH); // already has table "sales"

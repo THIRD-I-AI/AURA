@@ -409,6 +409,38 @@
    Constellation — the interactive knowledge-graph canvas (React Flow)
    ============================================================================ */
 .aura-terminal .constellation-panel { padding: 0; overflow: hidden; }
+
+/* command-deck header + canvas wrap (ops-style treatment for the analyst layout) */
+.aura-terminal .cst-deck { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+.aura-terminal .cst-canvas-wrap { flex: 1 1 auto; min-height: 0; position: relative; }
+.aura-terminal .cst-head {
+  display: flex; align-items: center; gap: 14px;
+  padding: 6px 12px; border-bottom: 1px solid var(--t-line);
+  background: var(--t-void); font-family: var(--t-mono);
+  font-size: 11px; letter-spacing: 0.04em; flex: 0 0 auto;
+}
+.aura-terminal .cst-head-title { display: flex; align-items: center; gap: 6px; font-weight: 700; color: var(--t-text); }
+.aura-terminal .cst-head-glyph { color: var(--t-live); font-size: 13px; }
+.aura-terminal .cst-conn {
+  display: flex; align-items: center; gap: 6px;
+  padding: 2px 8px; border-radius: 2px; border: 1px solid var(--t-line-hard);
+  text-transform: uppercase; font-size: 10px;
+}
+.aura-terminal .cst-conn-glyph { font-size: 11px; }
+.aura-terminal .cst-conn-loading { color: var(--t-faint); border-color: var(--t-line); }
+.aura-terminal .cst-conn-live { color: var(--t-live); border-color: var(--t-live); }
+.aura-terminal .cst-conn-error { color: var(--t-red); border-color: var(--t-red); }
+.aura-terminal .cst-head-counts { display: flex; gap: 12px; align-items: center; }
+.aura-terminal .cst-count { display: inline-flex; align-items: center; gap: 4px; color: var(--t-dim); }
+.aura-terminal .cst-count-glyph { font-size: 10px; }
+.aura-terminal .cst-count-total { color: var(--t-text); font-weight: 700; }
+.aura-terminal .cst-count-table .cst-count-glyph { color: var(--t-live); }
+.aura-terminal .cst-count-saved_query .cst-count-glyph { color: var(--t-cyan); }
+.aura-terminal .cst-count-dashboard .cst-count-glyph { color: var(--t-blue); }
+.aura-terminal .cst-count-edges { color: var(--t-faint); }
+.aura-terminal .cst-head-spacer { flex: 1 1 auto; }
+.aura-terminal .cst-head-ts { color: var(--t-faint); font-size: 10px; }
+
 .aura-terminal .constellation-canvas {
   position: relative; height: 100%; display: flex; flex-direction: column;
   background:
