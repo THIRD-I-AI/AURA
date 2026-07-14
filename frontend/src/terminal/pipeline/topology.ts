@@ -84,6 +84,9 @@ export const PIPELINE_NODES: PipelineNode[] = [
   { id: 'frontend', label: 'Frontend', stage: 5, row: 0, kind: 'client', healthKey: null, role: 'React cockpit — this UI' },
 ];
 
+/** Lane headers, indexed by stage — rendered as faint column labels. */
+export const STAGE_LABELS: string[] = ['INGRESS', 'BUS', 'PROCESSING', 'STORE', 'GATEWAY', 'CLIENT'];
+
 export const PIPELINE_EDGES: PipelineEdge[] = [
   { id: 'e-con-rp', source: 'connectors', target: 'redpanda', kind: 'flow' },
 
@@ -109,12 +112,15 @@ export const PIPELINE_EDGES: PipelineEdge[] = [
 ];
 
 // ── Layout geometry ────────────────────────────────────────────────────
-export const COL_W = 210;   // horizontal gap between stages
-export const ROW_H = 92;    // vertical gap between rows within a stage
+// Compact on purpose: less dead space = a larger effective render once the
+// panel scales the DAG to fit (browser-verified — the old 210/92/40 canvas
+// rendered the whole graph at ~0.5× in the ops layout).
+export const COL_W = 176;   // horizontal gap between stages
+export const ROW_H = 74;    // vertical gap between rows within a stage
 export const NODE_W = 150;
 export const NODE_H = 56;
-export const PAD_X = 40;
-export const PAD_Y = 40;
+export const PAD_X = 18;
+export const PAD_Y = 18;
 
 export interface PositionedNode extends PipelineNode {
   x: number;

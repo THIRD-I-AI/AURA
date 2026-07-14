@@ -9,11 +9,14 @@
  * the real backend. No synthetic data: offline simply shows declared status
  * and a quiet rail.
  */
-import { useCallback, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { IDockviewPanelProps } from 'dockview-react';
 import { streamingService, healingService, type PendingRecovery } from '../../services/api';
 import {
   computePipelineLayout,
+  COL_W,
+  PAD_X,
+  STAGE_LABELS,
   STATUS_GLYPH,
   type PositionedNode,
   type NodeStatus,
@@ -22,10 +25,27 @@ import { usePipelineTelemetry, nodeStatus } from '../pipeline/usePipelineTelemet
 import '../pipeline/pipeline.css';
 
 const LAYOUT = computePipelineLayout();
+/* Extra viewBox band above the graph for the stage lane headers — keeps the
+   topology module pure (its coordinates are untouched). */
+const LABEL_BAND = 22;
+const VIEW_H = LAYOUT.height + LABEL_BAND;
+/* Don't upscale past this: giant node text reads as a mistake, not a feature. */
+const MAX_SCALE = 1.6;
 
 function edgePath(x1: number, y1: number, x2: number, y2: number): string {
   const dx = Math.max(40, (x2 - x1) * 0.5);
   return `M ${x1} ${y1} C ${x1 + dx} ${y1}, ${x2 - dx} ${y2}, ${x2} ${y2}`;
+}
+
+/* Stages actually present, with their column x — drives the lane headers. */
+const STAGE_COLS = [...new Set(LAYOUT.nodes.map((n) => n.stage))].sort((a, b) => a - b)
+  .map((stage) => ({ stage, x: PAD_X + stage * COL_W, label: STAGE_LABELS[stage] ?? `STAGE ${stage}` }));
+
+/* nodeId → ids of edges touching it, for hover/selection highlighting. */
+const INCIDENT: Record<string, Set<string>> = {};
+for (const e of LAYOUT.edges) {
+  (INCIDENT[e.source] ??= new Set()).add(e.id);
+  (INCIDENT[e.target] ??= new Set()).add(e.id);
 }
 
 export default function PipelinePanel(_props: IDockviewPanelProps) {
@@ -34,7 +54,28 @@ export default function PipelinePanel(_props: IDockviewPanelProps) {
   const [busy, setBusy] = useState<string | null>(null);
   const [note, setNote] = useState<string>('');
   const [scrub, setScrub] = useState<number | null>(null); // null = live tail
+  const [hovered, setHovered] = useState<string | null>(null);
   const railRef = useRef<HTMLDivElement | null>(null);
+
+  /* Measure the graph box and scale the DAG to fill it (both axes, capped) —
+     fit-to-width alone left it floating small in wide panels. */
+  const wrapRef = useRef<HTMLDivElement | null>(null);
+  const [box, setBox] = useState<{ w: number; h: number } | null>(null);
+  useEffect(() => {
+    const el = wrapRef.current;
+    if (!el || typeof ResizeObserver === 'undefined') return; // jsdom: fall back to native size
+    const ro = new ResizeObserver((entries) => {
+      const r = entries[0]?.contentRect;
+      if (r && r.width > 0 && r.height > 0) setBox({ w: r.width, h: r.height });
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+  const scale = box ? Math.min(MAX_SCALE, box.w / LAYOUT.width, box.h / VIEW_H) : 1;
+
+  /* Highlight follows hover, falling back to the pinned selection. */
+  const focusId = hovered ?? selected;
+  const hotEdges = focusId ? INCIDENT[focusId] : undefined;
 
   const selectedNode = useMemo(
     () => LAYOUT.nodes.find((n) => n.id === selected) ?? null,
@@ -91,13 +132,12 @@ export default function PipelinePanel(_props: IDockviewPanelProps) {
 
       <div className="pl-body">
         {/* ── the flow DAG ──────────────────────────────────────────── */}
-        <div className="pl-graph-wrap">
+        <div className="pl-graph-wrap" ref={wrapRef}>
           <svg
-            className="pl-graph"
-            viewBox={`0 0 ${LAYOUT.width} ${LAYOUT.height}`}
-            width={LAYOUT.width}
-            height={LAYOUT.height}
-            style={{ maxWidth: LAYOUT.width }}
+            className={`pl-graph${t.connected ? ' is-live' : ''}${hotEdges ? ' has-focus' : ''}`}
+            viewBox={`0 ${-LABEL_BAND} ${LAYOUT.width} ${VIEW_H}`}
+            width={Math.max(1, Math.round(LAYOUT.width * scale))}
+            height={Math.max(1, Math.round(VIEW_H * scale))}
             preserveAspectRatio="xMidYMid meet"
             role="img"
             aria-label="AURA service pipeline"
@@ -107,13 +147,19 @@ export default function PipelinePanel(_props: IDockviewPanelProps) {
                 <path d="M0,0 L8,4 L0,8 Z" className="pl-arrow-head" />
               </marker>
             </defs>
+            {/* stage lane headers */}
+            <g className="pl-lanes">
+              {STAGE_COLS.map((s) => (
+                <text key={s.stage} className="pl-lane-label" x={s.x} y={-9}>{s.label}</text>
+              ))}
+            </g>
             {/* edges */}
             <g className="pl-edges">
               {LAYOUT.edges.map((e) => (
                 <path
                   key={e.id}
                   d={edgePath(e.x1, e.y1, e.x2, e.y2)}
-                  className={`pl-edge pl-edge-${e.kind ?? 'flow'}`}
+                  className={`pl-edge pl-edge-${e.kind ?? 'flow'}${hotEdges?.has(e.id) ? ' is-hot' : ''}`}
                   markerEnd={e.kind === 'flow' ? 'url(#pl-arrow)' : undefined}
                 />
               ))}
@@ -128,6 +174,8 @@ export default function PipelinePanel(_props: IDockviewPanelProps) {
                     transform={`translate(${n.x},${n.y})`}
                     className={nodeCls(n, status)}
                     onClick={() => setSelected(n.id)}
+                    onMouseEnter={() => setHovered(n.id)}
+                    onMouseLeave={() => setHovered((h) => (h === n.id ? null : h))}
                     role="button"
                     tabIndex={0}
                     onKeyDown={(ev) => { if (ev.key === 'Enter') setSelected(n.id); }}

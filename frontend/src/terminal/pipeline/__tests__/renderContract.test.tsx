@@ -51,8 +51,9 @@ describe('PipelinePanel render contract', () => {
     const { container } = render(<PipelinePanel {...props} />);
     const svg = container.querySelector('svg.pl-graph');
     expect(svg, 'pl-graph svg present').not.toBeNull();
-    // viewBox is what makes the CSS width/height:100% actually scale the DAG.
-    expect(svg!.getAttribute('viewBox')).toMatch(/^0 0 \d+ \d+$/);
+    // A viewBox is what lets the measured pixel size scale the DAG. The y
+    // origin may be negative: the stage-label band sits above the graph.
+    expect(svg!.getAttribute('viewBox')).toMatch(/^0 -?\d+ \d+ \d+$/);
   });
 
   it('renders the honest "unknown" glyph for a monitored service with no reading', () => {

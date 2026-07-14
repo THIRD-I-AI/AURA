@@ -52,22 +52,46 @@
 }
 .aura-terminal .pl-graph-wrap {
   flex: 1 1 auto;
-  overflow: auto;
+  overflow: hidden;
   padding: 14px;
   min-width: 0;
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: center;
   /* faint command-deck canvas grid */
   background-image: radial-gradient(var(--t-line-soft) 0.7px, transparent 0.7px);
   background-size: 22px 22px;
   background-position: -1px -1px;
 }
-/* Fit-to-width: the DAG scales to the panel width (up to its native size) and
-   keeps its aspect ratio, so it reads at a comfortable size instead of
-   letterboxing small in short/wide panels. Taller-than-panel scrolls
-   vertically in .pl-graph-wrap — never the old fixed-px invisible overflow. */
-.aura-terminal .pl-graph { display: block; width: 100%; height: auto; margin: auto 0; }
+/* Sized by the panel itself: a ResizeObserver measures the box and the svg is
+   given exact pixel dimensions filling BOTH axes (capped upscale), so the DAG
+   renders as large as the panel allows in any shape — wide, tall, maximized. */
+.aura-terminal .pl-graph { display: block; }
+
+/* stage lane headers */
+.aura-terminal .pl-lane-label {
+  fill: var(--t-faint);
+  font-family: var(--t-mono);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+}
+
+/* hover/selection focus: incident edges light up, the rest recede */
+.aura-terminal .pl-graph.has-focus .pl-edge { opacity: 0.22; }
+.aura-terminal .pl-graph.has-focus .pl-edge.is-hot { opacity: 1; stroke: var(--t-live); }
+.aura-terminal .pl-graph.has-focus .pl-edge-sidecar.is-hot { stroke: var(--t-cyan); }
+.aura-terminal .pl-graph.has-focus .pl-edge-cache.is-hot { stroke: var(--t-blue); }
+
+/* directional flow — animates ONLY while the SSE stream is actually live */
+@keyframes pl-flow { to { stroke-dashoffset: -20; } }
+.aura-terminal .pl-graph.is-live .pl-edge-flow {
+  stroke-dasharray: 7 5;
+  animation: pl-flow 1.1s linear infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .aura-terminal .pl-graph.is-live .pl-edge-flow { animation: none; stroke-dasharray: none; }
+}
 
 /* edges */
 .aura-terminal .pl-edge {
