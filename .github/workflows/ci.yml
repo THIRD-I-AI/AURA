@@ -518,6 +518,50 @@ jobs:
       - name: Run Vitest
         run: npx vitest run --reporter=verbose
 
+  # ── Frontend render smoke (Playwright) ───────────────────────
+  # Real-browser render gate. jsdom does no layout, so the vitest suite
+  # reports every element as 0x0 and cannot catch an invisible or clipped
+  # panel (e.g. the DAG SVG emitted at a fixed 1280x632 px inside a ~660 px
+  # box). Playwright drives a real Chromium against the built app served by
+  # `vite preview` (no backend needed for a render smoke).
+  frontend-e2e:
+    name: Frontend Render Smoke (Playwright)
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: frontend
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build app
+        run: npm run build
+
+      - name: Install Playwright Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Run render smoke
+        run: npx playwright test
+
+      - name: Upload trace on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: frontend/playwright-report/
+          retention-days: 7
+
   # ── Frontend lint ────────────────────────────────────────────────────────
   frontend-lint:
     name: Frontend Lint
