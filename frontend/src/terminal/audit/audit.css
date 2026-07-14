@@ -1,0 +1,261 @@
+/* ============================================================================
+   Audit command deck — scoped under .aura-terminal, reuses the cockpit's
+   --t-* tokens. Risk-sorted triage rail + verification banner + inspector +
+   decisions log. Nothing here leaks globally.
+   ============================================================================ */
+
+.aura-terminal .aud-panel {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: var(--t-surface);
+  color: var(--t-text);
+  font-family: var(--t-mono);
+  font-size: 12px;
+  overflow: hidden;
+}
+
+/* ── header ─────────────────────────────────────────────────────────── */
+.aura-terminal .aud-head {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--t-line);
+  background: var(--t-void);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  flex: 0 0 auto;
+}
+.aura-terminal .aud-head-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 700;
+}
+.aura-terminal .aud-head-glyph { color: var(--t-cyan); font-size: 14px; }
+
+.aura-terminal .aud-verify {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 8px;
+  border-radius: 2px;
+  border: 1px solid var(--t-line-hard);
+}
+.aura-terminal .aud-verify-glyph { font-size: 12px; }
+.aura-terminal .aud-verify-unverified { color: var(--t-faint); border-color: var(--t-line); }
+.aura-terminal .aud-verify-verified   { color: var(--t-live); border-color: var(--t-live); }
+.aura-terminal .aud-verify-broken     { color: var(--t-red); border-color: var(--t-red); }
+
+.aura-terminal .aud-head-counts {
+  display: flex;
+  gap: 10px;
+  margin-left: auto;
+}
+.aura-terminal .aud-count {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--t-dim);
+}
+.aura-terminal .aud-count-glyph { font-size: 11px; }
+
+/* risk colours */
+.aura-terminal .aud-risk-critical .aud-count-glyph,
+.aura-terminal .aud-risk-critical.aud-count,
+.aura-terminal .aud-risk-critical .aud-finding-glyph,
+.aura-terminal .aud-risk-critical .aud-finding-risk,
+.aura-terminal .aud-insp-risk.aud-risk-critical { color: var(--t-red); }
+.aura-terminal .aud-risk-high .aud-count-glyph,
+.aura-terminal .aud-risk-high.aud-count,
+.aura-terminal .aud-risk-high .aud-finding-glyph,
+.aura-terminal .aud-risk-high .aud-finding-risk,
+.aura-terminal .aud-insp-risk.aud-risk-high { color: var(--t-amber); }
+.aura-terminal .aud-risk-medium .aud-count-glyph,
+.aura-terminal .aud-risk-medium.aud-count,
+.aura-terminal .aud-risk-medium .aud-finding-glyph,
+.aura-terminal .aud-risk-medium .aud-finding-risk,
+.aura-terminal .aud-insp-risk.aud-risk-medium { color: var(--t-cyan); }
+.aura-terminal .aud-risk-low .aud-count-glyph,
+.aura-terminal .aud-risk-low.aud-count,
+.aura-terminal .aud-risk-low .aud-finding-glyph,
+.aura-terminal .aud-risk-low .aud-finding-risk,
+.aura-terminal .aud-insp-risk.aud-risk-low { color: var(--t-blue); }
+.aura-terminal .aud-risk-unknown .aud-finding-glyph,
+.aura-terminal .aud-risk-unknown .aud-finding-risk { color: var(--t-faint); }
+
+/* ── control row ────────────────────────────────────────────────────── */
+.aura-terminal .aud-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--t-line);
+  flex: 0 0 auto;
+}
+.aura-terminal .aud-btn {
+  background: var(--t-raised);
+  color: var(--t-text);
+  border: 1px solid var(--t-line-hard);
+  border-radius: 2px;
+  padding: 3px 10px;
+  font-family: var(--t-mono);
+  font-size: 11px;
+  cursor: pointer;
+}
+.aura-terminal .aud-btn:hover:not(:disabled) { background: var(--t-hover); }
+.aura-terminal .aud-btn:disabled { opacity: 0.45; cursor: default; }
+.aura-terminal .aud-btn-primary { border-color: var(--t-cyan); color: var(--t-cyan); }
+.aura-terminal .aud-btn-approve { border-color: var(--t-live); color: var(--t-live); }
+.aura-terminal .aud-btn-reject  { border-color: var(--t-red); color: var(--t-red); }
+.aura-terminal .aud-report-meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--t-dim);
+  font-size: 10px;
+  margin-left: auto;
+}
+.aura-terminal .aud-hash { color: var(--t-faint); }
+.aura-terminal .aud-sig { text-transform: uppercase; letter-spacing: 0.04em; }
+.aura-terminal .aud-error { color: var(--t-red); font-size: 10px; }
+
+/* ── body: rail + inspector ─────────────────────────────────────────── */
+.aura-terminal .aud-body {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+.aura-terminal .aud-rail {
+  flex: 0 0 320px;
+  overflow-y: auto;
+  border-right: 1px solid var(--t-line);
+  min-height: 0;
+}
+.aura-terminal .aud-empty {
+  padding: 18px 14px;
+  color: var(--t-faint);
+  font-size: 11px;
+}
+.aura-terminal .aud-finding {
+  display: flex;
+  gap: 8px;
+  width: 100%;
+  text-align: left;
+  padding: 8px 12px;
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid var(--t-line-soft);
+  color: var(--t-text);
+  font-family: var(--t-mono);
+  cursor: pointer;
+}
+.aura-terminal .aud-finding:hover { background: var(--t-hover); }
+.aura-terminal .aud-finding.is-selected { background: var(--t-row); }
+.aura-terminal .aud-finding-glyph { font-size: 12px; line-height: 1.4; flex: 0 0 auto; }
+.aura-terminal .aud-finding-body { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.aura-terminal .aud-finding-top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.aura-terminal .aud-finding-risk { font-weight: 700; }
+.aura-terminal .aud-finding-std { color: var(--t-dim); }
+.aura-terminal .aud-finding-review {
+  color: var(--t-amber);
+  border: 1px solid var(--t-amber);
+  border-radius: 2px;
+  padding: 0 4px;
+  font-size: 9px;
+}
+.aura-terminal .aud-finding-desc {
+  color: var(--t-dim);
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.aura-terminal .aud-inspector {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  padding: 14px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.aura-terminal .aud-insp-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.aura-terminal .aud-insp-risk { font-weight: 700; }
+.aura-terminal .aud-insp-id { color: var(--t-faint); font-size: 11px; }
+.aura-terminal .aud-insp-std { color: var(--t-dim); font-size: 11px; }
+.aura-terminal .aud-insp-desc { color: var(--t-text); font-size: 12px; line-height: 1.5; margin: 0; }
+.aura-terminal .aud-insp-label {
+  color: var(--t-faint);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin-bottom: 4px;
+}
+.aura-terminal .aud-evidence-pre {
+  background: var(--t-void);
+  border: 1px solid var(--t-line);
+  border-radius: 2px;
+  padding: 8px;
+  font-size: 11px;
+  color: var(--t-dim);
+  overflow-x: auto;
+  margin: 0;
+}
+.aura-terminal .aud-insp-noreview { color: var(--t-faint); font-size: 11px; }
+
+.aura-terminal .aud-decide { display: flex; flex-direction: column; gap: 8px; }
+.aura-terminal .aud-note {
+  background: var(--t-void);
+  border: 1px solid var(--t-line-hard);
+  border-radius: 2px;
+  color: var(--t-text);
+  font-family: var(--t-mono);
+  font-size: 11px;
+  padding: 6px 8px;
+  min-height: 52px;
+  resize: vertical;
+}
+.aura-terminal .aud-decide-btns { display: flex; gap: 8px; }
+
+/* ── decisions log ──────────────────────────────────────────────────── */
+.aura-terminal .aud-decisions {
+  flex: 0 0 auto;
+  max-height: 120px;
+  overflow-y: auto;
+  border-top: 1px solid var(--t-line);
+  padding: 6px 12px;
+}
+.aura-terminal .aud-decisions-head {
+  color: var(--t-faint);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin-bottom: 4px;
+}
+.aura-terminal .aud-decision {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 11px;
+  padding: 2px 0;
+}
+.aura-terminal .aud-decision-mark.is-approve { color: var(--t-live); }
+.aura-terminal .aud-decision-mark.is-reject { color: var(--t-red); }
+.aura-terminal .aud-decision-id { color: var(--t-dim); }
+.aura-terminal .aud-decision-who { color: var(--t-faint); }
+.aura-terminal .aud-decision-at { color: var(--t-faint); margin-left: auto; }

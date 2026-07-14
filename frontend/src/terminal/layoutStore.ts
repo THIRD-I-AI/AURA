@@ -38,10 +38,11 @@ export const DEFAULT_LAYOUTS: Record<
     api.addPanel({ id: 'livefeed', component: 'livefeed', title: 'Live Feed', position: { referencePanel: 'findings', direction: 'below' } });
   },
   auditor: (api) => {
-    api.addPanel({ id: 'findings', component: 'findings', title: 'Findings' });
-    api.addPanel({ id: 'datasets', component: 'datasets', title: 'Datasets', position: { referencePanel: 'findings', direction: 'right' } });
-    api.addPanel({ id: 'query', component: 'query', title: 'Query', position: { referencePanel: 'findings', direction: 'below' } });
-    api.addPanel({ id: 'livefeed', component: 'livefeed', title: 'Live Feed', position: { referencePanel: 'datasets', direction: 'below' } });
+    // Audit command deck leads — risk-sorted triage + verification is the auditor centerpiece.
+    api.addPanel({ id: 'audit', component: 'audit', title: 'Audit' });
+    api.addPanel({ id: 'findings', component: 'findings', title: 'Findings', position: { referencePanel: 'audit', direction: 'right' } });
+    api.addPanel({ id: 'query', component: 'query', title: 'Query', position: { referencePanel: 'audit', direction: 'below' } });
+    api.addPanel({ id: 'livefeed', component: 'livefeed', title: 'Live Feed', position: { referencePanel: 'findings', direction: 'below' } });
   },
   ops: (api) => {
     // Pipeline command deck leads — the live service DAG is the ops centerpiece.

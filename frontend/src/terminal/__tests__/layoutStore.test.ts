@@ -52,4 +52,10 @@ describe('layoutStore', () => {
     DEFAULT_LAYOUTS.ops({ addPanel: (o: { id: string }) => { ids.push(o.id); return {} as never; } } as never);
     expect(ids[0]).toBe('pipeline');
   });
+
+  it('the auditor layout leads with the audit command deck', () => {
+    const ids: string[] = [];
+    DEFAULT_LAYOUTS.auditor({ addPanel: (o: { id: string }) => { ids.push(o.id); return {} as never; } } as never);
+    expect(ids[0]).toBe('audit');
+  });
 });

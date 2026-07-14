@@ -1,8 +1,8 @@
 import { lazy } from 'react';
-import { Terminal, Database, ShieldAlert, Activity, Waypoints, Workflow, type LucideIcon } from 'lucide-react';
+import { Terminal, Database, ShieldAlert, Activity, Waypoints, Workflow, Gavel, type LucideIcon } from 'lucide-react';
 import type { IDockviewPanelProps } from 'dockview-react';
 
-export type PanelId = 'pipeline' | 'query' | 'datasets' | 'findings' | 'livefeed' | 'constellation';
+export type PanelId = 'pipeline' | 'audit' | 'query' | 'datasets' | 'findings' | 'livefeed' | 'constellation';
 
 export interface PanelDef {
   title: string;
@@ -12,6 +12,7 @@ export interface PanelDef {
 
 export const PANEL_REGISTRY: Record<PanelId, PanelDef> = {
   pipeline:      { title: 'Pipeline',      icon: Workflow,    component: lazy(() => import('./PipelinePanel')) },
+  audit:         { title: 'Audit',         icon: Gavel,       component: lazy(() => import('./AuditPanel')) },
   query:         { title: 'Query',         icon: Terminal,    component: lazy(() => import('./QueryPanel')) },
   datasets:      { title: 'Datasets',      icon: Database,    component: lazy(() => import('./DatasetsPanel')) },
   findings:      { title: 'Findings',      icon: ShieldAlert, component: lazy(() => import('./FindingsPanel')) },
