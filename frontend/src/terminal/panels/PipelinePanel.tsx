@@ -57,8 +57,12 @@ export default function PipelinePanel(_props: IDockviewPanelProps) {
   const [hovered, setHovered] = useState<string | null>(null);
   const railRef = useRef<HTMLDivElement | null>(null);
 
-  /* Measure the graph box and scale the DAG to fill it (both axes, capped) —
-     fit-to-width alone left it floating small in wide panels. */
+  /* Measure the graph box and scale the DAG to fill the wrap WIDTH (capped at
+     MAX_SCALE). Scaling by both axes letterboxed the DAG to a sliver whenever
+     the panel was short (e.g. docked in a stacked tab group), because the
+     height term dominated the min(). Left-to-right flow is read across, so we
+     fill the width and let the height overflow into a vertical scroll — the
+     wrap sets overflow-y:auto for exactly this. */
   const wrapRef = useRef<HTMLDivElement | null>(null);
   const [box, setBox] = useState<{ w: number; h: number } | null>(null);
   useEffect(() => {
@@ -71,7 +75,7 @@ export default function PipelinePanel(_props: IDockviewPanelProps) {
     ro.observe(el);
     return () => ro.disconnect();
   }, []);
-  const scale = box ? Math.min(MAX_SCALE, box.w / LAYOUT.width, box.h / VIEW_H) : 1;
+  const scale = box ? Math.min(MAX_SCALE, box.w / LAYOUT.width) : 1;
 
   /* Highlight follows hover, falling back to the pinned selection. */
   const focusId = hovered ?? selected;

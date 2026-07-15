@@ -52,11 +52,14 @@
 }
 .aura-terminal .pl-graph-wrap {
   flex: 1 1 auto;
-  overflow: hidden;
+  /* Fit-to-width: the DAG fills the wrap width and may be taller than the
+     panel, so scroll vertically rather than clip. Horizontal stays hidden. */
+  overflow-x: hidden;
+  overflow-y: auto;
   padding: 14px;
   min-width: 0;
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: center;
   /* faint command-deck canvas grid */
   background-image: radial-gradient(var(--t-line-soft) 0.7px, transparent 0.7px);

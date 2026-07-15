@@ -88,7 +88,16 @@ function openConnection(topic: string, entry: PoolEntry) {
     entry.es = null;
   }
 
-  const url = new URL(`${API_BASE}/stream/${encodeURIComponent(topic)}`);
+  // API_BASE resolves to the relative '/api/v1' for same-origin production
+  // deployments (unset VITE_API_URL). A single-arg `new URL('/api/v1/...')`
+  // throws "Invalid URL" because a relative path has no scheme, which crashed
+  // every SSE-subscribing panel on mount. Supplying window.location.origin as
+  // the base resolves the relative case and is ignored when API_BASE is
+  // already absolute (dev/cross-origin VITE_API_URL). Mirrors auditApi.ts.
+  const url = new URL(
+    `${API_BASE}/stream/${encodeURIComponent(topic)}`,
+    typeof window !== 'undefined' ? window.location.origin : 'http://localhost',
+  );
   if (entry.lastEventId) url.searchParams.set('last_event_id', entry.lastEventId);
 
   const es = new EventSource(url.toString());
