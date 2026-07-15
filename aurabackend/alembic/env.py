@@ -60,7 +60,9 @@ def run_migrations_offline() -> None:
         dialect_opts={"paramstyle": "named"},
         render_as_batch=_is_sqlite(url),
         compare_type=True,
-        compare_server_default=True,
+        # SQLite renders server defaults inconsistently, producing false-positive
+        # drift in `alembic check`; trust this comparison only on real DBs.
+        compare_server_default=not _is_sqlite(url),
     )
     with context.begin_transaction():
         context.run_migrations()
@@ -73,7 +75,9 @@ def do_run_migrations(connection: Connection) -> None:
         target_metadata=target_metadata,
         render_as_batch=_is_sqlite(url),  # SQLite needs batch mode for ALTERs
         compare_type=True,
-        compare_server_default=True,
+        # SQLite renders server defaults inconsistently, producing false-positive
+        # drift in `alembic check`; trust this comparison only on real DBs.
+        compare_server_default=not _is_sqlite(url),
     )
     with context.begin_transaction():
         context.run_migrations()
