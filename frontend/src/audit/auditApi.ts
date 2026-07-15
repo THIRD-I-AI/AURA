@@ -29,7 +29,18 @@ export const auditApi = {
     return getJson<Artifact>(`${CF}/artifacts/${hash}`);
   },
 
-  verify(hash: string): Promise<VerifyResult> {
+  async verify(hash: string): Promise<VerifyResult> {
+    // Two record families share /verify/:hash — counterfactual artifacts and
+    // financial-audit records. The artifact store answers "unsigned" for a
+    // hash it never signed, so fall through to the financial verifier before
+    // declaring an artifact unsigned (live-data bug: signed forensic audits
+    // rendered as NOT verified).
+    const art = await getJson<VerifyResult>(`${CF}/artifacts/${hash}/verify`).catch(() => null);
+    if (art && art.signature_status === 'signed') return art;
+    const fin = await getJson<VerifyResult>(`${CF}/audit/financial/verify/${hash}`).catch(() => null);
+    if (fin && fin.signature_status === 'signed') return fin;
+    if (art) return art;
+    if (fin) return fin;
     return getJson<VerifyResult>(`${CF}/artifacts/${hash}/verify`);
   },
 

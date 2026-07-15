@@ -21,6 +21,9 @@ from counterfactual_service.main import (
     _require_auditor,
 )
 from counterfactual_service.main import (
+    audit_ledger_verify as _svc_audit_ledger_verify,
+)
+from counterfactual_service.main import (
     demo_scenarios as _svc_demo_scenarios,
 )
 from counterfactual_service.main import (
@@ -28,6 +31,9 @@ from counterfactual_service.main import (
 )
 from counterfactual_service.main import (
     financial_audit_decide as _svc_financial_audit_decide,
+)
+from counterfactual_service.main import (
+    financial_audit_demo as _svc_financial_audit_demo,
 )
 from counterfactual_service.main import (
     financial_audit_exceptions as _svc_financial_audit_exceptions,
@@ -63,6 +69,7 @@ from counterfactual_service.main import (
     verify_artifact as _svc_verify_artifact,
 )
 from counterfactual_service.schemas import CounterfactualQuery
+from shared.auth import require_tenant
 
 router = APIRouter(prefix="/counterfactual", tags=["counterfactual"])
 
@@ -124,6 +131,21 @@ async def run_audit(req: AuditRequest) -> Dict[str, Any]:
 @router.post("/audit/financial")
 async def financial_audit(req: FinancialAuditRequest) -> Dict[str, Any]:
     return await _svc_financial_audit(req)
+
+
+@router.get("/audit/financial/demo")
+async def financial_audit_demo() -> Dict[str, Any]:
+    """S40 one-click forensic demo — the cockpit's 'Run signed audit'. The
+    facade previously never exposed it, so the Workbench 404'd through the
+    gateway while the service route worked (browser-verified gap)."""
+    return await _svc_financial_audit_demo()
+
+
+@router.get("/audit/ledger/verify")
+async def audit_ledger_verify(tenant: str = Depends(require_tenant)) -> Dict[str, Any]:
+    """Tenant hash-chain verification for the cockpit's ledger chip. Tenant
+    comes from the verified JWT (require_tenant), never a caller header."""
+    return await _svc_audit_ledger_verify(tenant)
 
 
 @router.get("/audit/financial/verify/{record_hash}")

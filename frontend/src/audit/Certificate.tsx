@@ -7,8 +7,10 @@ import type { Artifact, VerifyResult } from './types';
 
 /** Plain-English verdict from the estimates (S31b ships no narrative field). */
 function verdict(a: Artifact): string {
+  // Financial-audit records carry findings, not causal estimates — render the
+  // signature verdict without crashing on the missing array (live-data bug).
   // Skip failed estimators; coerce numbers (live path = number, replay = string).
-  const usable = a.estimates.filter(
+  const usable = (a.estimates ?? []).filter(
     (e) => !e.error && e.point !== undefined && e.point !== null && Number.isFinite(Number(e.point)),
   );
   if (usable.length === 0) return 'Audit complete — see estimator detail.';

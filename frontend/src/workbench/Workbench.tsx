@@ -10,6 +10,7 @@ import {
   analyticsService,
   authService,
   chatService,
+  getAuthToken,
   getCurrentWorkspaceId,
   healingService,
   streamingService,
@@ -76,7 +77,11 @@ type CfState =
   | { status: 'error'; message: string };
 
 export default function Workbench() {
-  const [view, setView] = useState<'login' | 'boot' | 'app'>('login');
+  /* Single front door: an already-authenticated session (classic login or a
+     restored token) skips the inner login and boots straight to the cockpit. */
+  const [view, setView] = useState<'login' | 'boot' | 'app'>(
+    () => (authService.currentUser?.() ? 'boot' : 'login'),
+  );
   const [theme, setTheme] = useState<'dark' | 'light'>('dark');
   const [nav, setNav] = useState('Cockpit');
   const [toast, setToast] = useState<string | null>(null);
@@ -133,7 +138,10 @@ export default function Workbench() {
   useEffect(() => {
     if (view !== 'app') return;
     const root = API_BASE_URL.replace(/\/api\/v1$/, '');
-    fetch(`${API_BASE_URL}/counterfactual/audit/ledger/verify`)
+    // Ledger verify is tenant-scoped (tenant from the verified JWT), so the
+    // bearer must ride along — a bare fetch 401s and looked like an outage.
+    const tok = getAuthToken();
+    fetch(`${API_BASE_URL}/counterfactual/audit/ledger/verify`, tok ? { headers: { Authorization: `Bearer ${tok}` } } : undefined)
       .then((r) => (r.ok ? r.json() : null))
       .then((j) => {
         if (j && typeof j.count === 'number') {
@@ -367,7 +375,7 @@ export default function Workbench() {
               <div className="aw-display" style={{ fontWeight: 700, fontSize: 44, lineHeight: 1.15 }}>Analysis your auditors can replay.</div>
               <div style={{ fontSize: 15, color: 'var(--text2)', lineHeight: 1.6 }}>Autonomous agents over mission-critical data — every conclusion signed, every pipeline self-healing.</div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 10, fontSize: 13, color: 'var(--text2)' }}>
-                {['ED25519-signed conclusions · deterministic replay', 'Self-healing streams — NetSuite, Workday, Kafka (MAPE-K)', 'Fail-closed auth · PII perimeter masking · WORM audit log'].map((t) => (
+                {['ED25519-signed conclusions · deterministic replay', 'Self-healing streams — Kafka, Postgres, BigQuery (MAPE-K drift repair)', 'Fail-closed auth · PII perimeter masking · WORM audit log'].map((t) => (
                   <div key={t} style={{ display: 'flex', alignItems: 'center', gap: 9 }}><span style={{ width: 5, height: 5, borderRadius: '50%', background: 'var(--accent)', flex: 'none' }} />{t}</div>
                 ))}
               </div>

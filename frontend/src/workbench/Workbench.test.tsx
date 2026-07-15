@@ -7,6 +7,7 @@ vi.mock('../services/api', () => ({
   API_BASE_URL: 'http://test/api/v1',
   chatService: { streamMessage: vi.fn().mockResolvedValue(undefined) },
   authService: { login: vi.fn() },
+  getAuthToken: () => 'test-token',
   getCurrentWorkspaceId: () => 'default',
   analyticsService: {
     getQueryHistory: vi.fn().mockResolvedValue([
