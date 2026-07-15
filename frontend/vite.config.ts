@@ -2,6 +2,7 @@
 import { defineConfig, type Plugin } from 'vite'
 import { configDefaults } from 'vitest/config'
 import react from '@vitejs/plugin-react'
+import tailwindcss from '@tailwindcss/vite'
 
 /**
  * S37 §5.2: index.html ships a production-tight CSP whose connect-src is
@@ -23,7 +24,12 @@ function devCspPlugin(): Plugin {
 
 // https://vite.dev/config/
 export default defineConfig({
-  plugins: [react(), devCspPlugin()],
+  // NOTE (rolldown-vite + Tailwind v4): Vite 8 ships Lightning CSS and Tailwind
+  // v4's oxide engine also uses it. We deliberately keep Vite's default CSS
+  // minifier (we do NOT set css.transformer:'lightningcss') to avoid a
+  // double-optimize path through Lightning CSS; the default build is verified
+  // clean, so no extra Tailwind config is needed.
+  plugins: [tailwindcss(), react(), devCspPlugin()],
   server: {
     port: 5173,
   },

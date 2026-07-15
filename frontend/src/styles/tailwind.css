@@ -1,0 +1,149 @@
+/**
+ * Tailwind v4 entry — TOKEN-BOUND.
+ *
+ * This is the utility layer for the Terminal-Authority redesign. It does NOT
+ * introduce a second source of design truth: every theme value below is bound
+ * with `@theme inline` to an existing custom property from tokens.css /
+ * design-system.css, so a utility like `bg-surface` compiles to
+ * `background-color: var(--bg-surface)` — resolved LIVE at runtime. That keeps
+ * tokens.css the single source of color truth (dark + certificate themes both
+ * keep working via var() indirection) and preserves the S37 token consolidation.
+ *
+ * Load order (main.tsx): fonts → design-system.css → components.css →
+ * tokens.css → primitives.css → THIS FILE → index.css. Tailwind must come
+ * after tokens.css so the vars it references are defined.
+ */
+/**
+ * Layered import WITHOUT preflight. AURA already ships its own reset in
+ * design-system.css (universal box-sizing/margin/padding + prefers-reduced-
+ * motion). Importing Tailwind's preflight on top would double-reset and could
+ * restyle unmigrated headings/lists/buttons — unacceptable for a strangler
+ * migration whose Phase-1 contract is "zero visual change". So we import ONLY
+ * the theme (to register @theme tokens) and utilities layers, and omit base.
+ * New primitives get explicit styling via utilities, so preflight isn't needed.
+ */
+@layer theme, base, components, utilities;
+@import 'tailwindcss/theme.css' layer(theme);
+@import 'tailwindcss/utilities.css' layer(utilities);
+
+/* Tailwind scans these for utility usage (v4 auto-detects, but be explicit). */
+@source '../**/*.{ts,tsx}';
+
+/* Dark is the product default; certificate is the only light island. We drive
+   theming through [data-theme] on <html> (already in index.html), NOT through
+   Tailwind's `dark:` variant — so disable the media-based dark variant and make
+   `dark:` a no-op-free custom variant keyed to our attribute if ever needed. */
+@custom-variant dark (&:where([data-theme='dark'], [data-theme='dark'] *));
+@custom-variant certificate (&:where([data-theme='certificate'], [data-theme='certificate'] *));
+
+@theme inline {
+  /* ── Colors → bound to tokens.css (var() indirection = runtime themable) ── */
+  --color-signal: var(--signal);
+  --color-info: var(--info);
+  --color-warn: var(--warn);
+  --color-danger: var(--danger);
+
+  --color-bg-base: var(--bg-base);
+  --color-bg-canvas: var(--bg-canvas);
+  --color-bg-primary: var(--bg-primary);
+  --color-bg-secondary: var(--bg-secondary);
+  --color-bg-surface: var(--bg-surface);
+  --color-bg-surface-2: var(--bg-surface-2);
+  --color-bg-elevated: var(--bg-elevated);
+  --color-bg-tertiary: var(--bg-tertiary);
+  --color-bg-sunken: var(--bg-sunken);
+  --color-bg-hover: var(--bg-hover);
+  --color-bg-active: var(--bg-active);
+  --color-bg-selected: var(--bg-selected);
+  --color-bg-overlay: var(--bg-overlay);
+  --color-bg-raised: var(--bg-raised);
+  --color-card: var(--card-bg);
+
+  --color-border-default: var(--border-default);
+  --color-border-subtle: var(--border-subtle);
+  --color-border-hairline: var(--border-hairline);
+  --color-border-strong: var(--border-strong);
+  --color-border-focus: var(--border-focus);
+  --color-border-brand: var(--border-brand);
+  --color-border-error: var(--border-error);
+  --color-border-success: var(--border-success);
+
+  --color-text-primary: var(--text-primary);
+  --color-text-secondary: var(--text-secondary);
+  --color-text-tertiary: var(--text-tertiary);
+
+  --color-accent: var(--accent);
+  --color-accent-hover: var(--accent-hover);
+  --color-accent-active: var(--accent-active);
+  --color-accent-dim: var(--accent-dim);
+
+  --color-green: var(--green);
+  --color-red: var(--red);
+  --color-yellow: var(--yellow);
+  --color-blue: var(--blue);
+  --color-cyan: var(--cyan);
+  --color-purple: var(--purple);
+
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --color-chart-6: var(--chart-6);
+  --color-chart-7: var(--chart-7);
+
+  /* ── Typography → tokens.css font stacks ── */
+  --font-sans: var(--font-sans);
+  --font-mono: var(--font-mono);
+
+  --font-weight-light: 300;
+  --font-weight-normal: 400;
+  --font-weight-medium: 500;
+  --font-weight-semibold: 600;
+  --font-weight-bold: 700;
+
+  /* ── Spacing → design-system.css --space-* scale ── */
+  --spacing-0: var(--space-0);
+  --spacing-px: var(--space-px);
+  --spacing-0_5: var(--space-0-5);
+  --spacing-1: var(--space-1);
+  --spacing-1_5: var(--space-1-5);
+  --spacing-2: var(--space-2);
+  --spacing-2_5: var(--space-2-5);
+  --spacing-3: var(--space-3);
+  --spacing-4: var(--space-4);
+  --spacing-5: var(--space-5);
+  --spacing-6: var(--space-6);
+  --spacing-7: var(--space-7);
+  --spacing-8: var(--space-8);
+  --spacing-10: var(--space-10);
+  --spacing-12: var(--space-12);
+  --spacing-14: var(--space-14);
+  --spacing-16: var(--space-16);
+  --spacing-20: var(--space-20);
+  --spacing-24: var(--space-24);
+
+  /* ── Radii → design-system.css (Terminal Authority skews SHARP: sm/md default) ── */
+  --radius-none: var(--radius-none);
+  --radius-xs: var(--radius-xs);
+  --radius-sm: var(--radius-sm);
+  --radius-md: var(--radius-md);
+  --radius-lg: var(--radius-lg);
+  --radius-xl: var(--radius-xl);
+  --radius-2xl: var(--radius-2xl);
+  --radius-3xl: var(--radius-3xl);
+  --radius-full: var(--radius-full);
+
+  /* ── Shadows → design-system.css ── */
+  --shadow-xs: var(--shadow-xs);
+  --shadow-sm: var(--shadow-sm);
+  --shadow-md: var(--shadow-md);
+  --shadow-lg: var(--shadow-lg);
+  --shadow-xl: var(--shadow-xl);
+
+  /* ── Easing / motion → design-system.css ── */
+  --ease-out: var(--ease-out);
+  --ease-in-out: var(--ease-in-out);
+  --ease-spring: var(--ease-spring);
+  --ease-bounce: var(--ease-bounce);
+}
