@@ -11,29 +11,29 @@
   flex-wrap: wrap;
   gap: 4px;
   align-items: center;
-  border-bottom: 1px solid var(--border, #232936);
+  border-bottom: 1px solid var(--border, var(--border-default));
   padding-bottom: 8px;
 }
 .webhooks__tab {
   background: transparent;
   border: 1px solid transparent;
-  color: var(--text-muted, #8a93a5);
+  color: var(--text-muted, var(--text-secondary));
   padding: 6px 14px;
   border-radius: 6px 6px 0 0;
   cursor: pointer;
   font-size: 13px;
 }
 .webhooks__tab.is-active {
-  color: var(--text, #e6ebf3);
-  border-color: var(--border, #232936);
-  border-bottom-color: var(--bg, #0d1017);
-  background: var(--surface, #141822);
+  color: var(--text, var(--text-primary));
+  border-color: var(--border, var(--border-default));
+  border-bottom-color: var(--bg, var(--bg-base));
+  background: var(--surface, var(--bg-surface-2));
 }
 .webhooks__refresh {
   margin-left: auto;
   background: transparent;
-  border: 1px solid var(--border, #232936);
-  color: var(--text-muted, #8a93a5);
+  border: 1px solid var(--border, var(--border-default));
+  color: var(--text-muted, var(--text-secondary));
   padding: 4px 10px;
   border-radius: 6px;
   font-size: 12px;
@@ -59,8 +59,8 @@
 }
 
 .webhooks__card {
-  background: var(--surface, #141822);
-  border: 1px solid var(--border, #232936);
+  background: var(--surface, var(--bg-surface-2));
+  border: 1px solid var(--border, var(--border-default));
   border-radius: 8px;
   padding: 16px;
 }
@@ -68,7 +68,7 @@
   margin: 0 0 12px 0;
   font-size: 14px;
   font-weight: 600;
-  color: var(--text, #e6ebf3);
+  color: var(--text, var(--text-primary));
 }
 
 .webhooks__form {
@@ -84,16 +84,16 @@
   flex-direction: column;
   gap: 4px;
   font-size: 12px;
-  color: var(--text-muted, #8a93a5);
+  color: var(--text-muted, var(--text-secondary));
 }
 .webhooks__form input,
 .webhooks__form select,
 .webhooks__form textarea {
-  background: var(--bg, #0d1017);
-  border: 1px solid var(--border, #232936);
+  background: var(--bg, var(--bg-base));
+  border: 1px solid var(--border, var(--border-default));
   border-radius: 6px;
   padding: 6px 10px;
-  color: var(--text, #e6ebf3);
+  color: var(--text, var(--text-primary));
   font-size: 13px;
   font-family: inherit;
 }
@@ -110,14 +110,14 @@
   gap: 8px;
   align-items: center;
   padding: 8px;
-  background: var(--bg, #0d1017);
-  border: 1px solid var(--border, #232936);
+  background: var(--bg, var(--bg-base));
+  border: 1px solid var(--border, var(--border-default));
   border-radius: 6px;
 }
 .webhooks__events-label {
   width: 100%;
   font-size: 12px;
-  color: var(--text-muted, #8a93a5);
+  color: var(--text-muted, var(--text-secondary));
   margin-bottom: 4px;
 }
 .webhooks__event-chip {
@@ -125,18 +125,18 @@
   align-items: center;
   gap: 4px;
   font-size: 12px;
-  background: var(--surface, #141822);
-  border: 1px solid var(--border, #232936);
+  background: var(--surface, var(--bg-surface-2));
+  border: 1px solid var(--border, var(--border-default));
   border-radius: 12px;
   padding: 3px 10px;
-  color: var(--text, #e6ebf3);
+  color: var(--text, var(--text-primary));
   cursor: pointer;
 }
 
 .webhooks__btn {
-  background: var(--surface, #141822);
-  border: 1px solid var(--border, #232936);
-  color: var(--text, #e6ebf3);
+  background: var(--surface, var(--bg-surface-2));
+  border: 1px solid var(--border, var(--border-default));
+  color: var(--text, var(--text-primary));
   border-radius: 6px;
   padding: 6px 12px;
   font-size: 13px;
@@ -152,7 +152,7 @@
 
 .webhooks__empty {
   font-size: 13px;
-  color: var(--text-muted, #8a93a5);
+  color: var(--text-muted, var(--text-secondary));
   font-style: italic;
 }
 
@@ -166,8 +166,8 @@
   justify-content: space-between;
   gap: 12px;
   padding: 12px;
-  background: var(--bg, #0d1017);
-  border: 1px solid var(--border, #232936);
+  background: var(--bg, var(--bg-base));
+  border: 1px solid var(--border, var(--border-default));
   border-radius: 6px;
 }
 .webhooks__item.is-disabled { opacity: 0.55; }
@@ -175,12 +175,12 @@
 .webhooks__item-url {
   font-family: var(--mono, monospace);
   font-size: 13px;
-  color: var(--text, #e6ebf3);
+  color: var(--text, var(--text-primary));
   word-break: break-all;
 }
 .webhooks__item-meta {
   font-size: 12px;
-  color: var(--text-muted, #8a93a5);
+  color: var(--text-muted, var(--text-secondary));
   margin-top: 4px;
   display: flex;
   flex-wrap: wrap;
@@ -194,12 +194,12 @@
   gap: 4px;
 }
 .webhooks__event-tag {
-  background: var(--surface, #141822);
-  border: 1px solid var(--border, #232936);
+  background: var(--surface, var(--bg-surface-2));
+  border: 1px solid var(--border, var(--border-default));
   border-radius: 10px;
   padding: 2px 8px;
   font-size: 11px;
-  color: var(--text-muted, #8a93a5);
+  color: var(--text-muted, var(--text-secondary));
 }
 .webhooks__item-actions {
   display: flex;
@@ -208,8 +208,8 @@
 }
 .webhooks__item-actions button {
   background: transparent;
-  border: 1px solid var(--border, #232936);
-  color: var(--text, #e6ebf3);
+  border: 1px solid var(--border, var(--border-default));
+  color: var(--text, var(--text-primary));
   font-size: 12px;
   padding: 4px 10px;
   border-radius: 4px;
@@ -239,11 +239,11 @@
 .webhooks__table td {
   text-align: left;
   padding: 6px 8px;
-  border-bottom: 1px solid var(--border, #232936);
+  border-bottom: 1px solid var(--border, var(--border-default));
   vertical-align: top;
 }
 .webhooks__table th {
-  color: var(--text-muted, #8a93a5);
+  color: var(--text-muted, var(--text-secondary));
   font-weight: 500;
 }
 .webhooks__table tr.is-failed td { background: rgba(255, 80, 80, 0.04); }

@@ -30,7 +30,7 @@ def upgrade() -> None:
         sa.Column('finding_type', sa.String(length=32), nullable=False, server_default='summary'),
         sa.Column('summary', sa.Text(), nullable=False, server_default=''),
         sa.Column('score', sa.Float(), nullable=False, server_default='0.0'),
-        sa.Column('is_anomaly', sa.Boolean(), nullable=False, server_default=sa.text('0')),
+        sa.Column('is_anomaly', sa.Boolean(), nullable=False, server_default=sa.text('false')),
         sa.Column('payload', sa.JSON(), nullable=False, server_default=sa.text("'{}'")),
         sa.Column('run_id', sa.String(length=64), nullable=True),
         sa.Column('error', sa.Text(), nullable=True),

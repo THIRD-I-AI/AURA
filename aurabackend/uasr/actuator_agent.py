@@ -132,30 +132,30 @@ class SynthesisActuatorAgent(BaseAgent):
                 new_t = new_types.get(col, old_t)
                 if old_t != new_t:
                     cast_lines.append(
-                        f'    if "{col}" in row:\n'
-                        f'        try:\n'
-                        f'            row["{col}"] = {_python_cast(old_t)}(row["{col}"])\n'
-                        f'        except (ValueError, TypeError):\n'
-                        f'            row["{col}"] = None  # Could not cast, set to None'
+                        f'        if "{col}" in row:\n'
+                        f'            try:\n'
+                        f'                row["{col}"] = {_python_cast(old_t)}(row["{col}"])\n'
+                        f'            except (ValueError, TypeError):\n'
+                        f'                row["{col}"] = None  # Could not cast, set to None'
                     )
 
             if not cast_lines:
                 return None
 
-            return textwrap.dedent(f'''\
-                """UASR Shim — Type Cast Recovery
-                Converts changed column types back to expected types.
-                Generated for drift: {diagnosis.root_cause}
-                """
-
-                def transform(rows: list[dict]) -> list[dict]:
-                    """Apply type-cast recovery to each row."""
-                    result = []
-                    for row in rows:
-                {chr(10).join(cast_lines)}
-                        result.append(row)
-                    return result
-            ''')
+            body = "\n".join(cast_lines)
+            return (
+                '"""UASR Shim - Type Cast Recovery\n'
+                'Converts changed column types back to expected types.\n'
+                f'Generated for drift: {diagnosis.root_cause}\n'
+                '"""\n\n'
+                'def transform(rows: list[dict]) -> list[dict]:\n'
+                '    """Apply type-cast recovery to each row."""\n'
+                '    result = []\n'
+                '    for row in rows:\n'
+                f'{body}\n'
+                '        result.append(row)\n'
+                '    return result\n'
+            )
 
         added = drift_vector.get("added", [])
         removed = drift_vector.get("removed", [])
@@ -165,63 +165,58 @@ class SynthesisActuatorAgent(BaseAgent):
                 f'        row.setdefault("{col}", None)'
                 for col in removed
             )
-            return textwrap.dedent(f'''\
-                """UASR Shim — Missing Column Recovery
-                Adds default values for columns removed from upstream.
-                Generated for drift: {diagnosis.root_cause}
-                """
-
-                def transform(rows: list[dict]) -> list[dict]:
-                    """Restore missing columns with NULL defaults."""
-                    result = []
-                    for row in rows:
-                {default_lines}
-                        result.append(row)
-                    return result
-            ''')
+            return (
+                '"""UASR Shim - Missing Column Recovery\n'
+                'Adds default values for columns removed from upstream.\n'
+                f'Generated for drift: {diagnosis.root_cause}\n'
+                '"""\n\n'
+                'def transform(rows: list[dict]) -> list[dict]:\n'
+                '    """Restore missing columns with NULL defaults."""\n'
+                '    result = []\n'
+                '    for row in rows:\n'
+                f'{default_lines}\n'
+                '        result.append(row)\n'
+                '    return result\n'
+            )
 
         if added and not removed:
             keep_cols_str = ", ".join(f'"{c}"' for c in added)
-            return textwrap.dedent(f'''\
-                """UASR Shim — Column Filter
-                Strips unexpected new columns to maintain schema compatibility.
-                Generated for drift: {diagnosis.root_cause}
-                """
-
-                _NEW_COLUMNS = [{keep_cols_str}]
-
-                def transform(rows: list[dict]) -> list[dict]:
-                    """Remove newly added columns not in the expected schema."""
-                    result = []
-                    for row in rows:
-                        filtered = {{k: v for k, v in row.items() if k not in _NEW_COLUMNS}}
-                        result.append(filtered)
-                    return result
-            ''')
+            return (
+                '"""UASR Shim - Column Filter\n'
+                'Strips unexpected new columns to maintain schema compatibility.\n'
+                f'Generated for drift: {diagnosis.root_cause}\n'
+                '"""\n\n'
+                f'_NEW_COLUMNS = [{keep_cols_str}]\n\n'
+                'def transform(rows: list[dict]) -> list[dict]:\n'
+                '    """Remove newly added columns not in the expected schema."""\n'
+                '    result = []\n'
+                '    for row in rows:\n'
+                '        filtered = {k: v for k, v in row.items() if k not in _NEW_COLUMNS}\n'
+                '        result.append(filtered)\n'
+                '    return result\n'
+            )
 
         if added and removed and len(added) == len(removed):
             # Likely a rename
             rename_map = dict(zip(added, removed))
             map_str = ", ".join(f'"{k}": "{v}"' for k, v in rename_map.items())
-            return textwrap.dedent(f'''\
-                """UASR Shim — Column Rename Mapping
-                Maps renamed columns back to their original names.
-                Generated for drift: {diagnosis.root_cause}
-                """
-
-                _RENAME_MAP = {{{map_str}}}
-
-                def transform(rows: list[dict]) -> list[dict]:
-                    """Rename new column names back to expected names."""
-                    result = []
-                    for row in rows:
-                        mapped = {{}}
-                        for k, v in row.items():
-                            new_key = _RENAME_MAP.get(k, k)
-                            mapped[new_key] = v
-                        result.append(mapped)
-                    return result
-            ''')
+            return (
+                '"""UASR Shim - Column Rename Mapping\n'
+                'Maps renamed columns back to their original names.\n'
+                f'Generated for drift: {diagnosis.root_cause}\n'
+                '"""\n\n'
+                f'_RENAME_MAP = {{{map_str}}}\n\n'
+                'def transform(rows: list[dict]) -> list[dict]:\n'
+                '    """Rename new column names back to expected names."""\n'
+                '    result = []\n'
+                '    for row in rows:\n'
+                '        mapped = {}\n'
+                '        for k, v in row.items():\n'
+                '            new_key = _RENAME_MAP.get(k, k)\n'
+                '            mapped[new_key] = v\n'
+                '        result.append(mapped)\n'
+                '    return result\n'
+            )
 
         return None
 
@@ -233,52 +228,95 @@ class SynthesisActuatorAgent(BaseAgent):
         if not affected:
             return None
 
+        # --- Deterministic rescale (unit-bug) heal --------------------------
+        # If a column's batch mean is a near-integer multiple (or divisor) of
+        # its baseline mean, the drift is a systematic unit-scale error
+        # (e.g. cents mislabelled as dollars, x100). A divide-by-factor shim
+        # heals it exactly -- this is value-level healing, no LLM needed.
+        col_stats = drift_vector.get("col_stats", {})
+        rescale_ops = {}
+        for col in affected:
+            cs = col_stats.get(col) or {}
+            bmean = cs.get("baseline_mean")
+            xmean = cs.get("batch_mean")
+            if not bmean or not xmean or bmean == 0:
+                continue
+            ratio = xmean / bmean
+            factor = None
+            # Candidate scale factors: common unit bugs (10, 100, 1000, 60, ...).
+            for cand in (10.0, 100.0, 1000.0, 1e6, 60.0, 3600.0, 24.0, 12.0, 2.0):
+                if abs(ratio - cand) / cand < 0.05:       # batch inflated x cand
+                    factor = cand
+                    break
+                if abs(ratio - 1.0 / cand) * cand < 0.05:  # batch deflated / cand
+                    factor = 1.0 / cand
+                    break
+            if factor is not None:
+                rescale_ops[col] = factor
+
+        if rescale_ops:
+            div_lines = "\n".join(
+                f'        if "{col}" in row and isinstance(row["{col}"], (int, float)):\n'
+                f'            row["{col}"] = row["{col}"] / {factor!r}'
+                for col, factor in rescale_ops.items()
+            )
+            factors_repr = ", ".join(f"{c}:x{f:g}" for c, f in rescale_ops.items())
+            return (
+                '"""UASR Shim - Unit Rescale (value-level heal)\n'
+                f'Corrects systematic unit-scale error ({factors_repr}).\n'
+                f'Generated for drift: {diagnosis.root_cause}\n'
+                '"""\n\n'
+                'def transform(rows: list[dict]) -> list[dict]:\n'
+                '    """Divide mis-scaled columns back to baseline units."""\n'
+                '    result = []\n'
+                '    for row in rows:\n'
+                f'{div_lines}\n'
+                '        result.append(row)\n'
+                '    return result\n'
+            )
+
         if max_kl > zeta * 5:
-            # Severe — clip to baseline percentiles
+            # Severe - clip to baseline percentiles
             clip_lines = "\n".join(
                 f'        if "{col}" in row and isinstance(row["{col}"], (int, float)):\n'
                 f'            row["{col}"] = max(min(row["{col}"], _CLIP_MAX), _CLIP_MIN)'
                 for col in affected
             )
-            return textwrap.dedent(f'''\
-                """UASR Shim — Outlier Clipping
-                Clips extreme values to baseline distribution percentiles.
-                Generated for drift: {diagnosis.root_cause}
-                """
-
-                # These should be populated from the baseline distribution
-                _CLIP_MIN = -1e9
-                _CLIP_MAX = 1e9
-
-                def transform(rows: list[dict]) -> list[dict]:
-                    """Clip outlier values to safe range."""
-                    result = []
-                    for row in rows:
-                {clip_lines}
-                        result.append(row)
-                    return result
-            ''')
+            return (
+                '"""UASR Shim - Outlier Clipping\n'
+                'Clips extreme values to baseline distribution percentiles.\n'
+                f'Generated for drift: {diagnosis.root_cause}\n'
+                '"""\n\n'
+                '# These should be populated from the baseline distribution\n'
+                '_CLIP_MIN = -1e9\n'
+                '_CLIP_MAX = 1e9\n\n'
+                'def transform(rows: list[dict]) -> list[dict]:\n'
+                '    """Clip outlier values to safe range."""\n'
+                '    result = []\n'
+                '    for row in rows:\n'
+                f'{clip_lines}\n'
+                '        result.append(row)\n'
+                '    return result\n'
+            )
         else:
-            # Mild — just log and pass through
+            # Mild - just log and pass through
             cols_str = ", ".join(f'"{c}"' for c in affected)
-            return textwrap.dedent(f'''\
-                """UASR Shim — Drift Monitor (pass-through)
-                Logs statistical drift metrics without modifying data.
-                Generated for drift: {diagnosis.root_cause}
-                """
-
-                import logging
-                _logger = logging.getLogger("uasr.shim.monitor")
-                _DRIFT_COLUMNS = [{cols_str}]
-
-                def transform(rows: list[dict]) -> list[dict]:
-                    """Log drift metrics and pass data through unchanged."""
-                    _logger.warning(
-                        "Statistical drift detected in columns: %s (KL={max_kl:.4f}, zeta={zeta:.4f})",
-                        _DRIFT_COLUMNS,
-                    )
-                    return rows
-            ''')
+            return (
+                '"""UASR Shim - Drift Monitor (pass-through)\n'
+                'Logs statistical drift metrics without modifying data.\n'
+                f'Generated for drift: {diagnosis.root_cause}\n'
+                '"""\n\n'
+                'import logging\n'
+                '_logger = logging.getLogger("uasr.shim.monitor")\n'
+                f'_DRIFT_COLUMNS = [{cols_str}]\n\n'
+                'def transform(rows: list[dict]) -> list[dict]:\n'
+                '    """Log drift metrics and pass data through unchanged."""\n'
+                '    _logger.warning(\n'
+                f'        "Statistical drift in columns: %s (KL={max_kl:.4f}, zeta={zeta:.4f})",\n'
+                '        _DRIFT_COLUMNS,\n'
+                '    )\n'
+                '    return rows\n'
+            )
 
     # ────────────────────────────────────────────────────────────────
     # LLM-assisted shim generation

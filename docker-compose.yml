@@ -152,6 +152,19 @@ services:
     command: uvicorn uasr.service:app --host 0.0.0.0 --port 8009 --reload
     ports:
       - "8009:8009"
+    environment:
+      - PYTHONPATH=/app
+      # Self-healing layer runs against the bundled Redis so state is shared
+      # and repair admission is fleet-wide — the same image scales to N replicas.
+      - UASR_MAPEK_ENABLED=true
+      - UASR_STATE_BACKEND=redis
+      - UASR_REPAIR_BACKEND=distributed
+      - UASR_REDIS_URL=redis://redis:6379/0
+      - UASR_REPAIR_MAX_GLOBAL_CONCURRENT=8
+      - UASR_NODE_ID=${HOSTNAME:-uasr-dev}
+    depends_on:
+      redis:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8009/health').read()"]
       interval: 30s
@@ -187,6 +200,19 @@ services:
       retries: 5
     volumes:
       - redpanda_data:/var/lib/redpanda/data
+
+  # ── Port 6379 — Redis (UASR shared state + distributed repair admission) ──
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    ports:
+      - "6379:6379"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   # ── Port 16686 — Jaeger (OpenTelemetry tracing backend) ───────────────
   jaeger:

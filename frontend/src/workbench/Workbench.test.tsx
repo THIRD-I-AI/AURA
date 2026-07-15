@@ -7,6 +7,7 @@ vi.mock('../services/api', () => ({
   API_BASE_URL: 'http://test/api/v1',
   chatService: { streamMessage: vi.fn().mockResolvedValue(undefined) },
   authService: { login: vi.fn() },
+  getAuthToken: () => 'test-token',
   getCurrentWorkspaceId: () => 'default',
   analyticsService: {
     getQueryHistory: vi.fn().mockResolvedValue([
@@ -58,7 +59,7 @@ describe('Workbench', () => {
   it('starts at the login screen with the design headline', () => {
     render(<Workbench />);
     expect(screen.getByTestId('wb-login')).toBeInTheDocument();
-    expect(screen.getByText('Analytics your auditors can replay.')).toBeInTheDocument();
+    expect(screen.getByText('Analysis your auditors can replay.')).toBeInTheDocument();
   });
 
   it('email sign-in calls the REAL auth service; failure shows the error', async () => {

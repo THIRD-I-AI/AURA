@@ -14,9 +14,10 @@
  *   const { lastEvent } = useSSE({ topic: `query:${jobId}`, enabled: !!jobId });
  */
 import { useState, useEffect, useRef, useCallback } from 'react';
+import { API_BASE_URL } from '../services/api';
 
-const _RAW = (import.meta.env.VITE_API_URL || 'http://localhost:8000') as string;
-const API_BASE = `${_RAW.replace(/\/+$/, '')}/api/v1`;
+// Centralized base (same-origin in prod, localStorage('apiUrl') override wins).
+const API_BASE = API_BASE_URL;
 
 export interface SSEEvent<T = unknown> {
   id: string;
@@ -87,7 +88,16 @@ function openConnection(topic: string, entry: PoolEntry) {
     entry.es = null;
   }
 
-  const url = new URL(`${API_BASE}/stream/${encodeURIComponent(topic)}`);
+  // API_BASE resolves to the relative '/api/v1' for same-origin production
+  // deployments (unset VITE_API_URL). A single-arg `new URL('/api/v1/...')`
+  // throws "Invalid URL" because a relative path has no scheme, which crashed
+  // every SSE-subscribing panel on mount. Supplying window.location.origin as
+  // the base resolves the relative case and is ignored when API_BASE is
+  // already absolute (dev/cross-origin VITE_API_URL). Mirrors auditApi.ts.
+  const url = new URL(
+    `${API_BASE}/stream/${encodeURIComponent(topic)}`,
+    typeof window !== 'undefined' ? window.location.origin : 'http://localhost',
+  );
   if (entry.lastEventId) url.searchParams.set('last_event_id', entry.lastEventId);
 
   const es = new EventSource(url.toString());

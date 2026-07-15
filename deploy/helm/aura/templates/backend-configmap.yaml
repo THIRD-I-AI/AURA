@@ -12,6 +12,16 @@ data:
   # Durable per-tenant uploads root (auto-set to the mounted PVC path).
   AURA_UPLOADS_ROOT: {{ .Values.uploads.mountPath | quote }}
 {{- end }}
+{{- if .Values.redis.enabled }}
+  # UASR distributed self-healing (auto-injected when redis.enabled=true).
+  # Detector state is shared in Redis and repair admission is fleet-wide, so
+  # uasr_service is safe to scale beyond one replica.
+  UASR_MAPEK_ENABLED: "true"
+  UASR_STATE_BACKEND: "redis"
+  UASR_REPAIR_BACKEND: "distributed"
+  UASR_REDIS_URL: "redis://{{ include "aura.fullname" . }}-redis:6379/0"
+  UASR_REPAIR_MAX_GLOBAL_CONCURRENT: {{ .Values.redis.repairMaxGlobalConcurrent | default 8 | quote }}
+{{- end }}
 {{- if .Values.audit.enabled }}
   # TRAIGA audit overrides (auto-injected when audit.enabled=true).
 {{- range $k, $v := .Values.audit.env }}

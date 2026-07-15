@@ -1,5 +1,6 @@
 /// <reference types="vitest/config" />
 import { defineConfig, type Plugin } from 'vite'
+import { configDefaults } from 'vitest/config'
 import react from '@vitejs/plugin-react'
 
 /**
@@ -32,5 +33,11 @@ export default defineConfig({
     setupFiles: './src/test/setup.ts',
     css: true,
     fakeTimers: { shouldAdvanceTime: true },
+    // Vitest's default include is **/*.{test,spec}.*, which sweeps in the
+    // Playwright e2e specs under e2e/. Those import from '@playwright/test'
+    // and call test.describe() at module load, which throws under the Vitest
+    // runner ("did not expect test.describe() to be called here"). Playwright
+    // owns e2e/ (see playwright.config.ts testDir); Vitest must not collect it.
+    exclude: [...configDefaults.exclude, 'e2e/**'],
   },
 })

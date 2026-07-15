@@ -10,6 +10,7 @@ import {
   analyticsService,
   authService,
   chatService,
+  getAuthToken,
   getCurrentWorkspaceId,
   healingService,
   streamingService,
@@ -24,7 +25,7 @@ type Heal = { id: string; title: string; method: string; safe: boolean; sub: str
 type FeedEv = { time: string; k: string; color: string; t: string };
 
 const NAV_GROUPS: [string, string[]][] = [
-  ['WORKSPACE', ['Cockpit', 'Terminal', 'Ask AURA', 'Dashboards', 'Library', 'Query History']],
+  ['WORKSPACE', ['Cockpit', 'Terminal', 'Pipeline', 'Ask AURA', 'Dashboards', 'Library', 'Query History']],
   ['AUDIT', ['Audit Workbench', 'Counterfactuals', 'Certificates', 'Exception Queue']],
   ['OPERATE', ['Pipelines', 'Streaming', 'Healing Queue', 'Scheduler', 'Webhooks', 'Cost']],
   ['DATA', ['Connectors', 'Files & Data', 'Lineage', 'Metadata Store']],
@@ -42,11 +43,12 @@ const STUB_DESCS: Record<string, string> = {
   'Files & Data': 'Uploads, datasets, and the DuckDB analytics lake with atomic Parquet loads.',
   'Metadata Store': 'Schema registry and catalog the critic validates every generated query against.',
   Terminal: 'The dockview multi-panel command terminal (S46).',
+  Pipeline: 'Palantir-style live pipeline command deck — the service DAG, streaming logs, and one-click start/stop plus UASR recovery approvals, inside the terminal cockpit.',
   'Ask AURA': 'Full-page conversational analytics over your datasets.',
   'Audit Workbench': 'HITL exception review with signed decisions.',
 };
 const STUB_LINKS: Record<string, string> = {
-  Terminal: '/app/terminal', Dashboards: '/app', Library: '/app', Certificates: '/app',
+  Terminal: '/app/terminal', Pipeline: '/app/terminal?panel=pipeline', Dashboards: '/app', Library: '/app', Certificates: '/app',
   Scheduler: '/app', Webhooks: '/app', Cost: '/app', Connectors: '/app',
   'Files & Data': '/app', 'Metadata Store': '/app', 'Audit Workbench': '/app', 'Ask AURA': '/app',
 };
@@ -75,11 +77,16 @@ type CfState =
   | { status: 'error'; message: string };
 
 export default function Workbench() {
-  const [view, setView] = useState<'login' | 'boot' | 'app'>('login');
+  /* Single front door: an already-authenticated session (classic login or a
+     restored token) skips the inner login and boots straight to the cockpit. */
+  const [view, setView] = useState<'login' | 'boot' | 'app'>(
+    () => (authService.currentUser?.() ? 'boot' : 'login'),
+  );
   const [theme, setTheme] = useState<'dark' | 'light'>('dark');
   const [nav, setNav] = useState('Cockpit');
   const [toast, setToast] = useState<string | null>(null);
   const [paletteOpen, setPaletteOpen] = useState(false);
+  const [navOpen, setNavOpen] = useState(false); // mobile nav drawer (<860px)
   const [paletteQ, setPaletteQ] = useState('');
   const [loginError, setLoginError] = useState<string | null>(null);
   const [bootIdx, setBootIdx] = useState(0);
@@ -131,7 +138,10 @@ export default function Workbench() {
   useEffect(() => {
     if (view !== 'app') return;
     const root = API_BASE_URL.replace(/\/api\/v1$/, '');
-    fetch(`${API_BASE_URL}/counterfactual/audit/ledger/verify`)
+    // Ledger verify is tenant-scoped (tenant from the verified JWT), so the
+    // bearer must ride along — a bare fetch 401s and looked like an outage.
+    const tok = getAuthToken();
+    fetch(`${API_BASE_URL}/counterfactual/audit/ledger/verify`, tok ? { headers: { Authorization: `Bearer ${tok}` } } : undefined)
       .then((r) => (r.ok ? r.json() : null))
       .then((j) => {
         if (j && typeof j.count === 'number') {
@@ -312,6 +322,18 @@ export default function Workbench() {
     { label: 'Pending approvals', value: String(pendingCount), sub: pendingCount > 0 ? 'healing queue' : 'queue clear', subColor: pendingCount > 0 ? 'var(--warn)' : 'var(--accent)' },
     { label: 'Pipelines', value: pipelines ? String(pipelines.length) : dash.value, sub: pipelines?.length ? 'streaming' : 'none defined', subColor: 'var(--text3)' },
   ];
+  /* Header status is DERIVED from live health, never asserted. Claiming
+     "verified" while the gateway or ledger is down would be an audit-trust
+     lie — the pill degrades honestly. */
+  const systemStatus: { label: string; tone: 'ok' | 'warn' | 'danger' | 'idle' } =
+    gatewayUp === false ? { label: 'GATEWAY OFFLINE', tone: 'danger' }
+    : ledger?.intact === false ? { label: 'LEDGER CHAIN BROKEN', tone: 'danger' }
+    : ledgerDown ? { label: 'LEDGER OFFLINE', tone: 'warn' }
+    : gatewayUp && ledger?.intact ? { label: 'ALL SYSTEMS VERIFIED', tone: 'ok' }
+    : { label: 'VERIFYING…', tone: 'idle' };
+  const statusColor = systemStatus.tone === 'ok' ? 'var(--accent)' : systemStatus.tone === 'danger' ? 'var(--danger)' : systemStatus.tone === 'warn' ? 'var(--warn)' : 'var(--text3)';
+  const statusBg = systemStatus.tone === 'ok' ? 'var(--accent-dim)' : systemStatus.tone === 'danger' ? 'var(--danger-dim)' : systemStatus.tone === 'warn' ? 'var(--warn-dim)' : 'transparent';
+
   const runColors: Record<string, string> = { running: 'var(--blue)', active: 'var(--blue)', completed: 'var(--accent)', success: 'var(--accent)', failed: 'var(--danger)', error: 'var(--danger)' };
   const runs = (pipelines ?? []).map((p) => ({ name: p.name, status: p.status, color: runColors[p.status.toLowerCase()] ?? 'var(--text2)', time: '—', rows: '—' }));
 
@@ -346,14 +368,14 @@ export default function Workbench() {
   if (view === 'login') {
     return (
       <div className="aw" data-theme={theme} data-testid="wb-login">
-        <div style={{ flex: 1, minHeight: '100vh', display: 'grid', gridTemplateColumns: '1.1fr 1fr' }}>
-          <div style={{ background: 'var(--sunken)', padding: '48px 56px', display: 'flex', flexDirection: 'column' }}>
+        <div className="aw-hero-split" style={{ flex: 1, minHeight: '100vh', display: 'grid', gridTemplateColumns: '1.1fr 1fr' }}>
+          <div className="aw-hero" style={{ padding: '48px 56px', display: 'flex', flexDirection: 'column' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}><span style={{ width: 8, height: 8, background: 'var(--accent)', borderRadius: 2 }} /><span className="aw-display" style={{ fontWeight: 700, fontSize: 15, letterSpacing: '.1em' }}>AURA</span></div>
             <div style={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'center', gap: 22, maxWidth: 520 }}>
-              <div className="aw-display" style={{ fontWeight: 700, fontSize: 44, lineHeight: 1.15 }}>Analytics your auditors can replay.</div>
+              <div className="aw-display" style={{ fontWeight: 700, fontSize: 44, lineHeight: 1.15 }}>Analysis your auditors can replay.</div>
               <div style={{ fontSize: 15, color: 'var(--text2)', lineHeight: 1.6 }}>Autonomous agents over mission-critical data — every conclusion signed, every pipeline self-healing.</div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 10, fontSize: 13, color: 'var(--text2)' }}>
-                {['ED25519-signed conclusions · deterministic replay', 'Self-healing streams — NetSuite, Workday, Kafka (MAPE-K)', 'Fail-closed auth · PII perimeter masking · WORM audit log'].map((t) => (
+                {['ED25519-signed conclusions · deterministic replay', 'Self-healing streams — Kafka, Postgres, BigQuery (MAPE-K drift repair)', 'Fail-closed auth · PII perimeter masking · WORM audit log'].map((t) => (
                   <div key={t} style={{ display: 'flex', alignItems: 'center', gap: 9 }}><span style={{ width: 5, height: 5, borderRadius: '50%', background: 'var(--accent)', flex: 'none' }} />{t}</div>
                 ))}
               </div>
@@ -413,20 +435,22 @@ export default function Workbench() {
     <div className="aw" data-theme={theme} data-testid="wb-app" style={{ height: '100vh', overflow: 'hidden' }}>
       {/* topbar */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 16, height: 54, padding: '0 24px', background: 'var(--surface)', borderBottom: '1px solid var(--border)', flex: 'none' }}>
+        <div className="aw-burger" onClick={() => setNavOpen((o) => !o)} role="button" aria-label="Toggle navigation">☰</div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}><span style={{ width: 8, height: 8, background: 'var(--accent)', borderRadius: 2 }} /><span className="aw-display" style={{ fontWeight: 700, fontSize: 15, letterSpacing: '.1em' }}>AURA</span></div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 7, fontSize: 12.5, color: 'var(--text2)', border: '1px solid var(--border)', borderRadius: 6, padding: '5px 10px' }}>{getCurrentWorkspaceId()}</div>
         {gatewayUp === false && <div className="aw-mono" style={{ fontSize: 9.5, fontWeight: 600, letterSpacing: '.08em', color: 'var(--danger)', background: 'var(--sunken)', border: '1px solid var(--border)', borderRadius: 4, padding: '3px 7px' }}>GATEWAY OFFLINE</div>}
         <div style={{ flex: 1 }} />
-        <div onClick={() => { setPaletteOpen(true); setTimeout(() => paletteInput.current?.focus(), 30); }} className="aw-mono aw-hover-accent-bd" style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 8, fontSize: 11, fontWeight: 500, color: 'var(--text2)', border: '1px solid var(--border)', borderRadius: 6, padding: '5px 10px' }}>
+        <div onClick={() => { setPaletteOpen(true); setTimeout(() => paletteInput.current?.focus(), 30); }} className="aw-mono aw-hover-accent-bd aw-topbar-search" style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 8, fontSize: 11, fontWeight: 500, color: 'var(--text2)', border: '1px solid var(--border)', borderRadius: 6, padding: '5px 10px' }}>
           Search, ask, or run a command <span style={{ background: 'var(--sunken)', borderRadius: 3, padding: '1px 5px' }}>⌘K</span>
         </div>
         <div onClick={() => setTheme((t) => t === 'dark' ? 'light' : 'dark')} style={{ cursor: 'pointer', fontSize: 11.5, fontWeight: 600, color: 'var(--text2)', border: '1px solid var(--border)', borderRadius: 6, padding: '5px 11px' }}>{theme === 'dark' ? '☾ Dark' : '☀ Light'}</div>
-        <a href="/app" style={{ fontSize: 11.5, fontWeight: 600, color: 'var(--text2)', border: '1px solid var(--border)', borderRadius: 6, padding: '5px 11px', textDecoration: 'none' }}>Classic app</a>
+        <a href="/app" className="aw-topbar-classic" style={{ fontSize: 11.5, fontWeight: 600, color: 'var(--text2)', border: '1px solid var(--border)', borderRadius: 6, padding: '5px 11px', textDecoration: 'none' }}>Classic app</a>
       </div>
 
       <div style={{ display: 'flex', flex: 1, minHeight: 0 }}>
+        <div className={`aw-backdrop${navOpen ? ' aw-open' : ''}`} onClick={() => setNavOpen(false)} />
         {/* nav */}
-        <div style={{ width: 204, flex: 'none', borderRight: '1px solid var(--border)', background: 'var(--surface)', padding: '16px 10px 20px', display: 'flex', flexDirection: 'column', gap: 18, overflowY: 'auto' }}>
+        <div className={`aw-nav${navOpen ? ' aw-open' : ''}`} style={{ width: 204, flex: 'none', borderRight: '1px solid var(--border)', background: 'var(--surface)', padding: '16px 10px 20px', display: 'flex', flexDirection: 'column', gap: 18, overflowY: 'auto' }}>
           {NAV_GROUPS.map(([label, items]) => (
             <div key={label}>
               <div className="aw-mono" style={{ fontSize: 9.5, fontWeight: 600, letterSpacing: '.14em', color: 'var(--text3)', padding: '0 12px 6px' }}>{label}</div>
@@ -435,7 +459,7 @@ export default function Workbench() {
                   const active = name === nav;
                   const badge = (name === 'Exception Queue' || name === 'Healing Queue') && pendingCount > 0 ? String(pendingCount) : null;
                   return (
-                    <div key={name} onClick={() => setNav(name)} className="aw-nav-item" style={{ color: active ? 'var(--text)' : 'var(--text2)', background: active ? 'var(--accent-dim)' : 'transparent', fontWeight: active ? 600 : 400 }}>
+                    <div key={name} onClick={() => { setNav(name); setNavOpen(false); }} className="aw-nav-item" style={{ color: active ? 'var(--text)' : 'var(--text2)', background: active ? 'var(--accent-dim)' : 'transparent', fontWeight: active ? 600 : 400 }}>
                       <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>{active && <span style={{ width: 5, height: 5, borderRadius: '50%', background: 'var(--accent)' }} />}{name}</span>
                       {badge && <span className="aw-mono" style={{ fontSize: 9.5, fontWeight: 600, color: 'var(--warn)', background: 'var(--warn-dim)', borderRadius: 99, padding: '1px 6px' }}>{badge}</span>}
                     </div>
@@ -450,16 +474,16 @@ export default function Workbench() {
         </div>
 
         {/* main */}
-        <div style={{ flex: 1, minWidth: 0, padding: '24px 26px 28px', display: 'flex', flexDirection: 'column', gap: 16, overflowY: 'auto' }}>
+        <div className="aw-main" style={{ flex: 1, minWidth: 0, padding: '24px 26px 28px', display: 'flex', flexDirection: 'column', gap: 16, overflowY: 'auto' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
             <div className="aw-display" style={{ fontWeight: 600, fontSize: 22 }}>{nav}</div>
-            <div className="aw-chip aw-pill-accent" style={{ display: 'flex', alignItems: 'center', gap: 6, border: '1px solid var(--accent-bd)', fontWeight: 600, letterSpacing: '.08em' }}><span style={{ width: 5, height: 5, borderRadius: '50%', background: 'var(--accent)', animation: 'awpulse 2.4s infinite' }} />ALL SYSTEMS VERIFIED</div>
+            <div className="aw-chip" style={{ display: 'flex', alignItems: 'center', gap: 6, color: statusColor, background: statusBg, border: `1px solid ${systemStatus.tone === 'ok' ? 'var(--accent-bd)' : statusColor}`, fontWeight: 600, letterSpacing: '.08em' }}><span style={{ width: 5, height: 5, borderRadius: '50%', background: statusColor, animation: 'awpulse 2.4s infinite' }} />{systemStatus.label}</div>
             <div style={{ flex: 1 }} />
             <div style={{ fontSize: 12, color: 'var(--text3)' }}>Last full audit replay 06:00 UTC · scheduler on time</div>
           </div>
 
           {nav === 'Cockpit' && (
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6,1fr)', gap: 12 }} data-testid="wb-stats">
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(150px,1fr))', gap: 12 }} data-testid="wb-stats">
               {stats.map((st) => (
                 <div key={st.label} className="aw-panel" style={{ borderRadius: 8, padding: '12px 14px' }}>
                   <div style={{ fontSize: 11, color: 'var(--text3)', marginBottom: 6 }}>{st.label}</div>
@@ -470,7 +494,7 @@ export default function Workbench() {
             </div>
           )}
 
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(470px,1fr))', gap: 16, alignItems: 'start' }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(min(470px,100%),1fr))', gap: 16, alignItems: 'start' }}>
             {showChat && (
               <div className="aw-panel" style={{ display: 'flex', flexDirection: 'column' }} data-testid="wb-chat">
                 <div className="aw-panel-head" style={{ padding: '14px 18px' }}>
@@ -567,7 +591,7 @@ export default function Workbench() {
             )}
           </div>
 
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(380px,1fr))', gap: 16, alignItems: 'start' }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(min(380px,100%),1fr))', gap: 16, alignItems: 'start' }}>
             {showHealing && (
               <div className="aw-panel" data-testid="wb-healing">
                 <div className="aw-panel-head">

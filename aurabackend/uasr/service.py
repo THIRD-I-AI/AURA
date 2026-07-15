@@ -44,6 +44,12 @@ from .models import (
     RecoveryStatus,
 )
 from .recovery_loop import RecoveryLoop, RecoveryLoopConfig
+from .runtime_config import (
+    build_redis_client,
+    build_repair_scheduler,
+    build_state_store,
+    deployment_summary,
+)
 from .semantic_gateway import ReferenceContextMatrix, SemanticGateway
 
 logger = get_logger("uasr.service")
@@ -57,7 +63,23 @@ logger = get_logger("uasr.service")
 # otherwise drift events seen via Kafka wouldn't show up in /uasr/metrics
 # and shims deployed via either path wouldn't apply to the other.
 
-_detector = DriftDetector()
+# Deployment mode is env-driven (see runtime_config): the same image runs
+# single-node (in-memory state, in-process repair scheduling) or as a fleet
+# (Redis-shared state, cross-node repair admission) with no code change.
+# A cold replica with UASR_STATE_BACKEND=redis serves any source because the
+# baselines live in Redis, written by its peers.
+_redis_client = None
+if (
+    os.getenv("UASR_STATE_BACKEND", "memory").lower() == "redis"
+    or os.getenv("UASR_REPAIR_BACKEND", "local").lower() in ("distributed", "redis", "fleet")
+):
+    _redis_client = build_redis_client()
+
+_detector = DriftDetector(state_store=build_state_store(redis_client=_redis_client))
+# Repair-admission backend (local RepairScheduler or DistributedRepairCoordinator);
+# started in the lifespan when the MAPE-K worker runs. None => await recoveries
+# directly (legacy one-worker-per-process behaviour).
+_repair_scheduler = build_repair_scheduler(redis_client=_redis_client)
 _matrix = ReferenceContextMatrix()
 _gateway = SemanticGateway(matrix=_matrix)
 _tracker = HealingMetricTracker()
@@ -94,17 +116,24 @@ async def _lifespan(_):
     global _mapek_worker
     await init_uasr_db()
     logger.info("UASR database tables initialised")
+    logger.info("UASR deployment mode: %s", deployment_summary())
 
     # MAPE-K worker is opt-in because it requires a reachable Kafka
     # cluster — turning it on by default would break every dev box that
     # runs the UASR service for its HTTP API only.
     if os.getenv("UASR_MAPEK_ENABLED", "false").lower() == "true":
         try:
+            # Start the repair-admission backend if it needs a background
+            # pump (local RepairScheduler). The distributed coordinator polls
+            # inside submit() and has no start()/stop().
+            if _repair_scheduler is not None and hasattr(_repair_scheduler, "start"):
+                await _repair_scheduler.start()
             _mapek_worker = MAPEKWorker(
                 MAPEKConfig(),
                 detector=_detector,
                 recovery_loop=_loop,
                 metrics=_tracker,
+                repair_scheduler=_repair_scheduler,
             )
             await _mapek_worker.start()
             logger.info(
@@ -128,16 +157,41 @@ async def _lifespan(_):
                 logger.info("MAPE-K worker stopped cleanly")
             except Exception as exc:
                 logger.warning("MAPE-K worker shutdown raised: %s", exc)
+        if _repair_scheduler is not None and hasattr(_repair_scheduler, "stop"):
+            try:
+                await _repair_scheduler.stop(drain=True)
+                logger.info("Repair scheduler stopped cleanly")
+            except Exception as exc:
+                logger.warning("Repair scheduler shutdown raised: %s", exc)
 
 # ────────────────────────────────────────────────────────────────────
 # FastAPI application
 # ────────────────────────────────────────────────────────────────────
+
+async def _redis_health_probe() -> None:
+    """Health probe: ping Redis when a redis-backed mode is active.
+
+    Registered only when the deployment actually depends on Redis, so a
+    single-node (memory/local) deployment keeps a dependency-free /health.
+    Raising propagates to /health as a 503 degraded status -- the operator
+    signal that shared state / fleet admission has lost its backend.
+    """
+    if _redis_client is None:
+        return
+    import asyncio as _asyncio
+    await _asyncio.get_event_loop().run_in_executor(None, _redis_client.ping)
+
+
+_uasr_health_checks = {}
+if _redis_client is not None:
+    _uasr_health_checks["redis"] = _redis_health_probe
 
 app = create_service(
     name="UASR Service",
     service_tag="uasr_service",
     description="Universal Agentic Semantic Recovery — self-healing data pipeline layer",
     lifespan=_lifespan,
+    health_checks=_uasr_health_checks or None,
 )
 
 
@@ -639,6 +693,22 @@ async def mapek_status() -> Dict[str, Any]:
     }
 
 
+@app.get("/uasr/deployment")
+async def uasr_deployment() -> Dict[str, Any]:
+    """Surface the active deployment mode: state backend, repair backend,
+    concurrency limits, and this node id. Lets an operator confirm a fleet
+    is actually running distributed (Redis state + cross-node admission) vs.
+    silently single-node."""
+    summary = deployment_summary()
+    summary["repair_backend_class"] = (
+        type(_repair_scheduler).__name__ if _repair_scheduler is not None else None
+    )
+    summary["state_store_class"] = (
+        type(_detector._store).__name__ if hasattr(_detector, "_store") else None
+    )
+    return summary
+
+
 @app.post("/uasr/mapek/resume")
 async def mapek_resume() -> Dict[str, Any]:
     """Manual unpause after operator-triaged drift recovery.
@@ -653,3 +723,17 @@ async def mapek_resume() -> Dict[str, Any]:
         return {"resumed": False, "reason": "worker was not paused"}
     _mapek_worker.resume()
     return {"resumed": True}
+
+# âââ Operator dashboard (static single-page console) âââ
+@app.get("/", include_in_schema=False)
+@app.get("/dashboard", include_in_schema=False)
+async def uasr_dashboard() -> Any:
+    """Serve the self-contained operator console (polls the REST API)."""
+    from pathlib import Path
+
+    from fastapi.responses import HTMLResponse
+
+    html_path = Path(__file__).parent / "static" / "dashboard.html"
+    if not html_path.is_file():
+        raise HTTPException(status_code=404, detail="dashboard not found")
+    return HTMLResponse(html_path.read_text(encoding="utf-8"))

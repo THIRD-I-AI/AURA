@@ -310,6 +310,69 @@ chart's PVC-backed embedded store if no Postgres is available on site.
 
 ---
 
+## UASR self-healing — single-node vs. distributed (horizontal scale)
+
+The UASR self-healing service (`uasr_service`, port 8009) runs in one of two
+modes, selected entirely by environment — the same image, no code change:
+
+| Axis | Default (single node) | Distributed (fleet) |
+|------|-----------------------|---------------------|
+| Detector state | `UASR_STATE_BACKEND=memory` — per-pod, in-process | `UASR_STATE_BACKEND=redis` — shared in Redis, any replica serves any source |
+| Repair admission | `UASR_REPAIR_BACKEND=local` — per-process concurrency cap | `UASR_REPAIR_BACKEND=distributed` — fleet-wide cap + crash-safe leases |
+| Replicas | 1 (state would fragment across pods) | N (safe — state and admission are shared) |
+| Redis | not required | required |
+
+**Why the split matters:** detector baselines live *with* the pod in memory
+mode, so a second replica would see cold-start misses for sources its peer
+already learned, and each pod would independently flood the shared synthesis/
+validation backend with recoveries. Redis mode fixes both — shared baselines
+(the cross-replica cold-miss fix) and one global repair budget regardless of
+replica count.
+
+**Compose** — the bundled `redis` service and the distributed env are already
+wired in `docker-compose.yml` / `docker-compose.prod.yml`. Scale out with:
+
+```bash
+docker compose up -d --scale uasr_service=4
+# every replica shares state via redis://redis:6379/0 and a global
+# UASR_REPAIR_MAX_GLOBAL_CONCURRENT=8 recovery budget
+```
+
+**Helm** — flip one switch; the chart deploys Redis, injects the UASR
+distributed env, opens the NetworkPolicy path to Redis, and (with autoscaling
+on) attaches an HPA to `uasr_service`:
+
+```bash
+helm upgrade --install aura deploy/helm/aura \
+  --set redis.enabled=true \
+  --set backendServices.uasr_service.replicas=3 \
+  --set autoscaling.enabled=true \
+  --set backendServices.uasr_service.autoscaling.enabled=true
+```
+
+For production at scale, prefer a managed/HA Redis over the bundled single pod:
+leave `redis.enabled=false` and add the `UASR_*` vars (below) to `env` with your
+external `UASR_REDIS_URL`.
+
+**Tuning knobs** (all optional, sane defaults):
+
+```dotenv
+UASR_STATE_BACKEND=redis                 # memory | redis
+UASR_REPAIR_BACKEND=distributed          # local | distributed | none
+UASR_REDIS_URL=redis://redis:6379/0
+UASR_REPAIR_MAX_GLOBAL_CONCURRENT=8      # fleet-wide concurrent recoveries
+UASR_REPAIR_MAX_CONCURRENT=4             # per-process cap (local mode)
+UASR_STATE_TTL_SECONDS=                  # optional Redis key TTL (blank = no expiry)
+UASR_STATE_CAPACITY=                     # optional LRU cap (memory mode, blank = unbounded)
+UASR_MAPEK_ENABLED=true                  # run the autonomous MAPE-K control loop
+```
+
+Confirm the active mode at runtime — `GET /health` on port 8009 reports
+`state_backend`, `repair_backend`, and `node_id`, so a fleet's replicas are
+individually identifiable.
+
+---
+
 ## Object storage (multi-node scale)
 
 The default upload path writes CSVs to a local volume (`ReadWriteOnce`), which

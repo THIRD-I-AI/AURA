@@ -518,6 +518,50 @@ jobs:
       - name: Run Vitest
         run: npx vitest run --reporter=verbose
 
+  # ── Frontend render smoke (Playwright) ───────────────────────
+  # Real-browser render gate. jsdom does no layout, so the vitest suite
+  # reports every element as 0x0 and cannot catch an invisible or clipped
+  # panel (e.g. the DAG SVG emitted at a fixed 1280x632 px inside a ~660 px
+  # box). Playwright drives a real Chromium against the built app served by
+  # `vite preview` (no backend needed for a render smoke).
+  frontend-e2e:
+    name: Frontend Render Smoke (Playwright)
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: frontend
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build app
+        run: npm run build
+
+      - name: Install Playwright Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Run render smoke
+        run: npx playwright test
+
+      - name: Upload trace on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: frontend/playwright-report/
+          retention-days: 7
+
   # ── Frontend lint ────────────────────────────────────────────────────────
   frontend-lint:
     name: Frontend Lint
@@ -608,3 +652,97 @@ jobs:
         #   F401        re-exports in __init__ files
         #   E701        multiple statements on one line
         #   E712        == True/False comparisons
+
+  # ── Database migrations ──────────────────────────────────────────────────
+  db-migrations:
+    name: DB Migrations (Alembic)
+    runs-on: ubuntu-latest
+
+    # Production runs Postgres (docker-compose.prod.yml: postgresql+asyncpg).
+    # SQLite silently coerces types that Postgres rejects — e.g. a boolean
+    # column with an integer server_default aborted the first prod
+    # `upgrade head` at c7d8e9f0a1b2 while every SQLite run passed. This lane
+    # therefore exercises the full chain on a real postgres:16 service, and
+    # keeps a parallel SQLite lane for dev parity.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: aura_test_pw
+          POSTGRES_DB: aura_migrations_test
+          POSTGRES_USER: aura_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    defaults:
+      run:
+        working-directory: aurabackend
+
+    env:
+      SECRET_KEY: ci-not-a-real-secret
+      ENVIRONMENT: development
+      PG_URL: postgresql+asyncpg://aura_test:aura_test_pw@localhost:5432/aura_migrations_test
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: aurabackend/requirements*.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install asyncpg
+
+      - name: Single migration head
+        run: |
+          heads="$(python -m alembic heads)"
+          echo "$heads"
+          n="$(python -m alembic heads | grep -c '(head)')"
+          if [ "$n" -ne 1 ]; then
+            echo "::error::Expected exactly one Alembic head, found $n (branched history — merge with 'alembic merge')"
+            exit 1
+          fi
+
+      # ── Postgres lane (matches production engine) ──────────────────────────
+      - name: "[Postgres] Upgrade a clean database to head"
+        env:
+          METADATA_DATABASE_URL: ${{ env.PG_URL }}
+        run: python -m alembic upgrade head
+
+      - name: "[Postgres] Downgrade to base then re-upgrade (reversibility)"
+        env:
+          METADATA_DATABASE_URL: ${{ env.PG_URL }}
+        run: |
+          python -m alembic downgrade base
+          python -m alembic upgrade head
+
+      - name: "[Postgres] ORM/migration drift check"
+        env:
+          METADATA_DATABASE_URL: ${{ env.PG_URL }}
+        run: |
+          # Fails if the ORM models declare columns/tables/indexes that no
+          # migration creates (the org_id / recovery-HITL drift class).
+          # server_default comparison is disabled in env.py (ORM uses Python
+          # default=, migrations use server_default=; autogenerate cannot
+          # reconcile them). Structural + type drift is still enforced.
+          python -m alembic check
+
+      # ── SQLite lane (dev parity) ───────────────────────────────────────────
+      - name: "[SQLite] Upgrade, downgrade, re-upgrade, drift check"
+        env:
+          METADATA_DATABASE_URL: sqlite+aiosqlite:///./ci_migrations.db
+        run: |
+          python -m alembic upgrade head
+          python -m alembic downgrade base
+          python -m alembic upgrade head
+          python -m alembic check

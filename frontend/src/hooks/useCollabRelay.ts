@@ -18,11 +18,20 @@
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 
-const _RAW = (import.meta.env.VITE_API_URL || 'http://localhost:8000') as string;
-// Convert http(s) → ws(s) preserving host/port. The relay sits at root,
-// not under /api/v1, because browsers can't send auth headers on WS
-// handshakes (see api_gateway/main.py for the corresponding comment).
-const WS_BASE = _RAW.replace(/\/+$/, '').replace(/^http/, 'ws');
+// Same-origin by default. An unset (or empty) VITE_API_URL -- the production
+// build behind nginx -- derives the ws(s) origin from window.location, so the
+// handshake targets whatever host served the app (cloud-agnostic, no rebuild).
+// Dev sets VITE_API_URL=http://localhost:8000 explicitly (cross-origin dev
+// server). The relay sits at root, not under /api/v1, because browsers can't
+// send auth headers on WS handshakes (see api_gateway/main.py).
+const _WS_ENV = (import.meta.env.VITE_API_URL as string | undefined) || '';
+const _sameOriginWs = (): string =>
+  typeof window !== 'undefined'
+    ? `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}`
+    : 'ws://localhost:8000';
+const WS_BASE = _WS_ENV
+  ? _WS_ENV.replace(/\/+$/, '').replace(/^http/, 'ws')
+  : _sameOriginWs();
 
 export interface UseCollabRelayOptions {
   /** Room id — clients in the same room exchange messages. */

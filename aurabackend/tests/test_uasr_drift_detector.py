@@ -401,3 +401,70 @@ class TestVectorizedDistributionIdentity:
         assert "categories" in dist.histogram
         assert dist.histogram["categories"] == {"A": 2, "B": 1}
 
+
+# ── Cold-start warmup suppression (caveat #1) ─────────────────────
+
+class TestColdStartWarmup:
+    """Warmup suppresses the cold-start false-positive transient (Poisson
+    bin-noise off an under-sampled 50-bin histogram) WITHOUT hiding genuine
+    severe drift, discriminating the two by column location shift.
+
+    Empirically this drops the first-5-batch healthy FPR from ~0.86 to 0.0
+    while leaving the steady-state FPR (~0.077) and catastrophic-drift
+    detection untouched.
+    """
+
+    import random as _random
+
+    def _healthy(self, sid, bid, n=500, seed=0):
+        rnd = self._random.Random(f"{sid}:{bid}:{seed}")
+        return BatchPayload(
+            source_id=sid, batch_id=str(bid),
+            rows=[{"amount": rnd.gauss(50.0, 5.0)} for _ in range(n)],
+        )
+
+    def _unit_bug(self, sid, bid, factor=1000.0, n=500, seed=0):
+        rnd = self._random.Random(f"{sid}:{bid}:{seed}")
+        return BatchPayload(
+            source_id=sid, batch_id=str(bid),
+            rows=[{"amount": rnd.gauss(50.0 * factor, 5.0 * factor)} for _ in range(n)],
+        )
+
+    def test_warmup_suppresses_healthy_cold_start(self):
+        det = DriftDetector(default_zeta=0.15, warmup_batches=5)
+        det.register_baseline("s", self._healthy("s", "base", seed=99))
+        # first 5 healthy batches must NOT false-alarm during warmup
+        for b in range(1, 6):
+            r = det.detect(self._healthy("s", b, seed=b))
+            assert r.drift_detected is False, f"cold-start false alarm at batch {b}"
+
+    def test_warmup_does_not_hide_catastrophic_drift(self):
+        det = DriftDetector(default_zeta=0.15, warmup_batches=5)
+        det.register_baseline("s", self._healthy("s", "base", seed=99))
+        # a ×1000 unit bug on batch #1 (deep in warmup) still fires CRITICAL
+        r = det.detect(self._unit_bug("s", 1))
+        assert r.drift_detected is True
+        assert r.drift_type == DriftType.STATISTICAL
+        assert r.severity == DriftSeverity.CRITICAL
+
+    def test_warmup_zero_restores_original_behaviour(self):
+        det = DriftDetector(default_zeta=0.15, warmup_batches=0)
+        det.register_baseline("s", self._healthy("s", "base", seed=99))
+        # with warmup off, at least one of the first healthy batches false-alarms
+        # (the raw cold-start transient this feature exists to remove)
+        fired = any(
+            det.detect(self._healthy("s", b, seed=b)).drift_detected
+            for b in range(1, 6)
+        )
+        assert fired is True
+
+    def test_steady_state_drift_fires_after_warmup(self):
+        det = DriftDetector(default_zeta=0.15, warmup_batches=3)
+        det.register_baseline("s", self._healthy("s", "base", seed=99))
+        for b in range(1, 5):  # fill past warmup with healthy data
+            det.detect(self._healthy("s", b, seed=b))
+        # now a real unit bug post-warmup fires normally
+        r = det.detect(self._unit_bug("s", 99))
+        assert r.drift_detected is True
+        assert r.drift_type == DriftType.STATISTICAL
+

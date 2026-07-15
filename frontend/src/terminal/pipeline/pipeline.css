@@ -1,0 +1,318 @@
+/* ============================================================================
+   Pipeline command deck — scoped under .aura-terminal, reuses the cockpit's
+   --t-* tokens. LtR flow DAG + inspector + event rail + timeline scrubber.
+   Nothing here leaks globally.
+   ============================================================================ */
+
+.aura-terminal .pl-panel {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: var(--t-surface);
+  color: var(--t-text);
+  font-family: var(--t-mono);
+  font-size: 12px;
+  overflow: hidden;
+}
+
+/* ── header ─────────────────────────────────────────────────────────── */
+.aura-terminal .pl-head {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--t-line);
+  background: var(--t-void);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  flex: 0 0 auto;
+}
+.aura-terminal .pl-overall {
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 2px;
+  border: 1px solid var(--t-line-hard);
+}
+.aura-terminal .pl-overall-healthy  { color: var(--t-live); border-color: var(--t-live); }
+.aura-terminal .pl-overall-degraded { color: var(--t-amber); border-color: var(--t-amber); }
+.aura-terminal .pl-overall-critical { color: var(--t-red); border-color: var(--t-red); }
+.aura-terminal .pl-overall-unknown  { color: var(--t-faint); }
+.aura-terminal .pl-head-metric { color: var(--t-dim); }
+.aura-terminal .pl-conn { font-size: 10px; text-transform: uppercase; }
+.aura-terminal .pl-conn.is-on  { color: var(--t-live); }
+.aura-terminal .pl-conn.is-off { color: var(--t-faint); }
+.aura-terminal .pl-head-spacer { flex: 1 1 auto; }
+.aura-terminal .pl-head-ts { color: var(--t-faint); font-size: 10px; }
+
+/* ── body: graph + inspector ────────────────────────────────────────── */
+.aura-terminal .pl-body {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+.aura-terminal .pl-graph-wrap {
+  flex: 1 1 auto;
+  /* Fit-to-width: the DAG fills the wrap width and may be taller than the
+     panel, so scroll vertically rather than clip. Horizontal stays hidden. */
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding: 14px;
+  min-width: 0;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  /* faint command-deck canvas grid */
+  background-image: radial-gradient(var(--t-line-soft) 0.7px, transparent 0.7px);
+  background-size: 22px 22px;
+  background-position: -1px -1px;
+}
+/* Sized by the panel itself: a ResizeObserver measures the box and the svg is
+   given exact pixel dimensions filling BOTH axes (capped upscale), so the DAG
+   renders as large as the panel allows in any shape — wide, tall, maximized. */
+.aura-terminal .pl-graph { display: block; }
+
+/* stage lane headers */
+.aura-terminal .pl-lane-label {
+  fill: var(--t-faint);
+  font-family: var(--t-mono);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+}
+
+/* hover/selection focus: incident edges light up, the rest recede */
+.aura-terminal .pl-graph.has-focus .pl-edge { opacity: 0.22; }
+.aura-terminal .pl-graph.has-focus .pl-edge.is-hot { opacity: 1; stroke: var(--t-live); }
+.aura-terminal .pl-graph.has-focus .pl-edge-sidecar.is-hot { stroke: var(--t-cyan); }
+.aura-terminal .pl-graph.has-focus .pl-edge-cache.is-hot { stroke: var(--t-blue); }
+
+/* directional flow — animates ONLY while the SSE stream is actually live */
+@keyframes pl-flow { to { stroke-dashoffset: -20; } }
+.aura-terminal .pl-graph.is-live .pl-edge-flow {
+  stroke-dasharray: 7 5;
+  animation: pl-flow 1.1s linear infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .aura-terminal .pl-graph.is-live .pl-edge-flow { animation: none; stroke-dasharray: none; }
+}
+
+/* edges */
+.aura-terminal .pl-edge {
+  fill: none;
+  stroke: var(--t-line-hard);
+  stroke-width: 1.4;
+}
+.aura-terminal .pl-edge-flow    { stroke: var(--t-line-hard); }
+.aura-terminal .pl-edge-sidecar { stroke: var(--t-cyan); stroke-dasharray: 4 3; opacity: 0.7; }
+.aura-terminal .pl-edge-cache   { stroke: var(--t-blue); stroke-dasharray: 2 3; opacity: 0.6; }
+.aura-terminal .pl-arrow-head   { fill: var(--t-line-hard); }
+
+/* nodes */
+.aura-terminal .pl-node { cursor: pointer; }
+.aura-terminal .pl-node-box {
+  fill: var(--t-raised);
+  stroke: var(--t-line-hard);
+  stroke-width: 1;
+  transition: stroke 0.12s, fill 0.12s;
+}
+.aura-terminal .pl-node:hover .pl-node-box { fill: var(--t-hover); }
+.aura-terminal .pl-node.is-selected .pl-node-box {
+  stroke: var(--t-live);
+  stroke-width: 1.8;
+}
+.aura-terminal .pl-node-label {
+  fill: var(--t-text);
+  font-family: var(--t-sans);
+  font-size: 12px;
+  font-weight: 600;
+}
+.aura-terminal .pl-node-sub {
+  fill: var(--t-faint);
+  font-size: 10px;
+}
+.aura-terminal .pl-node-glyph { font-size: 13px; }
+
+/* status colours (glyph fill + inspector glyph) */
+.aura-terminal .pl-status-healthy .pl-node-glyph,
+.aura-terminal .pl-glyph.pl-status-healthy { fill: var(--t-live); color: var(--t-live); }
+.aura-terminal .pl-status-degraded .pl-node-glyph,
+.aura-terminal .pl-glyph.pl-status-degraded { fill: var(--t-amber); color: var(--t-amber); }
+.aura-terminal .pl-status-down .pl-node-glyph,
+.aura-terminal .pl-glyph.pl-status-down { fill: var(--t-red); color: var(--t-red); }
+.aura-terminal .pl-status-unmonitored .pl-node-glyph,
+.aura-terminal .pl-glyph.pl-status-unmonitored { fill: var(--t-faint); color: var(--t-faint); }
+/* monitored service, no reading yet (offline/loading) — honestly 'unknown',
+   distinct from truly-unmonitored infra. */
+.aura-terminal .pl-status-unknown .pl-node-glyph,
+.aura-terminal .pl-glyph.pl-status-unknown { fill: var(--t-dim); color: var(--t-dim); }
+
+/* processing services get a subtle left tint by kind */
+.aura-terminal .pl-kind-sidecar .pl-node-box { stroke-dasharray: 3 2; }
+.aura-terminal .pl-kind-bus .pl-node-box,
+.aura-terminal .pl-kind-infra .pl-node-box { fill: var(--t-surface-2); }
+
+/* ── inspector ──────────────────────────────────────────────────────── */
+.aura-terminal .pl-inspector {
+  flex: 0 0 280px;
+  border-left: 1px solid var(--t-line);
+  background: var(--t-void);
+  padding: 12px;
+  overflow: auto;
+}
+.aura-terminal .pl-insp-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--t-sans);
+  font-size: 14px;
+  font-weight: 700;
+  margin-bottom: 10px;
+}
+.aura-terminal .pl-insp-grid {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 3px 12px;
+  margin: 0 0 10px;
+  font-size: 11px;
+}
+.aura-terminal .pl-insp-grid dt { color: var(--t-faint); }
+.aura-terminal .pl-insp-grid dd { color: var(--t-text); margin: 0; }
+.aura-terminal .pl-insp-role {
+  color: var(--t-dim);
+  font-family: var(--t-sans);
+  font-size: 12px;
+  line-height: 1.5;
+  border-top: 1px solid var(--t-line-soft);
+  padding-top: 8px;
+}
+.aura-terminal .pl-insp-sub {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--t-faint);
+  margin: 10px 0 6px;
+}
+.aura-terminal .pl-empty { color: var(--t-faint); font-style: italic; font-size: 11px; }
+
+/* pipeline control rows */
+.aura-terminal .pl-pipe-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 0;
+  border-bottom: 1px solid var(--t-line-soft);
+}
+.aura-terminal .pl-pipe-name { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.aura-terminal .pl-pipe-status { font-size: 10px; text-transform: uppercase; color: var(--t-dim); }
+.aura-terminal .pl-pipe-status.st-running { color: var(--t-live); }
+.aura-terminal .pl-pipe-status.st-paused  { color: var(--t-amber); }
+.aura-terminal .pl-pipe-status.st-stopped { color: var(--t-faint); }
+.aura-terminal .pl-pipe-btns { display: flex; gap: 2px; }
+.aura-terminal .pl-pipe-btns button,
+.aura-terminal .pl-recov-btns button {
+  background: var(--t-raised);
+  color: var(--t-text);
+  border: 1px solid var(--t-line-hard);
+  border-radius: 2px;
+  font-family: var(--t-mono);
+  font-size: 10px;
+  padding: 2px 5px;
+  cursor: pointer;
+}
+.aura-terminal .pl-pipe-btns button:hover:not(:disabled),
+.aura-terminal .pl-recov-btns button:hover:not(:disabled) { border-color: var(--t-live); color: var(--t-live); }
+.aura-terminal .pl-pipe-btns button:disabled,
+.aura-terminal .pl-recov-btns button:disabled { opacity: 0.4; cursor: default; }
+
+/* recovery approvals */
+.aura-terminal .pl-note {
+  width: 100%;
+  box-sizing: border-box;
+  background: var(--t-surface);
+  border: 1px solid var(--t-line-hard);
+  color: var(--t-text);
+  font-family: var(--t-mono);
+  font-size: 11px;
+  padding: 4px 6px;
+  margin-bottom: 6px;
+}
+.aura-terminal .pl-recov-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 0;
+  border-bottom: 1px solid var(--t-line-soft);
+}
+.aura-terminal .pl-recov-meta { flex: 1 1 auto; min-width: 0; }
+.aura-terminal .pl-recov-src { display: block; font-weight: 600; }
+.aura-terminal .pl-recov-diag {
+  display: block;
+  color: var(--t-dim);
+  font-size: 10px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.aura-terminal .pl-recov-btns button.ok:hover:not(:disabled) { border-color: var(--t-live); color: var(--t-live); }
+.aura-terminal .pl-recov-btns button.no:hover:not(:disabled) { border-color: var(--t-red); color: var(--t-red); }
+
+/* ── event rail + scrubber ──────────────────────────────────────────── */
+.aura-terminal .pl-rail-wrap {
+  flex: 0 0 auto;
+  border-top: 1px solid var(--t-line);
+  background: var(--t-void);
+  display: flex;
+  flex-direction: column;
+  max-height: 34%;
+}
+.aura-terminal .pl-rail-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 12px;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--t-faint);
+  border-bottom: 1px solid var(--t-line-soft);
+}
+.aura-terminal .pl-rail-count { color: var(--t-dim); }
+.aura-terminal .pl-live-btn {
+  margin-left: auto;
+  background: none;
+  border: 1px solid var(--t-line-hard);
+  color: var(--t-live);
+  border-radius: 2px;
+  font-family: var(--t-mono);
+  font-size: 10px;
+  padding: 1px 6px;
+  cursor: pointer;
+}
+.aura-terminal .pl-rail {
+  overflow: auto;
+  padding: 4px 12px;
+  flex: 1 1 auto;
+}
+.aura-terminal .pl-rail-row {
+  display: flex;
+  gap: 10px;
+  padding: 1px 0;
+  line-height: 1.5;
+  border-left: 2px solid transparent;
+  padding-left: 6px;
+}
+.aura-terminal .pl-rail-row.type-error { border-left-color: var(--t-red); }
+.aura-terminal .pl-rail-row.type-data  { border-left-color: var(--t-live); }
+.aura-terminal .pl-rail-ts { color: var(--t-faint); flex: 0 0 auto; }
+.aura-terminal .pl-rail-line { color: var(--t-text); }
+.aura-terminal .pl-scrub {
+  width: calc(100% - 24px);
+  margin: 6px 12px 8px;
+  accent-color: var(--t-live);
+}
+
+/* inspector sub-sections — grouping wrappers */
+.aura-terminal .pl-pipelines,
+.aura-terminal .pl-recov {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--t-line-soft);
+}

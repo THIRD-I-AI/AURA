@@ -6,7 +6,7 @@
 .aw[data-theme='dark'] {
   --bg: #0a0e14; --surface: #0f141b; --raised: #161d27; --sunken: #070a0f;
   --border: #1d2530; --hair: #131a23;
-  --text: #e6e9ef; --text2: #9aa4b2; --text3: #7d8590;
+  --text: #e6e9ef; --text2: #9aa4b2; --text3: #87919d;
   --accent: #22c55e; --accent-dim: rgba(34, 197, 94, .12); --accent-bd: rgba(34, 197, 94, .4);
   --on-accent: #07100a;
   --warn: #f59e0b; --warn-dim: rgba(245, 158, 11, .12);
@@ -85,3 +85,82 @@
   letter-spacing: .05em; background: var(--raised);
 }
 .aw .aw-cell { padding: 7px 12px; font: 400 11px 'JetBrains Mono', monospace; }
+
+/* ────────────────────────────────────────────────────────────────────
+   Visual elevation + responsive shell (browser-verified pass).
+   Adds depth/atmosphere the flat port lacked, honest motion, and a real
+   mobile treatment — the inline-styled shell had none.
+   ──────────────────────────────────────────────────────────────────── */
+
+/* Depth: panels stop being flat rectangles — a faint top light + shadow. */
+.aw .aw-panel { transition: border-color .18s ease, box-shadow .18s ease; }
+.aw[data-theme='dark'] .aw-panel {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, .022), rgba(255, 255, 255, 0) 120px),
+    var(--surface);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .035), 0 1px 2px rgba(0, 0, 0, .28);
+}
+.aw[data-theme='dark'] .aw-panel:hover { border-color: #2a3543; }
+
+/* Motion: buttons, nav, chips gain honest micro-feedback. */
+.aw .aw-btn-accent { transition: filter .15s ease, transform .06s ease; }
+.aw .aw-btn-accent:hover { filter: brightness(1.07); }
+.aw .aw-btn-accent:active { transform: translateY(1px); }
+.aw .aw-nav-item { transition: background .14s ease, color .14s ease; }
+.aw .aw-chip { transition: background .16s ease, color .16s ease; }
+
+/* One orchestrated cockpit reveal — staggered, not scattered. */
+@keyframes awrise { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+.aw-main > * { animation: awrise .34s cubic-bezier(.2, .7, .2, 1) both; }
+.aw-main > *:nth-child(2) { animation-delay: .04s; }
+.aw-main > *:nth-child(3) { animation-delay: .08s; }
+.aw-main > *:nth-child(4) { animation-delay: .12s; }
+.aw-main > *:nth-child(5) { animation-delay: .16s; }
+@media (prefers-reduced-motion: reduce) {
+  .aw-main > *, .aw .aw-btn-accent, .aw .aw-panel { animation: none !important; transition: none !important; }
+}
+
+/* Login hero: atmosphere instead of a flat void — brand-tinted glow + a
+   masked technical grid that fades out toward the content. */
+.aw-hero { position: relative; overflow: hidden; }
+.aw[data-theme='dark'].aw .aw-hero,
+.aw[data-theme='dark'] .aw-hero {
+  background:
+    radial-gradient(115% 80% at 12% 16%, rgba(34, 197, 94, .10), rgba(34, 197, 94, 0) 44%),
+    var(--sunken);
+}
+.aw-hero::before {
+  content: ''; position: absolute; inset: 0; pointer-events: none;
+  background-image:
+    linear-gradient(rgba(255, 255, 255, .028) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, .028) 1px, transparent 1px);
+  background-size: 46px 46px;
+  -webkit-mask-image: radial-gradient(78% 60% at 22% 30%, #000, transparent 76%);
+  mask-image: radial-gradient(78% 60% at 22% 30%, #000, transparent 76%);
+}
+.aw-hero > * { position: relative; }
+
+/* ── Responsive shell: the port was desktop-only. ─────────────────── */
+.aw-burger { display: none; }
+.aw-backdrop { display: none; }
+
+@media (max-width: 860px) {
+  .aw-burger {
+    display: grid; place-items: center; cursor: pointer; flex: none;
+    width: 34px; height: 30px; border: 1px solid var(--border); border-radius: 7px;
+    color: var(--text2); background: var(--surface); font-size: 15px; line-height: 1;
+  }
+  .aw-nav {
+    position: fixed !important; top: 54px; bottom: 0; left: 0; z-index: 80;
+    width: 244px !important; transform: translateX(-100%);
+    transition: transform .22s ease; box-shadow: 0 24px 60px rgba(0, 0, 0, .55);
+  }
+  .aw-nav.aw-open { transform: none; }
+  .aw-backdrop.aw-open {
+    display: block; position: fixed; inset: 54px 0 0 0; z-index: 70; background: var(--overlay);
+  }
+  .aw-topbar-search, .aw-topbar-classic { display: none !important; }
+  .aw-main { padding: 16px 14px 24px !important; }
+  .aw-hero-split { grid-template-columns: 1fr !important; }
+  .aw-hero { display: none !important; }
+}

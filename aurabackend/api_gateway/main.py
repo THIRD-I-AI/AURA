@@ -248,6 +248,7 @@ from api_gateway.routers.lineage import router as lineage_router
 from api_gateway.routers.pipelines import router as pipelines_router
 from api_gateway.routers.queries import router as queries_router
 from api_gateway.routers.stream import router as stream_router
+from api_gateway.routers.synthetic import router as synthetic_router
 from api_gateway.routers.webhooks import router as webhooks_router
 from api_gateway.routers.workspaces import router as workspaces_router
 
@@ -262,6 +263,7 @@ app.include_router(dashboards_router, prefix=_API_V1)
 app.include_router(lineage_router, prefix=_API_V1)
 app.include_router(etl_router, prefix=_API_V1)
 app.include_router(pipelines_router, prefix=_API_V1)
+app.include_router(synthetic_router, prefix=_API_V1)
 app.include_router(stream_router, prefix=_API_V1)
 app.include_router(webhooks_router, prefix=_API_V1)
 app.include_router(inbound_hooks_router, prefix=_API_V1)

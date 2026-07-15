@@ -160,11 +160,34 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      redis:
+        condition: service_healthy
     volumes: []
     environment:
       <<: *backend-env
+      # Distributed self-healing: shared state + fleet-wide repair admission.
+      # Scale horizontally with `docker compose up -d --scale uasr_service=N`.
+      UASR_MAPEK_ENABLED: "true"
+      UASR_STATE_BACKEND: redis
+      UASR_REPAIR_BACKEND: distributed
+      UASR_REDIS_URL: redis://redis:6379/0
+      UASR_REPAIR_MAX_GLOBAL_CONCURRENT: "8"
+
+  # ── Redis — UASR shared state + distributed repair admission ──────────
+  redis:
+    <<: *prod-common
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru"]
+    volumes:
+      - aura-redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
 volumes:
+  aura-redis:
   scheduler_data:
   aura-pgdata:
   aura-uploads:

@@ -28,7 +28,7 @@ def upgrade() -> None:
         sa.Column('column_name', sa.String(length=255), nullable=False),
         sa.Column('column_name_lower', sa.String(length=255), nullable=False),
         sa.Column('data_type', sa.String(length=64), nullable=False),
-        sa.Column('is_nullable', sa.Boolean(), nullable=False, server_default=sa.text('1')),
+        sa.Column('is_nullable', sa.Boolean(), nullable=False, server_default=sa.text('true')),
         sa.Column('ordinal_position', sa.Integer(), nullable=True),
         sa.Column('sample_values', sa.JSON(), nullable=False, server_default=sa.text("'[]'")),
         sa.Column('description', sa.Text(), nullable=True),

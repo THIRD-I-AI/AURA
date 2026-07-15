@@ -1,5 +1,5 @@
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useLocation } from 'react-router-dom';
 import { DockviewReact, type DockviewReadyEvent, type IDockviewPanelProps, type DockviewApi } from 'dockview-react';
 import 'dockview-react/dist/styles/dockview.css';
 import { CockpitProvider } from './CockpitProvider';
@@ -39,6 +39,7 @@ export function TerminalWorkspace() {
   const apiRef = useRef<DockviewApi | null>(null);
   const components = useMemo(buildComponents, []);
   const navigate = useNavigate();
+  const location = useLocation();
   const [paletteOpen, setPaletteOpen] = useState(false);
   // dockview's multi-panel grid can't reflow to a phone; below the 'standard'
   // viewport class we render a single-panel stacked fallback instead. Reads the
@@ -50,7 +51,16 @@ export function TerminalWorkspace() {
     const restored = restoreLayout(LAYOUT_KEY, event.api);
     if (!restored) DEFAULT_LAYOUTS.analyst(event.api);
     event.api.onDidLayoutChange(() => persistLayout(LAYOUT_KEY, event.api));
-  }, []);
+    // Deep-link: /app/terminal?panel=<id> (e.g. the Workbench 'Pipeline' nav)
+    // focuses that panel on arrival, adding it if the restored layout omits it.
+    const requested = new URLSearchParams(location.search).get('panel');
+    if (requested && requested in PANEL_REGISTRY) {
+      const id = requested as PanelId;
+      const existing = event.api.getPanel(id);
+      if (existing) existing.api.setActive();
+      else event.api.addPanel({ id, component: id, title: PANEL_REGISTRY[id].title });
+    }
+  }, [location.search]);
 
   const openPanel = useCallback((id: PanelId) => {
     const api = apiRef.current;
@@ -78,17 +88,21 @@ export function TerminalWorkspace() {
     [openPanel, applyLayout, resetLayout, navigate],
   );
 
-  // Global Cmd/Ctrl+K shortcut to open the palette.
+  // Global keyboard shortcuts: Cmd/Ctrl+K opens the palette; Cmd/Ctrl+Shift+P
+  // jumps straight to the pipeline command deck (focus, or add if absent).
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+      if ((e.metaKey || e.ctrlKey) && !e.shiftKey && e.key.toLowerCase() === 'k') {
         e.preventDefault();
         setPaletteOpen(true);
+      } else if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === 'p') {
+        e.preventDefault();
+        openPanel('pipeline');
       }
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, []);
+  }, [openPanel]);
 
   return (
     <CockpitProvider>

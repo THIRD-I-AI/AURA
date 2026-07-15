@@ -36,7 +36,8 @@ export function AuthForm({ mode }: { mode: Mode }) {
   const navigate = useNavigate();
   const location = useLocation();
   const wide = useViewport().atLeast('standard');
-  const from = (location.state as { from?: string } | null)?.from ?? '/app';
+  // Workbench is the single front door; a deep-linked `from` still wins.
+  const from = (location.state as { from?: string } | null)?.from ?? '/workbench';
 
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');

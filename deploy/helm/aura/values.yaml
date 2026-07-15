@@ -129,7 +129,15 @@ backendServices:
     module: uasr.service:app
     port: 8009
     workers: 1
+    # Safe at replicas>1 ONLY with redis.enabled=true (shared state + fleet-wide
+    # repair admission). With redis disabled keep this at 1: in-memory detector
+    # state is per-pod and would fragment across replicas.
     replicas: 1
+    autoscaling:
+      enabled: false
+      minReplicas: 2
+      maxReplicas: 8
+      targetCPUUtilizationPercentage: 70
   causal_service:
     # Sprint 7: DoWhy-based root-cause attribution. Heavy deps live in
     # requirements-causal.txt — same image base as counterfactual_service.
@@ -227,6 +235,32 @@ autoscaling:
     minReplicas: 2
     maxReplicas: 6
     targetCPUUtilizationPercentage: 70
+
+# ── Redis (UASR self-healing: shared state + distributed repair admission) ──
+# When enabled, a bundled single-replica Redis is deployed and the UASR
+# self-healing service is switched to its distributed backend (state in Redis,
+# fleet-wide repair admission). This is what lets uasr_service run more than
+# one replica: every replica shares detector baselines and a global repair
+# concurrency budget. Leave disabled for a single-replica UASR (in-memory
+# state, in-process repair scheduler) with no Redis dependency.
+#
+# For production at scale, point UASR_REDIS_URL at a managed/HA Redis instead
+# of this bundled pod: set redis.enabled=false and add UASR_* overrides
+# (below) to `env` with your external URL.
+redis:
+  enabled: false
+  image: redis:7-alpine
+  # AOF persistence + an LRU memory ceiling. Detector state is reconstructable
+  # from incoming batches, so Redis here is a fast shared cache, not a system
+  # of record — losing it degrades to cold-start, it does not lose audited data.
+  args: ["redis-server", "--appendonly", "yes", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru"]
+  resources:
+    requests: { cpu: "50m",  memory: "64Mi" }
+    limits:   { cpu: "500m", memory: "320Mi" }
+  # Fleet-wide cap on concurrent recoveries hitting the shared synthesis/
+  # validation backend, regardless of replica count. Size to that backend's
+  # budget, not to the replica count.
+  repairMaxGlobalConcurrent: 8
 
 # ── Pod disruption budgets ─────────────────────────────────────────────────
 # A PDB is rendered for any service whose replica count is > 1, keeping at

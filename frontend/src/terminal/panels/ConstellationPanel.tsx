@@ -15,7 +15,15 @@ import type { IDockviewPanelProps } from 'dockview-react';
 import { lineageService, uploadService, type LineageGraph, type LineageNode } from '../../services/api';
 import { useCockpit } from '../CockpitProvider';
 import { AuraNode } from '../constellation/AuraNode';
-import { computeConstellationLayout, neighborSet, type RFAuraNode } from '../constellation/layout';
+import { computeConstellationLayout, neighborSet, type RFAuraNode, type ConstellationKind } from '../constellation/layout';
+import {
+  constellationStats,
+  KIND_GLYPH,
+  KIND_LABEL,
+  CONNECTION_GLYPH,
+  type ConnectionState,
+  type ConstellationStats,
+} from '../constellation/deckModel';
 
 const nodeTypes = { aura: AuraNode };
 
@@ -51,9 +59,9 @@ function withDatasets(
 }
 
 /** Inner canvas — runs inside a ReactFlowProvider so it can use the flow API. */
-function Canvas({ graph }: { graph: LineageGraph }) {
+function Canvas({ graph, fitSignal }: { graph: LineageGraph; fitSignal: number }) {
   const { activeDataset, setActiveDataset } = useCockpit();
-  const { setCenter } = useReactFlow();
+  const { setCenter, fitView } = useReactFlow();
   const base = useMemo(() => computeConstellationLayout(graph), [graph]);
   const [focusId, setFocusId] = useState<string | null>(null);
   const [search, setSearch] = useState('');
@@ -72,6 +80,11 @@ function Canvas({ graph }: { graph: LineageGraph }) {
       setCenter(hit.position.x, hit.position.y, { zoom: 1.3, duration: 500 });
     }
   }, [activeDataset, base.nodes, setCenter]);
+
+  // Fit-to-view control from the deck header (signal counter avoids a ref).
+  useEffect(() => {
+    if (fitSignal > 0) fitView({ duration: 500, padding: 0.2 });
+  }, [fitSignal, fitView]);
 
   const focus = useMemo(
     () => (focusId ? neighborSet(graph.edges, focusId) : null),
@@ -149,9 +162,69 @@ function Canvas({ graph }: { graph: LineageGraph }) {
   );
 }
 
+/** Command-deck header: honest live node/edge tallies + connection state. */
+function ConstellationDeckHead({
+  stats,
+  connection,
+  lastUpdate,
+  onRefresh,
+  onFit,
+  busy,
+}: {
+  stats: ConstellationStats;
+  connection: ConnectionState;
+  lastUpdate: string | null;
+  onRefresh: () => void;
+  onFit: () => void;
+  busy: boolean;
+}) {
+  const cells: Array<{ k: ConstellationKind; n: number }> = [
+    { k: 'table', n: stats.tables },
+    { k: 'saved_query', n: stats.queries },
+    { k: 'dashboard', n: stats.dashboards },
+  ];
+  const shown = cells.filter((c) => c.n !== 0);
+  return (
+    <div className="cst-head">
+      <div className="cst-head-title">
+        <span className="cst-head-glyph">✦</span>
+        <span>Constellation</span>
+      </div>
+      <div className={`cst-conn cst-conn-${connection}`}>
+        <span className="cst-conn-glyph">{CONNECTION_GLYPH[connection]}</span>
+        <span>{connection}</span>
+      </div>
+      <div className="cst-head-counts">
+        <span className="cst-count cst-count-total">{stats.total} nodes</span>
+        {shown.map((c) => (
+          <span key={c.k} className={`cst-count cst-count-${c.k}`}>
+            <span className="cst-count-glyph">{KIND_GLYPH[c.k]}</span>
+            {c.n} {KIND_LABEL[c.k]}
+          </span>
+        ))}
+        <span className="cst-count cst-count-edges">{stats.edges} edges</span>
+      </div>
+      <span className="cst-head-spacer" />
+      <div className="cst-actions">
+        <button className="cst-btn" onClick={onFit} title="Fit graph to view">fit</button>
+        <button className="cst-btn" onClick={onRefresh} disabled={busy} title="Refresh lineage now">
+          {busy ? '…' : '↻'}
+        </button>
+      </div>
+      {lastUpdate ? (
+        <span className="cst-head-ts">{new Date(lastUpdate).toLocaleTimeString()}</span>
+      ) : null}
+    </div>
+  );
+}
+
 export default function ConstellationPanel(_props: IDockviewPanelProps) {
   const [graph, setGraph] = useState<LineageGraph | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [lastUpdate, setLastUpdate] = useState<string | null>(null);
+  const [conn, setConn] = useState<ConnectionState>('loading');
+  const [fitSignal, setFitSignal] = useState(0);
+  const [busy, setBusy] = useState(false);
   const filesKeyRef = useRef<string>('');
 
   useEffect(() => {
@@ -165,10 +238,15 @@ export default function ConstellationPanel(_props: IDockviewPanelProps) {
       if (!alive) return;
       filesKeyRef.current = files.map((f) => f.filename).sort().join('|');
       setGraph(withDatasets(lineage, files));
+      setLastUpdate(new Date().toISOString());
+      setConn('live');
     };
 
     build().catch((e) => {
-      if (alive) setError(e instanceof Error ? e.message : 'Failed to load lineage');
+      if (alive) {
+        setError(e instanceof Error ? e.message : 'Failed to load lineage');
+        setConn('error');
+      }
     });
 
     // Auto-populate newly uploaded datasets: poll the (cheap) file list and
@@ -181,7 +259,7 @@ export default function ConstellationPanel(_props: IDockviewPanelProps) {
         if (!alive || key === filesKeyRef.current) return;
         filesKeyRef.current = key;
         const lineage = await lineageService.get();
-        if (alive) setGraph(withDatasets(lineage, files));
+        if (alive) { setGraph(withDatasets(lineage, files)); setLastUpdate(new Date().toISOString()); setConn('live'); }
       } catch {
         /* transient — keep the current graph */
       }
@@ -190,23 +268,64 @@ export default function ConstellationPanel(_props: IDockviewPanelProps) {
     return () => { alive = false; clearInterval(iv); };
   }, []);
 
+  const refresh = useCallback(() => {
+    setBusy(true);
+    void (async () => {
+      try {
+        const [lineage, files] = await Promise.all([
+          lineageService.get(),
+          uploadService.getUploadedFiles().catch(() => []),
+        ]);
+        filesKeyRef.current = files.map((f) => f.filename).sort().join('|');
+        setGraph(withDatasets(lineage, files));
+        setLastUpdate(new Date().toISOString());
+        setConn('live');
+        setError(null);
+      } catch (e) {
+        setConn('error');
+        setError(e instanceof Error ? e.message : 'Failed to load lineage');
+      } finally {
+        setBusy(false);
+      }
+    })();
+  }, []);
+  const fit = useCallback(() => setFitSignal((x) => x + 1), []);
+
   const shell = (inner: React.ReactNode) => (
     <div data-testid="constellation-panel" className="aura-panel constellation-panel">{inner}</div>
   );
 
-  if (error) return shell(<div className="panel-error-inline">{error}</div>);
-  if (!graph) return shell(<div className="panel-loading">Mapping the constellation…</div>);
-  if (!graph.nodes.length) {
-    return shell(
+  const stats = constellationStats(graph);
+  let body: React.ReactNode;
+  if (error && !graph) {
+    body = <div className="panel-error-inline">{error}</div>;
+  } else if (!graph) {
+    body = <div className="panel-loading">Mapping the constellation…</div>;
+  } else if (!graph.nodes.length) {
+    body = (
       <div className="constellation-empty">
         No datasets yet — upload a file (or run queries) to populate the graph.
-      </div>,
+      </div>
+    );
+  } else {
+    body = (
+      <ReactFlowProvider>
+        <Canvas graph={graph} fitSignal={fitSignal} />
+      </ReactFlowProvider>
     );
   }
 
   return shell(
-    <ReactFlowProvider>
-      <Canvas graph={graph} />
-    </ReactFlowProvider>,
+    <div className="cst-deck">
+      <ConstellationDeckHead
+        stats={stats}
+        connection={conn}
+        lastUpdate={lastUpdate}
+        onRefresh={refresh}
+        onFit={fit}
+        busy={busy}
+      />
+      <div className="cst-canvas-wrap">{body}</div>
+    </div>,
   );
 }
