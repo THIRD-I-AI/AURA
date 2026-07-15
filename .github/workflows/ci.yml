@@ -658,9 +658,35 @@ jobs:
     name: DB Migrations (Alembic)
     runs-on: ubuntu-latest
 
+    # Production runs Postgres (docker-compose.prod.yml: postgresql+asyncpg).
+    # SQLite silently coerces types that Postgres rejects — e.g. a boolean
+    # column with an integer server_default aborted the first prod
+    # `upgrade head` at c7d8e9f0a1b2 while every SQLite run passed. This lane
+    # therefore exercises the full chain on a real postgres:16 service, and
+    # keeps a parallel SQLite lane for dev parity.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: aura_test_pw
+          POSTGRES_DB: aura_migrations_test
+          POSTGRES_USER: aura_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
     defaults:
       run:
         working-directory: aurabackend
+
+    env:
+      SECRET_KEY: ci-not-a-real-secret
+      ENVIRONMENT: development
+      PG_URL: postgresql+asyncpg://aura_test:aura_test_pw@localhost:5432/aura_migrations_test
 
     steps:
       - uses: actions/checkout@v6
@@ -675,6 +701,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
+          pip install asyncpg
 
       - name: Single migration head
         run: |
@@ -686,28 +713,36 @@ jobs:
             exit 1
           fi
 
-      - name: Upgrade a clean database to head
+      # ── Postgres lane (matches production engine) ──────────────────────────
+      - name: "[Postgres] Upgrade a clean database to head"
         env:
-          METADATA_DATABASE_URL: sqlite+aiosqlite:///./ci_migrations.db
-          SECRET_KEY: ci-not-a-real-secret
-          ENVIRONMENT: development
+          METADATA_DATABASE_URL: ${{ env.PG_URL }}
         run: python -m alembic upgrade head
 
-      - name: Downgrade to base (reversibility)
+      - name: "[Postgres] Downgrade to base then re-upgrade (reversibility)"
+        env:
+          METADATA_DATABASE_URL: ${{ env.PG_URL }}
+        run: |
+          python -m alembic downgrade base
+          python -m alembic upgrade head
+
+      - name: "[Postgres] ORM/migration drift check"
+        env:
+          METADATA_DATABASE_URL: ${{ env.PG_URL }}
+        run: |
+          # Fails if the ORM models declare columns/tables/indexes that no
+          # migration creates (the org_id / recovery-HITL drift class).
+          # server_default comparison is disabled in env.py (ORM uses Python
+          # default=, migrations use server_default=; autogenerate cannot
+          # reconcile them). Structural + type drift is still enforced.
+          python -m alembic check
+
+      # ── SQLite lane (dev parity) ───────────────────────────────────────────
+      - name: "[SQLite] Upgrade, downgrade, re-upgrade, drift check"
         env:
           METADATA_DATABASE_URL: sqlite+aiosqlite:///./ci_migrations.db
-          SECRET_KEY: ci-not-a-real-secret
-          ENVIRONMENT: development
-        run: python -m alembic downgrade base
-
-      - name: ORM/migration drift check
-        env:
-          METADATA_DATABASE_URL: sqlite+aiosqlite:///./ci_check.db
-          SECRET_KEY: ci-not-a-real-secret
-          ENVIRONMENT: development
         run: |
           python -m alembic upgrade head
-          # Fails if the ORM models declare columns/tables/indexes that no
-          # migration creates (the org_id / recovery-HITL drift class). SQLite
-          # server-default comparison is disabled in env.py as unreliable.
+          python -m alembic downgrade base
+          python -m alembic upgrade head
           python -m alembic check
