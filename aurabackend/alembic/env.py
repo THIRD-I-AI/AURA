@@ -60,9 +60,14 @@ def run_migrations_offline() -> None:
         dialect_opts={"paramstyle": "named"},
         render_as_batch=_is_sqlite(url),
         compare_type=True,
-        # SQLite renders server defaults inconsistently, producing false-positive
-        # drift in `alembic check`; trust this comparison only on real DBs.
-        compare_server_default=not _is_sqlite(url),
+        # Server-default comparison is disabled: the ORM models declare
+        # Python-side `default=` (applied by SQLAlchemy at INSERT), while the
+        # migrations carry DB-level `server_default=`. Both are intentional, but
+        # autogenerate cannot reconcile them and emits phantom `modify_default`
+        # ops on every such column. Structural drift (missing columns / tables /
+        # indexes / type changes) is still caught via compare_type + the default
+        # table/column/index comparison.
+        compare_server_default=False,
     )
     with context.begin_transaction():
         context.run_migrations()
@@ -75,9 +80,14 @@ def do_run_migrations(connection: Connection) -> None:
         target_metadata=target_metadata,
         render_as_batch=_is_sqlite(url),  # SQLite needs batch mode for ALTERs
         compare_type=True,
-        # SQLite renders server defaults inconsistently, producing false-positive
-        # drift in `alembic check`; trust this comparison only on real DBs.
-        compare_server_default=not _is_sqlite(url),
+        # Server-default comparison is disabled: the ORM models declare
+        # Python-side `default=` (applied by SQLAlchemy at INSERT), while the
+        # migrations carry DB-level `server_default=`. Both are intentional, but
+        # autogenerate cannot reconcile them and emits phantom `modify_default`
+        # ops on every such column. Structural drift (missing columns / tables /
+        # indexes / type changes) is still caught via compare_type + the default
+        # table/column/index comparison.
+        compare_server_default=False,
     )
     with context.begin_transaction():
         context.run_migrations()
