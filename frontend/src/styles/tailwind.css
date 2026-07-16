@@ -167,6 +167,39 @@
   --radius-3xl: var(--radius-3xl);
   --radius-full: var(--radius-full);
 
+  /* ── Type scale → design-system.css --font-* ──
+     Overrides Tailwind's stock --text-* so text-xs/sm/base/… emit OUR dense
+     Terminal-Authority sizes (e.g. text-base = 0.875rem, not 1rem). Single
+     source preserved: each is a var() into design-system.css. Note this is the
+     font-SIZE namespace (utility `text-sm`); the color namespace (`text-primary`,
+     `text-text-secondary`) is separate and unaffected. */
+  --text-2xs: var(--font-2xs);
+  --text-xs: var(--font-xs);
+  --text-sm: var(--font-sm);
+  --text-base: var(--font-base);
+  --text-md: var(--font-md);
+  --text-lg: var(--font-lg);
+  --text-xl: var(--font-xl);
+  --text-2xl: var(--font-2xl);
+  --text-3xl: var(--font-3xl);
+  --text-4xl: var(--font-4xl);
+
+  /* ── Line-height → design-system.css --line-* (utility: leading-*) ── */
+  --leading-tight: var(--line-tight);
+  --leading-snug: var(--line-snug);
+  --leading-normal: var(--line-normal);
+  --leading-relaxed: var(--line-relaxed);
+
+  /* ── Letter-spacing → design-system.css --tracking-* (utility: tracking-*) ──
+     `wider`/`widest` matter for the uppercase mono labels the Terminal-
+     Authority decks lean on (PANEL HEADERS, STATUS chips). */
+  --tracking-tight: var(--tracking-tight);
+  --tracking-snug: var(--tracking-snug);
+  --tracking-normal: var(--tracking-normal);
+  --tracking-wide: var(--tracking-wide);
+  --tracking-wider: var(--tracking-wider);
+  --tracking-widest: var(--tracking-widest);
+
   /* ── Shadows → design-system.css ── */
   --shadow-xs: var(--shadow-xs);
   --shadow-sm: var(--shadow-sm);
