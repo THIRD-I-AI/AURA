@@ -1,30 +1,11 @@
 import { useState, type FormEvent } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
-import { Button } from '../components/ui/Button';
+import { Button } from '@/components/ui-kit/button';
 import { useViewport } from '../shell/ViewportProvider';
 import { useAuth } from './AuthContext';
 import './AuthForm.css';
 
 type Mode = 'login' | 'signup';
-
-const inputStyle: React.CSSProperties = {
-  width: '100%',
-  padding: 'var(--space-3)',
-  fontSize: 'var(--font-md)',
-  borderRadius: 'var(--radius-md)',
-  border: '1px solid var(--border-strong)',
-  background: 'var(--bg-base)',
-  color: 'var(--text-primary)',
-  marginTop: 'var(--space-1)',
-};
-
-const labelStyle: React.CSSProperties = {
-  display: 'block',
-  textAlign: 'left',
-  marginBottom: 'var(--space-3)',
-  fontSize: 'var(--font-sm)',
-  color: 'var(--text-secondary)',
-};
 
 /**
  * One form for both login and signup (kept simple on purpose — the SaaS should
@@ -82,73 +63,73 @@ export function AuthForm({ mode }: { mode: Mode }) {
         </div>
       )}
       <div className="auth-pane__form">
-        <div data-testid="auth-form" style={{ maxWidth: 420, margin: '0 auto', width: '100%' }}>
-      <h1 style={{ fontSize: 'var(--font-2xl)', textAlign: 'center', marginBottom: 'var(--space-2)' }}>
-        {isSignup ? 'Create your account' : 'Welcome back'}
-      </h1>
-      <p style={{ textAlign: 'center', color: 'var(--text-secondary)', marginBottom: 'var(--space-6)' }}>
-        {isSignup ? 'Check your data in under a minute.' : 'Sign in to your workspace.'}
-      </p>
-
-      <form onSubmit={onSubmit}>
-        {isSignup && (
-          <label style={labelStyle}>
-            Name
-            <input
-              data-testid="auth-name"
-              type="text"
-              autoComplete="name"
-              required
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              style={inputStyle}
-            />
-          </label>
-        )}
-        <label style={labelStyle}>
-          Email
-          <input
-            data-testid="auth-email"
-            type="email"
-            autoComplete="email"
-            required
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            style={inputStyle}
-          />
-        </label>
-        <label style={labelStyle}>
-          Password
-          <input
-            data-testid="auth-password"
-            type="password"
-            autoComplete={isSignup ? 'new-password' : 'current-password'}
-            required
-            minLength={8}
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            style={inputStyle}
-          />
-        </label>
-
-        {error && (
-          <p data-testid="auth-error" role="alert" style={{ color: 'var(--red)', fontSize: 'var(--font-sm)', marginBottom: 'var(--space-3)' }}>
-            {error}
+        <div data-testid="auth-form" className="auth-form">
+          <h1 className="auth-form__title">
+            {isSignup ? 'Create your account' : 'Welcome back'}
+          </h1>
+          <p className="auth-form__sub">
+            {isSignup ? 'Check your data in under a minute.' : 'Sign in to your workspace.'}
           </p>
-        )}
 
-        <Button type="submit" variant="primary" size="lg" isLoading={busy} style={{ width: '100%' }}>
-          {isSignup ? 'Create account' : 'Sign in'}
-        </Button>
-      </form>
+          <form onSubmit={onSubmit}>
+            {isSignup && (
+              <label className="auth-form__label">
+                Name
+                <input
+                  data-testid="auth-name"
+                  className="auth-form__input"
+                  type="text"
+                  autoComplete="name"
+                  required
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                />
+              </label>
+            )}
+            <label className="auth-form__label">
+              Email
+              <input
+                data-testid="auth-email"
+                className="auth-form__input"
+                type="email"
+                autoComplete="email"
+                required
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+              />
+            </label>
+            <label className="auth-form__label">
+              Password
+              <input
+                data-testid="auth-password"
+                className="auth-form__input"
+                type="password"
+                autoComplete={isSignup ? 'new-password' : 'current-password'}
+                required
+                minLength={8}
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+              />
+            </label>
 
-      <p style={{ textAlign: 'center', marginTop: 'var(--space-5)', fontSize: 'var(--font-sm)', color: 'var(--text-tertiary)' }}>
-        {isSignup ? (
-          <>Already have an account? <Link data-testid="auth-switch" to="/login">Sign in</Link></>
-        ) : (
-          <>New here? <Link data-testid="auth-switch" to="/signup">Create an account</Link></>
-        )}
-      </p>
+            {error && (
+              <p data-testid="auth-error" role="alert" className="auth-form__error">
+                {error}
+              </p>
+            )}
+
+            <Button type="submit" size="lg" disabled={busy} className="auth-form__submit">
+              {busy ? (isSignup ? 'Creating…' : 'Signing in…') : isSignup ? 'Create account' : 'Sign in'}
+            </Button>
+          </form>
+
+          <p className="auth-form__switch">
+            {isSignup ? (
+              <>Already have an account? <Link data-testid="auth-switch" to="/login">Sign in</Link></>
+            ) : (
+              <>New here? <Link data-testid="auth-switch" to="/signup">Create an account</Link></>
+            )}
+          </p>
         </div>
       </div>
     </div>

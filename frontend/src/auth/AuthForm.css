@@ -48,3 +48,71 @@
   align-items: center;
   justify-content: center;
 }
+
+/* ── Form fields: Terminal-authority — sharp corners, mono labels/inputs ── */
+.auth-form {
+  width: 100%;
+  max-width: 420px;
+  margin: 0 auto;
+}
+.auth-form__title {
+  font-size: var(--font-2xl);
+  font-weight: var(--weight-bold);
+  letter-spacing: -0.02em;
+  text-align: center;
+  margin: 0 0 var(--space-2);
+}
+.auth-form__sub {
+  text-align: center;
+  color: var(--text-secondary);
+  margin: 0 0 var(--space-6);
+  font-size: var(--font-sm);
+}
+.auth-form__label {
+  display: block;
+  text-align: left;
+  margin-bottom: var(--space-4);
+  font-family: var(--font-mono);
+  font-size: var(--font-2xs);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-wider);
+  color: var(--text-secondary);
+}
+.auth-form__input {
+  width: 100%;
+  margin-top: var(--space-2);
+  padding: var(--space-3);
+  font-family: var(--font-mono);
+  font-size: var(--font-sm);
+  border-radius: var(--radius-none);
+  border: 1px solid var(--border-strong);
+  background: var(--bg-base);
+  color: var(--text-primary);
+  transition: border-color var(--dur-fast);
+}
+.auth-form__input:focus {
+  outline: none;
+  border-color: var(--signal);
+}
+.auth-form__error {
+  color: var(--danger);
+  font-size: var(--font-sm);
+  margin: 0 0 var(--space-3);
+}
+.auth-form__submit {
+  width: 100%;
+  margin-top: var(--space-2);
+}
+.auth-form__switch {
+  text-align: center;
+  margin-top: var(--space-5);
+  font-size: var(--font-sm);
+  color: var(--text-tertiary);
+}
+.auth-form__switch a {
+  color: var(--accent);
+  text-decoration: none;
+}
+.auth-form__switch a:hover {
+  text-decoration: underline;
+}

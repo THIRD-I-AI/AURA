@@ -2,6 +2,8 @@ import { useEffect, useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { auditApi } from './auditApi';
 import { AuthNav } from '../auth/AuthNav';
+import { EmptyState } from '@/components/ui-kit/empty-state';
+import { Button } from '@/components/ui-kit/button';
 import type { Scenario } from './types';
 
 export function AuditFrontDoor({ embedded = false }: { embedded?: boolean } = {}) {
@@ -41,13 +43,29 @@ export function AuditFrontDoor({ embedded = false }: { embedded?: boolean } = {}
       </div>
 
       {error && (
-        <div data-testid="scenarios-error" className="aud-scenario">
-          Couldn't load scenarios.{' '}
-          <button className="ui-btn ui-btn--secondary ui-btn--sm" onClick={load}>Retry</button>
-        </div>
+        <EmptyState
+          data-testid="scenarios-error"
+          intent="error"
+          title="Couldn't load scenarios"
+          description="The audit gateway didn't respond. Your connection or the service may be down."
+          action={
+            <Button variant="outline" size="sm" onClick={load}>
+              Retry
+            </Button>
+          }
+          className="my-6 min-h-[160px] border border-border bg-secondary"
+        />
       )}
 
-      {!scenarios && !error && <p className="aud-scenario__desc">Loading scenarios…</p>}
+      {!scenarios && !error && (
+        <EmptyState
+          data-testid="scenarios-loading"
+          intent="awaiting"
+          title="Loading scenarios"
+          description="Fetching the available regulated-decision scenarios…"
+          className="my-6 min-h-[160px]"
+        />
+      )}
 
       <div className="aud-scenarios">
         {scenarios?.map((s) => (
