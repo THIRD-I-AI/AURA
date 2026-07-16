@@ -57,7 +57,9 @@
   --color-bg-selected: var(--bg-selected);
   --color-bg-overlay: var(--bg-overlay);
   --color-bg-raised: var(--bg-raised);
-  --color-card: var(--card-bg);
+  /* shadcn `card` surface — solid (not the translucent --card-bg rgba) so
+     New-York cards read as opaque panels; paired with --color-card-foreground. */
+  --color-card: var(--bg-surface);
 
   --color-border-default: var(--border-default);
   --color-border-subtle: var(--border-subtle);
@@ -72,10 +74,41 @@
   --color-text-secondary: var(--text-secondary);
   --color-text-tertiary: var(--text-tertiary);
 
-  --color-accent: var(--accent);
-  --color-accent-hover: var(--accent-hover);
-  --color-accent-active: var(--accent-active);
-  --color-accent-dim: var(--accent-dim);
+  /* AURA brand ramp (green signal). Named `brand`, NOT `accent`, so the
+     shadcn semantic `accent` (a subtle hover surface — see block below) can
+     own the `accent` utility without a green-flash collision on ghost hovers.
+     Reach the brand green via `bg-brand` / `text-brand` / `border-signal`. */
+  --color-brand: var(--accent);
+  --color-brand-hover: var(--accent-hover);
+  --color-brand-active: var(--accent-active);
+  --color-brand-dim: var(--accent-dim);
+
+  /* ── shadcn/ui semantic aliases → AURA tokens (var() = runtime themable) ──
+     shadcn New-York primitives emit utilities like bg-background / text-
+     foreground / bg-primary / border-border / ring-ring. We DON'T let the
+     shadcn CLI write its own :root palette (that would fork the token source);
+     instead we bind its semantic names to tokens.css here. Terminal-Authority
+     mapping: primary + ring = green signal; accent/muted/secondary = the
+     surface ramp; destructive = danger red. Both dark + certificate themes
+     resolve live because every value is a var() into tokens.css. */
+  --color-background: var(--bg-base);
+  --color-foreground: var(--text-primary);
+  --color-card-foreground: var(--text-primary);
+  --color-popover: var(--bg-elevated);
+  --color-popover-foreground: var(--text-primary);
+  --color-primary: var(--signal);
+  --color-primary-foreground: var(--bg-base);
+  --color-secondary: var(--bg-surface-2);
+  --color-secondary-foreground: var(--text-primary);
+  --color-muted: var(--bg-surface-2);
+  --color-muted-foreground: var(--text-secondary);
+  --color-accent: var(--bg-hover);
+  --color-accent-foreground: var(--text-primary);
+  --color-destructive: var(--danger);
+  --color-destructive-foreground: var(--text-primary);
+  --color-border: var(--border-default);
+  --color-input: var(--border-default);
+  --color-ring: var(--border-focus);
 
   --color-green: var(--green);
   --color-red: var(--red);

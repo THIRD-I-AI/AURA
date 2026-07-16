@@ -31,6 +31,7 @@
     "dockview-react": "^6.6.1",
     "lucide-react": "^0.562.0",
     "motion": "^12.42.2",
+    "radix-ui": "^1.6.2",
     "react": "^19.1.1",
     "react-dom": "^19.1.1",
     "react-router-dom": "^7.16.0",

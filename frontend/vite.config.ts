@@ -1,4 +1,5 @@
 /// <reference types="vitest/config" />
+import { fileURLToPath, URL } from 'node:url'
 import { defineConfig, type Plugin } from 'vite'
 import { configDefaults } from 'vitest/config'
 import react from '@vitejs/plugin-react'
@@ -30,6 +31,13 @@ export default defineConfig({
   // double-optimize path through Lightning CSS; the default build is verified
   // clean, so no extra Tailwind config is needed.
   plugins: [tailwindcss(), react(), devCspPlugin()],
+  resolve: {
+    // shadcn/ui convention: `@/` → src. Kept in sync with the tsconfig.app.json
+    // paths entry so editor, tsc, Vite, and Vitest all resolve imports the same.
+    alias: {
+      '@': fileURLToPath(new URL('./src', import.meta.url)),
+    },
+  },
   server: {
     port: 5173,
   },
