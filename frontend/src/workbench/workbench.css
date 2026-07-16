@@ -1,7 +1,9 @@
 /* AURA Workbench — ported from the Claude Design prototype
    "AURA Workbench (Interactive) copy.dc.html" (docs/design/aura-workbench/).
-   All styling is scoped under .aw so the classic app is untouched. */
-@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Instrument+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap');
+   All styling is scoped under .aw so the classic app is untouched.
+   Fonts (Space Grotesk, Instrument Sans, JetBrains Mono) are self-hosted via
+   @fontsource in main.tsx — a remote @import here was blocked by CSP
+   (style-src 'self') and crashed the whole /workbench route. */
 
 .aw[data-theme='dark'] {
   --bg: #0a0e14; --surface: #0f141b; --raised: #161d27; --sunken: #070a0f;

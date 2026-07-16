@@ -5,16 +5,20 @@
     <link rel="icon" type="image/svg+xml" href="/vite.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <!-- S37 §5.2: production-tight CSP. Fonts are self-hosted
-         (@fontsource) — no third-party origins. style-src keeps
-         'unsafe-inline' until legacy inline-styled panels migrate
-         (tracked in the spec). connect-src is 'self' only here; the dev
-         server's vite plugin (aura-dev-csp) widens it to the local
-         gateway + HMR websocket in `serve` mode, so no bare ws:/wss:
-         wildcard ships. A cross-origin production gateway or a
+         (@fontsource) — no third-party origins. font-src allows 'self'
+         (Vite emits large @fontsource unicode subsets as /assets/*.woff2
+         files) plus data: (Vite inlines subsets below its 4KB
+         assetsInlineLimit as self-contained data:font URIs — no external
+         origin, same trust class as the img-src data: already allowed).
+         style-src keeps 'unsafe-inline' until legacy inline-styled panels
+         migrate (tracked in the spec). connect-src is 'self' only here;
+         the dev server's vite plugin (aura-dev-csp) widens it to the
+         local gateway + HMR websocket in `serve` mode, so no bare
+         ws:/wss: wildcard ships. A cross-origin production gateway or a
          VITE_SENTRY_DSN ingest origin must be added to connect-src at
          deploy time (see ENTERPRISE.md). -->
     <meta http-equiv="Content-Security-Policy"
-          content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'" />
+          content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'" />
     <title>AURA - Enterprise Data Analytics</title>
   </head>
   <body>

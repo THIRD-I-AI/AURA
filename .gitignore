@@ -26,6 +26,11 @@ wheels/
 *.egg
 MANIFEST
 
+# Frontend source overrides — the Python `lib/` ignore above (build output)
+# unintentionally matches the shadcn-conventional frontend/src/lib source dir.
+!frontend/src/lib/
+!frontend/src/lib/**
+
 # Virtual Environment
 .venv/
 venv/
