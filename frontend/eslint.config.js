@@ -42,4 +42,16 @@ export default defineConfig([
       ],
     },
   },
+  {
+    // shadcn/ui primitives (New York) canonically co-locate a `*Variants` cva
+    // export beside the component in one file (e.g. button.tsx exports Button +
+    // buttonVariants). That is a deliberate shadcn convention, but it trips
+    // react-refresh/only-export-components. Scope the rule off for the ui-kit
+    // primitives dir only — app code keeps the guard. Fast-refresh DX loss here
+    // is nil: these files are stable vendored primitives, not actively hot-edited.
+    files: ['src/components/ui-kit/**/*.{ts,tsx}'],
+    rules: {
+      'react-refresh/only-export-components': 'off',
+    },
+  },
 ])
