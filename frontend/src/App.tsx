@@ -49,7 +49,7 @@ const KPICard = memo(function KPICard({
   value,
   hint,
   trend,
-  accentColor = 'var(--accent)',
+  accentColor = 'var(--signal)',
 }: {
   label: string;
   value: string;
@@ -61,7 +61,7 @@ const KPICard = memo(function KPICard({
     <div style={{
       background: 'var(--bg-surface)',
       border: '1px solid var(--border-default)',
-      borderRadius: 'var(--radius-lg)',
+      borderRadius: 'var(--radius-none)',
       padding: 'var(--space-5)',
       display: 'flex',
       flexDirection: 'column',
@@ -71,10 +71,10 @@ const KPICard = memo(function KPICard({
       onMouseEnter={e => (e.currentTarget.style.borderColor = 'var(--border-strong)')}
       onMouseLeave={e => (e.currentTarget.style.borderColor = 'var(--border-default)')}
     >
-      <span style={{ fontSize: 'var(--font-xs)', color: 'var(--text-tertiary)', fontWeight: 500, letterSpacing: '0.06em', textTransform: 'uppercase' }}>
+      <span style={{ fontSize: 'var(--font-2xs)', fontFamily: 'var(--font-mono)', color: 'var(--text-secondary)', fontWeight: 500, letterSpacing: 'var(--tracking-wider)', textTransform: 'uppercase' }}>
         {label}
       </span>
-      <span style={{ fontSize: 'var(--font-3xl)', fontWeight: 700, color: 'var(--text-primary)', letterSpacing: '-0.03em', lineHeight: 1 }}>
+      <span style={{ fontSize: 'var(--font-3xl)', fontWeight: 700, color: 'var(--text-primary)', letterSpacing: '-0.03em', lineHeight: 1, fontFamily: 'var(--font-mono)' }}>
         {value}
       </span>
       <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}>
@@ -82,7 +82,8 @@ const KPICard = memo(function KPICard({
           <span style={{
             fontSize: 'var(--font-xs)',
             fontWeight: 600,
-            color: trend.direction === 'up' ? 'var(--green)' : trend.direction === 'down' ? 'var(--red)' : 'var(--text-tertiary)',
+            color: trend.direction === 'up' ? 'var(--signal)' : trend.direction === 'down' ? 'var(--red)' : 'var(--text-tertiary)',
+            fontFamily: 'var(--font-mono)',
           }}>
             {trend.direction === 'up' ? '↑' : trend.direction === 'down' ? '↓' : '—'} {trend.label}
           </span>
@@ -172,20 +173,20 @@ function AppInner() {
                   value={stats?.total_rows ? fmt(stats.total_rows) : '0'}
                   hint="Across all data sources"
                   trend={stats?.total_rows ? { direction: 'up', label: 'live' } : undefined}
-                  accentColor="var(--accent)"
+                  accentColor="var(--signal)"
                 />
                 <KPICard
                   label="Active sources"
                   value={String(stats?.active_sources ?? 0)}
                   hint={`${stats?.file_sources ?? 0} files · ${((stats?.active_sources ?? 0) - (stats?.file_sources ?? 0))} connections`}
-                  accentColor="var(--green)"
+                  accentColor="var(--signal)"
                 />
                 <KPICard
                   label="Queries run"
                   value={stats?.queries_run ? fmt(stats.queries_run) : '0'}
                   hint="This session"
                   trend={stats?.queries_run ? { direction: 'flat', label: 'session' } : undefined}
-                  accentColor="var(--purple)"
+                  accentColor="var(--signal)"
                 />
                 <KPICard
                   label="System health"
@@ -196,7 +197,7 @@ function AppInner() {
                   }
                   hint={healthHint(healthStatus?.status ?? 'down')}
                   accentColor={
-                    healthStatus?.status === 'healthy' ? 'var(--green)'
+                    healthStatus?.status === 'healthy' ? 'var(--signal)'
                     : healthStatus?.status === 'degraded' ? 'var(--yellow)'
                     : 'var(--red)'
                   }
@@ -235,11 +236,11 @@ function AppInner() {
                 <CardBody>
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-2)' }}>
                     {[
-                      { label: 'Ask a question about your data', page: 'chat' as PageType, color: 'var(--accent)' },
-                      { label: 'Run the AI Agent on a new task', page: 'agent' as PageType, color: 'var(--purple)' },
-                      { label: 'Build an ETL transformation', page: 'pipelines' as PageType, color: 'var(--green)' },
-                      { label: 'Monitor streaming pipelines', page: 'streaming' as PageType, color: 'var(--cyan)' },
-                    ].map(({ label, page, color }) => (
+                      { label: 'Ask a question about your data', page: 'chat' as PageType },
+                      { label: 'Run the AI Agent on a new task', page: 'agent' as PageType },
+                      { label: 'Build an ETL transformation', page: 'pipelines' as PageType },
+                      { label: 'Monitor streaming pipelines', page: 'streaming' as PageType },
+                    ].map(({ label, page }) => (
                       <button
                         key={page}
                         onClick={() => setCurrentPage(page)}
@@ -250,7 +251,7 @@ function AppInner() {
                           padding: 'var(--space-2-5) var(--space-3)',
                           background: 'var(--bg-surface-2)',
                           border: '1px solid var(--border-subtle)',
-                          borderRadius: 'var(--radius-md)',
+                          borderRadius: 'var(--radius-none)',
                           cursor: 'pointer',
                           color: 'var(--text-secondary)',
                           fontSize: 'var(--font-sm)',
@@ -258,12 +259,12 @@ function AppInner() {
                           transition: 'all var(--dur-fast)',
                           fontFamily: 'var(--font-sans)',
                         }}
-                        onMouseEnter={e => { (e.currentTarget as HTMLButtonElement).style.borderColor = color; (e.currentTarget as HTMLButtonElement).style.color = 'var(--text-primary)'; }}
+                        onMouseEnter={e => { (e.currentTarget as HTMLButtonElement).style.borderColor = 'var(--signal)'; (e.currentTarget as HTMLButtonElement).style.color = 'var(--text-primary)'; }}
                         onMouseLeave={e => { (e.currentTarget as HTMLButtonElement).style.borderColor = 'var(--border-subtle)'; (e.currentTarget as HTMLButtonElement).style.color = 'var(--text-secondary)'; }}
                       >
-                        <span style={{ width: 6, height: 6, borderRadius: '50%', background: color, flexShrink: 0 }} />
+                        <span style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--signal)', flexShrink: 0 }} />
                         {label}
-                        <span style={{ marginLeft: 'auto', color: 'var(--text-disabled)' }}>→</span>
+                        <span style={{ marginLeft: 'auto', color: 'var(--text-disabled)', fontFamily: 'var(--font-mono)' }}>→</span>
                       </button>
                     ))}
                   </div>
