@@ -1,11 +1,14 @@
-/* AURA Workbench — ported from the Claude Design prototype
-   "AURA Workbench (Interactive) copy.dc.html" (docs/design/aura-workbench/).
+/* AURA Workbench — Terminal-authority (Phase 6).
+   Ported originally from the Claude Design prototype, then migrated to the
+   Terminal-authority design language: dark-first (no light toggle),
+   mono-first (JetBrains Mono), sharp corners (radius 0), green signal only.
    All styling is scoped under .aw so the classic app is untouched.
-   Fonts (Space Grotesk, Instrument Sans, JetBrains Mono) are self-hosted via
-   @fontsource in main.tsx — a remote @import here was blocked by CSP
-   (style-src 'self') and crashed the whole /workbench route. */
+   Fonts are self-hosted via @fontsource in main.tsx — a remote @import here
+   was blocked by CSP (style-src 'self') and crashed the whole /workbench
+   route. Tokens are dark-only; there is deliberately no [data-theme] fork —
+   theme_honesty: we ship one honest surface, not a fake toggle. */
 
-.aw[data-theme='dark'] {
+.aw {
   --bg: #0a0e14; --surface: #0f141b; --raised: #161d27; --sunken: #070a0f;
   --border: #1d2530; --hair: #131a23;
   --text: #e6e9ef; --text2: #9aa4b2; --text3: #87919d;
@@ -13,19 +16,11 @@
   --on-accent: #07100a;
   --warn: #f59e0b; --warn-dim: rgba(245, 158, 11, .12);
   --danger: #ef4444; --danger-dim: rgba(239, 68, 68, .12);
-  --blue: #3b82f6; --purple: #a78bfa;
+  --cyan: #22d3ee;
   --shadow: none; --overlay: rgba(2, 4, 8, .6);
-}
-.aw[data-theme='light'] {
-  --bg: #f4f6f8; --surface: #ffffff; --raised: #eef1f5; --sunken: #eceff3;
-  --border: #dfe5ec; --hair: #e9edf2;
-  --text: #16202b; --text2: #55636f; --text3: #8593a0;
-  --accent: #178a4e; --accent-dim: rgba(23, 138, 78, .1); --accent-bd: rgba(23, 138, 78, .35);
-  --on-accent: #ffffff;
-  --warn: #b45309; --warn-dim: rgba(180, 83, 9, .1);
-  --danger: #dc2626; --danger-dim: rgba(220, 38, 38, .08);
-  --blue: #2563eb; --purple: #7c5cd6;
-  --shadow: 0 1px 2px rgba(23, 32, 43, .05); --overlay: rgba(23, 32, 43, .35);
+  /* One motion vocabulary, tuned once. */
+  --ease-out: cubic-bezier(.22, 1, .36, 1);
+  --ease-in-out: cubic-bezier(.65, 0, .35, 1);
 }
 
 @keyframes awspin { to { transform: rotate(360deg) } }
@@ -35,15 +30,15 @@
 
 .aw {
   min-height: 100vh; background: var(--bg); color: var(--text);
-  font-family: 'Instrument Sans', system-ui, sans-serif;
+  font-family: 'JetBrains Mono', ui-monospace, 'SFMono-Regular', monospace;
   display: flex; flex-direction: column;
 }
-.aw .aw-mono { font-family: 'JetBrains Mono', monospace; }
-.aw .aw-display { font-family: 'Space Grotesk', sans-serif; }
+.aw .aw-mono { font-family: 'JetBrains Mono', ui-monospace, monospace; }
+.aw .aw-display { font-family: 'JetBrains Mono', ui-monospace, monospace; letter-spacing: -.01em; }
 
 .aw .aw-panel {
   background: var(--surface); border: 1px solid var(--border);
-  border-radius: 10px; box-shadow: var(--shadow);
+  border-radius: 0; box-shadow: var(--shadow);
 }
 .aw .aw-panel-head {
   display: flex; align-items: center; gap: 10px;
@@ -51,19 +46,19 @@
 }
 .aw .aw-panel-title { font-size: 13.5px; font-weight: 600; }
 .aw .aw-chip {
-  font: 500 9.5px 'JetBrains Mono', monospace; border-radius: 99px; padding: 2px 8px;
+  font: 500 9.5px 'JetBrains Mono', monospace; border-radius: 0; padding: 2px 8px;
 }
 .aw .aw-pill-accent { color: var(--accent); background: var(--accent-dim); }
 .aw .aw-pill-outline { color: var(--text3); border: 1px solid var(--border); }
 .aw .aw-btn-accent {
   cursor: pointer; font-weight: 600; color: var(--on-accent);
-  background: var(--accent); border-radius: 8px; border: none;
-  font-family: 'Instrument Sans', system-ui, sans-serif;
+  background: var(--accent); border-radius: 0; border: none;
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
 }
 .aw .aw-input {
-  background: var(--sunken); border: 1px solid var(--border); border-radius: 8px;
+  background: var(--sunken); border: 1px solid var(--border); border-radius: 0;
   color: var(--text); outline: none;
-  font-family: 'Instrument Sans', system-ui, sans-serif;
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
 }
 .aw .aw-input:focus { border-color: var(--accent-bd); }
 .aw .aw-hover-raise:hover { background: var(--raised); }
@@ -73,12 +68,12 @@
   border-radius: 50%; animation: awspin .8s linear infinite; flex: none;
 }
 .aw .aw-skeleton {
-  border: 1px solid var(--border); border-radius: 8px;
+  border: 1px solid var(--border); border-radius: 0;
   background: linear-gradient(90deg, var(--raised) 25%, var(--surface) 50%, var(--raised) 75%);
   background-size: 800px 100%; animation: awshimmer 1.1s linear infinite;
 }
 .aw .aw-nav-item {
-  padding: 7px 12px; font-size: 12.5px; border-radius: 6px; cursor: pointer;
+  padding: 7px 12px; font-size: 12.5px; border-radius: 0; cursor: pointer;
   display: flex; justify-content: space-between; align-items: center;
 }
 .aw .aw-nav-item:hover { background: var(--raised); }
@@ -89,31 +84,30 @@
 .aw .aw-cell { padding: 7px 12px; font: 400 11px 'JetBrains Mono', monospace; }
 
 /* ────────────────────────────────────────────────────────────────────
-   Visual elevation + responsive shell (browser-verified pass).
-   Adds depth/atmosphere the flat port lacked, honest motion, and a real
-   mobile treatment — the inline-styled shell had none.
+   Visual elevation + responsive shell.
+   Depth/atmosphere, honest motion, and a real mobile treatment.
    ──────────────────────────────────────────────────────────────────── */
 
 /* Depth: panels stop being flat rectangles — a faint top light + shadow. */
-.aw .aw-panel { transition: border-color .18s ease, box-shadow .18s ease; }
-.aw[data-theme='dark'] .aw-panel {
+.aw .aw-panel {
+  transition: border-color .18s var(--ease-out), box-shadow .18s var(--ease-out);
   background:
     linear-gradient(180deg, rgba(255, 255, 255, .022), rgba(255, 255, 255, 0) 120px),
     var(--surface);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, .035), 0 1px 2px rgba(0, 0, 0, .28);
 }
-.aw[data-theme='dark'] .aw-panel:hover { border-color: #2a3543; }
+.aw .aw-panel:hover { border-color: #2a3543; }
 
 /* Motion: buttons, nav, chips gain honest micro-feedback. */
-.aw .aw-btn-accent { transition: filter .15s ease, transform .06s ease; }
+.aw .aw-btn-accent { transition: filter .15s var(--ease-out), transform .08s var(--ease-out); }
 .aw .aw-btn-accent:hover { filter: brightness(1.07); }
 .aw .aw-btn-accent:active { transform: translateY(1px); }
-.aw .aw-nav-item { transition: background .14s ease, color .14s ease; }
-.aw .aw-chip { transition: background .16s ease, color .16s ease; }
+.aw .aw-nav-item { transition: background .14s var(--ease-out), color .14s var(--ease-out); }
+.aw .aw-chip { transition: background .16s var(--ease-out), color .16s var(--ease-out); }
 
 /* One orchestrated cockpit reveal — staggered, not scattered. */
 @keyframes awrise { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
-.aw-main > * { animation: awrise .34s cubic-bezier(.2, .7, .2, 1) both; }
+.aw-main > * { animation: awrise .34s var(--ease-out) both; }
 .aw-main > *:nth-child(2) { animation-delay: .04s; }
 .aw-main > *:nth-child(3) { animation-delay: .08s; }
 .aw-main > *:nth-child(4) { animation-delay: .12s; }
@@ -125,8 +119,7 @@
 /* Login hero: atmosphere instead of a flat void — brand-tinted glow + a
    masked technical grid that fades out toward the content. */
 .aw-hero { position: relative; overflow: hidden; }
-.aw[data-theme='dark'].aw .aw-hero,
-.aw[data-theme='dark'] .aw-hero {
+.aw-hero {
   background:
     radial-gradient(115% 80% at 12% 16%, rgba(34, 197, 94, .10), rgba(34, 197, 94, 0) 44%),
     var(--sunken);
@@ -149,13 +142,13 @@
 @media (max-width: 860px) {
   .aw-burger {
     display: grid; place-items: center; cursor: pointer; flex: none;
-    width: 34px; height: 30px; border: 1px solid var(--border); border-radius: 7px;
+    width: 34px; height: 30px; border: 1px solid var(--border); border-radius: 0;
     color: var(--text2); background: var(--surface); font-size: 15px; line-height: 1;
   }
   .aw-nav {
     position: fixed !important; top: 54px; bottom: 0; left: 0; z-index: 80;
     width: 244px !important; transform: translateX(-100%);
-    transition: transform .22s ease; box-shadow: 0 24px 60px rgba(0, 0, 0, .55);
+    transition: transform .22s var(--ease-out); box-shadow: 0 24px 60px rgba(0, 0, 0, .55);
   }
   .aw-nav.aw-open { transform: none; }
   .aw-backdrop.aw-open {

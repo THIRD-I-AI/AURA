@@ -588,3 +588,53 @@
 .aura-terminal .panel-empty.is-idle .panel-empty-glyph { color: var(--text-disabled, #39424e); }
 .aura-terminal .panel-empty.is-error .panel-empty-glyph { color: var(--t-red); }
 .aura-terminal .panel-empty.is-error .panel-empty-title { color: var(--t-red); }
+/* ── Live System Radar HUD ───────────────────────────────────
+   Ambient, collapsible system-health overlay. Bottom-right, above the
+   dockview grid, below the command palette. Sharp corners, mono, green
+   signal — Terminal-authority, same visual language as the workbench. */
+.aura-terminal .terminal-radar-hud {
+  position: absolute;
+  right: 12px;
+  bottom: 12px;
+  z-index: 7;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  background: color-mix(in srgb, var(--t-void, #070a0f) 92%, transparent);
+  border: 1px solid var(--t-line, #1d2530);
+  backdrop-filter: blur(6px);
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.45);
+  transition: box-shadow 180ms var(--ease-out, ease);
+}
+.aura-terminal .terminal-radar-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 11px;
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  font-family: var(--t-mono, 'JetBrains Mono', ui-monospace, monospace);
+  font-size: 10.5px;
+  letter-spacing: 0.06em;
+  color: var(--t-text, #dbe4ee);
+}
+.aura-terminal .terminal-radar-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex: none;
+}
+.aura-terminal .terminal-radar-label { font-weight: 600; }
+.aura-terminal .terminal-radar-meta { color: var(--t-dim, #8b97a8); margin-left: 2px; }
+.aura-terminal .terminal-radar-caret { margin-left: auto; color: var(--t-faint, #5a6675); }
+.aura-terminal .terminal-radar-toggle:hover { color: var(--accent, #22c55e); }
+.aura-terminal .terminal-radar-body {
+  padding: 4px 10px 12px;
+  display: flex;
+  justify-content: center;
+  border-top: 1px solid var(--t-line, #1d2530);
+}
+@media (prefers-reduced-motion: reduce) {
+  .aura-terminal .terminal-radar-hud { transition: none; }
+}

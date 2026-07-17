@@ -1,4 +1,4 @@
-import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { DockviewReact, type DockviewReadyEvent, type IDockviewPanelProps, type DockviewApi } from 'dockview-react';
 import 'dockview-react/dist/styles/dockview.css';
@@ -17,6 +17,10 @@ import './terminal.css';
 // new constellation-led default surfaces once for everyone (old saved layouts
 // predate the panel). Custom layouts re-persist under this key thereafter.
 const LAYOUT_KEY = 'default.v2';
+
+// Ambient live-system HUD. Lazy so the mocked workspace unit test never mounts
+// the pulse hook, and so its motion/SVG cost stays off the critical boot path.
+const TerminalRadarRail = lazy(() => import('./TerminalRadarRail'));
 
 function buildComponents(): Record<string, React.FC<IDockviewPanelProps>> {
   const out: Record<string, React.FC<IDockviewPanelProps>> = {};
@@ -120,11 +124,16 @@ export function TerminalWorkspace() {
         {isMobile ? (
           <MobileTerminalStack />
         ) : (
-          <DockviewReact
-            className="dockview-theme-dark"
-            components={components}
-            onReady={onReady}
-          />
+          <>
+            <DockviewReact
+              className="dockview-theme-dark"
+              components={components}
+              onReady={onReady}
+            />
+            <Suspense fallback={null}>
+              <TerminalRadarRail />
+            </Suspense>
+          </>
         )}
         <TerminalCommandPalette
           open={paletteOpen}
