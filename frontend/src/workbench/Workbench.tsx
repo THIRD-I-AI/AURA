@@ -133,6 +133,9 @@ export default function Workbench() {
     setToast(t);
     toastTimer.current = setTimeout(() => setToast(null), 2600);
   }, []);
+
+  // Stable identity so the memoized SystemRadar isn't re-rendered every poll.
+  const onRadarService = useCallback((id: string) => showToast(`service · ${id}`), [showToast]);
   useEffect(() => () => { if (toastTimer.current) clearTimeout(toastTimer.current); }, []);
 
   const pushFeed = useCallback((k: string, color: string, t: string) => {
@@ -595,7 +598,7 @@ export default function Workbench() {
           {nav === 'Cockpit' && (
             <div className="aw-panel" data-testid="wb-radar" style={{ display: 'grid', gridTemplateColumns: 'minmax(0,340px) 1fr', gap: 0 }}>
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '18px 8px', borderRight: '1px solid var(--hair)' }}>
-                <SystemRadar model={radarModel} size={320} onServiceClick={(id) => showToast(`service · ${id}`)} />
+                <SystemRadar model={radarModel} size={320} onServiceClick={onRadarService} />
               </div>
               <div style={{ display: 'flex', flexDirection: 'column', minWidth: 0 }}>
                 <div className="aw-panel-head" style={{ padding: '14px 18px' }}>

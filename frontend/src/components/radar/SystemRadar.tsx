@@ -12,7 +12,7 @@
    and out as the live topology changes (new pipeline, recovered source).
    Respects prefers-reduced-motion via the CSS media query in workbench.css
    and Motion's own reduced-motion handling. */
-import { useMemo } from 'react';
+import { memo, useMemo } from 'react';
 import { motion, AnimatePresence, useReducedMotion } from 'motion/react';
 import type { SystemRadarModel, Severity } from './types';
 import { SEVERITY_COLOR, SEVERITY_RANK } from './types';
@@ -29,7 +29,7 @@ export interface SystemRadarProps {
 
 const VIEW = 200; // internal coordinate space (centered at 0,0 → -100..100)
 
-export function SystemRadar({ model, size = 320, onServiceClick, className }: SystemRadarProps) {
+function SystemRadarImpl({ model, size = 320, onServiceClick, className }: SystemRadarProps) {
   const reduce = useReducedMotion();
   const serviceR = 62;
   const nodes = useRadarLayout(model.services, serviceR);
@@ -210,5 +210,10 @@ export function SystemRadar({ model, size = 320, onServiceClick, className }: Sy
     </svg>
   );
 }
+
+/** Memoized: the radar re-renders only when its model/size/props actually change,
+ *  so the Workbench 10s live-poll (which re-renders the shell) does not re-run the
+ *  seeded d3-force layout unless topology changed. */
+export const SystemRadar = memo(SystemRadarImpl);
 
 export default SystemRadar;
