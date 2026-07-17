@@ -195,7 +195,7 @@ const WebhooksPanel: React.FC<WebhooksPanelProps> = () => {
       {error && (
         <div className="webhooks__error">
           {error}
-          <button onClick={() => setError(null)}>✕</button>
+          <button onClick={() => setError(null)} aria-label="Dismiss error" title="Dismiss"><span aria-hidden="true">✕</span></button>
         </div>
       )}
 

@@ -182,6 +182,7 @@ export default function PipelinePanel(_props: IDockviewPanelProps) {
                     onMouseLeave={() => setHovered((h) => (h === n.id ? null : h))}
                     role="button"
                     tabIndex={0}
+                    aria-label={`${n.label} — ${status}`}
                     onKeyDown={(ev) => { if (ev.key === 'Enter') setSelected(n.id); }}
                   >
                     <rect className="pl-node-box" width={150} height={56} rx={2} />
@@ -231,10 +232,10 @@ export default function PipelinePanel(_props: IDockviewPanelProps) {
                       <span className="pl-pipe-name" title={p.description}>{p.name}</span>
                       <span className={`pl-pipe-status st-${p.status}`}>{p.status}</span>
                       <span className="pl-pipe-btns">
-                        <button disabled={!!busy} onClick={() => runControl('start', p.id)}>▶</button>
-                        <button disabled={!!busy} onClick={() => runControl('pause', p.id)}>❚❚</button>
-                        <button disabled={!!busy} onClick={() => runControl('resume', p.id)}>⟳</button>
-                        <button disabled={!!busy} onClick={() => runControl('stop', p.id)}>■</button>
+                        <button disabled={!!busy} onClick={() => runControl('start', p.id)} aria-label={`Start ${p.name}`} title="Start"><span aria-hidden="true">▶</span></button>
+                        <button disabled={!!busy} onClick={() => runControl('pause', p.id)} aria-label={`Pause ${p.name}`} title="Pause"><span aria-hidden="true">❚❚</span></button>
+                        <button disabled={!!busy} onClick={() => runControl('resume', p.id)} aria-label={`Resume ${p.name}`} title="Resume"><span aria-hidden="true">⟳</span></button>
+                        <button disabled={!!busy} onClick={() => runControl('stop', p.id)} aria-label={`Stop ${p.name}`} title="Stop"><span aria-hidden="true">■</span></button>
                       </span>
                     </div>
                   ))}

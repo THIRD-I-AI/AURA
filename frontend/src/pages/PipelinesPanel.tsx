@@ -498,7 +498,7 @@ const PipelinesPanel: React.FC<PipelinesPanelProps> = () => {
       {toast && (
         <div className={`etl-toast etl-toast--${toast.type}`}>
           <span>{toast.message}</span>
-          <button className="etl-toast__close" onClick={() => setToast(null)}>✕</button>
+          <button className="etl-toast__close" aria-label="Dismiss" title="Dismiss" onClick={() => setToast(null)}><span aria-hidden="true">✕</span></button>
         </div>
       )}
 
@@ -538,7 +538,7 @@ const PipelinesPanel: React.FC<PipelinesPanelProps> = () => {
       {error && activeTab !== 'ai' && (
         <div className="etl-error">
           {error}
-          <button className="etl-error__close" onClick={() => setError(null)}>✕</button>
+          <button className="etl-error__close" aria-label="Dismiss" title="Dismiss" onClick={() => setError(null)}><span aria-hidden="true">✕</span></button>
         </div>
       )}
 
@@ -688,7 +688,7 @@ const PipelinesPanel: React.FC<PipelinesPanelProps> = () => {
           {aiError && (
             <div className="etl-error">
               {aiError}
-              <button className="etl-error__close" onClick={() => setAiError(null)}>✕</button>
+              <button className="etl-error__close" aria-label="Dismiss" title="Dismiss" onClick={() => setAiError(null)}><span aria-hidden="true">✕</span></button>
             </div>
           )}
 
@@ -1220,7 +1220,7 @@ const PipelinesPanel: React.FC<PipelinesPanelProps> = () => {
             {savedError && (
               <div className="etl-error">
                 ⚠️ {savedError}
-                <button className="etl-error__close" onClick={() => setSavedError(null)}>✕</button>
+                <button className="etl-error__close" aria-label="Dismiss" title="Dismiss" onClick={() => setSavedError(null)}><span aria-hidden="true">✕</span></button>
               </div>
             )}
 

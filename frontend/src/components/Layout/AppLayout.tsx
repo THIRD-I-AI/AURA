@@ -74,6 +74,8 @@ const AppLayout: React.FC<AppLayoutProps> = ({ children, currentPage, onPageChan
       data-viewport={vp.size}
       data-rail={vp.hasRail ? 'true' : undefined}
     >
+      <a href="#main-content" className="skip-link">Skip to main content</a>
+
       {/* Mobile scrim */}
       <div
         className={`sidebar-scrim${mobileSidebarOpen ? ' sidebar-scrim--visible' : ''}`}
@@ -116,7 +118,7 @@ const AppLayout: React.FC<AppLayoutProps> = ({ children, currentPage, onPageChan
           }
         />
 
-        <main className="app-shell__main">
+        <main id="main-content" tabIndex={-1} className="app-shell__main">
           <div className="app-shell__main-inner">
             {children}
           </div>
