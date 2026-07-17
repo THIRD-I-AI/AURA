@@ -115,9 +115,9 @@ export function SystemRadar({ model, size = 320, onServiceClick, className }: Sy
             stroke="var(--accent, #22c55e)"
             strokeWidth={1.2}
             initial={{ pathLength: 0, opacity: 0 }}
-            animate={{ pathLength: 1, opacity: [0.2, 0.8, 0.2] }}
+            animate={reduce ? { pathLength: 1, opacity: 0.6 } : { pathLength: 1, opacity: [0.2, 0.8, 0.2] }}
             exit={{ opacity: 0 }}
-            transition={{ pathLength: { duration: 0.6 }, opacity: { duration: 1.6, repeat: Infinity } }}
+            transition={reduce ? { duration: 0 } : { pathLength: { duration: 0.6 }, opacity: { duration: 1.6, repeat: Infinity } }}
           />
         ))}
       </AnimatePresence>

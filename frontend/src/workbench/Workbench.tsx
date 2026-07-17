@@ -18,6 +18,8 @@ import {
   streamingService,
   uploadService,
 } from '../services/api';
+import { motion } from 'motion/react';
+import { deckSwitch, maybe } from '../lib/motion';
 import { VIEW_REGISTRY } from './viewRegistry';
 import { ViewHost } from './views';
 import { SystemRadar } from '../components/radar';
@@ -571,6 +573,13 @@ export default function Workbench() {
             <div style={{ fontSize: 12, color: 'var(--text3)' }}>Last full audit replay 06:00 UTC · scheduler on time</div>
           </div>
 
+          <motion.div
+            key={nav}
+            variants={maybe(deckSwitch)}
+            initial="hidden"
+            animate="visible"
+            style={{ display: 'flex', flexDirection: 'column', gap: 16, minHeight: 0 }}
+          >
           {nav === 'Cockpit' && (
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(150px,1fr))', gap: 12 }} data-testid="wb-stats">
               {stats.map((st) => (
@@ -840,6 +849,7 @@ export default function Workbench() {
               <a href={STUB_LINKS[nav] || '/app'} className="aw-mono" style={{ fontSize: 10.5, fontWeight: 600, color: 'var(--accent)', textDecoration: 'none', border: '1px solid var(--accent-bd)', borderRadius: 0, padding: '6px 14px' }}>Open in classic app →</a>
             </div>
           )}
+          </motion.div>
         </main>
       </div>
 
