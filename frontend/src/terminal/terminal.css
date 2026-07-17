@@ -542,3 +542,49 @@
   .aura-terminal .react-flow__edge.animated .react-flow__edge-path { animation: none; }
   .aura-terminal .aura-node__disc { transition: none; }
 }
+
+/* ── shared utility-panel command head (Datasets / Findings / Query / Feed) ──
+   Brings the four utility panels to command-deck parity with the pipeline,
+   audit, and constellation decks: a titled bar with a glyph + live metric,
+   matching .aud-head / .pl-head. Terminal island — bespoke --t-* tokens, not
+   the React ui-kit primitives. */
+.aura-terminal .panel-head {
+  flex: 0 0 auto;
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--t-line);
+  background: var(--t-void);
+  font-family: var(--t-mono);
+  font-size: 11px; letter-spacing: 0.04em;
+}
+.aura-terminal .panel-head-glyph { color: var(--t-cyan); font-size: 13px; line-height: 1; }
+.aura-terminal .panel-head-title {
+  font-weight: 700; text-transform: uppercase; letter-spacing: 0.09em; color: var(--t-text);
+}
+.aura-terminal .panel-head-metric {
+  margin-left: auto;
+  color: var(--t-dim); font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em;
+}
+
+/* ── honest empty / awaiting / error states ──
+   Glyph vocabulary matches the ui-kit StatusGlyph honesty rules:
+     ◌ awaiting  = monitored, no data yet
+     · idle      = nothing to show, not an error
+     ● error     = a real failure
+   No fake "verified/healthy" green when there is simply no data. */
+.aura-terminal .panel-empty {
+  flex: 1 1 auto;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 8px; padding: 32px 16px; text-align: center;
+  font-family: var(--t-mono);
+}
+.aura-terminal .panel-empty-glyph { font-size: 22px; line-height: 1; color: var(--t-faint); }
+.aura-terminal .panel-empty-title {
+  font-size: 11px; text-transform: uppercase; letter-spacing: 0.09em; color: var(--t-dim);
+}
+.aura-terminal .panel-empty-hint {
+  font-size: 10.5px; color: var(--t-faint); max-width: 36ch; line-height: 1.5;
+}
+.aura-terminal .panel-empty.is-idle .panel-empty-glyph { color: var(--text-disabled, #39424e); }
+.aura-terminal .panel-empty.is-error .panel-empty-glyph { color: var(--t-red); }
+.aura-terminal .panel-empty.is-error .panel-empty-title { color: var(--t-red); }

@@ -28,8 +28,14 @@ export default function QueryPanel(_props: IDockviewPanelProps) {
   };
 
   const er = result?.execution_result;
+  const idle = !error && !busy && !result;
   return (
     <div data-testid="query-panel" className="aura-panel query-panel">
+      <div className="panel-head">
+        <span className="panel-head-glyph" aria-hidden>❯</span>
+        <span className="panel-head-title">Query</span>
+        <span className="panel-head-metric">{busy ? 'running…' : activeDataset ?? 'no dataset'}</span>
+      </div>
       <div className="panel-context" data-testid="query-context">
         {activeDataset
           ? <>dataset: {activeDataset}</>
@@ -53,6 +59,17 @@ export default function QueryPanel(_props: IDockviewPanelProps) {
             ))}
           </tbody>
         </table>
+      )}
+      {idle && (
+        <div className="panel-empty is-idle" role="status">
+          <span className="panel-empty-glyph" aria-hidden>·</span>
+          <span className="panel-empty-title">No query run yet</span>
+          <span className="panel-empty-hint">
+            {activeDataset
+              ? 'Ask a question above to run a natural-language query against the active dataset.'
+              : 'Select a dataset, then ask a question to query it.'}
+          </span>
+        </div>
       )}
     </div>
   );
