@@ -18,6 +18,8 @@ import {
   streamingService,
   uploadService,
 } from '../services/api';
+import { motion } from 'motion/react';
+import { deckSwitch, maybe } from '../lib/motion';
 import { VIEW_REGISTRY } from './viewRegistry';
 import { ViewHost } from './views';
 import { SystemRadar } from '../components/radar';
@@ -131,6 +133,9 @@ export default function Workbench() {
     setToast(t);
     toastTimer.current = setTimeout(() => setToast(null), 2600);
   }, []);
+
+  // Stable identity so the memoized SystemRadar isn't re-rendered every poll.
+  const onRadarService = useCallback((id: string) => showToast(`service · ${id}`), [showToast]);
   useEffect(() => () => { if (toastTimer.current) clearTimeout(toastTimer.current); }, []);
 
   const pushFeed = useCallback((k: string, color: string, t: string) => {
@@ -522,6 +527,7 @@ export default function Workbench() {
     /* height (not min-height) bounds the shell so topbar+nav stay pinned and
        ONLY the main column scrolls — the design's cockpit scroll model. */
     <div className="aw" data-testid="wb-app" style={{ height: '100vh', overflow: 'hidden' }}>
+      <a href="#wb-main" className="skip-link">Skip to main content</a>
       {/* topbar */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 16, height: 54, padding: '0 24px', background: 'var(--surface)', borderBottom: '1px solid var(--border)', flex: 'none' }}>
         <div className="aw-burger" onClick={() => setNavOpen((o) => !o)} role="button" aria-label="Toggle navigation">☰</div>
@@ -562,14 +568,21 @@ export default function Workbench() {
         </div>
 
         {/* main */}
-        <div className="aw-main" style={{ flex: 1, minWidth: 0, padding: '24px 26px 28px', display: 'flex', flexDirection: 'column', gap: 16, overflowY: 'auto' }}>
+        <main id="wb-main" tabIndex={-1} className="aw-main" style={{ flex: 1, minWidth: 0, padding: '24px 26px 28px', display: 'flex', flexDirection: 'column', gap: 16, overflowY: 'auto' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
             <div className="aw-display" style={{ fontWeight: 600, fontSize: 22 }}>{nav}</div>
-            <div className="aw-chip" style={{ display: 'flex', alignItems: 'center', gap: 6, color: statusColor, background: statusBg, border: `1px solid ${systemStatus.tone === 'ok' ? 'var(--accent-bd)' : statusColor}`, fontWeight: 600, letterSpacing: '.08em' }}><span style={{ width: 5, height: 5, borderRadius: '50%', background: statusColor, animation: 'awpulse 2.4s infinite' }} />{systemStatus.label}</div>
+            <div className="aw-chip" role="status" aria-live="polite" aria-atomic="true" aria-label={`System status: ${systemStatus.label}`} style={{ display: 'flex', alignItems: 'center', gap: 6, color: statusColor, background: statusBg, border: `1px solid ${systemStatus.tone === 'ok' ? 'var(--accent-bd)' : statusColor}`, fontWeight: 600, letterSpacing: '.08em' }}><span aria-hidden="true" style={{ width: 5, height: 5, borderRadius: '50%', background: statusColor, animation: 'awpulse 2.4s infinite' }} />{systemStatus.label}</div>
             <div style={{ flex: 1 }} />
             <div style={{ fontSize: 12, color: 'var(--text3)' }}>Last full audit replay 06:00 UTC · scheduler on time</div>
           </div>
 
+          <motion.div
+            key={nav}
+            variants={maybe(deckSwitch)}
+            initial="hidden"
+            animate="visible"
+            style={{ display: 'flex', flexDirection: 'column', gap: 16, minHeight: 0 }}
+          >
           {nav === 'Cockpit' && (
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(150px,1fr))', gap: 12 }} data-testid="wb-stats">
               {stats.map((st) => (
@@ -585,7 +598,7 @@ export default function Workbench() {
           {nav === 'Cockpit' && (
             <div className="aw-panel" data-testid="wb-radar" style={{ display: 'grid', gridTemplateColumns: 'minmax(0,340px) 1fr', gap: 0 }}>
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '18px 8px', borderRight: '1px solid var(--hair)' }}>
-                <SystemRadar model={radarModel} size={320} onServiceClick={(id) => showToast(`service · ${id}`)} />
+                <SystemRadar model={radarModel} size={320} onServiceClick={onRadarService} />
               </div>
               <div style={{ display: 'flex', flexDirection: 'column', minWidth: 0 }}>
                 <div className="aw-panel-head" style={{ padding: '14px 18px' }}>
@@ -817,7 +830,7 @@ export default function Workbench() {
           )}
 
           {nav === 'Cockpit' && (
-            <div className="aw-panel" data-testid="wb-feed">
+            <div className="aw-panel" data-testid="wb-feed" role="log" aria-live="polite" aria-label="Session events">
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '12px 16px' }}><span style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--accent)', animation: 'awpulse 1.6s infinite' }} /><div className="aw-panel-title">Session events</div><div style={{ flex: 1 }} /><div style={{ fontSize: 10.5, color: 'var(--text3)' }}>real actions only — queries · audits · approvals</div></div>
               {feed.length === 0 && <div style={{ padding: '10px 16px', borderTop: '1px solid var(--hair)', fontSize: 11.5, color: 'var(--text3)' }}>No events yet — run a query or an audit and it lands here.</div>}
               {feed.map((ev, i) => (
@@ -839,7 +852,8 @@ export default function Workbench() {
               <a href={STUB_LINKS[nav] || '/app'} className="aw-mono" style={{ fontSize: 10.5, fontWeight: 600, color: 'var(--accent)', textDecoration: 'none', border: '1px solid var(--accent-bd)', borderRadius: 0, padding: '6px 14px' }}>Open in classic app →</a>
             </div>
           )}
-        </div>
+          </motion.div>
+        </main>
       </div>
 
       {/* command palette */}
