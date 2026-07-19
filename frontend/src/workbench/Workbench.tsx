@@ -7,6 +7,7 @@
    data elsewhere so every panel renders.
    Additive: the classic /app shell is untouched and reachable from stubs. */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { UserMenu } from '../auth/UserMenu';
 import {
   API_BASE_URL,
   analyticsService,
@@ -538,7 +539,7 @@ export default function Workbench() {
         <div onClick={() => { setPaletteOpen(true); setTimeout(() => paletteInput.current?.focus(), 30); }} className="aw-mono aw-hover-accent-bd aw-topbar-search" style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 8, fontSize: 11, fontWeight: 500, color: 'var(--text2)', border: '1px solid var(--border)', borderRadius: 0, padding: '5px 10px' }}>
           Search, ask, or run a command <span style={{ background: 'var(--sunken)', borderRadius: 0, padding: '1px 5px' }}>⌘K</span>
         </div>
-        <a href="/app" className="aw-topbar-classic" style={{ fontSize: 11.5, fontWeight: 600, color: 'var(--text2)', border: '1px solid var(--border)', borderRadius: 0, padding: '5px 11px', textDecoration: 'none' }}>Classic app</a>
+        <UserMenu />
       </div>
 
       <div style={{ display: 'flex', flex: 1, minHeight: 0 }}>
