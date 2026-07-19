@@ -12,11 +12,11 @@ const Connectors = lazy(() => import('./panels/ConnectorsPanel'));
 const Cost = lazy(() => import('./panels/CostPanel'));
 const WebhooksPanel = lazy(() => import('./panels/WebhooksPanel'));
 const Dashboards = lazy(() => import('./panels/DashboardsPanel'));
+const StreamingPanel = lazy(() => import('./panels/StreamingPanel'));
 
 // Still-embedded classic pages (pending native rebuild).
 const Lineage = lazy(() => import('../pages/Lineage'));
 const PipelinesPanel = lazy(() => import('../pages/PipelinesPanel'));
-const StreamingPanel = lazy(() => import('../pages/StreamingPanel'));
 const Counterfactual = lazy(() => import('../pages/Counterfactual'));
 const AuditService = lazy(() => import('../pages/AuditService'));
 const ExceptionQueue = lazy(() => import('../components/HITL/ExceptionQueue'));
@@ -36,7 +36,7 @@ export const VIEW_REGISTRY: Record<string, ViewEntry> = {
   'Counterfactuals': c(Counterfactual),
   'Exception Queue': c(ExceptionQueue),
   'Pipelines': c(PipelinesPanel, true),
-  'Streaming': c(StreamingPanel, true),
+  'Streaming': c(StreamingPanel),
   'Healing Queue': c(HealingQueue),
   'Webhooks': c(WebhooksPanel),
   'Cost': c(Cost),
