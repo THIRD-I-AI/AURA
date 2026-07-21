@@ -13,9 +13,9 @@ const Cost = lazy(() => import('./panels/CostPanel'));
 const WebhooksPanel = lazy(() => import('./panels/WebhooksPanel'));
 const Dashboards = lazy(() => import('./panels/DashboardsPanel'));
 const StreamingPanel = lazy(() => import('./panels/StreamingPanel'));
+const Lineage = lazy(() => import('./panels/LineagePanel'));
 
 // Still-embedded classic pages (pending native rebuild).
-const Lineage = lazy(() => import('../pages/Lineage'));
 const PipelinesPanel = lazy(() => import('../pages/PipelinesPanel'));
 const Counterfactual = lazy(() => import('../pages/Counterfactual'));
 const AuditService = lazy(() => import('../pages/AuditService'));
