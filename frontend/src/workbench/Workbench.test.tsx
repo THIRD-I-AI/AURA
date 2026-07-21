@@ -37,6 +37,7 @@ vi.mock('./views', () => ({
 }));
 
 import { healingService } from '../services/api';
+import { MemoryRouter } from 'react-router-dom';
 import Workbench from './Workbench';
 
 beforeEach(() => {
@@ -50,21 +51,21 @@ beforeEach(() => {
 });
 
 const boot = async () => {
-  render(<Workbench />);
+  render(<MemoryRouter><Workbench /></MemoryRouter>);
   fireEvent.click(screen.getByText('Continue with Okta'));
   await act(async () => { vi.advanceTimersByTime(420 * 7); });
 };
 
 describe('Workbench', () => {
   it('starts at the login screen with the design headline', () => {
-    render(<Workbench />);
+    render(<MemoryRouter><Workbench /></MemoryRouter>);
     expect(screen.getByTestId('wb-login')).toBeInTheDocument();
     expect(screen.getByText('Analysis your auditors can replay.')).toBeInTheDocument();
   });
 
   it('email sign-in calls the REAL auth service; failure shows the error', async () => {
     vi.mocked((await import('../services/api')).authService.login).mockRejectedValueOnce(new Error('Invalid credentials'));
-    render(<Workbench />);
+    render(<MemoryRouter><Workbench /></MemoryRouter>);
     fireEvent.change(screen.getByPlaceholderText('you@acme.com'), { target: { value: 'a@b.co' } });
     fireEvent.click(screen.getByText('Continue'));
     expect(await screen.findByText('Invalid credentials')).toBeInTheDocument();
