@@ -27,9 +27,11 @@ in a thread / background task and reports progress via the callback.
 from __future__ import annotations
 
 import json
+import os
 import posixpath
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 import numpy as np
@@ -78,7 +80,13 @@ class GenerationResult:
 def _resolve_fs(output_uri: str):
     """Return (filesystem, base_path) for a local or cloud URI."""
     if "://" not in output_uri:
-        output_uri = "file://" + posixpath.abspath(output_uri)
+        # os.path.abspath + Path.as_uri(), NOT "file://" + posixpath.abspath:
+        # posixpath treats a Windows drive path (C:\... / C:/...) as RELATIVE
+        # because it only accepts a leading "/", so it joined the path onto the
+        # cwd and produced //C/<cwd>/C:/... — which pyarrow then failed to
+        # create with WinError 53. as_uri() also emits the drive form Windows
+        # needs (file:///C:/...) and percent-encodes spaces.
+        output_uri = Path(os.path.abspath(output_uri)).as_uri()
     fs, path = pafs.FileSystem.from_uri(output_uri)
     return fs, path
 
