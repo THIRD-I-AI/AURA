@@ -1,9 +1,13 @@
-/* Files & Data — native terminal-authority panel (replaces the embedded
-   classic FilesAndData page). Lists the real uploaded datasets from the
-   gateway (GET /files via uploadService) and uploads new ones, styled to
-   match the Cockpit: dark, mono-first, sharp-cornered, green-signal.
-   Behaviour is identical to the classic page — only the presentation is new. */
+/* Files & Data — native panel. shadcn/ui + Tailwind (frontend/CLAUDE.md):
+   ui-kit primitives + token utilities, no inline styles. Lists real uploaded
+   datasets (GET /files) and uploads new ones via uploadService. */
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { Upload } from 'lucide-react';
+
+import { Panel } from '@/components/ui-kit/panel';
+import { Button } from '@/components/ui-kit/button';
+import { EmptyState } from '@/components/ui-kit/empty-state';
+import { cn } from '@/lib/cn';
 import { uploadService } from '../../services/api';
 
 type Dataset = { filename: string; size: number; modified: string | null };
@@ -16,12 +20,12 @@ function fmtSize(bytes: number): string {
   return `${n < 10 && i > 0 ? n.toFixed(1) : Math.round(n)} ${u[i]}`;
 }
 
-function extTag(name: string): { label: string; color: string } {
+function extTag(name: string): { label: string; dot: string; text: string } {
   const ext = name.split('.').pop()?.toLowerCase();
-  if (ext === 'csv' || ext === 'xlsx' || ext === 'xls') return { label: (ext || 'csv').toUpperCase(), color: 'var(--accent)' };
-  if (ext === 'json') return { label: 'JSON', color: 'var(--warn)' };
-  if (ext === 'parquet') return { label: 'PARQUET', color: '#7aa2f7' };
-  return { label: (ext || 'FILE').toUpperCase(), color: 'var(--text3)' };
+  if (ext === 'csv' || ext === 'xlsx' || ext === 'xls') return { label: (ext || 'csv').toUpperCase(), dot: 'bg-signal', text: 'text-signal' };
+  if (ext === 'json') return { label: 'JSON', dot: 'bg-warn', text: 'text-warn' };
+  if (ext === 'parquet') return { label: 'PARQUET', dot: 'bg-info', text: 'text-info' };
+  return { label: (ext || 'FILE').toUpperCase(), dot: 'bg-text-tertiary', text: 'text-text-tertiary' };
 }
 
 export default function FilesAndDataPanel() {
@@ -33,8 +37,7 @@ export default function FilesAndDataPanel() {
 
   const load = useCallback(async () => {
     try {
-      const list = await uploadService.getUploadedFiles();
-      setFiles(list as Dataset[]);
+      setFiles((await uploadService.getUploadedFiles()) as Dataset[]);
       setError(null);
     } catch {
       setError('Could not reach the gateway to list datasets.');
@@ -42,8 +45,6 @@ export default function FilesAndDataPanel() {
   }, []);
 
   useEffect(() => { load(); }, [load]);
-
-  const onPick = () => inputRef.current?.click();
 
   const onFile = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -66,66 +67,47 @@ export default function FilesAndDataPanel() {
   const totalBytes = (files ?? []).reduce((s, f) => s + (f.size || 0), 0);
 
   return (
-    <div data-testid="wb-files-panel" style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-      {/* header row */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
-        <span className="aw-mono" style={{ fontSize: 11, color: 'var(--text3)' }}>
+    <div className="flex flex-col gap-3.5" data-testid="wb-files-panel">
+      <div className="flex flex-wrap items-center gap-3">
+        <span className="font-mono text-2xs text-text-tertiary">
           {files === null ? 'loading…' : `${count} dataset${count === 1 ? '' : 's'} · ${fmtSize(totalBytes)} · workspace uploads`}
         </span>
-        <div style={{ flex: 1 }} />
-        <input ref={inputRef} type="file" accept=".csv,.xlsx,.xls,.json,.parquet" onChange={onFile} style={{ display: 'none' }} data-testid="wb-files-input" />
-        <button
-          onClick={onPick}
-          disabled={uploading}
-          className="aw-mono aw-hover-accent-bd"
-          data-testid="wb-files-upload"
-          style={{
-            cursor: uploading ? 'default' : 'pointer', fontSize: 11, fontWeight: 600, letterSpacing: '.04em',
-            color: uploading ? 'var(--text3)' : 'var(--accent)', background: 'var(--sunken)',
-            border: '1px solid var(--accent-bd)', borderRadius: 0, padding: '7px 14px',
-          }}
-        >
-          {uploading ? 'UPLOADING…' : '↑ UPLOAD DATASET'}
-        </button>
+        <div className="flex-1" />
+        <input ref={inputRef} type="file" accept=".csv,.xlsx,.xls,.json,.parquet" onChange={onFile} className="hidden" data-testid="wb-files-input" />
+        <Button variant="outline" size="sm" onClick={() => inputRef.current?.click()} disabled={uploading} data-testid="wb-files-upload">
+          <Upload /> {uploading ? 'Uploading…' : 'Upload dataset'}
+        </Button>
       </div>
 
-      {notice && <div className="aw-mono" style={{ fontSize: 11, color: 'var(--accent)', background: 'var(--sunken)', border: '1px solid var(--accent-bd)', padding: '6px 12px' }}>{notice}</div>}
-      {error && <div className="aw-mono" style={{ fontSize: 11, color: 'var(--danger)', background: 'var(--sunken)', border: '1px solid var(--border)', padding: '6px 12px' }}>{error}</div>}
+      {notice && <div className="border border-signal/40 bg-secondary px-3 py-1.5 font-mono text-xs text-signal">{notice}</div>}
+      {error && <div className="border border-border bg-secondary px-3 py-1.5 font-mono text-xs text-destructive">{error}</div>}
 
-      {/* dataset table */}
-      <div className="aw-panel" style={{ overflow: 'hidden' }}>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 96px 84px', gap: 0, padding: '10px 16px', borderBottom: '1px solid var(--hair)' }}>
-          {['DATASET', 'SIZE', 'TYPE'].map((h, i) => (
-            <div key={h} className="aw-mono" style={{ fontSize: 9.5, fontWeight: 600, letterSpacing: '.12em', color: 'var(--text3)', textAlign: i === 0 ? 'left' : 'right' }}>{h}</div>
-          ))}
+      <Panel>
+        <div className="grid grid-cols-[1fr_96px_84px] border-b border-border px-4 py-2.5 font-mono text-2xs font-semibold uppercase tracking-wider text-text-tertiary">
+          <span>Dataset</span><span className="text-right">Size</span><span className="text-right">Type</span>
         </div>
-
-        {files === null && (
-          <div style={{ padding: '14px 16px', fontSize: 11.5, color: 'var(--text3)' }}>Loading datasets…</div>
-        )}
+        {files === null && <div className="px-4 py-3.5 text-xs text-text-tertiary">Loading datasets…</div>}
         {files !== null && count === 0 && !error && (
-          <div style={{ padding: '22px 16px', fontSize: 12, color: 'var(--text3)', textAlign: 'center', lineHeight: 1.7 }}>
-            No datasets yet.<br />Upload a CSV, Excel, JSON, or Parquet file — it becomes queryable in Ask AURA immediately.
-          </div>
+          <EmptyState intent="empty" title="No datasets yet" description="Upload a CSV, Excel, JSON, or Parquet file — it becomes queryable in Ask AURA immediately." />
         )}
         {(files ?? []).map((f) => {
           const tag = extTag(f.filename);
           return (
-            <div key={f.filename} className="aw-nav-item" style={{ display: 'grid', gridTemplateColumns: '1fr 96px 84px', alignItems: 'center', gap: 0, padding: '9px 16px', borderTop: '1px solid var(--hair)', cursor: 'default' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
-                <span style={{ width: 6, height: 6, flex: 'none', background: tag.color, borderRadius: 0 }} />
-                <span style={{ fontSize: 12.5, color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{f.filename}</span>
+            <div key={f.filename} className="grid grid-cols-[1fr_96px_84px] items-center border-t border-border px-4 py-2.5 transition-colors hover:bg-accent">
+              <div className="flex min-w-0 items-center gap-2.5">
+                <span className={cn('size-1.5 shrink-0', tag.dot)} />
+                <span className="truncate text-sm text-card-foreground">{f.filename}</span>
               </div>
-              <div className="aw-mono" style={{ fontSize: 11, color: 'var(--text2)', textAlign: 'right' }}>{fmtSize(f.size)}</div>
-              <div className="aw-mono" style={{ fontSize: 9.5, fontWeight: 600, letterSpacing: '.06em', color: tag.color, textAlign: 'right' }}>{tag.label}</div>
+              <div className="text-right font-mono text-xs text-text-secondary">{fmtSize(f.size)}</div>
+              <div className={cn('text-right font-mono text-2xs font-semibold tracking-wide', tag.text)}>{tag.label}</div>
             </div>
           );
         })}
-      </div>
+      </Panel>
 
-      <div className="aw-mono" style={{ fontSize: 10, color: 'var(--text3)' }}>
+      <p className="font-mono text-2xs text-text-tertiary">
         Datasets are workspace-scoped and queryable from Ask AURA — no classic app required.
-      </div>
+      </p>
     </div>
   );
 }
