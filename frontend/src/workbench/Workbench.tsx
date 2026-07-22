@@ -477,22 +477,25 @@ export default function Workbench() {
             </div>
             <div className="aw-mono" style={{ fontSize: 10, fontWeight: 500, color: 'var(--text3)' }}>{ledger ? `LEDGER ${ledger.no} · ${ledger.intact ? 'CHAIN INTACT' : 'CHAIN CHECK'} · sha256 ${ledger.hash}` : 'ED25519-SIGNED · TAMPER-EVIDENT AUDIT LEDGER'}</div>
           </div>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 40 }}>
+          <div role="main" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 40 }}>
             <div style={{ width: 380, display: 'flex', flexDirection: 'column', gap: 18 }}>
               <div>
                 <div className="aw-display" style={{ fontWeight: 700, fontSize: 24 }}>Sign in</div>
                 <div style={{ marginTop: 6, fontSize: 13, color: 'var(--text2)' }}>Use your corporate identity to continue to <strong>acme-corp</strong>.</div>
               </div>
-              {['Okta', 'Microsoft Entra ID', 'Google Workspace'].map((sso) => (
-                <div key={sso} onClick={() => { if (ssoEnabled) { window.location.href = `${API_BASE_URL}/auth/oidc/login`; } else { setBootIdx(0); setView('boot'); } }} className="aw-hover-accent-bd" style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 10, border: '1px solid var(--border)', borderRadius: 0, padding: '11px 14px', fontSize: 13.5, fontWeight: 600 }}>
+              {['Okta', 'Microsoft Entra ID', 'Google Workspace'].map((sso) => {
+                const go = () => { if (ssoEnabled) { window.location.href = `${API_BASE_URL}/auth/oidc/login`; } else { setBootIdx(0); setView('boot'); } };
+                return (
+                <div key={sso} role="button" tabIndex={0} aria-label={`Continue with ${sso}`} onClick={go} onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); go(); } }} className="aw-hover-accent-bd" style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 10, border: '1px solid var(--border)', borderRadius: 0, padding: '11px 14px', fontSize: 13.5, fontWeight: 600 }}>
                   <span className="aw-mono" style={{ width: 18, height: 18, display: 'grid', placeItems: 'center', background: 'var(--raised)', borderRadius: 0, fontSize: 9 }}>{sso[0]}</span>
                   Continue with {sso}
                 </div>
-              ))}
+                );
+              })}
               <div style={{ display: 'flex', alignItems: 'center', gap: 10, color: 'var(--text3)', fontSize: 11 }}><span style={{ flex: 1, height: 1, background: 'var(--hair)' }} />or with email<span style={{ flex: 1, height: 1, background: 'var(--hair)' }} /></div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-                <label style={{ fontSize: 12, fontWeight: 600 }}>Work email<input ref={emailInput} onKeyDown={(e) => e.key === 'Enter' && signIn()} placeholder="you@acme.com" className="aw-input" style={{ marginTop: 6, width: '100%', boxSizing: 'border-box', padding: '10px 14px', fontSize: 13 }} /></label>
-                <label style={{ fontSize: 12, fontWeight: 600 }}>Password<input ref={passInput} type="password" onKeyDown={(e) => e.key === 'Enter' && signIn()} placeholder="••••••••••••" className="aw-input" style={{ marginTop: 6, width: '100%', boxSizing: 'border-box', padding: '10px 14px', fontSize: 13 }} /></label>
+                <label htmlFor="wb-email" style={{ fontSize: 12, fontWeight: 600 }}>Work email<input id="wb-email" name="email" autoComplete="email" ref={emailInput} onKeyDown={(e) => e.key === 'Enter' && signIn()} placeholder="you@acme.com" className="aw-input" style={{ marginTop: 6, width: '100%', boxSizing: 'border-box', padding: '10px 14px', fontSize: 13 }} /></label>
+                <label htmlFor="wb-password" style={{ fontSize: 12, fontWeight: 600 }}>Password<input id="wb-password" name="password" autoComplete="current-password" ref={passInput} type="password" onKeyDown={(e) => e.key === 'Enter' && signIn()} placeholder="••••••••••••" className="aw-input" style={{ marginTop: 6, width: '100%', boxSizing: 'border-box', padding: '10px 14px', fontSize: 13 }} /></label>
                 {loginError && <div style={{ fontSize: 12, color: 'var(--danger)' }}>{loginError}</div>}
                 <button onClick={signIn} className="aw-btn-accent" style={{ textAlign: 'center', fontSize: 13.5, padding: 12 }}>Continue</button>
               </div>
@@ -553,8 +556,9 @@ export default function Workbench() {
                 {items.map((name) => {
                   const active = name === nav;
                   const badge = (name === 'Exception Queue' || name === 'Healing Queue') && pendingCount > 0 ? String(pendingCount) : null;
+                  const goNav = () => { setNav(name); setNavOpen(false); };
                   return (
-                    <div key={name} onClick={() => { setNav(name); setNavOpen(false); }} className="aw-nav-item" style={{ color: active ? 'var(--text)' : 'var(--text2)', background: active ? 'var(--accent-dim)' : 'transparent', fontWeight: active ? 600 : 400 }}>
+                    <div key={name} role="button" tabIndex={0} aria-current={active ? 'page' : undefined} onClick={goNav} onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); goNav(); } }} className="aw-nav-item" style={{ color: active ? 'var(--text)' : 'var(--text2)', background: active ? 'var(--accent-dim)' : 'transparent', fontWeight: active ? 600 : 400 }}>
                       <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>{active && <span style={{ width: 5, height: 5, borderRadius: '50%', background: 'var(--accent)' }} />}{name}</span>
                       {badge && <span className="aw-mono" style={{ fontSize: 9.5, fontWeight: 600, color: 'var(--warn)', background: 'var(--warn-dim)', borderRadius: 0, padding: '1px 6px' }}>{badge}</span>}
                     </div>
