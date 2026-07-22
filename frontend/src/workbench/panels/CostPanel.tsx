@@ -1,7 +1,11 @@
-/* Cost — native terminal-authority panel (replaces embedded classic Cost page).
-   Real LLM token accounting from GET /llm-stats via costService, styled to match
-   the Cockpit. */
+/* Cost — native panel. shadcn/ui + Tailwind (frontend/CLAUDE.md): ui-kit
+   primitives + token utilities, no inline styles. Real LLM token accounting from
+   GET /llm-stats via costService. */
 import { useCallback, useEffect, useState } from 'react';
+import { RefreshCw } from 'lucide-react';
+
+import { Panel } from '@/components/ui-kit/panel';
+import { Button } from '@/components/ui-kit/button';
 import { costService } from '../../services/api';
 
 type Row = { provider: string; model: string; kind: string; tokens: number };
@@ -16,11 +20,11 @@ function fmt(n: number): string {
 
 function Tile({ label, value, sub }: { label: string; value: string; sub: string }) {
   return (
-    <div className="aw-panel" style={{ flex: 1, minWidth: 150, padding: '14px 16px' }}>
-      <div className="aw-mono" style={{ fontSize: 9.5, fontWeight: 600, letterSpacing: '.12em', color: 'var(--text3)' }}>{label}</div>
-      <div className="aw-display" style={{ fontSize: 26, fontWeight: 600, color: 'var(--text)', marginTop: 6 }}>{value}</div>
-      <div className="aw-mono" style={{ fontSize: 10, color: 'var(--text3)', marginTop: 2 }}>{sub}</div>
-    </div>
+    <Panel className="min-w-[150px] flex-1 p-4">
+      <div className="font-mono text-2xs font-semibold uppercase tracking-widest text-text-tertiary">{label}</div>
+      <div className="mt-1.5 text-3xl font-semibold text-card-foreground">{value}</div>
+      <div className="mt-0.5 font-mono text-2xs text-text-tertiary">{sub}</div>
+    </Panel>
   );
 }
 
@@ -44,44 +48,44 @@ export default function CostPanel() {
   const rows = data?.rows ?? [];
 
   return (
-    <div data-testid="wb-cost-panel" style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-        <span className="aw-mono" style={{ fontSize: 11, color: 'var(--text3)' }}>
+    <div className="flex flex-col gap-3.5" data-testid="wb-cost-panel">
+      <div className="flex items-center gap-3">
+        <span className="font-mono text-2xs text-text-tertiary">
           {data === null ? 'loading…' : `LLM token accounting · ${data.available ? 'live' : 'unavailable'}`}
         </span>
-        <div style={{ flex: 1 }} />
-        <button onClick={load} className="aw-mono aw-hover-accent-bd" style={{ cursor: 'pointer', fontSize: 11, fontWeight: 600, letterSpacing: '.04em', color: 'var(--text2)', background: 'var(--sunken)', border: '1px solid var(--border)', borderRadius: 0, padding: '7px 14px' }}>↻ REFRESH</button>
+        <div className="flex-1" />
+        <Button variant="outline" size="sm" onClick={load}>
+          <RefreshCw /> Refresh
+        </Button>
       </div>
 
-      {error && <div className="aw-mono" style={{ fontSize: 11, color: 'var(--danger)', background: 'var(--sunken)', border: '1px solid var(--border)', padding: '6px 12px' }}>{error}</div>}
+      {error && <div className="border border-border bg-secondary px-3 py-1.5 font-mono text-xs text-danger">{error}</div>}
 
-      <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
-        <Tile label="PROMPT TOKENS" value={fmt(t?.prompt ?? 0)} sub="input" />
-        <Tile label="COMPLETION TOKENS" value={fmt(t?.completion ?? 0)} sub="output" />
-        <Tile label="CACHED" value={fmt(t?.cached_completion ?? 0)} sub="reused completions" />
+      <div className="flex flex-wrap gap-3">
+        <Tile label="Prompt tokens" value={fmt(t?.prompt ?? 0)} sub="input" />
+        <Tile label="Completion tokens" value={fmt(t?.completion ?? 0)} sub="output" />
+        <Tile label="Cached" value={fmt(t?.cached_completion ?? 0)} sub="reused completions" />
       </div>
 
-      <div className="aw-panel" style={{ overflow: 'hidden' }}>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 100px 110px', padding: '10px 16px', borderBottom: '1px solid var(--hair)' }}>
-          {['PROVIDER', 'MODEL', 'KIND', 'TOKENS'].map((h, i) => (
-            <div key={h} className="aw-mono" style={{ fontSize: 9.5, fontWeight: 600, letterSpacing: '.12em', color: 'var(--text3)', textAlign: i >= 2 ? 'right' : 'left' }}>{h}</div>
-          ))}
+      <Panel>
+        <div className="grid grid-cols-[1fr_1fr_100px_110px] border-b border-border px-4 py-2.5 font-mono text-2xs font-semibold uppercase tracking-widest text-text-tertiary">
+          <span>Provider</span><span>Model</span><span className="text-right">Kind</span><span className="text-right">Tokens</span>
         </div>
-        {data === null && <div style={{ padding: '14px 16px', fontSize: 11.5, color: 'var(--text3)' }}>Loading…</div>}
+        {data === null && <div className="px-4 py-3.5 text-xs text-text-tertiary">Loading…</div>}
         {data !== null && rows.length === 0 && !error && (
-          <div style={{ padding: '20px 16px', fontSize: 12, color: 'var(--text3)', textAlign: 'center', lineHeight: 1.7 }}>
-            No token usage recorded yet.<br />Run a query or an audit and per-model usage appears here.
+          <div className="px-4 py-5 text-center text-sm leading-relaxed text-text-tertiary">
+            No token usage recorded yet. Run a query or an audit and per-model usage appears here.
           </div>
         )}
         {rows.map((r, i) => (
-          <div key={i} style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 100px 110px', alignItems: 'center', padding: '9px 16px', borderTop: '1px solid var(--hair)' }}>
-            <div style={{ fontSize: 12, color: 'var(--text2)' }}>{r.provider}</div>
-            <div style={{ fontSize: 12, color: 'var(--text)' }}>{r.model}</div>
-            <div className="aw-mono" style={{ fontSize: 10, color: 'var(--text3)', textAlign: 'right' }}>{r.kind}</div>
-            <div className="aw-mono" style={{ fontSize: 11, color: 'var(--accent)', textAlign: 'right' }}>{fmt(r.tokens)}</div>
+          <div key={i} className="grid grid-cols-[1fr_1fr_100px_110px] items-center border-t border-border px-4 py-2.5">
+            <div className="text-xs text-text-secondary">{r.provider}</div>
+            <div className="text-xs text-card-foreground">{r.model}</div>
+            <div className="text-right font-mono text-2xs text-text-tertiary">{r.kind}</div>
+            <div className="text-right font-mono text-xs text-signal">{fmt(r.tokens)}</div>
           </div>
         ))}
-      </div>
+      </Panel>
     </div>
   );
 }

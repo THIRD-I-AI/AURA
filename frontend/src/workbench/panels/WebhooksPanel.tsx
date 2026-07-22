@@ -1,7 +1,13 @@
-/* Webhooks — native terminal-authority panel (replaces embedded classic
-   WebhooksPanel). Real outbound webhooks from GET /webhooks via webhookService,
-   styled to match the Cockpit. */
+/* Webhooks — native panel. shadcn/ui + Tailwind (frontend/CLAUDE.md): ui-kit
+   primitives + token utilities, no inline styles. Real outbound webhooks from
+   GET /webhooks via webhookService. */
 import { useCallback, useEffect, useState } from 'react';
+import { RefreshCw } from 'lucide-react';
+
+import { Panel } from '@/components/ui-kit/panel';
+import { Button } from '@/components/ui-kit/button';
+import { EmptyState } from '@/components/ui-kit/empty-state';
+import { cn } from '@/lib/cn';
 import { webhookService } from '../../services/api';
 
 type Webhook = { id: string; url: string; events: string[]; active: boolean; retries: number; description?: string };
@@ -25,41 +31,41 @@ export default function WebhooksPanel() {
   const count = hooks?.length ?? 0;
 
   return (
-    <div data-testid="wb-webhooks-panel" style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-        <span className="aw-mono" style={{ fontSize: 11, color: 'var(--text3)' }}>
+    <div className="flex flex-col gap-3.5" data-testid="wb-webhooks-panel">
+      <div className="flex items-center gap-3">
+        <span className="font-mono text-2xs text-text-tertiary">
           {hooks === null ? 'loading…' : `${count} outbound webhook${count === 1 ? '' : 's'} · HMAC-signed`}
         </span>
-        <div style={{ flex: 1 }} />
-        <button onClick={load} className="aw-mono aw-hover-accent-bd" style={{ cursor: 'pointer', fontSize: 11, fontWeight: 600, letterSpacing: '.04em', color: 'var(--text2)', background: 'var(--sunken)', border: '1px solid var(--border)', borderRadius: 0, padding: '7px 14px' }}>↻ REFRESH</button>
+        <div className="flex-1" />
+        <Button variant="outline" size="sm" onClick={load}>
+          <RefreshCw /> Refresh
+        </Button>
       </div>
 
-      {error && <div className="aw-mono" style={{ fontSize: 11, color: 'var(--danger)', background: 'var(--sunken)', border: '1px solid var(--border)', padding: '6px 12px' }}>{error}</div>}
+      {error && <div className="border border-border bg-secondary px-3 py-1.5 font-mono text-xs text-danger">{error}</div>}
 
-      <div className="aw-panel" style={{ overflow: 'hidden' }}>
-        {hooks === null && <div style={{ padding: '14px 16px', fontSize: 11.5, color: 'var(--text3)' }}>Loading webhooks…</div>}
+      <Panel>
+        {hooks === null && <div className="px-4 py-3.5 text-xs text-text-tertiary">Loading webhooks…</div>}
         {hooks !== null && count === 0 && !error && (
-          <div style={{ padding: '22px 16px', fontSize: 12, color: 'var(--text3)', textAlign: 'center', lineHeight: 1.7 }}>
-            No webhooks configured.<br />Register an endpoint to receive HMAC-signed events (audit sealed, drift healed, pipeline completed).
-          </div>
+          <EmptyState intent="empty" title="No webhooks configured" description="Register an endpoint to receive HMAC-signed events — audit sealed, drift healed, pipeline completed." />
         )}
-        {(hooks ?? []).map((h) => (
-          <div key={h.id} style={{ display: 'flex', flexDirection: 'column', gap: 6, padding: '11px 16px', borderTop: '1px solid var(--hair)' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-              <span style={{ width: 6, height: 6, flex: 'none', background: h.active ? 'var(--accent)' : 'var(--text3)', borderRadius: 0 }} />
-              <span className="aw-mono" style={{ fontSize: 12, color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{h.url}</span>
-              <div style={{ flex: 1 }} />
-              <span className="aw-mono" style={{ fontSize: 9, fontWeight: 700, letterSpacing: '.06em', color: h.active ? 'var(--accent)' : 'var(--text3)' }}>{h.active ? 'ACTIVE' : 'PAUSED'}</span>
+        {(hooks ?? []).map((h, i) => (
+          <div key={h.id} className={cn('flex flex-col gap-2 px-4 py-3', i > 0 && 'border-t border-border')}>
+            <div className="flex items-center gap-2.5">
+              <span className={cn('size-1.5 shrink-0', h.active ? 'bg-signal' : 'bg-text-tertiary')} />
+              <span className="truncate font-mono text-xs text-card-foreground">{h.url}</span>
+              <div className="flex-1" />
+              <span className={cn('font-mono text-2xs font-bold tracking-wider', h.active ? 'text-signal' : 'text-text-tertiary')}>{h.active ? 'ACTIVE' : 'PAUSED'}</span>
             </div>
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+            <div className="flex flex-wrap items-center gap-1.5">
               {(h.events ?? []).map((ev) => (
-                <span key={ev} className="aw-mono" style={{ fontSize: 9.5, color: 'var(--text2)', background: 'var(--sunken)', border: '1px solid var(--hair)', padding: '2px 7px' }}>{ev}</span>
+                <span key={ev} className="border border-border bg-secondary px-1.5 py-0.5 font-mono text-2xs text-text-secondary">{ev}</span>
               ))}
-              <span className="aw-mono" style={{ fontSize: 9.5, color: 'var(--text3)' }}>retries {h.retries}</span>
+              <span className="font-mono text-2xs text-text-tertiary">retries {h.retries}</span>
             </div>
           </div>
         ))}
-      </div>
+      </Panel>
     </div>
   );
 }

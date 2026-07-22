@@ -1,7 +1,13 @@
-/* Query History — native terminal-authority panel (replaces embedded classic
-   QueryHistory page). Lists real executed queries from GET /query-history via
-   analyticsService, styled to match the Cockpit. */
+/* Query History — native panel. shadcn/ui + Tailwind (frontend/CLAUDE.md):
+   ui-kit primitives + token utilities, no inline styles. Lists real executed
+   queries from GET /query-history via analyticsService. */
 import { useCallback, useEffect, useState } from 'react';
+import { RefreshCw } from 'lucide-react';
+
+import { Panel } from '@/components/ui-kit/panel';
+import { Button } from '@/components/ui-kit/button';
+import { EmptyState } from '@/components/ui-kit/empty-state';
+import { cn } from '@/lib/cn';
 import { analyticsService } from '../../services/api';
 
 type QueryRow = {
@@ -9,10 +15,10 @@ type QueryRow = {
   row_count?: number | null; execution_time_ms?: number | null; timestamp?: string;
 };
 
-function statusColor(s?: string): string {
-  if (s === 'success') return 'var(--accent)';
-  if (s === 'error' || s === 'failed') return 'var(--danger)';
-  return 'var(--warn)';
+function statusTone(s?: string): { dot: string; text: string } {
+  if (s === 'success') return { dot: 'bg-signal', text: 'text-signal' };
+  if (s === 'error' || s === 'failed') return { dot: 'bg-danger', text: 'text-danger' };
+  return { dot: 'bg-warn', text: 'text-warn' };
 }
 
 export default function QueryHistoryPanel() {
@@ -34,37 +40,42 @@ export default function QueryHistoryPanel() {
   const count = rows?.length ?? 0;
 
   return (
-    <div data-testid="wb-queries-panel" style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-        <span className="aw-mono" style={{ fontSize: 11, color: 'var(--text3)' }}>
+    <div className="flex flex-col gap-3.5" data-testid="wb-queries-panel">
+      <div className="flex items-center gap-3">
+        <span className="font-mono text-2xs text-text-tertiary">
           {rows === null ? 'loading…' : `${count} quer${count === 1 ? 'y' : 'ies'} · this workspace`}
         </span>
-        <div style={{ flex: 1 }} />
-        <button onClick={load} className="aw-mono aw-hover-accent-bd" style={{ cursor: 'pointer', fontSize: 11, fontWeight: 600, letterSpacing: '.04em', color: 'var(--text2)', background: 'var(--sunken)', border: '1px solid var(--border)', borderRadius: 0, padding: '7px 14px' }}>↻ REFRESH</button>
+        <div className="flex-1" />
+        <Button variant="outline" size="sm" onClick={load}>
+          <RefreshCw /> Refresh
+        </Button>
       </div>
 
-      {error && <div className="aw-mono" style={{ fontSize: 11, color: 'var(--danger)', background: 'var(--sunken)', border: '1px solid var(--border)', padding: '6px 12px' }}>{error}</div>}
+      {error && <div className="border border-border bg-secondary px-3 py-1.5 font-mono text-xs text-danger">{error}</div>}
 
-      <div className="aw-panel" style={{ overflow: 'hidden' }}>
-        {rows === null && <div style={{ padding: '14px 16px', fontSize: 11.5, color: 'var(--text3)' }}>Loading query history…</div>}
+      <Panel>
+        {rows === null && <div className="px-4 py-3.5 text-xs text-text-tertiary">Loading query history…</div>}
         {rows !== null && count === 0 && !error && (
-          <div style={{ padding: '22px 16px', fontSize: 12, color: 'var(--text3)', textAlign: 'center', lineHeight: 1.7 }}>
-            No queries yet.<br />Ask a question in Ask AURA and it lands here, with its generated SQL and status.
-          </div>
+          <EmptyState intent="empty" title="No queries yet" description="Ask a question in Ask AURA — it lands here with its generated SQL and status." />
         )}
-        {(rows ?? []).map((q, i) => (
-          <div key={i} style={{ display: 'flex', flexDirection: 'column', gap: 5, padding: '11px 16px', borderTop: i === 0 ? 'none' : '1px solid var(--hair)' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-              <span style={{ width: 6, height: 6, flex: 'none', background: statusColor(q.status), borderRadius: 0 }} />
-              <span style={{ fontSize: 12.5, color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{q.prompt || q.sql || '(query)'}</span>
-              <div style={{ flex: 1 }} />
-              <span className="aw-mono" style={{ fontSize: 9, fontWeight: 700, letterSpacing: '.06em', color: statusColor(q.status) }}>{(q.status || 'unknown').toUpperCase()}</span>
-              {typeof q.row_count === 'number' && <span className="aw-mono" style={{ fontSize: 10, color: 'var(--text3)' }}>{q.row_count} rows</span>}
+        {(rows ?? []).map((q, i) => {
+          const tone = statusTone(q.status);
+          return (
+            <div key={i} className={cn('flex flex-col gap-1.5 px-4 py-3', i > 0 && 'border-t border-border')}>
+              <div className="flex items-center gap-2.5">
+                <span className={cn('size-1.5 shrink-0', tone.dot)} />
+                <span className="truncate text-sm text-card-foreground">{q.prompt || q.sql || '(query)'}</span>
+                <div className="flex-1" />
+                <span className={cn('font-mono text-2xs font-bold tracking-wider', tone.text)}>{(q.status || 'unknown').toUpperCase()}</span>
+                {typeof q.row_count === 'number' && <span className="font-mono text-2xs text-text-tertiary">{q.row_count} rows</span>}
+              </div>
+              {q.sql && (
+                <div className="truncate border border-border bg-secondary px-2.5 py-1.5 font-mono text-2xs text-text-secondary">{q.sql}</div>
+              )}
             </div>
-            {q.sql && <div className="aw-mono" style={{ fontSize: 10.5, color: 'var(--text2)', background: 'var(--sunken)', border: '1px solid var(--hair)', padding: '5px 9px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{q.sql}</div>}
-          </div>
-        ))}
-      </div>
+          );
+        })}
+      </Panel>
     </div>
   );
 }

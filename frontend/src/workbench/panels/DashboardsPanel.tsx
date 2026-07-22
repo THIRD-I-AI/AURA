@@ -1,7 +1,12 @@
-/* Dashboards — native terminal-authority panel (replaces embedded classic
-   Dashboards page). Real saved dashboards from GET /dashboards via
-   dashboardService, styled to match the Cockpit. */
+/* Dashboards — native panel. shadcn/ui + Tailwind (frontend/CLAUDE.md): ui-kit
+   primitives + token utilities, no inline styles. Real saved dashboards from
+   GET /dashboards via dashboardService. */
 import { useCallback, useEffect, useState } from 'react';
+import { RefreshCw } from 'lucide-react';
+
+import { Panel } from '@/components/ui-kit/panel';
+import { Button } from '@/components/ui-kit/button';
+import { EmptyState } from '@/components/ui-kit/empty-state';
 import { dashboardService } from '../../services/api';
 
 type Tile = { id?: string };
@@ -26,33 +31,35 @@ export default function DashboardsPanel() {
   const count = items?.length ?? 0;
 
   return (
-    <div data-testid="wb-dashboards-panel" style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-        <span className="aw-mono" style={{ fontSize: 11, color: 'var(--text3)' }}>
+    <div className="flex flex-col gap-3.5" data-testid="wb-dashboards-panel">
+      <div className="flex items-center gap-3">
+        <span className="font-mono text-2xs text-text-tertiary">
           {items === null ? 'loading…' : `${count} dashboard${count === 1 ? '' : 's'} · this workspace`}
         </span>
-        <div style={{ flex: 1 }} />
-        <button onClick={load} className="aw-mono aw-hover-accent-bd" style={{ cursor: 'pointer', fontSize: 11, fontWeight: 600, letterSpacing: '.04em', color: 'var(--text2)', background: 'var(--sunken)', border: '1px solid var(--border)', borderRadius: 0, padding: '7px 14px' }}>↻ REFRESH</button>
+        <div className="flex-1" />
+        <Button variant="outline" size="sm" onClick={load}>
+          <RefreshCw /> Refresh
+        </Button>
       </div>
 
-      {error && <div className="aw-mono" style={{ fontSize: 11, color: 'var(--danger)', background: 'var(--sunken)', border: '1px solid var(--border)', padding: '6px 12px' }}>{error}</div>}
+      {error && <div className="border border-border bg-secondary px-3 py-1.5 font-mono text-xs text-danger">{error}</div>}
 
       {items !== null && count === 0 && !error ? (
-        <div className="aw-panel" style={{ padding: '26px 16px', fontSize: 12, color: 'var(--text3)', textAlign: 'center', lineHeight: 1.7 }}>
-          No dashboards yet.<br />Pin a query result from Ask AURA to build a live dashboard of your workspace metrics.
-        </div>
+        <Panel>
+          <EmptyState intent="empty" title="No dashboards yet" description="Pin a query result from Ask AURA to build a live dashboard of your workspace metrics." />
+        </Panel>
       ) : (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(min(260px, 100%), 1fr))', gap: 12 }}>
-          {items === null && <div className="aw-panel" style={{ padding: 16, fontSize: 11.5, color: 'var(--text3)' }}>Loading…</div>}
+        <div className="grid grid-cols-[repeat(auto-fill,minmax(min(260px,100%),1fr))] gap-3">
+          {items === null && <Panel className="p-4 text-xs text-text-tertiary">Loading…</Panel>}
           {(items ?? []).map((d) => (
-            <div key={d.id} className="aw-panel aw-hover-accent-bd" style={{ padding: '14px 16px', display: 'flex', flexDirection: 'column', gap: 6, cursor: 'pointer' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                <span style={{ width: 6, height: 6, flex: 'none', background: 'var(--accent)', borderRadius: 0 }} />
-                <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{d.name || '(untitled)'}</span>
+            <Panel key={d.id} className="flex cursor-pointer flex-col gap-1.5 p-4 transition-colors hover:border-signal">
+              <div className="flex items-center gap-2">
+                <span className="size-1.5 shrink-0 bg-signal" />
+                <span className="truncate text-sm font-semibold text-card-foreground">{d.name || '(untitled)'}</span>
               </div>
-              {d.description && <div style={{ fontSize: 11, color: 'var(--text3)', lineHeight: 1.5 }}>{d.description}</div>}
-              <div className="aw-mono" style={{ fontSize: 9.5, color: 'var(--text3)', marginTop: 2 }}>{(d.tiles?.length ?? 0)} tile{(d.tiles?.length ?? 0) === 1 ? '' : 's'}</div>
-            </div>
+              {d.description && <div className="text-xs leading-snug text-text-tertiary">{d.description}</div>}
+              <div className="mt-0.5 font-mono text-2xs text-text-tertiary">{(d.tiles?.length ?? 0)} tile{(d.tiles?.length ?? 0) === 1 ? '' : 's'}</div>
+            </Panel>
           ))}
         </div>
       )}

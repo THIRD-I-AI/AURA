@@ -1,25 +1,32 @@
-/* Lineage — native terminal-authority panel (replaces embedded classic Lineage
-   page). Real data-lineage graph from GET /lineage via lineageService: which
-   tables feed which saved queries and dashboards. Styled to match the Cockpit. */
+/* Lineage — native panel. shadcn/ui + Tailwind (frontend/CLAUDE.md): ui-kit
+   primitives + token utilities, no inline styles. Real data-lineage graph from
+   GET /lineage via lineageService: which tables feed which saved queries and
+   dashboards. */
 import { useCallback, useEffect, useState } from 'react';
+import { RefreshCw } from 'lucide-react';
+
+import { Panel } from '@/components/ui-kit/panel';
+import { Button } from '@/components/ui-kit/button';
+import { EmptyState } from '@/components/ui-kit/empty-state';
+import { cn } from '@/lib/cn';
 import { lineageService } from '../../services/api';
 
 type Node = { id: string; type: 'table' | 'saved_query' | 'dashboard'; label: string };
 type Edge = { id: string; source: string; target: string };
 type Graph = { nodes: Node[]; edges: Edge[]; summary?: { tables: number; queries: number; dashboards: number; edges: number } };
 
-const TYPE_META: Record<Node['type'], { label: string; color: string }> = {
-  table: { label: 'TABLE', color: 'var(--accent)' },
-  saved_query: { label: 'QUERY', color: 'var(--warn)' },
-  dashboard: { label: 'DASHBOARD', color: '#7aa2f7' },
+const TYPE_META: Record<Node['type'], { label: string; dot: string; text: string }> = {
+  table: { label: 'TABLE', dot: 'bg-signal', text: 'text-signal' },
+  saved_query: { label: 'QUERY', dot: 'bg-warn', text: 'text-warn' },
+  dashboard: { label: 'DASHBOARD', dot: 'bg-info', text: 'text-info' },
 };
 
 function Tile({ label, value }: { label: string; value: number }) {
   return (
-    <div className="aw-panel" style={{ flex: 1, minWidth: 120, padding: '13px 16px' }}>
-      <div className="aw-mono" style={{ fontSize: 9.5, fontWeight: 600, letterSpacing: '.12em', color: 'var(--text3)' }}>{label}</div>
-      <div className="aw-display" style={{ fontSize: 24, fontWeight: 600, color: 'var(--text)', marginTop: 5 }}>{value}</div>
-    </div>
+    <Panel className="min-w-[120px] flex-1 p-4">
+      <div className="font-mono text-2xs font-semibold uppercase tracking-widest text-text-tertiary">{label}</div>
+      <div className="mt-1 text-2xl font-semibold text-card-foreground">{value}</div>
+    </Panel>
   );
 }
 
@@ -45,53 +52,51 @@ export default function LineagePanel() {
   const downstream = (id: string) => edges.filter((e) => e.source === id).length;
 
   return (
-    <div data-testid="wb-lineage-panel" style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-        <span className="aw-mono" style={{ fontSize: 11, color: 'var(--text3)' }}>
+    <div className="flex flex-col gap-3.5" data-testid="wb-lineage-panel">
+      <div className="flex items-center gap-3">
+        <span className="font-mono text-2xs text-text-tertiary">
           {graph === null ? 'loading…' : `${nodes.length} nodes · ${edges.length} edges · provenance graph`}
         </span>
-        <div style={{ flex: 1 }} />
-        <button onClick={load} className="aw-mono aw-hover-accent-bd" style={{ cursor: 'pointer', fontSize: 11, fontWeight: 600, letterSpacing: '.04em', color: 'var(--text2)', background: 'var(--sunken)', border: '1px solid var(--border)', borderRadius: 0, padding: '7px 14px' }}>↻ REFRESH</button>
+        <div className="flex-1" />
+        <Button variant="outline" size="sm" onClick={load}>
+          <RefreshCw /> Refresh
+        </Button>
       </div>
 
-      {error && <div className="aw-mono" style={{ fontSize: 11, color: 'var(--danger)', background: 'var(--sunken)', border: '1px solid var(--border)', padding: '6px 12px' }}>{error}</div>}
+      {error && <div className="border border-border bg-secondary px-3 py-1.5 font-mono text-xs text-danger">{error}</div>}
 
       {s && (
-        <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
-          <Tile label="TABLES" value={s.tables} />
-          <Tile label="QUERIES" value={s.queries} />
-          <Tile label="DASHBOARDS" value={s.dashboards} />
-          <Tile label="EDGES" value={s.edges} />
+        <div className="flex flex-wrap gap-3">
+          <Tile label="Tables" value={s.tables} />
+          <Tile label="Queries" value={s.queries} />
+          <Tile label="Dashboards" value={s.dashboards} />
+          <Tile label="Edges" value={s.edges} />
         </div>
       )}
 
-      <div className="aw-panel" style={{ overflow: 'hidden' }}>
-        <div style={{ display: 'grid', gridTemplateColumns: '110px 1fr 130px', padding: '10px 16px', borderBottom: '1px solid var(--hair)' }}>
-          {['TYPE', 'NODE', 'DOWNSTREAM'].map((h, i) => (
-            <div key={h} className="aw-mono" style={{ fontSize: 9.5, fontWeight: 600, letterSpacing: '.12em', color: 'var(--text3)', textAlign: i === 2 ? 'right' : 'left' }}>{h}</div>
-          ))}
+      <Panel>
+        <div className="grid grid-cols-[110px_1fr_130px] border-b border-border px-4 py-2.5 font-mono text-2xs font-semibold uppercase tracking-widest text-text-tertiary">
+          <span>Type</span><span>Node</span><span className="text-right">Downstream</span>
         </div>
-        {graph === null && <div style={{ padding: '14px 16px', fontSize: 11.5, color: 'var(--text3)' }}>Loading lineage…</div>}
+        {graph === null && <div className="px-4 py-3.5 text-xs text-text-tertiary">Loading lineage…</div>}
         {graph !== null && nodes.length === 0 && !error && (
-          <div style={{ padding: '22px 16px', fontSize: 12, color: 'var(--text3)', textAlign: 'center', lineHeight: 1.7 }}>
-            No lineage yet.<br />Run queries and pin dashboards — AURA traces which datasets feed which results.
-          </div>
+          <EmptyState intent="empty" title="No lineage yet" description="Run queries and pin dashboards — AURA traces which datasets feed which results." />
         )}
         {nodes.map((n) => {
-          const meta = TYPE_META[n.type] ?? { label: (n.type as string).toUpperCase(), color: 'var(--text3)' };
+          const meta = TYPE_META[n.type] ?? { label: String(n.type).toUpperCase(), dot: 'bg-text-tertiary', text: 'text-text-tertiary' };
           const dn = downstream(n.id);
           return (
-            <div key={n.id} className="aw-nav-item" style={{ display: 'grid', gridTemplateColumns: '110px 1fr 130px', alignItems: 'center', padding: '9px 16px', borderTop: '1px solid var(--hair)', cursor: 'default' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                <span style={{ width: 6, height: 6, flex: 'none', background: meta.color, borderRadius: 0 }} />
-                <span className="aw-mono" style={{ fontSize: 9, fontWeight: 600, letterSpacing: '.06em', color: meta.color }}>{meta.label}</span>
+            <div key={n.id} className="grid grid-cols-[110px_1fr_130px] items-center border-t border-border px-4 py-2.5">
+              <div className="flex items-center gap-2">
+                <span className={cn('size-1.5 shrink-0', meta.dot)} />
+                <span className={cn('font-mono text-2xs font-semibold tracking-wider', meta.text)}>{meta.label}</span>
               </div>
-              <div style={{ fontSize: 12.5, color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{n.label}</div>
-              <div className="aw-mono" style={{ fontSize: 11, color: dn ? 'var(--text2)' : 'var(--text3)', textAlign: 'right' }}>{dn ? `${dn} →` : '—'}</div>
+              <div className="truncate text-sm text-card-foreground">{n.label}</div>
+              <div className={cn('text-right font-mono text-xs', dn ? 'text-text-secondary' : 'text-text-tertiary')}>{dn ? `${dn} →` : '—'}</div>
             </div>
           );
         })}
-      </div>
+      </Panel>
     </div>
   );
 }
