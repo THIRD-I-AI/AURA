@@ -15,20 +15,20 @@ const Dashboards = lazy(() => import('./panels/DashboardsPanel'));
 const StreamingPanel = lazy(() => import('./panels/StreamingPanel'));
 const Lineage = lazy(() => import('./panels/LineagePanel'));
 const HealingQueue = lazy(() => import('./panels/HealingQueuePanel'));
+const AskAura = lazy(() => import('./panels/AskAuraPanel'));
 
 // Still-embedded classic pages (pending native rebuild).
 const PipelinesPanel = lazy(() => import('../pages/PipelinesPanel'));
 const Counterfactual = lazy(() => import('../pages/Counterfactual'));
 const AuditService = lazy(() => import('../pages/AuditService'));
 const ExceptionQueue = lazy(() => import('../components/HITL/ExceptionQueue'));
-const ChatInterface = lazy(() => import('../components/ChatInterface'));
 
 export type ViewEntry = { component: ComponentType<Record<string, unknown>>; needsSetPage?: boolean };
 const c = (component: unknown, needsSetPage = false): ViewEntry =>
   ({ component: component as ViewEntry['component'], needsSetPage });
 
 export const VIEW_REGISTRY: Record<string, ViewEntry> = {
-  'Ask AURA': c(ChatInterface),
+  'Ask AURA': c(AskAura),
   'Dashboards': c(Dashboards),
   'Library': c(Library),
   'Query History': c(QueryHistory),
