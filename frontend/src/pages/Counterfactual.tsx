@@ -1,4 +1,11 @@
-import React, { useCallback, useMemo, useState } from 'react';
+/* Counterfactual Audit — native shadcn/ui + Tailwind (frontend/CLAUDE.md):
+   ui-kit primitives + token utilities, no inline styles. Submits a causal
+   counterfactual job, polls to completion, renders the operator card + the
+   signed-artifact actions. Mounts in the workbench (viewRegistry
+   'Counterfactuals') and, until it's deleted, the classic App shell. */
+import { useCallback, useMemo, useState } from 'react';
+
+import { Button } from '@/components/ui-kit/button';
 import CounterfactualCard, {
   type CounterfactualOperatorView,
 } from '../components/CounterfactualCard';
@@ -26,8 +33,7 @@ const AUDIENCE_BLURB: Record<Audience, string> = {
   analyst:  'Operator view + raw artifact JSON for programmatic drill-down.',
 };
 
-
-const Counterfactual: React.FC = () => {
+export default function Counterfactual() {
   const [audience, setAudience] = useState<Audience>('operator');
   const [queryText, setQueryText] = useState(
     JSON.stringify({ ...BASE_QUERY, audience: 'operator' }, null, 2),
@@ -38,7 +44,7 @@ const Counterfactual: React.FC = () => {
   const [running, setRunning] = useState(false);
   const [progress, setProgress] = useState<string>('');
 
-  // Re-emit the textarea body when the user picks a new audience tier
+  // Re-emit the textarea body when the user picks a new audience tier.
   const onAudienceChange = useCallback((next: Audience) => {
     setAudience(next);
     try {
@@ -108,41 +114,26 @@ const Counterfactual: React.FC = () => {
   );
 
   return (
-    <div style={{ padding: 24, maxWidth: 980, margin: '0 auto', display: 'flex', flexDirection: 'column', gap: 16 }}>
+    <div className="flex flex-col gap-3.5" data-testid="wb-counterfactual-panel">
       <div>
-        <h2 style={{ margin: 0 }}>Counterfactual Audit</h2>
-        <p style={{ margin: '4px 0 0', color: 'var(--text-secondary, #94a3b8)', fontSize: 13 }}>
-          Ask a counterfactual question. The engine returns a causally-grounded estimate
-          with adversarial review and a hash-sealed audit reference. Each artifact runs
-          four estimators and four refutation tests; the confidence badge reflects how
-          much they agreed.
+        <h2 className="font-display text-lg font-semibold text-card-foreground">Counterfactual Audit</h2>
+        <p className="mt-1 max-w-2xl text-xs leading-snug text-text-tertiary">
+          Ask a counterfactual question. The engine returns a causally-grounded estimate with
+          adversarial review and a hash-sealed audit reference. Each artifact runs four estimators
+          and four refutation tests; the confidence badge reflects how much they agreed.
         </p>
       </div>
 
-      <fieldset
-        style={{
-          border: '1px solid var(--border, #1e293b)',
-          borderRadius: 6,
-          padding: '8px 12px 12px',
-          margin: 0,
-        }}
-      >
-        <legend style={{ fontSize: 12, color: 'var(--text-secondary, #94a3b8)', padding: '0 6px' }}>
+      <fieldset className="rounded-none border border-border p-3">
+        <legend className="px-1.5 font-mono text-2xs uppercase tracking-widest text-text-tertiary">
           Audience
         </legend>
-        <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap' }}>
+        <div className="flex flex-wrap gap-6">
           {(['operator', 'auditor', 'analyst'] as const).map(a => (
             <label
               key={a}
               data-testid={`audience-${a}`}
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: 8,
-                fontSize: 13,
-                color: 'var(--text-primary, #f1f5f9)',
-                cursor: 'pointer',
-              }}
+              className="flex cursor-pointer items-start gap-2 text-sm text-card-foreground"
             >
               <input
                 type="radio"
@@ -150,13 +141,12 @@ const Counterfactual: React.FC = () => {
                 value={a}
                 checked={audience === a}
                 onChange={() => onAudienceChange(a)}
+                className="mt-0.5 accent-[var(--signal)]"
               />
-              <div>
-                <div style={{ fontWeight: 500 }}>{a}</div>
-                <div style={{ fontSize: 11, color: 'var(--text-secondary, #94a3b8)' }}>
-                  {AUDIENCE_BLURB[a]}
-                </div>
-              </div>
+              <span>
+                <span className="block font-medium capitalize">{a}</span>
+                <span className="block text-2xs text-text-tertiary">{AUDIENCE_BLURB[a]}</span>
+              </span>
             </label>
           ))}
         </div>
@@ -167,57 +157,19 @@ const Counterfactual: React.FC = () => {
         value={queryText}
         onChange={e => setQueryText(e.target.value)}
         spellCheck={false}
-        style={{
-          width: '100%',
-          height: 280,
-          fontFamily: 'monospace',
-          fontSize: 12,
-          background: 'var(--card-bg, #0f172a)',
-          color: 'var(--text-primary, #f1f5f9)',
-          border: '1px solid var(--border, #1e293b)',
-          borderRadius: 6,
-          padding: 12,
-          resize: 'vertical',
-        }}
+        aria-label="Counterfactual query (JSON)"
+        className="h-72 w-full resize-y rounded-none border border-border bg-card p-3 font-mono text-xs text-card-foreground focus:border-signal focus:outline-none"
       />
 
-      <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-        <button
-          type="button"
-          onClick={submit}
-          disabled={running}
-          style={{
-            padding: '8px 16px',
-            borderRadius: 4,
-            border: '1px solid var(--accent, #0284c7)',
-            background: running ? 'var(--bg-muted, #1e293b)' : 'var(--accent, #0284c7)',
-            color: 'white',
-            cursor: running ? 'not-allowed' : 'pointer',
-            opacity: running ? 0.7 : 1,
-          }}
-        >
+      <div className="flex items-center gap-3">
+        <Button type="button" onClick={submit} disabled={running}>
           {running ? 'Running…' : 'Run counterfactual'}
-        </button>
-        {progress && (
-          <span style={{ fontSize: 12, color: 'var(--text-secondary, #94a3b8)' }}>
-            {progress}
-          </span>
-        )}
+        </Button>
+        {progress && <span className="font-mono text-2xs text-text-tertiary">{progress}</span>}
       </div>
 
       {error && (
-        <pre
-          style={{
-            color: '#fca5a5',
-            fontSize: 12,
-            whiteSpace: 'pre-wrap',
-            background: 'rgba(127, 29, 29, 0.2)',
-            padding: 12,
-            borderRadius: 4,
-            border: '1px solid #7f1d1d',
-            margin: 0,
-          }}
-        >
+        <pre className="overflow-x-auto whitespace-pre-wrap rounded-none border border-danger bg-secondary p-3 font-mono text-xs text-danger">
           {error}
         </pre>
       )}
@@ -227,16 +179,7 @@ const Counterfactual: React.FC = () => {
       {recordHash && (
         <div
           data-testid="auditor-actions"
-          style={{
-            display: 'flex',
-            gap: 12,
-            flexWrap: 'wrap',
-            fontSize: 13,
-            padding: 12,
-            border: '1px solid var(--border, #1e293b)',
-            borderRadius: 6,
-            background: 'var(--card-bg, rgba(15, 23, 42, 0.5))',
-          }}
+          className="flex flex-wrap gap-4 rounded-none border border-border bg-card p-3 text-xs"
         >
           {pdfUrl && (
             <a
@@ -244,7 +187,7 @@ const Counterfactual: React.FC = () => {
               target="_blank"
               rel="noopener noreferrer"
               data-testid="download-pdf"
-              style={{ color: 'var(--accent, #38bdf8)', textDecoration: 'underline' }}
+              className="text-info underline underline-offset-2 hover:text-signal"
             >
               ↓ Download PDF report
             </a>
@@ -255,7 +198,7 @@ const Counterfactual: React.FC = () => {
               target="_blank"
               rel="noopener noreferrer"
               data-testid="open-replay-json"
-              style={{ color: 'var(--accent, #38bdf8)', textDecoration: 'underline' }}
+              className="text-info underline underline-offset-2 hover:text-signal"
             >
               ⤴ Open persisted artifact (JSON)
             </a>
@@ -266,7 +209,7 @@ const Counterfactual: React.FC = () => {
               target="_blank"
               rel="noopener noreferrer"
               data-testid="verify-signature"
-              style={{ color: 'var(--accent, #38bdf8)', textDecoration: 'underline' }}
+              className="text-info underline underline-offset-2 hover:text-signal"
             >
               ✓ Verify ED25519 signature
             </a>
@@ -275,6 +218,4 @@ const Counterfactual: React.FC = () => {
       )}
     </div>
   );
-};
-
-export default Counterfactual;
+}
