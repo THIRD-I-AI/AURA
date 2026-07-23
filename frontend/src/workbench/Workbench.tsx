@@ -38,7 +38,7 @@ const NAV_GROUPS: [string, string[]][] = [
   ['DATA', ['Connectors', 'Files & Data', 'Lineage', 'Metadata Store']],
 ];
 
-/* Stubs open the classic app so no existing feature is lost while views are ported. */
+/* Descriptions for platform modules that don't yet have a dedicated inline view. */
 const STUB_DESCS: Record<string, string> = {
   Dashboards: 'Saved-query tiles rendered as live charts (Recharts), workspace-scoped, with presence indicators for collaborators.',
   Library: 'Saved queries and reusable analysis snippets shared across the workspace.',
@@ -54,10 +54,10 @@ const STUB_DESCS: Record<string, string> = {
   'Ask AURA': 'Full-page conversational analytics over your datasets.',
   'Audit Workbench': 'HITL exception review with signed decisions.',
 };
+/* Only modules that live in the terminal cockpit deep-link out; everything else
+   with a registered view renders inline (VIEW_REGISTRY), so no link is shown. */
 const STUB_LINKS: Record<string, string> = {
-  Terminal: '/app/terminal', Pipeline: '/app/terminal?panel=pipeline', Dashboards: '/app', Library: '/app', Certificates: '/app',
-  Scheduler: '/app', Webhooks: '/app', Cost: '/app', Connectors: '/app',
-  'Files & Data': '/app', 'Metadata Store': '/app', 'Audit Workbench': '/app', 'Ask AURA': '/app',
+  Terminal: '/app/terminal', Pipeline: '/app/terminal?panel=pipeline',
 };
 
 const CF_STAGES = [
@@ -452,7 +452,6 @@ export default function Workbench() {
     const all = [
       ...navs.map((n) => ({ title: 'Go to ' + n, hint: 'NAV', run: () => { setNav(n); setPaletteOpen(false); } })),
       { title: 'Run counterfactual audit', hint: 'JOB', run: () => { setNav('Counterfactuals'); setPaletteOpen(false); runCf(); } },
-      { title: 'Open classic app', hint: 'NAV', run: () => { window.location.href = '/app'; } },
       { title: 'Sign out', hint: 'AUTH', run: () => { setView('login'); setPaletteOpen(false); } },
     ];
     return all.filter((c) => c.title.toLowerCase().includes(q)).slice(0, 9);
@@ -779,7 +778,7 @@ export default function Workbench() {
                   </div>
                   {runs.length === 0 && (
                     <div style={{ fontSize: 12, color: 'var(--text3)', lineHeight: 1.6 }}>
-                      No streaming pipelines yet — <a href="/app" style={{ color: 'var(--accent)' }}>create one in the classic app</a> and it appears here.
+                      No streaming pipelines yet — <button type="button" onClick={() => setNav('Pipelines')} className="aw-mono" style={{ background: 'none', border: 'none', padding: 0, color: 'var(--accent)', cursor: 'pointer', font: 'inherit' }}>define one in the Pipelines view</button> and it appears here.
                     </div>
                   )}
                   {runs.length > 0 && <div style={{ border: '1px solid var(--hair)', borderRadius: 0, overflow: 'hidden', fontSize: 11.5 }}>
@@ -854,7 +853,7 @@ export default function Workbench() {
             <div style={{ background: 'var(--surface)', border: '1px dashed var(--border)', borderRadius: 0, padding: 36, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10, textAlign: 'center' }} data-testid="wb-stub">
               <div className="aw-display" style={{ fontWeight: 600, fontSize: 13 }}>{nav}</div>
               <div style={{ fontSize: 12.5, color: 'var(--text2)', maxWidth: 460, lineHeight: 1.6 }}>{STUB_DESCS[nav] || 'Module from the AURA platform.'}</div>
-              <a href={STUB_LINKS[nav] || '/app'} className="aw-mono" style={{ fontSize: 10.5, fontWeight: 600, color: 'var(--accent)', textDecoration: 'none', border: '1px solid var(--accent-bd)', borderRadius: 0, padding: '6px 14px' }}>Open in classic app →</a>
+              {STUB_LINKS[nav] && <a href={STUB_LINKS[nav]} className="aw-mono" style={{ fontSize: 10.5, fontWeight: 600, color: 'var(--accent)', textDecoration: 'none', border: '1px solid var(--accent-bd)', borderRadius: 0, padding: '6px 14px' }}>Open in terminal →</a>}
             </div>
           )}
           </motion.div>
