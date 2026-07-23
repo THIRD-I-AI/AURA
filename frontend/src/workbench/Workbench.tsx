@@ -32,7 +32,7 @@ type Heal = { id: string; title: string; method: string; safe: boolean; sub: str
 type FeedEv = { time: string; k: string; color: string; t: string };
 
 const NAV_GROUPS: [string, string[]][] = [
-  ['WORKSPACE', ['Cockpit', 'Terminal', 'Pipeline', 'Ask AURA', 'Dashboards', 'Library', 'Query History']],
+  ['WORKSPACE', ['Cockpit', 'Ask AURA', 'Dashboards', 'Library', 'Query History']],
   ['AUDIT', ['Audit Workbench', 'Counterfactuals', 'Certificates', 'Exception Queue']],
   ['OPERATE', ['Pipelines', 'Streaming', 'Healing Queue', 'Scheduler', 'Webhooks', 'Cost']],
   ['DATA', ['Connectors', 'Files & Data', 'Lineage', 'Metadata Store']],
@@ -49,15 +49,8 @@ const STUB_DESCS: Record<string, string> = {
   Connectors: 'PostgreSQL · MySQL · BigQuery · DuckDB · FAISS · spatial — credential vault + health checks.',
   'Files & Data': 'Uploads, datasets, and the DuckDB analytics lake with atomic Parquet loads.',
   'Metadata Store': 'Schema registry and catalog the critic validates every generated query against.',
-  Terminal: 'The dockview multi-panel command terminal (S46).',
-  Pipeline: 'Palantir-style live pipeline command deck — the service DAG, streaming logs, and one-click start/stop plus UASR recovery approvals, inside the terminal cockpit.',
   'Ask AURA': 'Full-page conversational analytics over your datasets.',
   'Audit Workbench': 'HITL exception review with signed decisions.',
-};
-/* Only modules that live in the terminal cockpit deep-link out; everything else
-   with a registered view renders inline (VIEW_REGISTRY), so no link is shown. */
-const STUB_LINKS: Record<string, string> = {
-  Terminal: '/app/terminal', Pipeline: '/app/terminal?panel=pipeline',
 };
 
 const CF_STAGES = [
@@ -853,7 +846,6 @@ export default function Workbench() {
             <div style={{ background: 'var(--surface)', border: '1px dashed var(--border)', borderRadius: 0, padding: 36, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10, textAlign: 'center' }} data-testid="wb-stub">
               <div className="aw-display" style={{ fontWeight: 600, fontSize: 13 }}>{nav}</div>
               <div style={{ fontSize: 12.5, color: 'var(--text2)', maxWidth: 460, lineHeight: 1.6 }}>{STUB_DESCS[nav] || 'Module from the AURA platform.'}</div>
-              {STUB_LINKS[nav] && <a href={STUB_LINKS[nav]} className="aw-mono" style={{ fontSize: 10.5, fontWeight: 600, color: 'var(--accent)', textDecoration: 'none', border: '1px solid var(--accent-bd)', borderRadius: 0, padding: '6px 14px' }}>Open in terminal →</a>}
             </div>
           )}
           </motion.div>
