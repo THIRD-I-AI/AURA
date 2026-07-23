@@ -1,5 +1,7 @@
-/* Workbench (Claude Design port) — login → boot → cockpit flow + panel smoke.
-   Panels carry NO dummy data: everything comes from (mocked) real services. */
+/* Workbench (Claude Design port) — boot → cockpit flow + panel smoke.
+   Auth is the real /login upstream (ProtectedRoute); the Workbench itself has
+   no inner login and boots straight in. Panels carry NO dummy data:
+   everything comes from (mocked) real services. */
 import { render, screen, fireEvent, act } from '@testing-library/react';
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 
@@ -37,7 +39,7 @@ vi.mock('./views', () => ({
 }));
 
 import { healingService } from '../services/api';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter, Routes, Route } from 'react-router-dom';
 import Workbench from './Workbench';
 
 beforeEach(() => {
@@ -52,23 +54,35 @@ beforeEach(() => {
 
 const boot = async () => {
   render(<MemoryRouter><Workbench /></MemoryRouter>);
-  fireEvent.click(screen.getByText('Continue with Okta'));
   await act(async () => { vi.advanceTimersByTime(420 * 7); });
 };
 
 describe('Workbench', () => {
-  it('starts at the login screen with the design headline', () => {
+  it('boots straight into the cockpit — there is no inner login screen', async () => {
+    vi.useFakeTimers();
     render(<MemoryRouter><Workbench /></MemoryRouter>);
-    expect(screen.getByTestId('wb-login')).toBeInTheDocument();
-    expect(screen.getByText('Analysis your auditors can replay.')).toBeInTheDocument();
+    // The mock login is gone; ProtectedRoute owns auth one level up, so the
+    // Workbench only ever mounts authenticated and boots directly.
+    expect(screen.queryByTestId('wb-login')).not.toBeInTheDocument();
+    await act(async () => { vi.advanceTimersByTime(420 * 7); });
+    expect(screen.getByTestId('wb-app')).toBeInTheDocument();
+    vi.useRealTimers();
   });
 
-  it('email sign-in calls the REAL auth service; failure shows the error', async () => {
-    vi.mocked((await import('../services/api')).authService.login).mockRejectedValueOnce(new Error('Invalid credentials'));
-    render(<MemoryRouter><Workbench /></MemoryRouter>);
-    fireEvent.change(screen.getByPlaceholderText('you@acme.com'), { target: { value: 'a@b.co' } });
-    fireEvent.click(screen.getByText('Continue'));
-    expect(await screen.findByText('Invalid credentials')).toBeInTheDocument();
+  it('selecting Terminal navigates to the full-screen terminal route', async () => {
+    vi.useFakeTimers();
+    render(
+      <MemoryRouter initialEntries={['/workbench']}>
+        <Routes>
+          <Route path="/workbench" element={<Workbench />} />
+          <Route path="/app/terminal" element={<div data-testid="terminal-route">terminal</div>} />
+        </Routes>
+      </MemoryRouter>,
+    );
+    await act(async () => { vi.advanceTimersByTime(420 * 7); });
+    fireEvent.click(screen.getByText('Terminal'));
+    expect(screen.getByTestId('terminal-route')).toBeInTheDocument();
+    vi.useRealTimers();
   });
 
   it('cockpit renders every board panel from real (mocked) services', async () => {

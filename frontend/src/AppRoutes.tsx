@@ -26,9 +26,13 @@ export function AppRoutes() {
       <Route path="/audit/:jobId" element={<PublicShell><AuditProgress /></PublicShell>} />
       <Route path="/certificate/:hash" element={<PublicShell><CertificatePage /></PublicShell>} />
       <Route path="/verify/:hash" element={<PublicShell><VerifyPage /></PublicShell>} />
-      {/* The Workbench is the one authenticated app — a full-viewport cockpit
-          with its own login/boot flow. */}
-      <Route path="/workbench" element={<Suspense fallback={<div>Loading…</div>}><Workbench /></Suspense>} />
+      {/* The Workbench is the one authenticated app — a full-viewport cockpit.
+          Auth is the real /login (ProtectedRoute); it boots straight in. */}
+      <Route path="/workbench" element={
+        <ProtectedRoute>
+          <Suspense fallback={<div>Loading…</div>}><Workbench /></Suspense>
+        </ProtectedRoute>
+      } />
       {/* Full-viewport terminal cockpit — sibling of the workbench. Must appear
           before /app/* to prevent shadowing. */}
       <Route path="/app/terminal/*" element={
