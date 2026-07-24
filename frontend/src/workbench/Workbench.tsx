@@ -5,12 +5,15 @@
    has the API (Ask AURA → commander SSE, ledger chip → /audit/ledger/verify,
    health + pipelines polled so new state reflects on its own); design seed
    data elsewhere so every panel renders.
-   Additive: the classic /app shell is untouched and reachable from stubs. */
+   The single authenticated app — the real /login gates it (ProtectedRoute), so
+   it boots straight in with one shared session; the classic /app shell is gone. */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { UserMenu } from '../auth/UserMenu';
+import { useAuth } from '../auth/AuthContext';
 import {
   API_BASE_URL,
   analyticsService,
-  authService,
   chatService,
   getAuthToken,
   getCurrentWorkspaceId,
@@ -31,13 +34,13 @@ type Heal = { id: string; title: string; method: string; safe: boolean; sub: str
 type FeedEv = { time: string; k: string; color: string; t: string };
 
 const NAV_GROUPS: [string, string[]][] = [
-  ['WORKSPACE', ['Cockpit', 'Terminal', 'Pipeline', 'Ask AURA', 'Dashboards', 'Library', 'Query History']],
+  ['WORKSPACE', ['Cockpit', 'Terminal', 'Ask AURA', 'Dashboards', 'Library', 'Query History']],
   ['AUDIT', ['Audit Workbench', 'Counterfactuals', 'Certificates', 'Exception Queue']],
   ['OPERATE', ['Pipelines', 'Streaming', 'Healing Queue', 'Scheduler', 'Webhooks', 'Cost']],
   ['DATA', ['Connectors', 'Files & Data', 'Lineage', 'Metadata Store']],
 ];
 
-/* Stubs open the classic app so no existing feature is lost while views are ported. */
+/* Descriptions for platform modules that don't yet have a dedicated inline view. */
 const STUB_DESCS: Record<string, string> = {
   Dashboards: 'Saved-query tiles rendered as live charts (Recharts), workspace-scoped, with presence indicators for collaborators.',
   Library: 'Saved queries and reusable analysis snippets shared across the workspace.',
@@ -48,15 +51,8 @@ const STUB_DESCS: Record<string, string> = {
   Connectors: 'PostgreSQL · MySQL · BigQuery · DuckDB · FAISS · spatial — credential vault + health checks.',
   'Files & Data': 'Uploads, datasets, and the DuckDB analytics lake with atomic Parquet loads.',
   'Metadata Store': 'Schema registry and catalog the critic validates every generated query against.',
-  Terminal: 'The dockview multi-panel command terminal (S46).',
-  Pipeline: 'Palantir-style live pipeline command deck — the service DAG, streaming logs, and one-click start/stop plus UASR recovery approvals, inside the terminal cockpit.',
   'Ask AURA': 'Full-page conversational analytics over your datasets.',
   'Audit Workbench': 'HITL exception review with signed decisions.',
-};
-const STUB_LINKS: Record<string, string> = {
-  Terminal: '/app/terminal', Pipeline: '/app/terminal?panel=pipeline', Dashboards: '/app', Library: '/app', Certificates: '/app',
-  Scheduler: '/app', Webhooks: '/app', Cost: '/app', Connectors: '/app',
-  'Files & Data': '/app', 'Metadata Store': '/app', 'Audit Workbench': '/app', 'Ask AURA': '/app',
 };
 
 const CF_STAGES = [
@@ -83,17 +79,16 @@ type CfState =
   | { status: 'error'; message: string };
 
 export default function Workbench() {
-  /* Single front door: an already-authenticated session (classic login or a
-     restored token) skips the inner login and boots straight to the cockpit. */
-  const [view, setView] = useState<'login' | 'boot' | 'app'>(
-    () => (authService.currentUser?.() ? 'boot' : 'login'),
-  );
+  /* ProtectedRoute guarantees a real authenticated session before this mounts,
+     so there is no inner login — the cockpit boots straight in. */
+  const { logout } = useAuth();
+  const navigate = useNavigate();
+  const [view, setView] = useState<'boot' | 'app'>('boot');
   const [nav, setNav] = useState('Cockpit');
   const [toast, setToast] = useState<string | null>(null);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [navOpen, setNavOpen] = useState(false); // mobile nav drawer (<860px)
   const [paletteQ, setPaletteQ] = useState('');
-  const [loginError, setLoginError] = useState<string | null>(null);
   const [bootIdx, setBootIdx] = useState(0);
   const [audience, setAudience] = useState<'operator' | 'auditor' | 'analyst'>('operator');
   /* NO seeded/dummy data: every panel below starts empty and fills from the
@@ -111,19 +106,8 @@ export default function Workbench() {
   const [pipelines, setPipelines] = useState<Array<{ name: string; status: string }> | null>(null);
   const [gatewayUp, setGatewayUp] = useState<boolean | null>(null);
   const [ledgerDown, setLedgerDown] = useState(false);
-  const [ssoEnabled, setSsoEnabled] = useState(false);
 
-  /* Real enterprise SSO when the deployment configures OIDC; buttons fall
-     back to the demo boot flow otherwise. */
-  useEffect(() => {
-    fetch(`${API_BASE_URL}/auth/oidc/status`)
-      .then((r) => (r.ok ? r.json() : null))
-      .then((j) => setSsoEnabled(Boolean(j?.enabled)))
-      .catch(() => undefined);
-  }, []);
   const chatInput = useRef<HTMLInputElement>(null);
-  const emailInput = useRef<HTMLInputElement>(null);
-  const passInput = useRef<HTMLInputElement>(null);
   const paletteInput = useRef<HTMLInputElement>(null);
   const cfBusy = useRef(false);
 
@@ -276,21 +260,6 @@ export default function Workbench() {
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, []);
-
-  /* Email/password = REAL auth (JWT via /auth/token, same session as the
-     classic app). SSO buttons remain the design's demo path. */
-  const signIn = async () => {
-    const email = emailInput.current?.value.trim() ?? '';
-    const pass = passInput.current?.value ?? '';
-    if (!email || !email.includes('@')) { setLoginError('Enter a valid corporate email address.'); return; }
-    try {
-      await authService.login(email, pass);
-    } catch (e) {
-      setLoginError(e instanceof Error ? e.message : 'Sign-in failed — check your credentials.');
-      return;
-    }
-    setLoginError(null); setBootIdx(0); setView('boot');
-  };
 
   const ask = async () => {
     const q = chatInput.current?.value.trim();
@@ -445,63 +414,24 @@ export default function Workbench() {
   const showHistory = isCockpit;
   const showStub = !isCockpit && !hasView;
 
+  /* Terminal is a full-screen route (a shared authenticated session), not an
+     inline view — selecting it navigates; every other nav mounts inline. */
+  const selectNav = (name: string) => {
+    if (name === 'Terminal') navigate('/app/terminal');
+    else setNav(name);
+  };
+
   const commands = useMemo(() => {
     const q = paletteQ.toLowerCase();
     const navs = NAV_GROUPS.flatMap(([, items]) => items);
     const all = [
-      ...navs.map((n) => ({ title: 'Go to ' + n, hint: 'NAV', run: () => { setNav(n); setPaletteOpen(false); } })),
+      ...navs.map((n) => ({ title: 'Go to ' + n, hint: 'NAV', run: () => { selectNav(n); setPaletteOpen(false); } })),
       { title: 'Run counterfactual audit', hint: 'JOB', run: () => { setNav('Counterfactuals'); setPaletteOpen(false); runCf(); } },
-      { title: 'Open classic app', hint: 'NAV', run: () => { window.location.href = '/app'; } },
-      { title: 'Sign out', hint: 'AUTH', run: () => { setView('login'); setPaletteOpen(false); } },
+      { title: 'Sign out', hint: 'AUTH', run: () => { logout(); setPaletteOpen(false); } },
     ];
     return all.filter((c) => c.title.toLowerCase().includes(q)).slice(0, 9);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [paletteQ]);
-
-  /* ── login ── */
-  if (view === 'login') {
-    return (
-      <div className="aw" data-testid="wb-login">
-        <div className="aw-hero-split" style={{ flex: 1, minHeight: '100vh', display: 'grid', gridTemplateColumns: '1.1fr 1fr' }}>
-          <div className="aw-hero" style={{ padding: '48px 56px', display: 'flex', flexDirection: 'column' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}><span style={{ width: 8, height: 8, background: 'var(--accent)', borderRadius: 0 }} /><span className="aw-display" style={{ fontWeight: 700, fontSize: 15, letterSpacing: '.1em' }}>AURA</span></div>
-            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'center', gap: 22, maxWidth: 520 }}>
-              <div className="aw-display" style={{ fontWeight: 700, fontSize: 44, lineHeight: 1.15 }}>Analysis your auditors can replay.</div>
-              <div style={{ fontSize: 15, color: 'var(--text2)', lineHeight: 1.6 }}>Autonomous agents over mission-critical data — every conclusion signed, every pipeline self-healing.</div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 10, fontSize: 13, color: 'var(--text2)' }}>
-                {['ED25519-signed conclusions · deterministic replay', 'Self-healing streams — Kafka, Postgres, BigQuery (MAPE-K drift repair)', 'Fail-closed auth · PII perimeter masking · WORM audit log'].map((t) => (
-                  <div key={t} style={{ display: 'flex', alignItems: 'center', gap: 9 }}><span style={{ width: 5, height: 5, borderRadius: '50%', background: 'var(--accent)', flex: 'none' }} />{t}</div>
-                ))}
-              </div>
-            </div>
-            <div className="aw-mono" style={{ fontSize: 10, fontWeight: 500, color: 'var(--text3)' }}>{ledger ? `LEDGER ${ledger.no} · ${ledger.intact ? 'CHAIN INTACT' : 'CHAIN CHECK'} · sha256 ${ledger.hash}` : 'ED25519-SIGNED · TAMPER-EVIDENT AUDIT LEDGER'}</div>
-          </div>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 40 }}>
-            <div style={{ width: 380, display: 'flex', flexDirection: 'column', gap: 18 }}>
-              <div>
-                <div className="aw-display" style={{ fontWeight: 700, fontSize: 24 }}>Sign in</div>
-                <div style={{ marginTop: 6, fontSize: 13, color: 'var(--text2)' }}>Use your corporate identity to continue to <strong>acme-corp</strong>.</div>
-              </div>
-              {['Okta', 'Microsoft Entra ID', 'Google Workspace'].map((sso) => (
-                <div key={sso} onClick={() => { if (ssoEnabled) { window.location.href = `${API_BASE_URL}/auth/oidc/login`; } else { setBootIdx(0); setView('boot'); } }} className="aw-hover-accent-bd" style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 10, border: '1px solid var(--border)', borderRadius: 0, padding: '11px 14px', fontSize: 13.5, fontWeight: 600 }}>
-                  <span className="aw-mono" style={{ width: 18, height: 18, display: 'grid', placeItems: 'center', background: 'var(--raised)', borderRadius: 0, fontSize: 9 }}>{sso[0]}</span>
-                  Continue with {sso}
-                </div>
-              ))}
-              <div style={{ display: 'flex', alignItems: 'center', gap: 10, color: 'var(--text3)', fontSize: 11 }}><span style={{ flex: 1, height: 1, background: 'var(--hair)' }} />or with email<span style={{ flex: 1, height: 1, background: 'var(--hair)' }} /></div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-                <label style={{ fontSize: 12, fontWeight: 600 }}>Work email<input ref={emailInput} onKeyDown={(e) => e.key === 'Enter' && signIn()} placeholder="you@acme.com" className="aw-input" style={{ marginTop: 6, width: '100%', boxSizing: 'border-box', padding: '10px 14px', fontSize: 13 }} /></label>
-                <label style={{ fontSize: 12, fontWeight: 600 }}>Password<input ref={passInput} type="password" onKeyDown={(e) => e.key === 'Enter' && signIn()} placeholder="••••••••••••" className="aw-input" style={{ marginTop: 6, width: '100%', boxSizing: 'border-box', padding: '10px 14px', fontSize: 13 }} /></label>
-                {loginError && <div style={{ fontSize: 12, color: 'var(--danger)' }}>{loginError}</div>}
-                <button onClick={signIn} className="aw-btn-accent" style={{ textAlign: 'center', fontSize: 13.5, padding: 12 }}>Continue</button>
-              </div>
-              <div style={{ fontSize: 11, color: 'var(--text3)', lineHeight: 1.6 }}>SSO is enforced for production workspaces. Sessions are JWT-scoped and expire after 12 hours.<br />Trouble signing in? Contact your workspace admin.</div>
-            </div>
-          </div>
-        </div>
-      </div>
-    );
-  }
 
   /* ── boot ── */
   if (view === 'boot') {
@@ -538,7 +468,7 @@ export default function Workbench() {
         <div onClick={() => { setPaletteOpen(true); setTimeout(() => paletteInput.current?.focus(), 30); }} className="aw-mono aw-hover-accent-bd aw-topbar-search" style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 8, fontSize: 11, fontWeight: 500, color: 'var(--text2)', border: '1px solid var(--border)', borderRadius: 0, padding: '5px 10px' }}>
           Search, ask, or run a command <span style={{ background: 'var(--sunken)', borderRadius: 0, padding: '1px 5px' }}>⌘K</span>
         </div>
-        <a href="/app" className="aw-topbar-classic" style={{ fontSize: 11.5, fontWeight: 600, color: 'var(--text2)', border: '1px solid var(--border)', borderRadius: 0, padding: '5px 11px', textDecoration: 'none' }}>Classic app</a>
+        <UserMenu />
       </div>
 
       <div style={{ display: 'flex', flex: 1, minHeight: 0 }}>
@@ -552,8 +482,9 @@ export default function Workbench() {
                 {items.map((name) => {
                   const active = name === nav;
                   const badge = (name === 'Exception Queue' || name === 'Healing Queue') && pendingCount > 0 ? String(pendingCount) : null;
+                  const goNav = () => { selectNav(name); setNavOpen(false); };
                   return (
-                    <div key={name} onClick={() => { setNav(name); setNavOpen(false); }} className="aw-nav-item" style={{ color: active ? 'var(--text)' : 'var(--text2)', background: active ? 'var(--accent-dim)' : 'transparent', fontWeight: active ? 600 : 400 }}>
+                    <div key={name} role="button" tabIndex={0} aria-current={active ? 'page' : undefined} onClick={goNav} onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); goNav(); } }} className="aw-nav-item" style={{ color: active ? 'var(--text)' : 'var(--text2)', background: active ? 'var(--accent-dim)' : 'transparent', fontWeight: active ? 600 : 400 }}>
                       <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>{active && <span style={{ width: 5, height: 5, borderRadius: '50%', background: 'var(--accent)' }} />}{name}</span>
                       {badge && <span className="aw-mono" style={{ fontSize: 9.5, fontWeight: 600, color: 'var(--warn)', background: 'var(--warn-dim)', borderRadius: 0, padding: '1px 6px' }}>{badge}</span>}
                     </div>
@@ -774,7 +705,7 @@ export default function Workbench() {
                   </div>
                   {runs.length === 0 && (
                     <div style={{ fontSize: 12, color: 'var(--text3)', lineHeight: 1.6 }}>
-                      No streaming pipelines yet — <a href="/app" style={{ color: 'var(--accent)' }}>create one in the classic app</a> and it appears here.
+                      No streaming pipelines yet — <button type="button" onClick={() => setNav('Pipelines')} className="aw-mono" style={{ background: 'none', border: 'none', padding: 0, color: 'var(--accent)', cursor: 'pointer', font: 'inherit' }}>define one in the Pipelines view</button> and it appears here.
                     </div>
                   )}
                   {runs.length > 0 && <div style={{ border: '1px solid var(--hair)', borderRadius: 0, overflow: 'hidden', fontSize: 11.5 }}>
@@ -849,7 +780,6 @@ export default function Workbench() {
             <div style={{ background: 'var(--surface)', border: '1px dashed var(--border)', borderRadius: 0, padding: 36, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10, textAlign: 'center' }} data-testid="wb-stub">
               <div className="aw-display" style={{ fontWeight: 600, fontSize: 13 }}>{nav}</div>
               <div style={{ fontSize: 12.5, color: 'var(--text2)', maxWidth: 460, lineHeight: 1.6 }}>{STUB_DESCS[nav] || 'Module from the AURA platform.'}</div>
-              <a href={STUB_LINKS[nav] || '/app'} className="aw-mono" style={{ fontSize: 10.5, fontWeight: 600, color: 'var(--accent)', textDecoration: 'none', border: '1px solid var(--accent-bd)', borderRadius: 0, padding: '6px 14px' }}>Open in classic app →</a>
             </div>
           )}
           </motion.div>

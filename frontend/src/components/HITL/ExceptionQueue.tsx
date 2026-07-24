@@ -8,10 +8,15 @@
  * auditor/admin bearer token; in open auth mode we self-provision one. The
  * auditor's identity is never sent in the body — the backend binds it to the
  * verified JWT's `sub` claim (anti-impersonation, fail-closed).
+ *
+ * Native shadcn/ui + Tailwind (frontend/CLAUDE.md): ui-kit primitives + token
+ * utilities, no inline styles.
  */
 import { useCallback, useEffect, useState } from 'react';
-import Card, { CardHeader, CardBody } from '../ui/Card';
-import Button from '../ui/Button';
+
+import { Panel, PanelHeader, PanelBody } from '@/components/ui-kit/panel';
+import { Button } from '@/components/ui-kit/button';
+import { cn } from '@/lib/cn';
 import {
   financialAuditService,
   type AuditFinding,
@@ -20,24 +25,21 @@ import {
 } from '../../services/api';
 import { SAMPLE_AUDIT_BATCH } from '../../audit/sampleAuditBatch';
 
-const RISK_COLORS: Record<string, string> = {
-  Critical: 'var(--error, #ef4444)',
-  High: 'var(--warning, #f59e0b)',
-  Medium: 'var(--accent, #6366f1)',
-  Low: 'var(--text-tertiary, #9ca3af)',
+const RISK_TONE: Record<string, string> = {
+  Critical: 'border-danger text-danger',
+  High: 'border-warn text-warn',
+  Medium: 'border-info text-info',
+  Low: 'border-border text-text-tertiary',
 };
 
 function RiskBadge({ level }: { level: string }) {
   return (
-    <span style={{
-      fontSize: 'var(--font-xs, 12px)',
-      fontWeight: 600,
-      color: RISK_COLORS[level] || 'var(--text-secondary)',
-      border: `1px solid ${RISK_COLORS[level] || 'var(--border-default)'}`,
-      borderRadius: 'var(--radius-full, 999px)',
-      padding: '2px 10px',
-      whiteSpace: 'nowrap',
-    }}>
+    <span
+      className={cn(
+        'shrink-0 whitespace-nowrap border px-2 py-0.5 font-mono text-2xs font-semibold uppercase tracking-wider',
+        RISK_TONE[level] ?? 'border-border text-text-secondary',
+      )}
+    >
       {level} risk
     </span>
   );
@@ -105,126 +107,109 @@ export function ExceptionQueue() {
   }, []);
 
   return (
-    <div style={{ display: 'grid', gap: 'var(--space-5, 20px)' }}>
-      <Card>
-        <CardHeader
-          title="PCAOB AS 1215 Exception Review"
-          subtitle="Every AI finding below requires documented human judgment. Decisions are ED25519-signed and chained into the WORM audit log."
-        />
-        <CardBody>
-          <div style={{ display: 'flex', gap: 'var(--space-3, 12px)', alignItems: 'center', flexWrap: 'wrap' }}>
-            <Button onClick={runSampleAudit} disabled={busy} variant="primary">
+    <div className="flex flex-col gap-5">
+      <Panel>
+        <PanelHeader title="PCAOB AS 1215 Exception Review" />
+        <PanelBody className="flex flex-col gap-3">
+          <p className="max-w-2xl text-xs leading-snug text-text-tertiary">
+            Every AI finding below requires documented human judgment. Decisions are
+            ED25519-signed and chained into the WORM audit log.
+          </p>
+          <div className="flex flex-wrap items-center gap-3">
+            <Button onClick={runSampleAudit} disabled={busy}>
               {busy ? 'Working…' : 'Run sample financial audit'}
             </Button>
             {report && (
-              <span style={{ fontSize: 'var(--font-sm, 13px)', color: 'var(--text-secondary)' }}>
-                Report <code>{report.record_hash.slice(0, 12)}…</code> · {report.signature_status} ·{' '}
+              <span className="text-sm text-text-secondary">
+                Report <code className="font-mono">{report.record_hash.slice(0, 12)}…</code> · {report.signature_status} ·{' '}
                 {verified === null ? 'verifying…' : verified ? '✓ signature verified' : '✗ VERIFICATION FAILED'}
               </span>
             )}
           </div>
           {error && (
-            <p role="alert" style={{ color: 'var(--error, #ef4444)', marginTop: 'var(--space-3, 12px)' }}>
+            <p role="alert" className="border border-danger bg-secondary px-3 py-1.5 font-mono text-xs text-danger">
               {error}
             </p>
           )}
           {lastDecisionHash && (
-            <p style={{ color: 'var(--success, #22c55e)', fontSize: 'var(--font-sm, 13px)', marginTop: 'var(--space-2, 8px)' }}>
+            <p className="font-mono text-xs text-signal">
               Decision recorded as signed HumanOverrideRecord <code>{lastDecisionHash.slice(0, 12)}…</code>
             </p>
           )}
-        </CardBody>
-      </Card>
+        </PanelBody>
+      </Panel>
 
       {queue && (
-        <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr)', gap: 'var(--space-5, 20px)' }}>
-          <Card>
-            <CardHeader
-              title={`Pending exceptions (${queue.n_pending})`}
-              subtitle={`${queue.n_decided} decided · PII shown as deterministic tokens or [REDACTED]`}
-            />
-            <CardBody>
+        <div className="grid grid-cols-1 gap-5 md:grid-cols-2">
+          <Panel>
+            <PanelHeader title={`Pending exceptions (${queue.n_pending})`} />
+            <PanelBody className="flex flex-col gap-3">
+              <p className="font-mono text-2xs text-text-tertiary">
+                {queue.n_decided} decided · PII shown as deterministic tokens or [REDACTED]
+              </p>
               {queue.pending.length === 0 && (
-                <p style={{ color: 'var(--success, #22c55e)' }}>
+                <p className="text-sm text-signal">
                   All exceptions cleared — the engagement file is complete.
                 </p>
               )}
-              <div style={{ display: 'grid', gap: 'var(--space-3, 12px)' }}>
+              <div className="flex flex-col gap-3">
                 {queue.pending.map((f) => (
                   <button
                     key={f.finding_id}
                     onClick={() => setSelected(f)}
-                    style={{
-                      textAlign: 'left',
-                      cursor: 'pointer',
-                      background: selected?.finding_id === f.finding_id ? 'var(--bg-elevated, #1f2230)' : 'var(--bg-surface)',
-                      border: `1px solid ${selected?.finding_id === f.finding_id ? 'var(--accent)' : 'var(--border-default)'}`,
-                      borderRadius: 'var(--radius-lg, 12px)',
-                      padding: 'var(--space-4, 16px)',
-                      color: 'var(--text-primary)',
-                    }}
+                    className={cn(
+                      'flex flex-col gap-2 rounded-none border p-4 text-left transition-colors',
+                      selected?.finding_id === f.finding_id
+                        ? 'border-signal bg-secondary'
+                        : 'border-border bg-card hover:bg-accent',
+                    )}
                   >
-                    <div style={{ display: 'flex', justifyContent: 'space-between', gap: 'var(--space-3, 12px)' }}>
-                      <strong style={{ color: 'var(--accent)' }}>{f.pcaob_standard}</strong>
+                    <div className="flex items-start justify-between gap-3">
+                      <span className="font-mono text-sm font-semibold text-signal">{f.pcaob_standard}</span>
                       <RiskBadge level={f.risk_level} />
                     </div>
-                    <p style={{ margin: 'var(--space-2, 8px) 0 0', fontSize: 'var(--font-sm, 13px)' }}>{f.description}</p>
+                    <p className="text-sm text-text-secondary">{f.description}</p>
                   </button>
                 ))}
               </div>
-            </CardBody>
-          </Card>
+            </PanelBody>
+          </Panel>
 
-          <Card>
-            <CardHeader title="Review finding" subtitle="AS 1215 contradiction record — rationale is mandatory" />
-            <CardBody>
-              {!selected && <p style={{ color: 'var(--text-tertiary)' }}>Select a pending exception to review.</p>}
+          <Panel>
+            <PanelHeader title="Review finding" />
+            <PanelBody className="flex flex-col gap-3">
+              <p className="font-mono text-2xs text-text-tertiary">
+                AS 1215 contradiction record — rationale is mandatory
+              </p>
+              {!selected && <p className="text-sm text-text-tertiary">Select a pending exception to review.</p>}
               {selected && (
-                <div style={{ display: 'grid', gap: 'var(--space-3, 12px)' }}>
-                  <p style={{ margin: 0 }}>{selected.description}</p>
-                  <pre style={{
-                    margin: 0,
-                    fontSize: 'var(--font-xs, 12px)',
-                    background: 'var(--bg-elevated, #1f2230)',
-                    border: '1px solid var(--border-default)',
-                    borderRadius: 'var(--radius-md, 8px)',
-                    padding: 'var(--space-3, 12px)',
-                    overflowX: 'auto',
-                  }}>
+                <div className="flex flex-col gap-3">
+                  <p className="text-sm text-card-foreground">{selected.description}</p>
+                  <pre className="overflow-x-auto rounded-none border border-border bg-secondary p-3 font-mono text-2xs text-text-secondary">
                     {JSON.stringify(selected.evidence_payload, null, 2)}
                   </pre>
-                  <label style={{ fontSize: 'var(--font-sm, 13px)', color: 'var(--text-secondary)' }}>
+                  <label className="flex flex-col gap-2 text-sm text-text-secondary">
                     Auditor rationale
                     <textarea
                       value={rationale}
                       onChange={(e) => setRationale(e.target.value)}
                       rows={4}
                       placeholder="Explain why you are approving or overriding this AI finding…"
-                      style={{
-                        display: 'block',
-                        width: '100%',
-                        marginTop: 'var(--space-2, 8px)',
-                        background: 'var(--bg-surface)',
-                        color: 'var(--text-primary)',
-                        border: '1px solid var(--border-default)',
-                        borderRadius: 'var(--radius-md, 8px)',
-                        padding: 'var(--space-3, 12px)',
-                        resize: 'vertical',
-                      }}
+                      className="w-full resize-y rounded-none border border-border bg-card p-3 text-sm text-card-foreground focus:border-signal focus:outline-none"
                     />
                   </label>
-                  <div style={{ display: 'flex', gap: 'var(--space-3, 12px)' }}>
-                    <Button variant="success" disabled={busy || !rationale.trim()} onClick={() => submitDecision(true)}>
+                  <div className="flex gap-3">
+                    <Button disabled={busy || !rationale.trim()} onClick={() => submitDecision(true)}>
                       Approve AI finding
                     </Button>
-                    <Button variant="danger" disabled={busy || !rationale.trim()} onClick={() => submitDecision(false)}>
+                    <Button variant="destructive" disabled={busy || !rationale.trim()} onClick={() => submitDecision(false)}>
                       Override AI finding
                     </Button>
                   </div>
                 </div>
               )}
-            </CardBody>
-          </Card>
+            </PanelBody>
+          </Panel>
         </div>
       )}
     </div>

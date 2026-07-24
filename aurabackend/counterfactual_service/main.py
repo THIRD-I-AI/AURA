@@ -97,19 +97,55 @@ def load_persisted_demo_artifacts() -> int:
 
     Instant + CPU-free — safe to call from the gateway's startup. Returns the
     number of scenarios loaded. Missing dir / files is fine (returns 0): the
-    deploy just hasn't run warm_demos yet."""
+    deploy just hasn't run warm_demos yet.
+
+    Boundary check (enterprise trust): a persisted artifact signed with a key
+    the running process no longer holds renders "✓ SIGNED" on the certificate
+    page yet fails ``/verify`` — a silent trust contradiction. Rather than
+    serve that, re-verify each *signed* artifact against the CURRENT key here
+    and refuse to cache any that don't verify. The demo endpoint then returns
+    an honest 503 ("run warm_demos") instead of a signed-but-unverifiable
+    certificate. Uses the same strip_for_hashing/verify path as verify_artifact
+    so the check can't drift from the real verification."""
     n = 0
+    skipped = 0
     if not _DEMO_ARTIFACT_DIR.exists():
         return 0
+    from .canonical import canonical_dumps
+    from .engine import strip_for_hashing
     for p in _DEMO_ARTIFACT_DIR.glob("*.json"):
         try:
             with open(p, encoding="utf-8") as fh:
-                _demo_last_good[p.stem] = json.load(fh)
-            n += 1
+                art = json.load(fh)
         except (OSError, ValueError) as exc:
             logger.warning("could not load demo artifact %s: %s", p.name, exc)
+            continue
+        sig_b64 = art.get("signature_b64")
+        if art.get("signature_status") == "signed" and sig_b64:
+            try:
+                payload_bytes = canonical_dumps(strip_for_hashing(art)).encode("utf-8")
+                verified = signing.verify_bytes(payload_bytes, sig_b64)
+            except Exception as exc:  # a malformed artifact must never crash startup
+                verified = False
+                logger.error("demo artifact %s failed signature re-check (%s)", p.name, exc)
+            if not verified:
+                skipped += 1
+                logger.error(
+                    "demo artifact %s claims signed but does NOT verify against the current "
+                    "signing key (source=%s) — refusing to cache. Re-run "
+                    "`python -m counterfactual_service.warm_demos` with the deployed key.",
+                    p.name, signing.signing_key_source(),
+                )
+                continue
+        _demo_last_good[p.stem] = art
+        n += 1
     if n:
         logger.info("loaded %d pre-computed demo artifact(s) from %s", n, _DEMO_ARTIFACT_DIR)
+    if skipped:
+        logger.error(
+            "%d demo artifact(s) skipped (signature mismatch) — those scenarios will 503 until re-warmed",
+            skipped,
+        )
     return n
 
 

@@ -2,366 +2,289 @@
 
 # AURA
 
-### Auditable Causal Analytics Platform for Global Enterprise
+### Auditable Causal Analytics Platform
 
-**A microservices platform where autonomous AI agents operate over mission-critical data — every decision cryptographically signed, deterministically replayable, statistically guaranteed, and running on pipelines that heal themselves when upstream data drifts.**
-
-📍 **New here? Start with the [Repository Map](docs/REPO_MAP.md)** — what every directory and service is, and where to find things.
-
-[![CI](https://github.com/THIRD-I-AI/AURA/actions/workflows/ci.yml/badge.svg)](https://github.com/THIRD-I-AI/AURA/actions/workflows/ci.yml)
-[![Python 3.11+](https://img.shields.io/badge/python-3.11+-3776AB?logo=python&logoColor=white)](https://www.python.org/downloads/)
-[![TypeScript](https://img.shields.io/badge/TypeScript-5.9-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-
-[Architecture](#architecture) · [Self-Healing Pipelines](#self-healing-pipelines-uasr) · [Audit Engine](#the-audit-engine) · [Financial Audit](#signed-financial-audits-pcaob) · [Security](#enterprise-security-posture) · [Getting Started](#getting-started) · [Deployment](./docs/DEPLOYMENT.md) · [Enterprise Guide](./ENTERPRISE.md) · [Investor Demo](./docs/INVESTOR_DEMO.md)
+**Ask questions about your data in plain English and get causally-grounded, cryptographically-signed, replayable answers.** AURA is a FastAPI microservices platform fronted by a single API gateway, driven by a React cockpit. Natural-language questions become verified SQL; causal and forensic-financial audits are ED25519-signed and appended to a tamper-evident ledger; and the streaming ingestion plane heals itself when upstream data drifts.
 
 </div>
 
 ---
 
-## Why AURA Exists
+## Table of contents
 
-Traditional "AI agent platforms" treat AI as a synchronous chat wrapper. That model fails under the throughput, safety, and governance demands of mission-critical data systems for predictable reasons:
+- [What AURA does](#what-aura-does)
+- [Key features](#key-features)
+- [Architecture](#architecture)
+- [How a query flows end-to-end](#how-a-query-flows-end-to-end)
+- [Tech stack](#tech-stack)
+- [Getting started (run it locally)](#getting-started-run-it-locally)
+- [Auth model](#auth-model)
+- [Repository layout](#repository-layout)
+- [Testing](#testing)
+- [Further reading](#further-reading)
 
-1. **Their pipelines are brittle to upstream drift** — one schema rename and the corporate metrics go stale until an on-call engineer triages.
-2. **Their LLM outputs are unverified** — a generated SQL query is trusted because it parses, not because it's right.
-3. **Their AI decisions are unauditable** — regulators can't reconstruct which model touched which record, with which evidence, under which threshold.
-4. **Their "compliance" is cosmetic** — PII handling, auth, and audit trails bolted on after the fact, silently bypassable.
+---
 
-AURA is architected for the production shape that defeats those wrappers: a conversational analytics plane for operators, a **causal + financial audit engine** that signs everything it concludes, and a **self-healing streaming plane (UASR)** that keeps data flowing when upstream systems change underneath it.
+## What AURA does
+
+Traditional "chat with your data" tools trust an LLM's SQL because it parses, produce answers nobody can reconstruct later, and break the moment an upstream column is renamed. AURA is built around three ideas that fix those failure modes:
+
+1. **Verified answers, not just generated ones.** Generated SQL is executed against a real engine (DuckDB), critiqued by a second agent, and (for causal work) cross-checked by an independent computational paradigm.
+2. **Everything consequential is signed.** Causal audits and forensic financial audits are serialized to canonical JSON, hashed (SHA-256), signed (ED25519), and appended to a hash-chained ledger with a Merkle root — so a decision can be replayed and independently verified.
+3. **The data plane heals itself.** The UASR self-healing worker watches ingestion for schema/statistical/semantic drift and synthesizes just-in-time repair shims (with an optional human approval gate) instead of letting pipelines silently produce wrong numbers.
+
+The whole platform is delivered as one authenticated web app — the **Workbench cockpit** — plus a public audit front door where anyone can verify a signed certificate by its hash.
+
+---
+
+## Key features
+
+- **Natural-language → SQL commander.** `POST /api/v1/chat` classifies intent (conversation / SQL / pipeline / audit), builds a live schema context from your uploaded datasets, generates SQL through an LLM, executes it on DuckDB, and returns rows plus a chart suggestion and narrative. An optional agentic **Commander** streaming loop (`POST /api/v1/chat/stream`, behind the `AURA_COMMANDER_ENABLED` flag) exposes the same capability as a tool-calling agent over Server-Sent Events.
+- **Causal / counterfactual audit engine.** Multiple treatment-effect estimators (linear regression, IPW, PSM, double-ML, forest-DR, TMLE, IV-2SLS) run behind `POST /api/v1/counterfactual/jobs`, paired with refuters, sensitivity analysis (E-values), an adversarial LLM critic, and a canonical significance verdict. Results are signed and replayable byte-for-byte.
+- **Forensic financial audit.** `POST /api/v1/counterfactual/audit/financial` (and a one-click `.../financial/demo`) runs PCAOB-aligned techniques — Benford's-law first-digit analysis and duplicate/round-number detection (AS 2401), three-way match / segregation-of-duties (AS 2201), and expectation/outlier analytics (AS 2305) — emits findings, and produces a signed AS 1215 completion document. Findings needing review land in a human-in-the-loop exception queue where approve/reject decisions are themselves signed.
+- **Tamper-evident audit ledger.** Signed artifacts are chained; `GET /api/v1/counterfactual/audit/ledger/verify` returns the record count, Merkle root, and an `ok` integrity flag. The cockpit degrades honestly to "LEDGER CHAIN BROKEN" if verification fails.
+- **Self-healing streaming (UASR / MAPE-K).** The UASR service (`:8009`) detects schema, statistical (KL-divergence), and semantic drift on incoming micro-batches, then diagnoses and synthesizes repair shims. A supervised mode routes proposals to a **Healing Queue** for signed human approval (`/api/v1/uasr/recovery/pending|approve|reject`).
+- **ETL + streaming pipeline builders.** Build batch ETL pipelines (`/api/v1/etl/*`, `/api/v1/pipeline/*`) or windowed streaming pipelines (`/api/v1/streaming/*`) — including from a natural-language instruction — with sources/sinks/transforms rendered from backend schemas.
+- **Multi-tenant SaaS auth.** JWT-based login carries an `org_id` tenant claim taken from the verified token (never a request header); every data store is scoped to it when JWT enforcement is on.
+- **Two authenticated surfaces.** The **Workbench** cockpit (dense board + ⌘K palette + live System Radar) and the **Terminal** cockpit (a dockview panel grid with a Constellation lineage graph built on React Flow).
+- **Operational plumbing.** Dashboards, saved-query library with schedules and share links, data lineage (sqlglot), outbound/inbound webhooks, LLM cost/token accounting, and a unified `/system/health` aggregator.
 
 ---
 
 ## Architecture
 
-Thirteen FastAPI microservices, each instantiated through one standardized `create_service()` chassis (uniform JWT auth, rate limiting, security headers, Prometheus hooks, request-ID tracing). The frontend connects only through the API Gateway.
+Every microservice is built through one `create_service()` chassis (`aurabackend/shared/service_factory.py`), which uniformly wires CORS, rate limiting, optional JWT/API-key middleware, request-ID tracing, security headers, an optional TRAIGA audit-log middleware, Prometheus metrics, optional OpenTelemetry, and a standard `GET /health`. **The frontend talks only to the API gateway**, which mounts every domain router under `/api/v1` and aggregates per-service health at `/system/health`.
+
+Notably, several capabilities described as "services" run **in-process inside the gateway** rather than as separate uvicorn processes: the counterfactual/financial-audit engine (`counterfactual_service`, mounted via `api_gateway/routers/counterfactual.py`), the agentic chat/commander loop (`agents/`), the ETL/streaming pipeline engines (`pipeline/`), and the evolution engine (`evolution/`). The nine processes launched by `start_all.ps1` are the ones below.
 
 ```mermaid
 flowchart TB
-    USER["Browser / Python SDK / CLI / curl"]
-    FE["Frontend — React 19 + Vite (5173)<br/>Chat · Dashboards · Audit Workbench"]
-    GW["API Gateway (8000)<br/>JWT auth · rate limit · SSE streaming · TRAIGA audit middleware"]
+    USER["Browser · curl · Python SDK"]
+    FE["Frontend — React 19 + Vite (:5173)<br/>Workbench cockpit · Terminal · public audit front door"]
+    GW["API Gateway (:8010)<br/>/api/v1 routers · JWT auth · SSE · /system/health<br/>IN-PROCESS: counterfactual + financial audit,<br/>commander agents, ETL/streaming engines, evolution"]
 
     USER --> FE --> GW
 
-    subgraph PLANE1["Conversational analytics plane"]
-        CG["Code-Gen (8001)<br/>NL→SQL + DPC cross-check"]
-        ORCH["Orchestration (8006)<br/>generator / critic loop"]
-        INS["Insights (8005)"]
-        SBX["Execution Sandbox (8003)<br/>isolated compute"]
-        CONN["Connectors (8002)<br/>PG · MySQL · BQ · DuckDB · FAISS · spatial"]
-        MET["Metadata Store (8007)"]
-        SCH["Scheduler (8004)<br/>distributed queue, LISTEN/NOTIFY"]
-    end
-
-    subgraph PLANE2["Causal + financial audit plane"]
-        CF["Counterfactual Audit Engine (8012)<br/>7 estimators × 4 refuters × adversarial critic<br/>ED25519 signing · conformal CIs · E-values"]
-        CAUS["Causal Service (8010)<br/>DoWhy GCM root-cause"]
-        DAR["DAR (8011)<br/>autonomous research daemon"]
-        HITL["HITL Exception Queue<br/>signed human overrides, WORM log"]
-        CF --- HITL
-    end
-
-    subgraph PLANE3["Streaming + self-healing plane"]
-        ING["Ingestion Service<br/>ERP adapters (NetSuite, Workday)<br/>fail-closed auth · PII perimeter masking"]
-        KAF[("Kafka<br/>idempotent producer + DLQ")]
-        UASR["UASR (8009)<br/>MAPE-K self-healing worker"]
-        LAKE[("DuckDB analytics lake<br/>atomic Parquet loads")]
-        ING --> KAF --> UASR --> LAKE
+    subgraph SVCS["Backend microservices (start_all.ps1)"]
+        CG["Code Generation (:8011)<br/>NL plan-step → SQL via llm_provider"]
+        CONN["Connectors / Vault (:8002)<br/>PostgreSQL · MySQL · BigQuery · DuckDB"]
+        SBX["Execution Sandbox (:8003)<br/>isolated SQL execution"]
+        SCH["Scheduler (:8004)<br/>distributed job queue"]
+        INS["Insights (:8005)<br/>charts + narratives"]
+        ORCH["Orchestration (:8006)<br/>generator ⇄ critic agent loop"]
+        MET["Metadata Store (:8007)<br/>users + schema catalog"]
+        UASR["UASR (:8009)<br/>MAPE-K self-healing worker"]
     end
 
     GW --> CG
-    GW --> ORCH
-    GW --> INS
-    GW --> SBX
     GW --> CONN
-    GW --> MET
+    GW --> SBX
     GW --> SCH
-    GW --> CF
-    GW --> ING
-    CF --- CAUS
-    CF --- DAR
-    CONN -.-> LAKE
+    GW --> INS
+    GW --> ORCH
+    GW --> MET
+    GW --> UASR
+
+    PG[("PostgreSQL — aura_vault<br/>(+ SQLite for gateway/scheduler/metadata in dev)")]
+    DUCK[("DuckDB<br/>per-tenant analytics lake / query execution")]
+    LLM["LLM providers<br/>Groq · Gemini · Ollama · OpenAI"]
+
+    GW -.-> PG
+    GW -.-> DUCK
+    CONN -.-> PG
+    SBX -.-> DUCK
+    CG -.-> LLM
+    ORCH -.-> LLM
+    GW -.-> LLM
 ```
 
-**Cross-cutting infrastructure:** TRAIGA hash-chained audit log with RFC 6962 Merkle tree + signed tree heads + inclusion proofs; ED25519 artifact signing with key revocation; HMAC-keyed PII tokenization; Aura Vault for connector secrets; in-process pub/sub streaming bus; outbound HMAC-signed webhooks; 11 auto-generated typed SDK clients kept byte-stable by CI.
+### Services and ports
+
+| Service | Port | Uvicorn target | Responsibility |
+|---|---|---|---|
+| **API Gateway** | 8010 | `api_gateway.main:app` | Single entry point. Mounts every `/api/v1` router (chat, files, connections, queries, dashboards, lineage, etl, pipelines, streaming, webhooks, counterfactual, auth, workspaces, approvals…). Runs the counterfactual/financial-audit engine and commander agents in-process. Aggregates `/system/health`; broadcasts SSE. |
+| **Code Generation** | 8011 | `code_generation_service.main:code_gen_app` | Turns a plan step into a PostgreSQL query via `shared/llm_provider`; fails loud (503/502) when no LLM is configured. |
+| **Connectors / Vault** | 8002 | `connectors.main:app` | External data-source connections (PostgreSQL, MySQL, BigQuery, DuckDB) plus a connector registry the UI renders generically. Reported as `database_service` in health. |
+| **Execution Sandbox** | 8003 | `execution_sandbox_service.main:execution_app` | Isolated SQL execution service. |
+| **Scheduler** | 8004 | `scheduler_service.main:scheduler_app` | Distributed job queue / cron-style schedules for saved queries and pipelines. |
+| **Insights** | 8005 | `insights_service.main:app` | Auto-generates insights, chart specs, and narratives from query results. |
+| **Orchestration** | 8006 | `orchestration_service.main:app` | Generator ⇄ Critic agent loop (`TinyRecursiveCoordinator`, MCP tool descriptors). |
+| **Metadata Store** | 8007 | `metadata_store.main:metadata_app` | Users table (auth backing store) and schema registry / catalog. |
+| **UASR** | 8009 | `uasr.service:app` | Self-healing MAPE-K worker: drift detection, recovery shims, `Hᵤ` healing metrics. |
+
+`GET /system/health` on the gateway polls seven of these plus itself, so a fully-up stack reports **8 healthy services** (the orchestration service on 8006 is not part of the health roll-up).
 
 ---
 
-## Self-Healing Pipelines (UASR)
+## How a query flows end-to-end
 
-**The problem.** Enterprises lose enormous operational velocity to upstream drift: a renamed column, a type change, a regional date format, a vendor switching units. Downstream pipelines crash or — worse — silently produce wrong numbers until someone notices.
+Tracing a plain-English question through the code (`aurabackend/api_gateway/routers/chat.py`):
 
-**Where UASR sits.** The Universal Agentic Semantic Recovery module (`aurabackend/uasr/`) sits **between the Kafka spine and the analytics lake**. Every micro-batch flowing toward DuckDB passes through its MAPE-K (Monitor–Analyze–Plan–Execute–Knowledge) loop. Nothing reaches the lake unexamined; nothing drifted reaches the lake unhealed.
+1. **Frontend → gateway.** The Workbench/Terminal calls `POST /api/v1/chat` (or streams `POST /api/v1/chat/stream`) via `frontend/src/services/api.ts`, with the bearer token and an `X-Workspace-Id` header on every request.
+2. **Schema context.** The gateway opens a per-tenant DuckDB connection, loads that workspace's uploaded datasets, and builds a schema context (columns, types, sample data, relationships), trimming to a token budget when needed.
+3. **Intent classification.** `IntentAgent` labels the message `conversation`, `sql`, `pipeline`, or `audit`. Conversational replies short-circuit; `pipeline` builds and saves a real ETL pipeline; `audit` runs the forensic auditor on the dataset's monetary column and returns a signed certificate.
+4. **NL → SQL.** For `sql` intent, `run_orchestrator` (a LangGraph flow) generates SQL — the code-generation path is LLM-backed through `shared/llm_provider` (Groq → Gemini → Ollama → OpenAI auto-detection with fallback + response caching), and a critic reviews it. AURA also ships DPC (Dual-Paradigm Cross-check) that independently re-solves a query with a sandboxed pandas program to confirm the SQL result.
+5. **Execution.** The SQL runs on DuckDB; rows, columns, an optional chart spec, and a conclusion are collected into the typed response. Errors are humanized (rate-limit / no-LLM / execution messages) rather than leaked verbatim.
+6. **Persistence + signing.** The query is recorded in tenant-scoped history. For audits, the completion document is built, ED25519-signed, and persisted to the ledger (`counterfactual_service.financial_report.sign_and_persist`); the UI can then open `/verify/<hash>` to check the signature independently.
 
-```mermaid
-flowchart TB
-    subgraph SOURCES["Upstream sources UASR watches"]
-        ERP["ERP ingestion<br/>(NetSuite / Workday adapters)"]
-        ETL["ETL + streaming connectors"]
-        API["Direct micro-batches<br/>POST /uasr/ingest"]
-    end
-
-    KAFKA[("Kafka topic<br/>aura.uasr.events")]
-    ERP --> KAFKA
-    ETL --> KAFKA
-
-    subgraph MAPEK["MAPE-K worker — uasr/mapek_worker.py"]
-        MON["MONITOR<br/>poll Kafka, micro-batch<br/>(200 rows / 5 s window)"]
-        ANA["ANALYZE — four watch points<br/>1. schema drift  2. KL-divergence drift<br/>3. semantic drift  4. Wasserstein martingale"]
-        PLAN["PLAN — RecoveryLoop<br/>Reflector agent diagnoses root cause →<br/>Actuator agent synthesizes a JIT shim (LLM)"]
-        EXE["EXECUTE<br/>sandbox-validate shim (must cut KL to nominal)<br/>→ deploy: pause/replay OR canary-route"]
-        KNO["KNOWLEDGE<br/>re-baseline on healed batch<br/>+ healing metrics → /uasr/metrics"]
-        MON --> ANA
-        ANA -- "drift ≥ pause severity" --> PLAN --> EXE --> KNO
-        ANA -- "clean batch" --> KNO
-        KNO --> MON
-    end
-
-    KAFKA --> MON
-    API --> ANA
-
-    LAKE[("DuckDB lake<br/>Parquet-staged, atomic txn —<br/>readers never see a partial batch")]
-    EXE -- "healed rows" --> LAKE
-    KNO -. "alerts" .-> OPS["Operators<br/>/uasr/metrics · /uasr/drift/status<br/>POST /uasr/rollback (reversible shims)"]
-```
-
-### The four watch points
-
-Each incoming batch is checked against a per-source registered baseline (`POST /uasr/baseline`):
-
-| # | Watch point | What it catches | Mechanism |
-|---|------------|-----------------|-----------|
-| 1 | **Schema drift** | Column added / removed / type changed | Set-diff + dtype comparison vs. schema baseline. Removals escalate severity; losing >50% of columns is CRITICAL. |
-| 2 | **Statistical drift** | Distribution shift in any column | Per-column KL-divergence D<sub>KL</sub>(batch ∥ baseline) against an **adaptive threshold** ζ = mean + 2σ of KL history, plus a >2σ location-shift check so range explosions (10–500 → 10k–500k) can't hide behind matching histogram shapes. |
-| 3 | **Semantic drift** | "Same schema, different meaning" | Cosine distance between a feature-hashed batch embedding and the source's reference context matrix — no external model required. |
-| 4 | **Wasserstein martingale** *(opt-in, S18.1)* | Slow statistical creep below KL's radar | Per-column exchangeability martingale on W₁ distances with an **Azuma-Hoeffding bound: provable false-alarm rate ≤ α**. When this alarm fires, the drift is mathematically guaranteed real. Fails open to detector 1–3 on columns without baselines. |
-
-### The healing path
-
-When drift crosses the pause threshold, the worker does **not** drop the batch and does **not** lose Kafka offsets:
-
-1. **Pause** — consumer polling gates on an `asyncio.Event`; offsets are preserved, the consumer stays alive.
-2. **Diagnose** — the `DiagnosticReflectorAgent` reasons over the drift vector (affected columns, KL values, old/new types) to a root cause.
-3. **Synthesize** — the `SynthesisActuatorAgent` writes a just-in-time transformation shim (e.g., rename the column back, coerce the type, rescale the unit).
-4. **Validate** — the shim runs in a sandbox against the drifted batch; it deploys only if it reduces D<sub>KL</sub> back to nominal. With the opt-in **causal-RL evaluator** (S18.1b), all validated candidates compete and the winner is chosen by counterfactual expected improvement, not greedily.
-5. **Deploy** — two modes: classic *pause → apply shim → replay → resume*, or the **canary ShimRouter** (S18.1c) which keeps ingestion running and gives the new shim a fractional traffic weight that is promoted or reverted based on drift re-detection.
-6. **Learn** — the healed batch becomes the new baseline (so the same drift never re-fires), the healing event lands in `/uasr/metrics`, and the shim is reversible at any time via `POST /uasr/rollback`.
-
-If recovery fails validation, the consumer **stays paused** — fail-closed, no corrupted data reaches the lake — and the failure is surfaced as an alert rather than swallowed.
+The Commander streaming variant runs the same intent set as an agentic tool-loop (`agents/commander.py`) in a worker thread, emitting typed SSE frames (`tool_call`, `tool_result`, `text`, `error`) that the cockpit renders live.
 
 ---
 
-## The Audit Engine
+## Tech stack
 
-The engine at `aurabackend/counterfactual_service/` (port 8012) produces a single canonical, signed artifact per causal query, then renders it for three audiences from the same persisted bytes.
+**Backend** — Python 3.11+, FastAPI, Pydantic v2 / pydantic-settings, SQLAlchemy + Alembic, PostgreSQL (the `aura_vault` database) with SQLite for the gateway/scheduler/metadata stores in dev, DuckDB for per-tenant query execution and the analytics lake, and LLMs via `shared/llm_provider` (Groq, Gemini, Ollama, OpenAI — auto-detected, with a fallback chain and content-addressable caching). Cross-cutting: ED25519 signing, hash-chained + Merkle audit ledger, Prometheus metrics, optional OpenTelemetry/Sentry, optional Kafka for streaming ingestion.
 
-### Query lifecycle
+**Frontend** — React 19, Vite 8, TypeScript ~5.9, Tailwind CSS v4 with shadcn/ui (style `new-york`, primitives in `src/components/ui-kit/`), `react-router-dom` v7, `dockview-react` (Terminal panel grid), `@xyflow/react` / React Flow + `d3-force` (Constellation lineage graph), Recharts (charts), `motion` (animation), `lucide-react` (icons), and Vitest + Testing Library + Playwright for tests. The frontend design system is mandatory and documented in `frontend/CLAUDE.md`.
 
-1. **Submit** — `POST /counterfactual/jobs` (treatment, outcome, DAG, dataset, audience) or one-click `POST /demo` scenarios.
-2. **Fan out** — up to 7 estimators run on the same identification:
-
-| Estimator | Bias guarantee | CI |
-|---|---|---|
-| `linear_regression` | Unbiased if confounders observed | Asymptotic normal |
-| `ipw` | Consistent if propensity correct | Asymptotic normal / bootstrap |
-| `psm` | Consistent if propensity correct | Bootstrap |
-| `double_ml` (LinearDRLearner) | **Doubly robust** — either nuisance model may be wrong | Asymptotic + **opt-in conformal** (finite-sample, distribution-free) |
-| `forest_dr` (ForestDRLearner) | Doubly robust + non-parametric CATE | Bootstrap-of-Little-Bags + opt-in conformal |
-| `tmle` | Doubly robust, targeted, achieves efficiency bound | Influence-curve based |
-| `iv_2sls` | Consistent under unobserved confounding given a valid instrument | 2SLS asymptotic |
-
-3. **Refute** — placebo treatment, random common cause, data-subset robustness, unobserved-confounder sensitivity.
-4. **Sensitivity** — an **E-value + Cinelli-Hazlett `SensitivityReport` ships with every estimate**: how strong would hidden confounding need to be to explain the effect away.
-5. **Adversarial critique** — an LLM critic (cached, time-bounded, off the critical path) emits structured challenges; deterministic challenges fire on fragile propensity overlap and on **cross-estimator disagreement** (TMLE vs. ForestDR beyond 2× CI half-width).
-6. **Verdict** — one canonical `significance_verdict()` decides what the headline may claim; a point estimate whose CI crosses zero is *never* reported as "impact detected".
-7. **Seal** — canonical JSON → SHA-256 → ED25519 signature → disk + TRAIGA audit log.
-8. **Replay & verify** — `GET /counterfactual/artifacts/{hash}` is byte-identical re-execution (Layer-10 determinism contract: per-method seeds derived from the request hash, sequential fan-out); `/verify` checks the signature; bulk replay streams NDJSON for auditor sweeps.
-
-### Trustworthy SQL, too
-
-The conversational plane gets the same treatment: **DPC (Dual-Paradigm Cross-check)** independently solves each generated SQL query with an AST-sandboxed pandas program and compares results — tri-state `verified / mismatch / skipped` with bounded retry. An LLM agreeing with itself is not verification; two different computational paradigms agreeing is.
+**SDK** — a hand-written `aura-counterfactual` client under `sdk/`, plus per-service typed clients auto-generated from each OpenAPI schema under `sdk_clients/`.
 
 ---
 
-## Signed Financial Audits (PCAOB)
+## Getting started (run it locally)
 
-AURA's flagship vertical: autonomous financial audit mapped directly to PCAOB Auditing Standards, with a human-in-the-loop exception queue. See [docs/INVESTOR_DEMO.md](./docs/INVESTOR_DEMO.md) for the 4-act walkthrough.
-
-| Standard | What the agent does |
-|---|---|
-| **AS 2110** | Risk assessment: establishes materiality thresholds before scanning |
-| **AS 2305** | Substantive analytical procedures: variance scanning against materiality |
-| **AS 2201** | Internal controls: PO ↔ invoice matching |
-| **AS 2401** | Fraud: duplicate-payment detection keyed on (amount, account, vendor) + round-dollar anomalies |
-| **AS 1215** | Engagement completion document — assembled, ED25519-signed, hash-addressed, independently verifiable |
-
-**Human-in-the-loop:** every finding requiring review lands in the exception queue (`frontend` → Audit Workbench). Approve/override decisions are signed `HumanOverrideRecord`s — identity taken from the JWT `sub`, never the request body — appended to a WORM audit log. The signed artifact keeps raw evidence for verifiability; **client-facing views are PII-masked at egress** with HMAC-keyed deterministic tokens, so auditors can correlate entities across findings without ever seeing raw PII.
-
-**Ingestion is fail-closed:** ERP ingestion endpoints require JWT bearer auth (401 without), and a pure-ASGI PII perimeter masks restricted fields *before* payloads reach Kafka. A Kafka outage degrades publishing (with DLQ + lazy retry) but never takes the service down.
-
----
-
-## Enterprise Security Posture
-
-- **Armed production gates** — with `ENVIRONMENT=production`, boot *fails* on open auth mode, default `SECRET_KEY`, or wildcard/http CORS. The Helm chart pins these on.
-- **PII fail-safe** — without `AURA_PII_TOKEN_KEY`, egress falls back to blanket `[REDACTED]`; an unkeyed deterministic hash (dictionary-invertible) is never emitted.
-- **Signing-key lifecycle** — persistent ED25519 keys, admin-gated revocation; signing refuses revoked key IDs.
-- **TRAIGA + Merkle federation** — hash-chained audit events, RFC 6962 signed tree heads, inclusion proofs for third-party verification.
-- **Service chassis** — every microservice inherits rate limiting, security headers, JWT auth, and exception-to-JSON handling from `create_service()`; per-service security review is unnecessary by construction.
-- **CI security lanes** — CodeQL, Bandit, Dependabot (clean as of 2026-06), Schemathesis contract fuzzing.
-
-The full 10-item production deployment checklist lives in [ENTERPRISE.md](./ENTERPRISE.md).
-
----
-
-## Getting Started
+This section reflects **this machine's actual setup**. Ports differ from the defaults because a `claude-science` daemon occupies 8000 and 8001, so the gateway runs on **8010** and code-gen on **8011** (already set in `start_all.ps1`).
 
 ### Prerequisites
 
-- Python 3.11+ (3.12 for the full eval-gate) · Node 18+
-- One LLM provider key (Groq / Gemini / OpenAI) or local Ollama
-- Optional: Docker (Kafka, full compose stack), Postgres (distributed scheduler)
+- **Python 3.11+** in a repo-root virtual environment at `.venv` (`start_all.ps1` prefers `.venv/Scripts/python.exe`).
+- **Node 20+** for the frontend.
+- **A reachable PostgreSQL.** This box points at `192.168.1.92:5432/aura_vault` via the repo-root `.env` (`DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASSWORD`).
+- **An LLM key** in the repo-root `.env`: `GROQ_API_KEY` (default provider) or `GEMINI_API_KEY` (or point `OLLAMA_HOST` at a local Ollama for a fully offline model).
+- Auth is `AURA_AUTH_MODE=password` (set in `.env`).
 
-### Install
+> Configuration is env-var driven through `aurabackend/shared/config.py`, which loads `aurabackend/.env` then the repo-root `.env`. Never commit secret values — set the variable **names** above. In `production`, config validators hard-fail on open auth, the default `SECRET_KEY`, wildcard/`http` CORS, and `AURA_JWT_ENABLED=false`.
 
-```bash
-git clone https://github.com/THIRD-I-AI/AURA.git
-cd AURA
-
-# Backend
-cd aurabackend
-python -m venv .venv && .venv\Scripts\activate   # POSIX: source .venv/bin/activate
-pip install -r requirements.txt
-pip install -r requirements-causal.txt           # dowhy, econml — for the audit engine
-
-# Frontend
-cd ../frontend && npm install
-
-# SDK (optional)
-cd ../sdk && pip install -e .
-```
-
-### Configure
-
-```bash
-cp aurabackend/.env.example aurabackend/.env
-```
-
-Set one LLM key, plus (recommended for the audit engine):
-
-```
-AURA_SIGNING_PRIVATE_KEY_HEX=<64 hex>   # persistent report-signing key
-AURA_PII_TOKEN_KEY=<long random>        # keyed PII tokenization at egress
-```
-
-### WSL / Windows note
-
-If you run the backend from **WSL** against a repo checked out on the Windows
-drive (`/mnt/c/...`), SQLite writes to tracked files on the `drvfs` mount can
-fail with `attempt to write a readonly database`. The test suite avoids this
-by pointing the gateway DB at an ext4 temp dir automatically. For the running
-app, either keep the checkout on the Linux filesystem (e.g. `~/AURA`) or set
-`GATEWAY_DATABASE_URL` to a path under `/tmp` or `$HOME`:
-
-```bash
-export GATEWAY_DATABASE_URL="sqlite+aiosqlite:///$HOME/aura_gateway.db"
-```
-
-### Run
+### 1. Backend
 
 ```powershell
 cd aurabackend
-.\start_all.ps1                                   # core services (POSIX: bash start_all.sh)
-python -m uvicorn counterfactual_service.main:app --port 8012   # audit engine
+.\start_all.ps1
 ```
+
+This sweeps any stale AURA python processes, loads `.env`, and launches the nine services in separate windows:
+
+| Window | URL |
+|---|---|
+| API-Gateway | http://localhost:8010 |
+| Code-Generation | http://localhost:8011 |
+| Connectors-Vault | http://localhost:8002 |
+| Exec-Sandbox | http://localhost:8003 |
+| Scheduler | http://localhost:8004 |
+| Insights | http://localhost:8005 |
+| Orchestration | http://localhost:8006 |
+| Metadata-Store | http://localhost:8007 |
+| UASR-Service | http://localhost:8009 |
+
+`.\start_all.ps1 -Kill` stops the stack without relaunching. (A POSIX `start_all.sh` also exists.)
+
+### 2. Frontend
 
 ```bash
-cd frontend && npm run dev      # http://localhost:5173
+cd frontend
+npm install
+npm run dev          # Vite dev server on http://localhost:5173
 ```
 
-### Verify
+The frontend targets the gateway via `VITE_API_URL`; this repo's `frontend/.env.local` sets it to `http://localhost:8010`. The app's Content-Security-Policy only allows `connect-src` to the gateway on `:8000`/`:8010`, so the gateway **must** be on one of those (it is — `:8010`).
+
+### 3. First use
+
+Open **http://localhost:5173**, choose **Create an account** (or sign in with an existing one), and you land in the **`/workbench`** cockpit. Upload a CSV/Parquet from **Files & Data**, then ask a question in **Ask AURA**.
+
+### 4. Health check
 
 ```bash
-for p in 8000 8001 8002 8003 8004 8005 8006 8007 8009 8012; do
-  curl -s http://localhost:$p/health | jq -r '"\(.service): \(.status)"'
-done
-curl -s -X POST http://localhost:8012/demo -H "Content-Type: application/json" \
-  -d '{"scenario": "fair_lending"}' | jq .confidence
+curl http://localhost:8010/system/health
 ```
 
-### Deploy to production
-
-The steps above are for local dev. To deploy a durable, authenticated instance —
-cloud SaaS, semi-cloud/hybrid (customer-hosted LLM), or fully on-prem/air-gapped
-(local Ollama) — follow **[docs/DEPLOYMENT.md](./docs/DEPLOYMENT.md)**, the
-hands-on Compose + Helm guide for all three targets.
+A healthy stack reports `"overall": "healthy"` with **8 healthy services** and, when UASR is up, an `hu_score`.
 
 ---
 
-## SDK & CLI
+## Auth model
 
-```python
-from aura_counterfactual import Client
+There is one real login. The flow lives in `aurabackend/api_gateway/routers/auth.py` and `frontend/src/services/api.ts`:
 
-with Client(base_url="http://localhost:8012", prefix="") as c:
-    artifact = c.run({...})                    # blocks to completion
-    again = c.replay(artifact.audit_record_hash)   # byte-identical
-    assert c.verify(artifact.audit_record_hash).verified
+- **Login** — the frontend `POST`s `/api/v1/auth/token`. In **password mode** (`AURA_AUTH_MODE=password`, this machine's setting) it validates `email` + `password` against the `users` table with bcrypt and mints a JWT. In **open mode** (dev default) it issues a token for any `user_id` with no credential check.
+- **Register** — `POST /api/v1/auth/register` creates a bcrypt-hashed user; new accounts get their own `org_id` (single-user tenant).
+- **SSO** — an optional generic OIDC (authorization-code + PKCE) flow (`/api/v1/auth/oidc/*`) covers Entra/Okta/Google/Auth0/Keycloak; the JWT never transits a URL (a single-use handoff code is exchanged via `POST /auth/oidc/exchange`).
+- **Route gating** — `ProtectedRoute` guards `/workbench` and `/app/terminal`; the public routes (`/`, `/login`, `/signup`, `/audit/*`, `/certificate/:hash`, `/verify/:hash`) are open so anyone can verify a signed certificate.
+- **Tenancy** — the multi-tenant `org_id` is read from the verified token, never from the request body/header. Data isolation is fully enforced when `AURA_JWT_ENABLED=true` (required in production); with it off, requests collapse to a shared `default` workspace — fine for single-user dev, unsafe in prod.
+
+---
+
+## Repository layout
+
 ```
+Data-Analyst-Agent/
+├─ README.md              — this file
+├─ ARCHITECTURE.md        — service topology (existing)
+├─ ENTERPRISE.md          — deployment + compliance posture
+├─ STREAMING_FOUNDATIONS.md — math behind the streaming primitives
+├─ CLAUDE.md              — shared dev conventions (sprints, branching, CI)
+├─ docker-compose*.yml    — container stacks
+├─ aurabackend/           — all backend services
+│  ├─ start_all.ps1 / .sh — canonical local launcher (9 services)
+│  ├─ api_gateway/        — the gateway: main.py, routers/, persistence.py
+│  ├─ code_generation_service/  — NL → SQL (LLM)
+│  ├─ connectors/         — data-source connectors + registry (:8002)
+│  ├─ execution_sandbox_service/ — SQL execution (:8003)
+│  ├─ scheduler_service/  — distributed job queue (:8004)
+│  ├─ insights_service/   — charts + narratives (:8005)
+│  ├─ orchestration_service/ — generator ⇄ critic agents (:8006)
+│  ├─ metadata_store/     — users + schema catalog (:8007)
+│  ├─ uasr/               — MAPE-K self-healing (:8009)
+│  ├─ counterfactual_service/ — causal + financial audit engine (in-process)
+│  ├─ agents/             — commander tool-loop + specialists + LangGraph
+│  ├─ pipeline/           — ETL + streaming pipeline engines
+│  ├─ evolution/          — self-evolution engine
+│  ├─ shared/             — config, service_factory, llm_provider, auth,
+│  │                        signing, audit ledger, middleware
+│  ├─ alembic/            — DB migrations
+│  └─ tests/ tests_e2e/ tests_contract/ — pytest suites
+├─ frontend/              — React 19 + Vite + Tailwind v4 + shadcn/ui
+│  └─ src/
+│     ├─ AppRoutes.tsx    — routes (front door, login, workbench, terminal, verify)
+│     ├─ services/api.ts  — typed API client (API_BASE_URL = VITE_API_URL + /api/v1)
+│     ├─ workbench/       — the primary cockpit: Workbench.tsx, panels/, viewRegistry.ts
+│     ├─ terminal/        — dockview cockpit + Constellation graph
+│     ├─ audit/           — public front door, certificate, verify pages
+│     ├─ auth/            — AuthForm, ProtectedRoute, AuthContext, SSO callback
+│     └─ components/ui-kit/ — shadcn/ui primitives (the design system)
+├─ sdk/                   — hand-written aura-counterfactual SDK
+├─ sdk_clients/           — auto-generated per-service typed clients
+├─ scripts/               — codegen + dev helpers
+└─ docs/                  — SPRINTS.md, DEPLOYMENT.md, REPO_MAP.md, INVESTOR_DEMO.md, …
+```
+
+---
+
+## Testing
+
+**Backend** (from `aurabackend/`):
 
 ```bash
-aura-counterfactual replay 0xabc... && aura-counterfactual report 0xabc... -o audit.pdf
+python -m ruff check --fix . --ignore E501,E402,F401,W191,W291,W293,F841,E701,E712,F823
+python -m pytest tests/<the_file_you_touched>.py --tb=short
 ```
 
-Exit codes are CI-gradable (`0=ok … 5=verify_failed`). Beyond the hand-written audit SDK, `sdk_clients/` holds **11 auto-generated typed clients** (one per service, 160+ methods) regenerated from each service's OpenAPI schema and kept byte-stable by the CI codegen-sync gate.
+The full suite is large (the pre-push run takes roughly 12 minutes); run only the files you touched during iteration and let CI run the rest. Optional-dependency tests (Postgres, dowhy/econml, faiss, aiokafka) are gated and have dedicated CI lanes.
 
----
-
-## Frontend
-
-React 19 + Vite SPA, strict TypeScript, design-system components (CSS variables, no utility-class framework). 14 lazy-loaded pages including the **Audit Workbench** — the live HITL surface where auditors review the exception queue and sign override decisions. An enterprise-wide visual redesign (S37 "Terminal Authority") is in flight.
-
----
-
-## Project History & Roadmap
-
-Development runs as numbered sprints with a public registry — see **[docs/SPRINTS.md](./docs/SPRINTS.md)** for what's done, in flight, and next. Highlights: S8–S16 counterfactual engine, S17 multi-modal fabric, S18 self-healing + causal-RL, S19 Merkle federation, S20 distributed scheduler, S21 SDK codegen, S22–S24 analytic depth (TMLE, E-values, disagreement challenges), S31–S35 the financial-audit vertical + HITL workbench, Sec-1–Sec-7 security hardening.
-
----
-
-## References
-
-- Robins, Rotnitzky & Zhao (1994) — doubly-robust estimation. JASA 89.
-- Chernozhukov et al. (2018) — DML / cross-fitting. Econometrics J. 21(1).
-- Wager & Athey (2018); Athey, Tibshirani & Wager (2019) — honest forests / GRF.
-- van der Laan & Rose (2011) — Targeted Maximum Likelihood Estimation.
-- Lei & Candès (2021) — conformal counterfactual inference. JRSS-B 83(5).
-- VanderWeele & Ding (2017) — E-values. Annals of Internal Medicine.
-- Cinelli & Hazlett (2020) — sensitivity analysis. JRSS-B 82(1).
-- Kallus & Uehara (2020) — causal RL / efficient off-policy evaluation. JMLR.
-- RFC 6962 — Certificate Transparency (Merkle audit log design).
-- RFC 8785 — canonical JSON (hash basis); Bernstein et al. (2012) — ED25519.
-- PCAOB AS 1215 / 2110 / 2201 / 2305 / 2401 — auditing standards implemented by the financial-audit agent.
-- Texas Responsible AI Governance Act (TRAIGA) — audit-log traceability design.
-
----
-
-## Contributing
+**Frontend** (from `frontend/`):
 
 ```bash
-cd aurabackend
-python -m ruff check . --ignore E501,E402,F401,E701,E712     # CI-exact lint
-python -m pytest tests/<files_you_touched> --tb=short
-
-cd ../frontend
 npx tsc --noEmit && npx eslint src --max-warnings 0 && npx vitest run
 ```
 
-All CI jobs must be green before merge. Conventions (sprint claiming, branch naming, commit style) live in [CLAUDE.md](./CLAUDE.md); the sprint registry is [docs/SPRINTS.md](./docs/SPRINTS.md).
+CI must be green before merge. See `CLAUDE.md` for the sprint/branch/commit conventions and the full pre-push protocol.
 
 ---
 
-## License
+## Further reading
 
-MIT — see [LICENSE](LICENSE).
+- **`ARCHITECTURE.md`** — deeper service topology.
+- **`ENTERPRISE.md`** — production hardening + compliance checklist.
+- **`STREAMING_FOUNDATIONS.md`** — formal math behind the streaming/self-healing primitives.
+- **`docs/SPRINTS.md`** — the development sprint registry.
+- **`docs/DEPLOYMENT.md`** — cloud / hybrid / on-prem deployment guide.
