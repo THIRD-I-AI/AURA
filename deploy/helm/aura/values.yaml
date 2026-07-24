@@ -76,6 +76,17 @@ env:
 #                                    findings fall back to [REDACTED] and
 #                                    auditors lose cross-finding correlation)
 #   DATABASE_URL                   - external Postgres DSN
+#   GATEWAY_DATABASE_URL           - api_gateway/persistence.py's Postgres DSN
+#                                    (same aura_vault instance as DATABASE_URL).
+#                                    Without it the gateway falls back to a
+#                                    per-pod SQLite file — with the default 2
+#                                    api_gateway replicas that silently
+#                                    fragments query history, saved queries,
+#                                    and share tokens across pods.
+# This Secret's keys are forwarded to EVERY backend pod via envFrom (see
+# backend-deployments.yaml) — harmless for keys a given service doesn't read
+# (e.g. GATEWAY_DATABASE_URL on metadata_store), same as docker-compose.prod.yml
+# applying its shared backend-env anchor to every stateful service.
 envSecretName: aura-secrets
 
 # ── Backend services ───────────────────────────────────────────────────────

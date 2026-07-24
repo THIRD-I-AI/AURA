@@ -34,6 +34,8 @@ import os
 from pathlib import Path
 from typing import Optional, Tuple
 
+from shared.config import settings
+
 logger = logging.getLogger("aura.counterfactual.signing")
 
 
@@ -132,7 +134,19 @@ def _resolve_key_pair() -> Optional[Tuple[object, object]]:
 
     # Ephemeral fallback (final). Logged loudly because it changes the
     # security posture (signatures become advisory rather than
-    # auditor-grade): a restart invalidates prior signatures.
+    # auditor-grade): a restart invalidates prior signatures. In production
+    # that's not an acceptable silent degradation — fail startup instead of
+    # minting signatures auditors would wrongly trust as stable.
+    if settings.is_production:
+        raise RuntimeError(
+            "ED25519 signing key could not be loaded from "
+            "AURA_SIGNING_PRIVATE_KEY_HEX / AURA_SIGNING_PRIVATE_KEY_PATH, "
+            "and the persisted-key directory (AURA_SIGNING_KEY_DIR, default "
+            "data/keys) is not writable. Refusing to fall back to an "
+            "ephemeral key in production — it would invalidate every prior "
+            "signature on the next restart. Fix the key dir permissions or "
+            "set AURA_SIGNING_PRIVATE_KEY_HEX/_PATH."
+        )
     sk = ed25519.Ed25519PrivateKey.generate()
     _KEY_PAIR = (sk, sk.public_key())
     _KEY_SOURCE = "ephemeral"

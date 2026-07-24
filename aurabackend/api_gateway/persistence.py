@@ -340,10 +340,20 @@ def get_engine() -> AsyncEngine:
     if _engine is None:
         url = database_url()
         connect_args: Dict[str, Any] = {}
+        engine_kwargs: Dict[str, Any] = {}
         if url.startswith("sqlite"):
             connect_args["check_same_thread"] = False
+        else:
+            # aiosqlite doesn't accept pool sizing/health-check kwargs —
+            # only apply them to real connection-pooled backends (Postgres).
+            engine_kwargs.update(
+                pool_pre_ping=True,
+                pool_size=10,
+                max_overflow=20,
+                pool_recycle=1800,
+            )
         _engine = create_async_engine(
-            url, echo=False, future=True, connect_args=connect_args,
+            url, echo=False, future=True, connect_args=connect_args, **engine_kwargs,
         )
         if url.startswith("sqlite"):
             # SQLite disables FK enforcement by default; enable it per

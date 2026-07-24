@@ -19,6 +19,13 @@ from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
 from alembic import context
+
+# api_gateway.persistence and shared.audit_ledger each own a SEPARATE
+# DeclarativeBase (by design — see their module docstrings: independent
+# schema evolution, possibly separate DBs/schemas per deployment). Their
+# tables were create_all-only until this migration; importing them here
+# registers their metadata below so autogenerate can see future drift too.
+from api_gateway import persistence as _gateway_persistence  # noqa: F401
 from evolution import models as _evolution_models  # noqa: F401
 
 # ── Register all AURA model metadata ──────────────────────────────
@@ -26,6 +33,7 @@ from evolution import models as _evolution_models  # noqa: F401
 # Base.metadata. Add new model modules here as they are introduced.
 from metadata_store import models as _metadata_models  # noqa: F401
 from metadata_store.db import DATABASE_URL, Base
+from shared import audit_ledger as _audit_ledger_models  # noqa: F401
 from uasr import models as _uasr_models  # noqa: F401
 
 # Alembic Config object — values come from alembic.ini.
@@ -43,7 +51,14 @@ if config.config_file_name is not None:
     # ran in the app's process.
     fileConfig(config.config_file_name, disable_existing_loggers=False)
 
-target_metadata = Base.metadata
+# A sequence of MetaData objects (supported by Alembic >=1.10, pinned
+# >=1.13 in requirements.txt) so autogenerate diffs against all three
+# independently-owned schemas in one pass.
+target_metadata = [
+    Base.metadata,
+    _gateway_persistence.Base.metadata,
+    _audit_ledger_models.Base.metadata,
+]
 
 
 def _is_sqlite(url: str) -> bool:

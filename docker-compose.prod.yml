@@ -30,6 +30,12 @@ x-backend-env: &backend-env
   DATABASE_URL: postgresql+asyncpg://${DB_USER:-aura}:${DB_PASSWORD}@db:5432/${DB_NAME:-aura}
   METADATA_DATABASE_URL: postgresql+asyncpg://${DB_USER:-aura}:${DB_PASSWORD}@db:5432/${DB_NAME:-aura}
   SCHEDULER_DATABASE_URL: postgresql+asyncpg://${DB_USER:-aura}:${DB_PASSWORD}@db:5432/${DB_NAME:-aura}
+  # api_gateway/persistence.py falls back to a per-pod SQLite file
+  # (data/gateway.db) when this is unset — with --workers 4 (and any future
+  # multi-replica deploy) that silently fragments query history, saved
+  # queries, and share tokens across pods. Point it at the same Postgres
+  # instance as the other stateful services.
+  GATEWAY_DATABASE_URL: postgresql+asyncpg://${DB_USER:-aura}:${DB_PASSWORD}@db:5432/${DB_NAME:-aura}
   # Subsystem C — the durable audit ledger MUST be on Postgres in prod, not the
   # SQLite default: that's what makes its per-tenant hash chain multi-replica-safe
   # (engages the pg_advisory_xact_lock serialization path).

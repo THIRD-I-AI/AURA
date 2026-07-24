@@ -28,6 +28,18 @@ def _locate_env_files() -> list[str]:
     return [str(p) for p in candidates if p.exists()]
 
 
+# Recognised spellings of "this is a production deployment" for the ENVIRONMENT
+# var. A deployment named "prod" (a common shorthand) must trip the same
+# hard-fail validators as "production" — comparing only the exact string
+# "production" let "prod" silently bypass every security gate below.
+_PRODUCTION_ENV_NAMES = {"production", "prod"}
+
+
+def _is_production_env(value: str) -> bool:
+    """True if *value* (an ENVIRONMENT setting) names a production deploy."""
+    return (value or "").strip().lower() in _PRODUCTION_ENV_NAMES
+
+
 class AuraSettings(BaseSettings):
     """
     All AURA configuration in one place.
@@ -106,7 +118,7 @@ class AuraSettings(BaseSettings):
     @classmethod
     def _validate_cors_production(cls, v, info):
         env = info.data.get("environment", "development")
-        if env.lower() == "production":
+        if _is_production_env(env):
             if "*" in v:
                 raise ValueError(
                     "CORS wildcard '*' is not allowed in production. "
@@ -131,6 +143,12 @@ class AuraSettings(BaseSettings):
     auth_mode: str = Field("open", alias="AURA_AUTH_MODE")
     secret_key: str = Field("change-me-in-production", alias="SECRET_KEY")
     trust_forwarded_for: bool = Field(False, alias="AURA_TRUST_FORWARDED_FOR")
+    # Gates POST /auth/register. Default True keeps dev/open-mode signup
+    # working with zero config. In production, an unauthenticated, unthrottled
+    # registration endpoint is an abuse vector (bulk account creation); set
+    # AURA_ALLOW_SELF_REGISTRATION=false to require operator-provisioned
+    # accounts (e.g. via SSO / admin-created users) instead.
+    allow_self_registration: bool = Field(True, alias="AURA_ALLOW_SELF_REGISTRATION")
 
     @field_validator("auth_mode", mode="after")
     @classmethod
@@ -142,7 +160,7 @@ class AuraSettings(BaseSettings):
         # An accidental ENVIRONMENT=production deployment with the
         # default config must fail loud, not silently mint tokens.
         env = info.data.get("environment", "development")
-        if env.lower() == "production" and v == "open":
+        if _is_production_env(env) and v == "open":
             raise ValueError(
                 "auth_mode='open' is not allowed in production. "
                 "Set AURA_AUTH_MODE=password (or another credential-"
@@ -155,7 +173,7 @@ class AuraSettings(BaseSettings):
     def _warn_default_secret(cls, v, info):
         if v == "change-me-in-production":
             env = info.data.get("environment", "development")
-            if env.lower() == "production":
+            if _is_production_env(env):
                 raise ValueError(
                     "SECRET_KEY must be set in production. "
                     "The default 'change-me-in-production' value is not allowed. "
@@ -200,7 +218,7 @@ class AuraSettings(BaseSettings):
         # hole. Acceptable for single-user dev; a silent data breach in prod.
         # Fail loud at startup, parallel to _reject_open_auth_in_production.
         env = info.data.get("environment", "development")
-        if env.lower() == "production" and not v:
+        if _is_production_env(env) and not v:
             raise ValueError(
                 "AURA_JWT_ENABLED must be true in production. Without it, "
                 "tenant isolation is not enforced and all callers share the "
@@ -326,7 +344,7 @@ class AuraSettings(BaseSettings):
 
     @property
     def is_production(self) -> bool:
-        return self.environment.lower() == "production"
+        return _is_production_env(self.environment)
 
     @property
     def vault_dsn(self) -> str:
