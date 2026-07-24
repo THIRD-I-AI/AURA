@@ -61,18 +61,24 @@ async def test_unsigned_fairness_audit_is_not_chained(ledger_env):
 
 
 @pytest.mark.asyncio
-async def test_ledger_failure_never_raises(ledger_env, monkeypatch):
-    # a ledger hiccup must not blow up the audit job
+async def test_ledger_failure_propagates(ledger_env, monkeypatch):
+    # Enterprise-readiness change (2026-07-24 — FLAGGED FOR REVIEW): a
+    # ledger-append failure is intentionally NOT swallowed anymore. A signed
+    # cert with no ledger entry is an orphan that silently breaks the
+    # tamper-evident chain-of-custody, so the failure propagates and the caller
+    # marks the audit job failed rather than reporting a false "success". (This
+    # reverses the prior availability-over-integrity choice; a retry/reconcile
+    # approach would be a gentler alternative — see PR discussion.)
     import shared.audit_ledger as mod
     from counterfactual_service.main import _append_fairness_audit_to_ledger
 
     async def _boom(**kw):
         raise RuntimeError("db down")
     monkeypatch.setattr(mod, "append_audit", _boom)
-    # should swallow + log, not raise
-    await _append_fairness_audit_to_ledger(
-        {"audit_record_hash": "c" * 64, "dataset_fingerprint": "d" * 64},
-        {"tenant_id": "bankA", "subject_id": "m1", "preparer_id": "x"})
+    with pytest.raises(RuntimeError, match="db down"):
+        await _append_fairness_audit_to_ledger(
+            {"audit_record_hash": "c" * 64, "dataset_fingerprint": "d" * 64},
+            {"tenant_id": "bankA", "subject_id": "m1", "preparer_id": "x"})
 
 
 def test_audit_request_accepts_identity():
