@@ -25,6 +25,12 @@ if (Test-Path $envFile) {
 
 $env:PYTHONPATH = $BACKEND
 
+# App-runtime config the LAUNCHED SERVICES need, set here rather than in .env so it
+# does NOT leak into the pytest suite (pytest loads .env, not this script). Putting
+# AURA_AUTH_MODE=password in .env flips the open-mode auth tests to 422. The frontend
+# login needs password mode, so the services get it here; tests stay open-mode.
+$env:AURA_AUTH_MODE = "password"
+
 # Always sweep stale AURA backends before starting — running this
 # script twice (or alongside another launcher) leaves duplicate
 # uvicorn instances racing for the same ports and the SQLite write
@@ -63,8 +69,12 @@ if ($Kill) {
 }
 
 $services = @(
-    @{ Name = "API-Gateway";       Port = 8000; Mod = "api_gateway.main:app" }
-    @{ Name = "Code-Generation";   Port = 8001; Mod = "code_generation_service.main:code_gen_app" }
+    # Gateway on 8010, not 8000: a `claude-science` daemon holds :8000 on this box,
+    # and the frontend CSP only allows connect-src to :8000 and :8010. The frontend
+    # points at :8010 via frontend/.env.local (VITE_API_URL). See project memory.
+    @{ Name = "API-Gateway";       Port = 8010; Mod = "api_gateway.main:app" }
+    # Code-gen on 8011, not 8001: `claude-science` also holds :8001 on this box.
+    @{ Name = "Code-Generation";   Port = 8011; Mod = "code_generation_service.main:code_gen_app" }
     @{ Name = "Connectors-Vault";  Port = 8002; Mod = "connectors.main:app" }
     @{ Name = "Exec-Sandbox";      Port = 8003; Mod = "execution_sandbox_service.main:execution_app" }
     @{ Name = "Scheduler";         Port = 8004; Mod = "scheduler_service.main:scheduler_app" }

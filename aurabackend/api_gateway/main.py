@@ -299,7 +299,7 @@ except ImportError as exc:
 # ── Unified system health endpoint ─────────────────────────────────
 
 _SERVICES = {
-    "code_generation": "http://localhost:8001/health",
+    "code_generation": "http://localhost:8011/health",
     "database_service": "http://localhost:8002/health",
     "execution_sandbox": "http://localhost:8003/health",
     "scheduler":        "http://localhost:8004/health",
