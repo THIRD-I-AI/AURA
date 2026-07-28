@@ -399,7 +399,7 @@ async def _append_fairness_audit_to_ledger(result: Any, payload: Dict[str, Any])
         return
     fingerprint = _result_field(result, "dataset_fingerprint", "") or cert_hash
     from shared import audit_ledger
-    await audit_ledger.append_audit(
+    await audit_ledger.append_audit_with_retry(
         tenant_id=payload.get("tenant_id") or "default",
         kind="fairness_audit_completed",
         subject_id=payload.get("subject_id") or "default",
@@ -426,7 +426,7 @@ async def _append_review_to_ledger(*, tenant_id: str, audit_cert_hash: str,
     if original is None:
         return
     from datetime import datetime, timezone
-    await audit_ledger.append_audit(
+    await audit_ledger.append_audit_with_retry(
         tenant_id=tenant_id, kind="human_review",
         subject_id=original.subject_id, subject_type=original.subject_type,
         preparer_id=original.preparer_id, reviewer_id=reviewer_id,
