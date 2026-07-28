@@ -117,7 +117,7 @@ Context visibility is preserved across geo-distributed nodes by dynamically bind
 
 ### Cryptographic guarantees on the audit-engine output
 
-The counterfactual audit engine (`counterfactual_service/`, port 8012) extends the TRAIGA chain with **ED25519 signatures** on every sealed artifact. The signing key lives in `AURA_SIGNING_PRIVATE_KEY_HEX`; verification works against the public key without privileged access. Sprint 13's `strip_for_hashing(artifact)` helper guarantees that the sign-time and verify-time payloads cannot drift on Pydantic schema changes — the same source of truth runs through both paths.
+The counterfactual audit engine (`counterfactual_service/`, imported and run in-process inside the API gateway on port 8000 — not a separate pod) extends the TRAIGA chain with **ED25519 signatures** on every sealed artifact. The signing key lives in `AURA_SIGNING_PRIVATE_KEY_HEX`; verification works against the public key without privileged access. Sprint 13's `strip_for_hashing(artifact)` helper guarantees that the sign-time and verify-time payloads cannot drift on Pydantic schema changes — the same source of truth runs through both paths.
 
 ### Compliance posture
 
@@ -213,7 +213,7 @@ That single call returns a fully-configured FastAPI app with every cross-cutting
 
 ### Developer velocity impact
 
-A new microservice now costs **one `create_service()` call + one router declaration** to ship — every other concern is inherited. A new team joining the platform doesn't need to read fifteen specs; they read the factory's docstring once and implement domain logic only. The factory is the **architectural discipline** that keeps the 12-microservice platform from sprawling.
+A new microservice now costs **one `create_service()` call + one router declaration** to ship — every other concern is inherited. A new team joining the platform doesn't need to read fifteen specs; they read the factory's docstring once and implement domain logic only. The factory is the **architectural discipline** that keeps the 9-microservice platform from sprawling.
 
 ### Compliance & governance impact
 
@@ -243,20 +243,22 @@ Because every service inherits the same authentication, rate limiting, and audit
                                                                │
 ┌──────────┐    HTTPS    ┌─────────────────┐   ┌──────────────┴──────────────┐
 │ Browser  │────────────▶│  Ingress (HAProxy/│  │     Kubernetes Cluster      │
-│ / SDK    │             │   nginx / ALB)    │──▶│  (Helm chart, 12 svcs)      │
+│ / SDK    │             │   nginx / ALB)    │──▶│  (Helm chart, 9 svcs)       │
 └──────────┘             └─────────────────┘   │                              │
-                                               │   API Gateway (2 replicas)   │
-                                               │   Code Gen, Insights         │
-                                               │   Connectors, Sandbox        │
+                                               │   API Gateway (2 replicas —  │
+                                               │      counterfactual/financial-│
+                                               │      audit engine runs        │
+                                               │      IN-PROCESS here, no      │
+                                               │      separate pod)            │
+                                               │   Code Gen, Insights          │
+                                               │   Connectors/Vault, Sandbox   │
+                                               │   Orchestration               │
                                                │   Metadata Store (3 repls,   │
                                                │      Postgres backed)        │
                                                │   Scheduler (1 leader +      │
                                                │      N workers — S20+)       │
                                                │   UASR (1 replica per Kafka  │
                                                │      consumer group)         │
-                                               │   Causal / DAR / Counterfactual│
-                                               │     (1 replica each — in-     │
-                                               │      process job state)       │
                                                └──────────────────────────────┘
                                                                │
                                        ┌───────────────────────┼───────────────────────┐
