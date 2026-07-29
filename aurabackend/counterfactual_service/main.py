@@ -25,6 +25,7 @@ from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, Field
 
 from shared.auth import get_current_user, require_user
+from shared.error_handler import sanitize_error
 
 
 def _ledger_tenant(user: Optional[Dict[str, Any]]) -> str:
@@ -123,9 +124,14 @@ def load_persisted_demo_artifacts() -> int:
         sig_b64 = art.get("signature_b64")
         if art.get("signature_status") == "signed" and sig_b64:
             try:
+                # verify_bytes() itself never raises (see signing.py) — a broken
+                # signing key surfaces there as its own distinct "key resolution
+                # failed" error log, not as this block's generic catch. What
+                # remains catchable here is a malformed artifact shape breaking
+                # canonical_dumps/strip_for_hashing, which must never crash startup.
                 payload_bytes = canonical_dumps(strip_for_hashing(art)).encode("utf-8")
                 verified = signing.verify_bytes(payload_bytes, sig_b64)
-            except Exception as exc:  # a malformed artifact must never crash startup
+            except Exception as exc:
                 verified = False
                 logger.error("demo artifact %s failed signature re-check (%s)", p.name, exc)
             if not verified:
@@ -209,10 +215,16 @@ async def _run_async(job_id: str, query: CounterfactualQuery) -> None:
             artifact=artifact.model_dump(mode="json"),
         )
     except HTTPException as exc:
+        # exc.detail here is always an author-curated string raised inside this
+        # module (see _resolve_dataset) — never raw upstream exception text —
+        # so it's safe to surface to the caller as-is.
         _jobs[job_id].update(state="failed", error=f"HTTP {exc.status_code}: {exc.detail}")
     except Exception as exc:
         logger.exception("Counterfactual job %s failed", job_id)
-        _jobs[job_id].update(state="failed", error=f"{type(exc).__name__}: {exc}")
+        _jobs[job_id].update(
+            state="failed",
+            error=sanitize_error(exc, logger=logger, context=f"counterfactual job {job_id}"),
+        )
 
 
 async def _run_demo_async(job_id: str, scenario_id: str, query: CounterfactualQuery) -> None:
@@ -234,15 +246,35 @@ async def _run_demo_async(job_id: str, scenario_id: str, query: CounterfactualQu
             patched["degraded"] = True
             _jobs[job_id].update(state="succeeded", artifact=patched)
         else:
-            _jobs[job_id].update(state="failed", error=f"{type(exc).__name__}: {exc}")
+            _jobs[job_id].update(
+                state="failed",
+                error=sanitize_error(exc, logger=logger, context=f"demo job {scenario_id}"),
+            )
+
+
+def _new_job(prefix: str, tenant: str) -> str:
+    """Register a queued job owned by ``tenant`` and return its id.
+
+    Every job-creating endpoint MUST go through here. The tenant stamp is what
+    get_job filters on, so a record created without one is readable by nobody —
+    which makes this the single place that invariant can be enforced.
+
+    The id carries the full uuid4 hex rather than a truncated slice: it is the
+    handle a client polls with, so its entropy is the defence-in-depth layer
+    sitting behind the tenant check. 48 bits is cheap to grind for something as
+    valuable as a fair-lending audit result.
+    """
+    job_id = f"{prefix}_{uuid.uuid4().hex}"
+    _jobs[job_id] = {"state": "queued", "artifact": None, "error": None, "tenant": tenant}
+    return job_id
 
 
 # ── Endpoints ─────────────────────────────────────────────────────────
 
 @app.post("/counterfactual/jobs")
-async def submit_job(query: CounterfactualQuery) -> Dict[str, str]:
-    job_id = f"ca_{uuid.uuid4().hex[:12]}"
-    _jobs[job_id] = {"state": "queued", "artifact": None, "error": None}
+async def submit_job(query: CounterfactualQuery,
+                     user: Dict[str, Any] = Depends(require_user)) -> Dict[str, str]:
+    job_id = _new_job("ca", _ledger_tenant(user))
     # Hold the Task reference inside the job record. Without this, the
     # task is eligible for garbage collection as soon as submit_job
     # returns — Python 3.11+ asyncio gives "Task was destroyed but it
@@ -252,11 +284,16 @@ async def submit_job(query: CounterfactualQuery) -> Dict[str, str]:
 
 
 @app.get("/counterfactual/jobs/{job_id}")
-async def get_job(job_id: str) -> Dict[str, Any]:
-    if job_id not in _jobs:
+async def get_job(job_id: str, user: Dict[str, Any] = Depends(require_user)) -> Dict[str, Any]:
+    # Sec review: this endpoint was unauthenticated, so anyone holding — or
+    # grinding — a job id could read another org's audit result. Auth is now
+    # required on BOTH sides: every record carries its submitter's tenant (see
+    # _new_job), and a cross-tenant read is answered identically to a missing
+    # job, so the response never confirms that someone else's id exists.
+    j = _jobs.get(job_id)
+    if j is None or j.get("tenant") != _ledger_tenant(user):
         raise HTTPException(404, f"job {job_id} not found")
-    j = _jobs[job_id]
-    # Don't leak the Task object through the JSON response.
+    # Don't leak the Task object (or the tenant stamp) through the JSON response.
     return {
         "job_id": job_id,
         "state": j["state"],
@@ -288,21 +325,27 @@ async def demo_scenarios() -> Dict[str, Any]:
 
 
 @app.post("/counterfactual/demo/{scenario_id}")
-async def run_demo(scenario_id: str, fresh: bool = False) -> Dict[str, Any]:
+async def run_demo(scenario_id: str, fresh: bool = False,
+                   user: Dict[str, Any] = Depends(require_user)) -> Dict[str, Any]:
     """Run the pre-loaded compliance audit. Poll GET /counterfactual/jobs/{id}.
 
     Fast path: once a scenario is pre-warmed, return its sealed artifact as an
     already-complete job (instant, deterministic). ``fresh=true`` forces a live
-    run for the "watch it compute" progress view."""
+    run for the "watch it compute" progress view.
+
+    Authenticated like every other job producer: the poll endpoint it hands the
+    caller off to is tenant-scoped, so an anonymous demo job would be one nobody
+    could then read. The UI reaches this behind a login already."""
     try:
         scenario = get_scenario(scenario_id)
     except KeyError:
         raise HTTPException(404, f"unknown demo scenario: {scenario_id!r}")
 
+    tenant = _ledger_tenant(user)
     cached = _demo_last_good.get(scenario_id)
     if cached is not None and not fresh:
-        job_id = f"demo_{uuid.uuid4().hex[:12]}"
-        _jobs[job_id] = {"state": "succeeded", "artifact": cached, "error": None}
+        job_id = _new_job("demo", tenant)
+        _jobs[job_id].update(state="succeeded", artifact=cached)
         return {"job_id": job_id, "scenario_id": scenario_id, "degraded": False, "cached": True}
 
     if not fresh:
@@ -321,8 +364,7 @@ async def run_demo(scenario_id: str, fresh: bool = False) -> Dict[str, Any]:
     df = scenario.build_dataset()
     query = scenario.query()
     register_dataset(query.dataset.source_id, df)
-    job_id = f"demo_{uuid.uuid4().hex[:12]}"
-    _jobs[job_id] = {"state": "queued", "artifact": None, "error": None}
+    job_id = _new_job("demo", tenant)
     _jobs[job_id]["_task"] = asyncio.create_task(
         _run_demo_async(job_id, scenario_id, query)
     )
@@ -446,12 +488,15 @@ async def _run_audit_job_async(job_id: str, payload: Dict[str, Any]) -> None:
         await _append_fairness_audit_to_ledger(result, payload)
     except Exception as exc:
         logger.exception("Audit job %s failed", job_id)
-        _jobs[job_id].update(state="failed", error=f"{type(exc).__name__}: {exc}")
+        _jobs[job_id].update(
+            state="failed",
+            error=sanitize_error(exc, logger=logger, context=f"audit job {job_id}"),
+        )
 
 
 @app.post("/counterfactual/audit")
 async def run_audit(req: AuditRequest,
-                    user: Optional[Dict[str, Any]] = Depends(get_current_user)) -> Dict[str, Any]:
+                    user: Dict[str, Any] = Depends(require_user)) -> Dict[str, Any]:
     """Audit the user's own uploaded data. Cheap pre-validation here; the heavy,
     GIL-bound fan-out runs out-of-process so the gateway never blocks."""
     path = _find_upload(req.uploaded_file)
@@ -465,11 +510,12 @@ async def run_audit(req: AuditRequest,
         if missing:
             raise HTTPException(400, f"columns not in file {req.uploaded_file!r}: {missing}")
 
-    job_id = f"audit_{uuid.uuid4().hex[:12]}"
-    _jobs[job_id] = {"state": "queued", "artifact": None, "error": None}
     # Ledger tenant comes from the VERIFIED token, never the body — overwrite
-    # the request's tenant_id before it reaches the ledger append.
-    payload = {**req.model_dump(), "tenant_id": _ledger_tenant(user)}
+    # the request's tenant_id before it reaches the ledger append, and scope the
+    # job record to the same tenant so only this org can poll the result.
+    tenant = _ledger_tenant(user)
+    job_id = _new_job("audit", tenant)
+    payload = {**req.model_dump(), "tenant_id": tenant}
     _jobs[job_id]["_task"] = asyncio.create_task(
         _run_audit_job_async(job_id, payload)
     )
@@ -1140,4 +1186,11 @@ def start_demo_prewarm() -> None:
 
 @app.on_event("startup")
 async def _prewarm_demos() -> None:
+    # Fail loud on a broken production signing key at startup rather than
+    # degrading silently the first time sign_bytes/verify_bytes is called
+    # (see signing.py — those now swallow the same RuntimeError by contract).
+    # NOTE: this hook does not fire when the gateway mounts this app
+    # in-process (see start_demo_prewarm's docstring) — that path still
+    # needs the equivalent call; not wired here (out of scope).
+    signing.validate_signing_config()
     start_demo_prewarm()

@@ -331,6 +331,14 @@ class AuraSettings(BaseSettings):
     rate_limit_enabled: bool = Field(True, alias="AURA_RATE_LIMIT_ENABLED")
     rate_limit_requests: int = Field(100, alias="AURA_RATE_LIMIT_REQUESTS")
     rate_limit_window_seconds: int = Field(60, alias="AURA_RATE_LIMIT_WINDOW_SECONDS")
+    # Credential endpoints (/auth/token, /auth/register) get their own, much
+    # tighter bucket. They are unauthenticated by necessity, so the general
+    # 100/min allowance is an invitation to credential-stuff and to bulk-create
+    # accounts. 10/min/IP still leaves ample room for a human mistyping a
+    # password while making an online guessing attack impractical.
+    auth_rate_limit_requests: int = Field(10, alias="AURA_AUTH_RATE_LIMIT_REQUESTS")
+    auth_rate_limit_window_seconds: int = Field(
+        60, alias="AURA_AUTH_RATE_LIMIT_WINDOW_SECONDS")
     redis_url: Optional[str] = Field(None, alias="AURA_REDIS_URL")
 
     model_config = {

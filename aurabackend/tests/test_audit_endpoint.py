@@ -45,12 +45,19 @@ def test_run_audit_subprocess_produces_signed_artifact_with_honesty(tmp_path, mo
 
 from fastapi.testclient import TestClient  # noqa: E402
 
+from shared.auth import create_access_token  # noqa: E402
+
+# /counterfactual/audit and the job poller are authenticated + tenant-scoped
+# (see main._new_job) — the same token must both submit and poll.
+_AUTH = {"Authorization":
+         f"Bearer {create_access_token({'sub': 'audit-tester', 'org_id': 'org-audit'})}"}
+
 
 def _client(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     (tmp_path / "data" / "uploads").mkdir(parents=True, exist_ok=True)
     from counterfactual_service.main import app
-    return TestClient(app)
+    return TestClient(app, headers=_AUTH)
 
 
 def test_audit_404_when_file_missing(tmp_path, monkeypatch):

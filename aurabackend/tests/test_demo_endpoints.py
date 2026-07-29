@@ -10,8 +10,17 @@ from fastapi.testclient import TestClient
 
 from counterfactual_service import main as m
 from counterfactual_service.main import app
+from shared.auth import create_access_token
 
-client = TestClient(app)
+
+def _auth(sub: str = "demo-tester", org: str = "org-demo") -> dict:
+    return {"Authorization": f"Bearer {create_access_token({'sub': sub, 'org_id': org})}"}
+
+
+# Job endpoints are tenant-scoped now (see main._new_job), so the demo producer
+# and the job poller must present the SAME token or the poll reads as a 404.
+# Bound on the client so every request in this module is authenticated.
+client = TestClient(app, headers=_auth())
 DEMO_METHODS = {"double_ml", "tmle", "iv"}
 
 
@@ -66,6 +75,28 @@ def test_demo_serves_prewarmed_artifact_instantly(monkeypatch):
     jr = client.get(f"/counterfactual/jobs/{body['job_id']}").json()
     assert jr["state"] == "succeeded"
     assert jr["artifact"]["audit_record_hash"] == "deadbeefcafe"
+
+
+def test_job_poll_requires_a_token():
+    r = TestClient(app).get("/counterfactual/jobs/ca_whatever")
+    assert r.status_code == 401
+
+
+def test_another_tenant_cannot_read_this_tenants_job(monkeypatch):
+    """Cross-tenant isolation on the job poller. Holding a valid job id is not
+    authorization — an audit result belongs to the org that produced it. The
+    response must be a 404, identical to a job that never existed, so it can't
+    be used to confirm which ids are real."""
+    monkeypatch.setitem(m._demo_last_good, "fair_lending", {"audit_record_hash": "secret"})
+    job_id = client.post("/counterfactual/demo/fair_lending").json()["job_id"]
+
+    intruder = TestClient(app, headers=_auth(sub="mallory", org="org-other"))
+    r = intruder.get(f"/counterfactual/jobs/{job_id}")
+    assert r.status_code == 404
+    assert "secret" not in r.text
+
+    # ...and the owning tenant still reads it fine.
+    assert client.get(f"/counterfactual/jobs/{job_id}").json()["state"] == "succeeded"
 
 
 # ── Tier B: the real audit (needs econml + dowhy) ───────────────────

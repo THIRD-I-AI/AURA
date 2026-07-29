@@ -9,7 +9,7 @@ for an httpx client without touching front-end code.
 """
 from __future__ import annotations
 
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Depends
 from fastapi.responses import Response
@@ -69,19 +69,27 @@ from counterfactual_service.main import (
     verify_artifact as _svc_verify_artifact,
 )
 from counterfactual_service.schemas import CounterfactualQuery
-from shared.auth import require_tenant
+from shared.auth import get_current_user, require_tenant, require_user
 
 router = APIRouter(prefix="/counterfactual", tags=["counterfactual"])
 
+# These handlers call the service functions DIRECTLY (in-process mount, see the
+# module docstring), so FastAPI never resolves the service function's own
+# Depends() defaults — they would arrive as raw Depends sentinels. Every
+# dependency the service needs must therefore be declared here and forwarded by
+# hand. Jobs are tenant-scoped (counterfactual_service.main._new_job) → require_user.
+
 
 @router.post("/jobs")
-async def submit(query: CounterfactualQuery) -> Dict[str, Any]:
-    return await _svc_submit(query)
+async def submit(query: CounterfactualQuery,
+                 user: Dict[str, Any] = Depends(require_user)) -> Dict[str, Any]:
+    return await _svc_submit(query, user=user)
 
 
 @router.get("/jobs/{job_id}")
-async def status(job_id: str) -> Dict[str, Any]:
-    return await _svc_get(job_id)
+async def status(job_id: str,
+                 user: Dict[str, Any] = Depends(require_user)) -> Dict[str, Any]:
+    return await _svc_get(job_id, user=user)
 
 
 @router.get("/info")
@@ -119,18 +127,28 @@ async def demo_scenarios() -> Dict[str, Any]:
 
 
 @router.post("/demo/{scenario_id}")
-async def run_demo(scenario_id: str, fresh: bool = False) -> Dict[str, Any]:
-    return await _svc_run_demo(scenario_id, fresh=fresh)
+async def run_demo(scenario_id: str, fresh: bool = False,
+                   user: Dict[str, Any] = Depends(require_user)) -> Dict[str, Any]:
+    return await _svc_run_demo(scenario_id, fresh=fresh, user=user)
 
 
 @router.post("/audit")
-async def run_audit(req: AuditRequest) -> Dict[str, Any]:
-    return await _svc_run_audit(req)
+async def run_audit(req: AuditRequest,
+                    user: Dict[str, Any] = Depends(require_user)) -> Dict[str, Any]:
+    return await _svc_run_audit(req, user=user)
 
 
 @router.post("/audit/financial")
-async def financial_audit(req: FinancialAuditRequest) -> Dict[str, Any]:
-    return await _svc_financial_audit(req)
+async def financial_audit(req: FinancialAuditRequest,
+                         user: Optional[Dict[str, Any]] = Depends(get_current_user),
+                         ) -> Dict[str, Any]:
+    # Was calling the service bare, so its own Depends(get_current_user) default
+    # arrived as a Depends sentinel and _ledger_tenant() crashed on .get() —
+    # this route 500'd through the gateway while working service-direct.
+    # NOTE: still OPTIONAL auth, matching the service. An anonymous call lands
+    # in the "default" tenant chain; tightening it to require_user is a posture
+    # decision, not a bug fix, so it is deliberately left alone here.
+    return await _svc_financial_audit(req, user=user)
 
 
 @router.get("/audit/financial/demo")

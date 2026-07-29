@@ -27,6 +27,11 @@ from counterfactual_service.engine import (
     strip_for_hashing,
 )
 from counterfactual_service.main import register_dataset
+from shared.auth import create_access_token
+
+# Job submit + poll are authenticated and tenant-scoped (see main._new_job).
+_AUTH = {"Authorization":
+         f"Bearer {create_access_token({'sub': 's13-tester', 'org_id': 'org-s13'})}"}
 from counterfactual_service.schemas import (
     CounterfactualQuery,
     DAGSpec,
@@ -72,7 +77,7 @@ async def test_bulk_replay_returns_ndjson_with_mixed_statuses(monkeypatch, tmp_p
         "audience":  "auditor",
     }
 
-    with TestClient(app) as client:
+    with TestClient(app, headers=_AUTH) as client:
         # Build a real artifact to verify against
         r = client.post("/counterfactual/jobs", json=payload)
         assert r.status_code == 200, r.text
@@ -112,7 +117,7 @@ def test_bulk_replay_rejects_empty_list():
 
     from counterfactual_service.main import app
 
-    with TestClient(app) as client:
+    with TestClient(app, headers=_AUTH) as client:
         r = client.post("/counterfactual/replay/bulk", json={"hashes": []})
         assert r.status_code == 422
 
@@ -123,7 +128,7 @@ def test_bulk_replay_caps_batch_at_256():
 
     from counterfactual_service.main import app
 
-    with TestClient(app) as client:
+    with TestClient(app, headers=_AUTH) as client:
         too_many = ["0" * 64] * 257
         r = client.post("/counterfactual/replay/bulk", json={"hashes": too_many})
         assert r.status_code == 422
