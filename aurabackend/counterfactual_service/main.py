@@ -671,7 +671,7 @@ async def financial_audit(req: FinancialAuditRequest,
     # an orphan that defeats the whole tamper-evident-chain guarantee.
     from shared import audit_ledger
     try:
-        await audit_ledger.append_audit(
+        await audit_ledger.append_audit_with_retry(
             tenant_id=tenant, kind="financial_audit_completed",
             subject_id=req.subject_id, subject_type=req.subject_type, preparer_id=req.preparer_id,
             cert_hash=stored["record_hash"], input_fingerprint=fingerprint,
