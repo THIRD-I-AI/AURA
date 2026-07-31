@@ -14,7 +14,7 @@ describe('auditApi', () => {
   it('listScenarios GETs the demo scenarios endpoint and unwraps the array', async () => {
     (fetch as ReturnType<typeof vi.fn>).mockReturnValue(mockJson({ scenarios: [{ id: 'fair_lending', title: 'T', vertical: 'compliance', description: 'd' }] }));
     const out = await auditApi.listScenarios();
-    expect(fetch).toHaveBeenCalledWith(`${API_BASE_URL}/counterfactual/demo/scenarios`);
+    expect(fetch).toHaveBeenCalledWith(`${API_BASE_URL}/counterfactual/demo/scenarios`, expect.anything());
     expect(out).toHaveLength(1);
     expect(out[0].id).toBe('fair_lending');
   });
@@ -29,15 +29,42 @@ describe('auditApi', () => {
   it('getJob GETs the job snapshot', async () => {
     (fetch as ReturnType<typeof vi.fn>).mockReturnValue(mockJson({ job_id: 'ca_1', state: 'running' }));
     const out = await auditApi.getJob('ca_1');
-    expect(fetch).toHaveBeenCalledWith(`${API_BASE_URL}/counterfactual/jobs/ca_1`);
+    expect(fetch).toHaveBeenCalledWith(`${API_BASE_URL}/counterfactual/jobs/ca_1`, expect.anything());
     expect(out.state).toBe('running');
   });
 
   it('verify GETs the artifact verify endpoint', async () => {
     (fetch as ReturnType<typeof vi.fn>).mockReturnValue(mockJson({ record_hash: 'h', verified: true, signature_status: 'ok', signing_key_source: 'persisted_file' }));
     const out = await auditApi.verify('h');
-    expect(fetch).toHaveBeenCalledWith(`${API_BASE_URL}/counterfactual/artifacts/h/verify`);
+    expect(fetch).toHaveBeenCalledWith(`${API_BASE_URL}/counterfactual/artifacts/h/verify`, expect.anything());
     expect(out.verified).toBe(true);
+  });
+
+  it('sends the bearer token on job polls once logged in', async () => {
+    // The job endpoints are authenticated + tenant-scoped server-side. A bare
+    // fetch 401s and surfaces to the user as an outage rather than a login
+    // problem, so pin the header rather than trusting it stays wired.
+    const { setAuthToken } = await import('../../services/api');
+    setAuthToken('tok-123');
+    try {
+      (fetch as ReturnType<typeof vi.fn>).mockReturnValue(mockJson({ job_id: 'ca_1', state: 'running' }));
+      await auditApi.getJob('ca_1');
+      expect(fetch).toHaveBeenCalledWith(
+        `${API_BASE_URL}/counterfactual/jobs/ca_1`,
+        expect.objectContaining({ headers: { Authorization: 'Bearer tok-123' } }),
+      );
+    } finally {
+      setAuthToken(null);
+    }
+  });
+
+  it('omits the auth header when logged out so anonymous routes still work', async () => {
+    (fetch as ReturnType<typeof vi.fn>).mockReturnValue(mockJson({ scenarios: [] }));
+    await auditApi.listScenarios();
+    expect(fetch).toHaveBeenCalledWith(
+      `${API_BASE_URL}/counterfactual/demo/scenarios`,
+      expect.objectContaining({ headers: {} }),
+    );
   });
 
   it('throws on non-ok responses', async () => {
