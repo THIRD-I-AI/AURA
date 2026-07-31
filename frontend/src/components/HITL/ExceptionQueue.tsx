@@ -1,7 +1,11 @@
 /**
  * HITL Exception Queue — PCAOB AS 1215 review workbench (S35).
  *
- * Live flow: run (or load) a signed financial audit → findings flagged
+ * Three independent ways into the queue below, kept visually separate so a
+ * user can tell at a glance which one touches their own data: (1) load the
+ * exception queue of an already-signed audit by record hash, (2) POST a
+ * user-authored ledger for a real audit, (3) run the fixed walkthrough
+ * sample. All three converge on the same flow: findings flagged
  * requires_human_review appear here → the auditor approves or overrides each
  * with a rationale → every decision becomes a signed HumanOverrideRecord +
  * WORM audit entry on the backend and the queue shrinks. Decisions need an
@@ -19,11 +23,21 @@ import { Button } from '@/components/ui-kit/button';
 import { cn } from '@/lib/cn';
 import {
   financialAuditService,
+  sanitizeRecordHash,
   type AuditFinding,
   type ExceptionQueueView,
   type FinancialAuditReport,
 } from '../../services/api';
 import { SAMPLE_AUDIT_BATCH } from '../../audit/sampleAuditBatch';
+
+// Shown as placeholder text (not a pre-filled value) so the empty textarea
+// documents the accepted shape without looking like real fabricated rows.
+const OWN_LEDGER_PLACEHOLDER = `{
+  "ledger": [{ "internal_id": "...", "account_code": "...", "amount": 0 }],
+  "invoices": [{ "invoice_number": "...", "po_number": "...", "amount": 0 }],
+  "purchase_orders": [{ "po_number": "..." }],
+  "journal_entries": [{ "internal_id": "...", "amount": 0, "account_code": "..." }]
+}`;
 
 const RISK_TONE: Record<string, string> = {
   Critical: 'border-danger text-danger',
@@ -54,6 +68,10 @@ export function ExceptionQueue() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [lastDecisionHash, setLastDecisionHash] = useState<string | null>(null);
+  const [hashInput, setHashInput] = useState('');
+  const [hashError, setHashError] = useState<string | null>(null);
+  const [ledgerText, setLedgerText] = useState('');
+  const [ledgerError, setLedgerError] = useState<string | null>(null);
 
   const refreshQueue = useCallback(async (recordHash: string) => {
     const [q, v] = await Promise.all([
@@ -80,6 +98,66 @@ export function ExceptionQueue() {
       setBusy(false);
     }
   }, [refreshQueue]);
+
+  // Pre-validate client-side so an obviously malformed hash never reaches the
+  // network — getExceptions/verify throw on this same 64-hex-char check, and
+  // an unvalidated call would surface that as an unhandled rejection instead
+  // of the inline message a typo deserves.
+  const loadByHash = useCallback(async () => {
+    const candidate = hashInput.trim();
+    if (!sanitizeRecordHash(candidate)) {
+      setHashError('Enter a 64-character sha256 hex record hash from a prior signed audit.');
+      return;
+    }
+    setHashError(null);
+    setError(null);
+    setBusy(true);
+    setSelected(null);
+    setLastDecisionHash(null);
+    setReport(null); // a hash lookup only yields the queue view, not a full report
+    try {
+      await financialAuditService.ensureAuditorToken();
+      await refreshQueue(candidate);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }, [hashInput, refreshQueue]);
+
+  const runOwnLedger = useCallback(async () => {
+    let ledgerFields: Record<string, unknown>;
+    try {
+      const parsed: unknown = JSON.parse(ledgerText);
+      if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        throw new Error('Expected a JSON object with array fields, e.g. { "ledger": [...], "invoices": [...] }.');
+      }
+      ledgerFields = parsed as Record<string, unknown>;
+    } catch (e) {
+      setLedgerError(`Invalid JSON: ${e instanceof Error ? e.message : String(e)}`);
+      return;
+    }
+    setLedgerError(null);
+    setError(null);
+    setBusy(true);
+    setSelected(null);
+    setLastDecisionHash(null);
+    try {
+      await financialAuditService.ensureAuditorToken();
+      // tenant_id is required on the wire, but the backend always overrides
+      // it from the verified JWT (never trusts the body) — this value is
+      // discarded server-side, so it isn't exposed as a user-facing field.
+      const payload = { tenant_id: 'ignored-by-backend', ...ledgerFields } as
+        Parameters<typeof financialAuditService.runAudit>[0];
+      const r = await financialAuditService.runAudit(payload);
+      setReport(r);
+      await refreshQueue(r.record_hash);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }, [ledgerText, refreshQueue]);
 
   const submitDecision = useCallback(async (approved: boolean) => {
     if (!queue || !selected || !rationale.trim()) return;
@@ -115,17 +193,13 @@ export function ExceptionQueue() {
             Every AI finding below requires documented human judgment. Decisions are
             ED25519-signed and chained into the WORM audit log.
           </p>
-          <div className="flex flex-wrap items-center gap-3">
-            <Button onClick={runSampleAudit} disabled={busy}>
-              {busy ? 'Working…' : 'Run sample financial audit'}
-            </Button>
-            {report && (
-              <span className="text-sm text-text-secondary">
-                Report <code className="font-mono">{report.record_hash.slice(0, 12)}…</code> · {report.signature_status} ·{' '}
-                {verified === null ? 'verifying…' : verified ? '✓ signature verified' : '✗ VERIFICATION FAILED'}
-              </span>
-            )}
-          </div>
+          {queue && (
+            <span className="text-sm text-text-secondary">
+              Record <code className="font-mono">{queue.record_hash.slice(0, 12)}…</code>
+              {report && <> · {report.signature_status}</>} ·{' '}
+              {verified === null ? 'verifying…' : verified ? '✓ signature verified' : '✗ VERIFICATION FAILED'}
+            </span>
+          )}
           {error && (
             <p role="alert" className="border border-danger bg-secondary px-3 py-1.5 font-mono text-xs text-danger">
               {error}
@@ -138,6 +212,70 @@ export function ExceptionQueue() {
           )}
         </PanelBody>
       </Panel>
+
+      <div className="grid grid-cols-1 gap-5 md:grid-cols-3">
+        <Panel>
+          <PanelHeader title="Load a signed audit" />
+          <PanelBody className="flex flex-col gap-3">
+            <p className="text-xs leading-snug text-text-tertiary">
+              Look up the exception queue of an audit that already ran, by its record hash.
+            </p>
+            <label className="flex flex-col gap-2 text-sm text-text-secondary">
+              Record hash
+              <input
+                type="text"
+                value={hashInput}
+                onChange={(e) => { setHashInput(e.target.value); setHashError(null); }}
+                placeholder="64-char sha256 hex, from a prior report"
+                className="w-full rounded-none border border-border bg-card p-2 font-mono text-2xs text-card-foreground focus:border-signal focus:outline-none"
+              />
+            </label>
+            {hashError && (
+              <p role="alert" className="font-mono text-2xs text-danger">{hashError}</p>
+            )}
+            <Button variant="outline" onClick={loadByHash} disabled={busy || !hashInput.trim()}>
+              {busy ? 'Working…' : 'Load audit'}
+            </Button>
+          </PanelBody>
+        </Panel>
+
+        <Panel>
+          <PanelHeader title="Audit your ledger" />
+          <PanelBody className="flex flex-col gap-3">
+            <p className="text-xs leading-snug text-text-tertiary">
+              Paste your own ledger/invoice/PO/journal-entry rows as JSON and run a real audit.
+            </p>
+            <label className="flex flex-col gap-2 text-sm text-text-secondary">
+              Ledger JSON
+              <textarea
+                value={ledgerText}
+                onChange={(e) => { setLedgerText(e.target.value); setLedgerError(null); }}
+                rows={5}
+                placeholder={OWN_LEDGER_PLACEHOLDER}
+                className="w-full resize-y rounded-none border border-border bg-card p-2 font-mono text-2xs text-card-foreground focus:border-signal focus:outline-none"
+              />
+            </label>
+            {ledgerError && (
+              <p role="alert" className="font-mono text-2xs text-danger">{ledgerError}</p>
+            )}
+            <Button variant="outline" onClick={runOwnLedger} disabled={busy || !ledgerText.trim()}>
+              {busy ? 'Working…' : 'Run my audit'}
+            </Button>
+          </PanelBody>
+        </Panel>
+
+        <Panel>
+          <PanelHeader title="Demo scenario" />
+          <PanelBody className="flex flex-col gap-3">
+            <p className="text-xs leading-snug text-text-tertiary">
+              Runs a fixed sample ledger for walkthroughs — not your data.
+            </p>
+            <Button onClick={runSampleAudit} disabled={busy}>
+              {busy ? 'Working…' : 'Run demo scenario'}
+            </Button>
+          </PanelBody>
+        </Panel>
+      </div>
 
       {queue && (
         <div className="grid grid-cols-1 gap-5 md:grid-cols-2">

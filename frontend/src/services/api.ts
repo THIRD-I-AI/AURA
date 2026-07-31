@@ -1277,6 +1277,48 @@ export const pipelineService = {
   },
 };
 
+/**
+ * Metadata Store — the semantic-model catalog. `metadata_store/` is a
+ * separate service module but has no standalone gateway router; the only
+ * read path the gateway exposes is GET /semantic/models (registered in
+ * pipelines.py, backed by metadata_store.repository). There is no bulk
+ * "list dataset profiles" endpoint — only per-file GET /files/{id}/profile.
+ */
+export interface SemanticField {
+  id: string;
+  name: string;
+  field_type: string;
+  data_type?: string | null;
+  expression?: string | null;
+  description?: string | null;
+  aggregation?: string | null;
+  metadata?: Record<string, unknown>;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface SemanticModel {
+  id: string;
+  name: string;
+  description?: string | null;
+  source: Record<string, unknown>;
+  tags: string[];
+  created_at?: string;
+  updated_at?: string;
+  fields: SemanticField[];
+}
+
+export const metadataService = {
+  /** List the real semantic-model catalog. Throws on a repository-unavailable
+   *  body (status: 'error') so the panel's honest error state fires instead
+   *  of silently rendering an empty catalog. */
+  async listModels(): Promise<SemanticModel[]> {
+    const resp = await client.get<{ status: string; models?: SemanticModel[]; error?: string }>('/semantic/models');
+    if (resp.status !== 'success') throw new Error(resp.error || 'Metadata store is unavailable.');
+    return resp.models ?? [];
+  },
+};
+
 // =============================================================================
 // Webhooks (outbound + inbound) Types & Services
 // =============================================================================

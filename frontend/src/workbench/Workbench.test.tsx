@@ -131,6 +131,10 @@ describe('Workbench', () => {
     vi.useRealTimers();
   });
 
+  // NB: VIEW_REGISTRY is mocked above down to a single 'Dashboards' entry, so
+  // ANY other nav name exercises the fallback here — including ones that are
+  // registered for real in production (Scheduler now is). This tests the stub
+  // mechanism, not the real registry's coverage.
   it('an unregistered nav still gets the honest stub', async () => {
     vi.useFakeTimers();
     await boot();

@@ -16,6 +16,9 @@ const StreamingPanel = lazy(() => import('./panels/StreamingPanel'));
 const Lineage = lazy(() => import('./panels/LineagePanel'));
 const HealingQueue = lazy(() => import('./panels/HealingQueuePanel'));
 const AskAura = lazy(() => import('./panels/AskAuraPanel'));
+const Certificates = lazy(() => import('./panels/CertificatesPanel'));
+const Scheduler = lazy(() => import('./panels/SchedulerPanel'));
+const MetadataStore = lazy(() => import('./panels/MetadataStorePanel'));
 
 // Still-embedded classic pages (pending native rebuild).
 const PipelinesPanel = lazy(() => import('../pages/PipelinesPanel'));
@@ -43,6 +46,9 @@ export const VIEW_REGISTRY: Record<string, ViewEntry> = {
   'Connectors': c(Connectors),
   'Files & Data': c(FilesAndData),
   'Lineage': c(Lineage),
+  'Certificates': c(Certificates),
+  'Scheduler': c(Scheduler),
+  'Metadata Store': c(MetadataStore),
 };
 
 /* Classic pages navigate via setCurrentPage(pageId) — translate to nav names. */

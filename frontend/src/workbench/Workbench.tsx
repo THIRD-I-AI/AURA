@@ -41,20 +41,11 @@ const NAV_GROUPS: [string, string[]][] = [
 ];
 
 /* Descriptions for platform modules that don't yet have a dedicated inline view. */
-const STUB_DESCS: Record<string, string> = {
-  Dashboards: 'Saved-query tiles rendered as live charts (Recharts), workspace-scoped, with presence indicators for collaborators.',
-  Library: 'Saved queries and reusable analysis snippets shared across the workspace.',
-  Certificates: 'Signed audit certificates (PCAOB-style) with public verify links and ED25519 signatures.',
-  Scheduler: 'Distributed job queue (LISTEN/NOTIFY) — cron-style schedules for pipelines, audits, and DAR research runs.',
-  Webhooks: 'Outbound event subscriptions: pipeline completions, healing events, signed findings.',
-  Cost: 'Per-service and per-query spend, budgets, and anomaly alerts on cost drift.',
-  Connectors: 'PostgreSQL · MySQL · BigQuery · DuckDB · FAISS · spatial — credential vault + health checks.',
-  'Files & Data': 'Uploads, datasets, and the DuckDB analytics lake with atomic Parquet loads.',
-  'Metadata Store': 'Schema registry and catalog the critic validates every generated query against.',
-  'Ask AURA': 'Full-page conversational analytics over your datasets.',
-  'Audit Workbench': 'HITL exception review with signed decisions.',
-};
-
+// STUB_DESCS is gone: every nav entry now resolves to a real panel in
+// VIEW_REGISTRY, so all of its descriptions were unreachable — and the
+// Scheduler one actively overclaimed, advertising a distributed LISTEN/NOTIFY
+// job queue that has no gateway route at all. The stub branch below stays as
+// the honest fallback for any nav added before its panel exists.
 const CF_STAGES = [
   'Submitting job to counterfactual service…',
   'Estimators 1–4: backdoor.linear_reg · psm · dml · ipw…',
@@ -302,7 +293,12 @@ export default function Workbench() {
       setCf((c) => (c.status === 'running' && c.stageIdx < CF_STAGES.length - 1 ? { status: 'running', stageIdx: c.stageIdx + 1 } : c));
     }, 700);
     try {
-      const r = await fetch(`${API_BASE_URL}/counterfactual/audit/financial/demo`);
+      // Endpoint is currently anonymous, but send the bearer anyway: the audit it
+      // signs is chained under the caller's tenant, and every sibling call here
+      // already carries it. A bare fetch is how the job endpoints silently 401'd.
+      const demoTok = getAuthToken();
+      const r = await fetch(`${API_BASE_URL}/counterfactual/audit/financial/demo`,
+                            demoTok ? { headers: { Authorization: `Bearer ${demoTok}` } } : undefined);
       if (!r.ok) throw new Error(`audit service replied ${r.status}`);
       const j = await r.json();
       const hash = typeof j.record_hash === 'string' ? j.record_hash : null;
@@ -616,6 +612,19 @@ export default function Workbench() {
                     "Run the full forensic sweep — Benford, cutoff, three-way match, segregation of duties,
                     expectation analytics — and sign the findings to the ledger."
                   </div>
+                  {/* Say plainly which half is a demo. The INPUT is a fixed sample
+                      ledger (GET …/audit/financial/demo); the signing, hashing and
+                      ledger chaining that follow are the real production pipeline.
+                      Without this the tile reads as if it had audited the user's books. */}
+                  <div className="aw-mono" style={{ fontSize: 10.5, lineHeight: 1.6, color: 'var(--text3)', border: '1px solid var(--hair)', borderRadius: 0, padding: '7px 9px', background: 'var(--sunken)' }} data-testid="wb-cf-demo-notice">
+                    DEMO SCENARIO — runs a fixed sample ledger. The signature, record hash and
+                    ledger chaining below are real. To audit your own ledger, use{' '}
+                    <button
+                      type="button"
+                      onClick={() => selectNav('Exception Queue')}
+                      style={{ background: 'none', border: 'none', padding: 0, font: 'inherit', color: 'var(--accent)', cursor: 'pointer', textDecoration: 'underline' }}
+                    >Exception Queue</button>.
+                  </div>
                   {cf.status === 'running' && (
                     <div style={{ display: 'flex', flexDirection: 'column', gap: 7, padding: '6px 0' }}>
                       {CF_STAGES.map((label, i) => (
@@ -648,7 +657,7 @@ export default function Workbench() {
                     )}
                     <div style={{ flex: 1 }} />
                     <button onClick={runCf} disabled={cf.status === 'running'} className="aw-btn-accent" style={{ fontSize: 11.5, padding: '5px 11px', borderRadius: 0, opacity: cf.status === 'running' ? 0.6 : 1 }}>
-                      {cf.status === 'idle' ? 'Run signed audit' : cf.status === 'running' ? 'Running…' : 'Re-run audit'}
+                      {cf.status === 'idle' ? 'Run demo audit' : cf.status === 'running' ? 'Running…' : 'Re-run demo audit'}
                     </button>
                   </div>
                 </div>
@@ -779,7 +788,7 @@ export default function Workbench() {
           {showStub && (
             <div style={{ background: 'var(--surface)', border: '1px dashed var(--border)', borderRadius: 0, padding: 36, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10, textAlign: 'center' }} data-testid="wb-stub">
               <div className="aw-display" style={{ fontWeight: 600, fontSize: 13 }}>{nav}</div>
-              <div style={{ fontSize: 12.5, color: 'var(--text2)', maxWidth: 460, lineHeight: 1.6 }}>{STUB_DESCS[nav] || 'Module from the AURA platform.'}</div>
+              <div style={{ fontSize: 12.5, color: 'var(--text2)', maxWidth: 460, lineHeight: 1.6 }}>This module has no panel yet. Nothing is being shown for it — no data is implied.</div>
             </div>
           )}
           </motion.div>
