@@ -9,7 +9,7 @@ import { Button } from '@/components/ui-kit/button';
 import CounterfactualCard, {
   type CounterfactualOperatorView,
 } from '../components/CounterfactualCard';
-import { API_BASE_URL, sanitizeRecordHash } from '../services/api';
+import { API_BASE_URL, getAuthToken, sanitizeRecordHash } from '../services/api';
 
 type Audience = 'operator' | 'auditor' | 'analyst';
 
@@ -65,9 +65,15 @@ export default function Counterfactual() {
     setProgress('Submitting…');
 
     try {
+      // Jobs are authenticated + tenant-scoped server-side; both the submit and
+      // every poll below must carry the bearer or the run 401s and reads as an
+      // engine outage rather than a session problem.
+      const t = getAuthToken();
+      const auth: Record<string, string> = t ? { Authorization: `Bearer ${t}` } : {};
+
       const submitResp = await fetch(`${API_BASE_URL}/counterfactual/jobs`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...auth },
         body: queryText,
       });
       if (!submitResp.ok) {
@@ -78,7 +84,8 @@ export default function Counterfactual() {
 
       for (let i = 0; i < 120; i++) {
         await new Promise(res => setTimeout(res, 1000));
-        const statusResp = await fetch(`${API_BASE_URL}/counterfactual/jobs/${job_id}`);
+        const statusResp = await fetch(`${API_BASE_URL}/counterfactual/jobs/${job_id}`,
+                                       { headers: auth });
         const status = await statusResp.json();
         if (status.state === 'succeeded') {
           setArtifact(status.artifact.rendered as CounterfactualOperatorView);
