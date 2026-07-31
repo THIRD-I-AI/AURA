@@ -51,6 +51,22 @@ def _reset_storage_backend_singleton():
         pass
 
 
+@pytest.fixture(autouse=True)
+def _reset_rate_limit_counters():
+    """Rate-limit windows are per-IP but process-global, and every TestClient
+    request in the suite reports the same client host. The credential
+    endpoints have a deliberately tight bucket (10/60s), so without this reset
+    the 11th /auth/* call anywhere in a run 429s an unrelated test — which is
+    exactly how test_auth's 422 assertion started failing only under the full
+    gate and never in isolation."""
+    try:
+        from shared.rate_limit import InMemoryBackend
+        InMemoryBackend.reset_all()
+    except Exception:
+        pass
+    yield
+
+
 def pytest_sessionfinish(session, exitstatus):
     """Shut down joblib/loky's reusable process pool explicitly.
 

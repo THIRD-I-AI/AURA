@@ -133,7 +133,17 @@ def test_audit_reachable_through_gateway(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     (tmp_path / "data" / "uploads").mkdir(parents=True, exist_ok=True)
     from api_gateway.main import app as gw
-    gc = TestClient(gw)
+    gc = TestClient(gw, headers=_AUTH)
     r = gc.post("/api/v1/counterfactual/audit", json={
         "uploaded_file": "nope.csv", "treatment": "t", "outcome": "y", "confounders": []})
     assert r.status_code == 404  # routed through; file-missing check fired
+
+
+def test_audit_through_gateway_requires_auth():
+    """The gateway calls the service handler directly (in-process mount), so
+    the service's own Depends() never resolves — the dependency has to be
+    declared on the gateway route. Assert it actually is."""
+    from api_gateway.main import app as gw
+    r = TestClient(gw).post("/api/v1/counterfactual/audit", json={
+        "uploaded_file": "nope.csv", "treatment": "t", "outcome": "y", "confounders": []})
+    assert r.status_code == 401
