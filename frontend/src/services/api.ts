@@ -1645,6 +1645,17 @@ export const financialAuditService = {
     purchase_orders?: Array<Record<string, unknown>>;
     invoices?: Array<Record<string, unknown>>;
     journal_entries?: Array<Record<string, unknown>>;
+    historical_reports?: Array<Record<string, unknown>>;
+    // Enables the AS-2201 three-way match (PO ↔ invoice ↔ goods receipt).
+    goods_receipts?: Array<Record<string, unknown>>;
+    // Enables AS-2401 cutoff testing.
+    period_end?: string;
+    // AS-1215 audit-identity fields — omit to let the backend apply its
+    // documented defaults ("default" / "dataset" / "system") rather than
+    // writing a fabricated value into a signed audit record.
+    subject_id?: string;
+    subject_type?: string;
+    preparer_id?: string;
   }): Promise<FinancialAuditReport> {
     return client.post<FinancialAuditReport>('/counterfactual/audit/financial', payload);
   },

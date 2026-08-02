@@ -32,11 +32,15 @@ import { SAMPLE_AUDIT_BATCH } from '../../audit/sampleAuditBatch';
 
 // Shown as placeholder text (not a pre-filled value) so the empty textarea
 // documents the accepted shape without looking like real fabricated rows.
+// goods_receipts/historical_reports are arrays, so they belong here rather
+// than as scalar form fields (period_end/subject_id/preparer_id below).
 const OWN_LEDGER_PLACEHOLDER = `{
   "ledger": [{ "internal_id": "...", "account_code": "...", "amount": 0 }],
   "invoices": [{ "invoice_number": "...", "po_number": "...", "amount": 0 }],
   "purchase_orders": [{ "po_number": "..." }],
-  "journal_entries": [{ "internal_id": "...", "amount": 0, "account_code": "..." }]
+  "journal_entries": [{ "internal_id": "...", "amount": 0, "account_code": "..." }],
+  "goods_receipts": [{ "po_number": "..." }],
+  "historical_reports": [{ "account_code": "...", "amount": 0 }]
 }`;
 
 const RISK_TONE: Record<string, string> = {
@@ -72,6 +76,12 @@ export function ExceptionQueue() {
   const [hashError, setHashError] = useState<string | null>(null);
   const [ledgerText, setLedgerText] = useState('');
   const [ledgerError, setLedgerError] = useState<string | null>(null);
+  // Scalar AS-1215/AS-2401 fields — kept as their own inputs (not JSON) since
+  // a user would reasonably type single values here; left blank means "omit
+  // the key" so the backend's documented default applies (see runOwnLedger).
+  const [periodEnd, setPeriodEnd] = useState('');
+  const [subjectId, setSubjectId] = useState('');
+  const [preparerId, setPreparerId] = useState('');
 
   const refreshQueue = useCallback(async (recordHash: string) => {
     const [q, v] = await Promise.all([
@@ -149,6 +159,13 @@ export function ExceptionQueue() {
       // discarded server-side, so it isn't exposed as a user-facing field.
       const payload = { tenant_id: 'ignored-by-backend', ...ledgerFields } as
         Parameters<typeof financialAuditService.runAudit>[0];
+      // Scalar fields come from their own inputs, not the JSON textarea.
+      // Blank means "not provided" — omit the key entirely rather than
+      // sending "" (which would overwrite the backend's documented default
+      // with an empty value in a signed audit record).
+      if (periodEnd.trim()) payload.period_end = periodEnd.trim();
+      if (subjectId.trim()) payload.subject_id = subjectId.trim();
+      if (preparerId.trim()) payload.preparer_id = preparerId.trim();
       const r = await financialAuditService.runAudit(payload);
       setReport(r);
       await refreshQueue(r.record_hash);
@@ -157,7 +174,7 @@ export function ExceptionQueue() {
     } finally {
       setBusy(false);
     }
-  }, [ledgerText, refreshQueue]);
+  }, [ledgerText, periodEnd, subjectId, preparerId, refreshQueue]);
 
   const submitDecision = useCallback(async (approved: boolean) => {
     if (!queue || !selected || !rationale.trim()) return;
@@ -245,8 +262,39 @@ export function ExceptionQueue() {
             <p className="text-xs leading-snug text-text-tertiary">
               Paste your own ledger/invoice/PO/journal-entry rows as JSON and run a real audit.
             </p>
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+              <label className="flex flex-col gap-2 text-sm text-text-secondary">
+                Period end (optional)
+                <input
+                  type="date"
+                  value={periodEnd}
+                  onChange={(e) => setPeriodEnd(e.target.value)}
+                  className="w-full rounded-none border border-border bg-card p-2 font-mono text-2xs text-card-foreground focus:border-signal focus:outline-none"
+                />
+              </label>
+              <label className="flex flex-col gap-2 text-sm text-text-secondary">
+                Subject ID (optional)
+                <input
+                  type="text"
+                  value={subjectId}
+                  onChange={(e) => setSubjectId(e.target.value)}
+                  placeholder="defaults to &quot;default&quot;"
+                  className="w-full rounded-none border border-border bg-card p-2 font-mono text-2xs text-card-foreground focus:border-signal focus:outline-none"
+                />
+              </label>
+              <label className="flex flex-col gap-2 text-sm text-text-secondary">
+                Preparer ID (optional)
+                <input
+                  type="text"
+                  value={preparerId}
+                  onChange={(e) => setPreparerId(e.target.value)}
+                  placeholder="defaults to &quot;system&quot;"
+                  className="w-full rounded-none border border-border bg-card p-2 font-mono text-2xs text-card-foreground focus:border-signal focus:outline-none"
+                />
+              </label>
+            </div>
             <label className="flex flex-col gap-2 text-sm text-text-secondary">
-              Ledger JSON
+              Ledger JSON (goods receipts / historical reports go here as arrays)
               <textarea
                 value={ledgerText}
                 onChange={(e) => { setLedgerText(e.target.value); setLedgerError(null); }}
