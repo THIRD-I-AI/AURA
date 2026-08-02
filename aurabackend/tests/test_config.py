@@ -205,3 +205,53 @@ class TestAuraSettings:
         )
         assert "myhost:5433/mydb" in s.db_dsn
         assert "myuser:mypass" in s.db_dsn
+
+
+class TestProductionEnvFailsClosed:
+    """Every production safeguard hangs off `_is_production_env`: JWT
+    enforcement (and therefore tenant isolation), the open-auth-mode rejection,
+    the SECRET_KEY check, and the ephemeral-signing-key refusal. It used to
+    match an allowlist of exactly {"production", "prod"}, so a deploy named
+    `prod-eu` or `staging` silently disabled ALL of them at once — every route
+    unauthenticated, every request collapsed into one shared 'default'
+    workspace. These pin the inverted, fail-closed behaviour."""
+
+    @pytest.mark.parametrize("name", [
+        "development", "dev", "devel", "test", "testing", "ci",
+        "local", "localhost", "docker", "sandbox", "demo",
+        "DEVELOPMENT", "  dev  ",  # case + surrounding whitespace normalised
+    ])
+    def test_known_non_production_names(self, name):
+        from shared.config import _is_production_env
+        assert _is_production_env(name) is False
+
+    @pytest.mark.parametrize("name", [
+        "production", "prod", "PROD",
+        # The regression this class exists for: every one of these previously
+        # returned False and disabled all production guards simultaneously.
+        "prod-eu", "prod-us-east-1", "production-eu", "staging", "live",
+        "preprod", "uat", "prd", "typo-here", "",
+    ])
+    def test_unrecognised_names_are_production(self, name):
+        from shared.config import _is_production_env
+        assert _is_production_env(name) is True
+
+    def test_jwt_disabled_in_prod_like_env_now_fails_loudly(self):
+        """The payoff: a realistic multi-region name refuses to boot rather
+        than silently serving every tenant from one shared workspace."""
+        from shared.config import AuraSettings
+        with pytest.raises(ValueError, match="AURA_JWT_ENABLED must be true"):
+            AuraSettings(
+                _env_file=None,
+                ENVIRONMENT="prod-eu",
+                AURA_JWT_ENABLED=False,
+                AURA_AUTH_MODE="password",
+                SECRET_KEY="x" * 48,
+            )
+
+    def test_dev_still_boots_with_jwt_disabled(self):
+        """The inversion must not break ordinary local development."""
+        from shared.config import AuraSettings
+        s = AuraSettings(_env_file=None, ENVIRONMENT="development",
+                         AURA_JWT_ENABLED=False, SECRET_KEY="x")
+        assert s.is_production is False

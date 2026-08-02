@@ -32,12 +32,44 @@ def _locate_env_files() -> list[str]:
 # var. A deployment named "prod" (a common shorthand) must trip the same
 # hard-fail validators as "production" — comparing only the exact string
 # "production" let "prod" silently bypass every security gate below.
-_PRODUCTION_ENV_NAMES = {"production", "prod"}
+# Names KNOWN to be non-production. Anything else is treated as production —
+# see _is_production_env for why this list, and not its inverse, is enumerated.
+_NON_PRODUCTION_ENV_NAMES = {
+    "development", "dev", "devel",
+    "test", "testing", "ci",
+    "local", "localhost", "docker",
+    "sandbox", "demo",
+}
 
 
 def _is_production_env(value: str) -> bool:
-    """True if *value* (an ENVIRONMENT setting) names a production deploy."""
-    return (value or "").strip().lower() in _PRODUCTION_ENV_NAMES
+    """True unless *value* (an ENVIRONMENT setting) explicitly names a known
+    non-production deploy.
+
+    FAIL-CLOSED BY DESIGN. This previously matched an allowlist of exactly
+    {"production", "prod"}, so any other name returned False — and every
+    production safeguard hangs off this one predicate:
+
+      * jwt_enabled  → JWTAuthMiddleware is not installed at all, so EVERY
+        route is unauthenticated and every request collapses to the shared
+        'default' workspace, i.e. two tenants read each other's data
+      * auth_mode='open' → tokens minted with no credential validation
+      * SECRET_KEY / CORS-over-HTTP validators → skipped
+      * the ephemeral-signing-key refusal → skipped, so audit certificates
+        silently stop surviving a restart
+
+    A deployment named `prod-eu`, `prod-us-east-1`, `staging` or `live` — all
+    ordinary choices, especially multi-region — therefore disabled every one of
+    them at once, silently. Inverting the test makes an unrecognised name get
+    the SAFE treatment: a misconfigured deploy fails loudly at startup instead
+    of quietly serving one shared tenant.
+
+    The cost of inverting is that a genuinely non-production environment with an
+    unlisted name refuses to boot until it is added above or renamed. That is
+    the correct direction for the error to point: noisy in dev, never silent in
+    prod.
+    """
+    return (value or "").strip().lower() not in _NON_PRODUCTION_ENV_NAMES
 
 
 class AuraSettings(BaseSettings):
