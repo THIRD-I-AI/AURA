@@ -5,7 +5,6 @@ Database connection CRUD, testing, schema introspection, and connector proxies.
 """
 
 import os
-import threading
 import uuid as _uuid
 from datetime import datetime
 from typing import Any, Dict, List, Optional
@@ -13,6 +12,8 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, HTTPException, Request, status
 from pydantic import BaseModel, Field
 
+from api_gateway import persistence
+from api_gateway.routers.workspaces import current_workspace_id
 from connectors import (
     ConnectorConfig,
     SourceType,
@@ -30,8 +31,11 @@ router = APIRouter(tags=["Connections"])
 
 # ── In-memory store ──────────────────────────────────────────────────
 
-_connections_lock = threading.Lock()
-_connections_store: Dict[str, Dict[str, Any]] = {}  # id → connection dict
+# Connections live in the gateway persistence layer (persistence.ConnectionRow),
+# workspace-scoped, with the password encrypted at rest. The module-level dict
+# that used to hold them had NO tenant filter, so GET /connections returned
+# every organisation's connections to any caller — and it discarded the
+# password outright, so nothing stored here could ever authenticate.
 
 
 def _make_connector(conn_type: str, config: ConnectorConfig):
@@ -163,8 +167,10 @@ async def get_connections(request: Request):
 
     from api_gateway.routers.workspaces import tenant_upload_dir
 
-    with _connections_lock:
-        conns = list(_connections_store.values())
+    # Workspace-scoped. This listing previously returned EVERY organisation's
+    # connections — host, port, database, username — because the store was a
+    # single unfiltered dict.
+    conns = await persistence.list_connections(current_workspace_id(request))
     file_sources = 0
     try:
         # Count datasets in the CALLER's per-tenant upload dir (matches
@@ -183,7 +189,7 @@ async def get_connections(request: Request):
 
 
 @router.post("/connections")
-async def create_connection(req: ConnectionCreateRequest):
+async def create_connection(req: ConnectionCreateRequest, request: Request):
     """Register a new data source connection.
 
     The connector ``type`` is validated against the registry — unknown or
@@ -208,34 +214,43 @@ async def create_connection(req: ConnectionCreateRequest):
             },
         )
 
-    conn_id = str(_uuid.uuid4())[:12]
-    now = datetime.now().isoformat()
-    conn = {
-        "id": conn_id, "name": req.name, "type": req.type,
+    ts = datetime.now()
+    now = ts.isoformat()
+    record = {
+        "id": str(_uuid.uuid4()),
+        "workspace_id": current_workspace_id(request),
+        "name": req.name, "type": req.type,
         "host": req.host, "port": req.port, "database": req.database,
         "username": req.username, "ssl": req.ssl,
-        "is_active": False, "created_at": now, "updated_at": now,
-        "last_tested": None, "table_count": 0,
+        "created_at": now, "created_ts": ts.timestamp(), "updated_at": now,
     }
-    with _connections_lock:
-        _connections_store[conn_id] = conn
-    logger.info("Connection created: %s (%s/%s)", conn_id, req.type, req.name)
+    # The password is passed SEPARATELY from `record` and encrypted inside the
+    # repository, so a plaintext secret is never a member of the dict that gets
+    # logged or returned. It used to be read off the request and then simply
+    # dropped, which is why no saved connection could ever authenticate.
+    conn = await persistence.insert_connection(record, req.password)
+    logger.info("Connection created: %s (%s/%s)", conn["id"], req.type, req.name)
     return {"success": True, "connection": conn}
 
 
 @router.post("/connections/{connection_id}/test")
-async def test_connection_by_id(connection_id: str):
-    """Test an existing connection by ID."""
-    with _connections_lock:
-        conn = _connections_store.get(connection_id)
+async def test_connection_by_id(connection_id: str, request: Request):
+    """Test an existing connection by ID, using its REAL stored credential."""
+    wsid = current_workspace_id(request)
+    conn = await persistence.get_connection(connection_id, wsid)
     if not conn:
+        # 404 for another workspace's id too — a 403 would confirm it exists.
         raise HTTPException(status_code=404, detail="Connection not found")
     try:
+        # Decrypt only here, where a real connection is about to be opened.
+        # This test previously always passed password="" and so could never
+        # report anything truthful about whether the connection works.
+        password = await persistence.get_connection_secret(connection_id, wsid)
         connector_config = ConnectorConfig(
             source_type=SourceType(conn["type"]), name=conn["name"],
-            host=conn.get("host", ""), port=conn.get("port", 5432),
-            username=conn.get("username", ""), password="",
-            database=conn.get("database", ""),
+            host=conn.get("host") or "", port=conn.get("port") or 5432,
+            username=conn.get("username") or "", password=password or "",
+            database=conn.get("database") or "",
         )
         connector = _make_connector(conn["type"], connector_config)
         if connector is None:
@@ -244,39 +259,49 @@ async def test_connection_by_id(connection_id: str):
         if connected:
             tables = await connector.list_tables()
             await connector.disconnect()
-            with _connections_lock:
-                _connections_store[connection_id]["is_active"] = True
-                _connections_store[connection_id]["last_tested"] = datetime.now().isoformat()
-                _connections_store[connection_id]["table_count"] = len(tables)
+            await persistence.update_connection_status(
+                connection_id, wsid, is_active=True,
+                last_tested=datetime.now().isoformat(), table_count=len(tables),
+            )
             return {"success": True, "message": f"Connected. Found {len(tables)} tables.", "table_count": len(tables)}
+        # Record the failure too, so the UI can show a connection as broken
+        # rather than leaving a stale "active" badge from an earlier success.
+        await persistence.update_connection_status(
+            connection_id, wsid, is_active=False,
+            last_tested=datetime.now().isoformat(),
+        )
         return {"success": False, "message": "Connection failed"}
     except Exception as e:
         return {"success": False, "message": sanitize_error(e, logger=logger, context="connection test by id")}
 
 
 @router.delete("/connections/{connection_id}")
-async def delete_connection(connection_id: str):
+async def delete_connection(connection_id: str, request: Request):
     """Remove a registered connection."""
-    with _connections_lock:
-        removed = _connections_store.pop(connection_id, None)
-    if not removed:
+    wsid = current_workspace_id(request)
+    conn = await persistence.get_connection(connection_id, wsid)
+    if not conn or not await persistence.delete_connection(connection_id, wsid):
         raise HTTPException(status_code=404, detail="Connection not found")
-    return {"success": True, "message": f"Connection '{removed['name']}' deleted"}
+    return {"success": True, "message": f"Connection '{conn['name']}' deleted"}
 
 
 @router.get("/connections/{connection_id}/schema")
-async def get_connection_schema(connection_id: str):
+async def get_connection_schema(connection_id: str, request: Request):
     """Get table/column schema for a connection."""
-    with _connections_lock:
-        conn = _connections_store.get(connection_id)
+    wsid = current_workspace_id(request)
+    conn = await persistence.get_connection(connection_id, wsid)
     if not conn:
         raise HTTPException(status_code=404, detail="Connection not found")
     try:
+        # Same fix as the test endpoint: introspection needs the real
+        # credential, and passing password="" meant this could only ever
+        # succeed against a database that requires no authentication.
+        password = await persistence.get_connection_secret(connection_id, wsid)
         connector_config = ConnectorConfig(
             source_type=SourceType(conn["type"]), name=conn["name"],
-            host=conn.get("host", ""), port=conn.get("port", 5432),
-            username=conn.get("username", ""), password="",
-            database=conn.get("database", ""),
+            host=conn.get("host") or "", port=conn.get("port") or 5432,
+            username=conn.get("username") or "", password=password or "",
+            database=conn.get("database") or "",
         )
         connector = _make_connector(conn["type"], connector_config)
         if connector is None:

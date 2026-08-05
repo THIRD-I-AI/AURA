@@ -181,6 +181,14 @@ class AuraSettings(BaseSettings):
     # AURA_ALLOW_SELF_REGISTRATION=false to require operator-provisioned
     # accounts (e.g. via SSO / admin-created users) instead.
     allow_self_registration: bool = Field(True, alias="AURA_ALLOW_SELF_REGISTRATION")
+    # Fernet key protecting stored data-source passwords (shared/credentials.py).
+    # Deliberately distinct from SECRET_KEY: SECRET_KEY may be rotated freely,
+    # since it only invalidates sessions, whereas rotating the key that
+    # encrypts saved connection credentials makes every one of them
+    # undecryptable. Unset in production raises at first use — see
+    # credentials._get_fernet.
+    credential_encryption_key: str = Field(
+        "", alias="AURA_CREDENTIAL_ENCRYPTION_KEY")
 
     @field_validator("auth_mode", mode="after")
     @classmethod

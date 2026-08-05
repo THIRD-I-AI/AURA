@@ -174,6 +174,45 @@ class DashboardRow(Base):
     )
 
 
+class ConnectionRow(Base):
+    """One row per external data-source connection, workspace-scoped.
+
+    Connections previously lived in a module-level dict that was never
+    filtered by tenant, so GET /connections returned EVERY organisation's
+    connections — host, port, database and username — to any caller. On a
+    multi-tenant platform that is a live disclosure, independent of the
+    separate fact that the feature could not execute queries at all.
+
+    ``password_encrypted`` holds a Fernet token from shared/credentials.py,
+    never plaintext. It is excluded from the wire dict; callers that need to
+    open a connection decrypt explicitly, so a stray response or log line
+    cannot carry the secret.
+    """
+
+    __tablename__ = "gateway_connections"
+
+    id = Column(String(64), primary_key=True)
+    workspace_id = Column(String(64), nullable=False, index=True)
+    name = Column(String(255), nullable=False)
+    type = Column(String(64), nullable=False)
+    host = Column(String(255), nullable=True)
+    port = Column(Integer, nullable=True)
+    database = Column(String(255), nullable=True)
+    username = Column(String(255), nullable=True)
+    password_encrypted = Column(Text, nullable=True)
+    ssl = Column(Boolean, nullable=False, default=False)
+    is_active = Column(Boolean, nullable=False, default=False)
+    last_tested = Column(String(64), nullable=True)
+    table_count = Column(Integer, nullable=False, default=0)
+    created_at = Column(String(64), nullable=False)
+    created_ts = Column(Float, nullable=False)
+    updated_at = Column(String(64), nullable=False)
+
+    __table_args__ = (
+        Index("ix_connections_ws_created", workspace_id, created_ts.desc()),
+    )
+
+
 class SchemaContextRow(Base):
     """DB-persisted schema context — Sprint P-2b.
 
@@ -1562,5 +1601,135 @@ async def delete_dashboard(dashboard_id: str, workspace_id: str) -> bool:
             delete(DashboardRow)
             .where(DashboardRow.id == dashboard_id)
             .where(DashboardRow.workspace_id == workspace_id),
+        )
+        return bool(result.rowcount)
+
+
+# ── Connections (tenant-scoped, credentials encrypted at rest) ───────
+
+def _row_to_connection_dict(row: "ConnectionRow") -> Dict[str, Any]:
+    """Wire shape. Deliberately omits password_encrypted — the secret must
+    never ride out on a response, and callers that genuinely need it go
+    through get_connection_secret() so the decrypt is explicit."""
+    return {
+        "id": row.id,
+        "workspace_id": row.workspace_id,
+        "name": row.name,
+        "type": row.type,
+        "host": row.host,
+        "port": row.port,
+        "database": row.database,
+        "username": row.username,
+        "ssl": bool(row.ssl),
+        "is_active": bool(row.is_active),
+        "last_tested": row.last_tested,
+        "table_count": row.table_count or 0,
+        "created_at": row.created_at,
+        "updated_at": row.updated_at,
+    }
+
+
+async def list_connections(workspace_id: str) -> List[Dict[str, Any]]:
+    """Workspace-filtered, newest-first. The missing filter here was the leak."""
+    async with session_scope() as s:
+        stmt = (
+            select(ConnectionRow)
+            .where(ConnectionRow.workspace_id == workspace_id)
+            .order_by(ConnectionRow.created_ts.desc())
+        )
+        rows = (await s.execute(stmt)).scalars().all()
+        return [_row_to_connection_dict(r) for r in rows]
+
+
+async def get_connection(connection_id: str, workspace_id: str) -> Optional[Dict[str, Any]]:
+    """None for another workspace's id, so the router answers 404 rather than
+    403 — a 403 would confirm the connection exists."""
+    async with session_scope() as s:
+        stmt = (
+            select(ConnectionRow)
+            .where(ConnectionRow.id == connection_id)
+            .where(ConnectionRow.workspace_id == workspace_id)
+        )
+        row = (await s.execute(stmt)).scalar_one_or_none()
+        return _row_to_connection_dict(row) if row is not None else None
+
+
+async def get_connection_secret(connection_id: str, workspace_id: str) -> Optional[str]:
+    """Decrypted password for opening a real connection, or None when the
+    connection has no stored credential. Separate from get_connection so the
+    plaintext is only produced where it is actually needed."""
+    from shared.credentials import decrypt_secret
+
+    async with session_scope() as s:
+        stmt = (
+            select(ConnectionRow.password_encrypted)
+            .where(ConnectionRow.id == connection_id)
+            .where(ConnectionRow.workspace_id == workspace_id)
+        )
+        token = (await s.execute(stmt)).scalar_one_or_none()
+    return decrypt_secret(token) if token else None
+
+
+async def insert_connection(record: Dict[str, Any], password: Optional[str]) -> Dict[str, Any]:
+    """Persist a connection, encrypting the password if one was supplied.
+
+    ``password`` is passed separately from ``record`` so a plaintext secret
+    can never be sitting in the same dict that gets logged or returned.
+    """
+    from shared.credentials import encrypt_secret
+
+    async with session_scope() as s:
+        row = ConnectionRow(
+            id=record["id"],
+            workspace_id=record["workspace_id"],
+            name=record["name"],
+            type=record["type"],
+            host=record.get("host"),
+            port=record.get("port"),
+            database=record.get("database"),
+            username=record.get("username"),
+            password_encrypted=encrypt_secret(password) if password else None,
+            ssl=bool(record.get("ssl", False)),
+            is_active=False,
+            last_tested=None,
+            table_count=0,
+            created_at=record["created_at"],
+            created_ts=float(record["created_ts"]),
+            updated_at=record["updated_at"],
+        )
+        s.add(row)
+        await s.flush()
+        return _row_to_connection_dict(row)
+
+
+async def update_connection_status(
+    connection_id: str, workspace_id: str, *,
+    is_active: bool, last_tested: str, table_count: int = 0,
+) -> Optional[Dict[str, Any]]:
+    """Record the outcome of a connection test."""
+    async with session_scope() as s:
+        stmt = (
+            select(ConnectionRow)
+            .where(ConnectionRow.id == connection_id)
+            .where(ConnectionRow.workspace_id == workspace_id)
+        )
+        row = (await s.execute(stmt)).scalar_one_or_none()
+        if row is None:
+            return None
+        row.is_active = is_active
+        row.last_tested = last_tested
+        row.table_count = table_count
+        row.updated_at = datetime.now(timezone.utc).isoformat()
+        await s.flush()
+        return _row_to_connection_dict(row)
+
+
+async def delete_connection(connection_id: str, workspace_id: str) -> bool:
+    """True when a row in this workspace was actually removed."""
+    async with session_scope() as s:
+        result = await s.execute(
+            delete(ConnectionRow)
+            .where(ConnectionRow.id == connection_id)
+            .where(ConnectionRow.workspace_id == workspace_id),
         )
         return bool(result.rowcount)
