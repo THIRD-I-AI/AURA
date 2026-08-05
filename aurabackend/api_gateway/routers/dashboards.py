@@ -6,14 +6,15 @@ queries. Tiles render by executing the referenced saved query's SQL
 against the uploaded-file DuckDB (same path the saved-query scheduler
 uses).
 
-Storage is in-memory — mirrors the saved-queries library. No drag/drop
+Storage is the gateway persistence layer (``persistence.DashboardRow``),
+so dashboards survive restarts and multiple replicas — the same durability
+the saved-query library they are built from already had. No drag/drop
 layout yet; tiles render in order.
 """
 
 from __future__ import annotations
 
 import asyncio
-import threading
 import time
 from datetime import datetime
 from typing import Any, Dict, List, Optional
@@ -21,6 +22,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
+from api_gateway import persistence
 from api_gateway.routers.workspaces import (
     DEFAULT_WORKSPACE_ID,
     _request_tenant,
@@ -34,11 +36,12 @@ logger = get_logger("aura.api_gateway.dashboards")
 router = APIRouter(tags=["Dashboards"])
 
 
-# ── In-memory store ────────────────────────────────────────────────
-
-_dashboards_lock = threading.Lock()
-_dashboards_store: List[Dict[str, Any]] = []  # newest first
-_MAX_DASHBOARDS = 200
+# ── Storage ─────────────────────────────────────────────────────────
+# Dashboards live in the gateway's SQLAlchemy layer (persistence.DashboardRow),
+# not a module-level list. The list meant every dashboard a user built was lost
+# on restart — silently, and inconsistently with the saved-query library that
+# dashboards are assembled from — and it could not survive replicas > 1, since
+# each pod held its own copy. The per-workspace cap now lives in persistence.
 
 
 # ── Models ──────────────────────────────────────────────────────────
@@ -74,18 +77,13 @@ def _tile_to_record(tile: DashboardTileInput, index: int) -> Dict[str, Any]:
     }
 
 
-def _in_workspace(record: Dict[str, Any], wsid: str) -> bool:
-    return (record.get("workspace_id") or DEFAULT_WORKSPACE_ID) == wsid
-
-
 # ── CRUD endpoints ──────────────────────────────────────────────────
 
 @router.get("/dashboards")
 async def list_dashboards(request: Request):
     """Return dashboards for the caller's workspace, newest-first."""
     wsid = current_workspace_id(request)
-    with _dashboards_lock:
-        records = [r for r in _dashboards_store if _in_workspace(r, wsid)]
+    records = await persistence.list_dashboards(wsid)
     return {"success": True, "dashboards": records, "total": len(records)}
 
 
@@ -96,32 +94,27 @@ async def create_dashboard(payload: DashboardCreate, request: Request):
         raise HTTPException(status_code=400, detail="name is required")
     wsid = current_workspace_id(request)
     ts = datetime.now()
-    tiles = [_tile_to_record(t, i) for i, t in enumerate(payload.tiles)]
     record = {
         "id": f"dash_{int(ts.timestamp() * 1000)}",
         "workspace_id": wsid,
         "name": name,
         "description": (payload.description or "").strip() or None,
-        "tiles": tiles,
+        "tiles": [_tile_to_record(t, i) for i, t in enumerate(payload.tiles)],
         "created_at": ts.isoformat(),
+        "created_ts": ts.timestamp(),
         "updated_at": ts.isoformat(),
     }
-    with _dashboards_lock:
-        _dashboards_store.insert(0, record)
-        if len(_dashboards_store) > _MAX_DASHBOARDS:
-            del _dashboards_store[_MAX_DASHBOARDS:]
-    return {"success": True, "dashboard": record}
+    saved = await persistence.insert_dashboard(record)
+    return {"success": True, "dashboard": saved}
 
 
 @router.get("/dashboards/{dashboard_id}")
 async def get_dashboard(dashboard_id: str, request: Request):
     wsid = current_workspace_id(request)
-    with _dashboards_lock:
-        record = next(
-            (r for r in _dashboards_store if r["id"] == dashboard_id and _in_workspace(r, wsid)),
-            None,
-        )
+    record = await persistence.get_dashboard(dashboard_id, wsid)
     if record is None:
+        # 404 rather than 403 for another workspace's id: a 403 would confirm
+        # the dashboard exists and turn this into an existence oracle.
         raise HTTPException(status_code=404, detail="Dashboard not found")
     return {"success": True, "dashboard": record}
 
@@ -129,37 +122,28 @@ async def get_dashboard(dashboard_id: str, request: Request):
 @router.patch("/dashboards/{dashboard_id}")
 async def update_dashboard(dashboard_id: str, payload: DashboardUpdate, request: Request):
     wsid = current_workspace_id(request)
-    with _dashboards_lock:
-        record = next(
-            (r for r in _dashboards_store if r["id"] == dashboard_id and _in_workspace(r, wsid)),
-            None,
-        )
-        if record is None:
-            raise HTTPException(status_code=404, detail="Dashboard not found")
-        if payload.name is not None:
-            new_name = payload.name.strip()
-            if not new_name:
-                raise HTTPException(status_code=400, detail="name cannot be empty")
-            record["name"] = new_name
-        if payload.description is not None:
-            record["description"] = payload.description.strip() or None
-        if payload.tiles is not None:
-            record["tiles"] = [_tile_to_record(t, i) for i, t in enumerate(payload.tiles)]
-        record["updated_at"] = datetime.now().isoformat()
+    fields: Dict[str, Any] = {}
+    if payload.name is not None:
+        new_name = payload.name.strip()
+        if not new_name:
+            raise HTTPException(status_code=400, detail="name cannot be empty")
+        fields["name"] = new_name
+    if payload.description is not None:
+        fields["description"] = payload.description.strip() or None
+    if payload.tiles is not None:
+        fields["tiles"] = [_tile_to_record(t, i) for i, t in enumerate(payload.tiles)]
+
+    record = await persistence.update_dashboard(dashboard_id, wsid, fields)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Dashboard not found")
     return {"success": True, "dashboard": record}
 
 
 @router.delete("/dashboards/{dashboard_id}")
 async def delete_dashboard(dashboard_id: str, request: Request):
     wsid = current_workspace_id(request)
-    with _dashboards_lock:
-        before = len(_dashboards_store)
-        _dashboards_store[:] = [
-            r for r in _dashboards_store
-            if not (r["id"] == dashboard_id and _in_workspace(r, wsid))
-        ]
-        if len(_dashboards_store) == before:
-            raise HTTPException(status_code=404, detail="Dashboard not found")
+    if not await persistence.delete_dashboard(dashboard_id, wsid):
+        raise HTTPException(status_code=404, detail="Dashboard not found")
     return {"success": True, "id": dashboard_id}
 
 
@@ -234,14 +218,8 @@ async def render_dashboard(dashboard_id: str, request: Request):
     """Execute every tile's underlying saved query and return rows."""
     # Sprint P-1: saved queries are now in the gateway persistence
     # layer (workspace-indexed SQL), not an in-process list.
-    from api_gateway import persistence
-
     wsid = current_workspace_id(request)
-    with _dashboards_lock:
-        record = next(
-            (r for r in _dashboards_store if r["id"] == dashboard_id and _in_workspace(r, wsid)),
-            None,
-        )
+    record = await persistence.get_dashboard(dashboard_id, wsid)
     if record is None:
         raise HTTPException(status_code=404, detail="Dashboard not found")
 

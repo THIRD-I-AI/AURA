@@ -144,6 +144,36 @@ class SavedQueryRow(Base):
     )
 
 
+class DashboardRow(Base):
+    """One row per dashboard, workspace-scoped.
+
+    Dashboards previously lived in a module-level Python list, so every
+    dashboard a user built vanished on the next gateway restart — silently,
+    and inconsistently with the saved-query library they are assembled from.
+
+    ``tiles_json`` is canonical-JSON text rather than JSONB for the same
+    reason ``SavedQueryRow.schedule_json`` is: it keeps the schema portable
+    across SQLite and Postgres, and a tile list is far too small for JSONB
+    indexing to matter.
+    """
+
+    __tablename__ = "gateway_dashboards"
+
+    id = Column(String(64), primary_key=True)
+    workspace_id = Column(String(64), nullable=False, index=True)
+    name = Column(String(255), nullable=False)
+    description = Column(Text, nullable=True)
+    tiles_json = Column(Text, nullable=False, default="[]")
+    created_at = Column(String(64), nullable=False)
+    created_ts = Column(Float, nullable=False)
+    updated_at = Column(String(64), nullable=False)
+
+    __table_args__ = (
+        # Drives the list endpoint's newest-first ordering within a workspace.
+        Index("ix_dashboards_ws_created", workspace_id, created_ts.desc()),
+    )
+
+
 class SchemaContextRow(Base):
     """DB-persisted schema context — Sprint P-2b.
 
@@ -1420,3 +1450,117 @@ __all__ = [
     "delete_pipeline",
     "reset_all_for_tests",
 ]
+
+
+# ── Dashboards (durable replacement for the in-memory list) ──────────
+
+_MAX_DASHBOARDS_PER_WS = 200
+
+
+def _row_to_dashboard_dict(row: "DashboardRow") -> Dict[str, Any]:
+    """Wire shape, identical to what the old in-memory store returned so the
+    router's response contract is unchanged."""
+    try:
+        tiles = json.loads(row.tiles_json) if row.tiles_json else []
+    except ValueError:
+        # A corrupt tiles blob must not take down the whole dashboard list;
+        # surface the dashboard with no tiles rather than 500-ing the page.
+        logger.warning("dashboard %s has unparseable tiles_json", row.id)
+        tiles = []
+    return {
+        "id": row.id,
+        "workspace_id": row.workspace_id,
+        "name": row.name,
+        "description": row.description,
+        "tiles": tiles,
+        "created_at": row.created_at,
+        "updated_at": row.updated_at,
+    }
+
+
+async def list_dashboards(workspace_id: str) -> List[Dict[str, Any]]:
+    """Workspace-filtered, newest-first."""
+    async with session_scope() as s:
+        stmt = (
+            select(DashboardRow)
+            .where(DashboardRow.workspace_id == workspace_id)
+            .order_by(DashboardRow.created_ts.desc())
+        )
+        rows = (await s.execute(stmt)).scalars().all()
+        return [_row_to_dashboard_dict(r) for r in rows]
+
+
+async def get_dashboard(dashboard_id: str, workspace_id: str) -> Optional[Dict[str, Any]]:
+    """Workspace-filtered fetch. Returns None for another workspace's id so
+    the caller answers 404 — never 403, which would confirm the id exists."""
+    async with session_scope() as s:
+        stmt = (
+            select(DashboardRow)
+            .where(DashboardRow.id == dashboard_id)
+            .where(DashboardRow.workspace_id == workspace_id)
+        )
+        row = (await s.execute(stmt)).scalar_one_or_none()
+        return _row_to_dashboard_dict(row) if row is not None else None
+
+
+async def insert_dashboard(record: Dict[str, Any]) -> Dict[str, Any]:
+    """Persist a new dashboard and trim the workspace to its cap."""
+    async with session_scope() as s:
+        row = DashboardRow(
+            id=record["id"],
+            workspace_id=record["workspace_id"],
+            name=record["name"],
+            description=record.get("description"),
+            tiles_json=json.dumps(record.get("tiles") or []),
+            created_at=record["created_at"],
+            created_ts=float(record["created_ts"]),
+            updated_at=record["updated_at"],
+        )
+        s.add(row)
+        await s.flush()
+
+        # Cap per workspace, oldest-first, mirroring the saved-query library.
+        stale = (await s.execute(
+            select(DashboardRow.id)
+            .where(DashboardRow.workspace_id == record["workspace_id"])
+            .order_by(DashboardRow.created_ts.desc())
+            .offset(_MAX_DASHBOARDS_PER_WS),
+        )).scalars().all()
+        for old_id in stale:
+            await s.execute(delete(DashboardRow).where(DashboardRow.id == old_id))
+        return _row_to_dashboard_dict(row)
+
+
+async def update_dashboard(
+    dashboard_id: str, workspace_id: str, fields: Dict[str, Any],
+) -> Optional[Dict[str, Any]]:
+    """Partial update + updated_at bump. None when absent or wrong workspace."""
+    async with session_scope() as s:
+        stmt = (
+            select(DashboardRow)
+            .where(DashboardRow.id == dashboard_id)
+            .where(DashboardRow.workspace_id == workspace_id)
+        )
+        row = (await s.execute(stmt)).scalar_one_or_none()
+        if row is None:
+            return None
+        if fields.get("name") is not None:
+            row.name = fields["name"]
+        if "description" in fields:
+            row.description = fields["description"]
+        if fields.get("tiles") is not None:
+            row.tiles_json = json.dumps(fields["tiles"])
+        row.updated_at = datetime.now(timezone.utc).isoformat()
+        await s.flush()
+        return _row_to_dashboard_dict(row)
+
+
+async def delete_dashboard(dashboard_id: str, workspace_id: str) -> bool:
+    """True when a row in this workspace was actually removed."""
+    async with session_scope() as s:
+        result = await s.execute(
+            delete(DashboardRow)
+            .where(DashboardRow.id == dashboard_id)
+            .where(DashboardRow.workspace_id == workspace_id),
+        )
+        return bool(result.rowcount)
