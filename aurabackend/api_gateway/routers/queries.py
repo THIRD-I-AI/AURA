@@ -152,7 +152,6 @@ async def close_all_pg_pools() -> None:
 
 
 # Re-use the connections store from the connections router
-from api_gateway.routers.connections import _connections_lock, _connections_store
 
 
 async def track_query(prompt: str, sql: str, q_status: str, rows: int, execution_time_ms: float):
@@ -981,9 +980,13 @@ async def get_dashboard_stats(request: Request):
     except Exception as exc:
         logger.warning("dashboard stats file scan failed (non-fatal): %s", exc)
 
-    with _connections_lock:
-        active_conns = sum(1 for c in _connections_store.values() if c.get("is_active"))
-        total_conns = len(_connections_store)
+    # Workspace-scoped, like every other figure this endpoint reports. It used
+    # to count the global connections dict, so one org's "total connections"
+    # silently included every other org's — the same cross-tenant leak the
+    # /connections listing had, just expressed as a number.
+    _conns = await persistence.list_connections(current_workspace_id(request))
+    active_conns = sum(1 for c in _conns if c.get("is_active"))
+    total_conns = len(_conns)
     with _dashboard_counters_lock:
         queries_run = _dashboard_counters["queries_run"]
         tracked_rows = _dashboard_counters["total_rows"]
