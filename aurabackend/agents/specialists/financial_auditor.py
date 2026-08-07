@@ -1,6 +1,7 @@
 import logging
 import math
 from datetime import datetime
+from decimal import Decimal, InvalidOperation
 from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
@@ -38,6 +39,26 @@ MIN_BENFORD_SAMPLE = 50
 # period close are higher-risk for window dressing (revenue pulled
 # forward, expenses deferred) and warrant cutoff testing.
 CUTOFF_WINDOW_DAYS = 3
+
+
+def _money(value: Any) -> Decimal:
+    """Exact decimal for a monetary input.
+
+    Converts via ``str`` on purpose: ``Decimal(0.1)`` inherits the float's
+    representation error, while ``Decimal("0.1")`` is exact. Money is summed
+    over thousands of rows here, and binary floating point drifts as those
+    additions accumulate — on figures that end up inside a SIGNED audit
+    record, so two runs over the same ledger could disagree in the last cents
+    and both be attested.
+
+    Bad or non-finite inputs contribute zero rather than raising, matching how
+    the surrounding checks already treat unusable rows.
+    """
+    try:
+        d = Decimal(str(value if value is not None else 0))
+    except (InvalidOperation, ValueError, TypeError):
+        return Decimal(0)
+    return d if d.is_finite() else Decimal(0)
 
 
 def _first_significant_digit(value: Any) -> Optional[int]:
@@ -108,7 +129,15 @@ class FinancialAuditorAgent:
         """
         logger.info(f"[{self.tenant_id}] Executing AS 2110 Risk Assessment")
 
-        basis = float(sum(abs(entry.get("amount", 0) or 0) for entry in (ledger or [])))
+        # Summed as Decimal, then converted once at the boundary. The basis
+        # sets the materiality threshold and is written into a signed audit
+        # event, so accumulated float drift across a large ledger would be
+        # attested as fact. Converting only at the end keeps the threshold a
+        # float for the `amount > materiality_threshold` comparisons below,
+        # which run against raw JSON numbers — mixing Decimal and float there
+        # raises TypeError.
+        basis = float(sum((abs(_money(entry.get("amount"))) for entry in (ledger or [])),
+                          Decimal(0)))
         if basis > 0:
             overall = max(MATERIALITY_FLOOR, basis * MATERIALITY_BENCHMARK_PCT)
         else:
@@ -145,16 +174,20 @@ class FinancialAuditorAgent:
         # Form a per-account expectation (mean prior amount) from history.
         expectations: Dict[Any, float] = {}
         if historical_reports:
-            sums: Dict[Any, float] = {}
+            # Same reasoning as the materiality basis: accumulate exactly,
+            # convert once. These per-account averages are the AS-2305
+            # expectations that variances are measured against, so drift here
+            # shifts which entries get flagged.
+            sums: Dict[Any, Decimal] = {}
             counts: Dict[Any, int] = {}
             for rec in historical_reports:
                 acct = rec.get("account_code")
                 amt = rec.get("amount")
                 if acct is None or amt is None:
                     continue
-                sums[acct] = sums.get(acct, 0.0) + float(amt)
+                sums[acct] = sums.get(acct, Decimal(0)) + _money(amt)
                 counts[acct] = counts.get(acct, 0) + 1
-            expectations = {a: sums[a] / counts[a] for a in sums}
+            expectations = {a: float(sums[a] / counts[a]) for a in sums}
 
         for entry in ledger_batch:
             amount = entry.get("amount", 0)
