@@ -73,6 +73,23 @@ class ExecutionOutput(BaseModel):
     truncated: bool = False
 
 
+class VerificationOutput(BaseModel):
+    """DPC dual-paradigm cross-check verdict for the executed SQL.
+
+    Tri-state on purpose. ``skipped`` is NOT a pass: it means the check could
+    not run (no LLM, timeout, unsupported shape), and collapsing it into
+    ``verified`` would let an unchecked answer look confirmed.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    status: str = "skipped"           # verified | mismatch | skipped
+    verified: Optional[bool] = None
+    reason: str = ""
+    pandas_expr: Optional[str] = None
+    method: str = "dual_paradigm_pandas"
+
+
 # ── Visualization ─────────────────────────────────────────────────────
 
 ChartType = Literal[
@@ -140,6 +157,7 @@ class OrchestratorState(BaseModel):
     plan: Optional[PlannerOutput] = None
     sql: Optional[SQLGenOutput] = None
     execution: Optional[ExecutionOutput] = None
+    verification: Optional[VerificationOutput] = None
     visualization: Optional[VisualizationOutput] = None
     analysis: Optional[AnalysisOutput] = None
 

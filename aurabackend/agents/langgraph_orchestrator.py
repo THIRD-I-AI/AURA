@@ -25,6 +25,12 @@ from langgraph.graph import END, START, StateGraph
 from pydantic import ValidationError
 
 from agents.base import AgentContext, AgentStatus, BaseAgent
+from agents.dpc_verifier import (
+    dpc_enabled,
+    dpc_max_rows,
+    dpc_timeout,
+    verify_sql_result,
+)
 from agents.planner import PlannerAgent
 from agents.schemas import (
     AnalysisOutput,
@@ -35,6 +41,7 @@ from agents.schemas import (
     PlannerOutput,
     PlanTask,
     SQLGenOutput,
+    VerificationOutput,
     VisualizationOutput,
 )
 from agents.specialists.analysis_agent import AnalysisAgent
@@ -173,6 +180,84 @@ async def execution_node(state: OrchestratorState) -> Dict[str, Any]:
         return _err(state, "execution", f"execution schema invalid: {exc.errors()}", dur)
 
     return {"execution": out, "completed_nodes": _completed(state, "execution")}
+
+
+def _dpc_registry(con: Any) -> Any:
+    """A ToolRegistry whose ``execute_sql`` runs against the SAME DuckDB
+    connection the answer was produced from.
+
+    Deliberately not ``agents.tools.register_all_tools``: that ``execute_sql``
+    posts to the execution-sandbox service, which cannot see this request's
+    in-process DuckDB tables. Cross-checking through it would compare the
+    answer against *different data* and manufacture mismatches — worse than
+    running no verification at all, because a false mismatch teaches users to
+    ignore the warning.
+    """
+    import asyncio as _asyncio
+
+    from agents.tool_registry import Tool, ToolRegistry
+
+    async def _exec(query: str, **_kwargs: Any) -> Dict[str, Any]:
+        def _run() -> tuple[list[str], list[tuple]]:
+            cur = con.execute(query)
+            return [d[0] for d in cur.description], cur.fetchall()
+
+        cols, rows = await _asyncio.to_thread(_run)
+        return {"columns": cols, "rows": [list(r) for r in rows]}
+
+    reg = ToolRegistry()
+    reg.register(Tool(
+        name="execute_sql", fn=_exec, category="execution",
+        description="Execute SQL against the request's DuckDB connection.",
+    ))
+    return reg
+
+
+async def verify_node(state: OrchestratorState) -> Dict[str, Any]:
+    """Cross-check the executed SQL against an independent pandas computation.
+
+    Runs AFTER execution and reuses the rows it already produced, so a user's
+    query is never executed twice. That is why DPC is not enabled through
+    SQLGeneratorAgent's own ``execute`` path, which would re-run it.
+
+    Never fails the request: verify_sql_result is internally bounded and
+    returns ``skipped`` on any error, and a verification problem must not cost
+    the user an answer that already computed successfully.
+    """
+    if not dpc_enabled() or state.sql is None or state.execution is None:
+        return {}
+
+    con = state.metadata.get("duckdb_con")
+    if con is None:
+        # No connection in scope — record honestly that the check did not run
+        # rather than leaving a gap that reads as "verified".
+        return {"verification": VerificationOutput(
+            status="skipped", reason="no duckdb connection in scope")}
+
+    try:
+        # Late import, matching agents/base.py — shared.llm_provider imports
+        # back into the agent layer, so a module-level import here would
+        # reintroduce the cycle that comment warns about.
+        from shared.llm_provider import get_llm
+
+        vr = await verify_sql_result(
+            state.user_prompt, state.sql.sql,
+            state.execution.columns, state.execution.rows,
+            _dpc_registry(con), get_llm(),
+            timeout=dpc_timeout(), max_rows=dpc_max_rows(),
+        )
+        out = VerificationOutput(
+            status=vr.status, verified=vr.verified, reason=vr.reason,
+            pandas_expr=vr.pandas_expr, method=vr.method,
+        )
+    except Exception as exc:  # noqa: BLE001 — see docstring: never fail the request
+        logger.warning("DPC verification errored (non-fatal): %s", exc)
+        out = VerificationOutput(
+            status="skipped", reason=f"verifier error: {type(exc).__name__}")
+
+    if out.status == "mismatch":
+        logger.warning("DPC mismatch for session %s: %s", state.session_id, out.reason)
+    return {"verification": out, "completed_nodes": _completed(state, "verification")}
 
 
 async def visualization_node(state: OrchestratorState) -> Dict[str, Any]:
@@ -329,6 +414,7 @@ def build_graph():
     g.add_node("planner", planner_node)
     g.add_node("sql_run", sql_gen_node)
     g.add_node("exec_run", execution_node)
+    g.add_node("verify_run", verify_node)
     g.add_node("viz_run", visualization_node)
     g.add_node("analysis_run", analysis_node)
 
@@ -345,10 +431,17 @@ def build_graph():
         "sql_run", _route_after_sql_gen,
         {"exec_run": "exec_run", "end": END},
     )
+    # The successful branch of _route_after_execution now passes through DPC
+    # verification first. Its contract is unchanged (it still returns
+    # "viz_run"/"end") — only the destination behind that key moved, so the
+    # routing logic did not have to learn about verification.
     g.add_conditional_edges(
         "exec_run", _route_after_execution,
-        {"viz_run": "viz_run", "end": END},
+        {"viz_run": "verify_run", "end": END},
     )
+    # Unconditional: verification annotates the answer and must never divert
+    # or drop a result that already computed successfully.
+    g.add_edge("verify_run", "viz_run")
     g.add_conditional_edges(
         "viz_run", _route_after_visualization,
         {"analysis_run": "analysis_run", "end": END},

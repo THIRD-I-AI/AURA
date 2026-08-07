@@ -103,6 +103,11 @@ class ExecutionResult(BaseModel):
     conclusion: Optional[str] = None
     sql_explanation: Optional[str] = None
     error: Optional[str] = None
+    # DPC dual-paradigm cross-check verdict: {status, verified, reason}.
+    # Tri-state — "skipped" means the check could not run, NOT that the answer
+    # passed. A verification the user never sees changes nothing, so it is
+    # surfaced here rather than only logged.
+    verification: Optional[Dict[str, Any]] = None
 
 
 class ChatMetadata(BaseModel):
@@ -599,6 +604,9 @@ async def chat_endpoint(request: ChatRequest, http_request: Request) -> ChatResp
 
     if state.analysis and state.analysis.conclusion:
         execution_result.conclusion = state.analysis.conclusion
+
+    if state.verification is not None:
+        execution_result.verification = state.verification.model_dump()
 
     con.close()
     elapsed_ms = (time.perf_counter() - t0) * 1000
