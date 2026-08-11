@@ -23,6 +23,15 @@ from agents.langgraph_orchestrator import _dpc_registry, build_graph, verify_nod
 from agents.schemas import ExecutionOutput, OrchestratorState, SQLGenOutput
 
 
+@pytest.fixture(autouse=True)
+def _enable_chat_dpc(monkeypatch):
+    """Inline chat verification is opt-in (AURA_DPC_CHAT_ENABLED, default 0)
+    because it costs an LLM round-trip and up to 10s per query. These tests
+    exercise the node itself, so they turn it on explicitly."""
+    monkeypatch.setenv("AURA_DPC_CHAT_ENABLED", "1")
+    yield
+
+
 def _state(**kw) -> OrchestratorState:
     base = dict(
         user_prompt="total amount by region",

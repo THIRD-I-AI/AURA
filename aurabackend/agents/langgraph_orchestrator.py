@@ -182,6 +182,27 @@ async def execution_node(state: OrchestratorState) -> Dict[str, Any]:
     return {"execution": out, "completed_nodes": _completed(state, "execution")}
 
 
+def _dpc_chat_enabled() -> bool:
+    """Whether to cross-check on the INLINE chat path. Defaults to OFF.
+
+    Separate from ``AURA_DPC_ENABLED`` (which defaults on) because that flag
+    was written for the DAGExecutor path, where DPC was additionally gated
+    behind ``params["execute"]`` and therefore never actually ran. Wiring the
+    verifier into the always-on chat DAG silently reinterpreted "available" as
+    "on for every query" — each one paying an extra LLM round-trip and up to
+    ``AURA_DPC_TIMEOUT_S`` (default 10s) of added latency. That is a product
+    decision about response time, not a bug fix, so it is opt-in.
+
+    Set AURA_DPC_CHAT_ENABLED=1 to turn it on. It also respects the global
+    AURA_DPC_ENABLED kill switch, so setting that to 0 disables both paths.
+    """
+    import os
+
+    if not dpc_enabled():
+        return False
+    return os.getenv("AURA_DPC_CHAT_ENABLED", "0") == "1"
+
+
 def _dpc_registry(con: Any) -> Any:
     """A ToolRegistry whose ``execute_sql`` runs against the SAME DuckDB
     connection the answer was produced from.
@@ -224,7 +245,7 @@ async def verify_node(state: OrchestratorState) -> Dict[str, Any]:
     returns ``skipped`` on any error, and a verification problem must not cost
     the user an answer that already computed successfully.
     """
-    if not dpc_enabled() or state.sql is None or state.execution is None:
+    if not _dpc_chat_enabled() or state.sql is None or state.execution is None:
         return {}
 
     con = state.metadata.get("duckdb_con")
