@@ -32,9 +32,13 @@ class TestAuraSettings:
     # instantiates a *valid* production Settings must supply all three,
     # otherwise it would cascade-fail on those defaults before exercising
     # the assertion target.
+    # The minimum a production config must satisfy. Each entry corresponds to
+    # a fail-closed validator in shared/config.py, so adding a new production
+    # requirement surfaces here rather than at every construction site.
     _PROD_VALID = {
         "AURA_AUTH_MODE": "password",
         "AURA_JWT_ENABLED": "true",
+        "AURA_AUDIT_ENABLED": "true",
         "CORS_ALLOWED_ORIGINS": "https://app.example.com",
     }
 
@@ -114,6 +118,7 @@ class TestAuraSettings:
             SECRET_KEY="real-secret",
             AURA_AUTH_MODE="password",
             AURA_JWT_ENABLED="true",
+            AURA_AUDIT_ENABLED="true",
             CORS_ALLOWED_ORIGINS="https://api.example.com",
         )
         assert s.cors_origins == ["https://api.example.com"]
@@ -255,3 +260,44 @@ class TestProductionEnvFailsClosed:
         s = AuraSettings(_env_file=None, ENVIRONMENT="development",
                          AURA_JWT_ENABLED=False, SECRET_KEY="x")
         assert s.is_production is False
+
+
+class TestAuditTrailFailsClosedInProduction:
+    """AURA_AUDIT_ENABLED was read by a bare os.getenv in shared/audit_log.py,
+    defaulting to false, and was not a settings field at all — so none of the
+    production validators could cover it. A deploy could satisfy every other
+    hardening gate (JWT required, no open auth mode, no wildcard CORS) while
+    the durable hash-chained audit trail was silently off. For a product sold
+    to banks on provable audit trails, that is the worst thing to fail open."""
+
+    def test_audit_disabled_in_production_refuses_to_boot(self):
+        from shared.config import AuraSettings
+        with pytest.raises(ValueError, match="AURA_AUDIT_ENABLED must be true"):
+            AuraSettings(
+                _env_file=None,
+                ENVIRONMENT="production",
+                AURA_AUDIT_ENABLED=False,
+                AURA_JWT_ENABLED=True,
+                AURA_AUTH_MODE="password",
+                SECRET_KEY="x" * 48,
+            )
+
+    def test_audit_disabled_in_development_is_fine(self):
+        from shared.config import AuraSettings
+        s = AuraSettings(_env_file=None, ENVIRONMENT="development",
+                         AURA_AUDIT_ENABLED=False, SECRET_KEY="x")
+        assert s.audit_enabled is False
+
+    def test_prod_like_env_name_is_also_covered(self):
+        """Inherits the fail-closed env-name check: a region-suffixed name
+        must not slip past this validator either."""
+        from shared.config import AuraSettings
+        with pytest.raises(ValueError, match="AURA_AUDIT_ENABLED must be true"):
+            AuraSettings(
+                _env_file=None,
+                ENVIRONMENT="prod-eu",
+                AURA_AUDIT_ENABLED=False,
+                AURA_JWT_ENABLED=True,
+                AURA_AUTH_MODE="password",
+                SECRET_KEY="x" * 48,
+            )

@@ -189,6 +189,29 @@ class AuraSettings(BaseSettings):
     # credentials._get_fernet.
     credential_encryption_key: str = Field(
         "", alias="AURA_CREDENTIAL_ENCRYPTION_KEY")
+    # The durable request audit trail (shared/audit_log.py). Defaults off for
+    # dev ergonomics; a production deploy with it off is the opposite of this
+    # product's pitch — see the validator below.
+    audit_enabled: bool = Field(False, alias="AURA_AUDIT_ENABLED")
+
+    @field_validator("audit_enabled", mode="after")
+    @classmethod
+    def _require_audit_trail_in_production(cls, v, info):
+        # Every other production safeguard here fails loud — JWT enforcement,
+        # open auth-mode, SECRET_KEY, CORS-over-HTTP. This one did not exist at
+        # all: AURA_AUDIT_ENABLED was read by a bare os.getenv in
+        # shared/audit_log.py and defaulted to false, so a deployment could
+        # pass every hardening gate while the durable, hash-chained request
+        # audit trail was silently off. For a product sold on provable audit
+        # trails to banks, that is the single worst thing to fail open.
+        env = info.data.get("environment", "development")
+        if _is_production_env(env) and not v:
+            raise ValueError(
+                "AURA_AUDIT_ENABLED must be true in production. Without it the "
+                "durable request audit trail is not recorded, so privileged "
+                "actions cannot be reconstructed after the fact."
+            )
+        return v
 
     @field_validator("auth_mode", mode="after")
     @classmethod

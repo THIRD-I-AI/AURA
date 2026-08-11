@@ -111,7 +111,15 @@ def test_every_service_route_has_a_gateway_facade():
 # ── 2. Per-endpoint reachability + Depends()-forwarding checks ─────────
 
 @pytest.fixture()
-def gw():
+def gw(tmp_path, monkeypatch):
+    # Point the artifact store somewhere writable. Its default is
+    # /var/log/aura/artifacts — correct in production (the Helm WORM PVC) but
+    # absent and unwritable on a CI runner, where the store then reports
+    # "error" instead of "not_found" for a hash that simply does not exist.
+    # That is why this file passed on Windows and failed on Linux CI.
+    # persistence.py resolves artifacts as <AURA_AUDIT_DIR>/../artifacts, so
+    # this one variable covers both.
+    monkeypatch.setenv("AURA_AUDIT_DIR", str(tmp_path / "audit"))
     from api_gateway.main import app
     return TestClient(app)
 
