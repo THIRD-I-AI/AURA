@@ -148,14 +148,16 @@ c = Client(retry=RetryPolicy(max_attempts=5, initial_delay_s=0.25))
 c = Client(retry=None)   # disable retries entirely
 ```
 
-## Going through the standalone service
+## Deployment topology
 
-The default `prefix="/api/v1"` targets the AURA API gateway. To talk to
-the standalone `counterfactual_service` (port 8012) directly:
-
-```python
-c = Client(base_url="http://counterfactual:8012", prefix="")
-```
+The default `prefix="/api/v1"` targets the AURA API gateway (port 8000
+in production; the SDK examples above use the local dev default of
+`http://localhost:8000`). The counterfactual audit engine
+(`counterfactual_service/`) runs **in-process inside the gateway** — it
+is imported directly by `api_gateway/routers/counterfactual.py` rather
+than deployed as its own pod, so all requests go through the gateway's
+base URL and there is no separate `counterfactual:8012`-style host to
+target in production.
 
 ## Audience tiers
 

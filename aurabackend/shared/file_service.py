@@ -1,5 +1,6 @@
 import hashlib
 import json
+import logging
 import mimetypes
 import os
 import uuid
@@ -11,6 +12,8 @@ import aiofiles
 import numpy as np
 import pandas as pd
 from fastapi import HTTPException, UploadFile
+
+logger = logging.getLogger("aura.file_service")
 
 
 class FileService:
@@ -259,11 +262,47 @@ class FileService:
             file_metadata['error_time'] = datetime.now(timezone.utc).isoformat()
             raise HTTPException(status_code=500, detail=f"Error processing file: {str(e)}")
 
-    def get_file_info(self, file_id: str) -> Optional[Dict[str, Any]]:
-        """Get file information by ID"""
-        # This would typically query the database
-        # For now, we'll implement a simple file-based lookup
-        pass
+    def get_file_info(self, file_id: str, subdir: str = "") -> Optional[Dict[str, Any]]:
+        """Metadata for one uploaded object, scoped to ``subdir``'s tenant.
+
+        Was a bare ``pass``, so it returned None for every id and the route
+        above it answered 404 for files that plainly existed.
+
+        Matches on full name OR stem exactly as ``delete_file`` does, so a
+        caller may pass either ``sales.csv`` or ``sales``. Returns None when
+        this tenant has no such object; the route turns that into a 404.
+
+        Tenant-scoped deliberately: resolving the id across all tenants would
+        let one org confirm the existence — and read the inferred schema — of
+        another org's upload.
+        """
+        from shared.storage import get_storage_backend
+        tenant = subdir or "default"
+        for obj in get_storage_backend().list(tenant):
+            stem = os.path.splitext(obj.name)[0]
+            if obj.name != file_id and stem != file_id:
+                continue
+            info: Dict[str, Any] = {
+                "file_id": stem,
+                "filename": obj.name,
+                "size": obj.size,
+                "status": "uploaded",
+            }
+            # The processed sidecar is a local cache: absent in S3 mode and
+            # before profiling runs. Enrich when present, never fail when not.
+            sidecar = self.processed_path / f"{stem}_processed.json"
+            if sidecar.exists():
+                try:
+                    with open(sidecar, encoding="utf-8") as fh:
+                        processed = json.load(fh)
+                    info["status"] = "processed"
+                    info["preview_data"] = (
+                        processed[:5] if isinstance(processed, list) else processed
+                    )
+                except (OSError, ValueError) as exc:
+                    logger.warning("processed sidecar for %s unreadable: %s", stem, exc)
+            return info
+        return None
 
     def list_files(self, subdir: str = "") -> List[Dict[str, Any]]:
         """List uploaded files within an optional per-tenant subdir.

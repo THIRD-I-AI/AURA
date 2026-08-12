@@ -29,7 +29,17 @@ _session_factory: async_sessionmaker[AsyncSession] | None = None
 def get_engine() -> AsyncEngine:
     global _engine
     if _engine is None:
-        _engine = create_async_engine(DATABASE_URL, echo=ECHO_SQL, future=True)
+        engine_kwargs: dict = {}
+        if not DATABASE_URL.startswith("sqlite"):
+            # aiosqlite doesn't accept pool sizing/health-check kwargs —
+            # only apply them to real connection-pooled backends (Postgres).
+            engine_kwargs.update(
+                pool_pre_ping=True,
+                pool_size=10,
+                max_overflow=20,
+                pool_recycle=1800,
+            )
+        _engine = create_async_engine(DATABASE_URL, echo=ECHO_SQL, future=True, **engine_kwargs)
     return _engine
 
 

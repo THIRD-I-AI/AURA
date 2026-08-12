@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 import time
+import weakref
 from abc import ABC, abstractmethod
 from collections import defaultdict
 from typing import Tuple
@@ -49,8 +50,22 @@ class InMemoryBackend(RateLimitBackend):
     Not shared across workers or restarts.
     """
 
+    # Every live instance, weakly held. The sliding window is per-IP but
+    # process-global, and under TestClient the whole suite shares one client
+    # host — so without a per-test reset the 11th auth request ANYWHERE in a
+    # run 429s a test that never touched throttling. See the autouse fixture
+    # in tests/conftest.py. WeakSet so this never pins a backend alive.
+    _instances: "weakref.WeakSet" = weakref.WeakSet()
+
     def __init__(self) -> None:
         self._hits: dict[str, list[float]] = defaultdict(list)
+        InMemoryBackend._instances.add(self)
+
+    @classmethod
+    def reset_all(cls) -> None:
+        """Clear counters on every live in-memory backend (test isolation)."""
+        for inst in list(cls._instances):
+            inst._hits.clear()
 
     async def check_and_record(
         self, key: str, max_requests: int, window_seconds: int,

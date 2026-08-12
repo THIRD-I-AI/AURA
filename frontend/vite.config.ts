@@ -13,7 +13,7 @@ import tailwindcss from '@tailwindcss/vite'
  * gateways widen connect-src at deploy time (documented in ENTERPRISE.md).
  */
 function devCspPlugin(): Plugin {
-  const DEV_CONNECT = "connect-src 'self' http://localhost:8000 ws://localhost:* ws://127.0.0.1:*;"
+  const DEV_CONNECT = "connect-src 'self' http://localhost:8000 http://localhost:8010 ws://localhost:* ws://127.0.0.1:*;"
   return {
     name: 'aura-dev-csp',
     apply: 'serve',

@@ -6,6 +6,7 @@ Tests the ledger-append helper directly with a synthetic audit result so it
 doesn't need the heavy out-of-process causal fan-out."""
 from __future__ import annotations
 
+import asyncio
 import os
 import sys
 import uuid
@@ -61,18 +62,62 @@ async def test_unsigned_fairness_audit_is_not_chained(ledger_env):
 
 
 @pytest.mark.asyncio
-async def test_ledger_failure_never_raises(ledger_env, monkeypatch):
-    # a ledger hiccup must not blow up the audit job
+async def test_ledger_failure_propagates(ledger_env, monkeypatch):
+    # Enterprise-readiness change (2026-07-24 — FLAGGED FOR REVIEW): a
+    # ledger-append failure is intentionally NOT swallowed anymore. A signed
+    # cert with no ledger entry is an orphan that silently breaks the
+    # tamper-evident chain-of-custody, so the failure propagates and the caller
+    # marks the audit job failed rather than reporting a false "success". (This
+    # reverses the prior availability-over-integrity choice; a retry/reconcile
+    # approach would be a gentler alternative — see PR discussion.)
     import shared.audit_ledger as mod
     from counterfactual_service.main import _append_fairness_audit_to_ledger
 
     async def _boom(**kw):
         raise RuntimeError("db down")
     monkeypatch.setattr(mod, "append_audit", _boom)
-    # should swallow + log, not raise
-    await _append_fairness_audit_to_ledger(
-        {"audit_record_hash": "c" * 64, "dataset_fingerprint": "d" * 64},
-        {"tenant_id": "bankA", "subject_id": "m1", "preparer_id": "x"})
+    with pytest.raises(RuntimeError, match="db down"):
+        await _append_fairness_audit_to_ledger(
+            {"audit_record_hash": "c" * 64, "dataset_fingerprint": "d" * 64},
+            {"tenant_id": "bankA", "subject_id": "m1", "preparer_id": "x"})
+
+
+@pytest.mark.asyncio
+async def test_ledger_transient_failure_retries_then_chains(ledger_env, monkeypatch):
+    # Bounded-retry change: a TRANSIENT blip (e.g. a momentary connection
+    # hiccup) should be retried, not fail the whole audit — only a
+    # PERSISTENT failure (every attempt fails) should still propagate per
+    # test_ledger_failure_propagates above. Simulate a flake that clears
+    # after 2 failures and assert the append eventually succeeds and chains.
+    import shared.audit_ledger as mod
+    from counterfactual_service.main import _append_fairness_audit_to_ledger
+
+    real_append_audit = mod.append_audit
+    calls = {"n": 0}
+
+    async def _flaky(**kw):
+        calls["n"] += 1
+        if calls["n"] < 3:
+            raise RuntimeError("transient db blip")
+        return await real_append_audit(**kw)
+
+    monkeypatch.setattr(mod, "append_audit", _flaky)
+
+    async def _no_sleep(_seconds):
+        return None
+    monkeypatch.setattr(asyncio, "sleep", _no_sleep)
+
+    result = {"audit_record_hash": "e" * 64, "dataset_fingerprint": "f" * 64,
+              "signature_status": "signed"}
+    payload = {"tenant_id": "bankA", "subject_id": "model-underwriting-v3",
+               "subject_type": "model", "preparer_id": "ada@bank.test",
+               "treatment": "race_proxy", "outcome": "approved"}
+    await _append_fairness_audit_to_ledger(result, payload)  # must NOT raise
+
+    assert calls["n"] == 3
+    hist = await L.subject_history("bankA", "model-underwriting-v3")
+    assert len(hist) == 1
+    assert hist[0].cert_hash == "e" * 64
 
 
 def test_audit_request_accepts_identity():

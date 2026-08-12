@@ -1,0 +1,44 @@
+# Caddy reverse proxy for the AWS free-tier deploy.
+#
+# Why this exists at all: shared/config.py rejects a non-HTTPS CORS origin in
+# production (see TestAuraSettings::test_cors_http_origin_rejected_in_production).
+# That guard is correct and we are not weakening it to get online — so the
+# deploy needs a real TLS certificate on a real hostname. Caddy obtains and
+# renews one from Let's Encrypt automatically, with no cron job and no cost.
+#
+# AURA_DOMAIN is injected from .env by compose. It must be a hostname that
+# resolves to this instance's public IP BEFORE first boot — Let's Encrypt
+# validates over HTTP/80 and will fail (and back off) against a bare IP.
+
+{$AURA_DOMAIN} {
+	encode gzip
+
+	# API traffic goes to the gateway. Everything the frontend calls lives
+	# under /api/v1/... (see frontend/src/services/api.ts).
+	handle /api/* {
+		reverse_proxy api_gateway:8000
+	}
+
+	# Health is proxied so `curl https://<domain>/health` works from outside
+	# without exposing the gateway port to the internet directly.
+	handle /health {
+		reverse_proxy api_gateway:8000
+	}
+
+	# Everything else is the React SPA served by its nginx image, which already
+	# handles history-API fallback for client-side routes such as
+	# /workbench and /certificate/:hash.
+	handle {
+		reverse_proxy frontend:80
+	}
+
+	# The gateway sets its own security headers via middleware; these cover the
+	# static frontend, which nginx serves without them.
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		-Server
+	}
+}

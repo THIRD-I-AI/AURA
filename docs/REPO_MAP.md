@@ -26,10 +26,12 @@ Each is a FastAPI app with its own `main.py` and port. Launch them all with
 `aurabackend/start_all.ps1` (Windows) / `start_all.sh` (POSIX), or `make up`
 (Docker).
 
-| Service | Port | Purpose |
+Nine processes are actually launched (`start_all.ps1` / both `docker-compose*.yml`):
+
+| Service | Port (local / prod) | Purpose |
 |---|---|---|
-| `api_gateway/` | 8000 | The front door. Routers proxy/aggregate the other services + own the gateway DB (`persistence.py`). |
-| `code_generation_service/` | 8001 | LLM code generation. |
+| `api_gateway/` | 8010 / 8000 | The front door. Mounts every `/api/v1` router + own gateway DB (`persistence.py`). Runs the counterfactual/financial-audit engine and commander agents **in-process** (see below) — local port moved off 8000 because a `claude-science` daemon squats it on this machine. |
+| `code_generation_service/` | 8011 / 8001 | LLM code generation. |
 | `connectors/` | 8002 | Data-source connectors (Postgres, MySQL, BigQuery, DuckDB, Kafka). Also imported as a **library**. |
 | `execution_sandbox_service/` | 8003 | Sandboxed code/query execution. |
 | `scheduler_service/` | 8004 | Distributed job queue + scheduling (Postgres LISTEN/NOTIFY). |
@@ -37,16 +39,26 @@ Each is a FastAPI app with its own `main.py` and port. Launch them all with
 | `orchestration_service/` | 8006 | Cross-service workflow orchestration. |
 | `metadata_store/` | 8007 | Dataset profiles, semantic models, vector store. Also a **library**. |
 | `uasr/` | 8009 | Self-healing (UASR): drift detection → shim generation → human-in-the-loop approval. |
-| `counterfactual_service/` | 8012 | Causal/counterfactual audit engine — emits ED25519-signed certificates. The deepest IP. |
-| `causal_service/` | — | Causal discovery + estimation primitives. |
-| `dar_service/` | — | Data-access / audit-record service. |
-| `ingestion_service/` | — | Data ingestion. |
+
+`counterfactual_service/` (causal/counterfactual + financial audit engine —
+ED25519-signed certificates, the deepest IP) is **not** a standalone
+process; it's mounted in-process in the gateway via
+`api_gateway/routers/counterfactual.py` — see the libraries table below.
+
+`causal_service/`, `dar_service/`, and `ingestion_service/` still exist on
+disk with their own tests, but none is wired into `api_gateway`, either
+`docker-compose*.yml`, or launched by `start_all.ps1`. `causal_service/`
+and `dar_service/` are still configured as separate deployable pods in
+`deploy/helm/aura/values.yaml` (ports 8010/8011 in that chart) —
+an unreconciled leftover from the pre-pivot design, not part of the topology
+that actually runs today.
 
 ## Backend libraries (`aurabackend/`, imported — not standalone services)
 
 | Module | Purpose |
 |---|---|
 | `shared/` | Cross-cutting: logging, auth/JWT, `persistence` helpers, `tasks` (fire-and-forget), signing, merkle, middleware. |
+| `counterfactual_service/` | Causal/counterfactual + financial audit engine — mounted in-process via `api_gateway/routers/counterfactual.py`, not a standalone process. |
 | `agents/` | LangGraph agents: intent, planner, specialists + the orchestrator that powers Chat + the Agent. |
 | `pipeline/` | ETL pipeline `engine` + `models` (the runtime behind `/pipeline/*`). |
 | `mcp_core/`, `mcp_servers/` | Model Context Protocol core + servers. |
@@ -74,7 +86,7 @@ Run: `make test` (backend) · `cd frontend && npm test` (frontend).
 
 | Path | What it is |
 |---|---|
-| `main.tsx`, `App.tsx`, `AppRoutes.tsx` | Entry point, root component, routing. |
+| `main.tsx`, `AppRoutes.tsx` | Entry point + routing. The classic `App.tsx` shell was deleted; `/workbench` is the single authenticated cockpit and `/app/*` redirects there. |
 | `pages/` | One file per `/app/*` page (Files, Queries, Lineage, Cost, …). |
 | `components/` | Reusable components; `components/Layout/` is the app shell + sidebar. |
 | `shell/` | The screen-aware fluid shell: `ViewportProvider` anchor + page-aware `ContextRail`. |

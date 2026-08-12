@@ -253,12 +253,16 @@ async def list_files(request: Request) -> Dict[str, Any]:
 
 
 @router.get("/files/{file_id}")
-async def get_file_info(file_id: str) -> Dict[str, Any]:
+async def get_file_info(file_id: str, request: Request) -> Dict[str, Any]:
     """Get information about a specific file."""
     if file_service is None:
         return {"status": "error", "error": "File service not available"}
     try:
-        file_info = file_service.get_file_info(file_id)
+        # Scope to the caller's tenant, exactly as the /files listing above
+        # does. Without it the lookup ran against the shared 'default' tenant,
+        # so one org could resolve another org's upload by id.
+        sub = tenant_dir_name(_request_tenant(request))
+        file_info = file_service.get_file_info(file_id, subdir=sub)
         if file_info:
             return {"status": "success", "file_info": file_info}
         else:

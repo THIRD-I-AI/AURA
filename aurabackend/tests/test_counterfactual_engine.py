@@ -311,6 +311,12 @@ def test_service_endpoint_roundtrip(monkeypatch, tmp_path):
     from fastapi.testclient import TestClient
 
     from counterfactual_service.main import app, register_dataset
+    from shared.auth import create_access_token
+
+    # Job submit + poll are authenticated and tenant-scoped (see main._new_job),
+    # so both legs of the roundtrip must carry the same token.
+    auth = {"Authorization":
+            f"Bearer {create_access_token({'sub': 'eng-tester', 'org_id': 'org-eng'})}"}
 
     install_mock(monkeypatch, UnifiedMockLLM(default_response='{"challenges": []}'))
     monkeypatch.setenv("AURA_AUDIT_DIR", str(tmp_path))
@@ -329,7 +335,7 @@ def test_service_endpoint_roundtrip(monkeypatch, tmp_path):
         "dataset":   {"source_id": "synthetic_svc"},
         "audience":  "operator",
     }
-    with TestClient(app) as client:
+    with TestClient(app, headers=auth) as client:
         resp = client.post("/counterfactual/jobs", json=payload)
         assert resp.status_code == 200, resp.text
         job_id = resp.json()["job_id"]
@@ -345,10 +351,13 @@ def test_gateway_proxies_counterfactual(monkeypatch, tmp_path):
 
     from api_gateway.main import app
     from counterfactual_service.main import register_dataset
+    from shared.auth import create_access_token
 
     install_mock(monkeypatch, UnifiedMockLLM(default_response='{"challenges": []}'))
     monkeypatch.setenv("AURA_AUDIT_DIR", str(tmp_path))
     register_dataset("synthetic_gw", synthetic_dataset(n=300))
+    auth = {"Authorization":
+            f"Bearer {create_access_token({'sub': 'gw-tester', 'org_id': 'org-gw'})}"}
 
     payload = {
         "question": "test",
@@ -363,7 +372,7 @@ def test_gateway_proxies_counterfactual(monkeypatch, tmp_path):
         "dataset":   {"source_id": "synthetic_gw"},
         "audience":  "operator",
     }
-    with TestClient(app) as client:
+    with TestClient(app, headers=auth) as client:
         r = client.post("/api/v1/counterfactual/jobs", json=payload)
         assert r.status_code == 200, r.text
         job_id = r.json()["job_id"]

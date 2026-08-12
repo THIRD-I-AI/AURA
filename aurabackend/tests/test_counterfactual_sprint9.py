@@ -25,6 +25,11 @@ from counterfactual_service import (
 from counterfactual_service.canonical import canonical_dumps, sha256_canonical
 from counterfactual_service.engine import dowhy_available, run_job
 from counterfactual_service.main import register_dataset
+from shared.auth import create_access_token
+
+# Job submit + poll are authenticated and tenant-scoped (see main._new_job).
+_AUTH = {"Authorization":
+         f"Bearer {create_access_token({'sub': 's9-tester', 'org_id': 'org-s9'})}"}
 from counterfactual_service.schemas import (
     CounterfactualQuery,
     DAGSpec,
@@ -306,7 +311,7 @@ async def test_replay_endpoint_returns_artifact(monkeypatch, tmp_path):
         "audience":  "auditor",
     }
 
-    with TestClient(app) as client:
+    with TestClient(app, headers=_AUTH) as client:
         r = client.post("/counterfactual/jobs", json=payload)
         assert r.status_code == 200, r.text
         job_id = r.json()["job_id"]
@@ -395,7 +400,7 @@ def test_pdf_endpoint_501_when_renderer_unavailable(monkeypatch, tmp_path):
     from fastapi.testclient import TestClient
 
     from counterfactual_service.main import app
-    with TestClient(app) as client:
+    with TestClient(app, headers=_AUTH) as client:
         r = client.get("/counterfactual/artifacts/" + "a" * 64 + "/report.pdf")
         assert r.status_code == 501
         assert "reportlab" in r.text

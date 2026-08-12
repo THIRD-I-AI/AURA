@@ -1,0 +1,96 @@
+# AURA — AWS free-tier topology (single t3.micro, 1 GB RAM)
+#
+# This is NOT docker-compose.prod.yml with fewer services. Three deliberate
+# differences, each forced by the 1 GB ceiling:
+#
+#   1. ONE worker, not four. docker-compose.prod.yml runs the gateway with
+#      --workers 4; every worker imports pandas + numpy + duckdb + langgraph
+#      into its own address space (~250 MB each), so four workers OOM the box
+#      before the health check ever passes. With no users, one worker is also
+#      genuinely sufficient.
+#   2. SQLite, not Postgres. The `db` service is dropped entirely — RDS is the
+#      single largest cost item and a Postgres container is ~200 MB of RAM we
+#      do not have. persistence.py already supports SQLite (it is the dev
+#      default), so this is a config change, not a code change.
+#   3. base-runtime image, not causal-runtime. The dowhy/econml causal
+#      estimators live in the causal tier. The analyst loop (NL -> SQL ->
+#      answer) does not need them. See README for what that costs.
+#
+# The other eight services are absent, not disabled. The counterfactual and
+# financial-audit engines run IN-PROCESS inside the gateway (see CLAUDE.md), so
+# the analyst path and the audit path both work without them. Features that DO
+# require a missing service (external-DB connectors, distributed scheduler) are
+# listed honestly in README.md rather than left to fail at runtime.
+
+name: aura
+
+# Must match what .github/workflows/cd.yml actually publishes, which is not
+# obvious from reading it: IMAGE_NAME is ${{ github.repository }} (so the image
+# is <owner>/aura, NOT aura-backend), and `flavor: suffix=-<matrix.suffix>`
+# appends the tier — so target `base-runtime` publishes the tag `-base`, not
+# `-base-runtime`. Tag v0.1.0 therefore yields:
+#     ghcr.io/third-i-ai/aura:0.1.0-base
+# GHCR lowercases the whole path, so GHCR_OWNER must be lowercase too.
+x-image: &image ghcr.io/${GHCR_OWNER}/aura:${AURA_TAG}-base
+
+services:
+  api_gateway:
+    image: *image
+    restart: unless-stopped
+    # One worker. See note 1 above — this is the difference between booting
+    # and OOM-looping on a t3.micro.
+    command: uvicorn api_gateway.main:app --host 0.0.0.0 --port 8000 --workers 1
+    env_file: [.env]
+    environment:
+      # SQLite lives on the mounted volume so it survives container replacement.
+      AURA_DATABASE_URL: sqlite+aiosqlite:////data/state/gateway.db
+      AURA_LEDGER_DATABASE_URL: sqlite+aiosqlite:////data/state/ledger.db
+      AURA_AUDIT_DIR: /data/audit
+      AURA_ARTIFACT_DIR: /data/artifacts
+      AURA_SIGNING_KEY_DIR: /data/keys
+      AURA_UPLOAD_DIR: /data/uploads
+    volumes:
+      - aura-data:/data
+    # Hard ceiling. Without it a runaway pandas operation takes the whole box
+    # down including Caddy, and you lose the ability to reach the site at all.
+    mem_limit: 700m
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health', timeout=5).status==200 else 1)"]
+      interval: 30s
+      timeout: 10s
+      # ML imports are slow on a burstable instance; a short start_period would
+      # kill the container mid-import and loop forever.
+      start_period: 180s
+      retries: 3
+
+  frontend:
+    # Published by cd.yml's build-and-push-frontend job, which was added when
+    # this deploy was wired — before that, no frontend image existed at any tag.
+    image: ghcr.io/${GHCR_OWNER}/aura:${AURA_TAG}-frontend
+    restart: unless-stopped
+    mem_limit: 64m
+    depends_on:
+      api_gateway:
+        condition: service_healthy
+
+  # Caddy terminates TLS with an automatic Let's Encrypt certificate. This is
+  # not optional polish: shared/config.py REJECTS a non-HTTPS CORS origin in
+  # production, so an http:// deploy refuses to boot by design. Caddy is how we
+  # keep every production guard armed instead of weakening one to get online.
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports: ["80:80", "443:443"]
+    mem_limit: 64m
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    environment:
+      AURA_DOMAIN: ${AURA_DOMAIN}
+    depends_on: [frontend, api_gateway]
+
+volumes:
+  aura-data:
+  caddy-data:
+  caddy-config:

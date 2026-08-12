@@ -20,7 +20,7 @@ from sqlalchemy import select
 
 from shared.auth import create_access_token, require_user
 from shared.config import settings
-from shared.exceptions import AuthenticationError, ConflictError, ValidationError
+from shared.exceptions import AuthenticationError, ConflictError, ForbiddenError, ValidationError
 from shared.logging_config import get_logger
 
 logger = get_logger("aura.router.auth")
@@ -135,6 +135,13 @@ async def register_user(body: RegisterRequest):
     In production (``auth_mode=password``), this endpoint should be
     protected with ``require_role("admin")``.  In development it is open.
     """
+    if settings.is_production and not settings.allow_self_registration:
+        raise ForbiddenError(
+            "Self-registration is disabled on this deployment. "
+            "Set AURA_ALLOW_SELF_REGISTRATION=true to re-enable it, or "
+            "provision accounts via SSO / an administrator."
+        )
+
     from metadata_store.db import get_session_factory
     from metadata_store.models import User
     from shared.password import hash_password

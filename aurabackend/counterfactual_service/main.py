@@ -25,6 +25,7 @@ from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, Field
 
 from shared.auth import get_current_user, require_user
+from shared.error_handler import sanitize_error
 
 
 def _ledger_tenant(user: Optional[Dict[str, Any]]) -> str:
@@ -97,19 +98,60 @@ def load_persisted_demo_artifacts() -> int:
 
     Instant + CPU-free — safe to call from the gateway's startup. Returns the
     number of scenarios loaded. Missing dir / files is fine (returns 0): the
-    deploy just hasn't run warm_demos yet."""
+    deploy just hasn't run warm_demos yet.
+
+    Boundary check (enterprise trust): a persisted artifact signed with a key
+    the running process no longer holds renders "✓ SIGNED" on the certificate
+    page yet fails ``/verify`` — a silent trust contradiction. Rather than
+    serve that, re-verify each *signed* artifact against the CURRENT key here
+    and refuse to cache any that don't verify. The demo endpoint then returns
+    an honest 503 ("run warm_demos") instead of a signed-but-unverifiable
+    certificate. Uses the same strip_for_hashing/verify path as verify_artifact
+    so the check can't drift from the real verification."""
     n = 0
+    skipped = 0
     if not _DEMO_ARTIFACT_DIR.exists():
         return 0
+    from .canonical import canonical_dumps
+    from .engine import strip_for_hashing
     for p in _DEMO_ARTIFACT_DIR.glob("*.json"):
         try:
             with open(p, encoding="utf-8") as fh:
-                _demo_last_good[p.stem] = json.load(fh)
-            n += 1
+                art = json.load(fh)
         except (OSError, ValueError) as exc:
             logger.warning("could not load demo artifact %s: %s", p.name, exc)
+            continue
+        sig_b64 = art.get("signature_b64")
+        if art.get("signature_status") == "signed" and sig_b64:
+            try:
+                # verify_bytes() itself never raises (see signing.py) — a broken
+                # signing key surfaces there as its own distinct "key resolution
+                # failed" error log, not as this block's generic catch. What
+                # remains catchable here is a malformed artifact shape breaking
+                # canonical_dumps/strip_for_hashing, which must never crash startup.
+                payload_bytes = canonical_dumps(strip_for_hashing(art)).encode("utf-8")
+                verified = signing.verify_bytes(payload_bytes, sig_b64)
+            except Exception as exc:
+                verified = False
+                logger.error("demo artifact %s failed signature re-check (%s)", p.name, exc)
+            if not verified:
+                skipped += 1
+                logger.error(
+                    "demo artifact %s claims signed but does NOT verify against the current "
+                    "signing key (source=%s) — refusing to cache. Re-run "
+                    "`python -m counterfactual_service.warm_demos` with the deployed key.",
+                    p.name, signing.signing_key_source(),
+                )
+                continue
+        _demo_last_good[p.stem] = art
+        n += 1
     if n:
         logger.info("loaded %d pre-computed demo artifact(s) from %s", n, _DEMO_ARTIFACT_DIR)
+    if skipped:
+        logger.error(
+            "%d demo artifact(s) skipped (signature mismatch) — those scenarios will 503 until re-warmed",
+            skipped,
+        )
     return n
 
 
@@ -173,10 +215,16 @@ async def _run_async(job_id: str, query: CounterfactualQuery) -> None:
             artifact=artifact.model_dump(mode="json"),
         )
     except HTTPException as exc:
+        # exc.detail here is always an author-curated string raised inside this
+        # module (see _resolve_dataset) — never raw upstream exception text —
+        # so it's safe to surface to the caller as-is.
         _jobs[job_id].update(state="failed", error=f"HTTP {exc.status_code}: {exc.detail}")
     except Exception as exc:
         logger.exception("Counterfactual job %s failed", job_id)
-        _jobs[job_id].update(state="failed", error=f"{type(exc).__name__}: {exc}")
+        _jobs[job_id].update(
+            state="failed",
+            error=sanitize_error(exc, logger=logger, context=f"counterfactual job {job_id}"),
+        )
 
 
 async def _run_demo_async(job_id: str, scenario_id: str, query: CounterfactualQuery) -> None:
@@ -198,15 +246,35 @@ async def _run_demo_async(job_id: str, scenario_id: str, query: CounterfactualQu
             patched["degraded"] = True
             _jobs[job_id].update(state="succeeded", artifact=patched)
         else:
-            _jobs[job_id].update(state="failed", error=f"{type(exc).__name__}: {exc}")
+            _jobs[job_id].update(
+                state="failed",
+                error=sanitize_error(exc, logger=logger, context=f"demo job {scenario_id}"),
+            )
+
+
+def _new_job(prefix: str, tenant: str) -> str:
+    """Register a queued job owned by ``tenant`` and return its id.
+
+    Every job-creating endpoint MUST go through here. The tenant stamp is what
+    get_job filters on, so a record created without one is readable by nobody —
+    which makes this the single place that invariant can be enforced.
+
+    The id carries the full uuid4 hex rather than a truncated slice: it is the
+    handle a client polls with, so its entropy is the defence-in-depth layer
+    sitting behind the tenant check. 48 bits is cheap to grind for something as
+    valuable as a fair-lending audit result.
+    """
+    job_id = f"{prefix}_{uuid.uuid4().hex}"
+    _jobs[job_id] = {"state": "queued", "artifact": None, "error": None, "tenant": tenant}
+    return job_id
 
 
 # ── Endpoints ─────────────────────────────────────────────────────────
 
 @app.post("/counterfactual/jobs")
-async def submit_job(query: CounterfactualQuery) -> Dict[str, str]:
-    job_id = f"ca_{uuid.uuid4().hex[:12]}"
-    _jobs[job_id] = {"state": "queued", "artifact": None, "error": None}
+async def submit_job(query: CounterfactualQuery,
+                     user: Dict[str, Any] = Depends(require_user)) -> Dict[str, str]:
+    job_id = _new_job("ca", _ledger_tenant(user))
     # Hold the Task reference inside the job record. Without this, the
     # task is eligible for garbage collection as soon as submit_job
     # returns — Python 3.11+ asyncio gives "Task was destroyed but it
@@ -216,11 +284,16 @@ async def submit_job(query: CounterfactualQuery) -> Dict[str, str]:
 
 
 @app.get("/counterfactual/jobs/{job_id}")
-async def get_job(job_id: str) -> Dict[str, Any]:
-    if job_id not in _jobs:
+async def get_job(job_id: str, user: Dict[str, Any] = Depends(require_user)) -> Dict[str, Any]:
+    # Sec review: this endpoint was unauthenticated, so anyone holding — or
+    # grinding — a job id could read another org's audit result. Auth is now
+    # required on BOTH sides: every record carries its submitter's tenant (see
+    # _new_job), and a cross-tenant read is answered identically to a missing
+    # job, so the response never confirms that someone else's id exists.
+    j = _jobs.get(job_id)
+    if j is None or j.get("tenant") != _ledger_tenant(user):
         raise HTTPException(404, f"job {job_id} not found")
-    j = _jobs[job_id]
-    # Don't leak the Task object through the JSON response.
+    # Don't leak the Task object (or the tenant stamp) through the JSON response.
     return {
         "job_id": job_id,
         "state": j["state"],
@@ -252,21 +325,27 @@ async def demo_scenarios() -> Dict[str, Any]:
 
 
 @app.post("/counterfactual/demo/{scenario_id}")
-async def run_demo(scenario_id: str, fresh: bool = False) -> Dict[str, Any]:
+async def run_demo(scenario_id: str, fresh: bool = False,
+                   user: Dict[str, Any] = Depends(require_user)) -> Dict[str, Any]:
     """Run the pre-loaded compliance audit. Poll GET /counterfactual/jobs/{id}.
 
     Fast path: once a scenario is pre-warmed, return its sealed artifact as an
     already-complete job (instant, deterministic). ``fresh=true`` forces a live
-    run for the "watch it compute" progress view."""
+    run for the "watch it compute" progress view.
+
+    Authenticated like every other job producer: the poll endpoint it hands the
+    caller off to is tenant-scoped, so an anonymous demo job would be one nobody
+    could then read. The UI reaches this behind a login already."""
     try:
         scenario = get_scenario(scenario_id)
     except KeyError:
         raise HTTPException(404, f"unknown demo scenario: {scenario_id!r}")
 
+    tenant = _ledger_tenant(user)
     cached = _demo_last_good.get(scenario_id)
     if cached is not None and not fresh:
-        job_id = f"demo_{uuid.uuid4().hex[:12]}"
-        _jobs[job_id] = {"state": "succeeded", "artifact": cached, "error": None}
+        job_id = _new_job("demo", tenant)
+        _jobs[job_id].update(state="succeeded", artifact=cached)
         return {"job_id": job_id, "scenario_id": scenario_id, "degraded": False, "cached": True}
 
     if not fresh:
@@ -285,8 +364,7 @@ async def run_demo(scenario_id: str, fresh: bool = False) -> Dict[str, Any]:
     df = scenario.build_dataset()
     query = scenario.query()
     register_dataset(query.dataset.source_id, df)
-    job_id = f"demo_{uuid.uuid4().hex[:12]}"
-    _jobs[job_id] = {"state": "queued", "artifact": None, "error": None}
+    job_id = _new_job("demo", tenant)
     _jobs[job_id]["_task"] = asyncio.create_task(
         _run_demo_async(job_id, scenario_id, query)
     )
@@ -350,26 +428,28 @@ def _result_field(result: Any, key: str, default: Any = None) -> Any:
 
 async def _append_fairness_audit_to_ledger(result: Any, payload: Dict[str, Any]) -> None:
     """Chain a completed causal-fairness audit into the durable, tamper-evident
-    ledger — the fair-lending product's exam-ready trail. A ledger hiccup is
-    logged loudly but never fails the audit; an unsigned result (no cert hash)
-    is not chained (there is no cert to commit to)."""
+    ledger — the fair-lending product's exam-ready trail. A signed cert with no
+    ledger entry is an orphan: the tamper-evident chain would have no record of
+    it while the cert itself is still readable/verifiable, silently breaking the
+    chain-of-custody guarantee. So a ledger-append failure is intentionally
+    NOT swallowed here — it propagates to the caller (``_run_audit_job_async``),
+    which marks the job ``failed`` (artifact still attached) instead of
+    reporting a false success. An unsigned result (no cert hash) is not
+    chained (there is no cert to commit to) — that's the only legitimate skip."""
     cert_hash = _result_field(result, "audit_record_hash")
     if not cert_hash:
         return
     fingerprint = _result_field(result, "dataset_fingerprint", "") or cert_hash
     from shared import audit_ledger
-    try:
-        await audit_ledger.append_audit(
-            tenant_id=payload.get("tenant_id") or "default",
-            kind="fairness_audit_completed",
-            subject_id=payload.get("subject_id") or "default",
-            subject_type=payload.get("subject_type") or "decision_model",
-            preparer_id=payload.get("preparer_id") or "system",
-            cert_hash=cert_hash, input_fingerprint=fingerprint,
-            payload={"treatment": payload.get("treatment"), "outcome": payload.get("outcome"),
-                     "signature_status": _result_field(result, "signature_status")})
-    except Exception as exc:  # noqa: BLE001 — never fail the audit on a ledger hiccup
-        logger.error("fairness audit ledger append failed for %s: %s", cert_hash, exc)
+    await audit_ledger.append_audit_with_retry(
+        tenant_id=payload.get("tenant_id") or "default",
+        kind="fairness_audit_completed",
+        subject_id=payload.get("subject_id") or "default",
+        subject_type=payload.get("subject_type") or "decision_model",
+        preparer_id=payload.get("preparer_id") or "system",
+        cert_hash=cert_hash, input_fingerprint=fingerprint,
+        payload={"treatment": payload.get("treatment"), "outcome": payload.get("outcome"),
+                 "signature_status": _result_field(result, "signature_status")})
 
 
 async def _append_review_to_ledger(*, tenant_id: str, audit_cert_hash: str,
@@ -378,25 +458,25 @@ async def _append_review_to_ledger(*, tenant_id: str, audit_cert_hash: str,
     """Chain a human sign-off into the durable ledger, inheriting the audited
     subject + preparer from the original audit (looked up by its cert hash) so
     the AS-1215 preparer→reviewer trail is exam-provable. Skips silently if the
-    audit isn't in this tenant's ledger (don't fabricate an orphan review); a
-    ledger hiccup is logged, never fails the decision."""
+    audit isn't in this tenant's ledger (don't fabricate an orphan review) —
+    that's the one legitimate no-op. A genuine ledger-append failure is
+    intentionally NOT swallowed: it propagates so the caller
+    (``financial_audit_decide``) can surface a 5xx rather than returning a
+    signed-but-unchained decision as if it were a success."""
     from shared import audit_ledger
-    try:
-        original = await audit_ledger.record_for_cert(tenant_id, audit_cert_hash)
-        if original is None:
-            return
-        from datetime import datetime, timezone
-        await audit_ledger.append_audit(
-            tenant_id=tenant_id, kind="human_review",
-            subject_id=original.subject_id, subject_type=original.subject_type,
-            preparer_id=original.preparer_id, reviewer_id=reviewer_id,
-            decided_at=datetime.now(timezone.utc).isoformat(),
-            cert_hash=review_stored.get("record_hash") or audit_cert_hash,
-            input_fingerprint=original.input_fingerprint or audit_cert_hash,
-            payload={"action": "approved" if approved else "overridden",
-                     "audit_cert_hash": audit_cert_hash})
-    except Exception as exc:  # noqa: BLE001 — never fail the decision on a ledger hiccup
-        logger.error("review ledger append failed for audit %s: %s", audit_cert_hash, exc)
+    original = await audit_ledger.record_for_cert(tenant_id, audit_cert_hash)
+    if original is None:
+        return
+    from datetime import datetime, timezone
+    await audit_ledger.append_audit_with_retry(
+        tenant_id=tenant_id, kind="human_review",
+        subject_id=original.subject_id, subject_type=original.subject_type,
+        preparer_id=original.preparer_id, reviewer_id=reviewer_id,
+        decided_at=datetime.now(timezone.utc).isoformat(),
+        cert_hash=review_stored.get("record_hash") or audit_cert_hash,
+        input_fingerprint=original.input_fingerprint or audit_cert_hash,
+        payload={"action": "approved" if approved else "overridden",
+                 "audit_cert_hash": audit_cert_hash})
 
 
 async def _run_audit_job_async(job_id: str, payload: Dict[str, Any]) -> None:
@@ -408,12 +488,15 @@ async def _run_audit_job_async(job_id: str, payload: Dict[str, Any]) -> None:
         await _append_fairness_audit_to_ledger(result, payload)
     except Exception as exc:
         logger.exception("Audit job %s failed", job_id)
-        _jobs[job_id].update(state="failed", error=f"{type(exc).__name__}: {exc}")
+        _jobs[job_id].update(
+            state="failed",
+            error=sanitize_error(exc, logger=logger, context=f"audit job {job_id}"),
+        )
 
 
 @app.post("/counterfactual/audit")
 async def run_audit(req: AuditRequest,
-                    user: Optional[Dict[str, Any]] = Depends(get_current_user)) -> Dict[str, Any]:
+                    user: Dict[str, Any] = Depends(require_user)) -> Dict[str, Any]:
     """Audit the user's own uploaded data. Cheap pre-validation here; the heavy,
     GIL-bound fan-out runs out-of-process so the gateway never blocks."""
     path = _find_upload(req.uploaded_file)
@@ -427,11 +510,12 @@ async def run_audit(req: AuditRequest,
         if missing:
             raise HTTPException(400, f"columns not in file {req.uploaded_file!r}: {missing}")
 
-    job_id = f"audit_{uuid.uuid4().hex[:12]}"
-    _jobs[job_id] = {"state": "queued", "artifact": None, "error": None}
     # Ledger tenant comes from the VERIFIED token, never the body — overwrite
-    # the request's tenant_id before it reaches the ledger append.
-    payload = {**req.model_dump(), "tenant_id": _ledger_tenant(user)}
+    # the request's tenant_id before it reaches the ledger append, and scope the
+    # job record to the same tenant so only this org can poll the result.
+    tenant = _ledger_tenant(user)
+    job_id = _new_job("audit", tenant)
+    payload = {**req.model_dump(), "tenant_id": tenant}
     _jobs[job_id]["_task"] = asyncio.create_task(
         _run_audit_job_async(job_id, payload)
     )
@@ -624,19 +708,32 @@ async def financial_audit(req: FinancialAuditRequest,
     stored = sign_and_persist(doc)
 
     # Always-on durable ledger: chain this signed audit into the tenant's
-    # tamper-evident history (Subsystem C). Never let a ledger hiccup fail the
-    # audit response, but surface it loudly — a missing chain link is reportable.
+    # tamper-evident history (Subsystem C). The completion document is already
+    # signed + persisted to a separate filesystem-backed store (financial_report
+    # .sign_and_persist) by this point, so this DB append can't share one atomic
+    # transaction with it. A ledger-append failure is therefore surfaced as a
+    # 5xx instead of swallowed: returning 200 here would hand the caller a
+    # cert that LOOKS chained (it has a verify_url) but has no ledger entry —
+    # an orphan that defeats the whole tamper-evident-chain guarantee.
     from shared import audit_ledger
     try:
-        await audit_ledger.append_audit(
+        await audit_ledger.append_audit_with_retry(
             tenant_id=tenant, kind="financial_audit_completed",
             subject_id=req.subject_id, subject_type=req.subject_type, preparer_id=req.preparer_id,
             cert_hash=stored["record_hash"], input_fingerprint=fingerprint,
             payload={"n_findings": stored.get("n_findings"),
                      "signature_status": stored.get("signature_status"),
                      "materiality_threshold": result["materiality_threshold"]})
-    except Exception as exc:                       # noqa: BLE001
+    except Exception as exc:
         logger.error("audit ledger append failed for %s: %s", stored["record_hash"], exc)
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                f"audit {stored['record_hash']} was signed and persisted but failed to chain "
+                f"into the durable ledger ({type(exc).__name__}); it is NOT yet tamper-evident-"
+                f"chained — retry or contact an operator before relying on this certificate"
+            ),
+        ) from exc
 
     view = client_view(stored)
     view["verify_url"] = f"/audit/financial/verify/{stored['record_hash']}"
@@ -755,10 +852,26 @@ async def financial_audit_decide(record_hash: str, finding_id: str,
         # ValueError here = non-hex record_hash from the URL → not found.
         raise HTTPException(404, str(exc))
     # Chain the human sign-off into the durable ledger too (AS-1215
-    # preparer→reviewer). Additive + fail-safe: never affects the decision.
-    await _append_review_to_ledger(
-        tenant_id=_ledger_tenant(user), audit_cert_hash=record_hash,
-        review_stored=stored, reviewer_id=user["sub"], approved=req.approved)
+    # preparer→reviewer). The WORM decision above is already durably
+    # recorded and can't be cleanly rolled back on a ledger hiccup (it lives
+    # in a separate store — see exception_queue.py), so a ledger-append
+    # failure surfaces as a 5xx instead of a false 200: the caller must know
+    # this decision is signed but NOT YET chained into the tamper-evident
+    # ledger, rather than silently trusting an orphaned record.
+    try:
+        await _append_review_to_ledger(
+            tenant_id=_ledger_tenant(user), audit_cert_hash=record_hash,
+            review_stored=stored, reviewer_id=user["sub"], approved=req.approved)
+    except Exception as exc:
+        logger.error("review ledger append failed for audit %s: %s", record_hash, exc)
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                f"decision for finding {finding_id!r} was recorded but failed to chain into "
+                f"the durable ledger ({type(exc).__name__}); it is NOT yet tamper-evident-"
+                f"chained — retry the decision or contact an operator before relying on it"
+            ),
+        ) from exc
     stored["verify_url"] = f"/audit/financial/verify/{stored['record_hash']}"
     return stored
 
@@ -1073,4 +1186,11 @@ def start_demo_prewarm() -> None:
 
 @app.on_event("startup")
 async def _prewarm_demos() -> None:
+    # Fail loud on a broken production signing key at startup rather than
+    # degrading silently the first time sign_bytes/verify_bytes is called
+    # (see signing.py — those now swallow the same RuntimeError by contract).
+    # NOTE: this hook does not fire when the gateway mounts this app
+    # in-process (see start_demo_prewarm's docstring) — that path still
+    # needs the equivalent call; not wired here (out of scope).
+    signing.validate_signing_config()
     start_demo_prewarm()

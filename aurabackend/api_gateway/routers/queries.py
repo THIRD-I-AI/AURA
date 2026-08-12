@@ -152,7 +152,6 @@ async def close_all_pg_pools() -> None:
 
 
 # Re-use the connections store from the connections router
-from api_gateway.routers.connections import _connections_lock, _connections_store
 
 
 async def track_query(prompt: str, sql: str, q_status: str, rows: int, execution_time_ms: float):
@@ -734,18 +733,26 @@ async def list_saved_query_runs(query_id: str, request: Request, limit: int = 20
     return {"success": True, "runs": runs[:max(1, min(limit, 200))]}
 
 
-async def _execute_saved_query_sql(sql: str) -> Dict[str, Any]:
+async def _execute_saved_query_sql(sql: str, workspace_id: Optional[str] = None) -> Dict[str, Any]:
     """Run SQL against uploaded-file DuckDB. Mirrors the /execute/for-chat path.
 
     Kept minimal — no LLM analysis, no chart spec. Returns summary fields.
+
+    ``workspace_id`` is the OWNING workspace of the saved query. It used to be
+    hard-coded to None here, which slugs to "default": a scheduled query owned
+    by any other workspace therefore loaded the default tenant's uploads, so it
+    either ran against another org's data or failed on a table that exists only
+    in its own. Every SavedQueryRow carries workspace_id, so the owner is known
+    — thread it through rather than defaulting.
     """
     from shared.data_utils import build_schema_context_cached
     from shared.duckdb_factory import new_connection
 
     con = new_connection()
     try:
-        # tenant=None → backend slugs to "default", matching default_upload_dir()
-        await build_schema_context_cached(con, None, use_llm=False)
+        # None still slugs to "default", correct only for records that really
+        # do belong to the default workspace.
+        await build_schema_context_cached(con, workspace_id, use_llm=False)
 
         def _run() -> tuple[list[str], list[tuple]]:
             cur = con.execute(sql)
@@ -819,7 +826,7 @@ async def _fire_due_saved_queries() -> None:
         sql = record.get("sql", "")
         started = datetime.now().isoformat()
         try:
-            result = await _execute_saved_query_sql(sql)
+            result = await _execute_saved_query_sql(sql, record.get("workspace_id"))
             entry = {
                 "id": f"run_{int(time.time() * 1000)}",
                 "started_at": started,
@@ -973,9 +980,13 @@ async def get_dashboard_stats(request: Request):
     except Exception as exc:
         logger.warning("dashboard stats file scan failed (non-fatal): %s", exc)
 
-    with _connections_lock:
-        active_conns = sum(1 for c in _connections_store.values() if c.get("is_active"))
-        total_conns = len(_connections_store)
+    # Workspace-scoped, like every other figure this endpoint reports. It used
+    # to count the global connections dict, so one org's "total connections"
+    # silently included every other org's — the same cross-tenant leak the
+    # /connections listing had, just expressed as a number.
+    _conns = await persistence.list_connections(current_workspace_id(request))
+    active_conns = sum(1 for c in _conns if c.get("is_active"))
+    total_conns = len(_conns)
     with _dashboard_counters_lock:
         queries_run = _dashboard_counters["queries_run"]
         tracked_rows = _dashboard_counters["total_rows"]

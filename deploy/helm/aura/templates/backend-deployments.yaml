@@ -51,6 +51,11 @@ spec:
             - configMapRef:
                 name: {{ include "aura.fullname" $root }}-env
             {{- if $root.Values.envSecretName }}
+            # Every key in this Secret (DATABASE_URL, GATEWAY_DATABASE_URL,
+            # METADATA_DATABASE_URL, SECRET_KEY, ...) is forwarded to EVERY
+            # backend pod, not just the service that reads it — harmless for
+            # unused keys, and it's how api_gateway picks up
+            # GATEWAY_DATABASE_URL without a per-service envFrom split.
             - secretRef:
                 name: {{ $root.Values.envSecretName }}
                 optional: true

@@ -45,12 +45,19 @@ def test_run_audit_subprocess_produces_signed_artifact_with_honesty(tmp_path, mo
 
 from fastapi.testclient import TestClient  # noqa: E402
 
+from shared.auth import create_access_token  # noqa: E402
+
+# /counterfactual/audit and the job poller are authenticated + tenant-scoped
+# (see main._new_job) — the same token must both submit and poll.
+_AUTH = {"Authorization":
+         f"Bearer {create_access_token({'sub': 'audit-tester', 'org_id': 'org-audit'})}"}
+
 
 def _client(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     (tmp_path / "data" / "uploads").mkdir(parents=True, exist_ok=True)
     from counterfactual_service.main import app
-    return TestClient(app)
+    return TestClient(app, headers=_AUTH)
 
 
 def test_audit_404_when_file_missing(tmp_path, monkeypatch):
@@ -126,7 +133,17 @@ def test_audit_reachable_through_gateway(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     (tmp_path / "data" / "uploads").mkdir(parents=True, exist_ok=True)
     from api_gateway.main import app as gw
-    gc = TestClient(gw)
+    gc = TestClient(gw, headers=_AUTH)
     r = gc.post("/api/v1/counterfactual/audit", json={
         "uploaded_file": "nope.csv", "treatment": "t", "outcome": "y", "confounders": []})
     assert r.status_code == 404  # routed through; file-missing check fired
+
+
+def test_audit_through_gateway_requires_auth():
+    """The gateway calls the service handler directly (in-process mount), so
+    the service's own Depends() never resolves — the dependency has to be
+    declared on the gateway route. Assert it actually is."""
+    from api_gateway.main import app as gw
+    r = TestClient(gw).post("/api/v1/counterfactual/audit", json={
+        "uploaded_file": "nope.csv", "treatment": "t", "outcome": "y", "confounders": []})
+    assert r.status_code == 401

@@ -118,6 +118,18 @@ _PUBLIC_PATHS = {
     "/api/v1/auth/token", "/api/v1/auth/register",
 }
 
+# The credential endpoints. Unauthenticated by necessity — you cannot present a
+# token to the endpoint that mints it — which is exactly why they must NOT
+# inherit _PUBLIC_PATHS' rate-limit exemption: that set answers "does this need
+# an API key?", a different question from "does this need throttling?". Left
+# conflated, /auth/token accepted unlimited password guesses and /auth/register
+# unlimited account creation from a single IP.
+_AUTH_PATHS = {"/api/v1/auth/token", "/api/v1/auth/register"}
+
+# Infrastructure paths that genuinely need no throttling: liveness probes get
+# polled hard by orchestrators, and the docs are static.
+_RATE_LIMIT_EXEMPT_PATHS = _PUBLIC_PATHS - _AUTH_PATHS
+
 
 class APIKeyMiddleware(BaseHTTPMiddleware):
     """Opt-in API key gate.
@@ -228,11 +240,29 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         exempt_path_prefixes: tuple[str, ...] = ("/stream/",),
         backend=None,
         trust_forwarded_for: bool | None = None,
+        auth_requests_per_window: int | None = None,
+        auth_window_seconds: int | None = None,
     ) -> None:
         super().__init__(app)
         self._max_requests = requests_per_window
         self._window = window_seconds
         self._exempt_prefixes = exempt_path_prefixes
+
+        # Stricter bucket for the credential endpoints (see _AUTH_PATHS). None
+        # falls back to the global setting, mirroring trust_forwarded_for below
+        # so tests can override without touching env vars.
+        if auth_requests_per_window is None or auth_window_seconds is None:
+            try:
+                from shared.config import settings
+                if auth_requests_per_window is None:
+                    auth_requests_per_window = int(settings.auth_rate_limit_requests)
+                if auth_window_seconds is None:
+                    auth_window_seconds = int(settings.auth_rate_limit_window_seconds)
+            except (ImportError, AttributeError):
+                auth_requests_per_window = auth_requests_per_window or 10
+                auth_window_seconds = auth_window_seconds or 60
+        self._auth_max_requests = auth_requests_per_window
+        self._auth_window = auth_window_seconds
 
         if backend is None:
             from shared.rate_limit import InMemoryBackend
@@ -267,7 +297,9 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 
     async def dispatch(self, request: Request, call_next: Callable):
         path = request.url.path
-        if path in _PUBLIC_PATHS:
+        # NOT _PUBLIC_PATHS: that set exempts the credential endpoints from the
+        # API-key gate, which must not also exempt them from throttling.
+        if path in _RATE_LIMIT_EXEMPT_PATHS:
             return await call_next(request)
         # Exempt long-lived SSE streams — they hold one connection open for
         # minutes and would instantly exhaust a per-IP sliding window.
@@ -275,8 +307,16 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
 
         ip = self._client_ip(request)
+        is_auth = path in _AUTH_PATHS
+        # Separate key namespace, not just a separate limit: sharing the counter
+        # would let ordinary browsing burn the login allowance (locking a user
+        # out of their own account) and let an attacker's guesses hide inside
+        # normal traffic volume.
+        key = f"auth:{ip}" if is_auth else ip
+        max_requests = self._auth_max_requests if is_auth else self._max_requests
+        window = self._auth_window if is_auth else self._window
         allowed, retry_after = await self._backend.check_and_record(
-            ip, self._max_requests, self._window,
+            key, max_requests, window,
         )
 
         if not allowed:

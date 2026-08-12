@@ -264,6 +264,34 @@ async def append_audit(*, tenant_id: str, kind: str, subject_id: str, subject_ty
     raise RuntimeError(f"audit_ledger append failed after {_MAX_APPEND_RETRIES} retries: {last_exc}")
 
 
+async def append_audit_with_retry(*, max_attempts: int = 3, **kwargs: Any) -> LedgerRecord:
+    """``append_audit`` wrapped in a bounded retry for a TRANSIENT DB blip
+    (connection hiccup, momentary pool exhaustion, ...) — distinct from
+    ``append_audit``'s own internal retry loop, which only re-tries the
+    UNIQUE(tenant, seq) race under concurrent appends and never sees a raw
+    connection failure.
+
+    On persistent failure (every attempt fails) the last exception still
+    propagates: callers append a signed cert and must not report success
+    while it's not actually chained into the tamper-evident ledger, so
+    swallowing here would silently orphan the cert. Retrying blindly forever
+    would do the same by delaying the caller's failure response indefinitely,
+    hence bounded (default 3 attempts, 0.2s/0.4s backoff)."""
+    last_exc: Optional[Exception] = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            return await append_audit(**kwargs)
+        except Exception as exc:
+            last_exc = exc
+            if attempt < max_attempts:
+                logger.warning(
+                    "audit_ledger append attempt %d/%d failed (%s); retrying",
+                    attempt, max_attempts, exc,
+                )
+                await asyncio.sleep(0.2 * attempt)
+    raise last_exc
+
+
 async def verify_chain(tenant_id: str) -> Dict[str, Any]:
     """Re-walk a tenant's chain: every record_hash must match its content, and
     its prev_hash must equal the *recomputed* hash of its predecessor — so any
@@ -383,7 +411,8 @@ async def inclusion_proof(tenant_id: str, cert_hash: str) -> Optional[Dict[str, 
 
 
 __all__ = [
-    "AuditLedgerRow", "LedgerRecord", "append_audit", "verify_chain", "subject_history",
+    "AuditLedgerRow", "LedgerRecord", "append_audit", "append_audit_with_retry",
+    "verify_chain", "subject_history",
     "record_for_cert", "merkle_root", "inclusion_proof",
     "session_scope", "init_database", "close_database", "database_url",
 ]

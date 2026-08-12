@@ -34,6 +34,8 @@ import os
 from pathlib import Path
 from typing import Optional, Tuple
 
+from shared.config import settings
+
 logger = logging.getLogger("aura.counterfactual.signing")
 
 
@@ -132,7 +134,19 @@ def _resolve_key_pair() -> Optional[Tuple[object, object]]:
 
     # Ephemeral fallback (final). Logged loudly because it changes the
     # security posture (signatures become advisory rather than
-    # auditor-grade): a restart invalidates prior signatures.
+    # auditor-grade): a restart invalidates prior signatures. In production
+    # that's not an acceptable silent degradation — fail startup instead of
+    # minting signatures auditors would wrongly trust as stable.
+    if settings.is_production:
+        raise RuntimeError(
+            "ED25519 signing key could not be loaded from "
+            "AURA_SIGNING_PRIVATE_KEY_HEX / AURA_SIGNING_PRIVATE_KEY_PATH, "
+            "and the persisted-key directory (AURA_SIGNING_KEY_DIR, default "
+            "data/keys) is not writable. Refusing to fall back to an "
+            "ephemeral key in production — it would invalidate every prior "
+            "signature on the next restart. Fix the key dir permissions or "
+            "set AURA_SIGNING_PRIVATE_KEY_HEX/_PATH."
+        )
     sk = ed25519.Ed25519PrivateKey.generate()
     _KEY_PAIR = (sk, sk.public_key())
     _KEY_SOURCE = "ephemeral"
@@ -155,13 +169,24 @@ def signing_key_source() -> str:
 
 def sign_bytes(payload: bytes) -> Optional[str]:
     """Return base64 ED25519 signature, or ``None`` on any failure."""
-    pair = _resolve_key_pair()
-    if pair is None:
-        return None
-    private_key, _ = pair
+    # _resolve_key_pair() lives inside the try (not called before it) because
+    # it can raise RuntimeError in production (broken key config) — this
+    # function is documented/relied upon as never-raising, so that failure
+    # must degrade to None like any other signing failure, not propagate.
     try:
+        pair = _resolve_key_pair()
+        if pair is None:
+            return None
+        private_key, _ = pair
         sig = private_key.sign(payload)
         return base64.b64encode(sig).decode("ascii")
+    except RuntimeError as exc:
+        # Config problem (see _resolve_key_pair's production hard-fail), not a
+        # crypto failure — logged distinctly so it reads as "fix the key" not
+        # "signing is broken". validate_signing_config() should have already
+        # caught this at startup; reaching here means it wasn't wired in.
+        logger.error("ED25519 key resolution failed, cannot sign: %s", exc)
+        return None
     except Exception as exc:
         logger.warning("ED25519 sign failed: %s", exc)
         return None
@@ -171,19 +196,37 @@ def verify_bytes(payload: bytes, signature_b64: str) -> bool:
     """Verify ``signature_b64`` against ``payload`` using the *current*
     public key. Returns ``True`` on valid, ``False`` on any mismatch or
     structural error (never raises)."""
-    pair = _resolve_key_pair()
-    if pair is None:
-        return False
-    _, public_key = pair
     try:
+        pair = _resolve_key_pair()
+        if pair is None:
+            return False
+        _, public_key = pair
         sig = base64.b64decode(signature_b64)
         public_key.verify(sig, payload)
         return True
+    except RuntimeError as exc:
+        # Same config-vs-tamper distinction as sign_bytes above — a caller
+        # (e.g. load_persisted_demo_artifacts) must not read this as "the
+        # artifact was tampered with".
+        logger.error("ED25519 key resolution failed, cannot verify: %s", exc)
+        return False
     except (InvalidSignature, ValueError, TypeError):
         return False
     except Exception as exc:  # pragma: no cover
         logger.warning("ED25519 verify error: %s", exc)
         return False
+
+
+def validate_signing_config() -> None:
+    """Force key resolution now, at startup, instead of lazily at the first
+    sign/verify call. Without this, sign_bytes/verify_bytes above swallow
+    _resolve_key_pair's production hard-fail as part of their never-raises
+    contract — a broken key would otherwise degrade silently (unsigned
+    artifacts) instead of failing the deploy loudly. Raises RuntimeError on
+    a broken production key; no-op otherwise. Callers: see
+    counterfactual_service/main.py's startup hook — not yet wired into the
+    api_gateway in-process-mount lifespan (that hook doesn't run there)."""
+    _resolve_key_pair()
 
 
 def public_key_pem() -> Optional[str]:

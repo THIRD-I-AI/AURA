@@ -144,6 +144,75 @@ class SavedQueryRow(Base):
     )
 
 
+class DashboardRow(Base):
+    """One row per dashboard, workspace-scoped.
+
+    Dashboards previously lived in a module-level Python list, so every
+    dashboard a user built vanished on the next gateway restart — silently,
+    and inconsistently with the saved-query library they are assembled from.
+
+    ``tiles_json`` is canonical-JSON text rather than JSONB for the same
+    reason ``SavedQueryRow.schedule_json`` is: it keeps the schema portable
+    across SQLite and Postgres, and a tile list is far too small for JSONB
+    indexing to matter.
+    """
+
+    __tablename__ = "gateway_dashboards"
+
+    id = Column(String(64), primary_key=True)
+    workspace_id = Column(String(64), nullable=False, index=True)
+    name = Column(String(255), nullable=False)
+    description = Column(Text, nullable=True)
+    tiles_json = Column(Text, nullable=False, default="[]")
+    created_at = Column(String(64), nullable=False)
+    created_ts = Column(Float, nullable=False)
+    updated_at = Column(String(64), nullable=False)
+
+    __table_args__ = (
+        # Drives the list endpoint's newest-first ordering within a workspace.
+        Index("ix_dashboards_ws_created", workspace_id, created_ts.desc()),
+    )
+
+
+class ConnectionRow(Base):
+    """One row per external data-source connection, workspace-scoped.
+
+    Connections previously lived in a module-level dict that was never
+    filtered by tenant, so GET /connections returned EVERY organisation's
+    connections — host, port, database and username — to any caller. On a
+    multi-tenant platform that is a live disclosure, independent of the
+    separate fact that the feature could not execute queries at all.
+
+    ``password_encrypted`` holds a Fernet token from shared/credentials.py,
+    never plaintext. It is excluded from the wire dict; callers that need to
+    open a connection decrypt explicitly, so a stray response or log line
+    cannot carry the secret.
+    """
+
+    __tablename__ = "gateway_connections"
+
+    id = Column(String(64), primary_key=True)
+    workspace_id = Column(String(64), nullable=False, index=True)
+    name = Column(String(255), nullable=False)
+    type = Column(String(64), nullable=False)
+    host = Column(String(255), nullable=True)
+    port = Column(Integer, nullable=True)
+    database = Column(String(255), nullable=True)
+    username = Column(String(255), nullable=True)
+    password_encrypted = Column(Text, nullable=True)
+    ssl = Column(Boolean, nullable=False, default=False)
+    is_active = Column(Boolean, nullable=False, default=False)
+    last_tested = Column(String(64), nullable=True)
+    table_count = Column(Integer, nullable=False, default=0)
+    created_at = Column(String(64), nullable=False)
+    created_ts = Column(Float, nullable=False)
+    updated_at = Column(String(64), nullable=False)
+
+    __table_args__ = (
+        Index("ix_connections_ws_created", workspace_id, created_ts.desc()),
+    )
+
+
 class SchemaContextRow(Base):
     """DB-persisted schema context — Sprint P-2b.
 
@@ -340,10 +409,20 @@ def get_engine() -> AsyncEngine:
     if _engine is None:
         url = database_url()
         connect_args: Dict[str, Any] = {}
+        engine_kwargs: Dict[str, Any] = {}
         if url.startswith("sqlite"):
             connect_args["check_same_thread"] = False
+        else:
+            # aiosqlite doesn't accept pool sizing/health-check kwargs —
+            # only apply them to real connection-pooled backends (Postgres).
+            engine_kwargs.update(
+                pool_pre_ping=True,
+                pool_size=10,
+                max_overflow=20,
+                pool_recycle=1800,
+            )
         _engine = create_async_engine(
-            url, echo=False, future=True, connect_args=connect_args,
+            url, echo=False, future=True, connect_args=connect_args, **engine_kwargs,
         )
         if url.startswith("sqlite"):
             # SQLite disables FK enforcement by default; enable it per
@@ -1410,3 +1489,247 @@ __all__ = [
     "delete_pipeline",
     "reset_all_for_tests",
 ]
+
+
+# ── Dashboards (durable replacement for the in-memory list) ──────────
+
+_MAX_DASHBOARDS_PER_WS = 200
+
+
+def _row_to_dashboard_dict(row: "DashboardRow") -> Dict[str, Any]:
+    """Wire shape, identical to what the old in-memory store returned so the
+    router's response contract is unchanged."""
+    try:
+        tiles = json.loads(row.tiles_json) if row.tiles_json else []
+    except ValueError:
+        # A corrupt tiles blob must not take down the whole dashboard list;
+        # surface the dashboard with no tiles rather than 500-ing the page.
+        logger.warning("dashboard %s has unparseable tiles_json", row.id)
+        tiles = []
+    return {
+        "id": row.id,
+        "workspace_id": row.workspace_id,
+        "name": row.name,
+        "description": row.description,
+        "tiles": tiles,
+        "created_at": row.created_at,
+        "updated_at": row.updated_at,
+    }
+
+
+async def list_dashboards(workspace_id: str) -> List[Dict[str, Any]]:
+    """Workspace-filtered, newest-first."""
+    async with session_scope() as s:
+        stmt = (
+            select(DashboardRow)
+            .where(DashboardRow.workspace_id == workspace_id)
+            .order_by(DashboardRow.created_ts.desc())
+        )
+        rows = (await s.execute(stmt)).scalars().all()
+        return [_row_to_dashboard_dict(r) for r in rows]
+
+
+async def get_dashboard(dashboard_id: str, workspace_id: str) -> Optional[Dict[str, Any]]:
+    """Workspace-filtered fetch. Returns None for another workspace's id so
+    the caller answers 404 — never 403, which would confirm the id exists."""
+    async with session_scope() as s:
+        stmt = (
+            select(DashboardRow)
+            .where(DashboardRow.id == dashboard_id)
+            .where(DashboardRow.workspace_id == workspace_id)
+        )
+        row = (await s.execute(stmt)).scalar_one_or_none()
+        return _row_to_dashboard_dict(row) if row is not None else None
+
+
+async def insert_dashboard(record: Dict[str, Any]) -> Dict[str, Any]:
+    """Persist a new dashboard and trim the workspace to its cap."""
+    async with session_scope() as s:
+        row = DashboardRow(
+            id=record["id"],
+            workspace_id=record["workspace_id"],
+            name=record["name"],
+            description=record.get("description"),
+            tiles_json=json.dumps(record.get("tiles") or []),
+            created_at=record["created_at"],
+            created_ts=float(record["created_ts"]),
+            updated_at=record["updated_at"],
+        )
+        s.add(row)
+        await s.flush()
+
+        # Cap per workspace, oldest-first, mirroring the saved-query library.
+        stale = (await s.execute(
+            select(DashboardRow.id)
+            .where(DashboardRow.workspace_id == record["workspace_id"])
+            .order_by(DashboardRow.created_ts.desc())
+            .offset(_MAX_DASHBOARDS_PER_WS),
+        )).scalars().all()
+        for old_id in stale:
+            await s.execute(delete(DashboardRow).where(DashboardRow.id == old_id))
+        return _row_to_dashboard_dict(row)
+
+
+async def update_dashboard(
+    dashboard_id: str, workspace_id: str, fields: Dict[str, Any],
+) -> Optional[Dict[str, Any]]:
+    """Partial update + updated_at bump. None when absent or wrong workspace."""
+    async with session_scope() as s:
+        stmt = (
+            select(DashboardRow)
+            .where(DashboardRow.id == dashboard_id)
+            .where(DashboardRow.workspace_id == workspace_id)
+        )
+        row = (await s.execute(stmt)).scalar_one_or_none()
+        if row is None:
+            return None
+        if fields.get("name") is not None:
+            row.name = fields["name"]
+        if "description" in fields:
+            row.description = fields["description"]
+        if fields.get("tiles") is not None:
+            row.tiles_json = json.dumps(fields["tiles"])
+        row.updated_at = datetime.now(timezone.utc).isoformat()
+        await s.flush()
+        return _row_to_dashboard_dict(row)
+
+
+async def delete_dashboard(dashboard_id: str, workspace_id: str) -> bool:
+    """True when a row in this workspace was actually removed."""
+    async with session_scope() as s:
+        result = await s.execute(
+            delete(DashboardRow)
+            .where(DashboardRow.id == dashboard_id)
+            .where(DashboardRow.workspace_id == workspace_id),
+        )
+        return bool(result.rowcount)
+
+
+# ── Connections (tenant-scoped, credentials encrypted at rest) ───────
+
+def _row_to_connection_dict(row: "ConnectionRow") -> Dict[str, Any]:
+    """Wire shape. Deliberately omits password_encrypted — the secret must
+    never ride out on a response, and callers that genuinely need it go
+    through get_connection_secret() so the decrypt is explicit."""
+    return {
+        "id": row.id,
+        "workspace_id": row.workspace_id,
+        "name": row.name,
+        "type": row.type,
+        "host": row.host,
+        "port": row.port,
+        "database": row.database,
+        "username": row.username,
+        "ssl": bool(row.ssl),
+        "is_active": bool(row.is_active),
+        "last_tested": row.last_tested,
+        "table_count": row.table_count or 0,
+        "created_at": row.created_at,
+        "updated_at": row.updated_at,
+    }
+
+
+async def list_connections(workspace_id: str) -> List[Dict[str, Any]]:
+    """Workspace-filtered, newest-first. The missing filter here was the leak."""
+    async with session_scope() as s:
+        stmt = (
+            select(ConnectionRow)
+            .where(ConnectionRow.workspace_id == workspace_id)
+            .order_by(ConnectionRow.created_ts.desc())
+        )
+        rows = (await s.execute(stmt)).scalars().all()
+        return [_row_to_connection_dict(r) for r in rows]
+
+
+async def get_connection(connection_id: str, workspace_id: str) -> Optional[Dict[str, Any]]:
+    """None for another workspace's id, so the router answers 404 rather than
+    403 — a 403 would confirm the connection exists."""
+    async with session_scope() as s:
+        stmt = (
+            select(ConnectionRow)
+            .where(ConnectionRow.id == connection_id)
+            .where(ConnectionRow.workspace_id == workspace_id)
+        )
+        row = (await s.execute(stmt)).scalar_one_or_none()
+        return _row_to_connection_dict(row) if row is not None else None
+
+
+async def get_connection_secret(connection_id: str, workspace_id: str) -> Optional[str]:
+    """Decrypted password for opening a real connection, or None when the
+    connection has no stored credential. Separate from get_connection so the
+    plaintext is only produced where it is actually needed."""
+    from shared.credentials import decrypt_secret
+
+    async with session_scope() as s:
+        stmt = (
+            select(ConnectionRow.password_encrypted)
+            .where(ConnectionRow.id == connection_id)
+            .where(ConnectionRow.workspace_id == workspace_id)
+        )
+        token = (await s.execute(stmt)).scalar_one_or_none()
+    return decrypt_secret(token) if token else None
+
+
+async def insert_connection(record: Dict[str, Any], password: Optional[str]) -> Dict[str, Any]:
+    """Persist a connection, encrypting the password if one was supplied.
+
+    ``password`` is passed separately from ``record`` so a plaintext secret
+    can never be sitting in the same dict that gets logged or returned.
+    """
+    from shared.credentials import encrypt_secret
+
+    async with session_scope() as s:
+        row = ConnectionRow(
+            id=record["id"],
+            workspace_id=record["workspace_id"],
+            name=record["name"],
+            type=record["type"],
+            host=record.get("host"),
+            port=record.get("port"),
+            database=record.get("database"),
+            username=record.get("username"),
+            password_encrypted=encrypt_secret(password) if password else None,
+            ssl=bool(record.get("ssl", False)),
+            is_active=False,
+            last_tested=None,
+            table_count=0,
+            created_at=record["created_at"],
+            created_ts=float(record["created_ts"]),
+            updated_at=record["updated_at"],
+        )
+        s.add(row)
+        await s.flush()
+        return _row_to_connection_dict(row)
+
+
+async def update_connection_status(
+    connection_id: str, workspace_id: str, *,
+    is_active: bool, last_tested: str, table_count: int = 0,
+) -> Optional[Dict[str, Any]]:
+    """Record the outcome of a connection test."""
+    async with session_scope() as s:
+        stmt = (
+            select(ConnectionRow)
+            .where(ConnectionRow.id == connection_id)
+            .where(ConnectionRow.workspace_id == workspace_id)
+        )
+        row = (await s.execute(stmt)).scalar_one_or_none()
+        if row is None:
+            return None
+        row.is_active = is_active
+        row.last_tested = last_tested
+        row.table_count = table_count
+        row.updated_at = datetime.now(timezone.utc).isoformat()
+        await s.flush()
+        return _row_to_connection_dict(row)
+
+
+async def delete_connection(connection_id: str, workspace_id: str) -> bool:
+    """True when a row in this workspace was actually removed."""
+    async with session_scope() as s:
+        result = await s.execute(
+            delete(ConnectionRow)
+            .where(ConnectionRow.id == connection_id)
+            .where(ConnectionRow.workspace_id == workspace_id),
+        )
+        return bool(result.rowcount)

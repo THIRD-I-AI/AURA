@@ -36,4 +36,16 @@ describe('AppRoutes', () => {
     await waitFor(() => expect(screen.getByTestId('auth-form')).toBeInTheDocument());
     expect(screen.queryByTestId('audit-progress')).not.toBeInTheDocument();
   });
+
+  it('gates an anonymous visit to /workbench behind login', async () => {
+    // The Workbench is now the single authenticated app, wrapped in
+    // ProtectedRoute. With no session, /workbench redirects to /login instead
+    // of mounting the cockpit (which previously had its own mock login).
+    render(
+      <MemoryRouter initialEntries={['/workbench']}>
+        <AppRoutes />
+      </MemoryRouter>,
+    );
+    await waitFor(() => expect(screen.getByTestId('auth-form')).toBeInTheDocument());
+  });
 });

@@ -218,3 +218,75 @@ class TestGetRateLimitBackend:
 
         backend = get_rate_limit_backend()
         assert isinstance(backend, InMemoryBackend)
+
+
+# ── Auth-endpoint throttling (Sec review) ─────────────────────────────
+
+class TestAuthEndpointRateLimit:
+    """The credential endpoints used to sit in _PUBLIC_PATHS, which
+    RateLimitMiddleware treated as "no throttling" — so /auth/token accepted
+    unlimited password guesses. They now get their own tighter bucket."""
+
+    @pytest.fixture()
+    def client(self):
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+
+        from shared.middleware import RateLimitMiddleware
+        from shared.rate_limit import InMemoryBackend
+
+        app = FastAPI()
+        app.add_middleware(
+            RateLimitMiddleware,
+            requests_per_window=100,
+            window_seconds=60,
+            auth_requests_per_window=3,
+            auth_window_seconds=60,
+            backend=InMemoryBackend(),
+        )
+
+        @app.post("/api/v1/auth/token")
+        def token():
+            return {"access_token": "t"}
+
+        @app.post("/api/v1/auth/register")
+        def register():
+            return {"ok": True}
+
+        @app.get("/health")
+        def health():
+            return {"status": "healthy"}
+
+        @app.get("/test")
+        def test_endpoint():
+            return {"ok": True}
+
+        return TestClient(app)
+
+    def test_login_is_throttled_after_the_auth_limit(self, client):
+        for _ in range(3):
+            assert client.post("/api/v1/auth/token").status_code == 200
+        resp = client.post("/api/v1/auth/token")
+        assert resp.status_code == 429
+        assert resp.json()["error"] == "RATE_LIMITED"
+        assert "Retry-After" in resp.headers
+
+    def test_register_shares_the_auth_bucket(self, client):
+        # Same per-IP credential bucket — an attacker must not get a fresh
+        # allowance simply by alternating between the two auth endpoints.
+        for _ in range(3):
+            assert client.post("/api/v1/auth/token").status_code == 200
+        assert client.post("/api/v1/auth/register").status_code == 429
+
+    def test_health_is_still_exempt(self, client):
+        for _ in range(20):
+            assert client.get("/health").status_code == 200
+
+    def test_auth_bucket_is_separate_from_the_general_bucket(self, client):
+        # Exhausting the tight auth bucket must not throttle ordinary traffic...
+        for _ in range(4):
+            client.post("/api/v1/auth/token")
+        assert client.get("/test").status_code == 200
+        # ...and ordinary traffic must not consume the login allowance.
+        for _ in range(10):
+            assert client.get("/test").status_code == 200

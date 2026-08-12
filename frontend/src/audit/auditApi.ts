@@ -1,10 +1,20 @@
-import { API_BASE_URL } from '../services/api';
+import { API_BASE_URL, getAuthToken } from '../services/api';
 import type { Scenario, JobSnapshot, DemoSubmitResult, VerifyResult, Artifact, DataAuditRequest } from './types';
 
 const CF = `${API_BASE_URL}/counterfactual`;
 
+// Job submit/poll and the demo runner are authenticated and tenant-scoped
+// server-side — a bare fetch 401s and reads to the user as an outage rather
+// than a login problem. Same trap already documented on Workbench's ledger
+// chip. Header omitted entirely when logged out so the still-anonymous
+// endpoints (scenario list, artifact verify) keep working untouched.
+function authHeaders(): Record<string, string> {
+  const token = getAuthToken();
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
 async function getJson<T>(url: string): Promise<T> {
-  const resp = await fetch(url);
+  const resp = await fetch(url, { headers: authHeaders() });
   if (!resp.ok) throw new Error(`HTTP ${resp.status}: ${await resp.text()}`);
   return resp.json() as Promise<T>;
 }
@@ -16,7 +26,7 @@ export const auditApi = {
   },
 
   async runScenario(scenarioId: string): Promise<DemoSubmitResult> {
-    const resp = await fetch(`${CF}/demo/${scenarioId}`, { method: 'POST' });
+    const resp = await fetch(`${CF}/demo/${scenarioId}`, { method: 'POST', headers: authHeaders() });
     if (!resp.ok) throw new Error(`HTTP ${resp.status}: ${await resp.text()}`);
     return resp.json() as Promise<DemoSubmitResult>;
   },
@@ -59,7 +69,9 @@ export const auditApi = {
   async uploadDataset(file: File): Promise<{ filename: string }> {
     const form = new FormData();
     form.append('file', file);
-    const resp = await fetch(`${API_BASE_URL}/upload`, { method: 'POST', body: form });
+    const resp = await fetch(`${API_BASE_URL}/upload`, {
+      method: 'POST', headers: authHeaders(), body: form,
+    });
     if (!resp.ok) throw new Error(`HTTP ${resp.status}: ${await resp.text()}`);
     const body = (await resp.json()) as { filename: string };
     return { filename: body.filename };
@@ -68,7 +80,7 @@ export const auditApi = {
   async runDataAudit(req: DataAuditRequest): Promise<{ job_id: string }> {
     const resp = await fetch(`${CF}/audit`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
       body: JSON.stringify(req),
     });
     if (!resp.ok) throw new Error(`HTTP ${resp.status}: ${await resp.text()}`);

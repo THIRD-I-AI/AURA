@@ -76,6 +76,17 @@ env:
 #                                    findings fall back to [REDACTED] and
 #                                    auditors lose cross-finding correlation)
 #   DATABASE_URL                   - external Postgres DSN
+#   GATEWAY_DATABASE_URL           - api_gateway/persistence.py's Postgres DSN
+#                                    (same aura_vault instance as DATABASE_URL).
+#                                    Without it the gateway falls back to a
+#                                    per-pod SQLite file — with the default 2
+#                                    api_gateway replicas that silently
+#                                    fragments query history, saved queries,
+#                                    and share tokens across pods.
+# This Secret's keys are forwarded to EVERY backend pod via envFrom (see
+# backend-deployments.yaml) — harmless for keys a given service doesn't read
+# (e.g. GATEWAY_DATABASE_URL on metadata_store), same as docker-compose.prod.yml
+# applying its shared backend-env anchor to every stateful service.
 envSecretName: aura-secrets
 
 # ── Backend services ───────────────────────────────────────────────────────
@@ -138,40 +149,14 @@ backendServices:
       minReplicas: 2
       maxReplicas: 8
       targetCPUUtilizationPercentage: 70
-  causal_service:
-    # Sprint 7: DoWhy-based root-cause attribution. Heavy deps live in
-    # requirements-causal.txt — same image base as counterfactual_service.
-    module: causal_service.main:app
-    port: 8010
-    workers: 1
-    replicas: 1
-    resources:
-      requests: { cpu: "300m", memory: "512Mi" }
-      limits:   { cpu: "1.5",  memory: "2Gi" }
-  dar_service:
-    # Sprint 7: Data-Agnostic Researcher daemon. Spec § DAR — autonomous
-    # background insight loop. Pinned to 1 replica because the daemon
-    # owns global "next-tick" state in process memory.
-    module: dar_service.main:app
-    port: 8011
-    workers: 1
-    replicas: 1
-    resources:
-      requests: { cpu: "200m", memory: "384Mi" }
-      limits:   { cpu: "1",    memory: "1Gi" }
-  counterfactual_service:
-    # Sprint 8: hash-sealed counterfactual estimation. Pinned to one
-    # replica because v1 keeps job state in process memory; Sprint 9
-    # introduces a Postgres-backed job table and unlocks horizontal
-    # scaling. Larger memory cap accommodates DoWhy PSM/IPW matched
-    # datasets — see spec §7 risk #4.
-    module: counterfactual_service.main:app
-    port: 8012
-    workers: 1
-    replicas: 1
-    resources:
-      requests: { cpu: "500m", memory: "512Mi" }
-      limits:   { cpu: "2",    memory: "4Gi" }
+# NOTE: causal_service, dar_service, and counterfactual_service are
+# intentionally NOT deployed here. causal_service and dar_service are
+# orphaned (unwired into the live gateway routes); the counterfactual /
+# financial-audit engine runs IN-PROCESS inside api_gateway (imported
+# directly by api_gateway/routers/counterfactual.py) rather than as its
+# own pod — see docker-compose.prod.yml, which also has no entries for
+# any of the three. Deploying them here would spin up dead pods that
+# nothing in the live topology talks to.
 
 # Default resources applied to any backend service that doesn't set its own.
 defaultBackendResources:

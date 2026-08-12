@@ -1,0 +1,85 @@
+AURA — Codemap diff report
+Generated: 2026-07-28
+Prior codemaps: NONE FOUND (docs/CODEMAPS/ did not exist before this run) → INITIAL GENERATION.
+
+=== Status ===
+docs/CODEMAPS/architecture.md   CREATED  (~950 tokens)
+docs/CODEMAPS/backend.md        CREATED  (~990 tokens)
+docs/CODEMAPS/frontend.md       CREATED  (~940 tokens)
+docs/CODEMAPS/data.md           CREATED  (~850 tokens)
+docs/CODEMAPS/dependencies.md   CREATED  (~800 tokens)
+
+No prior version exists, so the "30%-change" re-approval gate in the
+/ecc:update-codemaps spec does not apply this run. All five files are new;
+future runs of this skill should diff against these as the baseline.
+
+=== Architecture changes worth flagging (baked into the codemaps) ===
+
+1. App.tsx deletion. The classic `/app` shell component is gone from
+   frontend/src — only an orphaned `App.css` remains on disk. AppRoutes.tsx
+   now redirects `/app/*` -> `/workbench` behind ProtectedRoute. Confirmed by
+   direct file-existence check (find frontend/src -maxdepth 1 -iname App.tsx
+   returned nothing).
+
+2. Local port shift 8000/8001 -> 8010/8011. aurabackend/start_all.ps1
+   explicitly comments this as a collision workaround with a local
+   `claude-science` daemon holding 8000/8001 on this machine. Docker/prod
+   compose (docker-compose.prod.yml) still runs the gateway on the
+   conventional :8000 — the shift is local-dev-only, not a repo-wide default
+   change. shared/config.py's Field defaults (api_gateway_port=8000,
+   code_generation_port=8001) were NOT edited to match start_all.ps1 — the
+   port override happens via CLI --port flag in the launcher script, not env
+   defaults. Worth knowing if you grep config.py expecting 8010 and don't
+   find it.
+
+3. Newest Alembic migration: 20260724_5e19034a50f4_gateway_persistence_and_
+   audit_ledger_ — brings api_gateway/persistence.py's 8 gateway_* tables and
+   shared/audit_ledger.py's audit_ledger table under Alembic management
+   (previously create_all-only, per the P-1 lazy-init pattern in persistence.py).
+
+4. ARCHITECTURE.md (root) is STALE relative to README.md. It describes a
+   13-service / 3-plane topology with ports 8000/8001/8010(causal)/
+   8011(DAR)/8012(counterfactual) and separate Causal Service + DAR daemon
+   processes — none of which match the current 9-process model in
+   README.md or the actual _SERVICES dict in api_gateway/main.py (7 polled
+   downstream services, no causal/DAR/8012 entries). ARCHITECTURE.md's own
+   header says "Last updated 2026-06-13 · supersedes the pre-pivot (Jan 2026)
+   topology doc" — it is itself now superseded by README.md's 2026-07-24
+   topology. Flagged in architecture.md's header; codemaps followed README.md,
+   not ARCHITECTURE.md, per task instructions.
+
+=== New dependencies detected (vs. nothing, since this is initial gen) ===
+
+Nothing to diff against. Full current dependency surface is captured in
+dependencies.md: Postgres/DuckDB/Kafka(Redpanda locally)/Redis/Prometheus/
+OpenTelemetry(Jaeger locally)/Sentry/S3, LLM fallback chain (Groq->Gemini->
+Ollama->OpenAI), dowhy/econml/pingouin/statsmodels (causal_service only,
+split into requirements-causal.txt to keep base image lean), aiokafka,
+boto3+moto, langgraph, mcp[cli], sqlglot. Frontend: React 19, Vite 8,
+Tailwind v4 + shadcn (radix-ui), dockview-react, @xyflow/react + d3-force,
+recharts, motion.
+
+=== Staleness notes ===
+
+- ARCHITECTURE.md (root): stale, ~6 weeks old relative to README.md, wrong
+  service count/ports — see item 4 above. Not edited (app-doc, out of scope
+  for this task's "don't touch app code" constraint, and the task explicitly
+  said mine README.md, not fix ARCHITECTURE.md).
+- No other docs/ files were checked for staleness this pass (out of scope —
+  task specified README.md/ARCHITECTURE.md/named source files only).
+
+=== Scan scope ===
+
+~45 files read or grepped: README.md, ARCHITECTURE.md, root CLAUDE.md,
+frontend/CLAUDE.md, aurabackend/api_gateway/main.py, all 17 files in
+aurabackend/api_gateway/routers/, aurabackend/shared/{config,service_factory,
+audit_ledger}.py, aurabackend/api_gateway/persistence.py,
+aurabackend/metadata_store/models.py, aurabackend/start_all.ps1,
+aurabackend/requirements{,-causal}.txt, 6 alembic migration filenames,
+frontend/src/AppRoutes.tsx, frontend/src/workbench/{Workbench.tsx,
+viewRegistry.ts}, frontend/src/services/api.ts, frontend/src/terminal/
+panels/registry.ts, frontend/package.json, docker-compose.yml,
+docker-compose.prod.yml.
+
+No git commands were run and no application code was modified — this task
+only created docs/CODEMAPS/*.md and this report.

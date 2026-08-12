@@ -234,6 +234,38 @@ class TestListAndDelete:
         svc = FileService()
         assert svc.get_file_info("nonexistent") is None
 
+    def test_get_file_info_finds_a_real_upload(self, tmp_path, monkeypatch):
+        """Regression: this method was a bare `pass`, so GET /files/{id}
+        answered 404 for every file that existed."""
+        monkeypatch.setenv("AURA_UPLOADS_ROOT", str(tmp_path))
+        from shared.storage import get_storage_backend, reset_storage_backend
+        reset_storage_backend()
+
+        svc = FileService()
+        svc.processed_path = tmp_path
+        get_storage_backend().write("default", "sales.csv", b"col,value")
+
+        by_name = svc.get_file_info("sales.csv")
+        assert by_name is not None and by_name["filename"] == "sales.csv"
+        # Stem also resolves, matching delete_file's matching rule.
+        assert svc.get_file_info("sales") is not None
+        reset_storage_backend()
+
+    def test_get_file_info_does_not_cross_tenants(self, tmp_path, monkeypatch):
+        """One org must not resolve another org's upload by id — that would
+        leak both its existence and its inferred schema."""
+        monkeypatch.setenv("AURA_UPLOADS_ROOT", str(tmp_path))
+        from shared.storage import get_storage_backend, reset_storage_backend
+        reset_storage_backend()
+
+        svc = FileService()
+        svc.processed_path = tmp_path
+        get_storage_backend().write("org-a", "private.csv", b"secret")
+
+        assert svc.get_file_info("private.csv", subdir="org-a") is not None
+        assert svc.get_file_info("private.csv", subdir="org-b") is None
+        reset_storage_backend()
+
 
 # ── Profiling ─────────────────────────────────────────────────────
 

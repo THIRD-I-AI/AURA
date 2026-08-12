@@ -157,6 +157,22 @@ async def _lifespan(app) -> AsyncGenerator[None, None]:
     file_meta_task = asyncio.create_task(_file_metadata_refresh_loop(file_meta_stop))
     logger.info("File metadata refresh loop started (interval=60s)")
 
+    # counterfactual_service/main.py has an @app.on_event("startup") hook that
+    # calls signing.validate_signing_config() to fail loudly on a broken
+    # PRODUCTION signing key (rather than degrading silently to unsigned
+    # artifacts the first time sign_bytes/verify_bytes is lazily called). That
+    # hook never fires here: the gateway mounts the counterfactual service
+    # in-process and calls its handlers directly, it never runs that app's own
+    # ASGI lifespan. Deliberately NOT wrapped in try/except like its neighbors
+    # below — validate_signing_config() only raises when settings.is_production
+    # is true AND every key source failed, and letting that RuntimeError
+    # propagate is the entire point (crash the deploy instead of shipping
+    # unsigned "verified" certificates). In dev/CI (is_production False by
+    # default) it falls through to a persisted/ephemeral key and returns
+    # normally, so this can't break local startup or the test suite.
+    from counterfactual_service import signing
+    signing.validate_signing_config()
+
     # S31b: LOAD pre-computed demo artifacts (instant, CPU-free) so the first
     # /api/v1/counterfactual/demo/{id} call serves the cached certificate. We
     # deliberately do NOT compute audits here: the gateway mounts the
@@ -299,7 +315,7 @@ except ImportError as exc:
 # ── Unified system health endpoint ─────────────────────────────────
 
 _SERVICES = {
-    "code_generation": "http://localhost:8001/health",
+    "code_generation": "http://localhost:8011/health",
     "database_service": "http://localhost:8002/health",
     "execution_sandbox": "http://localhost:8003/health",
     "scheduler":        "http://localhost:8004/health",

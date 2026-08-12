@@ -28,6 +28,50 @@ def _locate_env_files() -> list[str]:
     return [str(p) for p in candidates if p.exists()]
 
 
+# Recognised spellings of "this is a production deployment" for the ENVIRONMENT
+# var. A deployment named "prod" (a common shorthand) must trip the same
+# hard-fail validators as "production" — comparing only the exact string
+# "production" let "prod" silently bypass every security gate below.
+# Names KNOWN to be non-production. Anything else is treated as production —
+# see _is_production_env for why this list, and not its inverse, is enumerated.
+_NON_PRODUCTION_ENV_NAMES = {
+    "development", "dev", "devel",
+    "test", "testing", "ci",
+    "local", "localhost", "docker",
+    "sandbox", "demo",
+}
+
+
+def _is_production_env(value: str) -> bool:
+    """True unless *value* (an ENVIRONMENT setting) explicitly names a known
+    non-production deploy.
+
+    FAIL-CLOSED BY DESIGN. This previously matched an allowlist of exactly
+    {"production", "prod"}, so any other name returned False — and every
+    production safeguard hangs off this one predicate:
+
+      * jwt_enabled  → JWTAuthMiddleware is not installed at all, so EVERY
+        route is unauthenticated and every request collapses to the shared
+        'default' workspace, i.e. two tenants read each other's data
+      * auth_mode='open' → tokens minted with no credential validation
+      * SECRET_KEY / CORS-over-HTTP validators → skipped
+      * the ephemeral-signing-key refusal → skipped, so audit certificates
+        silently stop surviving a restart
+
+    A deployment named `prod-eu`, `prod-us-east-1`, `staging` or `live` — all
+    ordinary choices, especially multi-region — therefore disabled every one of
+    them at once, silently. Inverting the test makes an unrecognised name get
+    the SAFE treatment: a misconfigured deploy fails loudly at startup instead
+    of quietly serving one shared tenant.
+
+    The cost of inverting is that a genuinely non-production environment with an
+    unlisted name refuses to boot until it is added above or renamed. That is
+    the correct direction for the error to point: noisy in dev, never silent in
+    prod.
+    """
+    return (value or "").strip().lower() not in _NON_PRODUCTION_ENV_NAMES
+
+
 class AuraSettings(BaseSettings):
     """
     All AURA configuration in one place.
@@ -106,7 +150,7 @@ class AuraSettings(BaseSettings):
     @classmethod
     def _validate_cors_production(cls, v, info):
         env = info.data.get("environment", "development")
-        if env.lower() == "production":
+        if _is_production_env(env):
             if "*" in v:
                 raise ValueError(
                     "CORS wildcard '*' is not allowed in production. "
@@ -131,6 +175,43 @@ class AuraSettings(BaseSettings):
     auth_mode: str = Field("open", alias="AURA_AUTH_MODE")
     secret_key: str = Field("change-me-in-production", alias="SECRET_KEY")
     trust_forwarded_for: bool = Field(False, alias="AURA_TRUST_FORWARDED_FOR")
+    # Gates POST /auth/register. Default True keeps dev/open-mode signup
+    # working with zero config. In production, an unauthenticated, unthrottled
+    # registration endpoint is an abuse vector (bulk account creation); set
+    # AURA_ALLOW_SELF_REGISTRATION=false to require operator-provisioned
+    # accounts (e.g. via SSO / admin-created users) instead.
+    allow_self_registration: bool = Field(True, alias="AURA_ALLOW_SELF_REGISTRATION")
+    # Fernet key protecting stored data-source passwords (shared/credentials.py).
+    # Deliberately distinct from SECRET_KEY: SECRET_KEY may be rotated freely,
+    # since it only invalidates sessions, whereas rotating the key that
+    # encrypts saved connection credentials makes every one of them
+    # undecryptable. Unset in production raises at first use — see
+    # credentials._get_fernet.
+    credential_encryption_key: str = Field(
+        "", alias="AURA_CREDENTIAL_ENCRYPTION_KEY")
+    # The durable request audit trail (shared/audit_log.py). Defaults off for
+    # dev ergonomics; a production deploy with it off is the opposite of this
+    # product's pitch — see the validator below.
+    audit_enabled: bool = Field(False, alias="AURA_AUDIT_ENABLED")
+
+    @field_validator("audit_enabled", mode="after")
+    @classmethod
+    def _require_audit_trail_in_production(cls, v, info):
+        # Every other production safeguard here fails loud — JWT enforcement,
+        # open auth-mode, SECRET_KEY, CORS-over-HTTP. This one did not exist at
+        # all: AURA_AUDIT_ENABLED was read by a bare os.getenv in
+        # shared/audit_log.py and defaulted to false, so a deployment could
+        # pass every hardening gate while the durable, hash-chained request
+        # audit trail was silently off. For a product sold on provable audit
+        # trails to banks, that is the single worst thing to fail open.
+        env = info.data.get("environment", "development")
+        if _is_production_env(env) and not v:
+            raise ValueError(
+                "AURA_AUDIT_ENABLED must be true in production. Without it the "
+                "durable request audit trail is not recorded, so privileged "
+                "actions cannot be reconstructed after the fact."
+            )
+        return v
 
     @field_validator("auth_mode", mode="after")
     @classmethod
@@ -142,7 +223,7 @@ class AuraSettings(BaseSettings):
         # An accidental ENVIRONMENT=production deployment with the
         # default config must fail loud, not silently mint tokens.
         env = info.data.get("environment", "development")
-        if env.lower() == "production" and v == "open":
+        if _is_production_env(env) and v == "open":
             raise ValueError(
                 "auth_mode='open' is not allowed in production. "
                 "Set AURA_AUTH_MODE=password (or another credential-"
@@ -155,7 +236,7 @@ class AuraSettings(BaseSettings):
     def _warn_default_secret(cls, v, info):
         if v == "change-me-in-production":
             env = info.data.get("environment", "development")
-            if env.lower() == "production":
+            if _is_production_env(env):
                 raise ValueError(
                     "SECRET_KEY must be set in production. "
                     "The default 'change-me-in-production' value is not allowed. "
@@ -200,7 +281,7 @@ class AuraSettings(BaseSettings):
         # hole. Acceptable for single-user dev; a silent data breach in prod.
         # Fail loud at startup, parallel to _reject_open_auth_in_production.
         env = info.data.get("environment", "development")
-        if env.lower() == "production" and not v:
+        if _is_production_env(env) and not v:
             raise ValueError(
                 "AURA_JWT_ENABLED must be true in production. Without it, "
                 "tenant isolation is not enforced and all callers share the "
@@ -313,6 +394,14 @@ class AuraSettings(BaseSettings):
     rate_limit_enabled: bool = Field(True, alias="AURA_RATE_LIMIT_ENABLED")
     rate_limit_requests: int = Field(100, alias="AURA_RATE_LIMIT_REQUESTS")
     rate_limit_window_seconds: int = Field(60, alias="AURA_RATE_LIMIT_WINDOW_SECONDS")
+    # Credential endpoints (/auth/token, /auth/register) get their own, much
+    # tighter bucket. They are unauthenticated by necessity, so the general
+    # 100/min allowance is an invitation to credential-stuff and to bulk-create
+    # accounts. 10/min/IP still leaves ample room for a human mistyping a
+    # password while making an online guessing attack impractical.
+    auth_rate_limit_requests: int = Field(10, alias="AURA_AUTH_RATE_LIMIT_REQUESTS")
+    auth_rate_limit_window_seconds: int = Field(
+        60, alias="AURA_AUTH_RATE_LIMIT_WINDOW_SECONDS")
     redis_url: Optional[str] = Field(None, alias="AURA_REDIS_URL")
 
     model_config = {
@@ -326,7 +415,7 @@ class AuraSettings(BaseSettings):
 
     @property
     def is_production(self) -> bool:
-        return self.environment.lower() == "production"
+        return _is_production_env(self.environment)
 
     @property
     def vault_dsn(self) -> str:

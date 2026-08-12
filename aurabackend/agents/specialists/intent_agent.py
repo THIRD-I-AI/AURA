@@ -15,7 +15,27 @@ class IntentAgent(BaseAgent):
     async def _run(self, ctx: AgentContext, result: AgentResult) -> AgentResult:
         try:
             # Stringify context lightly to avoid overly massive prompt if many tables
-            schema_keys = list(ctx.schema_context.keys()) if ctx.schema_context else []
+            # Give the classifier the actual COLUMNS, not just table names.
+            # The "conversation" bucket below explicitly catches "what
+            # tables/columns are available", and the SAME llm call writes the
+            # user-facing answer — so passing only `.keys()` forced it to
+            # speculate about data it was never shown. Observed live: asked
+            # what was in `transactions` (txn_id, region, amount) it replied
+            # the data "likely contains ... transaction IDs, dates, and
+            # possibly the parties involved" — two invented fields, one real
+            # field omitted. The columns were in schema_context all along.
+            schema_lines: list[str] = []
+            for table_name, meta in (ctx.schema_context or {}).items():
+                cols = meta.get("columns") if isinstance(meta, dict) else None
+                if isinstance(cols, (list, tuple)) and cols:
+                    names = [
+                        c.get("name", str(c)) if isinstance(c, dict) else str(c)
+                        for c in cols
+                    ]
+                    schema_lines.append(f"- {table_name}({', '.join(names)})")
+                else:
+                    schema_lines.append(f"- {table_name}")
+            schema_keys = "\n".join(schema_lines) or "(no tables are loaded)"
 
             intent_prompt = f"""You are AURA, an intelligent data assistant and command center. Classify the user's message into EXACTLY ONE intent:
 
@@ -36,8 +56,16 @@ class IntentAgent(BaseAgent):
   tables/columns are available — anything that does NOT query the data, build
   a pipeline, or run an audit.
 
-Available Tables Context:
+Available Tables and Columns (this is the COMPLETE set of data loaded for
+this user — there is nothing else):
 {schema_keys}
+
+GROUNDING RULE for a "conversation" reply about what data is available:
+answer ONLY from the schema listed above, naming the real tables and columns
+verbatim. NEVER guess, infer, or describe a column that is not listed — a
+user acts on what you tell them, so inventing a plausible-sounding field is
+worse than saying you don't know. If the list above is empty, say plainly
+that no data is loaded yet.
 
 User's message: "{ctx.user_prompt}"
 
