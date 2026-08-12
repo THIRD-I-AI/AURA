@@ -1,0 +1,8 @@
+# Everything in this directory is consumed by Linux — bash (EC2 user-data),
+# Docker Compose, and Caddy. Pin LF so a Windows checkout can never commit a
+# CRLF bootstrap.sh, which would fail on boot with the famously unhelpful
+# "/bin/bash^M: bad interpreter: No such file or directory".
+#
+# Scoped to this directory on purpose: a repo-root *.sh rule would renormalise
+# every existing shell script and produce a large unrelated diff.
+* text eol=lf
