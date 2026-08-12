@@ -55,8 +55,27 @@ Counterfactuals is worse than one that tells you up front it isn't included.
 git tag v0.1.0 && git push origin v0.1.0     # triggers cd.yml
 ```
 
-Then make both packages public (Settings → Packages → Change visibility), or
-the instance needs a GHCR pull secret.
+This publishes four images for the release — `<version>-base`, `-causal`,
+`-streaming`, and `-frontend`. The free-tier deploy uses `-base` and
+`-frontend`.
+
+**Leave the package private.** The backend image contains the full application
+source, so flipping the package to public publishes the codebase to anyone who
+runs `docker pull`. Instead create a read-only token at
+
+    https://github.com/settings/tokens/new?scopes=read:packages
+
+with **only** the `read:packages` scope, and put it in `.env` as `GHCR_TOKEN`.
+Step 3 logs in with it.
+
+Verify before provisioning — an anonymous manifest request must 403 (proving
+the package is private) while an authenticated one returns 200:
+
+```sh
+curl -s -o /dev/null -w "%{http_code}\n" -u "$GHCR_USER:$GHCR_TOKEN" \
+  -H "Accept: application/vnd.oci.image.index.v1+json" \
+  https://ghcr.io/v2/<owner>/aura/manifests/0.1.1-base
+```
 
 ## Step 2 — launch the instance
 
@@ -100,6 +119,12 @@ into an hour of waiting.
 ssh -i ~/.ssh/aura.pem ec2-user@<public-ip>
 cd /opt/aura/deploy/aws-free-tier
 cp .env.example .env && vi .env          # fill every blank; see the file's comments
+
+# Authenticate to GHCR before the first pull — the images are private.
+# --password-stdin keeps the token out of shell history and the process list.
+set -a && . ./.env && set +a
+echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdin
+
 docker compose up -d
 docker compose logs -f api_gateway       # first boot is slow: ML imports
 ```
