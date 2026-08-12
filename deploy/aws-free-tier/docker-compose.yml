@@ -24,7 +24,14 @@
 
 name: aura
 
-x-image: &image ghcr.io/${GHCR_OWNER}/aura-backend:base-runtime-${AURA_TAG:-latest}
+# Must match what .github/workflows/cd.yml actually publishes, which is not
+# obvious from reading it: IMAGE_NAME is ${{ github.repository }} (so the image
+# is <owner>/aura, NOT aura-backend), and `flavor: suffix=-<matrix.suffix>`
+# appends the tier — so target `base-runtime` publishes the tag `-base`, not
+# `-base-runtime`. Tag v0.1.0 therefore yields:
+#     ghcr.io/third-i-ai/aura:0.1.0-base
+# GHCR lowercases the whole path, so GHCR_OWNER must be lowercase too.
+x-image: &image ghcr.io/${GHCR_OWNER}/aura:${AURA_TAG}-base
 
 services:
   api_gateway:
@@ -57,7 +64,9 @@ services:
       retries: 3
 
   frontend:
-    image: ghcr.io/${GHCR_OWNER}/aura-frontend:${AURA_TAG:-latest}
+    # Published by cd.yml's build-and-push-frontend job, which was added when
+    # this deploy was wired — before that, no frontend image existed at any tag.
+    image: ghcr.io/${GHCR_OWNER}/aura:${AURA_TAG}-frontend
     restart: unless-stopped
     mem_limit: 64m
     depends_on:
