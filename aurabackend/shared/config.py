@@ -11,13 +11,14 @@ Usage:
 
 from __future__ import annotations
 
+import json
 import os
 from functools import lru_cache
 from pathlib import Path
-from typing import List, Optional
+from typing import Annotated, List, Optional
 
 from pydantic import AliasChoices, Field, field_validator, model_validator
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, NoDecode
 
 
 def _locate_env_files() -> list[str]:
@@ -134,7 +135,18 @@ class AuraSettings(BaseSettings):
     api_gateway_url: str = Field("http://localhost:8000", alias="AURA_GATEWAY_URL")
 
     # ── CORS ────────────────────────────────────────────────────────────
-    cors_origins: List[str] = Field(
+    # NoDecode is load-bearing, not decoration. pydantic-settings JSON-decodes
+    # complex types (List[str]) inside EnvSettingsSource BEFORE field
+    # validators run, so a comma-separated CORS_ALLOWED_ORIGINS env var died
+    # at import with `SettingsError: error parsing value for field
+    # "cors_origins"` — _parse_cors below never saw it. The unit tests passed
+    # throughout because they pass the value as a kwarg, which bypasses the
+    # env source entirely; the crash only appears when the value actually
+    # arrives via the environment, i.e. in every containerised deploy.
+    # Found by booting the real image on EC2, not by any test.
+    # NoDecode suppresses the JSON pre-parse and hands the raw string to
+    # _parse_cors, which is what the documented "a.com, b.com" form assumes.
+    cors_origins: Annotated[List[str], NoDecode] = Field(
         default=["http://localhost:5173", "http://localhost:5174", "http://localhost:5175", "http://localhost:3000"],
         alias="CORS_ALLOWED_ORIGINS",
     )
@@ -142,9 +154,25 @@ class AuraSettings(BaseSettings):
     @field_validator("cors_origins", mode="before")
     @classmethod
     def _parse_cors(cls, v):
-        if isinstance(v, str):
-            return [o.strip() for o in v.split(",") if o.strip()]
-        return v
+        if not isinstance(v, str):
+            return v
+        s = v.strip()
+        # Accept the JSON form too. NoDecode (above) stops pydantic-settings
+        # from decoding it, so without this branch '["https://x"]' would split
+        # on commas into the single literal origin '["https://x"]' — an origin
+        # that matches nothing. That failure is SILENT: no boot error, just
+        # every browser request rejected by CORS with a healthy-looking server.
+        # The JSON form is in the wild precisely because it was the workaround
+        # for the bug NoDecode fixes, so it has to keep working.
+        if s.startswith("[") and s.endswith("]"):
+            try:
+                parsed = json.loads(s)
+            except json.JSONDecodeError:
+                pass
+            else:
+                if isinstance(parsed, list):
+                    return [str(o).strip() for o in parsed if str(o).strip()]
+        return [o.strip() for o in s.split(",") if o.strip()]
 
     @field_validator("cors_origins", mode="after")
     @classmethod

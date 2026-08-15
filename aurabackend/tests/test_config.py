@@ -301,3 +301,52 @@ class TestAuditTrailFailsClosedInProduction:
                 AURA_AUTH_MODE="password",
                 SECRET_KEY="x" * 48,
             )
+
+
+class TestSettingsLoadFromRealEnvironment:
+    """Every other test in this file passes settings as kwargs, which bypasses
+    pydantic-settings' EnvSettingsSource completely. That blind spot shipped a
+    bug making the app impossible to start in any container: cors_origins is a
+    List[str], and pydantic-settings JSON-decodes complex types from env vars
+    BEFORE field validators run — so the documented comma-separated
+    CORS_ALLOWED_ORIGINS died at import with
+
+        SettingsError: error parsing value for field "cors_origins"
+
+    while all three kwarg-based CORS tests stayed green. It was found by
+    booting the real image on EC2, the only place the env path was ever
+    exercised.
+
+    These go through monkeypatch.setenv so the env source actually runs."""
+
+    def test_cors_comma_separated_from_env(self, monkeypatch):
+        """The regression. Must parse, not raise."""
+        from shared.config import AuraSettings
+        monkeypatch.setenv("CORS_ALLOWED_ORIGINS",
+                           "https://a.example.com, https://b.example.com")
+        s = AuraSettings(_env_file=None, ENVIRONMENT="development", SECRET_KEY="x")
+        assert s.cors_origins == ["https://a.example.com", "https://b.example.com"]
+
+    def test_cors_single_origin_from_env(self, monkeypatch):
+        """The exact shape a real deploy uses — one origin, no commas. This is
+        what was set when the gateway refused to boot on EC2."""
+        from shared.config import AuraSettings
+        monkeypatch.setenv("CORS_ALLOWED_ORIGINS", "https://aura.example.org")
+        s = AuraSettings(_env_file=None, ENVIRONMENT="development", SECRET_KEY="x")
+        assert s.cors_origins == ["https://aura.example.org"]
+
+    def test_production_http_rejection_still_fires_from_env(self, monkeypatch):
+        """The after-validator must still run when the value arrives from the
+        environment — otherwise this fix would have quietly disarmed the
+        production HTTPS guard, which is worse than the bug it replaced."""
+        from shared.config import AuraSettings
+        monkeypatch.setenv("CORS_ALLOWED_ORIGINS", "http://insecure.example.com")
+        with pytest.raises(ValueError, match="Non-HTTPS CORS origin"):
+            AuraSettings(
+                _env_file=None,
+                ENVIRONMENT="production",
+                SECRET_KEY="x" * 48,
+                AURA_AUTH_MODE="password",
+                AURA_JWT_ENABLED="true",
+                AURA_AUDIT_ENABLED="true",
+            )
