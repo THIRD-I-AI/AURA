@@ -45,6 +45,13 @@ services:
       # SQLite lives on the mounted volume so it survives container replacement.
       AURA_DATABASE_URL: sqlite+aiosqlite:////data/state/gateway.db
       AURA_LEDGER_DATABASE_URL: sqlite+aiosqlite:////data/state/ledger.db
+      # USER ACCOUNTS live here — metadata_store/db.py reads this var and
+      # otherwise defaults to metadata.db inside the CONTAINER filesystem.
+      # Omitting it silently destroys every registered user on any restart or
+      # image update: registration returns 201, then the next `compose up`
+      # replaces the container and login answers "Invalid credentials" with no
+      # error anywhere explaining why. Found exactly that way on the live box.
+      METADATA_DATABASE_URL: sqlite+aiosqlite:////data/state/metadata.db
       AURA_AUDIT_DIR: /data/audit
       AURA_ARTIFACT_DIR: /data/artifacts
       AURA_SIGNING_KEY_DIR: /data/keys
