@@ -43,7 +43,18 @@ services:
     env_file: [.env]
     environment:
       # SQLite lives on the mounted volume so it survives container replacement.
-      AURA_DATABASE_URL: sqlite+aiosqlite:////data/state/gateway.db
+      #
+      # EVERY NAME HERE IS LOAD-BEARING AND SPELLED TO MATCH THE CODE. An env
+      # var the code does not read is not an error — it is silently ignored,
+      # the default wins, and the state lands inside the container where the
+      # next `compose pull` deletes it. Two names were wrong on the first
+      # deploy (AURA_DATABASE_URL and AURA_UPLOAD_DIR, both invented, matching
+      # nothing), so each now cites its reader:
+      #   persistence.py database_url()        -> GATEWAY_DATABASE_URL
+      #   metadata_store/db.py                 -> METADATA_DATABASE_URL
+      #   routers/workspaces.py _UPLOADS_ROOT  -> AURA_UPLOADS_ROOT
+      # Before adding one, grep the backend for the literal name.
+      GATEWAY_DATABASE_URL: sqlite+aiosqlite:////data/state/gateway.db
       AURA_LEDGER_DATABASE_URL: sqlite+aiosqlite:////data/state/ledger.db
       # USER ACCOUNTS live here — metadata_store/db.py reads this var and
       # otherwise defaults to metadata.db inside the CONTAINER filesystem.
@@ -55,7 +66,8 @@ services:
       AURA_AUDIT_DIR: /data/audit
       AURA_ARTIFACT_DIR: /data/artifacts
       AURA_SIGNING_KEY_DIR: /data/keys
-      AURA_UPLOAD_DIR: /data/uploads
+      # Every dataset a user uploads. Tenant-scoped as <root>/<workspace>/<file>.
+      AURA_UPLOADS_ROOT: /data/uploads
     volumes:
       - aura-data:/data
     # Hard ceiling. Without it a runaway pandas operation takes the whole box
