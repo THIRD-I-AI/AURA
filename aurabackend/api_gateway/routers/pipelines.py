@@ -21,6 +21,7 @@ from api_gateway.persistence import (
     save_pipeline,
 )
 from shared.error_handler import sanitize_error
+from shared.exceptions import ServiceUnavailableError
 from shared.logging_config import get_logger
 from shared.streaming_manager import TOPIC_PIPELINE, StreamEvent, streaming_manager
 
@@ -420,55 +421,65 @@ async def get_semantic_model(model_id: str) -> Dict[str, Any]:
 _UASR_URL = os.getenv("AURA_UASR_URL", "http://localhost:8009")
 
 
+async def _uasr(method: str, path: str, timeout: float, **kwargs: Any) -> Any:
+    """Proxy a call to the UASR service, failing honestly when it is absent.
+
+    UASR is a separate service and not every deployment profile runs it — the
+    single-instance profile runs the gateway alone. When it is missing, httpx
+    raises ConnectError and the generic handler renders that as
+    500 "An unexpected error occurred". That is misleading in both
+    directions: it reads as a crash inside AURA, and it gives an operator
+    nothing to act on. Verified on the live deployment, where /uasr/metrics,
+    /uasr/drift/status and /uasr/recovery/pending all returned 500 for this
+    reason alone.
+
+    503 is the accurate answer for a dependency that is unreachable rather
+    than broken. RequestError (not just ConnectError) is caught because a
+    timeout or DNS failure means the same thing to a caller. The upstream URL
+    is logged, never returned — it is internal topology.
+    """
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            resp = await client.request(method, f"{_UASR_URL}{path}", **kwargs)
+            return resp.json()
+    except httpx.RequestError as exc:
+        logger.warning("UASR unreachable at %s%s: %s", _UASR_URL, path, exc)
+        raise ServiceUnavailableError("UASR self-healing service") from exc
+
+
 @router.post("/uasr/ingest")
 async def uasr_ingest(req: Dict[str, Any]):
-    async with httpx.AsyncClient(timeout=60) as client:
-        resp = await client.post(f"{_UASR_URL}/uasr/ingest", json=req)
-        return resp.json()
+    return await _uasr("POST", "/uasr/ingest", 60, json=req)
 
 
 @router.post("/uasr/baseline")
 async def uasr_baseline(req: Dict[str, Any]):
-    async with httpx.AsyncClient(timeout=30) as client:
-        resp = await client.post(f"{_UASR_URL}/uasr/baseline", json=req)
-        return resp.json()
+    return await _uasr("POST", "/uasr/baseline", 30, json=req)
 
 
 @router.get("/uasr/metrics")
 async def uasr_metrics():
-    async with httpx.AsyncClient(timeout=15) as client:
-        resp = await client.get(f"{_UASR_URL}/uasr/metrics")
-        return resp.json()
+    return await _uasr("GET", "/uasr/metrics", 15)
 
 
 @router.get("/uasr/drift/status")
 async def uasr_drift_status(source_id: str = None):
-    params = {}
-    if source_id:
-        params["source_id"] = source_id
-    async with httpx.AsyncClient(timeout=15) as client:
-        resp = await client.get(f"{_UASR_URL}/uasr/drift/status", params=params)
-        return resp.json()
+    params = {"source_id": source_id} if source_id else {}
+    return await _uasr("GET", "/uasr/drift/status", 15, params=params)
 
 
 # ── S41: supervised self-healing approval queue (proxied to UASR) ────
 
 @router.get("/uasr/recovery/pending")
 async def uasr_pending_approvals(limit: int = 50):
-    async with httpx.AsyncClient(timeout=15) as client:
-        resp = await client.get(f"{_UASR_URL}/uasr/recovery/pending", params={"limit": limit})
-        return resp.json()
+    return await _uasr("GET", "/uasr/recovery/pending", 15, params={"limit": limit})
 
 
 @router.post("/uasr/recovery/{recovery_id}/approve")
 async def uasr_approve_recovery(recovery_id: str, req: Dict[str, Any]):
-    async with httpx.AsyncClient(timeout=30) as client:
-        resp = await client.post(f"{_UASR_URL}/uasr/recovery/{recovery_id}/approve", json=req)
-        return resp.json()
+    return await _uasr("POST", f"/uasr/recovery/{recovery_id}/approve", 30, json=req)
 
 
 @router.post("/uasr/recovery/{recovery_id}/reject")
 async def uasr_reject_recovery(recovery_id: str, req: Dict[str, Any]):
-    async with httpx.AsyncClient(timeout=30) as client:
-        resp = await client.post(f"{_UASR_URL}/uasr/recovery/{recovery_id}/reject", json=req)
-        return resp.json()
+    return await _uasr("POST", f"/uasr/recovery/{recovery_id}/reject", 30, json=req)
