@@ -52,7 +52,17 @@ export default function AskAuraPanel() {
         columns: (er.columns as string[]) || undefined,
         data: (er.data as Record<string, unknown>[]) || undefined,
         rowCount: typeof er.row_count === 'number' ? (er.row_count as number) : undefined,
-        error: ok ? undefined : ((er.error as string) || 'Query failed.'),
+        // A failure BEFORE execution (SQL generation, planning) reports on the
+        // top-level error_message, not execution_result.error — and the gateway
+        // has already humanized it (chat.py _humanize_pipeline_error). Reading
+        // only execution_result.error discarded that: a provider daily-quota
+        // 429 rendered as "Query failed.", identical to broken SQL, when the
+        // honest answer was "rate-limited, try again shortly".
+        error: ok
+          ? undefined
+          : ((er.error as string)
+            || (resp as { error_message?: string }).error_message
+            || 'Query failed.'),
       };
       setMessages((m) => m.map((x) => (x.id === pending.id ? filled : x)));
     } catch {
