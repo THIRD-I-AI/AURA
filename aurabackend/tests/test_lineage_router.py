@@ -36,9 +36,15 @@ def _fresh_engine():
 
     pytest-asyncio gives each test its own event loop while the module-level
     engine stays bound to the first one, so the second async test in a session
-    deadlocks with no output. Mirrors tests/test_dashboards_persistence.py;
-    deliberately does not await close_database(), which hangs against an
-    already-closed loop.
+    deadlocks with no output.
+
+    Orphaning the pool matters — aiosqlite connections run on non-daemon
+    threads and block interpreter exit — but closing it is NOT this fixture's
+    job: sync_engine.dispose() cannot close an async connection (it raises
+    MissingGreenlet, or silently leaves the thread alive), and nulling the
+    global after a failed dispose only hides the live engine from the
+    session-level cleanup that does work. conftest's pytest_sessionfinish
+    awaits engine.dispose() on a throwaway loop and reaps the threads there.
     """
     persistence._engine = None
     persistence._session_factory = None
