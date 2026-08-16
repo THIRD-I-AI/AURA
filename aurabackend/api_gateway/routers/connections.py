@@ -97,14 +97,38 @@ async def connectors_registry(include_unavailable: bool = True):
     }
 
 
+def _build_connector_config(connector_type: str, label: str, config: Dict[str, Any]) -> ConnectorConfig:
+    """Build a ConnectorConfig from a caller-supplied body.
+
+    `source_type` and `name` come from the PATH and a server-side label, so
+    they must be removed from the body before it is splatted — otherwise a
+    client that echoes either field back (the natural thing to do, since both
+    appear in the config objects this API returns) collides with the explicit
+    keyword and the request dies with
+
+        TypeError: ConnectorConfig() got multiple values for keyword
+        argument 'source_type'
+
+    reaching the caller as a bare 500 / "Internal server error", because
+    sanitize_error correctly refuses to leak the traceback. All three connector
+    endpoints had this, so testing a connection could never succeed from any
+    client that round-tripped the config. Found by POSTing a realistic body at
+    the live deployment.
+
+    The path parameter wins on purpose: the URL is the authoritative statement
+    of which connector this is, and honouring a conflicting body value would
+    let a caller instantiate a different connector than the one they addressed.
+    """
+    body = {k: v for k, v in config.items() if k not in ("source_type", "name")}
+    return ConnectorConfig(source_type=SourceType(connector_type), name=label, **body)
+
+
 @router.post("/connectors/{connector_type}/test")
 async def test_connector(connector_type: str, config: Dict[str, Any]):
     """Test connector configuration."""
     try:
-        connector_config = ConnectorConfig(
-            source_type=SourceType(connector_type),
-            name=f"test-{connector_type}",
-            **config,
+        connector_config = _build_connector_config(
+            connector_type, f"test-{connector_type}", config
         )
         connector = _make_connector(connector_type, connector_config)
         if connector is None:
@@ -124,7 +148,7 @@ async def test_connector(connector_type: str, config: Dict[str, Any]):
 async def list_connector_tables(connector_type: str, config: Dict[str, Any]) -> ConnectorTableListResponse:
     """List tables from a connector."""
     try:
-        connector_config = ConnectorConfig(source_type=SourceType(connector_type), name=f"list-{connector_type}", **config)
+        connector_config = _build_connector_config(connector_type, f"list-{connector_type}", config)
         connector = _make_connector(connector_type, connector_config)
         if connector is None:
             raise ValueError(f"Unknown connector type: {connector_type}")
@@ -143,7 +167,7 @@ async def list_connector_tables(connector_type: str, config: Dict[str, Any]) -> 
 async def profile_table(connector_type: str, request: ProfileTableRequest) -> Dict[str, Any]:
     """Profile a table from connector."""
     try:
-        connector_config = ConnectorConfig(source_type=SourceType(connector_type), name=f"profile-{connector_type}", **request.connector_config)
+        connector_config = _build_connector_config(connector_type, f"profile-{connector_type}", request.connector_config)
         connector = _make_connector(connector_type, connector_config)
         if connector is None:
             raise ValueError(f"Unknown connector type: {connector_type}")
