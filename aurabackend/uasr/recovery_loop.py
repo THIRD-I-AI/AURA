@@ -169,6 +169,17 @@ class RecoveryLoop:
                 logger.error("Shim generation failed on iteration %d", iteration + 1)
                 break
 
+            # Drift-type routing: the actuator decided this drift must not
+            # be auto-transformed (e.g. a severe location shift) and
+            # produced a no-op audit shim instead of a real repair. Nothing
+            # failed -- a human was asked. Skip validation (there is no
+            # transform to validate) and reuse the S41 hold path
+            # unconditionally, independent of risk_tiered.
+            if shim.requires_human_review:
+                self._hold_for_approval(loop_result, shim, drift_result, recovery_id)
+                logger.info("Recovery escalated: %s", shim.escalation_reason)
+                break
+
             # ── Step 3: Validate in sandbox ─────────────────────────
             loop_result.status = RecoveryStatus.VALIDATING
             validation = await self._validate_shim(shim, original_batch, drift_result)
