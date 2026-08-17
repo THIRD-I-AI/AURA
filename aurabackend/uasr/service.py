@@ -424,6 +424,25 @@ async def drift_status(
     }
 
 
+# ── S41: human-in-the-loop approval queue ────────────────────────────
+# Declared BEFORE /uasr/recovery/{recovery_id}: FastAPI matches routes in
+# declaration order, so with the parameterised route first this literal path
+# never ran — "pending" was captured as a recovery id and the endpoint
+# answered 404 "Recovery record 'pending' not found". The whole supervised
+# self-healing approval queue was unreachable for that reason alone.
+@app.get("/uasr/recovery/pending")
+async def pending_approvals(limit: int = 50, db: AsyncSession = Depends(get_db)):
+    """List recoveries held in PENDING_APPROVAL, awaiting a human decision."""
+    result = await db.execute(
+        select(RecoveryRecord)
+        .where(RecoveryRecord.status == RecoveryStatus.PENDING_APPROVAL.value)
+        .order_by(RecoveryRecord.created_at.desc())
+        .limit(limit)
+    )
+    records = result.scalars().all()
+    return {"pending": [_serialize_recovery(r) for r in records], "count": len(records)}
+
+
 @app.get("/uasr/recovery/{recovery_id}")
 async def recovery_detail(recovery_id: str, db: AsyncSession = Depends(get_db)):
     """Get details of a specific recovery attempt from the database."""
@@ -446,21 +465,6 @@ async def list_recoveries_for_event(drift_event_id: str, db: AsyncSession = Depe
     )
     records = result.scalars().all()
     return {"recoveries": [_serialize_recovery(r) for r in records], "count": len(records)}
-
-
-# ── S41: human-in-the-loop approval queue ────────────────────────────
-
-@app.get("/uasr/recovery/pending")
-async def pending_approvals(limit: int = 50, db: AsyncSession = Depends(get_db)):
-    """List recoveries held in PENDING_APPROVAL, awaiting a human decision."""
-    result = await db.execute(
-        select(RecoveryRecord)
-        .where(RecoveryRecord.status == RecoveryStatus.PENDING_APPROVAL.value)
-        .order_by(RecoveryRecord.created_at.desc())
-        .limit(limit)
-    )
-    records = result.scalars().all()
-    return {"pending": [_serialize_recovery(r) for r in records], "count": len(records)}
 
 
 @app.post("/uasr/recovery/{recovery_id}/approve")
