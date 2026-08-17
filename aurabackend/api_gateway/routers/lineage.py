@@ -19,7 +19,7 @@ from typing import Any, Dict, List
 
 from fastapi import APIRouter, Request
 
-from api_gateway.routers.workspaces import DEFAULT_WORKSPACE_ID, current_workspace_id
+from api_gateway.routers.workspaces import current_workspace_id
 from shared.logging_config import get_logger
 
 logger = get_logger("aura.api_gateway.lineage")
@@ -40,21 +40,26 @@ async def get_lineage(request: Request):
     Edges always point "downstream": table → query → dashboard.
     """
     from api_gateway import persistence
-    from api_gateway.routers.dashboards import _dashboards_lock, _dashboards_store
 
     wsid = current_workspace_id(request)
 
-    def _in_ws(r: Dict[str, Any]) -> bool:
-        return (r.get("workspace_id") or DEFAULT_WORKSPACE_ID) == wsid
-
-    # P-2c: fetch cached edges and saved-query metadata in parallel —
-    # both are indexed workspace-scoped SELECTs, O(edges) + O(queries).
-    cached_edges, saved_queries = await asyncio.gather(
+    # All three layers are indexed workspace-scoped SELECTs, fetched in
+    # parallel: O(edges) + O(queries) + O(dashboards).
+    #
+    # Dashboards come from persistence, NOT from a module attribute on the
+    # dashboards router. They used to live in an in-memory list there, and
+    # when that moved into DashboardRow this endpoint kept importing the
+    # deleted `_dashboards_store`/`_dashboards_lock` — so GET /lineage raised
+    # ImportError and answered 500 on every call in production. Nothing
+    # caught it because no test exercises this route and the import is
+    # function-local, so even importing the module stays clean. This is the
+    # exact hazard behind the CLAUDE.md rule that cross-router reads of
+    # persisted state go through persistence.py rather than module globals.
+    cached_edges, saved_queries, dashboards = await asyncio.gather(
         persistence.list_lineage_edges(wsid),
         persistence.list_saved_queries(wsid),
+        persistence.list_dashboards(wsid),
     )
-    with _dashboards_lock:
-        dashboards = [r for r in _dashboards_store if _in_ws(r)]
 
     # Group cached edges by query id for O(1) table_count lookup.
     tables_by_query: Dict[str, List[str]] = defaultdict(list)

@@ -15,6 +15,26 @@ import { defineConfig, devices } from '@playwright/test';
  */
 const PORT = 4173;
 
+/**
+ * E2E_BASE_URL points the suite at an already-running deployment instead of a
+ * locally-previewed build:
+ *
+ *   E2E_BASE_URL=https://your-host npx playwright test
+ *
+ * This matters because the localhost harness serves the built frontend with NO
+ * backend, so it can only ever assert honest empty/offline states. It cannot
+ * catch anything depending on the real API — and the first real deployment
+ * produced a run of bugs invisible to every green suite (CORS unreadable from
+ * the environment, users wiped on restart, connector endpoints 500ing, a
+ * connector silently reading :memory:). Every one needed a live server.
+ *
+ * With a remote target the local preview server is NOT started: the deployment
+ * under test IS the server, and spawning a second one would waste time and
+ * silently shadow the target for any spec using a relative URL.
+ */
+const REMOTE_BASE_URL = process.env.E2E_BASE_URL;
+const baseURL = REMOTE_BASE_URL || `http://localhost:${PORT}`;
+
 export default defineConfig({
   testDir: './e2e',
   fullyParallel: true,
@@ -22,17 +42,21 @@ export default defineConfig({
   retries: process.env.CI ? 1 : 0,
   reporter: process.env.CI ? [['github'], ['list']] : 'list',
   use: {
-    baseURL: `http://localhost:${PORT}`,
+    baseURL,
     trace: 'on-first-retry',
     screenshot: 'only-on-failure',
   },
   projects: [
     { name: 'chromium', use: { ...devices['Desktop Chrome'] } },
   ],
-  webServer: {
-    command: `npm run preview -- --port ${PORT} --strictPort`,
-    url: `http://localhost:${PORT}`,
-    reuseExistingServer: !process.env.CI,
-    timeout: 120_000,
-  },
+  ...(REMOTE_BASE_URL
+    ? {}
+    : {
+        webServer: {
+          command: `npm run preview -- --port ${PORT} --strictPort`,
+          url: `http://localhost:${PORT}`,
+          reuseExistingServer: !process.env.CI,
+          timeout: 120_000,
+        },
+      }),
 });

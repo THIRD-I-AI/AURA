@@ -24,7 +24,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
-from sqlalchemy import func, select
+from sqlalchemy import Integer, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from metadata_store.db import get_session
@@ -119,8 +119,16 @@ class EvolutionEngine:
                 AgentFeedback.agent_name,
                 AgentFeedback.task_type,
                 func.count().label("total"),
+                # cast() takes a SQLAlchemy type, not a Python one. This was
+                # `type_=type(1)` — i.e. the builtin `int` class — which blew up
+                # inside SQLAlchemy's own type inference with
+                # `AttributeError: 'int' object has no attribute '_isnull'`.
+                # The whole cycle is wrapped in a try/except that logged it as
+                # "Cycle DB error" and continued, so the self-improvement loop
+                # has silently never analysed a single failure. Caught by
+                # reading gateway logs on the first real deploy.
                 func.sum(
-                    (AgentFeedback.success == False).cast(type_=type(1))
+                    (AgentFeedback.success == False).cast(Integer)  # noqa: E712
                 ).label("failures"),
                 func.avg(AgentFeedback.duration_ms).label("avg_ms"),
             )

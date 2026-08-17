@@ -81,3 +81,37 @@ def pytest_sessionfinish(session, exitstatus):
         get_reusable_executor().shutdown(kill_workers=True)
     except Exception:
         pass
+
+    # Second source of the same hang: aiosqlite runs every connection on a
+    # NON-DAEMON worker thread, so an engine still holding a pool at exit
+    # blocks threading._shutdown forever. A py-spy dump of a stuck run showed
+    # MainThread parked in _shutdown behind several
+    # aiosqlite._connection_worker_thread entries: the suite printed
+    # "2050 passed" and then never exited, which the pre-push hook sees as a
+    # hung push with no error to show for it.
+    #
+    # Tests rebind these module-level engines (nulling the global for a fresh
+    # one per event loop), orphaning the previous pool instead of closing it.
+    # Reproduces standalone: tests/test_dashboards_persistence.py passes in
+    # ~1s and then hangs at exit.
+    #
+    # dispose() must be awaited on a live loop — SQLAlchemy's async close needs
+    # greenlet context, and calling sync_engine.dispose() here raises
+    # MissingGreenlet. The loops these engines were bound to are already gone,
+    # so a throwaway loop drives the close.
+    import asyncio as _asyncio
+    import sys as _sys
+    for _name in ("api_gateway.persistence", "shared.audit_ledger", "metadata_store.db"):
+        _module = _sys.modules.get(_name)
+        _engine = getattr(_module, "_engine", None) if _module else None
+        if _engine is None:
+            continue
+        try:
+            _loop = _asyncio.new_event_loop()
+            try:
+                _loop.run_until_complete(_engine.dispose())
+            finally:
+                _loop.close()
+            _module._engine = None
+        except Exception:
+            pass

@@ -38,7 +38,21 @@ class DuckDBConnector(BaseConnector):
         try:
             path = (
                 self.config.connection_string
-                or (self.config.extra_params or {}).get("db_path", ":memory:")
+                or (self.config.extra_params or {}).get("db_path")
+                # `database` is a first-class ConnectorConfig field and every
+                # other connector honours it (MySQL reads database/host/port/
+                # username/password). DuckDB read only connection_string and
+                # extra_params, so a caller sending {"database": "/x.duckdb"}
+                # — the obvious spelling, and the one this API's own config
+                # objects use — silently fell through to :memory:. connect()
+                # then SUCCEEDED against an empty ephemeral database and
+                # list_tables returned [], so the API answered
+                # {"success": true, "table_count": 0}: a healthy-looking
+                # response for a connection pointing at nothing. Verified on
+                # the live deployment, where one file returned 1 table via
+                # connection_string and 0 via database.
+                or self.config.database
+                or ":memory:"
             )
             self._conn = duckdb.connect(str(path))
             self._is_connected = True
