@@ -19,6 +19,7 @@ import logging
 import math
 import uuid
 from collections import Counter
+from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -181,8 +182,17 @@ class DriftDetector:
     # Main detection
     # ────────────────────────────────────────────────────────────────
 
-    def detect(self, batch: BatchPayload) -> DriftDetectionResult:
-        """Run all drift checks on an incoming batch."""
+    def detect(
+        self, batch: BatchPayload, *, record_state: bool = True
+    ) -> DriftDetectionResult:
+        """Run all drift checks on an incoming batch.
+
+        ``record_state=False`` runs the checks against a disposable copy of
+        the source's state and never persists it, so a validation-only call
+        (RecoveryLoop re-checking a candidate shim) cannot corrupt
+        ``kl_history`` / the adaptive ζ that the live Monitor loop depends on
+        for every future event on that source.
+        """
         result = DriftDetectionResult(
             source_id=batch.source_id,
             batch_id=batch.batch_id,
@@ -194,6 +204,11 @@ class DriftDetector:
         # (first-seen schema baseline, appended KL sample) so we avoid a
         # redundant write on read-only batches.
         st = self._store.load(batch.source_id)
+        if not record_state:
+            # kl_history is mutated in place (append/trim) by
+            # _check_statistical_drift, so a shallow dataclass copy would
+            # still share (and corrupt) the same list — copy it explicitly.
+            st = replace(st, kl_history=list(st.kl_history))
         dirty = False
 
         # 1. Schema drift
@@ -206,7 +221,7 @@ class DriftDetector:
             result.affected_columns = schema_drift["affected_columns"]
             result.drift_vector = schema_drift
             result.details = schema_drift.get("details", "")
-            if dirty:
+            if dirty and record_state:
                 self._store.save(batch.source_id, st)
             return result
 
@@ -221,7 +236,7 @@ class DriftDetector:
             result.affected_columns = stat_drift["affected_columns"]
             result.drift_vector = stat_drift
             result.details = stat_drift.get("details", "")
-            if dirty:
+            if dirty and record_state:
                 self._store.save(batch.source_id, st)
             return result
 
@@ -234,11 +249,11 @@ class DriftDetector:
             result.cosine_distance = sem_drift["cosine_distance"]
             result.drift_vector = sem_drift
             result.details = sem_drift.get("details", "")
-            if dirty:
+            if dirty and record_state:
                 self._store.save(batch.source_id, st)
             return result
 
-        if dirty:
+        if dirty and record_state:
             self._store.save(batch.source_id, st)
         result.details = "No drift detected"
         return result

@@ -309,8 +309,11 @@ class RecoveryLoop:
                 schema_snapshot=original_batch.schema_snapshot,
             )
 
-            # Re-run drift detection on transformed data
-            post_drift = self._detector.detect(transformed_batch)
+            # Re-run drift detection on transformed data. record_state=False:
+            # this is a probe on a candidate shim, not a live observation —
+            # it must not feed kl_history / the adaptive zeta the Monitor
+            # loop uses, or a failed validation poisons every later event.
+            post_drift = self._detector.detect(transformed_batch, record_state=False)
 
             if not post_drift.drift_detected:
                 return {

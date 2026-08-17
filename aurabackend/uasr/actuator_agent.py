@@ -276,22 +276,37 @@ class SynthesisActuatorAgent(BaseAgent):
             )
 
         if max_kl > zeta * 5:
-            # Severe - clip to baseline percentiles
+            # Severe - clip each drifted column to its own baseline mean +/-
+            # 3*std. Per-column (not one global pair) so a column with a
+            # tight baseline isn't clipped to a wide neighbour's range.
+            # A missing/zero baseline_std means we can't derive a safe band
+            # for that column -- fall back to a wide no-op range instead of
+            # collapsing every value in it to a single point.
+            bounds: Dict[str, tuple] = {}
+            for col in affected:
+                cs = col_stats.get(col) or {}
+                bmean = cs.get("baseline_mean")
+                bstd = cs.get("baseline_std")
+                if bmean is None or not bstd:
+                    bounds[col] = (-1e9, 1e9)
+                else:
+                    bounds[col] = (bmean - 3 * bstd, bmean + 3 * bstd)
+
             clip_lines = "\n".join(
                 f'        if "{col}" in row and isinstance(row["{col}"], (int, float)):\n'
-                f'            row["{col}"] = max(min(row["{col}"], _CLIP_MAX), _CLIP_MIN)'
+                f'            _lo, _hi = _CLIP_BOUNDS["{col}"]\n'
+                f'            row["{col}"] = max(min(row["{col}"], _hi), _lo)'
                 for col in affected
             )
+            bounds_repr = ", ".join(f'"{c}": ({lo!r}, {hi!r})' for c, (lo, hi) in bounds.items())
             return (
                 '"""UASR Shim - Outlier Clipping\n'
-                'Clips extreme values to baseline distribution percentiles.\n'
+                'Clips extreme values to baseline mean +/- 3*std, per column.\n'
                 f'Generated for drift: {diagnosis.root_cause}\n'
                 '"""\n\n'
-                '# These should be populated from the baseline distribution\n'
-                '_CLIP_MIN = -1e9\n'
-                '_CLIP_MAX = 1e9\n\n'
+                f'_CLIP_BOUNDS = {{{bounds_repr}}}\n\n'
                 'def transform(rows: list[dict]) -> list[dict]:\n'
-                '    """Clip outlier values to safe range."""\n'
+                '    """Clip outlier values to each column\'s baseline range."""\n'
                 '    result = []\n'
                 '    for row in rows:\n'
                 f'{clip_lines}\n'
