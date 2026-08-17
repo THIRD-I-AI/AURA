@@ -12,6 +12,7 @@ from typing import Any, Dict, List, Optional
 
 import httpx
 from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from api_gateway.persistence import (
@@ -421,7 +422,13 @@ async def get_semantic_model(model_id: str) -> Dict[str, Any]:
 _UASR_URL = os.getenv("AURA_UASR_URL", "http://localhost:8009")
 
 
-async def _uasr(method: str, path: str, timeout: float, **kwargs: Any) -> Any:
+async def _uasr(
+    method: str,
+    path: str,
+    timeout: float,
+    request: Optional[Request] = None,
+    **kwargs: Any,
+) -> Any:
     """Proxy a call to the UASR service, failing honestly when it is absent.
 
     UASR is a separate service and not every deployment profile runs it — the
@@ -438,48 +445,67 @@ async def _uasr(method: str, path: str, timeout: float, **kwargs: Any) -> Any:
     timeout or DNS failure means the same thing to a caller. The upstream URL
     is logged, never returned — it is internal topology.
     """
+    # UASR enforces the same bearer auth the gateway does, so the caller's
+    # token has to travel with the proxied request. Without it every call came
+    # back "Bearer token required" — and, because the old code returned
+    # resp.json() and dropped resp.status_code, that 401 reached the browser
+    # as HTTP 200 with an error body: a failure wearing a success status, the
+    # same shape as a connector reporting healthy while pointing at nothing.
+    headers = {}
+    if request is not None:
+        auth = request.headers.get("Authorization")
+        if auth:
+            headers["Authorization"] = auth
+
     try:
         async with httpx.AsyncClient(timeout=timeout) as client:
-            resp = await client.request(method, f"{_UASR_URL}{path}", **kwargs)
-            return resp.json()
+            resp = await client.request(method, f"{_UASR_URL}{path}", headers=headers, **kwargs)
     except httpx.RequestError as exc:
         logger.warning("UASR unreachable at %s%s: %s", _UASR_URL, path, exc)
         raise ServiceUnavailableError("UASR self-healing service") from exc
 
+    # Preserve the upstream status. A proxy that rewrites every outcome to 200
+    # makes the caller parse bodies to discover failure.
+    try:
+        payload = resp.json()
+    except ValueError:
+        payload = {"error": "UPSTREAM_NOT_JSON", "message": resp.text[:500]}
+    return JSONResponse(status_code=resp.status_code, content=payload)
+
 
 @router.post("/uasr/ingest")
-async def uasr_ingest(req: Dict[str, Any]):
-    return await _uasr("POST", "/uasr/ingest", 60, json=req)
+async def uasr_ingest(req: Dict[str, Any], request: Request):
+    return await _uasr("POST", "/uasr/ingest", 60, request, json=req)
 
 
 @router.post("/uasr/baseline")
-async def uasr_baseline(req: Dict[str, Any]):
-    return await _uasr("POST", "/uasr/baseline", 30, json=req)
+async def uasr_baseline(req: Dict[str, Any], request: Request):
+    return await _uasr("POST", "/uasr/baseline", 30, request, json=req)
 
 
 @router.get("/uasr/metrics")
-async def uasr_metrics():
-    return await _uasr("GET", "/uasr/metrics", 15)
+async def uasr_metrics(request: Request):
+    return await _uasr("GET", "/uasr/metrics", 15, request)
 
 
 @router.get("/uasr/drift/status")
-async def uasr_drift_status(source_id: str = None):
+async def uasr_drift_status(request: Request, source_id: str = None):
     params = {"source_id": source_id} if source_id else {}
-    return await _uasr("GET", "/uasr/drift/status", 15, params=params)
+    return await _uasr("GET", "/uasr/drift/status", 15, request, params=params)
 
 
 # ── S41: supervised self-healing approval queue (proxied to UASR) ────
 
 @router.get("/uasr/recovery/pending")
-async def uasr_pending_approvals(limit: int = 50):
-    return await _uasr("GET", "/uasr/recovery/pending", 15, params={"limit": limit})
+async def uasr_pending_approvals(request: Request, limit: int = 50):
+    return await _uasr("GET", "/uasr/recovery/pending", 15, request, params={"limit": limit})
 
 
 @router.post("/uasr/recovery/{recovery_id}/approve")
-async def uasr_approve_recovery(recovery_id: str, req: Dict[str, Any]):
-    return await _uasr("POST", f"/uasr/recovery/{recovery_id}/approve", 30, json=req)
+async def uasr_approve_recovery(recovery_id: str, req: Dict[str, Any], request: Request):
+    return await _uasr("POST", f"/uasr/recovery/{recovery_id}/approve", 30, request, json=req)
 
 
 @router.post("/uasr/recovery/{recovery_id}/reject")
-async def uasr_reject_recovery(recovery_id: str, req: Dict[str, Any]):
-    return await _uasr("POST", f"/uasr/recovery/{recovery_id}/reject", 30, json=req)
+async def uasr_reject_recovery(recovery_id: str, req: Dict[str, Any], request: Request):
+    return await _uasr("POST", f"/uasr/recovery/{recovery_id}/reject", 30, request, json=req)
