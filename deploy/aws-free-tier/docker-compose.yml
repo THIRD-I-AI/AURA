@@ -68,11 +68,17 @@ services:
       AURA_SIGNING_KEY_DIR: /data/keys
       # Every dataset a user uploads. Tenant-scoped as <root>/<workspace>/<file>.
       AURA_UPLOADS_ROOT: /data/uploads
+      # Reaches the uasr_service container below. The code default is
+      # http://localhost:8009, which inside this container is the gateway
+      # itself — every /uasr/* call then fails to connect.
+      AURA_UASR_URL: http://uasr_service:8009
     volumes:
       - aura-data:/data
     # Hard ceiling. Without it a runaway pandas operation takes the whole box
     # down including Caddy, and you lose the ability to reach the site at all.
-    mem_limit: 700m
+    # Trimmed from 700m to make room for uasr_service: the box has 916m total,
+    # and observed gateway usage is ~240m, so 520m is still >2x headroom.
+    mem_limit: 520m
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health', timeout=5).status==200 else 1)"]
       interval: 30s
@@ -80,6 +86,46 @@ services:
       # ML imports are slow on a burstable instance; a short start_period would
       # kill the container mid-import and loop forever.
       start_period: 180s
+      retries: 3
+
+  # ── UASR — self-healing MAPE-K loop ──────────────────────────────────
+  # Without this the seven /uasr/* gateway routes have nothing to reach and
+  # answer 503: the self-healing pillar is shipped code that no deployment
+  # actually runs. It fits here because uasr/* imports numpy and nothing
+  # heavier, so it reuses the SAME base image rather than needing its own.
+  #
+  # Single-node on purpose. The prod compose runs redis + postgres for
+  # distributed repair admission; runtime_config's defaults (state=memory,
+  # repair=local) have no redis dependency at all, which is what makes a
+  # 1 GB box viable.
+  uasr_service:
+    image: *image
+    restart: unless-stopped
+    command: uvicorn uasr.service:app --host 0.0.0.0 --port 8009 --workers 1
+    env_file: [.env]
+    environment:
+      # UASR's own tables, NOT the gateway's metadata.db. uasr/db.py reuses
+      # metadata_store's engine, so this var decides where its tables live;
+      # pointing it at the gateway's file would put two processes behind one
+      # SQLite writer for no benefit — the gateway reaches UASR over HTTP and
+      # never reads these tables (verified: no RecoveryRecord / DriftEvent /
+      # HealingMetric reference anywhere under api_gateway/).
+      METADATA_DATABASE_URL: sqlite+aiosqlite:////data/state/uasr.db
+      # Drift baselines and batch snapshots. On the volume for the same reason
+      # everything else is: a container-local path is deleted by compose pull,
+      # and a self-healer that forgets its baseline on every deploy re-learns
+      # "normal" from scratch and cannot detect drift across a release.
+      UASR_DUCKDB_PATH: /data/state/uasr.duckdb
+      UASR_PARQUET_DIR: /data/uasr_parquet
+      UASR_MAPEK_ENABLED: "true"
+    volumes:
+      - aura-data:/data
+    mem_limit: 220m
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8009/health', timeout=5).status==200 else 1)"]
+      interval: 30s
+      timeout: 10s
+      start_period: 120s
       retries: 3
 
   frontend:
