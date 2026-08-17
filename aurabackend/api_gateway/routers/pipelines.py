@@ -137,7 +137,7 @@ async def pipeline_generate(req: PipelineGenerateRequest, request: Request):
 
 
 @router.post("/pipeline/execute")
-async def pipeline_execute(req: PipelineExecuteRequest):
+async def pipeline_execute(req: PipelineExecuteRequest, request: Request):
     """Execute a pipeline definition and return results."""
     try:
         pipeline = PipelineModel(**req.pipeline)
@@ -148,14 +148,16 @@ async def pipeline_execute(req: PipelineExecuteRequest):
         logger.warning("[Pipeline] Invalid pipeline payload: %s", e)
         raise HTTPException(status_code=400, detail="Invalid pipeline payload")
     try:
-        run = await _pipeline_engine.execute(pipeline, preview_only=req.preview_only)
+        run = await _pipeline_engine.execute(
+            pipeline, preview_only=req.preview_only, upload_dir=tenant_upload_dir(request),
+        )
         return {"status": "success", "run": run.model_dump()}
     except Exception as e:
         return {"status": "error", "error": sanitize_error(e, logger=logger, context="pipeline execute")}
 
 
 @router.post("/pipeline/execute/async")
-async def pipeline_execute_async(req: PipelineExecuteRequest):
+async def pipeline_execute_async(req: PipelineExecuteRequest, request: Request):
     """Kick off pipeline execution in the background and publish live progress.
 
     Returns ``{run_id, topic}``. Subscribe to ``GET /stream/pipeline:{run_id}``
@@ -167,6 +169,10 @@ async def pipeline_execute_async(req: PipelineExecuteRequest):
         logger.warning("[Pipeline] Invalid pipeline payload on async execute: %s", e)
         raise HTTPException(status_code=400, detail="Invalid pipeline payload")
 
+    # Resolved eagerly, in the request handler — the background task
+    # below outlives the request and must not depend on request.state
+    # still being valid by the time it runs.
+    upload_dir = tenant_upload_dir(request)
     run_id = uuid.uuid4().hex
 
     async def _run() -> None:
@@ -227,6 +233,7 @@ async def pipeline_execute_async(req: PipelineExecuteRequest):
             run = await _pipeline_engine.execute(
                 pipeline, preview_only=req.preview_only,
                 source_progress_cb=_kafka_cb,
+                upload_dir=upload_dir,
             )
 
             await streaming_manager.publish_progress(
