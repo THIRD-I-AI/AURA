@@ -12,9 +12,12 @@
 #      single largest cost item and a Postgres container is ~200 MB of RAM we
 #      do not have. persistence.py already supports SQLite (it is the dev
 #      default), so this is a config change, not a code change.
-#   3. base-runtime image, not causal-runtime. The dowhy/econml causal
-#      estimators live in the causal tier. The analyst loop (NL -> SQL ->
-#      answer) does not need them. See README for what that costs.
+#   3. TWO tiers, not one. The gateway runs causal-runtime because the
+#      dowhy/econml estimators live there; on base it degraded to the single
+#      dependency-free estimator (IV) and rated its own jobs low confidence.
+#      Measured cost of the switch: gateway 210MiB -> ~390MiB, peak 402MiB of
+#      its 520m ceiling, no OOM. uasr_service stays on base (numpy only), so
+#      only one container pays for the causal wheels.
 #
 # The other eight services are absent, not disabled. The counterfactual and
 # financial-audit engines run IN-PROCESS inside the gateway (see CLAUDE.md), so
@@ -35,7 +38,14 @@ x-image: &image ghcr.io/${GHCR_OWNER}/aura:${AURA_TAG}-base
 
 services:
   api_gateway:
-    image: *image
+    # CAUSAL tier, not base: the base image ships numpy only, so double_ml
+    # (dowhy) and tmle (sklearn) could not run and all 4 refuters skipped —
+    # the engine degraded per-estimator to IV alone and self-rated the job
+    # low confidence. Measured on this box after switching: 3/3 estimators
+    # and 4/4 refuters run, confidence high, gateway peak 402MiB of its
+    # 520m ceiling, no OOM kill, no restart. uasr_service stays on base —
+    # it imports numpy and nothing heavier.
+    image: ghcr.io/${GHCR_OWNER}/aura:${AURA_TAG}-causal
     restart: unless-stopped
     # One worker. See note 1 above — this is the difference between booting
     # and OOM-looping on a t3.micro.
