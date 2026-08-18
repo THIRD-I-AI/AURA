@@ -28,6 +28,7 @@ import duckdb
 import pytest
 
 from pipeline.engine import PipelineEngine
+from pipeline.generator import PipelineGenerator
 from pipeline.models import (
     Pipeline,
     PipelineSink,
@@ -96,3 +97,43 @@ async def test_duckdb_source_reads_real_external_db_table(tmp_path):
     assert run.rows_read == 3
     populations = {row["population"] for row in run.preview_data}
     assert populations == {1000, 2000, 1500}
+
+
+def _generator() -> PipelineGenerator:
+    # get_file_schema() touches no LLM/parser state — skip __init__ so
+    # this stays hermetic (no LLM provider setup required for the test).
+    return PipelineGenerator.__new__(PipelineGenerator)
+
+
+def test_get_file_schema_reads_real_csv_through_tenant_upload_dir(tmp_path):
+    """generator.get_file_schema() must resolve through the SAME
+    tenant-scoped upload dir the engine uses (not a hardcoded/flat
+    UPLOAD_DIR) and report the file's real columns."""
+    tenant_dir = tmp_path / "uploads" / "tenant_abc123"
+    tenant_dir.mkdir(parents=True)
+    (tenant_dir / "customers.csv").write_text(
+        "id,name,revenue\n1,Alice,100\n2,Bob,250\n3,Carol,75\n", encoding="utf-8"
+    )
+
+    schema = _generator().get_file_schema("customers.csv", upload_dir=str(tenant_dir))
+
+    assert "error" not in schema, schema
+    assert [c["name"] for c in schema["columns"]] == ["id", "name", "revenue"]
+    assert schema["row_count"] == 3
+
+
+def test_get_file_schema_rejects_path_traversal(tmp_path):
+    """A traversal file_name must never escape the tenant upload dir to
+    read an unrelated file elsewhere on disk (e.g. a signing key)."""
+    tenant_dir = tmp_path / "uploads" / "tenant_abc123"
+    tenant_dir.mkdir(parents=True)
+    secret_dir = tmp_path / "keys"
+    secret_dir.mkdir()
+    (secret_dir / "signing_ed25519.pem").write_text(
+        "-----BEGIN PRIVATE KEY-----\nSECRET\n-----END PRIVATE KEY-----\n", encoding="utf-8"
+    )
+
+    gen = _generator()
+    for evil in ("../keys/signing_ed25519.pem", "../../etc/passwd"):
+        schema = gen.get_file_schema(evil, upload_dir=str(tenant_dir))
+        assert "error" in schema, f"traversal not rejected for {evil!r}: {schema}"

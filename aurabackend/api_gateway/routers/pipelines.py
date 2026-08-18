@@ -123,12 +123,14 @@ async def pipeline_generate(req: PipelineGenerateRequest, request: Request):
             target_file = available_files[0]
         if target_file:
             try:
-                schema_context[target_file] = gen.get_file_schema(target_file)
+                schema_context[target_file] = gen.get_file_schema(target_file, upload_dir)
             except Exception as e:
                 logger.warning("[Pipeline] Schema read failed for %s: %s", target_file, e)
 
     try:
-        pipeline = await gen.generate(prompt=req.prompt, available_files=available_files, schema_context=schema_context)
+        pipeline = await gen.generate(
+            prompt=req.prompt, available_files=available_files, schema_context=schema_context, upload_dir=upload_dir,
+        )
         if req.source_file and pipeline.source.type.value == "file":
             pipeline.source.file_name = req.source_file
         return {"status": "success", "pipeline": pipeline.model_dump()}
@@ -317,11 +319,11 @@ async def pipeline_delete(pipeline_id: str, request: Request):
 
 
 @router.get("/pipeline/schema/{file_name}")
-async def pipeline_file_schema(file_name: str):
+async def pipeline_file_schema(file_name: str, request: Request):
     """Get column schema for a file."""
     gen = _get_generator()
     try:
-        schema = gen.get_file_schema(file_name)
+        schema = gen.get_file_schema(file_name, tenant_upload_dir(request))
         return {"status": "success", "schema": schema}
     except Exception as e:
         return {"status": "error", "error": sanitize_error(e, logger=logger, context="pipeline file schema")}
