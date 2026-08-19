@@ -22,6 +22,7 @@ import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from pipeline.engine import _resolve_in_dir
 from pipeline.local_parser import LocalPipelineParser
 from pipeline.models import (
     Pipeline,
@@ -37,7 +38,13 @@ from shared.llm_provider import LLMRateLimitError
 
 logger = logging.getLogger("aura.pipeline.generator")
 
-UPLOAD_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "uploads")
+# Fallback for callers that pass no upload_dir (tests, CLI use). Real
+# HTTP requests get a tenant-scoped dir passed in by the router (see
+# get_file_schema()/generate()'s upload_dir param) — mirrors the same
+# fallback in pipeline/engine.py.
+UPLOAD_DIR = os.getenv("AURA_UPLOADS_ROOT") or os.path.join(
+    os.path.dirname(os.path.dirname(__file__)), "data", "uploads"
+)
 
 # ────────────────────────────────────────────────────────────────────
 # System prompt template — injected with available context
@@ -133,6 +140,7 @@ class PipelineGenerator:
         available_files: Optional[List[str]] = None,
         schema_context: Optional[Dict[str, Any]] = None,
         connections: Optional[List[Dict[str, str]]] = None,
+        upload_dir: Optional[str] = None,
     ) -> Pipeline:
         """
         Convert a natural-language prompt into a Pipeline object.
@@ -140,6 +148,11 @@ class PipelineGenerator:
         Resolution order:
           1. Local rule-based parser (instant, no LLM)
           2. Cloud/local LLM fallback (Groq → Gemini → Ollama → OpenAI)
+
+        ``upload_dir``: the caller's resolved (tenant-scoped) upload
+        directory — e.g. ``api_gateway.routers.workspaces.tenant_upload_dir(request)``.
+        Only consulted when ``available_files`` isn't already supplied;
+        callers with no request context (CLI, tests) may omit it.
         """
         # ── Tier 1: Local rule-based parser ──────────────────────────
         try:
@@ -152,7 +165,7 @@ class PipelineGenerator:
             result = self._local_parser.parse(
                 prompt,
                 schema_context=schema_context,
-                available_files=available_files or self._discover_files(),
+                available_files=available_files or self._discover_files(upload_dir),
                 source_file=source_file,
             )
             if result is not None:
@@ -173,7 +186,7 @@ class PipelineGenerator:
             local_fallback = None
 
         # ── Tier 2: LLM-based generation ─────────────────────────────
-        context = self._build_context(available_files, schema_context, connections)
+        context = self._build_context(available_files, schema_context, connections, upload_dir)
         user_message = f"{context}\n\nUser request: {prompt}"
         logger.info(f"[Generator] Falling back to LLM for: {prompt[:120]}...")
 
@@ -248,11 +261,12 @@ class PipelineGenerator:
         available_files: Optional[List[str]],
         schema_context: Optional[Dict[str, Any]],
         connections: Optional[List[Dict[str, str]]],
+        upload_dir: Optional[str] = None,
     ) -> str:
         parts: List[str] = []
 
         # Available files
-        files = available_files or self._discover_files()
+        files = available_files or self._discover_files(upload_dir)
         if files:
             parts.append(f"Available uploaded files: {', '.join(files)}")
 
@@ -293,14 +307,15 @@ class PipelineGenerator:
 
         return "\n\n".join(parts) if parts else "No specific context available."
 
-    def _discover_files(self) -> List[str]:
-        """List uploaded data files."""
-        if not os.path.isdir(UPLOAD_DIR):
+    def _discover_files(self, upload_dir: Optional[str] = None) -> List[str]:
+        """List uploaded data files in the caller's (tenant-scoped) upload dir."""
+        base_dir = upload_dir or UPLOAD_DIR
+        if not os.path.isdir(base_dir):
             return []
         skip = {".gitkeep", ".DS_Store"}
         data_exts = {".csv", ".parquet", ".json", ".xlsx", ".tsv"}
         files = []
-        for f in sorted(os.listdir(UPLOAD_DIR)):
+        for f in sorted(os.listdir(base_dir)):
             if f in skip:
                 continue
             if Path(f).suffix.lower() in data_exts:
@@ -381,16 +396,26 @@ class PipelineGenerator:
 
     # ── Schema Discovery ──────────────────────────────────────────────
 
-    def get_file_schema(self, file_name: str) -> Dict[str, Any]:
+    def get_file_schema(self, file_name: str, upload_dir: Optional[str] = None) -> Dict[str, Any]:
         """
         Quick-read column names and types from a file using DuckDB with smart header detection.
         Returns {"columns": [{"name": ..., "type": ...}], "row_count": N, "sample_data": [...]}
+
+        ``upload_dir``: the caller's resolved (tenant-scoped) upload
+        directory. Callers with no request context (CLI, tests) may
+        omit it and fall back to the module-level UPLOAD_DIR.
+        ``file_name`` is user input (pipeline definition / request body),
+        so it's resolved via the same basename + containment check the
+        engine uses for FILE sources (pipeline.engine._resolve_in_dir).
         """
         import duckdb
 
         from shared.data_utils import smart_load_file
 
-        file_path = os.path.join(UPLOAD_DIR, file_name)
+        try:
+            file_path = _resolve_in_dir(upload_dir or UPLOAD_DIR, file_name)
+        except ValueError:
+            return {"error": f"Invalid file name: {file_name}"}
         if not os.path.exists(file_path):
             return {"error": f"File not found: {file_name}"}
 

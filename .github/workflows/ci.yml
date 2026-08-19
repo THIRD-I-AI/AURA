@@ -21,6 +21,11 @@ jobs:
   backend-test:
     name: Backend Tests (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
+    timeout-minutes: 35
+    env:
+      # Without this, a killed job loses all buffered pytest output — the
+      # 6-hour hang on PR #178 reported zero lines despite running for hours.
+      PYTHONUNBUFFERED: "1"
     strategy:
       fail-fast: false
       matrix:
@@ -68,6 +73,7 @@ jobs:
   contract-test:
     name: Contract Tests (Schemathesis)
     runs-on: ubuntu-latest
+    timeout-minutes: 20
 
     defaults:
       run:
@@ -119,6 +125,7 @@ jobs:
   causal-test:
     name: Causal Tests (Python 3.12)
     runs-on: ubuntu-latest
+    timeout-minutes: 30
 
     defaults:
       run:
@@ -155,6 +162,7 @@ jobs:
   streaming-test:
     name: Streaming Tests (Python 3.12)
     runs-on: ubuntu-latest
+    timeout-minutes: 20
 
     defaults:
       run:
@@ -196,6 +204,7 @@ jobs:
   eval-gate:
     name: E2E Evaluation Gate (mock)
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     needs: backend-test
 
     defaults:
@@ -245,6 +254,7 @@ jobs:
   eval-gate-real:
     name: E2E Evaluation Gate (real LLM)
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     needs: backend-test
     if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'))
 
@@ -290,6 +300,7 @@ jobs:
   sdk-codegen-sync:
     name: SDK Codegen Sync
     runs-on: ubuntu-latest
+    timeout-minutes: 15
 
     steps:
       - uses: actions/checkout@v7
@@ -354,6 +365,7 @@ jobs:
   scheduler-distributed-test:
     name: Scheduler Distributed (Postgres integration)
     runs-on: ubuntu-latest
+    timeout-minutes: 20
 
     services:
       postgres:
@@ -417,6 +429,7 @@ jobs:
   storage-s3:
     name: Storage S3 (MinIO integration)
     runs-on: ubuntu-latest
+    timeout-minutes: 20
 
     defaults:
       run:
@@ -472,6 +485,7 @@ jobs:
   frontend-typecheck:
     name: Frontend Type Check
     runs-on: ubuntu-latest
+    timeout-minutes: 15
 
     defaults:
       run:
@@ -497,6 +511,7 @@ jobs:
   frontend-test:
     name: Frontend Tests (Vitest)
     runs-on: ubuntu-latest
+    timeout-minutes: 20
 
     defaults:
       run:
@@ -527,6 +542,7 @@ jobs:
   frontend-e2e:
     name: Frontend Render Smoke (Playwright)
     runs-on: ubuntu-latest
+    timeout-minutes: 25
 
     defaults:
       run:
@@ -566,6 +582,7 @@ jobs:
   frontend-lint:
     name: Frontend Lint
     runs-on: ubuntu-latest
+    timeout-minutes: 15
 
     defaults:
       run:
@@ -591,6 +608,7 @@ jobs:
   backend-security:
     name: Security Scan (bandit)
     runs-on: ubuntu-latest
+    timeout-minutes: 15
 
     defaults:
       run:
@@ -631,6 +649,7 @@ jobs:
   backend-lint:
     name: Backend Lint (ruff)
     runs-on: ubuntu-latest
+    timeout-minutes: 15
 
     steps:
       - uses: actions/checkout@v7
@@ -657,6 +676,7 @@ jobs:
   db-migrations:
     name: DB Migrations (Alembic)
     runs-on: ubuntu-latest
+    timeout-minutes: 15
 
     # Production runs Postgres (docker-compose.prod.yml: postgresql+asyncpg).
     # SQLite silently coerces types that Postgres rejects — e.g. a boolean

@@ -10,6 +10,7 @@ Thread-safe: each execution gets its own DuckDB connection.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import re
@@ -31,7 +32,16 @@ from pipeline.models import (
 
 logger = logging.getLogger("aura.pipeline.engine")
 
-UPLOAD_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "uploads")
+# Fallback for callers that pass no upload_dir (tests, CLI use). Real
+# HTTP requests get a tenant-scoped dir passed in by the router (see
+# execute()'s upload_dir param) since a module-level constant computed
+# at import time can't see a per-request tenant. Still honours
+# AURA_UPLOADS_ROOT so this fallback at least agrees with the rest of
+# the app (api_gateway/routers/workspaces.py::_UPLOADS_ROOT) about
+# where the shared root is, even though it can't add the tenant segment.
+UPLOAD_DIR = os.getenv("AURA_UPLOADS_ROOT") or os.path.join(
+    os.path.dirname(os.path.dirname(__file__)), "data", "uploads"
+)
 OUTPUT_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "processed")
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
@@ -46,9 +56,31 @@ def _sanitize_id(name: str) -> str:
     return cleaned or "col"
 
 
-def _q(name: str) -> str:
-    """Double-quote a SQL identifier to handle special characters like & in table names."""
-    return '"' + name.replace('"', '""') + '"'
+# Aliased, not reimplemented. This file had its own _q() that doubled quotes
+# but skipped the NUL-byte rejection added to shared/sql_identifiers.py during
+# the SQL-injection hardening — so two of the three "quote an identifier"
+# implementations in this repo silently missed that guard while the third had
+# it. Aliasing covers every existing call site without touching them.
+from shared.sql_identifiers import quote_identifier as _q  # noqa: E402
+
+
+def _resolve_in_dir(base_dir: str, raw_name: str) -> str:
+    """Resolve a user-supplied name to a path INSIDE base_dir.
+
+    source.file_name and source.connection["database"] come from a
+    pipeline definition (user input, not trusted). Mirrors the
+    containment check in api_gateway/routers/files.py::_safe_upload_path:
+    basename the input (drops any path/traversal component), then verify
+    the join still resolves inside base_dir. Raises ValueError for a
+    degenerate name or an attempted escape.
+    """
+    safe_name = os.path.basename(str(raw_name or "").replace("\\", "/")).strip()
+    if not safe_name or safe_name in (".", ".."):
+        raise ValueError("Invalid source path")
+    path = os.path.join(base_dir, safe_name)
+    if os.path.commonpath((os.path.abspath(path), os.path.abspath(base_dir))) != os.path.abspath(base_dir):
+        raise ValueError("Invalid source path")
+    return path
 
 
 class PipelineEngine:
@@ -68,10 +100,17 @@ class PipelineEngine:
         preview_only: bool = False,
         preview_limit: int = 50,
         source_progress_cb: Optional[Callable[[int, Optional[int]], Awaitable[None]]] = None,
+        upload_dir: Optional[str] = None,
     ) -> PipelineRun:
         """
         Run the full pipeline: Source → Process → Sink.
         Returns a PipelineRun with results/metadata.
+
+        ``upload_dir``: the caller's resolved (tenant-scoped) upload
+        directory — e.g. ``api_gateway.routers.workspaces.tenant_upload_dir(request)``.
+        Callers with no request context (CLI, tests) may omit it; FILE
+        and external-file DUCKDB sources then fall back to the
+        module-level UPLOAD_DIR.
         """
         import duckdb
 
@@ -81,15 +120,19 @@ class PipelineEngine:
 
         try:
             # ── 1. LOAD SOURCE ────────────────────────────────────────
-            source_table = await self._load_source(conn, pipeline.source, source_progress_cb)
+            source_table = await self._load_source(conn, pipeline.source, source_progress_cb, upload_dir)
             logger.info(f"[Pipeline:{pipeline.id}] Source loaded as '{source_table}'")
 
             # Count source rows
-            src_count = conn.execute(f"SELECT COUNT(*) FROM {_q(source_table)}").fetchone()[0]
+            src_count = (await asyncio.to_thread(
+                conn.execute, f"SELECT COUNT(*) FROM {_q(source_table)}"
+            )).fetchone()[0]
             run.rows_read = src_count
 
             # Source columns
-            src_cols = [desc[0] for desc in conn.execute(f"SELECT * FROM {_q(source_table)} LIMIT 0").description]
+            src_cols = [desc[0] for desc in (await asyncio.to_thread(
+                conn.execute, f"SELECT * FROM {_q(source_table)} LIMIT 0"
+            )).description]
             run.columns_in = src_cols
 
             # ── 2. BUILD PROCESSING SQL ───────────────────────────────
@@ -102,20 +145,28 @@ class PipelineEngine:
 
             logger.info(f"[Pipeline:{pipeline.id}] SQL:\n{sql}")
 
-            # Execute the transform chain
-            conn.execute(sql)
+            # Execute the transform chain (CPU-bound DuckDB work — the
+            # deployment runs one uvicorn worker, so running this inline
+            # would freeze every concurrent request for its duration).
+            await asyncio.to_thread(conn.execute, sql)
 
             # Get output metadata
-            out_count = conn.execute(f"SELECT COUNT(*) FROM {_q(final_table)}").fetchone()[0]
-            out_cols = [desc[0] for desc in conn.execute(f"SELECT * FROM {_q(final_table)} LIMIT 0").description]
+            out_count = (await asyncio.to_thread(
+                conn.execute, f"SELECT COUNT(*) FROM {_q(final_table)}"
+            )).fetchone()[0]
+            out_cols = [desc[0] for desc in (await asyncio.to_thread(
+                conn.execute, f"SELECT * FROM {_q(final_table)} LIMIT 0"
+            )).description]
             run.rows_written = out_count
             run.columns_out = out_cols
 
             # Preview rows
-            preview_rows = conn.execute(
-                f"SELECT * FROM {_q(final_table)} LIMIT {preview_limit}"
-            ).fetchall()
-            col_descs = [desc[0] for desc in conn.execute(f"SELECT * FROM {_q(final_table)} LIMIT 0").description]
+            preview_rows = (await asyncio.to_thread(
+                conn.execute, f"SELECT * FROM {_q(final_table)} LIMIT {preview_limit}"
+            )).fetchall()
+            col_descs = [desc[0] for desc in (await asyncio.to_thread(
+                conn.execute, f"SELECT * FROM {_q(final_table)} LIMIT 0"
+            )).description]
             run.preview_data = [dict(zip(col_descs, row)) for row in preview_rows]
 
             # ── 3. WRITE SINK (unless preview_only) ───────────────────
@@ -145,20 +196,21 @@ class PipelineEngine:
         conn: Any,
         source: PipelineSource,
         progress_cb: Optional[Callable[[int, Optional[int]], Awaitable[None]]] = None,
+        upload_dir: Optional[str] = None,
     ) -> str:
         """Load source data into DuckDB and return the table name."""
         if source.type == SourceType.FILE:
-            return self._load_file_source(conn, source)
+            return self._load_file_source(conn, source, upload_dir)
         elif source.type in (SourceType.POSTGRESQL, SourceType.MYSQL):
             return await self._load_db_source(conn, source)
         elif source.type == SourceType.DUCKDB:
-            return self._load_duckdb_source(conn, source)
+            return self._load_duckdb_source(conn, source, upload_dir)
         elif source.type == SourceType.KAFKA:
             return await self._load_kafka_source(conn, source, progress_cb)
         else:
             raise ValueError(f"Unsupported source type: {source.type}")
 
-    def _load_file_source(self, conn: Any, source: PipelineSource) -> str:
+    def _load_file_source(self, conn: Any, source: PipelineSource, upload_dir: Optional[str] = None) -> str:
         """Load a CSV/Parquet/JSON file into DuckDB with smart header detection."""
         from shared.data_utils import smart_load_file
 
@@ -166,7 +218,7 @@ class PipelineEngine:
         if not fname:
             raise ValueError("File source requires file_name")
 
-        file_path = os.path.join(UPLOAD_DIR, fname)
+        file_path = _resolve_in_dir(upload_dir or UPLOAD_DIR, fname)
         if not os.path.exists(file_path):
             raise FileNotFoundError(f"Source file not found: {fname}")
 
@@ -267,8 +319,39 @@ class PipelineEngine:
         logger.info("[Pipeline] Kafka source loaded %d rows from %s", len(rows), cfg.get("topic"))
         return table_name
 
-    def _load_duckdb_source(self, conn: Any, source: PipelineSource) -> str:
-        """Load from existing DuckDB table or query."""
+    def _load_duckdb_source(self, conn: Any, source: PipelineSource, upload_dir: Optional[str] = None) -> str:
+        """Load from an existing table/query on the engine's own
+        in-memory connection, or ATTACH an external .duckdb file named
+        in source.connection["database"] and load from that.
+
+        Without the ATTACH, ``source.table``/``source.query`` were
+        evaluated against the fresh empty ``:memory:`` connection
+        execute() opens, so any real external table raised
+        "Catalog Error: Table with name X does not exist!" even though
+        the table exists on disk.
+        """
+        from shared.sql_identifiers import quote_literal
+
+        cfg = source.connection or {}
+        db_path = cfg.get("database") or cfg.get("path")
+
+        if db_path:
+            # SECURITY: db_path is user input (pipeline definition).
+            # Same containment as a FILE source — resolved inside the
+            # caller's upload dir, never spliced raw into SQL.
+            attach_path = _resolve_in_dir(upload_dir or UPLOAD_DIR, db_path)
+            if not os.path.exists(attach_path):
+                raise FileNotFoundError(f"DuckDB source file not found: {os.path.basename(str(db_path))}")
+
+            conn.execute(f"ATTACH {quote_literal(attach_path)} AS ext_src (READ_ONLY)")
+            if source.query:
+                conn.execute(f"CREATE TABLE source_data AS {source.query}")
+            elif source.table:
+                conn.execute(f"CREATE TABLE source_data AS SELECT * FROM ext_src.{_q(source.table)}")
+            else:
+                raise ValueError("DuckDB source needs table or query")
+            return "source_data"
+
         if source.query:
             conn.execute(f"CREATE TABLE source_data AS {source.query}")
             return "source_data"

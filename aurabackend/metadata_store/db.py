@@ -40,6 +40,23 @@ def get_engine() -> AsyncEngine:
                 pool_recycle=1800,
             )
         _engine = create_async_engine(DATABASE_URL, echo=ECHO_SQL, future=True, **engine_kwargs)
+        if DATABASE_URL.startswith("sqlite"):
+            # busy_timeout: a concurrent writer past the driver default gets
+                # `database is locked` as a raw 500; this makes it WAIT instead.
+                # journal_mode=WAL was tried here and REVERTED: WAL is a property
+                # of the database FILE, not the connection, and its snapshot-read
+                # semantics made a just-written row invisible to another
+                # connection — which surfaced as a job 404 (KeyError: 'state')
+                # and a changed artifact hash in the full-suite run.
+            # default waits up to 5s instead of raising a raw
+            # "database is locked" 500.
+            from sqlalchemy import event
+
+            @event.listens_for(_engine.sync_engine, "connect")
+            def _set_sqlite_pragma(dbapi_conn, _record):
+                cur = dbapi_conn.cursor()
+                cur.execute("PRAGMA busy_timeout=5000")
+                cur.close()
     return _engine
 
 

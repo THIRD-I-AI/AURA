@@ -117,6 +117,23 @@ def get_engine() -> AsyncEngine:
         if url.startswith("sqlite"):
             connect_args["check_same_thread"] = False
         _engine = create_async_engine(url, echo=False, future=True, connect_args=connect_args)
+        if url.startswith("sqlite"):
+            # The ledger appends on every audit call, so it's the first
+            # thing to hit "database is locked" under concurrent writers.
+            # busy_timeout: a concurrent writer past the driver default gets
+                # `database is locked` as a raw 500; this makes it WAIT instead.
+                # journal_mode=WAL was tried here and REVERTED: WAL is a property
+                # of the database FILE, not the connection, and its snapshot-read
+                # semantics made a just-written row invisible to another
+                # connection — which surfaced as a job 404 (KeyError: 'state')
+                # and a changed artifact hash in the full-suite run.
+            from sqlalchemy import event
+
+            @event.listens_for(_engine.sync_engine, "connect")
+            def _set_sqlite_pragma(dbapi_conn, _record):
+                cur = dbapi_conn.cursor()
+                cur.execute("PRAGMA busy_timeout=5000")
+                cur.close()
     return _engine
 
 

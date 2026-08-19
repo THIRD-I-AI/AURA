@@ -102,6 +102,12 @@ select = ["E", "F", "I", "W"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+# Dump every thread's stack if the run wedges for 20 minutes. A Backend Tests
+# job once held a CI runner for 6h0m32s and was killed with no diagnostic at
+# all: pytest's stdout is block-buffered when it is not a TTY, so the progress
+# output was still sitting in an unflushed buffer when the process died. This
+# turns that silent hang into a stack trace naming the blocked thread.
+faulthandler_timeout = 1200
 
 [tool.coverage.run]
 # Brand-new sprint modules whose tests need integration setup (uvicorn,

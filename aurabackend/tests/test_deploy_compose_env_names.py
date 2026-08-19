@@ -83,9 +83,21 @@ def sources() -> list:
     return _python_sources()
 
 
+# Services whose environment is consumed by OUR Python code. caddy is excluded
+# deliberately: its AURA_DOMAIN is read by the Caddyfile ({$AURA_DOMAIN}), not
+# by the backend, so demanding a Python reader for it would be wrong.
+_PYTHON_SERVICES = ("api_gateway", "uasr_service")
+
+
 def _gateway_env_names() -> list:
-    svc = _compose().get("services", {}).get("api_gateway", {})
-    return [n for n in _env_names(svc) if n not in _NOT_OURS]
+    services = _compose().get("services", {})
+    names = []
+    for service_name in _PYTHON_SERVICES:
+        svc = services.get(service_name)
+        if not svc:
+            continue
+        names.extend(f"{service_name}:{n}" for n in _env_names(svc) if n not in _NOT_OURS)
+    return names
 
 
 def test_compose_defines_gateway_env_vars():
@@ -94,15 +106,17 @@ def test_compose_defines_gateway_env_vars():
     assert _gateway_env_names(), "no api_gateway env vars found — did the compose shape change?"
 
 
-@pytest.mark.parametrize("name", _gateway_env_names())
-def test_every_compose_env_var_is_read_by_the_backend(name, sources):
+@pytest.mark.parametrize("qualified", _gateway_env_names())
+def test_every_compose_env_var_is_read_by_the_backend(qualified, sources):
     """Each name must appear literally in non-test backend source — as
     ``os.getenv("NAME")``, a pydantic ``alias="NAME"``, or equivalent."""
+    service, name = qualified.split(":", 1)
     pattern = re.compile(rf"['\"]{re.escape(name)}['\"]")
     if any(pattern.search(text) for text in sources):
         return
     pytest.fail(
-        f"{name} is set in the deploy compose file but no non-test backend "
+        f"{name} is set on the {service} service in the deploy compose file "
+        f"but no non-test backend "
         f"source references it. Docker will accept it and the code will "
         f"silently use its default instead — which for a state path means "
         f"the data lands inside the container and is destroyed on the next "
@@ -111,10 +125,13 @@ def test_every_compose_env_var_is_read_by_the_backend(name, sources):
     )
 
 
-def test_state_paths_point_at_the_mounted_volume():
+@pytest.mark.parametrize("service_name", _PYTHON_SERVICES)
+def test_state_paths_point_at_the_mounted_volume(service_name):
     """A correctly-spelled var pointing at a container-local path loses the
     data just as thoroughly as a misspelled one."""
-    svc = _compose().get("services", {}).get("api_gateway", {})
+    svc = _compose().get("services", {}).get(service_name)
+    if not svc:
+        pytest.skip(f"{service_name} is not defined in this compose file")
     env = svc.get("environment") or {}
     if not isinstance(env, dict):
         pytest.skip("list-form environment carries no values to check")
@@ -124,11 +141,14 @@ def test_state_paths_point_at_the_mounted_volume():
 
     for name, value in env.items():
         text = str(value)
-        if not ("DATABASE_URL" in name or name.endswith(("_DIR", "_ROOT"))):
+        # _URL alone is too broad — AURA_UASR_URL is a service address, not a
+        # path. Only DB URLs and explicit directory/root vars name state.
+        if not ("DATABASE_URL" in name or name.endswith(("_DIR", "_ROOT", "_PATH"))):
             continue
         # sqlite+aiosqlite:////data/x.db -> the path part starts after the scheme
         path = text.split("://", 1)[-1] if "://" in text else text
         assert path.startswith("/data") or path.startswith("//data"), (
-            f"{name}={text} does not live under the mounted /data volume, so "
-            f"whatever it points at is destroyed when the container is replaced."
+            f"{service_name}: {name}={text} does not live under the mounted "
+            f"/data volume, so whatever it points at is destroyed when the "
+            f"container is replaced."
         )

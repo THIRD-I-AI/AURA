@@ -215,6 +215,13 @@ class ShimResult(BaseModel):
     post_kl_divergence: Optional[float] = None
     deployed: bool = False
     error: Optional[str] = None
+    # Drift-type routing: set when the actuator decided this drift must not
+    # be auto-transformed (e.g. a severe location shift) and produced a
+    # no-op audit shim instead. The recovery loop skips validation and
+    # routes straight to the S41 PENDING_APPROVAL queue -- see
+    # actuator_agent._location_shift_reason.
+    requires_human_review: bool = False
+    escalation_reason: Optional[str] = None
 
 
 class RecoveryLoopResult(BaseModel):

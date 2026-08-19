@@ -63,6 +63,26 @@ class SynthesisActuatorAgent(BaseAgent):
         generation_method = "template"
         shim_code = self._template_shim(drift_type, drift_vector, diagnosis)
 
+        # A severe LOCATION SHIFT dispatches to the outlier-clip template
+        # above, but clipping is the wrong repair for it: the whole batch's
+        # centroid moved, not just a handful of extreme values, so clipping
+        # to baseline_mean +/- 3*std collapses every row onto the clip
+        # boundary -- a degenerate spike that makes divergence WORSE, not
+        # better (measured live: N(100,10) -> N(250,10) clipped to a spike
+        # at 130, pre_kl=44.6108 -> post_kl=122.6068). Auto-rescaling
+        # production values to satisfy a divergence metric would hide
+        # real-world change from downstream consumers -- detecting and
+        # escalating is honest, silently rewriting data is not. Escalate to
+        # the S41 human-approval queue instead of deploying the clip shim.
+        # Rescale (unit-bug) fixes and mild pass-through monitors already
+        # dispatch to a different template and are untouched.
+        escalation_reason = None
+        if shim_code and "UASR Shim - Outlier Clipping" in shim_code:
+            escalation_reason = self._location_shift_reason(drift_vector)
+            if escalation_reason:
+                generation_method = "escalation"
+                shim_code = self._escalation_shim(diagnosis, escalation_reason)
+
         if not shim_code:
             await self._report("Using LLM for shim generation…", 50)
             generation_method = "llm"
@@ -79,6 +99,8 @@ class SynthesisActuatorAgent(BaseAgent):
             shim_code=shim_code,
             language="python",
             generation_method=generation_method,
+            requires_human_review=bool(escalation_reason),
+            escalation_reason=escalation_reason,
         )
 
         result.output = {
@@ -276,22 +298,37 @@ class SynthesisActuatorAgent(BaseAgent):
             )
 
         if max_kl > zeta * 5:
-            # Severe - clip to baseline percentiles
+            # Severe - clip each drifted column to its own baseline mean +/-
+            # 3*std. Per-column (not one global pair) so a column with a
+            # tight baseline isn't clipped to a wide neighbour's range.
+            # A missing/zero baseline_std means we can't derive a safe band
+            # for that column -- fall back to a wide no-op range instead of
+            # collapsing every value in it to a single point.
+            bounds: Dict[str, tuple] = {}
+            for col in affected:
+                cs = col_stats.get(col) or {}
+                bmean = cs.get("baseline_mean")
+                bstd = cs.get("baseline_std")
+                if bmean is None or not bstd:
+                    bounds[col] = (-1e9, 1e9)
+                else:
+                    bounds[col] = (bmean - 3 * bstd, bmean + 3 * bstd)
+
             clip_lines = "\n".join(
                 f'        if "{col}" in row and isinstance(row["{col}"], (int, float)):\n'
-                f'            row["{col}"] = max(min(row["{col}"], _CLIP_MAX), _CLIP_MIN)'
+                f'            _lo, _hi = _CLIP_BOUNDS["{col}"]\n'
+                f'            row["{col}"] = max(min(row["{col}"], _hi), _lo)'
                 for col in affected
             )
+            bounds_repr = ", ".join(f'"{c}": ({lo!r}, {hi!r})' for c, (lo, hi) in bounds.items())
             return (
                 '"""UASR Shim - Outlier Clipping\n'
-                'Clips extreme values to baseline distribution percentiles.\n'
+                'Clips extreme values to baseline mean +/- 3*std, per column.\n'
                 f'Generated for drift: {diagnosis.root_cause}\n'
                 '"""\n\n'
-                '# These should be populated from the baseline distribution\n'
-                '_CLIP_MIN = -1e9\n'
-                '_CLIP_MAX = 1e9\n\n'
+                f'_CLIP_BOUNDS = {{{bounds_repr}}}\n\n'
                 'def transform(rows: list[dict]) -> list[dict]:\n'
-                '    """Clip outlier values to safe range."""\n'
+                '    """Clip outlier values to each column\'s baseline range."""\n'
                 '    result = []\n'
                 '    for row in rows:\n'
                 f'{clip_lines}\n'
@@ -317,6 +354,54 @@ class SynthesisActuatorAgent(BaseAgent):
                 '    )\n'
                 '    return rows\n'
             )
+
+    @staticmethod
+    def _location_shift_reason(drift_vector: Dict[str, Any]) -> Optional[str]:
+        """Detect a location shift: the batch's own mean sits many
+        baseline-sigmas from the baseline mean, meaning the whole
+        distribution moved rather than a few extreme values contaminating
+        an otherwise-centered batch. Uses the same +/-3*std band the clip
+        shim would use as bounds -- if the batch centroid itself falls
+        outside that band, clipping has nothing sensible left to preserve.
+        """
+        affected = drift_vector.get("affected_columns", [])
+        col_stats = drift_vector.get("col_stats", {})
+        for col in affected:
+            cs = col_stats.get(col) or {}
+            bmean = cs.get("baseline_mean")
+            bstd = cs.get("baseline_std")
+            xmean = cs.get("batch_mean")
+            if bmean is None or not bstd or xmean is None:
+                continue
+            shift_sigmas = abs(xmean - bmean) / bstd
+            if shift_sigmas > 3:
+                return (
+                    f"column '{col}': batch mean {xmean:.4f} is {shift_sigmas:.1f} "
+                    f"baseline-sigmas from the baseline mean {bmean:.4f} "
+                    f"(baseline_std={bstd:.4f}) -- a location shift, not outlier "
+                    "contamination."
+                )
+        return None
+
+    def _escalation_shim(self, diagnosis: DiagnosisResult, reason: str) -> str:
+        """No-op audit shim for drift routed to human approval (see _run).
+
+        Does not transform data. A human approves or rejects via
+        POST /uasr/recovery/{id}/approve|reject after reviewing `reason`.
+        """
+        return (
+            '"""UASR Shim - Escalated (no auto-transform)\n'
+            f'Reason: {reason}\n'
+            f'Generated for drift: {diagnosis.root_cause}\n'
+            'Held for human approval -- see GET /uasr/recovery/pending.\n'
+            '"""\n\n'
+            'import logging\n'
+            '_logger = logging.getLogger("uasr.shim.escalated")\n\n'
+            'def transform(rows: list[dict]) -> list[dict]:\n'
+            '    """No-op: awaiting human approval, does not modify data."""\n'
+            f'    _logger.warning({reason!r})\n'
+            '    return rows\n'
+        )
 
     # ────────────────────────────────────────────────────────────────
     # LLM-assisted shim generation

@@ -18,6 +18,7 @@ Severity rubric:
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from typing import Any, Dict, List
@@ -80,7 +81,13 @@ class AdversarialCriticAgent(BaseAgent):
         result.add_step(action="critique_prompt_built")
 
         try:
-            raw = self.llm.generate(prompt) or "{}"
+            # self.llm.generate() is a sync httpx/OpenAI call. The deployment
+            # runs one uvicorn worker, so running it inline would block the
+            # event loop (and every concurrent request) for the call's full
+            # duration — asyncio.wait_for in BaseAgent.execute() can't
+            # preempt it since the loop can't service its own timer while
+            # stuck inside a blocking network call.
+            raw = await asyncio.to_thread(self.llm.generate, prompt) or "{}"
         except Exception as exc:
             result.error = f"LLM generate failed: {exc}"
             result.status = AgentStatus.FAILED
