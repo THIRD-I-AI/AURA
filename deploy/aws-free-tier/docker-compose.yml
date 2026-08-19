@@ -128,6 +128,16 @@ services:
       UASR_DUCKDB_PATH: /data/state/uasr.duckdb
       UASR_PARQUET_DIR: /data/uasr_parquet
       UASR_MAPEK_ENABLED: "true"
+      # Single node today: memory state + local repair admission, no redis.
+      # With 2+ replicas these MUST become redis/distributed or each replica
+      # keeps its own drift state and its own repair scheduler — both would
+      # detect the same drift and both would repair it, concurrently.
+      # Flip by setting these in .env and starting the `scale` profile:
+      #   UASR_STATE_BACKEND=redis  UASR_REPAIR_BACKEND=distributed
+      #   docker compose --profile scale up -d
+      UASR_STATE_BACKEND: ${UASR_STATE_BACKEND:-memory}
+      UASR_REPAIR_BACKEND: ${UASR_REPAIR_BACKEND:-local}
+      UASR_REDIS_URL: ${UASR_REDIS_URL:-redis://redis:6379/0}
     volumes:
       - aura-data:/data
     mem_limit: 220m
@@ -136,6 +146,23 @@ services:
       interval: 30s
       timeout: 10s
       start_period: 120s
+      retries: 3
+
+  # ── Redis — ONLY needed to run more than one replica ─────────────────
+  # Profile-gated: `docker compose up -d` does not start this. The single-node
+  # deployment is correct on memory/local backends, and adding a network
+  # dependency for one replica buys nothing but a new failure mode.
+  # Start it with: docker compose --profile scale up -d
+  redis:
+    image: redis:7-alpine
+    profiles: ["scale"]
+    restart: unless-stopped
+    command: redis-server --save "" --appendonly no --maxmemory 24mb --maxmemory-policy allkeys-lru
+    mem_limit: 48m
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 5s
       retries: 3
 
   frontend:

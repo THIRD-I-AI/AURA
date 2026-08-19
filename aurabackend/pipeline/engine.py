@@ -10,6 +10,7 @@ Thread-safe: each execution gets its own DuckDB connection.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import re
@@ -123,11 +124,15 @@ class PipelineEngine:
             logger.info(f"[Pipeline:{pipeline.id}] Source loaded as '{source_table}'")
 
             # Count source rows
-            src_count = conn.execute(f"SELECT COUNT(*) FROM {_q(source_table)}").fetchone()[0]
+            src_count = (await asyncio.to_thread(
+                conn.execute, f"SELECT COUNT(*) FROM {_q(source_table)}"
+            )).fetchone()[0]
             run.rows_read = src_count
 
             # Source columns
-            src_cols = [desc[0] for desc in conn.execute(f"SELECT * FROM {_q(source_table)} LIMIT 0").description]
+            src_cols = [desc[0] for desc in (await asyncio.to_thread(
+                conn.execute, f"SELECT * FROM {_q(source_table)} LIMIT 0"
+            )).description]
             run.columns_in = src_cols
 
             # ── 2. BUILD PROCESSING SQL ───────────────────────────────
@@ -140,20 +145,28 @@ class PipelineEngine:
 
             logger.info(f"[Pipeline:{pipeline.id}] SQL:\n{sql}")
 
-            # Execute the transform chain
-            conn.execute(sql)
+            # Execute the transform chain (CPU-bound DuckDB work — the
+            # deployment runs one uvicorn worker, so running this inline
+            # would freeze every concurrent request for its duration).
+            await asyncio.to_thread(conn.execute, sql)
 
             # Get output metadata
-            out_count = conn.execute(f"SELECT COUNT(*) FROM {_q(final_table)}").fetchone()[0]
-            out_cols = [desc[0] for desc in conn.execute(f"SELECT * FROM {_q(final_table)} LIMIT 0").description]
+            out_count = (await asyncio.to_thread(
+                conn.execute, f"SELECT COUNT(*) FROM {_q(final_table)}"
+            )).fetchone()[0]
+            out_cols = [desc[0] for desc in (await asyncio.to_thread(
+                conn.execute, f"SELECT * FROM {_q(final_table)} LIMIT 0"
+            )).description]
             run.rows_written = out_count
             run.columns_out = out_cols
 
             # Preview rows
-            preview_rows = conn.execute(
-                f"SELECT * FROM {_q(final_table)} LIMIT {preview_limit}"
-            ).fetchall()
-            col_descs = [desc[0] for desc in conn.execute(f"SELECT * FROM {_q(final_table)} LIMIT 0").description]
+            preview_rows = (await asyncio.to_thread(
+                conn.execute, f"SELECT * FROM {_q(final_table)} LIMIT {preview_limit}"
+            )).fetchall()
+            col_descs = [desc[0] for desc in (await asyncio.to_thread(
+                conn.execute, f"SELECT * FROM {_q(final_table)} LIMIT 0"
+            )).description]
             run.preview_data = [dict(zip(col_descs, row)) for row in preview_rows]
 
             # ── 3. WRITE SINK (unless preview_only) ───────────────────

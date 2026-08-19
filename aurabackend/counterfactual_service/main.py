@@ -553,7 +553,7 @@ async def get_artifact_pdf(record_hash: str) -> Response:
     art = persistence.read_artifact(record_hash)
     if art is None:
         raise HTTPException(404, f"artifact {record_hash} not found")
-    pdf_bytes = pdf_renderer.render_pdf(art)
+    pdf_bytes = await asyncio.to_thread(pdf_renderer.render_pdf, art)
     if pdf_bytes is None:
         raise HTTPException(
             501,

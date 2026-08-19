@@ -433,6 +433,11 @@ def get_engine() -> AsyncEngine:
             def _set_sqlite_pragma(dbapi_conn, _record):
                 cur = dbapi_conn.cursor()
                 cur.execute("PRAGMA foreign_keys=ON")
+                # WAL + busy_timeout: a concurrent writer past the driver
+                # default waits up to 5s instead of raising a raw
+                # "database is locked" 500.
+                cur.execute("PRAGMA journal_mode=WAL")
+                cur.execute("PRAGMA busy_timeout=5000")
                 cur.close()
 
     return _engine

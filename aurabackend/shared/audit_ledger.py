@@ -117,6 +117,18 @@ def get_engine() -> AsyncEngine:
         if url.startswith("sqlite"):
             connect_args["check_same_thread"] = False
         _engine = create_async_engine(url, echo=False, future=True, connect_args=connect_args)
+        if url.startswith("sqlite"):
+            # The ledger appends on every audit call, so it's the first
+            # thing to hit "database is locked" under concurrent writers.
+            # WAL + busy_timeout let it wait (up to 5s) instead of raising.
+            from sqlalchemy import event
+
+            @event.listens_for(_engine.sync_engine, "connect")
+            def _set_sqlite_pragma(dbapi_conn, _record):
+                cur = dbapi_conn.cursor()
+                cur.execute("PRAGMA journal_mode=WAL")
+                cur.execute("PRAGMA busy_timeout=5000")
+                cur.close()
     return _engine
 
 
