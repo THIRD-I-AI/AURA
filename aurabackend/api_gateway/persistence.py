@@ -433,10 +433,15 @@ def get_engine() -> AsyncEngine:
             def _set_sqlite_pragma(dbapi_conn, _record):
                 cur = dbapi_conn.cursor()
                 cur.execute("PRAGMA foreign_keys=ON")
-                # WAL + busy_timeout: a concurrent writer past the driver
+                # busy_timeout: a concurrent writer past the driver default gets
+                # `database is locked` as a raw 500; this makes it WAIT instead.
+                # journal_mode=WAL was tried here and REVERTED: WAL is a property
+                # of the database FILE, not the connection, and its snapshot-read
+                # semantics made a just-written row invisible to another
+                # connection — which surfaced as a job 404 (KeyError: 'state')
+                # and a changed artifact hash in the full-suite run.
                 # default waits up to 5s instead of raising a raw
                 # "database is locked" 500.
-                cur.execute("PRAGMA journal_mode=WAL")
                 cur.execute("PRAGMA busy_timeout=5000")
                 cur.close()
 
