@@ -55,9 +55,12 @@ def _sanitize_id(name: str) -> str:
     return cleaned or "col"
 
 
-def _q(name: str) -> str:
-    """Double-quote a SQL identifier to handle special characters like & in table names."""
-    return '"' + name.replace('"', '""') + '"'
+# Aliased, not reimplemented. This file had its own _q() that doubled quotes
+# but skipped the NUL-byte rejection added to shared/sql_identifiers.py during
+# the SQL-injection hardening — so two of the three "quote an identifier"
+# implementations in this repo silently missed that guard while the third had
+# it. Aliasing covers every existing call site without touching them.
+from shared.sql_identifiers import quote_identifier as _q  # noqa: E402
 
 
 def _resolve_in_dir(base_dir: str, raw_name: str) -> str:

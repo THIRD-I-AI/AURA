@@ -78,9 +78,9 @@ def _serialize_value(val: Any) -> Any:
     return val
 
 
-def _q(name: str) -> str:
-    """Double-quote a SQL identifier."""
-    return '"' + name.replace('"', '""') + '"'
+# Aliased to the hardened implementation rather than kept local — this copy
+# also predated the NUL-byte guard. See pipeline/engine.py for the same fix.
+from shared.sql_identifiers import quote_identifier as _q  # noqa: E402
 
 
 def _build_transform_sql(table: str, steps: List[ETLTransformStep], con=None) -> str:

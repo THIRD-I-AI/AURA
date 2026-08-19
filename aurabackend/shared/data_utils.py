@@ -22,7 +22,6 @@ logger = logging.getLogger("aura.data_utils")
 
 SCHEMA_CACHE_PREFIX = "schema:ctx:"
 
-UPLOAD_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "uploads")
 
 # Inferred headers are a pure function of file content, so we persist them in a
 # sidecar keyed by (mtime_ns, size). This survives process restarts and the
