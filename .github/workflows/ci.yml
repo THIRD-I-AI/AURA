@@ -22,6 +22,10 @@ jobs:
     name: Backend Tests (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
     timeout-minutes: 35
+    env:
+      # Without this, a killed job loses all buffered pytest output — the
+      # 6-hour hang on PR #178 reported zero lines despite running for hours.
+      PYTHONUNBUFFERED: "1"
     strategy:
       fail-fast: false
       matrix:
