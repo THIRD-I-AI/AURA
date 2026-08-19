@@ -21,7 +21,7 @@
     "@fontsource/inter": "^5.2.8",
     "@fontsource/jetbrains-mono": "^5.2.8",
     "@fontsource/space-grotesk": "^5.2.10",
-    "@sentry/react": "^9.0.0",
+    "@sentry/react": "^10.69.0",
     "@xyflow/react": "^12.11.0",
     "axios": "^1.16.1",
     "baseline-browser-mapping": "^2.9.17",
