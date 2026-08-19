@@ -206,23 +206,27 @@ async def _lifespan(app) -> AsyncGenerator[None, None]:
         uasr_task.cancel()
 
     # Stop webhook dispatcher
+    # Bounded like the two stops above. An unbounded await here hung the
+    # ASGI shutdown for 20+ minutes on CI (faulthandler caught it in
+    # tests/test_synthetic_api.py teardown, exiting `with TestClient(app)`),
+    # which is what took Backend Tests to its job timeout.
     try:
         from shared.webhook_dispatcher import webhook_dispatcher
-        await webhook_dispatcher.stop()
+        await asyncio.wait_for(webhook_dispatcher.stop(), timeout=5)
     except Exception:
         pass
 
     # Stop saved-query scheduler
     try:
         from api_gateway.routers.queries import stop_saved_query_scheduler
-        await stop_saved_query_scheduler()
+        await asyncio.wait_for(stop_saved_query_scheduler(), timeout=5)
     except Exception:
         pass
 
     # Sprint P-3 finding #6: drain the PostgreSQL connection pool registry
     try:
         from api_gateway.routers.queries import close_all_pg_pools
-        await close_all_pg_pools()
+        await asyncio.wait_for(close_all_pg_pools(), timeout=5)
     except Exception:
         pass
 
