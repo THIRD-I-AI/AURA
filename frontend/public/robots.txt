@@ -1,0 +1,26 @@
+# AURA — crawler policy
+#
+# Why this file exists at all: without it the SPA history-fallback answered
+# /robots.txt with the app shell — HTTP 200, Content-Type: text/html. A
+# malformed robots response is worse than a missing one, because a 404 is
+# understood by crawlers and an HTML 200 is not. Vite copies public/ into
+# dist/ and nginx serves real files before the SPA fallback, so simply having
+# this file here fixes that.
+#
+# Why Disallow: the current host is dataaura.duckdns.org — a deployment
+# address, not a brand domain. Anything indexed here would later compete with
+# the real domain as duplicate content, and stale third-party-subdomain URLs
+# are slow and awkward to get removed. Blocking a temporary host costs
+# nothing; un-blocking a permanent one is the two-line edit below.
+#
+# TO PUBLISH ON A REAL DOMAIN: replace the block below with
+#     User-agent: *
+#     Allow: /
+#     Disallow: /app/
+#     Sitemap: https://<your-domain>/sitemap.xml
+# and add a sitemap.xml listing the PUBLIC surface only — the marketing front
+# door and the /verify/{hash} certificate pages. /app/* is authenticated and
+# has nothing to offer a crawler.
+
+User-agent: *
+Disallow: /
