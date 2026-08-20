@@ -149,31 +149,10 @@ process is poisoned.
 
 ## Where things live
 
-### Repo structure (key paths)
-
-```
-aurabackend/
-  api_gateway/        — FastAPI gateway on port 8000
-    persistence.py    — Sprint P-1 SQLAlchemy layer (gateway-private)
-    routers/          — endpoint modules
-  counterfactual_service/  — port 8012, causal audit engine (S8-S16, S22+)
-  shared/             — service_factory, audit_log, merkle, signing, …
-  pipeline/streaming/ — S20a primitives (barrier, watermark, triggers, PID)
-  scheduler_service/  — port 8004, distributed_queue.py from S20b
-  uasr/               — Pillar 1 self-healing (S18 primitives)
-  connectors/         — S17 multi-modal (FAISS + DuckDB spatial)
-  tests/              — all pytest tests, single tier unless gated
-sdk/                  — hand-written aura-counterfactual SDK
-sdk_clients/          — auto-generated SDKs (S21a-c)
-scripts/
-  generate_sdk.py     — OpenAPI → typed Python client codegen
-docs/
-  SPRINTS.md          — public sprint registry
-  AUDIT_BURN_DOWN.md  — playbook for performance audit findings
-frontend/             — React + Vite + Vitest
-.github/workflows/
-  ci.yml              — 11-job CI sweep
-```
+Layout and ports are derivable from the tree itself — read `aurabackend/`,
+`docs/REPO_MAP.md`, and `ARCHITECTURE.md` rather than trusting a copy here.
+The one non-obvious fact: the counterfactual/financial-audit engine is NOT a
+separate service, it runs **in-process inside the gateway**.
 
 ### Sprint memory (local to each Claude, NOT shared)
 
@@ -184,13 +163,8 @@ collaborators. If you discover something important, **write it into
 
 ## Verification + CI
 
-* CI sweep has **14 jobs** as of 2026-05-26: Backend Tests (Python 3.11 +
-  3.12), Backend Lint (ruff), Bandit, Frontend Lint + Tests + Type Check,
-  Scheduler Distributed (Postgres integration), SDK Codegen Sync,
-  E2E Eval Gate (mock + real LLM), Causal Tests (dowhy + econml),
-  Streaming Tests (aiokafka), Contract Tests (Schemathesis).
-  CD workflow (`cd.yml`) builds and pushes 3 Docker tiers to GHCR.
-  Nightly E2E (`nightly-e2e.yml`) boots the full compose stack.
+* The job list lives in `.github/workflows/` — read it there; any copy here
+  goes stale (CodeQL was removed in favour of GitHub's default setup).
 * **All CI jobs must be green** before merging a PR. If a new optional
   dep needs a new lane, add it; never silently `pytest.mark.skipif()`
   and hope the gate catches it.
