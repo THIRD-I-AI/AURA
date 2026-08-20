@@ -3,10 +3,14 @@ Counterfactual Audit Engine — FastAPI app.
 
 Suggested port 8012, after ``causal_service:8010`` and ``dar_service:8011``.
 
-Job lifecycle is in-memory only for v1 (Sprint 8). Sprint 9 introduces a
-Postgres-backed job table + signed PDF replay endpoint. The service is
-pinned to one replica in Helm because the job state is process-local;
-moving to a real queue is the Sprint 9 entry condition.
+Job lifecycle (state/artifact/error) is durable: it lives in the gateway's
+SQLAlchemy persistence layer (``api_gateway.persistence.CounterfactualJobRow``,
+imported here as ``gateway_persistence``), not a module dict — this service
+mounts in-process inside the gateway (see api_gateway/routers/counterfactual.py),
+so a job POSTed on one gateway replica must be pollable on another. Sprint 9
+also introduced the Postgres-backed artifact replay store (``persistence.py``
+in THIS package — content-addressed by record_hash, a separate concern from
+job lifecycle).
 """
 from __future__ import annotations
 
@@ -36,6 +40,7 @@ def _ledger_tenant(user: Optional[Dict[str, Any]]) -> str:
     if not user:
         return "default"
     return str(user.get("org_id") or user.get("sub") or "default")
+from api_gateway import persistence as gateway_persistence
 from shared.exceptions import ForbiddenError
 from shared.service_factory import create_service
 
@@ -60,8 +65,20 @@ app = create_service(
 
 # ── In-memory state (v1) ──────────────────────────────────────────────
 
-_jobs: Dict[str, Dict[str, Any]] = {}    # job_id → {state, artifact, error}
+# Job records (state/artifact/error/tenant) live in gateway_persistence
+# (CounterfactualJobRow) — see _new_job / get_job below. _job_tasks holds
+# ONLY the asyncio.Task reference so it isn't GC'd mid-run (Python 3.11+
+# raises "Task was destroyed but it is pending!" otherwise); it carries no
+# job STATE, so it doesn't need to be shared across replicas — each
+# replica's own tasks run and get discarded locally. Mirrors the
+# _prewarm_tasks pattern further down this file.
+_job_tasks: set = set()
 _datasets: Dict[str, pd.DataFrame] = {}  # source_id → DataFrame
+
+
+def _hold_task(task: asyncio.Task) -> None:
+    _job_tasks.add(task)
+    task.add_done_callback(_job_tasks.discard)
 
 # S31b: the demo runs a curated set of fast, modern estimators. The classical
 # DoWhy backdoor methods (linear_regression/ipw/psm) bootstrap their CIs and
@@ -205,24 +222,24 @@ def _resolve_dataset(source_id: str) -> pd.DataFrame:
 # ── Job worker ────────────────────────────────────────────────────────
 
 async def _run_async(job_id: str, query: CounterfactualQuery) -> None:
-    _jobs[job_id]["state"] = "running"
+    await gateway_persistence.update_counterfactual_job(job_id, state="running")
     try:
         df = _resolve_dataset(query.dataset.source_id)
         artifact = await run_job(query, df=df)
         artifact.rendered = render(artifact, query.audience)
-        _jobs[job_id].update(
-            state="succeeded",
+        await gateway_persistence.update_counterfactual_job(
+            job_id, state="succeeded",
             artifact=artifact.model_dump(mode="json"),
         )
     except HTTPException as exc:
         # exc.detail here is always an author-curated string raised inside this
         # module (see _resolve_dataset) — never raw upstream exception text —
         # so it's safe to surface to the caller as-is.
-        _jobs[job_id].update(state="failed", error=f"HTTP {exc.status_code}: {exc.detail}")
+        await gateway_persistence.update_counterfactual_job(job_id, state="failed", error=f"HTTP {exc.status_code}: {exc.detail}")
     except Exception as exc:
         logger.exception("Counterfactual job %s failed", job_id)
-        _jobs[job_id].update(
-            state="failed",
+        await gateway_persistence.update_counterfactual_job(
+            job_id, state="failed",
             error=sanitize_error(exc, logger=logger, context=f"counterfactual job {job_id}"),
         )
 
@@ -230,29 +247,29 @@ async def _run_async(job_id: str, query: CounterfactualQuery) -> None:
 async def _run_demo_async(job_id: str, scenario_id: str, query: CounterfactualQuery) -> None:
     """Demo job worker: runs all 7 estimators; on failure serves the last
     good artifact (degraded) so the demo never shows a broken state."""
-    _jobs[job_id]["state"] = "running"
+    await gateway_persistence.update_counterfactual_job(job_id, state="running")
     try:
         df = _resolve_dataset(query.dataset.source_id)
         artifact = await run_job(query, df=df, methods=_DEMO_METHODS)
         artifact.rendered = render(artifact, query.audience)
         art_dict = artifact.model_dump(mode="json")
         _demo_last_good[scenario_id] = art_dict
-        _jobs[job_id].update(state="succeeded", artifact=art_dict)
+        await gateway_persistence.update_counterfactual_job(job_id, state="succeeded", artifact=art_dict)
     except Exception as exc:
         logger.exception("Demo job %s failed", job_id)
         fallback = _demo_last_good.get(scenario_id)
         if fallback is not None:
             patched = dict(fallback)
             patched["degraded"] = True
-            _jobs[job_id].update(state="succeeded", artifact=patched)
+            await gateway_persistence.update_counterfactual_job(job_id, state="succeeded", artifact=patched)
         else:
-            _jobs[job_id].update(
-                state="failed",
+            await gateway_persistence.update_counterfactual_job(
+                job_id, state="failed",
                 error=sanitize_error(exc, logger=logger, context=f"demo job {scenario_id}"),
             )
 
 
-def _new_job(prefix: str, tenant: str) -> str:
+async def _new_job(prefix: str, tenant: str) -> str:
     """Register a queued job owned by ``tenant`` and return its id.
 
     Every job-creating endpoint MUST go through here. The tenant stamp is what
@@ -265,8 +282,22 @@ def _new_job(prefix: str, tenant: str) -> str:
     valuable as a fair-lending audit result.
     """
     job_id = f"{prefix}_{uuid.uuid4().hex}"
-    _jobs[job_id] = {"state": "queued", "artifact": None, "error": None, "tenant": tenant}
+    await gateway_persistence.create_counterfactual_job(job_id, tenant)
     return job_id
+
+
+# Strong references to in-flight background tasks. Job STATE is durable in the
+# database; these handles are not serialisable and are meaningless off this
+# process — they exist only so the GC cannot collect a pending task, which
+# Python 3.11+ surfaces as "Task was destroyed but it is pending!" while the
+# work silently never completes. The done-callback keeps the set bounded.
+_running_tasks: set = set()
+
+
+def _track_task(task):
+    _running_tasks.add(task)
+    task.add_done_callback(_running_tasks.discard)
+    return task
 
 
 # ── Endpoints ─────────────────────────────────────────────────────────
@@ -274,12 +305,16 @@ def _new_job(prefix: str, tenant: str) -> str:
 @app.post("/counterfactual/jobs")
 async def submit_job(query: CounterfactualQuery,
                      user: Dict[str, Any] = Depends(require_user)) -> Dict[str, str]:
-    job_id = _new_job("ca", _ledger_tenant(user))
-    # Hold the Task reference inside the job record. Without this, the
-    # task is eligible for garbage collection as soon as submit_job
-    # returns — Python 3.11+ asyncio gives "Task was destroyed but it
-    # is pending!" and the work silently never completes.
-    _jobs[job_id]["_task"] = asyncio.create_task(_run_async(job_id, query))
+    job_id = await _new_job("ca", _ledger_tenant(user))
+    # Hold the Task reference in-process. Job STATE is durable (DB), but an
+    # asyncio handle is not serialisable and is meaningless across replicas —
+    # it only has to outlive this function. Without a strong reference the
+    # task is GC-eligible as soon as submit_job returns and Python 3.11+
+    # reports "Task was destroyed but it is pending!" while the work silently
+    # never completes. Discarding on completion keeps the set bounded.
+    _task = asyncio.create_task(_run_async(job_id, query))
+    _running_tasks.add(_task)
+    _task.add_done_callback(_running_tasks.discard)
     return {"job_id": job_id}
 
 
@@ -290,8 +325,8 @@ async def get_job(job_id: str, user: Dict[str, Any] = Depends(require_user)) -> 
     # required on BOTH sides: every record carries its submitter's tenant (see
     # _new_job), and a cross-tenant read is answered identically to a missing
     # job, so the response never confirms that someone else's id exists.
-    j = _jobs.get(job_id)
-    if j is None or j.get("tenant") != _ledger_tenant(user):
+    j = await gateway_persistence.get_counterfactual_job(job_id, _ledger_tenant(user))
+    if j is None:
         raise HTTPException(404, f"job {job_id} not found")
     # Don't leak the Task object (or the tenant stamp) through the JSON response.
     return {
@@ -344,8 +379,8 @@ async def run_demo(scenario_id: str, fresh: bool = False,
     tenant = _ledger_tenant(user)
     cached = _demo_last_good.get(scenario_id)
     if cached is not None and not fresh:
-        job_id = _new_job("demo", tenant)
-        _jobs[job_id].update(state="succeeded", artifact=cached)
+        job_id = await _new_job("demo", tenant)
+        await gateway_persistence.update_counterfactual_job(job_id, state="succeeded", artifact=cached)
         return {"job_id": job_id, "scenario_id": scenario_id, "degraded": False, "cached": True}
 
     if not fresh:
@@ -364,10 +399,10 @@ async def run_demo(scenario_id: str, fresh: bool = False,
     df = scenario.build_dataset()
     query = scenario.query()
     register_dataset(query.dataset.source_id, df)
-    job_id = _new_job("demo", tenant)
-    _jobs[job_id]["_task"] = asyncio.create_task(
+    job_id = await _new_job("demo", tenant)
+    _track_task(asyncio.create_task(
         _run_demo_async(job_id, scenario_id, query)
-    )
+    ))
     return {"job_id": job_id, "scenario_id": scenario_id, "degraded": False, "cached": False}
 
 
@@ -480,16 +515,16 @@ async def _append_review_to_ledger(*, tenant_id: str, audit_cert_hash: str,
 
 
 async def _run_audit_job_async(job_id: str, payload: Dict[str, Any]) -> None:
-    _jobs[job_id]["state"] = "running"
+    await gateway_persistence.update_counterfactual_job(job_id, state="running")
     loop = asyncio.get_event_loop()
     try:
         result = await loop.run_in_executor(get_audit_pool(), run_audit_subprocess, payload)
-        _jobs[job_id].update(state="succeeded", artifact=result)
+        await gateway_persistence.update_counterfactual_job(job_id, state="succeeded", artifact=result)
         await _append_fairness_audit_to_ledger(result, payload)
     except Exception as exc:
         logger.exception("Audit job %s failed", job_id)
-        _jobs[job_id].update(
-            state="failed",
+        await gateway_persistence.update_counterfactual_job(
+            job_id, state="failed",
             error=sanitize_error(exc, logger=logger, context=f"audit job {job_id}"),
         )
 
@@ -514,11 +549,11 @@ async def run_audit(req: AuditRequest,
     # the request's tenant_id before it reaches the ledger append, and scope the
     # job record to the same tenant so only this org can poll the result.
     tenant = _ledger_tenant(user)
-    job_id = _new_job("audit", tenant)
+    job_id = await _new_job("audit", tenant)
     payload = {**req.model_dump(), "tenant_id": tenant}
-    _jobs[job_id]["_task"] = asyncio.create_task(
+    _track_task(asyncio.create_task(
         _run_audit_job_async(job_id, payload)
-    )
+    ))
     return {"job_id": job_id}
 
 
