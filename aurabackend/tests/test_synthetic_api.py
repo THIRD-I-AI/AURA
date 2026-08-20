@@ -48,9 +48,24 @@ _SCHEMA = {
 
 @pytest.fixture()
 def client():
+    """TestClient WITHOUT the `with` block, so the ASGI lifespan never runs.
+
+    The lifespan is not needed here: persistence lazy-inits its schema on first
+    session_scope() use, not from the lifespan (CLAUDE.md, the P-1 hotfix).
+    Running it is actively harmful in CI — the SHUTDOWN half wedged on the
+    runner and never returned, so `with TestClient(app)` blocked in teardown
+    until the job hit its timeout. Faulthandler caught it here twice:
+
+        Timeout (0:20:00)!
+        File "aurabackend/tests/test_synthetic_api.py", line 52 in client
+        File "_pytest/fixtures.py", line 939 in _teardown_yield_fixture
+
+    Bounding the three unbounded shutdown awaits in main.py was NOT enough, so
+    this stops driving the lifespan at all rather than continuing to chase
+    which shutdown step blocks on a runner with no Postgres/Kafka reachable.
+    """
     from api_gateway.main import app
-    with TestClient(app) as c:   # `with` runs lifespan (DB init etc.)
-        yield c
+    return TestClient(app)
 
 
 # ── /plan ───────────────────────────────────────────────────────────
