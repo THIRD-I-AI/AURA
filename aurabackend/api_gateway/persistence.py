@@ -271,29 +271,6 @@ class FileMetadataRow(Base):
     last_indexed_at = Column(String(64), nullable=False)
 
 
-class CounterfactualJobRow(Base):
-    """One row per counterfactual/audit/demo job — durable, tenant-scoped.
-
-    Replaces the in-memory ``_jobs`` dict in counterfactual_service/main.py:
-    that dict was process-local, so a job POSTed to one gateway replica 404'd
-    when polled on another, and completed artifacts accumulated in memory for
-    the life of the process (no eviction). ``created_ts`` drives the TTL
-    cleanup in ``create_counterfactual_job`` — no background scheduler needed.
-
-    ``artifact_json`` stores the full result artifact as plain JSON text,
-    same tradeoff as ``DashboardRow.tiles_json`` / ``PipelineRow.definition_json``.
-    """
-
-    __tablename__ = "gateway_counterfactual_jobs"
-
-    id = Column(String(80), primary_key=True)
-    tenant = Column(String(128), nullable=False, index=True)
-    state = Column(String(16), nullable=False, default="queued")
-    artifact_json = Column(Text, nullable=True)
-    error = Column(Text, nullable=True)
-    created_ts = Column(Float, nullable=False, index=True)
-
-
 class ShareTokenRow(Base):
     """One row per active share token.
 
@@ -539,10 +516,6 @@ SAVED_QUERIES_PER_WORKSPACE_CAP = 500
 # S50: chat messages capped per (workspace, session); pipelines per workspace.
 CHAT_MESSAGES_PER_SESSION_CAP = 100
 PIPELINES_PER_WORKSPACE_CAP = 200
-# Counterfactual jobs: TTL, not a count cap — an artifact is only useful for
-# polling/replay shortly after it completes, and there's no per-workspace
-# grouping to cap against (job ids are opaque, tenant-scoped only).
-COUNTERFACTUAL_JOB_TTL_SECONDS = 24 * 3600
 
 
 def _row_to_history_dict(row: QueryHistoryRow) -> Dict[str, Any]:
@@ -1463,73 +1436,6 @@ async def delete_pipeline(pipeline_id: str, workspace_id: str) -> bool:
         return True
 
 
-# ── Counterfactual jobs (durable replacement for the in-process _jobs dict) ──
-
-
-async def create_counterfactual_job(job_id: str, tenant: str) -> None:
-    """Register a queued job owned by ``tenant`` and evict rows past the TTL.
-
-    Every job-creating endpoint in counterfactual_service/main.py goes
-    through here (mirrors the old ``_new_job``'s single-writer contract).
-    Eviction runs on every insert rather than via a scheduler — jobs are
-    created far less often than they're polled, so this is the cheap place
-    to do it (same pattern as ``insert_query_history``'s cap eviction).
-    """
-    async with session_scope() as s:
-        s.add(CounterfactualJobRow(
-            id=job_id, tenant=tenant, state="queued", created_ts=time.time(),
-        ))
-        await s.execute(
-            delete(CounterfactualJobRow).where(
-                CounterfactualJobRow.created_ts
-                < time.time() - COUNTERFACTUAL_JOB_TTL_SECONDS,
-            ),
-        )
-
-
-async def update_counterfactual_job(
-    job_id: str, *, state: Optional[str] = None,
-    artifact: Optional[Dict[str, Any]] = None, error: Optional[str] = None,
-) -> None:
-    """Partial update of a job's mutable fields. No-op if the id is unknown
-    (mirrors the old dict's ``_jobs[job_id].update(...)`` — the caller
-    always owns a job it just created, so a miss here would be a bug
-    elsewhere, not a condition to raise on)."""
-    async with session_scope() as s:
-        row = (await s.execute(
-            select(CounterfactualJobRow).where(CounterfactualJobRow.id == job_id),
-        )).scalar_one_or_none()
-        if row is None:
-            return
-        if state is not None:
-            row.state = state
-        if artifact is not None:
-            row.artifact_json = json.dumps(artifact)
-        if error is not None:
-            row.error = error
-
-
-async def get_counterfactual_job(job_id: str, tenant: str) -> Optional[Dict[str, Any]]:
-    """Tenant-scoped fetch. Returns None for a missing id OR another
-    tenant's job — the caller (counterfactual_service.main.get_job) turns
-    both into an identical 404, so a cross-tenant read can never confirm
-    that someone else's job id exists. Mirrors get_dashboard/get_connection."""
-    async with session_scope() as s:
-        row = (await s.execute(
-            select(CounterfactualJobRow)
-            .where(CounterfactualJobRow.id == job_id)
-            .where(CounterfactualJobRow.tenant == tenant),
-        )).scalar_one_or_none()
-        if row is None:
-            return None
-        return {
-            "job_id": row.id,
-            "state": row.state,
-            "artifact": json.loads(row.artifact_json) if row.artifact_json else None,
-            "error": row.error,
-        }
-
-
 # ── Test-only helper ──
 
 
@@ -1591,11 +1497,6 @@ __all__ = [
     "list_pipelines",
     "get_pipeline",
     "delete_pipeline",
-    "CounterfactualJobRow",
-    "COUNTERFACTUAL_JOB_TTL_SECONDS",
-    "create_counterfactual_job",
-    "update_counterfactual_job",
-    "get_counterfactual_job",
     "reset_all_for_tests",
 ]
 
