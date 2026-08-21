@@ -182,7 +182,29 @@ async def _redis_health_probe() -> None:
     await _asyncio.get_event_loop().run_in_executor(None, _redis_client.ping)
 
 
-_uasr_health_checks = {}
+async def _db_health_probe() -> str | None:
+    """SELECT 1 against UASR's own DB. Returns None on success.
+
+    Unconditional on purpose. The redis probe below is skipped whenever
+    UASR_STATE_BACKEND is `memory` — which is exactly what the deployed
+    free-tier profile sets — so without this the checks dict was empty, and
+    create_service returns a bare {"status": "healthy"} when it has no probes.
+    That made /health incapable of failing on the self-healing service itself:
+    uasr.db and uasr.duckdb could be corrupt or unwritable and the container
+    still reported green to compose, Caddy and any uptime check.
+    """
+    try:
+        from sqlalchemy import text
+
+        async for session in get_session():
+            await session.execute(text("SELECT 1"))
+            break
+        return None
+    except Exception as exc:  # noqa: BLE001 — surface the message to the caller
+        return f"db unreachable: {type(exc).__name__}: {exc}"
+
+
+_uasr_health_checks = {"db": _db_health_probe}
 if _redis_client is not None:
     _uasr_health_checks["redis"] = _redis_health_probe
 
