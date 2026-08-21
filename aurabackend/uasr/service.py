@@ -118,6 +118,46 @@ async def _lifespan(_):
     logger.info("UASR database tables initialised")
     logger.info("UASR deployment mode: %s", deployment_summary())
 
+    # Restore shims that were live before this process started.
+    #
+    # _deployed_shims is process-local, and apply_shims() consults it on every
+    # batch the MAPE-K worker handles. Without this, a restart (or a second
+    # replica) came up with an empty registry and silently passed drifted rows
+    # through untransformed — the self-healing layer stopped healing and said
+    # nothing. Only DEPLOYED records are selected, so a shim a human rolled back
+    # via /uasr/rollback (which persists status=ROLLED_BACK) stays rolled back.
+    try:
+        rows = []
+        async for session in get_session():
+            rows = (await session.execute(
+                select(DriftEvent.source_id, RecoveryRecord.shim_code)
+                .join(DriftEvent, RecoveryRecord.drift_event_id == DriftEvent.id)
+                .where(
+                    RecoveryRecord.status == RecoveryStatus.DEPLOYED.value,
+                    RecoveryRecord.shim_code.isnot(None),
+                )
+                .order_by(RecoveryRecord.created_at.asc())
+            )).all()
+            break
+        by_source: Dict[str, List[str]] = {}
+        for source_id, shim_code in rows:
+            if source_id and shim_code:
+                by_source.setdefault(source_id, []).append(shim_code)
+        restored = _loop.hydrate_deployed_shims(by_source)
+        # Logged unconditionally, including the zero case: "restored 0 shims" is
+        # the line that tells an operator healing is genuinely inactive rather
+        # than silently broken.
+        logger.info(
+            "UASR restored %d deployed shim(s) across %d source(s)",
+            restored, len(by_source),
+        )
+    except Exception as exc:  # noqa: BLE001 — never block startup on this
+        logger.error(
+            "UASR could not restore deployed shims (%s: %s) — healing is "
+            "INACTIVE for previously-healed sources until they are redeployed",
+            type(exc).__name__, exc,
+        )
+
     # MAPE-K worker is opt-in because it requires a reachable Kafka
     # cluster — turning it on by default would break every dev box that
     # runs the UASR service for its HTTP API only.

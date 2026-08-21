@@ -168,3 +168,42 @@ def test_deploy_approved_shim_registers_and_is_rollbackable() -> None:
     # an approved shim is rollback-able exactly like an auto-deployed one
     assert loop.rollback_last_shim("src") is True
     assert loop.get_deployed_shims("src") == []
+
+
+# ── Healing must survive a restart ─────────────────────────────────
+
+def test_deployed_shims_survive_a_restart() -> None:
+    """A restart used to silently stop healing, with no error anywhere.
+
+    _deployed_shims is process-local and apply_shims() consults it on every
+    live batch. A restarted process therefore passed drifted rows straight
+    through untransformed while still reporting itself healthy — the failure
+    this test pins down is the SILENCE, not a crash. Nothing logged, nothing
+    raised, and the pipeline kept serving unhealed data.
+    """
+    shim = "def transform(rows):\n    return [{**r, 'v': 100} for r in rows]\n"
+    drifted = [{"v": 999}]
+
+    live = RecoveryLoop(
+        detector=_FakeDetector(), config=RecoveryLoopConfig(risk_tiered=True),
+    )
+    live.deploy_approved_shim("src-1", shim, "rec-1")
+    assert live.apply_shims("src-1", drifted) == [{"v": 100}]
+
+    # Restart: a fresh process starts with an empty registry.
+    restarted = RecoveryLoop(
+        detector=_FakeDetector(), config=RecoveryLoopConfig(risk_tiered=True),
+    )
+    # The bug, made explicit — same input, same source id, unhealed output and
+    # not a single signal that anything is wrong.
+    assert restarted.apply_shims("src-1", drifted) == [{"v": 999}]
+
+    # Hydrating from the DEPLOYED records is what brings healing back.
+    assert restarted.hydrate_deployed_shims({"src-1": [shim]}) == 1
+    assert restarted.apply_shims("src-1", drifted) == [{"v": 100}]
+
+    # A rolled-back shim must NOT come back: /uasr/rollback persists
+    # status=ROLLED_BACK, so it is excluded from the hydration query and the
+    # restored loop must never re-apply a transform a human reverted.
+    assert restarted.hydrate_deployed_shims({"src-2": []}) == 0
+    assert restarted.get_deployed_shims("src-2") == []

@@ -589,6 +589,40 @@ class RecoveryLoop:
         """Return all deployed shim codes for a source."""
         return self._deployed_shims.get(source_id, [])
 
+    def hydrate_deployed_shims(
+        self, shims_by_source: Dict[str, List[str]],
+    ) -> int:
+        """Repopulate the in-memory shim registry after a restart.
+
+        WHY THIS EXISTS: ``_deployed_shims`` is process-local, and
+        ``apply_shims`` is what actually transforms drifted data back to healthy
+        on every live batch. After a restart the dict was empty, so apply_shims
+        silently returned rows unmodified and the pipeline resumed processing
+        drifted data as if nothing were wrong -- no error, no log, no signal. A
+        self-healing system that quietly stops healing is worse than one that
+        never claimed to, because nothing tells anyone to look.
+
+        The caller supplies the mapping rather than this class querying for it:
+        RecoveryLoop deliberately does no session/IO work, so the DB read stays
+        in the service layer that already owns sessions.
+
+        Only shims still in DEPLOYED state should be passed in. Rolled-back
+        shims are excluded at the query, which is what keeps this from
+        resurrecting a transform a human deliberately reverted -- see
+        ``/uasr/rollback``, which persists status=ROLLED_BACK.
+
+        Returns the number of shims restored so the caller can log it. That
+        count is the operator's only evidence that healing survived the restart,
+        which is why it is returned rather than swallowed.
+        """
+        restored = 0
+        for source_id, codes in shims_by_source.items():
+            if not codes:
+                continue
+            self._deployed_shims.setdefault(source_id, []).extend(codes)
+            restored += len(codes)
+        return restored
+
     def rollback_last_shim(self, source_id: str) -> bool:
         """Remove the most recently deployed shim for a source."""
         shims = self._deployed_shims.get(source_id, [])
