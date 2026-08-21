@@ -47,17 +47,32 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 from shared.auth import create_access_token  # noqa: E402
 
+
 # /counterfactual/audit and the job poller are authenticated + tenant-scoped
 # (see main._new_job) — the same token must both submit and poll.
-_AUTH = {"Authorization":
-         f"Bearer {create_access_token({'sub': 'audit-tester', 'org_id': 'org-audit'})}"}
+def _auth() -> dict:
+    """Mint a FRESH token on every call.
+
+    This was a module-level constant, so the token was minted at IMPORT time --
+    minute 0 of pytest collection. settings.access_token_expire_minutes defaults
+    to 30, and the full suite can run far longer than that (observed: 1h42m
+    under load, versus ~21m unloaded), so every test in this module that reached
+    the network past minute 30 failed with AUTHENTICATION_REQUIRED. The suite
+    passed when it was fast and failed when it was slow, which is why this sat
+    here undetected.
+
+    The claims are unchanged, so submit and poll still resolve to the same
+    tenant -- only the mint time moves.
+    """
+    return {"Authorization":
+            f"Bearer {create_access_token({'sub': 'audit-tester', 'org_id': 'org-audit'})}"}
 
 
 def _client(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     (tmp_path / "data" / "uploads").mkdir(parents=True, exist_ok=True)
     from counterfactual_service.main import app
-    return TestClient(app, headers=_AUTH)
+    return TestClient(app, headers=_auth())
 
 
 def test_audit_404_when_file_missing(tmp_path, monkeypatch):
@@ -133,7 +148,7 @@ def test_audit_reachable_through_gateway(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     (tmp_path / "data" / "uploads").mkdir(parents=True, exist_ok=True)
     from api_gateway.main import app as gw
-    gc = TestClient(gw, headers=_AUTH)
+    gc = TestClient(gw, headers=_auth())
     r = gc.post("/api/v1/counterfactual/audit", json={
         "uploaded_file": "nope.csv", "treatment": "t", "outcome": "y", "confounders": []})
     assert r.status_code == 404  # routed through; file-missing check fired
