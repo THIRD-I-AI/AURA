@@ -127,3 +127,7 @@ aurabackend/logs/
 # Loose stdout dumps (e.g. mc.out) + local scratch space.
 *.out
 /scratch/
+
+# Machine-specific Claude Code overrides (local DSNs, paths, credentials).
+# The shared conventions live in CLAUDE.md and .claude/rules/ and ARE committed.
+CLAUDE.local.md
