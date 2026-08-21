@@ -9,6 +9,46 @@ local memory files.
 If you're a new Claude session on this codebase: read this top-to-
 bottom before writing code.
 
+## Core Commands
+
+Quick reference. The authority on what must pass *before a push* is the
+Pre-push protocol below — this section is for running things day to day.
+
+```sh
+# Backend (aurabackend/). Use the REPO-ROOT .venv; aurabackend/.venv holds
+# broken 0-byte stubs, so a local rc=0 from it is meaningless.
+cd aurabackend
+../.venv/Scripts/python.exe -m pytest tests/<file>.py --tb=short   # test
+../.venv/Scripts/python.exe -m ruff check --fix .                  # lint
+#   pre-push ignore list: E501,E402,F401,W191,W291,W293,F841,E701,E712,F823
+#   CI ruff is STRICTER than that list — it selects E,F,I,W.
+
+# Frontend (frontend/)
+npm run test         # vitest run
+npm run lint         # eslint .
+npm run build        # tsc -b && vite build  — this IS the typecheck CI runs
+npm run dev:fresh    # vite --force; use after any branch switch
+```
+
+Never run pytest concurrently with a push — the pre-push gate uses the same
+test databases.
+
+## Architecture Map
+
+Entry points and the handful of paths worth knowing up front. Everything
+else is derivable from the tree; do not grow this into a directory listing.
+
+- **Entry points** — `aurabackend/api_gateway/main.py` (FastAPI gateway,
+  :8000, the only backend surface the frontend talks to);
+  `aurabackend/uasr/service.py` (:8009, self-healing MAPE-K loop, a separate
+  container); `frontend/src/main.tsx`.
+- **Core logic** — `aurabackend/api_gateway/routers/` (endpoint modules),
+  `aurabackend/uasr/` (drift detection, actuator, recovery loop),
+  `aurabackend/pipeline/` (ETL + streaming), `aurabackend/shared/`
+  (signing, audit ledger, SQL identifier quoting, config).
+- **The one non-obvious fact:** the counterfactual / financial-audit engine
+  is NOT a separate service — it runs in-process inside the gateway.
+
 ## How we structure work
 
 ### Sprint numbering
