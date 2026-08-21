@@ -259,17 +259,24 @@ async def etl_preview_source(payload: Dict[str, Any], request: Request):
 
     source_file = payload.get("source_file", "")
     limit = payload.get("limit", 20)
-    upload_dirs = [Path(tenant_upload_dir(request))]
+    upload_dir = Path(tenant_upload_dir(request))
 
-    file_path = None
-    for d in upload_dirs:
-        candidate = d / source_file
-        if candidate.exists():
-            file_path = str(candidate)
-            break
-
-    if not file_path:
+    # Sec-2 #36: user-supplied source_file must be sandboxed under upload_dir.
+    # This endpoint was missed when its two siblings below (run-pipeline and
+    # preview-transform) were hardened. A plain `upload_dir / source_file` is
+    # not merely weak here, it is no barrier at all: pathlib lets an ABSOLUTE
+    # right-hand side replace the base outright, so "/etc/passwd" escapes the
+    # tenant sandbox without containing a single "..". The read then flows into
+    # smart_load_file, which also writes a header sidecar next to whatever it
+    # loaded (mkdir(parents=True) + os.replace) — so an unsandboxed path here
+    # is an arbitrary file READ and an arbitrary directory/file WRITE.
+    try:
+        resolved = safe_join(upload_dir, source_file)
+    except PathTraversalError:
+        raise HTTPException(status_code=400, detail="Invalid source filename")
+    if not resolved.exists():
         raise HTTPException(status_code=404, detail=f"Source file '{source_file}' not found in uploads")
+    file_path = str(resolved)
 
     try:
         con = new_connection()
