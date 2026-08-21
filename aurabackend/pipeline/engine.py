@@ -61,6 +61,7 @@ def _sanitize_id(name: str) -> str:
 # the SQL-injection hardening — so two of the three "quote an identifier"
 # implementations in this repo silently missed that guard while the third had
 # it. Aliasing covers every existing call site without touching them.
+from shared.safe_paths import PathTraversalError, safe_join  # noqa: E402
 from shared.sql_identifiers import quote_identifier as _q  # noqa: E402
 
 
@@ -77,10 +78,26 @@ def _resolve_in_dir(base_dir: str, raw_name: str) -> str:
     safe_name = os.path.basename(str(raw_name or "").replace("\\", "/")).strip()
     if not safe_name or safe_name in (".", ".."):
         raise ValueError("Invalid source path")
-    path = os.path.join(base_dir, safe_name)
-    if os.path.commonpath((os.path.abspath(path), os.path.abspath(base_dir))) != os.path.abspath(base_dir):
-        raise ValueError("Invalid source path")
-    return path
+    # Containment is delegated to shared.safe_paths.safe_join rather than
+    # re-implemented here. Two reasons, and the second is not cosmetic:
+    #
+    #  1. One path guard, not several that drift apart. The same partial sweep
+    #     that left three SQL identifier quoters disagreeing also produced four
+    #     copies of "resolve a user path inside a base dir"; this removes one.
+    #  2. The old check compared os.path.commonpath against abspath(base). That
+    #     is CORRECT, but CodeQL's py/path-injection model does not recognise it
+    #     as a sanitizer, so every caller downstream stayed tainted and the
+    #     header-sidecar writes in shared/data_utils.py were reported as
+    #     high-severity path injection. safe_join uses realpath +
+    #     startswith(base + os.sep), which the standard model does recognise —
+    #     clearing the flow for real instead of suppressing the alert.
+    #
+    # basename() above still runs first, so subdirectory components are dropped
+    # exactly as before — safe_join alone would permit "sub/file.csv".
+    try:
+        return str(safe_join(base_dir, safe_name))
+    except PathTraversalError as exc:
+        raise ValueError("Invalid source path") from exc
 
 
 class PipelineEngine:
