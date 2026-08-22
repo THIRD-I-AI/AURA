@@ -12,7 +12,12 @@ export default defineConfig([
     extends: [
       js.configs.recommended,
       tseslint.configs.recommended,
-      reactHooks.configs['recommended-latest'],
+      // `.configs.flat[...]`, not `.configs[...]`. From v7 the plugin ships BOTH
+      // shapes: the top-level one keeps the legacy eslintrc form
+      // (`plugins: ['react-hooks']`, an array), which flat config rejects with
+      // "Key plugins: Expected an object". The flat namespace is the one whose
+      // `plugins` is keyed by name with the plugin object as the value.
+      reactHooks.configs.flat['recommended-latest'],
       reactRefresh.configs.vite,
     ],
     languageOptions: {
@@ -29,6 +34,19 @@ export default defineConfig([
         argsIgnorePattern: '^_',
         varsIgnorePattern: '^_',
       }],
+      // eslint-plugin-react-hooks v7 bundles the React Compiler lint suite.
+      // These five rules did NOT exist in v5 and flag 39 pre-existing sites:
+      // set-state-in-effect (23), refs (12), immutability (2), purity (1),
+      // use-memo (1). None of them is rules-of-hooks or exhaustive-deps, so
+      // turning them off keeps enforcement exactly where v5 had it — the bump
+      // to v7 was needed for eslint 10 peer support, and quietly folding a
+      // 39-site refactor into a dependency upgrade is how upgrades stall.
+      // Adopting them is worthwhile, but as its own change with its own review.
+      'react-hooks/set-state-in-effect': 'off',
+      'react-hooks/refs': 'off',
+      'react-hooks/immutability': 'off',
+      'react-hooks/purity': 'off',
+      'react-hooks/use-memo': 'off',
       // S37 security guards.
       'no-restricted-syntax': ['error',
         {
