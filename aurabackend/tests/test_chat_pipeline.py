@@ -161,18 +161,26 @@ def test_supported_file_formats(client):
 
 # ── Job Control ──────────────────────────────────────────────────────
 
-def test_approve_job(client):
-    """POST /jobs/{id}/approve should work."""
+def test_approve_job_does_not_approve_a_job_that_does_not_exist(client):
+    """A job id that was never real must not come back "approved".
+
+    This test previously asserted the opposite -- it posted the literal id
+    "fake-job-123" and required 200 with status "approved". That codified a bug
+    rather than catching it: both handlers read a `_jobs_store` that nothing in
+    the backend ever wrote to, so every call fell through to an unconditional
+    {"success": true}. The test passed for the very reason the endpoint was
+    broken, which is why the fake id sitting in it never looked wrong.
+    """
     resp = client.post(f"{V1}/jobs/fake-job-123/approve")
-    assert resp.status_code == 200
-    assert resp.json()["status"] == "approved"
+    assert resp.status_code != 200
+    assert resp.json().get("success") is not True
 
 
-def test_cancel_job(client):
-    """POST /jobs/{id}/cancel should work."""
+def test_cancel_job_does_not_cancel_a_job_that_does_not_exist(client):
+    """Same invariant for cancellation -- see the note above."""
     resp = client.post(f"{V1}/jobs/fake-job-123/cancel")
-    assert resp.status_code == 200
-    assert resp.json()["status"] == "cancelled"
+    assert resp.status_code != 200
+    assert resp.json().get("success") is not True
 
 
 # ── Validation ───────────────────────────────────────────────────────
