@@ -79,7 +79,7 @@ fakeredis>=2.20,<3.0  # in-process Redis double for state-store + repair-coordin
 bandit[toml]>=1.7,<2.0
 
 # Observability
-prometheus-fastapi-instrumentator>=7.0,<8.0
+prometheus-fastapi-instrumentator>=8.1.0,<9.0
 prometheus-client>=0.26.0,<1.0  # transitive, pinned for stable Counter/Histogram API
 # Sentry (no-op when AURA_SENTRY_DSN unset)
 sentry-sdk[fastapi]>=2.0,<3.0
