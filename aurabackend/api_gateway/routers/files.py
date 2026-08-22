@@ -274,11 +274,31 @@ async def get_file_info(file_id: str, request: Request) -> Dict[str, Any]:
 
 
 @router.get("/files/{file_id}/profile")
-async def get_file_profile(file_id: str) -> Dict[str, Any]:
+async def get_file_profile(file_id: str, request: Request) -> Dict[str, Any]:
     """Fetch stored profile for a file if available."""
     if get_repository is None:
         return {"status": "error", "error": "Metadata repository not available"}
     try:
+        # Tenant gate. The sibling GET /files/{file_id} above was patched for
+        # this exact bug; this route was missed, and it took no `request` at
+        # all, so it could not scope even in principle. file_id is a filename
+        # ("sales.csv"), not an unguessable id, and a DatasetProfile carries the
+        # column profile INCLUDING sample values — so an unscoped read handed
+        # one org another org's data, not merely its metadata.
+        #
+        # Gated on file ownership rather than a column on the profile, because
+        # DatasetProfile has no org_id/tenant column at all. Adding one is the
+        # right long-term fix for the whole metadata_store schema; until then,
+        # "you may read the profile only for a file that exists in YOUR
+        # tenant's upload dir" reuses the scoping that is already correct next
+        # door and closes the read today.
+        if file_service is not None:
+            sub = tenant_dir_name(_request_tenant(request))
+            if not file_service.get_file_info(file_id, subdir=sub):
+                # 404, not 403 — a 403 would confirm the file exists under some
+                # other tenant, which is the existence oracle the rest of the
+                # gateway's routes deliberately avoid.
+                raise HTTPException(status_code=404, detail="Profile not found")
         async for repo in get_repository():
             profile = await repo.get_dataset_profile(file_id)
             break
