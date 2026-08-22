@@ -240,11 +240,60 @@ async def _lifespan(app) -> AsyncGenerator[None, None]:
 
 # ── Create the app ─────────────────────────────────────────────────
 
+async def _check_db() -> str | None:
+    """SELECT 1 against the gateway DB. Returns None on success.
+
+    Without this the gateway's /health could not fail: create_service returns a
+    bare {"status": "healthy"} whenever no probes are supplied, so an unreachable
+    or unwritable database still answered 200 and every orchestrator, uptime
+    check and load balancer read the service as fine. metadata_store has had the
+    correct pattern all along; it was simply never applied to the two services
+    this deployment actually runs.
+    """
+    try:
+        from sqlalchemy import text
+
+        from api_gateway.persistence import get_engine
+
+        async with get_engine().connect() as conn:
+            await conn.execute(text("SELECT 1"))
+        return None
+    except Exception as exc:  # noqa: BLE001 — surface the message to the caller
+        return f"db unreachable: {type(exc).__name__}: {exc}"
+
+
+async def _check_data_dir() -> str | None:
+    """Confirm the state directory is present and writable.
+
+    A full or read-only volume is the failure this box is most likely to hit:
+    SQLite, the signing keys and every upload live on one mount, and a read-only
+    remount leaves the process running and answering while silently unable to
+    persist anything.
+    """
+    import tempfile
+
+    from api_gateway.persistence import database_url
+
+    url = database_url()
+    if not url.startswith("sqlite"):
+        return None  # server-backed DB: _check_db already covers reachability
+    target = os.path.dirname(url.split("///")[-1]) or "."
+    try:
+        if not os.path.isdir(target):
+            return f"state dir missing: {target}"
+        with tempfile.TemporaryFile(dir=target):
+            pass
+        return None
+    except OSError as exc:
+        return f"state dir not writable: {type(exc).__name__}: {exc}"
+
+
 app = create_service(
     name="API Gateway",
     service_tag="api_gateway",
     description="Enterprise self-healing data analytics platform gateway",
     lifespan=_lifespan,
+    health_checks={"db": _check_db, "data_dir": _check_data_dir},
 )
 
 
@@ -325,7 +374,11 @@ _SERVICES = {
     "scheduler":        "http://localhost:8004/health",
     "insights":         "http://localhost:8005/health",
     "metadata_store":   "http://localhost:8007/health",
-    "uasr":             "http://localhost:8009/health",
+    # NOT localhost: UASR is its own container. Inside the gateway, localhost is
+    # the gateway itself, so this dashboard reported UASR down no matter how
+    # healthy it was — on the one endpoint built for cross-service triage. The
+    # module already resolves the real address into _UASR_URL above.
+    "uasr":             f"{_UASR_URL}/health",
 }
 
 
@@ -358,7 +411,7 @@ async def system_health():
     hu_score = None
     try:
         async with httpx.AsyncClient(timeout=2.0) as client:
-            r = await client.get("http://localhost:8009/uasr/metrics")
+            r = await client.get(f"{_UASR_URL}/uasr/metrics")
             if r.status_code == 200:
                 hu_score = r.json().get("hu_score")
     except Exception:

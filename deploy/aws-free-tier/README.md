@@ -165,3 +165,50 @@ docker stats --no-stream               # memory headroom — the number that mat
 If the gateway OOM-loops, check `docker stats` first. The usual causes are a
 `--workers` value above 1, or swapping to the `causal-runtime` image. Both
 exceed 1 GB on their own.
+
+### Backups
+
+Every durable thing this deployment has — the four SQLite databases, the ED25519
+signing keys, every uploaded dataset, and the tamper-evident audit hash chain —
+lives in one unreplicated volume. `docker compose down -v`, a stray
+`docker volume rm`, or an EBS failure loses all of it at once.
+
+```sh
+./backup.sh                                    # writes ./backups/<UTC timestamp>/
+AURA_S3_BACKUP_BUCKET=my-bucket ./backup.sh    # also syncs off the box
+```
+
+Install it as a daily cron entry — a backup nobody runs is not a backup:
+
+```sh
+15 3 * * * cd /home/ec2-user/AURA/deploy/aws-free-tier && ./backup.sh >> backup.log 2>&1
+```
+
+The databases are copied with SQLite's online backup API, not `cp`: copying a
+live `.db` can capture a torn write and produce a file that opens fine and is
+subtly corrupt. Each copy is then re-opened and `PRAGMA integrity_check`ed, so a
+failed backup fails loudly instead of leaving a bad file you trust.
+`uasr.duckdb` is the one exception — DuckDB has no online-backup API, so it is
+copied as a plain file and is only crash-consistent. That is acceptable solely
+because it holds drift baselines the detector relearns from live data; nothing
+irreplaceable is in it.
+
+To restore, stop the stack first — writing a database file under a live process
+recreates the corruption you were avoiding, and the script refuses to run while
+containers are up:
+
+```sh
+docker compose down
+./backup.sh --restore 20260821T031500Z
+docker compose up -d
+```
+
+### Rolling back a bad deploy
+
+The image tag is pinned in `.env`, never `latest`, so a rollback is just the
+previous tag:
+
+```sh
+sed -i 's/^AURA_TAG=.*/AURA_TAG=v0.1.3/' .env    # the last known-good tag
+docker compose pull && docker compose up -d
+```

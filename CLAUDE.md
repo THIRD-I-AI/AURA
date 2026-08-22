@@ -1,231 +1,127 @@
 # CLAUDE.md — shared conventions for the AURA codebase
 
-This file is auto-loaded by every Claude Code session in this repo.
-Two developers (Mouni and a collaborator) are both using Claude Code
-on this codebase. This document is the **shared source of truth** for
-how we structure work — supersedes anything in any individual Claude's
-local memory files.
+Auto-loaded in every Claude Code session in this repo. Two developers (Mouni and
+a collaborator) work here; this is the **shared source of truth** and supersedes
+any individual Claude's local memory files.
 
-If you're a new Claude session on this codebase: read this top-to-
-bottom before writing code.
+**Context is layered — keep this file under ~150 lines.** Anything longer belongs
+in one of the other two layers:
 
-## How we structure work
+| Layer | Loads | Holds |
+|---|---|---|
+| this file | always | commands, execution mode, hard constraints, shared process |
+| `.claude/rules/*.md` | only when you touch matching paths | `backend.md`, `frontend.md`, `testing.md` |
+| `CLAUDE.local.md` | always, git-ignored | machine-specific overrides (local DSNs, paths) |
 
-### Sprint numbering
+# 🛠️ Tech Stack & Core Commands
 
-* **S<N>** — algorithmic / feature sprints (e.g., S17 Multi-Modal Fabric,
-  S22 TMLE estimator). Each S<N> deepens one of the five enterprise
-  pillars or adds analytic depth to the counterfactual engine.
-* **S<N><letter>** — multi-part sprints when a single feature is too big
-  for one bundle (e.g., S21a codegen + models, S21b operation methods,
-  S21c AsyncClient).
-* **P-<N>** — performance + audit-driven sprints. Triggered by a user
-  audit listing concrete bottlenecks; each P-N closes one or more
-  audit findings.
-* **S<N>.<M>** — integration sprints that wire previously-shipped
-  primitives into live paths (e.g., S20.1 wires Sprint 20a streaming
-  primitives into the live operator loop). Distinct from S<N><letter>
-  because the primitives must already be shipped.
-
-* **Conventional Commits are the current default** (e.g. `fix(frontend): …`,
-  `feat(saas): …`, `Sec-8: …`) — one focused commit per logical change, with a
-  PR per sprint or fix. This matches recent history (S37–Sec-8, PRs #88–#102).
-  The older single-bundled-commit **`Land Sprint <id>: …`** style remains
-  acceptable for sweeping multi-area sprints — see `feedback_commit_style`.
-* **Body:** anchors (papers / RFCs cited), subsystems landed, key
-  non-obvious decisions, verification summary, roadmap state update.
-* **Co-author:** `Co-Authored-By: Claude <model> <noreply@anthropic.com>` on
-  every commit you author with Claude help — use the model that actually wrote
-  it (currently Claude Opus 4.8).
-
-### Branching (active two-dev mode)
-
-* **Default branch:** `main`. CI runs on every push.
-* **NEW RULE as of 2026-05-19:** with two developers in flight, push
-  to a feature branch and open a PR instead of pushing to `main`
-  directly. Naming convention: `feature/<sprint-id>-<slug>` (e.g.,
-  `feature/s22-tmle`, `feature/audit-burn-down`).
-* **Single-author exceptions:** purely-additive coordination docs
-  (this file, `docs/SPRINTS.md`, `docs/AUDIT_BURN_DOWN.md`) can land
-  on `main` directly — they only ADD context, never modify code paths
-  the other dev might be working on.
-
-### Sprint claiming
-
-* **Open a GitHub issue** before starting any sprint that touches code.
-  Issue title: `Sprint <id>: <one-line goal>`. Assign yourself.
-* **Reserve the sprint id in `docs/SPRINTS.md`** by adding a row under
-  the "In Flight" section with your handle + the date.
-* If you find the sprint already claimed, work on a different one or
-  coordinate with the other dev via the issue.
-
-## How we work
-
-### Pre-push protocol
-
-Before pushing ANY commit, run these locally — CI will block on them:
+Python 3.11/3.12 FastAPI backend · React + Vite + Vitest frontend · SQLite in
+dev and on the free-tier box, Postgres in prod · DuckDB for analytics.
 
 ```sh
-# Backend:
+# Backend (aurabackend/). Use the REPO-ROOT .venv — aurabackend/.venv holds
+# broken 0-byte stubs, so a local rc=0 from it is meaningless.
 cd aurabackend
-python -m ruff check --fix . --ignore E501,E402,F401,W191,W291,W293,F841,E701,E712,F823
-python -m pytest tests/<the_file_you_touched>.py --tb=short
-# Optionally a focused cross-sprint regression sample to catch surprises.
+../.venv/Scripts/python.exe -m pytest tests/<file>.py --tb=short   # test
+../.venv/Scripts/python.exe -m ruff check --fix .                  # lint
 
-# Frontend (only if you touched it):
-cd frontend
-npx tsc --noEmit
-npx eslint src --max-warnings 0
-npx vitest run
+# Frontend (frontend/)
+npm run test         # vitest run
+npm run lint         # eslint .
+npm run build        # tsc -b && vite build — this IS the typecheck CI runs
+npm run dev:fresh    # vite --force; required after any branch switch
+
+# Migrations
+cd aurabackend && ../.venv/Scripts/python.exe -m alembic upgrade head
 ```
 
-See `feedback_ruff_isort_blank_lines` in memory for why ruff matters.
+Full pre-push gate, tier pattern, and edge-case requirements: `.claude/rules/testing.md`.
 
-### Tests follow the "Tier A + Tier B" pattern for optional deps
+# 🎯 Execution Mode & Workflow
 
-* **Tier A** = pure-Python tests, no optional deps. Runs on the base
-  backend CI lane (always).
-* **Tier B** = tests that need an optional dep (Postgres, dowhy, faiss).
-  Gated by `pytest.mark.skipif(not <dep>_available())` or by an
-  `AURA_*_TEST_DSN` env var. **MUST** have a dedicated CI lane that
-  installs the dep + runs the file. See `feedback_optional_dep_test_gating`.
+1. **Plan before code.** For anything beyond a one-line fix, propose the strategy
+   first and state a 2-step verification plan — how you will prove it works.
+2. **Do not over-engineer.** No abstraction, interface, factory, or config knob
+   that was not requested. Climb to the simplest rung that holds.
+3. **Minimal, surgical diffs.** Do not rewrite working code. A 3-line change beats
+   a rewrite that reads better.
+4. **Write code and its assertions together**, so the change carries its own
+   verification loop.
+5. **Delegate breadth to subagents** — wide code exploration, doc reading, audits.
+   Bound their lint/format steps to the files they touched, and verify the
+   resulting diff yourself; a worker's own scope report is not evidence.
 
-### Persistence layer
+# 🛑 Hard Constraints
 
-* `aurabackend/api_gateway/persistence.py` owns the gateway's SQLAlchemy
-  models, async engine, and session factory.
-* **Lazy-init via `session_scope()`** — schema is created on first
-  session use, NOT at import time and NOT solely from the FastAPI
-  lifespan. This means tests that import a router directly without
-  driving the lifespan still get working tables. Don't break this
-  pattern; it's the fix for the P-1 hotfix bug.
-* **Cross-router reads** of persistence-backed state MUST go through
-  the repository functions in `persistence.py`, not legacy module
-  attribute imports.
+- **NEVER** edit files outside the current task's scope without asking.
+- **NEVER** commit `.env`, secrets, keys, or production credentials.
+- **NEVER** mock an external call when a local test environment exists.
+- **NEVER** use `--no-verify` or otherwise bypass hooks. If a hook fails, fix the cause.
+- **Stage explicit paths.** `git add -A` has swept scratch files into a commit here,
+  and `git status` shows ~594 phantom CRLF-only diffs — the real blast radius is
+  `git diff --ignore-cr-at-eol --numstat`.
+- **If a build or test fails, loop and fix it before reporting done.** Report a
+  failure you cannot fix; never report a pass you did not observe.
+- **Don't add a compatibility feature flag** when you can just change the code.
+  We trust internal call sites.
+- **Don't comment WHAT the code does** — good identifiers do that. Comments are for
+  WHY: hidden constraints, subtle invariants, workarounds for specific bugs.
+- **Don't handle errors that can't happen.** Validate at system boundaries (user
+  input, external APIs); trust internal code. But an error path must name the
+  *true* cause — a handler that maps a broad exception to one narrated reason
+  will eventually lie.
 
-### The tool-render bug workaround
+# 🔄 Compaction Rule
 
-`git commit -m` and `git push` invoked through the Bash tool sometimes
-return `undefined is not an object (evaluating 'H.replace')` — the
-commit may or may not have actually run. Workaround:
+When `/compact` fires, ALWAYS preserve: active sprint/feature roadmaps, breaking
+changes, in-flight PR and CI state, and the exact build verification commands
+above. Run `/compact` intentionally between large tasks rather than waiting for
+the auto-trigger.
 
-1. First try: append `>out.log 2>&1 ; true` to redirect output.
-2. Second try: `git push --quiet origin <branch>` for pushes.
-3. Third try: write a Python wrapper to `runme.py` and invoke as
-   `python runme.py`:
+# 🗺️ Architecture Map
 
-```python
-import subprocess
-r = subprocess.run(["git", "commit", "-F", ".commit_msg.txt"], capture_output=True, text=True)
-with open(".commit.out", "w", encoding="utf-8") as f:
-    f.write(f"rc={r.returncode}\nSTDOUT:\n{r.stdout}\nSTDERR:\n{r.stderr}")
-```
+Entry points only — everything else is derivable from the tree. Do not grow this
+into a directory listing; the last one rotted and named a port that had not
+existed for several sprints.
 
-See `feedback_git_commit_tool_render_bug` for the full escalation
-ladder.
+- **Entry points** — `aurabackend/api_gateway/main.py` (FastAPI gateway, :8000,
+  the only backend surface the frontend talks to); `aurabackend/uasr/service.py`
+  (:8009, self-healing MAPE-K loop, separate container); `frontend/src/main.tsx`.
+- **Core logic** — `aurabackend/api_gateway/routers/`, `aurabackend/uasr/`,
+  `aurabackend/pipeline/`, `aurabackend/shared/`.
+- **Non-obvious:** the counterfactual / financial-audit engine is NOT a separate
+  service — it runs in-process inside the gateway.
 
-### Dev-server staleness (vite + branch switching)
+# 🌿 Process (two-dev mode)
 
-**Switching git branches under a live `vite` dev server can break the running
-app** — dead buttons / no interactivity, blank pages, and (under browser
-automation) phantom file-chooser dialogs. Cause: vite holds its module graph in
-memory and hot-reloads file changes, but a branch switch that makes whole
-modules appear or disappear (e.g. a `frontend/src/shell/` folder present on one
-branch, absent on another) leaves that graph stale, so the browser is served a
-broken bundle. The backend and the on-disk code are fine; only the dev-server
-process is poisoned.
+- **Branching** — default branch `main`; CI runs on every push. With two devs in
+  flight, push a feature branch and open a PR rather than pushing to `main`.
+  Naming: `feature/<sprint-id>-<slug>`. Exception: purely-additive coordination
+  docs (this file, `docs/SPRINTS.md`, `docs/AUDIT_BURN_DOWN.md`) may land directly.
+- **Sprint claiming** — open a GitHub issue titled `Sprint <id>: <goal>`, assign
+  yourself, and reserve the id in `docs/SPRINTS.md` under "In Flight". If it is
+  already claimed, coordinate via the issue.
+- **Sprint ids** — `S<N>` feature · `S<N><letter>` multi-part · `P-<N>`
+  performance/audit-driven · `S<N>.<M>` integration of already-shipped primitives.
+- **Commits** — Conventional Commits (`fix(frontend): …`, `feat(saas): …`). Body
+  carries anchors cited, subsystems landed, non-obvious decisions, and verification.
+  Co-author line names the model that actually wrote it.
+- **All CI jobs green before merging.** The job list lives in `.github/workflows/`
+  — read it there, any copy here goes stale. **SDK Codegen Sync** runs
+  `scripts/generate_sdk.py` with `git diff --exit-code sdk_clients/`; commit
+  regenerated output or the build breaks.
+- **Sprint memory is local, not shared.** Each dev's Claude keeps its own memory
+  under `~/.claude/projects/.../memory/`. If you learn something the other dev
+  needs, write it into this file, a `.claude/rules/` file, or `docs/`.
 
-* **Fix:** stop the dev server and restart clean: `cd frontend && npm run dev:fresh`
-  (`vite --force`, which also clears the dep-optimize cache). Then hard-reload the
-  browser.
-* **Prevention:** the committed `post-checkout` git hook
-  (`.github/hooks/post-checkout`, installed by `scripts/install-hooks.ps1`)
-  prints this reminder whenever a branch switch changes `frontend/`.
-* **Discipline (for Claude sessions):** do NOT churn the working-tree branch
-  while a dev server the human is actively using is running. If you must switch
-  branches for PR work, restart vite with `npm run dev:fresh` afterward and tell
-  the human to hard-reload. Backend-only branches don't need this; frontend ones
-  do.
+# 📚 Pointers
 
-## Where things live
+`docs/SPRINTS.md` (done / in flight / next) · `docs/AUDIT_BURN_DOWN.md` ·
+`ARCHITECTURE.md` · `ENTERPRISE.md` · `STREAMING_FOUNDATIONS.md`.
+Git tool-render bug escalation ladder: `feedback_git_commit_tool_render_bug` in memory.
 
-### Repo structure (key paths)
-
-```
-aurabackend/
-  api_gateway/        — FastAPI gateway on port 8000
-    persistence.py    — Sprint P-1 SQLAlchemy layer (gateway-private)
-    routers/          — endpoint modules
-  counterfactual_service/  — port 8012, causal audit engine (S8-S16, S22+)
-  shared/             — service_factory, audit_log, merkle, signing, …
-  pipeline/streaming/ — S20a primitives (barrier, watermark, triggers, PID)
-  scheduler_service/  — port 8004, distributed_queue.py from S20b
-  uasr/               — Pillar 1 self-healing (S18 primitives)
-  connectors/         — S17 multi-modal (FAISS + DuckDB spatial)
-  tests/              — all pytest tests, single tier unless gated
-sdk/                  — hand-written aura-counterfactual SDK
-sdk_clients/          — auto-generated SDKs (S21a-c)
-scripts/
-  generate_sdk.py     — OpenAPI → typed Python client codegen
-docs/
-  SPRINTS.md          — public sprint registry
-  AUDIT_BURN_DOWN.md  — playbook for performance audit findings
-frontend/             — React + Vite + Vitest
-.github/workflows/
-  ci.yml              — 11-job CI sweep
-```
-
-### Sprint memory (local to each Claude, NOT shared)
-
-Each developer's Claude maintains its own local memory at
-`~/.claude/projects/.../memory/`. These files are NOT shared between
-collaborators. If you discover something important, **write it into
-`CLAUDE.md` or a `docs/` file** so the other dev's Claude can see it.
-
-## Verification + CI
-
-* CI sweep has **14 jobs** as of 2026-05-26: Backend Tests (Python 3.11 +
-  3.12), Backend Lint (ruff), Bandit, Frontend Lint + Tests + Type Check,
-  Scheduler Distributed (Postgres integration), SDK Codegen Sync,
-  E2E Eval Gate (mock + real LLM), Causal Tests (dowhy + econml),
-  Streaming Tests (aiokafka), Contract Tests (Schemathesis).
-  CD workflow (`cd.yml`) builds and pushes 3 Docker tiers to GHCR.
-  Nightly E2E (`nightly-e2e.yml`) boots the full compose stack.
-* **All CI jobs must be green** before merging a PR. If a new optional
-  dep needs a new lane, add it; never silently `pytest.mark.skipif()`
-  and hope the gate catches it.
-* **SDK Codegen Sync** runs `scripts/generate_sdk.py` and `git diff
-  --exit-code sdk_clients/` — if you regenerate locally, commit the
-  result. Drift breaks the build.
-
-## What NOT to do
-
-* **Don't push to `main` directly while two devs are in flight.** Use a
-  feature branch + PR. (Single-dev coordination-docs are the
-  exception — see Branching section.)
-* **Don't add a feature flag for "backwards-compatibility"** when you
-  can just change the code. We trust internal call sites.
-* **Don't write comments explaining WHAT the code does** when good
-  identifiers do that already. Comments are for WHY: hidden constraints,
-  subtle invariants, workarounds for specific bugs. Each comment must
-  earn its keep.
-* **Don't add error handling for cases that can't happen.** Validate at
-  system boundaries (user input, external APIs). Trust internal code.
-
-## Pointers
-
-* `docs/SPRINTS.md` — what's done, what's in flight, what's next.
-* `docs/AUDIT_BURN_DOWN.md` — playbook for the performance audit
-  findings (Mouni's collaborator is driving these).
-* `ARCHITECTURE.md` — repo + service topology (existing).
-* `ENTERPRISE.md` — deployment + compliance posture (existing).
-* `STREAMING_FOUNDATIONS.md` — formal math behind the streaming
-  primitives (existing).
-
-Last updated 2026-06-17 by Mouni. Commit-style + co-author conventions
-synced to actual practice (Conventional Commits; co-author = the authoring
-Claude model, currently Opus 4.8).
-Update the date when you make material changes to this file.
+Last restructured 2026-08-21 into the three-layer layout (root / `.claude/rules/`
+/ `CLAUDE.local.md`). Update the date on material changes.
 
 <!-- SPECKIT START -->
 For additional context about technologies to be used, project structure,

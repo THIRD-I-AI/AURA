@@ -25,11 +25,8 @@ from counterfactual_service import (
 from counterfactual_service.canonical import canonical_dumps, sha256_canonical
 from counterfactual_service.engine import dowhy_available, run_job
 from counterfactual_service.main import register_dataset
-from shared.auth import create_access_token
 
 # Job submit + poll are authenticated and tenant-scoped (see main._new_job).
-_AUTH = {"Authorization":
-         f"Bearer {create_access_token({'sub': 's9-tester', 'org_id': 'org-s9'})}"}
 from counterfactual_service.schemas import (
     CounterfactualQuery,
     DAGSpec,
@@ -37,12 +34,30 @@ from counterfactual_service.schemas import (
     InterventionSpec,
     OutcomeSpec,
 )
+from shared.auth import create_access_token
 from tests._mock_llm import UnifiedMockLLM, install_mock
 from tests._synthetic_data import (
     synthetic_dag_full,
     synthetic_dataset,
 )
 
+
+def _auth() -> dict:
+    """Mint a FRESH token on every call.
+
+    This was a module-level constant, so the token was minted at IMPORT time --
+    minute 0 of pytest collection. settings.access_token_expire_minutes defaults
+    to 30, and the full suite can run far longer than that (observed: 1h42m
+    under load, versus ~21m unloaded), so every test in this module that reached
+    the network past minute 30 failed with AUTHENTICATION_REQUIRED. The suite
+    passed when it was fast and failed when it was slow, which is why this sat
+    here undetected.
+
+    The claims are unchanged, so submit and poll still resolve to the same
+    tenant -- only the mint time moves.
+    """
+    return {"Authorization":
+            f"Bearer {create_access_token({'sub': 's9-tester', 'org_id': 'org-s9'})}"}
 # Tests that touch the engine require dowhy.
 ENGINE_TESTS = pytest.mark.skipif(
     not dowhy_available(),
@@ -311,7 +326,7 @@ async def test_replay_endpoint_returns_artifact(monkeypatch, tmp_path):
         "audience":  "auditor",
     }
 
-    with TestClient(app, headers=_AUTH) as client:
+    with TestClient(app, headers=_auth()) as client:
         r = client.post("/counterfactual/jobs", json=payload)
         assert r.status_code == 200, r.text
         job_id = r.json()["job_id"]
@@ -400,7 +415,7 @@ def test_pdf_endpoint_501_when_renderer_unavailable(monkeypatch, tmp_path):
     from fastapi.testclient import TestClient
 
     from counterfactual_service.main import app
-    with TestClient(app, headers=_AUTH) as client:
+    with TestClient(app, headers=_auth()) as client:
         r = client.get("/counterfactual/artifacts/" + "a" * 64 + "/report.pdf")
         assert r.status_code == 501
         assert "reportlab" in r.text

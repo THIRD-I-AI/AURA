@@ -34,11 +34,9 @@ Wire it into Claude Code
 from __future__ import annotations
 
 import argparse
-import asyncio
 import json
 import logging
 import os
-from contextlib import asynccontextmanager
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger("aura.mcp.server")
@@ -46,11 +44,28 @@ logger = logging.getLogger("aura.mcp.server")
 # ── Optional deps — fail loudly only when actually invoked ────────────
 
 try:
-    from mcp.server.fastmcp import FastMCP  # modern decorator-based API
+    from mcp.server.fastmcp import FastMCP  # mcp <2.0
     _MCP_AVAILABLE = True
-except ImportError:  # pragma: no cover
-    FastMCP = None  # type: ignore[assignment]
-    _MCP_AVAILABLE = False
+except ImportError:
+    try:
+        from mcp.server import MCPServer as FastMCP  # mcp >=2.0: FastMCP renamed to MCPServer
+        _MCP_AVAILABLE = True
+    except ImportError:  # pragma: no cover
+        FastMCP = None  # type: ignore[assignment]
+        _MCP_AVAILABLE = False
+        try:
+            # Is mcp installed at all, just under a moved API? Ask the
+            # DISTRIBUTION, not the module: `mcp` exposes no __version__, so
+            # reading the attribute would report "unknown" and drop the one
+            # detail that makes this message actionable.
+            from importlib.metadata import version as _dist_version
+            _MCP_IMPORT_ERROR = (
+                f"mcp {_dist_version('mcp')} is installed, but no FastMCP server class was "
+                "found at mcp.server.fastmcp.FastMCP (mcp<2.0) or mcp.server.MCPServer "
+                "(mcp>=2.0). Its API may have moved again."
+            )
+        except Exception:
+            _MCP_IMPORT_ERROR = "mcp package not installed. Run: pip install 'mcp[cli]>=2.0'"
 
 try:
     import sqlglot
@@ -133,9 +148,7 @@ def _assert_select_only(sql: str) -> None:
 
 def build_server() -> "FastMCP":
     if not _MCP_AVAILABLE:
-        raise RuntimeError(
-            "mcp package not installed. Run: pip install 'mcp[cli]>=1.2'"
-        )
+        raise RuntimeError(_MCP_IMPORT_ERROR)
 
     server = FastMCP(
         name="aura-analytics",
