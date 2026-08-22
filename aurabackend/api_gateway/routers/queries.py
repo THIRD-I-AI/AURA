@@ -50,8 +50,6 @@ router = APIRouter(tags=["Queries"])
 _dashboard_counters_lock = threading.Lock()
 _dashboard_counters: Dict[str, int] = {"total_rows": 0, "queries_run": 0}
 
-_jobs_lock = threading.Lock()
-_jobs_store: Dict[str, Dict[str, Any]] = {}
 
 # Cross-router shims: dashboards.py and lineage.py used to import
 # ``_saved_queries_store`` + ``_saved_queries_lock`` directly. They
@@ -1006,25 +1004,38 @@ async def get_dashboard_stats(request: Request):
 
 # ── Job Control ──────────────────────────────────────────────────────
 
+# These two used to read a module-level `_jobs_store` that NOTHING in the
+# backend ever wrote to — verified repo-wide: the name appeared only in its own
+# declaration and these two lookups. So `job` was always None and both handlers
+# fell through to an unconditional {"success": true}, reporting that a job had
+# been approved or cancelled when no such job existed and no action was taken.
+#
+# On an audit platform that is close to the worst possible failure mode: a
+# human-approval gate that answers "approved" to anything, including a job id
+# that was never real. A caller cannot tell a genuine approval from a
+# fabricated one, and the fabricated one is indistinguishable in a log.
+#
+# There is no store to consult, so the honest answer is 404. The routes are kept
+# rather than deleted so the published OpenAPI contract and the generated SDKs
+# stay valid. If job control is implemented later it belongs on the durable,
+# tenant-scoped persistence layer — and it must check ownership, which these
+# never did either.
+
 @router.post("/jobs/{job_id}/approve")
 async def approve_job(job_id: str):
     """Approve a pending job for execution."""
-    with _jobs_lock:
-        job = _jobs_store.get(job_id)
-        if job:
-            job["status"] = "approved"
-            job["approved_at"] = datetime.now().isoformat()
-            return {"success": True, "job_id": job_id, "status": "approved"}
-    return {"success": True, "job_id": job_id, "status": "approved", "message": "Job approved (auto)"}
+    raise HTTPException(
+        status_code=404,
+        detail=f"No job '{job_id}'. Job approval is not backed by a store; "
+               "it never approved anything.",
+    )
 
 
 @router.post("/jobs/{job_id}/cancel")
 async def cancel_job(job_id: str):
     """Cancel a pending or running job."""
-    with _jobs_lock:
-        job = _jobs_store.get(job_id)
-        if job:
-            job["status"] = "cancelled"
-            job["cancelled_at"] = datetime.now().isoformat()
-            return {"success": True, "job_id": job_id, "status": "cancelled"}
-    return {"success": True, "job_id": job_id, "status": "cancelled", "message": "Job cancelled"}
+    raise HTTPException(
+        status_code=404,
+        detail=f"No job '{job_id}'. Job cancellation is not backed by a store; "
+               "it never cancelled anything.",
+    )

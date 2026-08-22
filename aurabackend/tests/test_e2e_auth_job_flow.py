@@ -89,3 +89,25 @@ def test_financial_audit_route_resolves_its_dependency(gw):
     r = gw.post(f"{V1}/counterfactual/audit/financial",
                 json={"uploaded_file": "nope.csv"})
     assert r.status_code != 500, r.text
+
+
+def test_job_approve_and_cancel_do_not_fake_success(gw) -> None:
+    """A HITL gate must never claim it approved something it did not.
+
+    Both endpoints previously read a module-level `_jobs_store` that nothing in
+    the backend ever wrote to, so the lookup always missed and both fell through
+    to an unconditional {"success": true} -- for ANY job id, including one that
+    was never real. On an audit platform that is indistinguishable, to the
+    caller and in the logs, from a genuine human approval.
+
+    404 is the honest answer while no store backs them. What this test really
+    guards is the invariant: never 200-with-success for an unknown job.
+    """
+    for verb in ("approve", "cancel"):
+        r = gw.post(f"{V1}/jobs/definitely-not-a-real-job-id/{verb}", json={})
+        assert r.status_code != 200, (
+            f"/jobs/.../{verb} returned 200 for a job that does not exist"
+        )
+        if r.status_code == 404:
+            body = r.json()
+            assert body.get("success") is not True
