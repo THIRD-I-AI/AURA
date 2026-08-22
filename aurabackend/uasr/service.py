@@ -431,6 +431,130 @@ async def ingest_batch(req: IngestRequest, db: AsyncSession = Depends(get_db)):
     }
 
 
+@app.post("/uasr/heal")
+async def heal_batch(req: IngestRequest, db: AsyncSession = Depends(get_db)):
+    """Heal a batch and RETURN THE ROWS. The endpoint any pipeline can attach to.
+
+    This is the difference between a monitor and a self-healing layer.
+    ``/uasr/ingest`` detects drift, diagnoses it, generates a shim and files a
+    recovery record -- but it hands back a verdict and never touches the
+    caller's data, and it does not apply already-deployed shims either.
+    Closed-loop healing existed in exactly one place: the Kafka MAPE-K worker.
+    Any pipeline that could not publish to Kafka -- Airflow, dbt, Spark, an LLM
+    pipeline -- got monitoring and nothing more.
+
+    The sequence below is deliberately the same one mapek_worker.py runs
+    (apply known shims -> detect -> recover -> re-apply -> emit healed rows), so
+    HTTP and Kafka callers get identical semantics rather than two dialects of
+    "healed" that drift apart.
+
+    Why return rows instead of exposing the shim: shims are Python. A dbt model
+    or a Spark job cannot execute one, but every pipeline on earth can POST JSON
+    and read JSON back. Returning data keeps the integration language-agnostic.
+
+    The response always carries `rows`. On the clean path they are the input
+    rows with any standing shims applied; on the drift path they are the rows
+    after a freshly deployed shim; and when recovery does NOT deploy -- it
+    failed, or a location shift was routed to the human approval queue -- the
+    rows come back UNHEALED with ``healed: false`` and a reason. That case is
+    the one to read carefully: quietly returning unhealed data as though it were
+    fixed is precisely the failure this layer exists to prevent.
+    """
+    batch = BatchPayload(
+        source_id=req.source_id,
+        batch_id=req.batch_id or f"heal_{req.source_id}_{uuid.uuid4().hex[:8]}",
+        columns=req.columns or (list(req.rows[0].keys()) if req.rows else []),
+        rows=req.rows,
+        schema_snapshot=req.schema_snapshot,
+        metadata=req.metadata,
+    )
+
+    # 1. Apply shims already deployed for this source, so drift that was
+    #    resolved earlier does not re-fire on every batch.
+    standing = len(_loop.get_deployed_shims(batch.source_id))
+    if standing:
+        batch.rows = _loop.apply_shims(batch.source_id, batch.rows)
+        batch.columns = list(batch.rows[0].keys()) if batch.rows else batch.columns
+
+    gate_decision = _gateway.check(batch)
+    drift_result = _detector.detect(batch)
+
+    if not drift_result.drift_detected:
+        return {
+            "status": "clean",
+            "healed": bool(standing),
+            "shims_applied": standing,
+            "drift_detected": False,
+            "rows": batch.rows,
+            "batch_id": batch.batch_id,
+            "gate": gate_decision.to_dict(),
+        }
+
+    # 2. New drift: persist the event, then let the recovery loop plan a fix.
+    event_id = uuid.uuid4().hex[:16]
+    db.add(DriftEvent(
+        id=event_id,
+        source_id=batch.source_id,
+        drift_type=drift_result.drift_type.value if drift_result.drift_type else "unknown",
+        severity=drift_result.severity.value if drift_result.severity else "medium",
+        kl_divergence=drift_result.kl_divergence,
+        cosine_distance=drift_result.cosine_distance,
+        drift_vector=drift_result.drift_vector,
+        details={
+            "description": drift_result.details,
+            "affected_columns": drift_result.affected_columns,
+        },
+    ))
+    await db.flush()
+
+    loop_result = await _loop.run(drift_result, batch)
+
+    db.add(RecoveryRecord(
+        id=loop_result.recovery_id,
+        drift_event_id=event_id,
+        source_id=batch.source_id,
+        status=loop_result.status.value,
+        diagnosis=loop_result.diagnosis.hypothesis if loop_result.diagnosis else None,
+        shim_code=loop_result.shim.shim_code if loop_result.shim else None,
+        generation_method=loop_result.shim.generation_method if loop_result.shim else "template",
+        validation_passed=loop_result.shim.validation_passed if loop_result.shim else None,
+        post_kl_divergence=loop_result.shim.post_kl_divergence if loop_result.shim else None,
+        latency_seconds=loop_result.total_latency_seconds,
+        completed_at=None if loop_result.status == RecoveryStatus.PENDING_APPROVAL
+        else datetime.now(timezone.utc),
+    ))
+    await db.commit()
+    _tracker.record_from_loop_result(batch.source_id, loop_result)
+
+    # 3. Only a DEPLOYED shim may touch the caller's data. Anything else
+    #    (failed, or held for human approval) returns the rows untransformed
+    #    and says so -- see the docstring.
+    deployed = loop_result.status == RecoveryStatus.DEPLOYED
+    if deployed:
+        batch.rows = _loop.apply_shims(batch.source_id, batch.rows)
+        batch.columns = list(batch.rows[0].keys()) if batch.rows else batch.columns
+
+    return {
+        "status": loop_result.status.value,
+        "healed": deployed or bool(standing),
+        "shims_applied": len(_loop.get_deployed_shims(batch.source_id)),
+        "drift_detected": True,
+        "drift_type": drift_result.drift_type.value if drift_result.drift_type else None,
+        "severity": drift_result.severity.value if drift_result.severity else None,
+        "drift_event_id": event_id,
+        "recovery_id": loop_result.recovery_id,
+        "shim_deployed": deployed,
+        "post_kl": loop_result.shim.post_kl_divergence if loop_result.shim else None,
+        "reason": None if deployed else (
+            loop_result.diagnosis.hypothesis if loop_result.diagnosis
+            else "recovery did not deploy a shim; rows returned unchanged"
+        ),
+        "rows": batch.rows,
+        "latency_seconds": round(loop_result.total_latency_seconds, 3),
+        "gate": gate_decision.to_dict(),
+    }
+
+
 @app.post("/uasr/baseline")
 async def register_baseline(req: BaselineRequest):
     """Register a reference baseline for a data source."""
