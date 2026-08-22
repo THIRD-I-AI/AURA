@@ -30,7 +30,7 @@
     "d3-force": "^3.0.0",
     "dockview-react": "^6.6.1",
     "lucide-react": "^0.562.0",
-    "motion": "^12.42.2",
+    "motion": "^13.1.0",
     "radix-ui": "^1.6.2",
     "react": "^19.1.1",
     "react-dom": "^19.2.8",
