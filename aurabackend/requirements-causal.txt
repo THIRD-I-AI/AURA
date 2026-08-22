@@ -23,13 +23,13 @@
 # caught this on the original CI run; bumping to 0.13 keeps the
 # networkx range we have without forcing every other AURA pod onto
 # a narrower one.
-dowhy>=0.13,<0.16
+dowhy>=0.14,<0.16
 networkx>=3.0,<4.0
 
 # Robust partial correlation (collinearity-aware) + ADF stationarity test
 # for the causal_service guardrail that refuses attribution when training
 # data spans a regime change.
-pingouin>=0.5.4,<1.0
+pingouin>=0.6.1,<1.0
 statsmodels>=0.14,<1.0
 
 # Sprint 9 — Counterfactual Audit Engine (Auditor tier)
