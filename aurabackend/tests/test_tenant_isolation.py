@@ -71,3 +71,57 @@ def test_tenant_upload_dir_is_per_principal(tmp_path, monkeypatch):
     # hostile org id cannot escape the uploads root
     h = workspaces.tenant_upload_dir(_req("../../keys"))
     assert os.path.commonpath((os.path.abspath(h), str(tmp_path))) == str(tmp_path)
+
+
+# ── /files/{id}/profile must not serve another tenant's profile ──────────
+
+def test_file_profile_is_tenant_scoped(tmp_path, monkeypatch):
+    """A profile that EXISTS must still 404 when the file is not the caller's.
+
+    GET /files/{file_id} was patched for this bug; GET /files/{file_id}/profile
+    was missed and took no `request` at all, so it could not scope even in
+    principle. file_id is a filename, not an unguessable id, and DatasetProfile
+    carries the column profile INCLUDING sample values -- so an unscoped read
+    handed one org another org's data.
+
+    The stub repository below always returns a profile. That is the whole point:
+    if the gate is removed, this test gets 200 and the leak is back. A test that
+    merely asked for a nonexistent profile would pass either way and prove
+    nothing.
+    """
+    monkeypatch.setenv("AURA_UPLOADS_ROOT", str(tmp_path))
+    from shared.storage import reset_storage_backend
+    reset_storage_backend()
+
+    # orgB owns the file; the caller (unauthenticated -> "default") does not.
+    (tmp_path / "orgB").mkdir()
+    (tmp_path / "orgB" / "secret.csv").write_text("salary\n100000\n")
+
+    import api_gateway.routers.files as files_mod
+
+    class _Profile:
+        dataset_name = "secret.csv"
+        rows_count = 1
+        columns_count = 1
+        profile = {"salary": {"samples": [100000]}}   # the payload that leaks
+        updated_at = None
+
+    class _Repo:
+        async def get_dataset_profile(self, file_id):
+            return _Profile()                          # always found
+
+    async def _fake_get_repository():
+        yield _Repo()
+
+    monkeypatch.setattr(files_mod, "get_repository", _fake_get_repository)
+
+    from fastapi.testclient import TestClient
+
+    from api_gateway.main import app
+    resp = TestClient(app).get("/api/v1/files/secret.csv/profile")
+
+    assert resp.status_code == 404, (
+        "profile for another tenant's file was served: "
+        f"{resp.status_code} {resp.text[:200]}"
+    )
+    assert "100000" not in resp.text

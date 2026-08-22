@@ -33,7 +33,16 @@ def _compiles_and_defines_transform(code: str):
     """A shim must parse, compile, and define a callable transform()."""
     assert code and "def transform" in code
     ast.parse(code)                       # defect #1: valid Python
-    ns: dict = {}
+    # Mirror the real sandbox namespace (recovery_loop._sandbox_execute), which
+    # pre-injects `logging` and whose __builtins__ whitelist omits __import__.
+    # Exec'ing into a bare {} tested a contract production never offers: the
+    # templates used to carry their own `import logging`, which compiled fine
+    # here and then died with "__import__ not found" inside the sandbox — so
+    # every generated shim failed validation and the recovery loop exhausted
+    # its retries without ever deploying. The import is gone from the
+    # templates; this namespace is why they still resolve `logging`.
+    import logging as _logging
+    ns: dict = {"logging": _logging}
     exec(compile(code, "<shim>", "exec"), ns)  # noqa: S102
     fn = ns.get("transform")
     assert callable(fn)
