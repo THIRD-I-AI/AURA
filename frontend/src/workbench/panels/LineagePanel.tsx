@@ -78,7 +78,10 @@ export default function LineagePanel() {
         <div className="grid grid-cols-[110px_1fr_130px] border-b border-border px-4 py-2.5 font-mono text-2xs font-semibold uppercase tracking-widest text-text-tertiary">
           <span>Type</span><span>Node</span><span className="text-right">Downstream</span>
         </div>
-        {graph === null && <div className="px-4 py-3.5 text-xs text-text-tertiary">Loading lineage…</div>}
+        {graph === null && !error && <div className="px-4 py-3.5 text-xs text-text-tertiary">Loading lineage…</div>}
+        {error && graph === null && (
+          <EmptyState intent="error" title="Unavailable" action={<Button variant="outline" size="sm" onClick={load}>Retry</Button>} />
+        )}
         {graph !== null && nodes.length === 0 && !error && (
           <EmptyState intent="empty" title="No lineage yet" description="Run queries and pin dashboards — AURA traces which datasets feed which results." />
         )}

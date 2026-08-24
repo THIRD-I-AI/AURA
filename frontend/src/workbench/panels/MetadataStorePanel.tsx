@@ -50,7 +50,10 @@ export default function MetadataStorePanel() {
       {error && <div className="border border-border bg-secondary px-3 py-1.5 font-mono text-xs text-danger">{error}</div>}
 
       <Panel>
-        {models === null && <div className="px-4 py-3.5 text-xs text-text-tertiary">Loading catalog…</div>}
+        {models === null && !error && <div className="px-4 py-3.5 text-xs text-text-tertiary">Loading catalog…</div>}
+        {error && models === null && (
+          <EmptyState intent="error" title="Unavailable" action={<Button variant="outline" size="sm" onClick={load}>Retry</Button>} />
+        )}
         {models !== null && count === 0 && !error && (
           <EmptyState
             intent="empty"

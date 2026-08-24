@@ -77,7 +77,6 @@ export default function CostPanel() {
           <EmptyState
             intent="error"
             title="Unavailable"
-            description={error}
             action={<Button variant="outline" size="sm" onClick={load}>Retry</Button>}
           />
         )}

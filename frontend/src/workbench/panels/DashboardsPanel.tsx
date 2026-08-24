@@ -50,7 +50,12 @@ export default function DashboardsPanel() {
         </Panel>
       ) : (
         <div className="grid grid-cols-[repeat(auto-fill,minmax(min(260px,100%),1fr))] gap-3">
-          {items === null && <Panel className="p-4 text-xs text-text-tertiary">Loading…</Panel>}
+          {items === null && !error && <Panel className="p-4 text-xs text-text-tertiary">Loading…</Panel>}
+          {error && items === null && (
+            <Panel>
+              <EmptyState intent="error" title="Unavailable" action={<Button variant="outline" size="sm" onClick={load}>Retry</Button>} />
+            </Panel>
+          )}
           {(items ?? []).map((d) => (
             <Panel key={d.id} className="flex cursor-pointer flex-col gap-1.5 p-4 transition-colors hover:border-signal">
               <div className="flex items-center gap-2">

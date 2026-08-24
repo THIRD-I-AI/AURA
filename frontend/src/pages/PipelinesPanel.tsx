@@ -982,7 +982,7 @@ const PipelinesPanel: React.FC<PipelinesPanelProps> = () => {
         </div>
 
         {isLoading && !result && !sourcePreview && (
-          <div className="py-3 text-center text-sm text-text-tertiary">Loading source preview…</div>
+          <EmptyState intent="awaiting" title="Loading source preview" />
         )}
 
         {sourcePreview && (
@@ -1281,7 +1281,7 @@ const PipelinesPanel: React.FC<PipelinesPanelProps> = () => {
             )}
 
             {savedLoading && savedPipelines.length === 0 && (
-              <div className="py-3 text-center text-sm text-text-tertiary">Loading saved pipelines…</div>
+              <EmptyState intent="awaiting" title="Loading saved pipelines" />
             )}
 
             {!savedLoading && savedPipelines.length === 0 && !savedError && (
