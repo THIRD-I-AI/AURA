@@ -6,6 +6,7 @@ import { RefreshCw } from 'lucide-react';
 
 import { Panel } from '@/components/ui-kit/panel';
 import { Button } from '@/components/ui-kit/button';
+import { EmptyState } from '@/components/ui-kit/empty-state';
 import { costService } from '../../services/api';
 
 type Row = { provider: string; model: string; kind: string; tokens: number };
@@ -71,11 +72,20 @@ export default function CostPanel() {
         <div className="grid grid-cols-[1fr_1fr_100px_110px] border-b border-border px-4 py-2.5 font-mono text-2xs font-semibold uppercase tracking-widest text-text-tertiary">
           <span>Provider</span><span>Model</span><span className="text-right">Kind</span><span className="text-right">Tokens</span>
         </div>
-        {data === null && <div className="px-4 py-3.5 text-xs text-text-tertiary">Loading…</div>}
+        {data === null && !error && <div className="px-4 py-3.5 text-xs text-text-tertiary">Loading…</div>}
+        {error && data === null && (
+          <EmptyState
+            intent="error"
+            title="Unavailable"
+            action={<Button variant="outline" size="sm" onClick={load}>Retry</Button>}
+          />
+        )}
         {data !== null && rows.length === 0 && !error && (
-          <div className="px-4 py-5 text-center text-sm leading-relaxed text-text-tertiary">
-            No token usage recorded yet. Run a query or an audit and per-model usage appears here.
-          </div>
+          <EmptyState
+            intent="awaiting"
+            title="No usage yet"
+            description="Run a query or an audit and per-model usage appears here."
+          />
         )}
         {rows.map((r, i) => (
           <div key={i} className="grid grid-cols-[1fr_1fr_100px_110px] items-center border-t border-border px-4 py-2.5">

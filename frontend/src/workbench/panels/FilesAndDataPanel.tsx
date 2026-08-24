@@ -86,7 +86,10 @@ export default function FilesAndDataPanel() {
         <div className="grid grid-cols-[1fr_96px_84px] border-b border-border px-4 py-2.5 font-mono text-2xs font-semibold uppercase tracking-wider text-text-tertiary">
           <span>Dataset</span><span className="text-right">Size</span><span className="text-right">Type</span>
         </div>
-        {files === null && <div className="px-4 py-3.5 text-xs text-text-tertiary">Loading datasets…</div>}
+        {files === null && !error && <div className="px-4 py-3.5 text-xs text-text-tertiary">Loading datasets…</div>}
+        {error && files === null && (
+          <EmptyState intent="error" title="Unavailable" action={<Button variant="outline" size="sm" onClick={load}>Retry</Button>} />
+        )}
         {files !== null && count === 0 && !error && (
           <EmptyState intent="empty" title="No datasets yet" description="Upload a CSV, Excel, JSON, or Parquet file — it becomes queryable in Ask AURA immediately." />
         )}

@@ -6,6 +6,7 @@ import { RefreshCw } from 'lucide-react';
 
 import { Panel } from '@/components/ui-kit/panel';
 import { Button } from '@/components/ui-kit/button';
+import { EmptyState } from '@/components/ui-kit/empty-state';
 import { cn } from '@/lib/cn';
 import { connectorService } from '../../services/api';
 
@@ -49,11 +50,12 @@ export default function ConnectorsPanel() {
 
       <Panel>
         <div className={sectionLabel}>Database connections</div>
-        {data === null && <div className="px-4 py-3.5 text-xs text-text-tertiary">Loading connectors…</div>}
+        {data === null && !error && <div className="px-4 py-3.5 text-xs text-text-tertiary">Loading connectors…</div>}
+        {error && data === null && (
+          <EmptyState intent="error" title="Unavailable" action={<Button variant="outline" size="sm" onClick={load}>Retry</Button>} />
+        )}
         {data !== null && conns.length === 0 && !error && (
-          <div className="px-4 py-4 text-sm leading-relaxed text-text-tertiary">
-            No external database connections. Add PostgreSQL, MySQL, or BigQuery to query live warehouses alongside your files.
-          </div>
+          <EmptyState intent="empty" title="No connections yet" description="Add PostgreSQL, MySQL, or BigQuery to query live warehouses alongside your files." />
         )}
         {conns.map((c, i) => (
           <div key={c.id || c.source_id || i} className="flex items-center gap-2.5 border-t border-border px-4 py-2.5">

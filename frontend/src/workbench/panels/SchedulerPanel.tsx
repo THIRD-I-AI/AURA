@@ -107,7 +107,10 @@ export default function SchedulerPanel() {
       {error && <div className="border border-border bg-secondary px-3 py-1.5 font-mono text-xs text-danger">{error}</div>}
 
       <Panel>
-        {items === null && <div className="px-4 py-3.5 text-xs text-text-tertiary">Loading scheduled jobs…</div>}
+        {items === null && !error && <div className="px-4 py-3.5 text-xs text-text-tertiary">Loading scheduled jobs…</div>}
+        {error && items === null && (
+          <EmptyState intent="error" title="Unavailable" action={<Button variant="outline" size="sm" onClick={load}>Retry</Button>} />
+        )}
         {items !== null && count === 0 && !error && (
           <EmptyState
             intent="empty"

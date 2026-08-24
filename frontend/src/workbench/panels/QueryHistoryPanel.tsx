@@ -54,7 +54,10 @@ export default function QueryHistoryPanel() {
       {error && <div className="border border-border bg-secondary px-3 py-1.5 font-mono text-xs text-danger">{error}</div>}
 
       <Panel>
-        {rows === null && <div className="px-4 py-3.5 text-xs text-text-tertiary">Loading query history…</div>}
+        {rows === null && !error && <div className="px-4 py-3.5 text-xs text-text-tertiary">Loading query history…</div>}
+        {error && rows === null && (
+          <EmptyState intent="error" title="Unavailable" action={<Button variant="outline" size="sm" onClick={load}>Retry</Button>} />
+        )}
         {rows !== null && count === 0 && !error && (
           <EmptyState intent="empty" title="No queries yet" description="Ask a question in Ask AURA — it lands here with its generated SQL and status." />
         )}

@@ -27,6 +27,12 @@ import { VIEW_REGISTRY } from './viewRegistry';
 import { ViewHost } from './views';
 import { SystemRadar } from '../components/radar';
 import type { SystemRadarModel, Severity } from '../components/radar';
+import {
+  LayoutDashboard, SquareTerminal, MessageSquare, BarChart3, BookOpen, History,
+  ShieldCheck, GitBranch, BadgeCheck, AlertTriangle, Workflow, Activity, Wrench,
+  CalendarClock, Link2, DollarSign, Plug, FolderOpen, Share2, Database,
+  PanelLeftClose, PanelLeftOpen, type LucideIcon,
+} from 'lucide-react';
 import './workbench.css';
 
 type Msg = { q: string; sql?: string; critic?: string; columns?: string[]; rows?: string[][]; answer?: string };
@@ -39,6 +45,16 @@ const NAV_GROUPS: [string, string[]][] = [
   ['OPERATE', ['Pipelines', 'Streaming', 'Healing Queue', 'Scheduler', 'Webhooks', 'Cost']],
   ['DATA', ['Connectors', 'Files & Data', 'Lineage', 'Metadata Store']],
 ];
+
+/* Icon per nav destination — purely visual scanability, no data behind it. */
+const NAV_ICONS: Record<string, LucideIcon> = {
+  'Cockpit': LayoutDashboard, 'Terminal': SquareTerminal, 'Ask AURA': MessageSquare,
+  'Dashboards': BarChart3, 'Library': BookOpen, 'Query History': History,
+  'Audit Workbench': ShieldCheck, 'Counterfactuals': GitBranch, 'Certificates': BadgeCheck,
+  'Exception Queue': AlertTriangle, 'Pipelines': Workflow, 'Streaming': Activity,
+  'Healing Queue': Wrench, 'Scheduler': CalendarClock, 'Webhooks': Link2, 'Cost': DollarSign,
+  'Connectors': Plug, 'Files & Data': FolderOpen, 'Lineage': Share2, 'Metadata Store': Database,
+};
 
 /* Descriptions for platform modules that don't yet have a dedicated inline view. */
 // STUB_DESCS is gone: every nav entry now resolves to a real panel in
@@ -79,6 +95,7 @@ export default function Workbench() {
   const [toast, setToast] = useState<string | null>(null);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [navOpen, setNavOpen] = useState(false); // mobile nav drawer (<860px)
+  const [navCollapsed, setNavCollapsed] = useState(false); // desktop icon-only rail
   const [paletteQ, setPaletteQ] = useState('');
   const [bootIdx, setBootIdx] = useState(0);
   const [audience, setAudience] = useState<'operator' | 'auditor' | 'analyst'>('operator');
@@ -458,7 +475,10 @@ export default function Workbench() {
       <div style={{ display: 'flex', alignItems: 'center', gap: 16, height: 54, padding: '0 24px', background: 'var(--surface)', borderBottom: '1px solid var(--border)', flex: 'none' }}>
         <div className="aw-burger" onClick={() => setNavOpen((o) => !o)} role="button" aria-label="Toggle navigation">☰</div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}><span style={{ width: 8, height: 8, background: 'var(--accent)', borderRadius: 0 }} /><span className="aw-display" style={{ fontWeight: 700, fontSize: 15, letterSpacing: '.1em' }}>AURA</span></div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 7, fontSize: 12.5, color: 'var(--text2)', border: '1px solid var(--border)', borderRadius: 0, padding: '5px 10px' }}>{getCurrentWorkspaceId()}</div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12.5, color: 'var(--text2)', border: '1px solid var(--border)', borderRadius: 0, padding: '4px 10px 4px 4px' }}>
+          <span className="aw-mono" style={{ width: 18, height: 18, display: 'grid', placeItems: 'center', fontSize: 9.5, fontWeight: 700, color: 'var(--accent)', background: 'var(--accent-dim)', border: '1px solid var(--accent-bd)' }}>{getCurrentWorkspaceId().slice(0, 2).toUpperCase()}</span>
+          {getCurrentWorkspaceId()}
+        </div>
         {gatewayUp === false && <div className="aw-mono" style={{ fontSize: 9.5, fontWeight: 600, letterSpacing: '.08em', color: 'var(--danger)', background: 'var(--sunken)', border: '1px solid var(--border)', borderRadius: 0, padding: '3px 7px' }}>GATEWAY OFFLINE</div>}
         <div style={{ flex: 1 }} />
         <div onClick={() => { setPaletteOpen(true); setTimeout(() => paletteInput.current?.focus(), 30); }} className="aw-mono aw-hover-accent-bd aw-topbar-search" style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 8, fontSize: 11, fontWeight: 500, color: 'var(--text2)', border: '1px solid var(--border)', borderRadius: 0, padding: '5px 10px' }}>
@@ -470,37 +490,58 @@ export default function Workbench() {
       <div style={{ display: 'flex', flex: 1, minHeight: 0 }}>
         <div className={`aw-backdrop${navOpen ? ' aw-open' : ''}`} onClick={() => setNavOpen(false)} />
         {/* nav */}
-        <div className={`aw-nav${navOpen ? ' aw-open' : ''}`} style={{ width: 204, flex: 'none', borderRight: '1px solid var(--border)', background: 'var(--surface)', padding: '16px 10px 20px', display: 'flex', flexDirection: 'column', gap: 18, overflowY: 'auto' }}>
+        <div className={`aw-nav${navOpen ? ' aw-open' : ''}`} style={{ width: navCollapsed ? 56 : 204, flex: 'none', borderRight: '1px solid var(--border)', background: 'var(--surface)', padding: navCollapsed ? '10px 6px 16px' : '10px 10px 20px', display: 'flex', flexDirection: 'column', gap: 18, overflowY: 'auto', overflowX: 'hidden', transition: 'width .16s var(--ease-out)' }}>
+          <button
+            type="button"
+            onClick={() => setNavCollapsed((c) => !c)}
+            className="aw-hover-raise aw-topbar-search"
+            aria-label={navCollapsed ? 'Expand navigation' : 'Collapse navigation'}
+            title={navCollapsed ? 'Expand navigation' : 'Collapse navigation'}
+            style={{ alignSelf: navCollapsed ? 'center' : 'flex-end', display: 'grid', placeItems: 'center', width: 22, height: 22, border: '1px solid var(--border)', background: 'transparent', color: 'var(--text3)', cursor: 'pointer', flex: 'none' }}
+          >
+            {navCollapsed ? <PanelLeftOpen size={13} /> : <PanelLeftClose size={13} />}
+          </button>
           {NAV_GROUPS.map(([label, items]) => (
             <div key={label}>
-              <div className="aw-mono" style={{ fontSize: 9.5, fontWeight: 600, letterSpacing: '.14em', color: 'var(--text3)', padding: '0 12px 6px' }}>{label}</div>
+              {!navCollapsed && <div className="aw-mono" style={{ fontSize: 9.5, fontWeight: 600, letterSpacing: '.14em', color: 'var(--text3)', padding: '0 12px 6px' }}>{label}</div>}
               <div style={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
                 {items.map((name) => {
                   const active = name === nav;
                   const badge = (name === 'Exception Queue' || name === 'Healing Queue') && pendingCount > 0 ? String(pendingCount) : null;
                   const goNav = () => { selectNav(name); setNavOpen(false); };
+                  const Icon = NAV_ICONS[name];
                   return (
-                    <div key={name} role="button" tabIndex={0} aria-current={active ? 'page' : undefined} onClick={goNav} onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); goNav(); } }} className="aw-nav-item" style={{ color: active ? 'var(--text)' : 'var(--text2)', background: active ? 'var(--accent-dim)' : 'transparent', fontWeight: active ? 600 : 400 }}>
-                      <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>{active && <span style={{ width: 5, height: 5, borderRadius: '50%', background: 'var(--accent)' }} />}{name}</span>
-                      {badge && <span className="aw-mono" style={{ fontSize: 9.5, fontWeight: 600, color: 'var(--warn)', background: 'var(--warn-dim)', borderRadius: 0, padding: '1px 6px' }}>{badge}</span>}
+                    <div key={name} role="button" tabIndex={0} aria-current={active ? 'page' : undefined} onClick={goNav} onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); goNav(); } }} title={navCollapsed ? name : undefined} className="aw-nav-item" style={{ color: active ? 'var(--text)' : 'var(--text2)', background: active ? 'var(--accent-dim)' : 'transparent', fontWeight: active ? 600 : 400, justifyContent: navCollapsed ? 'center' : 'space-between' }}>
+                      <span style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+                        {Icon && <Icon size={15} style={{ flex: 'none', color: active ? 'var(--accent)' : 'var(--text3)' }} />}
+                        {!navCollapsed && <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{name}</span>}
+                      </span>
+                      {!navCollapsed && badge && <span className="aw-mono" style={{ fontSize: 9.5, fontWeight: 600, color: 'var(--warn)', background: 'var(--warn-dim)', borderRadius: 0, padding: '1px 6px' }}>{badge}</span>}
                     </div>
                   );
                 })}
               </div>
             </div>
           ))}
-          <div className="aw-mono" style={{ marginTop: 'auto', padding: '14px 12px 0', borderTop: '1px solid var(--border)', fontSize: 9.5, fontWeight: 500, color: 'var(--text3)', lineHeight: 1.9 }}>
-            {ledger ? (<>LEDGER {ledger.no}<br /><span style={{ color: ledger.intact ? 'var(--accent)' : 'var(--danger)' }}>● {ledger.intact ? 'CHAIN INTACT' : 'CHAIN BROKEN'}</span><br />sha256 {ledger.hash}</>) : (<>LEDGER —<br /><span style={ledgerDown ? { color: 'var(--warn)' } : undefined}>● {ledgerDown ? 'SERVICE OFFLINE' : 'VERIFYING…'}</span></>)}
-          </div>
+          {!navCollapsed && (
+            <div className="aw-mono" style={{ marginTop: 'auto', padding: '14px 12px 0', borderTop: '1px solid var(--border)', fontSize: 9.5, fontWeight: 500, color: 'var(--text3)', lineHeight: 1.9 }}>
+              {ledger ? (<>LEDGER {ledger.no}<br /><span style={{ color: ledger.intact ? 'var(--accent)' : 'var(--danger)' }}>● {ledger.intact ? 'CHAIN INTACT' : 'CHAIN BROKEN'}</span><br />sha256 {ledger.hash}</>) : (<>LEDGER —<br /><span style={ledgerDown ? { color: 'var(--warn)' } : undefined}>● {ledgerDown ? 'SERVICE OFFLINE' : 'VERIFYING…'}</span></>)}
+            </div>
+          )}
         </div>
 
         {/* main */}
         <main id="wb-main" tabIndex={-1} className="aw-main" style={{ flex: 1, minWidth: 0, padding: '24px 26px 28px', display: 'flex', flexDirection: 'column', gap: 16, overflowY: 'auto' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
-            <div className="aw-display" style={{ fontWeight: 600, fontSize: 22 }}>{nav}</div>
-            <div className="aw-chip" role="status" aria-live="polite" aria-atomic="true" aria-label={`System status: ${systemStatus.label}`} style={{ display: 'flex', alignItems: 'center', gap: 6, color: statusColor, background: statusBg, border: `1px solid ${systemStatus.tone === 'ok' ? 'var(--accent-bd)' : statusColor}`, fontWeight: 600, letterSpacing: '.08em' }}><span aria-hidden="true" style={{ width: 5, height: 5, borderRadius: '50%', background: statusColor, animation: 'awpulse 2.4s infinite' }} />{systemStatus.label}</div>
-            <div style={{ flex: 1 }} />
-            <div style={{ fontSize: 12, color: 'var(--text3)' }}>Last full audit replay 06:00 UTC · scheduler on time</div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            <div className="aw-mono" style={{ fontSize: 11, color: 'var(--text3)', display: 'flex', alignItems: 'center', gap: 6 }}>
+              <span>{getCurrentWorkspaceId()}</span><span style={{ color: 'var(--border)' }}>/</span><span style={{ color: 'var(--text2)' }}>{nav}</span>
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
+              <div className="aw-display" style={{ fontWeight: 600, fontSize: 22 }}>{nav}</div>
+              <div className="aw-chip" role="status" aria-live="polite" aria-atomic="true" aria-label={`System status: ${systemStatus.label}`} style={{ display: 'flex', alignItems: 'center', gap: 6, color: statusColor, background: statusBg, border: `1px solid ${systemStatus.tone === 'ok' ? 'var(--accent-bd)' : statusColor}`, fontWeight: 600, letterSpacing: '.08em' }}><span aria-hidden="true" style={{ width: 5, height: 5, borderRadius: '50%', background: statusColor, animation: 'awpulse 2.4s infinite' }} />{systemStatus.label}</div>
+              <div style={{ flex: 1 }} />
+              <div style={{ fontSize: 12, color: 'var(--text3)' }}>Last full audit replay 06:00 UTC · scheduler on time</div>
+            </div>
           </div>
 
           <motion.div

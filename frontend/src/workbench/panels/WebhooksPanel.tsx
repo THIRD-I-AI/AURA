@@ -45,7 +45,10 @@ export default function WebhooksPanel() {
       {error && <div className="border border-border bg-secondary px-3 py-1.5 font-mono text-xs text-danger">{error}</div>}
 
       <Panel>
-        {hooks === null && <div className="px-4 py-3.5 text-xs text-text-tertiary">Loading webhooks…</div>}
+        {hooks === null && !error && <div className="px-4 py-3.5 text-xs text-text-tertiary">Loading webhooks…</div>}
+        {error && hooks === null && (
+          <EmptyState intent="error" title="Unavailable" action={<Button variant="outline" size="sm" onClick={load}>Retry</Button>} />
+        )}
         {hooks !== null && count === 0 && !error && (
           <EmptyState intent="empty" title="No webhooks configured" description="Register an endpoint to receive HMAC-signed events — audit sealed, drift healed, pipeline completed." />
         )}
