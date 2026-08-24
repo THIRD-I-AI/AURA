@@ -2,6 +2,7 @@ import { createContext, useContext, useEffect, useMemo, useState, type ReactNode
 
 export type ViewportClass = 'compact' | 'cozy' | 'standard' | 'wide' | 'ultrawide';
 
+// eslint-disable-next-line react-refresh/only-export-components
 export const BREAKPOINTS = { cozy: 768, standard: 1200, wide: 1600, ultrawide: 2200 } as const;
 
 const ORDER: ViewportClass[] = ['compact', 'cozy', 'standard', 'wide', 'ultrawide'];
