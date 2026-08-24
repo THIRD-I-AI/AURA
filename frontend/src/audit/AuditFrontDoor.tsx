@@ -32,12 +32,12 @@ export function AuditFrontDoor({ embedded = false }: { embedded?: boolean } = {}
   return (
     <div data-testid="audit-front-door">
       {!embedded && <AuthNav />}
-      <h1 className="aud-hero__title">Cryptographically-verifiable compliance audits</h1>
-      <p className="aud-hero__sub">
+      <h1 className="text-3xl font-extrabold tracking-[-0.03em] m-0">Cryptographically-verifiable compliance audits</h1>
+      <p className="text-text-secondary mt-2 mb-5 max-w-[60ch]">
         Pick a regulated-decision scenario. Watch the audit run. Get a signed
         certificate anyone can verify.
       </p>
-      <div data-testid="aud-trust-band" className="aud-trust">
+      <div data-testid="aud-trust-band" className="inline-flex items-center gap-2 font-mono text-xs text-text-secondary bg-raised border border-border rounded-md py-2 px-3 mb-8">
         <span aria-hidden="true">⬢</span>
         Every result is ED25519-signed and independently verifiable.
       </div>
@@ -67,41 +67,41 @@ export function AuditFrontDoor({ embedded = false }: { embedded?: boolean } = {}
         />
       )}
 
-      <div className="aud-scenarios">
+      <div className="grid grid-cols-[repeat(auto-fill,minmax(264px,1fr))] gap-5">
         {scenarios?.map((s) => (
           <button
             key={s.id}
             data-testid={`scenario-card-${s.id}`}
-            className="aud-scenario"
+            className="text-left cursor-pointer bg-surface border border-border rounded-lg p-5 transition-[border-color,transform] duration-150 ease-out enabled:hover:border-signal/40 enabled:hover:-translate-y-0.5 disabled:opacity-[0.55] disabled:cursor-progress"
             onClick={() => run(s.id)}
             disabled={launching !== null}
           >
-            <span className="aud-scenario__vertical">{s.vertical}</span>
-            <h3 className="aud-scenario__title">{s.title}</h3>
-            <p className="aud-scenario__desc">{s.description}</p>
-            <span className="aud-scenario__cta">{launching === s.id ? 'Starting…' : 'Run audit →'}</span>
+            <span className="font-mono text-2xs uppercase tracking-widest text-signal">{s.vertical}</span>
+            <h3 className="my-2 text-md">{s.title}</h3>
+            <p className="text-sm text-text-secondary mb-3">{s.description}</p>
+            <span className="text-sm text-signal font-semibold">{launching === s.id ? 'Starting…' : 'Run audit →'}</span>
           </button>
         ))}
       </div>
 
-      <p className="aud-links">
-        <Link to="/audit/new" className="aud-link">Run a custom audit</Link>
+      <p className="mt-8 text-sm flex gap-3 items-center">
+        <Link to="/audit/new" className="!text-signal no-underline">Run a custom audit</Link>
         <span aria-hidden="true">·</span>
         {/* Hard nav: intentionally exits the public shell to load the dashboard. */}
-        <a href="/app" className="aud-link aud-link--muted">Open dashboard</a>
+        <a href="/app" className="!text-text-tertiary no-underline">Open dashboard</a>
       </p>
 
       {/* Capability band: always renders, so the page states its value even
           when the scenario list is empty or the gateway is unreachable. */}
-      <div className="aud-caps" aria-label="Platform capabilities">
+      <div className="grid grid-cols-[repeat(auto-fit,minmax(min(240px,100%),1fr))] gap-5 mt-8 pt-6 border-t border-border-subtle" aria-label="Platform capabilities">
         {[
           { k: 'Signed & replayable', t: 'Every conclusion is ED25519-signed and deterministically replayable — auditors re-run the exact decision, not a screenshot of it.' },
           { k: 'Self-healing data', t: 'Pipelines detect drift and repair themselves (MAPE-K) across NetSuite, Workday, and Kafka — every human override signed to a WORM log.' },
           { k: 'Fail-closed by design', t: 'PII perimeter masking, tamper-evident audit ledger, and fail-closed auth. Nothing crosses the boundary unsigned or unmasked.' },
         ].map((c) => (
-          <div key={c.k} className="aud-cap">
-            <span className="aud-cap__k">{c.k}</span>
-            <p className="aud-cap__t">{c.t}</p>
+          <div key={c.k} className="border-t-2 border-signal/40 pt-3">
+            <span className="block font-mono text-2xs uppercase tracking-widest text-signal font-semibold">{c.k}</span>
+            <p className="text-sm text-text-secondary leading-[1.6] mt-2">{c.t}</p>
           </div>
         ))}
       </div>
