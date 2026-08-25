@@ -38,7 +38,7 @@ export default function ConnectorsPanel() {
     <div className="flex flex-col gap-3.5" data-testid="wb-connectors-panel">
       <div className="flex items-center gap-3">
         <span className="font-mono text-2xs text-text-tertiary">
-          {data === null ? 'loading…' : `${conns.length} database connection${conns.length === 1 ? '' : 's'} · ${fileSources} file source${fileSources === 1 ? '' : 's'}`}
+          {data === null && !error ? 'loading…' : `${conns.length} database connection${conns.length === 1 ? '' : 's'} · ${fileSources} file source${fileSources === 1 ? '' : 's'}`}
         </span>
         <div className="flex-1" />
         <Button variant="outline" size="sm" onClick={load}>
