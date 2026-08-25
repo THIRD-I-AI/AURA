@@ -25,6 +25,29 @@
             "statusMessage": "Loading workbench state digest"
           }
         ]
+      },
+      {
+        "matcher": "compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cat .claude/session-state/latest-digest.md 2>/dev/null || true",
+            "timeout": 10,
+            "statusMessage": "Loading pre-compaction snapshot"
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash .claude/hooks/precompact-snapshot.sh",
+            "timeout": 20,
+            "statusMessage": "Snapshotting session state before compaction"
+          }
+        ]
       }
     ]
   }
