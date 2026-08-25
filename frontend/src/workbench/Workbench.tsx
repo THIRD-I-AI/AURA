@@ -33,6 +33,7 @@ import {
   CalendarClock, Link2, DollarSign, Plug, FolderOpen, Share2, Database,
   PanelLeftClose, PanelLeftOpen, type LucideIcon,
 } from 'lucide-react';
+import { Skeleton } from '@/components/ui-kit/skeleton';
 import './workbench.css';
 
 type Msg = { q: string; sql?: string; critic?: string; columns?: string[]; rows?: string[][]; answer?: string };
@@ -356,12 +357,12 @@ export default function Workbench() {
   const pendingCount = healing.filter((h) => h.state === 'pending').length;
   const dash = { value: '—', subColor: 'var(--text3)' };
   const stats = [
-    { label: 'Services healthy', value: health ? `${health.up}/${health.total}` : gatewayUp ? '✓' : dash.value, sub: gatewayUp === false ? 'gateway offline' : gatewayUp ? 'gateway up' : 'checking…', subColor: gatewayUp === false ? 'var(--danger)' : gatewayUp ? 'var(--accent)' : 'var(--text3)' },
-    { label: 'Datasets loaded', value: files != null ? String(files) : dash.value, sub: 'workspace uploads', subColor: 'var(--text3)' },
-    { label: 'Ledger records', value: ledger ? ledger.no.replace('#', '') : dash.value, sub: ledger ? `chain ${ledger.intact ? 'intact' : 'BROKEN'}` : ledgerDown ? 'ledger service offline' : 'verifying…', subColor: ledger?.intact === false ? 'var(--danger)' : ledgerDown ? 'var(--warn)' : 'var(--accent)' },
-    { label: 'Recent queries', value: String(history.length), sub: 'this workspace', subColor: 'var(--text3)' },
-    { label: 'Pending approvals', value: String(pendingCount), sub: pendingCount > 0 ? 'healing queue' : 'queue clear', subColor: pendingCount > 0 ? 'var(--warn)' : 'var(--accent)' },
-    { label: 'Pipelines', value: pipelines ? String(pipelines.length) : dash.value, sub: pipelines?.length ? 'streaming' : 'none defined', subColor: 'var(--text3)' },
+    { label: 'Services healthy', value: health ? `${health.up}/${health.total}` : gatewayUp ? '✓' : dash.value, sub: gatewayUp === false ? 'gateway offline' : gatewayUp ? 'gateway up' : 'checking…', subColor: gatewayUp === false ? 'var(--danger)' : gatewayUp ? 'var(--accent)' : 'var(--text3)', loading: gatewayUp === null && health === null },
+    { label: 'Datasets loaded', value: files != null ? String(files) : dash.value, sub: 'workspace uploads', subColor: 'var(--text3)', loading: files == null },
+    { label: 'Ledger records', value: ledger ? ledger.no.replace('#', '') : dash.value, sub: ledger ? `chain ${ledger.intact ? 'intact' : 'BROKEN'}` : ledgerDown ? 'ledger service offline' : 'verifying…', subColor: ledger?.intact === false ? 'var(--danger)' : ledgerDown ? 'var(--warn)' : 'var(--accent)', loading: !ledger && !ledgerDown },
+    { label: 'Recent queries', value: String(history.length), sub: 'this workspace', subColor: 'var(--text3)', loading: false },
+    { label: 'Pending approvals', value: String(pendingCount), sub: pendingCount > 0 ? 'healing queue' : 'queue clear', subColor: pendingCount > 0 ? 'var(--warn)' : 'var(--accent)', loading: false },
+    { label: 'Pipelines', value: pipelines ? String(pipelines.length) : dash.value, sub: pipelines?.length ? 'streaming' : 'none defined', subColor: 'var(--text3)', loading: pipelines == null },
   ];
   /* Header status is DERIVED from live health, never asserted. Claiming
      "verified" while the gateway or ledger is down would be an audit-trust
@@ -556,8 +557,17 @@ export default function Workbench() {
               {stats.map((st) => (
                 <div key={st.label} className="aw-panel" style={{ borderRadius: 0, padding: '12px 14px' }}>
                   <div style={{ fontSize: 11, color: 'var(--text3)', marginBottom: 6 }}>{st.label}</div>
-                  <div className="aw-mono" style={{ fontWeight: 600, fontSize: 18 }}>{st.value}</div>
-                  <div style={{ fontSize: 10.5, marginTop: 3, color: st.subColor }}>{st.sub}</div>
+                  {st.loading ? (
+                    <>
+                      <Skeleton className="h-[18px] w-12" />
+                      <Skeleton className="mt-1.5 h-[10.5px] w-20" />
+                    </>
+                  ) : (
+                    <>
+                      <div className="aw-mono" style={{ fontWeight: 600, fontSize: 18 }}>{st.value}</div>
+                      <div style={{ fontSize: 10.5, marginTop: 3, color: st.subColor }}>{st.sub}</div>
+                    </>
+                  )}
                 </div>
               ))}
             </div>
