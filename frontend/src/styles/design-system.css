@@ -234,11 +234,17 @@
 }
 
 /* ── Base Reset ──────────────────────────────────────────────────── */
-
-*, *::before, *::after {
-  box-sizing: border-box;
-  margin: 0;
-  padding: 0;
+/* Layered into `base` (declared by tailwind.css's `@layer theme, base,
+   components, utilities;`) so Tailwind's `@layer utilities` correctly wins —
+   an unlayered rule beats ANY layered rule regardless of specificity, so
+   until this was layered, this reset silently zeroed every Tailwind
+   padding/margin utility app-wide (e.g. `px-6`, `py-2`) with no visible error. */
+@layer base {
+  *, *::before, *::after {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+  }
 }
 
 html {
