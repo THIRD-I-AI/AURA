@@ -54,7 +54,7 @@ export default function HealingQueuePanel() {
     <div className="flex flex-col gap-3.5" data-testid="wb-healing-panel">
       <div className="flex items-center gap-3">
         <span className="font-mono text-2xs text-text-tertiary">
-          {pending === null ? 'loading…' : `${count} recover${count === 1 ? 'y' : 'ies'} awaiting approval · MAPE-K drift repair`}
+          {pending === null && !error ? 'loading…' : `${count} recover${count === 1 ? 'y' : 'ies'} awaiting approval · MAPE-K drift repair`}
         </span>
         <div className="flex-1" />
         <Button variant="outline" size="sm" onClick={load}>
@@ -65,7 +65,10 @@ export default function HealingQueuePanel() {
       {error && <div className="border border-border bg-secondary px-3 py-1.5 font-mono text-xs text-danger">{error}</div>}
 
       <Panel>
-        {pending === null && <div className="px-4 py-3.5 text-xs text-text-tertiary">Loading healing queue…</div>}
+        {pending === null && !error && <div className="px-4 py-3.5 text-xs text-text-tertiary">Loading healing queue…</div>}
+        {error && pending === null && (
+          <EmptyState intent="error" title="Unavailable" action={<Button variant="outline" size="sm" onClick={load}>Retry</Button>} />
+        )}
         {pending !== null && count === 0 && !error && (
           <EmptyState intent="awaiting" title="Queue clear" description="No recoveries awaiting approval. When drift is detected, high-risk shims land here for a human decision (WORM-logged)." />
         )}

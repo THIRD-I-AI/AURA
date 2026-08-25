@@ -39,7 +39,7 @@ export default function MetadataStorePanel() {
     <div className="flex flex-col gap-3.5" data-testid="wb-metadata-panel">
       <div className="flex items-center gap-3">
         <span className="font-mono text-2xs text-text-tertiary">
-          {models === null ? 'loading…' : `${count} catalog model${count === 1 ? '' : 's'} · ${totalFields} field${totalFields === 1 ? '' : 's'}`}
+          {models === null && !error ? 'loading…' : `${count} catalog model${count === 1 ? '' : 's'} · ${totalFields} field${totalFields === 1 ? '' : 's'}`}
         </span>
         <div className="flex-1" />
         <Button variant="outline" size="sm" onClick={load}>

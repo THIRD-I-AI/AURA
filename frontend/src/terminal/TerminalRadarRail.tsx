@@ -29,10 +29,10 @@ export default function TerminalRadarRail() {
           style={{
             background:
               model.gatewayUp === false
-                ? 'var(--danger, #ef4444)'
+                ? 'var(--danger)'
                 : model.gatewayUp
-                  ? 'var(--accent, #22c55e)'
-                  : 'var(--text3, #5a6675)',
+                  ? 'var(--accent)'
+                  : 'var(--text-tertiary)',
           }}
         />
         <span className="terminal-radar-label">SYSTEM RADAR</span>

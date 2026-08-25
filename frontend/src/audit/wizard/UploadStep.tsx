@@ -1,5 +1,6 @@
 import { useRef, useState } from 'react';
 
+import { cn } from '@/lib/cn';
 import type { ColumnType } from '../csv';
 
 export function UploadStep({ file, columns, previewRows, types, uploading, error, onPick }: {
@@ -17,7 +18,7 @@ export function UploadStep({ file, columns, previewRows, types, uploading, error
   return (
     <div data-testid="wizard-step-upload">
       <h3>1 · Upload your dataset</h3>
-      <p style={{ color: 'var(--text-tertiary)', fontSize: 'var(--font-sm)' }}>A CSV with one row per decision. We parse it in your browser instantly; nothing is shared until you run the audit.</p>
+      <p className="text-text-tertiary text-sm">A CSV with one row per decision. We parse it in your browser instantly; nothing is shared until you run the audit.</p>
       {/* The native input stays in the DOM (hidden) so programmatic
           uploads — and the existing wizard tests — keep working. */}
       <input
@@ -26,7 +27,7 @@ export function UploadStep({ file, columns, previewRows, types, uploading, error
         type="file"
         accept=".csv,text/csv"
         onChange={(e) => { const f = e.target.files?.[0]; if (f) onPick(f); }}
-        style={{ display: 'none' }}
+        className="hidden"
       />
       <div
         data-testid="wizard-dropzone"
@@ -43,42 +44,36 @@ export function UploadStep({ file, columns, previewRows, types, uploading, error
           const f = e.dataTransfer.files?.[0];
           if (f) onPick(f);
         }}
-        style={{
-          margin: 'var(--space-4) 0',
-          padding: 'var(--space-7) var(--space-5)',
-          textAlign: 'center',
-          cursor: 'pointer',
-          border: `1.5px dashed ${dragOver ? 'var(--accent)' : 'var(--border-default)'}`,
-          borderRadius: 'var(--radius-md)',
-          background: dragOver ? 'rgba(56, 130, 246, 0.06)' : 'var(--card-bg, rgba(15, 23, 42, 0.5))',
-          transition: 'border-color 120ms ease, background 120ms ease',
-        }}
-      >
-        <div aria-hidden="true" style={{ fontSize: 22, marginBottom: 'var(--space-2)', color: 'var(--accent)' }}>↑</div>
-        {file ? (
-          <p style={{ margin: 0, fontWeight: 600 }}>{file.name}</p>
-        ) : (
-          <p style={{ margin: 0, fontWeight: 600 }}>Drag &amp; drop your CSV here</p>
+        className={cn(
+          'my-4 py-7 px-5 text-center cursor-pointer border-[1.5px] border-dashed rounded-none transition-[border-color,background-color] duration-150 ease-out',
+          dragOver ? 'border-signal bg-signal/10' : 'border-border bg-[var(--card-bg)]',
         )}
-        <p style={{ margin: 'var(--space-1) 0 0', fontSize: 'var(--font-sm)', color: 'var(--text-tertiary)' }}>
+      >
+        <div aria-hidden="true" className="text-2xl mb-2 text-signal">↑</div>
+        {file ? (
+          <p className="m-0 font-semibold">{file.name}</p>
+        ) : (
+          <p className="m-0 font-semibold">Drag &amp; drop your CSV here</p>
+        )}
+        <p className="mt-1 text-sm text-text-tertiary">
           {file ? 'Click to choose a different file' : 'or click to browse'}
         </p>
       </div>
-      {uploading && <p data-testid="wizard-uploading" style={{ fontSize: 'var(--font-sm)', color: 'var(--text-tertiary)' }}>Uploading {file?.name}…</p>}
-      {error && <p data-testid="wizard-upload-error" style={{ color: 'var(--red)' }}>{error}</p>}
+      {uploading && <p data-testid="wizard-uploading" className="text-sm text-text-tertiary">Uploading {file?.name}…</p>}
+      {error && <p data-testid="wizard-upload-error" className="text-danger">{error}</p>}
       {columns.length > 0 && (
-        <div data-testid="wizard-preview" style={{ overflowX: 'auto', border: '1px solid var(--border-default)', borderRadius: 'var(--radius-md)' }}>
-          <table style={{ borderCollapse: 'collapse', fontSize: 'var(--font-sm)', width: '100%' }}>
+        <div data-testid="wizard-preview" className="overflow-x-auto border border-border rounded-none">
+          <table className="border-collapse text-sm w-full">
             <thead>
               <tr>{columns.map((c) => (
-                <th key={c} style={{ textAlign: 'left', padding: 'var(--space-2)', borderBottom: '1px solid var(--border-default)' }}>
-                  {c} <span style={{ color: 'var(--text-tertiary)', fontWeight: 400 }}>({types[c]})</span>
+                <th key={c} className="text-left p-2 border-b border-border">
+                  {c} <span className="text-text-tertiary font-normal">({types[c]})</span>
                 </th>
               ))}</tr>
             </thead>
             <tbody>
               {previewRows.slice(0, 5).map((r, i) => (
-                <tr key={i}>{columns.map((_, j) => <td key={j} style={{ padding: 'var(--space-2)', borderBottom: '1px solid var(--border-default)' }}>{r[j]}</td>)}</tr>
+                <tr key={i}>{columns.map((_, j) => <td key={j} className="p-2 border-b border-border">{r[j]}</td>)}</tr>
               ))}
             </tbody>
           </table>

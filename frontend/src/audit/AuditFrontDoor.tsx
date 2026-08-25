@@ -37,7 +37,7 @@ export function AuditFrontDoor({ embedded = false }: { embedded?: boolean } = {}
         Pick a regulated-decision scenario. Watch the audit run. Get a signed
         certificate anyone can verify.
       </p>
-      <div data-testid="aud-trust-band" className="inline-flex items-center gap-2 font-mono text-xs text-text-secondary bg-raised border border-border rounded-md py-2 px-3 mb-8">
+      <div data-testid="aud-trust-band" className="inline-flex items-center gap-2 font-mono text-xs text-text-secondary bg-raised border border-border rounded-none py-2 px-3 mb-8">
         <span aria-hidden="true">⬢</span>
         Every result is ED25519-signed and independently verifiable.
       </div>
@@ -72,7 +72,7 @@ export function AuditFrontDoor({ embedded = false }: { embedded?: boolean } = {}
           <button
             key={s.id}
             data-testid={`scenario-card-${s.id}`}
-            className="text-left cursor-pointer bg-surface border border-border rounded-lg p-5 transition-[border-color,transform] duration-150 ease-out enabled:hover:border-signal/40 enabled:hover:-translate-y-0.5 disabled:opacity-[0.55] disabled:cursor-progress"
+            className="text-left cursor-pointer bg-surface border border-border rounded-none p-5 transition-[border-color,transform] duration-150 ease-out enabled:hover:border-signal/40 enabled:hover:-translate-y-0.5 disabled:opacity-[0.55] disabled:cursor-progress"
             onClick={() => run(s.id)}
             disabled={launching !== null}
           >

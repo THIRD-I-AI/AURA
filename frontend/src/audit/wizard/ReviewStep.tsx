@@ -2,9 +2,9 @@ import type { ColumnMapping } from '../types';
 
 export function ReviewStep({ filename, mapping }: { filename: string | null; mapping: ColumnMapping }) {
   const row = (label: string, value: string) => (
-    <div style={{ display: 'flex', justifyContent: 'space-between', padding: 'var(--space-2) 0', borderBottom: '1px solid var(--border-default)' }}>
-      <span style={{ color: 'var(--text-tertiary)' }}>{label}</span>
-      <span style={{ fontFamily: 'monospace' }}>{value}</span>
+    <div className="flex justify-between py-2 border-b border-border">
+      <span className="text-text-tertiary">{label}</span>
+      <span className="font-mono">{value}</span>
     </div>
   );
   return (

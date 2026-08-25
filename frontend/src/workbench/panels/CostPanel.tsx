@@ -52,7 +52,7 @@ export default function CostPanel() {
     <div className="flex flex-col gap-3.5" data-testid="wb-cost-panel">
       <div className="flex items-center gap-3">
         <span className="font-mono text-2xs text-text-tertiary">
-          {data === null ? 'loading…' : `LLM token accounting · ${data.available ? 'live' : 'unavailable'}`}
+          {data === null && !error ? 'loading…' : `LLM token accounting · ${data?.available ? 'live' : 'unavailable'}`}
         </span>
         <div className="flex-1" />
         <Button variant="outline" size="sm" onClick={load}>
