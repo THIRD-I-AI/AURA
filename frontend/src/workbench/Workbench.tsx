@@ -716,38 +716,38 @@ export default function Workbench() {
             )}
           </div>
 
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(min(380px,100%),1fr))', gap: 16, alignItems: 'start' }}>
+          <div className="grid grid-cols-[repeat(auto-fit,minmax(min(380px,100%),1fr))] gap-4 items-start">
             {showHealing && (
               <div className="aw-panel" data-testid="wb-healing">
                 <div className="aw-panel-head">
                   <div className="aw-panel-title">Healing queue</div>
                   {pendingCount > 0
-                    ? <div className="aw-chip" style={{ fontWeight: 600, color: 'var(--warn)', background: 'var(--warn-dim)' }}>{pendingCount} PENDING_APPROVAL</div>
+                    ? <div className="aw-chip text-[var(--warn)] bg-[var(--warn-dim)]" style={{ fontWeight: 600 }}>{pendingCount} PENDING_APPROVAL</div>
                     : <div className="aw-chip aw-pill-accent" style={{ fontWeight: 600 }}>QUEUE CLEAR</div>}
                 </div>
-                <div style={{ padding: '6px 16px 14px' }}>
+                <div className="pt-1.5 px-4 pb-3.5">
                   {healing.length === 0 && (
-                    <div style={{ padding: '14px 0', fontSize: 12, color: 'var(--text3)', lineHeight: 1.6 }}>
+                    <div className="py-3.5 text-xs text-[var(--text3)] leading-[1.6]">
                       No pending recoveries — the MAPE-K loop is nominal. Drift proposals appear here for signed approval.
                     </div>
                   )}
                   {healing.map((h) => (
-                    <div key={h.id} style={{ padding: '11px 0', borderBottom: '1px solid var(--hair)' }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                        <div className="aw-mono" style={{ fontSize: 11.5, fontWeight: 500 }}>{h.title}</div>
-                        <div className="aw-mono" style={{ fontSize: 9, fontWeight: 700, borderRadius: 0, padding: '1px 7px', color: h.safe ? 'var(--accent)' : 'var(--warn)', background: h.safe ? 'var(--accent-dim)' : 'var(--warn-dim)', border: `1px solid ${h.safe ? 'var(--accent)' : 'var(--warn)'}` }}>{h.method}</div>
+                    <div key={h.id} className="py-[11px] border-b border-[var(--hair)]">
+                      <div className="flex items-center gap-2">
+                        <div className="aw-mono text-[11.5px] font-medium">{h.title}</div>
+                        <div className={cn('aw-mono text-[9px] font-bold rounded-none py-px px-[7px] border', h.safe ? 'text-[var(--accent)] bg-[var(--accent-dim)] border-[var(--accent)]' : 'text-[var(--warn)] bg-[var(--warn-dim)] border-[var(--warn)]')}>{h.method}</div>
                       </div>
-                      <div style={{ marginTop: 5, fontSize: 11, color: 'var(--text3)' }}>{h.sub}</div>
+                      <div className="mt-[5px] text-[11px] text-[var(--text3)]">{h.sub}</div>
                       {h.state === 'pending' && (
-                        <div style={{ marginTop: 8, display: 'flex', gap: 7 }}>
-                          <div onClick={() => decideHeal(h.id, true)} style={{ cursor: 'pointer', fontSize: 11, fontWeight: 600, color: 'var(--accent)', background: 'var(--accent-dim)', border: '1px solid var(--accent-bd)', borderRadius: 0, padding: '4px 12px' }}>Approve & deploy</div>
-                          <div onClick={() => decideHeal(h.id, false)} style={{ cursor: 'pointer', fontSize: 11, fontWeight: 600, color: 'var(--danger)', background: 'var(--danger-dim)', border: '1px solid var(--danger)', borderRadius: 0, padding: '4px 12px' }}>Reject</div>
+                        <div className="mt-2 flex gap-[7px]">
+                          <div onClick={() => decideHeal(h.id, true)} className="cursor-pointer text-[11px] font-semibold text-[var(--accent)] bg-[var(--accent-dim)] border border-[var(--accent-bd)] rounded-none py-1 px-3">Approve & deploy</div>
+                          <div onClick={() => decideHeal(h.id, false)} className="cursor-pointer text-[11px] font-semibold text-[var(--danger)] bg-[var(--danger-dim)] border border-[var(--danger)] rounded-none py-1 px-3">Reject</div>
                         </div>
                       )}
-                      {h.resolution && <div className="aw-mono" style={{ marginTop: 8, fontSize: 10.5, fontWeight: 500, color: h.state === 'deployed' ? 'var(--accent)' : 'var(--danger)' }}>{h.resolution}</div>}
+                      {h.resolution && <div className={cn('aw-mono mt-2 text-[10.5px] font-medium', h.state === 'deployed' ? 'text-[var(--accent)]' : 'text-[var(--danger)]')}>{h.resolution}</div>}
                     </div>
                   ))}
-                  <div style={{ paddingTop: 10, fontSize: 10.5, color: 'var(--text3)' }}>every approve/reject is a signed override in the WORM audit log</div>
+                  <div className="pt-2.5 text-[10.5px] text-[var(--text3)]">every approve/reject is a signed override in the WORM audit log</div>
                 </div>
               </div>
             )}
@@ -756,30 +756,30 @@ export default function Workbench() {
               <div className="aw-panel" data-testid="wb-pipes">
                 <div className="aw-panel-head">
                   <div className="aw-panel-title">Pipelines & streaming</div>
-                  <div style={{ flex: 1 }} />
-                  <div className="aw-mono" style={{ fontSize: 9.5, fontWeight: 500, color: 'var(--accent)' }}>PII MASKING ON</div>
+                  <div className="flex-1" />
+                  <div className="aw-mono text-[9.5px] font-medium text-[var(--accent)]">PII MASKING ON</div>
                 </div>
-                <div style={{ padding: '12px 16px 14px', display: 'flex', flexDirection: 'column', gap: 10 }}>
-                  <div className="aw-mono" style={{ display: 'flex', gap: 8, fontSize: 10.5, fontWeight: 500, flexWrap: 'wrap' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, border: '1px solid var(--hair)', borderRadius: 0, padding: '5px 10px', color: 'var(--text2)' }}><span style={{ width: 5, height: 5, borderRadius: '50%', background: pipelines?.length ? 'var(--accent)' : 'var(--text3)' }} />{pipelines ? `${pipelines.length} pipeline${pipelines.length === 1 ? '' : 's'} defined` : 'pipelines unavailable'}</div>
+                <div className="pt-3 px-4 pb-3.5 flex flex-col gap-2.5">
+                  <div className="aw-mono flex gap-2 text-[10.5px] font-medium flex-wrap">
+                    <div className="flex items-center gap-1.5 border border-[var(--hair)] rounded-none py-[5px] px-2.5 text-[var(--text2)]"><span className={cn('w-[5px] h-[5px] rounded-full', pipelines?.length ? 'bg-[var(--accent)]' : 'bg-[var(--text3)]')} />{pipelines ? `${pipelines.length} pipeline${pipelines.length === 1 ? '' : 's'} defined` : 'pipelines unavailable'}</div>
                   </div>
                   {runs.length === 0 && (
-                    <div style={{ fontSize: 12, color: 'var(--text3)', lineHeight: 1.6 }}>
-                      No streaming pipelines yet — <button type="button" onClick={() => setNav('Pipelines')} className="aw-mono" style={{ background: 'none', border: 'none', padding: 0, color: 'var(--accent)', cursor: 'pointer', font: 'inherit' }}>define one in the Pipelines view</button> and it appears here.
+                    <div className="text-xs text-[var(--text3)] leading-[1.6]">
+                      No streaming pipelines yet — <button type="button" onClick={() => setNav('Pipelines')} className="aw-mono bg-transparent border-none p-0 text-[var(--accent)] cursor-pointer [font:inherit]">define one in the Pipelines view</button> and it appears here.
                     </div>
                   )}
-                  {runs.length > 0 && <div style={{ border: '1px solid var(--hair)', borderRadius: 0, overflow: 'hidden', fontSize: 11.5 }}>
-                    <div className="aw-table-head" style={{ display: 'grid', gridTemplateColumns: '1.6fr .9fr .7fr .8fr' }}><div style={{ padding: '6px 12px' }}>RUN</div><div style={{ padding: '6px 12px' }}>STATUS</div><div style={{ padding: '6px 12px' }}>TIME</div><div style={{ padding: '6px 12px' }}>ROWS</div></div>
+                  {runs.length > 0 && <div className="border border-[var(--hair)] rounded-none overflow-hidden text-[11.5px]">
+                    <div className="aw-table-head grid grid-cols-[1.6fr_.9fr_.7fr_.8fr]"><div className="py-1.5 px-3">RUN</div><div className="py-1.5 px-3">STATUS</div><div className="py-1.5 px-3">TIME</div><div className="py-1.5 px-3">ROWS</div></div>
                     {runs.map((r) => (
-                      <div key={r.name} style={{ display: 'grid', gridTemplateColumns: '1.6fr .9fr .7fr .8fr', borderTop: '1px solid var(--hair)', alignItems: 'center' }}>
+                      <div key={r.name} className="grid grid-cols-[1.6fr_.9fr_.7fr_.8fr] border-t border-[var(--hair)] items-center">
                         <div className="aw-cell">{r.name}</div>
-                        <div style={{ padding: '7px 12px', fontWeight: 600, color: r.color }}>{r.status}</div>
+                        <div className="py-[7px] px-3 font-semibold" style={{ color: r.color }}>{r.status}</div>
                         <div className="aw-cell">{r.time}</div>
                         <div className="aw-cell">{r.rows}</div>
                       </div>
                     ))}
                   </div>}
-                  <div style={{ fontSize: 10.5, color: 'var(--text3)' }}>Transforms: filter · aggregate · dedupe · cast · custom SQL → CSV / Parquet / JSON</div>
+                  <div className="text-[10.5px] text-[var(--text3)]">Transforms: filter · aggregate · dedupe · cast · custom SQL → CSV / Parquet / JSON</div>
                 </div>
               </div>
             )}
@@ -787,13 +787,13 @@ export default function Workbench() {
             {showLineage && (
               <div className="aw-panel" data-testid="wb-lineage">
                 <div className="aw-panel-head"><div className="aw-panel-title">Lineage &amp; provenance</div></div>
-                <div style={{ padding: '14px 16px', display: 'flex', flexDirection: 'column', gap: 10 }}>
-                  <div style={{ fontSize: 12, color: 'var(--text2)', lineHeight: 1.65 }}>
+                <div className="py-3.5 px-4 flex flex-col gap-2.5">
+                  <div className="text-xs text-[var(--text2)] leading-[1.65]">
                     Dataset-to-finding lineage renders live in the <strong>Constellation</strong> graph —
                     uploaded datasets, derived metrics, and signed findings as a navigable graph.
                   </div>
-                  <a href="/app" className="aw-mono" style={{ alignSelf: 'flex-start', fontSize: 10.5, fontWeight: 600, color: 'var(--accent)', border: '1px solid var(--accent-bd)', borderRadius: 0, padding: '6px 12px', textDecoration: 'none' }}>Open Constellation →</a>
-                  {ledger && <div style={{ fontSize: 10.5, color: 'var(--text3)', lineHeight: 1.6 }}>Every signed artifact is replayable from ledger {ledger.no}.</div>}
+                  <a href="/app" className="aw-mono self-start text-[10.5px] font-semibold border border-[var(--accent-bd)] rounded-none py-1.5 px-3 no-underline" style={{ color: 'var(--accent)' }}>Open Constellation →</a>
+                  {ledger && <div className="text-[10.5px] text-[var(--text3)] leading-[1.6]">Every signed artifact is replayable from ledger {ledger.no}.</div>}
                 </div>
               </div>
             )}
@@ -801,19 +801,19 @@ export default function Workbench() {
 
           {showHistory && (
             <div className="aw-panel" data-testid="wb-history">
-              <div className="aw-panel-head"><div className="aw-panel-title">Query history</div><div style={{ flex: 1 }} /><div style={{ fontSize: 11, color: 'var(--text3)' }}>this session + today</div></div>
-              <div style={{ fontSize: 11.5 }}>
-                <div className="aw-table-head" style={{ display: 'grid', gridTemplateColumns: '.55fr 2.6fr .8fr .7fr .55fr .6fr .7fr' }}>{['TIME', 'QUERY', 'ENGINE', 'STATUS', 'COST', 'DUR', 'BY'].map((h) => <div key={h} style={{ padding: '7px 16px' }}>{h}</div>)}</div>
-                {history.length === 0 && <div style={{ padding: '12px 16px', fontSize: 12, color: 'var(--text3)' }}>No queries recorded yet in this workspace.</div>}
+              <div className="aw-panel-head"><div className="aw-panel-title">Query history</div><div className="flex-1" /><div className="text-[11px] text-[var(--text3)]">this session + today</div></div>
+              <div className="text-[11.5px]">
+                <div className="aw-table-head grid grid-cols-[.55fr_2.6fr_.8fr_.7fr_.55fr_.6fr_.7fr]">{['TIME', 'QUERY', 'ENGINE', 'STATUS', 'COST', 'DUR', 'BY'].map((h) => <div key={h} className="py-[7px] px-4">{h}</div>)}</div>
+                {history.length === 0 && <div className="py-3 px-4 text-xs text-[var(--text3)]">No queries recorded yet in this workspace.</div>}
                 {history.map((hq, i) => (
-                  <div key={i} style={{ display: 'grid', gridTemplateColumns: '.55fr 2.6fr .8fr .7fr .55fr .6fr .7fr', borderTop: '1px solid var(--hair)', alignItems: 'center' }}>
-                    <div className="aw-mono" style={{ padding: '8px 16px', fontSize: 11, color: 'var(--text3)' }}>{hq.time}</div>
-                    <div style={{ padding: '8px 16px' }}>{hq.q}</div>
-                    <div className="aw-mono" style={{ padding: '8px 16px', fontSize: 11 }}>{hq.engine}</div>
-                    <div style={{ padding: '8px 16px', fontWeight: 600, color: hq.status === 'signed' ? 'var(--accent)' : 'var(--text2)' }}>{hq.status}</div>
-                    <div className="aw-mono" style={{ padding: '8px 16px', fontSize: 11 }}>{hq.cost}</div>
-                    <div className="aw-mono" style={{ padding: '8px 16px', fontSize: 11 }}>{hq.dur}</div>
-                    <div style={{ padding: '8px 16px', color: 'var(--text3)' }}>{hq.by}</div>
+                  <div key={i} className="grid grid-cols-[.55fr_2.6fr_.8fr_.7fr_.55fr_.6fr_.7fr] border-t border-[var(--hair)] items-center">
+                    <div className="aw-mono py-2 px-4 text-[11px] text-[var(--text3)]">{hq.time}</div>
+                    <div className="py-2 px-4">{hq.q}</div>
+                    <div className="aw-mono py-2 px-4 text-[11px]">{hq.engine}</div>
+                    <div className={cn('py-2 px-4 font-semibold', hq.status === 'signed' ? 'text-[var(--accent)]' : 'text-[var(--text2)]')}>{hq.status}</div>
+                    <div className="aw-mono py-2 px-4 text-[11px]">{hq.cost}</div>
+                    <div className="aw-mono py-2 px-4 text-[11px]">{hq.dur}</div>
+                    <div className="py-2 px-4 text-[var(--text3)]">{hq.by}</div>
                   </div>
                 ))}
               </div>
@@ -822,13 +822,13 @@ export default function Workbench() {
 
           {nav === 'Cockpit' && (
             <div className="aw-panel" data-testid="wb-feed" role="log" aria-live="polite" aria-label="Session events">
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '12px 16px' }}><span style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--accent)', animation: 'awpulse 1.6s infinite' }} /><div className="aw-panel-title">Session events</div><div style={{ flex: 1 }} /><div style={{ fontSize: 10.5, color: 'var(--text3)' }}>real actions only — queries · audits · approvals</div></div>
-              {feed.length === 0 && <div style={{ padding: '10px 16px', borderTop: '1px solid var(--hair)', fontSize: 11.5, color: 'var(--text3)' }}>No events yet — run a query or an audit and it lands here.</div>}
+              <div className="flex items-center gap-2 py-3 px-4"><span className="w-1.5 h-1.5 rounded-full bg-[var(--accent)] animate-[awpulse_1.6s_infinite]" /><div className="aw-panel-title">Session events</div><div className="flex-1" /><div className="text-[10.5px] text-[var(--text3)]">real actions only — queries · audits · approvals</div></div>
+              {feed.length === 0 && <div className="py-2.5 px-4 border-t border-[var(--hair)] text-[11.5px] text-[var(--text3)]">No events yet — run a query or an audit and it lands here.</div>}
               {feed.map((ev, i) => (
-                <div key={i} className="aw-mono" style={{ display: 'flex', gap: 10, alignItems: 'baseline', padding: '6px 16px', borderTop: '1px solid var(--hair)', fontSize: 10.5 }}>
-                  <span style={{ color: 'var(--text3)', flex: 'none' }}>{ev.time}</span>
-                  <span style={{ flex: 'none', fontWeight: 700, fontSize: 9, letterSpacing: '.06em', color: ev.color }}>{ev.k}</span>
-                  <span style={{ color: 'var(--text2)' }}>{ev.t}</span>
+                <div key={i} className="aw-mono flex gap-2.5 items-baseline py-1.5 px-4 border-t border-[var(--hair)] text-[10.5px]">
+                  <span className="text-[var(--text3)] flex-none">{ev.time}</span>
+                  <span className="flex-none font-bold text-[9px] tracking-[.06em]" style={{ color: ev.color }}>{ev.k}</span>
+                  <span className="text-[var(--text2)]">{ev.t}</span>
                 </div>
               ))}
             </div>
@@ -837,9 +837,9 @@ export default function Workbench() {
           {hasView && <ViewHost nav={nav} onNavigate={setNav} />}
 
           {showStub && (
-            <div style={{ background: 'var(--surface)', border: '1px dashed var(--border)', borderRadius: 0, padding: 36, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10, textAlign: 'center' }} data-testid="wb-stub">
-              <div className="aw-display" style={{ fontWeight: 600, fontSize: 13 }}>{nav}</div>
-              <div style={{ fontSize: 12.5, color: 'var(--text2)', maxWidth: 460, lineHeight: 1.6 }}>This module has no panel yet. Nothing is being shown for it — no data is implied.</div>
+            <div className="bg-[var(--surface)] border border-dashed border-[var(--border)] rounded-none p-9 flex flex-col items-center gap-2.5 text-center" data-testid="wb-stub">
+              <div className="aw-display font-semibold text-[13px]">{nav}</div>
+              <div className="text-[12.5px] text-[var(--text2)] max-w-[460px] leading-[1.6]">This module has no panel yet. Nothing is being shown for it — no data is implied.</div>
             </div>
           )}
           </motion.div>
