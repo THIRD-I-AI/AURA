@@ -20,6 +20,8 @@ export interface AuraNodeData extends Record<string, unknown> {
   label: string;
   kind: ConstellationKind;
   degree: number;
+  /** Byte size of the source file, when this node came from an upload (table nodes only). */
+  sizeBytes?: number;
 }
 
 export type RFAuraNode = Node<AuraNodeData, 'aura'>;
@@ -65,11 +67,17 @@ export function computeConstellationLayout(
 
   const nodes: RFAuraNode[] = graph.nodes.map((n) => {
     const p = byId.get(n.id);
+    const size = n.metadata?.size;
     return {
       id: n.id,
       type: 'aura',
       position: { x: p?.x ?? 0, y: p?.y ?? 0 },
-      data: { label: n.label, kind: n.type, degree: degree.get(n.id) ?? 0 },
+      data: {
+        label: n.label,
+        kind: n.type,
+        degree: degree.get(n.id) ?? 0,
+        sizeBytes: typeof size === 'number' ? size : undefined,
+      },
     };
   });
 

@@ -5,7 +5,7 @@ import type { LineageGraph } from '../../../services/api';
 const graph: LineageGraph = {
   success: true,
   nodes: [
-    { id: 't1', type: 'table', label: 'sales', metadata: {} },
+    { id: 't1', type: 'table', label: 'sales', metadata: { source: 'upload', size: 2048 } },
     { id: 'q1', type: 'saved_query', label: 'rev_by_region', metadata: {} },
     { id: 'd1', type: 'dashboard', label: 'exec', metadata: {} },
   ],
@@ -27,6 +27,12 @@ describe('computeConstellationLayout', () => {
     expect(t1.data.kind).toBe('table');
     expect(t1.data.degree).toBe(1);
     expect(nodes.find((n) => n.id === 'q1')!.data.degree).toBe(2);
+  });
+
+  it('carries an upload node\'s byte size through to sizeBytes, and leaves it undefined otherwise', () => {
+    const { nodes } = computeConstellationLayout(graph);
+    expect(nodes.find((n) => n.id === 't1')!.data.sizeBytes).toBe(2048);
+    expect(nodes.find((n) => n.id === 'q1')!.data.sizeBytes).toBeUndefined();
   });
 
   it('maps each lineage edge to an animated RF edge', () => {

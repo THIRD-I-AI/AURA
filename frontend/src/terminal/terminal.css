@@ -561,6 +561,10 @@
   color: var(--t-text); background: color-mix(in srgb, var(--t-void) 70%, transparent);
   padding: 1px 5px; max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
+.aura-terminal .aura-node__size {
+  font-family: var(--t-mono); font-size: 8px; letter-spacing: 0.02em;
+  color: var(--t-dim);
+}
 .aura-terminal .aura-node__handle { opacity: 0; width: 1px; height: 1px; border: 0; min-width: 0; min-height: 0; }
 /* per-kind accent (drives --node-c used above) */
 .aura-terminal .aura-node--table        { --node-c: var(--t-cyan); }
