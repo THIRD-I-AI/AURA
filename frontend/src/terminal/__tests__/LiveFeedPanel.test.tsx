@@ -18,9 +18,16 @@ describe('LiveFeedPanel', () => {
     expect(screen.getByTestId('livefeed-panel')).toBeInTheDocument();
     // status text is just "live" — the dot is a styled ::before, not a literal char
     expect(screen.getByText('live').textContent).toBe('live');
+    const timestamp = '2026-08-25T09:30:00.000Z';
+    const payload = { msg: 'healthy', detail: { retries: 0 } };
     act(() => {
-      capturedOnEvent?.({ id: '1', type: 'progress', topic: 'system:health', payload: { msg: 'healthy' }, timestamp: 't1' });
+      capturedOnEvent?.({ id: '1', type: 'progress', topic: 'system:health', payload, timestamp });
     });
     expect(screen.getByText(/system:health/)).toBeInTheDocument();
+    // timestamp renders via toLocaleTimeString (compact, matches PipelinePanel/AuditPanel convention)
+    expect(screen.getByText(new Date(timestamp).toLocaleTimeString())).toBeInTheDocument();
+    // payload stays single-line JSON but carries the full pretty-printed value as a hover tooltip
+    const payloadEl = screen.getByText(JSON.stringify(payload));
+    expect(payloadEl).toHaveAttribute('title', JSON.stringify(payload, null, 2));
   });
 });
