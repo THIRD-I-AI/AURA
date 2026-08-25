@@ -120,6 +120,11 @@
   stroke: var(--t-live);
   stroke-width: 1.8;
 }
+.aura-terminal .pl-node:focus-visible { outline: none; }
+.aura-terminal .pl-node:focus-visible .pl-node-box {
+  stroke: var(--t-live);
+  stroke-width: 2;
+}
 .aura-terminal .pl-node-label {
   fill: var(--t-text);
   font-family: var(--t-sans);
