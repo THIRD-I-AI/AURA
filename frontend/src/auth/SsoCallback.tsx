@@ -27,7 +27,7 @@ export function SsoCallback() {
       .catch((e) => setError(e instanceof Error ? e.message : 'exchange failed'));
   }, []);
   return (
-    <div style={{ padding: 40, fontFamily: 'monospace', color: error ? '#ef4444' : '#9aa4b2' }}>
+    <div className="font-mono" style={{ padding: 40, color: error ? 'var(--danger)' : 'var(--text-tertiary)' }}>
       {error ? `Sign-in failed: ${error} — return to /login and retry.` : 'Completing sign-in…'}
     </div>
   );

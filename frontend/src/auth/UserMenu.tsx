@@ -67,7 +67,7 @@ export function UserMenu({ onSettingsClick }: { onSettingsClick?: () => void }) 
           style={{
             position: 'absolute', right: 0, top: 'calc(100% + 8px)', minWidth: 220, zIndex: 50,
             background: 'var(--bg-surface)', border: '1px solid var(--border-strong)',
-            borderRadius: 'var(--radius-md)', boxShadow: '0 8px 28px rgba(0,0,0,0.35)', overflow: 'hidden',
+            borderRadius: 0, overflow: 'hidden',
           }}
         >
           <div style={{ padding: 'var(--space-3)', borderBottom: '1px solid var(--border-default)' }}>
