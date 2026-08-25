@@ -7,6 +7,7 @@ import { RefreshCw } from 'lucide-react';
 import { Panel } from '@/components/ui-kit/panel';
 import { Button } from '@/components/ui-kit/button';
 import { EmptyState } from '@/components/ui-kit/empty-state';
+import { Skeleton } from '@/components/ui-kit/skeleton';
 import { cn } from '@/lib/cn';
 import { analyticsService } from '../../services/api';
 
@@ -54,7 +55,18 @@ export default function QueryHistoryPanel() {
       {error && <div className="border border-border bg-secondary px-3 py-1.5 font-mono text-xs text-danger">{error}</div>}
 
       <Panel>
-        {rows === null && !error && <div className="px-4 py-3.5 text-xs text-text-tertiary">Loading query history…</div>}
+        {rows === null && !error && (
+          <div aria-label="Loading query history" role="status">
+            {[0, 1, 2].map((i) => (
+              <div key={i} className={cn('flex items-center gap-2.5 px-4 py-3', i > 0 && 'border-t border-border')}>
+                <Skeleton className="size-1.5 shrink-0" />
+                <Skeleton className="h-3.5 w-2/3" />
+                <div className="flex-1" />
+                <Skeleton className="h-2.5 w-14" />
+              </div>
+            ))}
+          </div>
+        )}
         {error && rows === null && (
           <EmptyState intent="error" title="Unavailable" action={<Button variant="outline" size="sm" onClick={load}>Retry</Button>} />
         )}
