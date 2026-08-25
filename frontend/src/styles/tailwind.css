@@ -141,6 +141,7 @@
   --font-sans: var(--font-sans);
   --font-mono: var(--font-mono);
   --font-display: var(--font-display);
+  --font-ui: var(--font-ui);
 
   --font-weight-light: 300;
   --font-weight-normal: 400;
