@@ -98,6 +98,9 @@ describe('ConstellationPanel', () => {
     await waitFor(() => expect(screen.getByText('customer.csv')).toBeInTheDocument());
     // 2 lineage nodes + 1 new dataset (sales.csv deduped away) = 3
     expect(captured.nodes).toHaveLength(3);
+    // the uploaded file's byte size flows through to the node's sizeBytes
+    const uploaded = captured.nodes?.find((n: any) => n.id === 'file:customer.csv');
+    expect(uploaded?.data.sizeBytes).toBe(2);
   });
 
   it('shows an empty state when there is no lineage or datasets', async () => {
