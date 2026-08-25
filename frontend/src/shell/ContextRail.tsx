@@ -1,5 +1,5 @@
 import { Suspense, useState } from 'react';
-import type { PageType } from '../components/Layout/AppLayout';
+import type { PageType } from '../lib/pageTypes';
 import { ErrorBoundary } from '../components/ui/ErrorBoundary';
 import { RAIL_CONTENT, railTitleFor } from './railRegistry';
 import DefaultRail from './rails/DefaultRail';
