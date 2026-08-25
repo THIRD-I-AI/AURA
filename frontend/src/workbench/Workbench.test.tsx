@@ -98,8 +98,8 @@ describe('Workbench', () => {
     vi.useFakeTimers();
     await boot();
     const app = screen.getByTestId('wb-app');
-    expect(app.style.height).toBe('100vh');
-    expect(app.style.overflow).toBe('hidden');
+    expect(app.className).toContain('h-screen');
+    expect(app.className).toContain('overflow-hidden');
     vi.useRealTimers();
   });
 
