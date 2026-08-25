@@ -532,16 +532,16 @@ export default function Workbench() {
         </div>
 
         {/* main */}
-        <main id="wb-main" tabIndex={-1} className="aw-main" style={{ flex: 1, minWidth: 0, padding: '24px 26px 28px', display: 'flex', flexDirection: 'column', gap: 16, overflowY: 'auto' }}>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-            <div className="aw-mono" style={{ fontSize: 11, color: 'var(--text3)', display: 'flex', alignItems: 'center', gap: 6 }}>
-              <span>{getCurrentWorkspaceId()}</span><span style={{ color: 'var(--border)' }}>/</span><span style={{ color: 'var(--text2)' }}>{nav}</span>
+        <main id="wb-main" tabIndex={-1} className="aw-main flex-1 min-w-0 flex flex-col gap-4 overflow-y-auto pt-6 pb-7 px-[26px]">
+          <div className="flex flex-col gap-1.5">
+            <div className="aw-mono text-[11px] text-[var(--text3)] flex items-center gap-1.5">
+              <span>{getCurrentWorkspaceId()}</span><span className="text-[var(--border)]">/</span><span className="text-[var(--text2)]">{nav}</span>
             </div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
-              <div className="aw-display" style={{ fontWeight: 600, fontSize: 22 }}>{nav}</div>
-              <div className="aw-chip" role="status" aria-live="polite" aria-atomic="true" aria-label={`System status: ${systemStatus.label}`} style={{ display: 'flex', alignItems: 'center', gap: 6, color: statusColor, background: statusBg, border: `1px solid ${systemStatus.tone === 'ok' ? 'var(--accent-bd)' : statusColor}`, fontWeight: 600, letterSpacing: '.08em' }}><span aria-hidden="true" style={{ width: 5, height: 5, borderRadius: '50%', background: statusColor, animation: 'awpulse 2.4s infinite' }} />{systemStatus.label}</div>
-              <div style={{ flex: 1 }} />
-              <div style={{ fontSize: 12, color: 'var(--text3)' }}>Last full audit replay 06:00 UTC · scheduler on time</div>
+            <div className="flex items-center gap-3.5">
+              <div className="aw-display font-semibold text-[22px]">{nav}</div>
+              <div className="aw-chip flex items-center gap-1.5 tracking-[0.08em]" role="status" aria-live="polite" aria-atomic="true" aria-label={`System status: ${systemStatus.label}`} style={{ fontWeight: 600, color: statusColor, background: statusBg, border: `1px solid ${systemStatus.tone === 'ok' ? 'var(--accent-bd)' : statusColor}` }}><span aria-hidden="true" className="w-[5px] h-[5px] rounded-full animate-[awpulse_2.4s_infinite]" style={{ background: statusColor }} />{systemStatus.label}</div>
+              <div className="flex-1" />
+              <div className="text-[12px] text-[var(--text3)]">Last full audit replay 06:00 UTC · scheduler on time</div>
             </div>
           </div>
 
@@ -550,13 +550,13 @@ export default function Workbench() {
             variants={maybe(deckSwitch)}
             initial="hidden"
             animate="visible"
-            style={{ display: 'flex', flexDirection: 'column', gap: 16, minHeight: 0 }}
+            className="flex flex-col gap-4 min-h-0"
           >
           {nav === 'Cockpit' && (
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(150px,1fr))', gap: 12 }} data-testid="wb-stats">
+            <div className="grid grid-cols-[repeat(auto-fit,minmax(150px,1fr))] gap-3" data-testid="wb-stats">
               {stats.map((st) => (
-                <div key={st.label} className="aw-panel" style={{ borderRadius: 0, padding: '12px 14px' }}>
-                  <div style={{ fontSize: 11, color: 'var(--text3)', marginBottom: 6 }}>{st.label}</div>
+                <div key={st.label} className="aw-panel rounded-none py-3 px-3.5">
+                  <div className="text-[11px] text-[var(--text3)] mb-1.5">{st.label}</div>
                   {st.loading ? (
                     <>
                       <Skeleton className="h-[18px] w-12" />
@@ -564,8 +564,8 @@ export default function Workbench() {
                     </>
                   ) : (
                     <>
-                      <div className="aw-mono" style={{ fontWeight: 600, fontSize: 18 }}>{st.value}</div>
-                      <div style={{ fontSize: 10.5, marginTop: 3, color: st.subColor }}>{st.sub}</div>
+                      <div className="aw-mono font-semibold text-[18px]">{st.value}</div>
+                      <div className="text-[10.5px] mt-[3px]" style={{ color: st.subColor }}>{st.sub}</div>
                     </>
                   )}
                 </div>
@@ -574,32 +574,32 @@ export default function Workbench() {
           )}
 
           {nav === 'Cockpit' && (
-            <div className="aw-panel" data-testid="wb-radar" style={{ display: 'grid', gridTemplateColumns: 'minmax(0,340px) 1fr', gap: 0 }}>
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '18px 8px', borderRight: '1px solid var(--hair)' }}>
+            <div className="aw-panel grid grid-cols-[minmax(0,340px)_1fr] gap-0" data-testid="wb-radar">
+              <div className="flex items-center justify-center py-[18px] px-2 border-r border-[var(--hair)]">
                 <SystemRadar model={radarModel} size={320} onServiceClick={onRadarService} />
               </div>
-              <div style={{ display: 'flex', flexDirection: 'column', minWidth: 0 }}>
+              <div className="flex flex-col min-w-0">
                 <div className="aw-panel-head" style={{ padding: '14px 18px' }}>
-                  <span style={{ width: 6, height: 6, borderRadius: '50%', background: gatewayUp === false ? 'var(--danger)' : gatewayUp ? 'var(--accent)' : 'var(--text3)', animation: gatewayUp ? 'awpulse 2.4s infinite' : undefined }} />
-                  <div style={{ fontSize: 14, fontWeight: 600 }}>Live System Radar</div>
+                  <span className={cn('w-1.5 h-1.5 rounded-full', gatewayUp && 'animate-[awpulse_2.4s_infinite]')} style={{ background: gatewayUp === false ? 'var(--danger)' : gatewayUp ? 'var(--accent)' : 'var(--text3)' }} />
+                  <div className="text-[14px] font-semibold">Live System Radar</div>
                   <div className="aw-chip aw-pill-outline">real topology</div>
-                  <div style={{ flex: 1 }} />
-                  <div style={{ fontSize: 11, color: 'var(--text3)' }}>{radarModel.services.length} services · {radarModel.sources.length} sources</div>
+                  <div className="flex-1" />
+                  <div className="text-[11px] text-[var(--text3)]">{radarModel.services.length} services · {radarModel.sources.length} sources</div>
                 </div>
-                <div style={{ padding: '16px 18px', display: 'flex', flexDirection: 'column', gap: 12 }}>
-                  <div style={{ fontSize: 12.5, color: 'var(--text2)', lineHeight: 1.7 }}>
+                <div className="py-4 px-[18px] flex flex-col gap-3">
+                  <div className="text-[12.5px] text-[var(--text2)] leading-[1.7]">
                     {gatewayUp === false
                       ? 'Gateway unreachable — nodes shown from last known topology. Radar resumes when /health responds.'
                       : radarModel.services.length === 0
                         ? 'Awaiting first health report — service nodes appear as /health responds. Nothing is fabricated.'
                         : 'Each node is a backend service from /health; rim points are streaming sources. A ring pulses on drift and an arc traces each recovery in flight.'}
                   </div>
-                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px 16px', fontSize: 11, color: 'var(--text3)' }}>
-                    <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}><span style={{ width: 8, height: 8, borderRadius: '50%', border: '1.4px solid var(--accent)' }} />service healthy</span>
-                    <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}><span style={{ width: 8, height: 8, borderRadius: '50%', border: '1.4px solid var(--danger)' }} />service down</span>
-                    <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}><span style={{ width: 8, height: 8, borderRadius: '50%', border: '1.4px solid var(--text3)' }} />awaiting</span>
-                    <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}><span style={{ width: 8, height: 8, borderRadius: '50%', background: 'var(--warn)' }} />drift</span>
-                    <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}><span style={{ width: 8, height: 8, borderRadius: '50%', background: 'var(--danger)' }} />critical</span>
+                  <div className="flex flex-wrap gap-y-2 gap-x-4 text-[11px] text-[var(--text3)]">
+                    <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full" style={{ border: '1.4px solid var(--accent)' }} />service healthy</span>
+                    <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full" style={{ border: '1.4px solid var(--danger)' }} />service down</span>
+                    <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full" style={{ border: '1.4px solid var(--text3)' }} />awaiting</span>
+                    <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full bg-[var(--warn)]" />drift</span>
+                    <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full bg-[var(--danger)]" />critical</span>
                   </div>
                 </div>
               </div>
