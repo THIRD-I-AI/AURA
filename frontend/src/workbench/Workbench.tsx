@@ -848,13 +848,13 @@ export default function Workbench() {
 
       {/* command palette */}
       {paletteOpen && (
-        <div onClick={() => setPaletteOpen(false)} style={{ position: 'fixed', inset: 0, background: 'var(--overlay)', zIndex: 100, display: 'flex', justifyContent: 'center', paddingTop: 120 }} data-testid="wb-palette">
-          <div onClick={(e) => e.stopPropagation()} style={{ width: 520, height: 'fit-content', background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 0, boxShadow: '0 24px 60px rgba(0,0,0,.35)', overflow: 'hidden', animation: 'awup .18s ease' }}>
-            <input ref={paletteInput} value={paletteQ} onChange={(e) => setPaletteQ(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter' && commands[0]) commands[0].run(); }} placeholder="Type a command or destination…" style={{ width: '100%', boxSizing: 'border-box', background: 'transparent', border: 'none', borderBottom: '1px solid var(--hair)', padding: '14px 18px', font: "400 14px 'Instrument Sans',sans-serif", color: 'var(--text)', outline: 'none' }} />
-            <div style={{ maxHeight: 320, overflowY: 'auto', padding: 6 }}>
+        <div onClick={() => setPaletteOpen(false)} className="fixed inset-0 bg-[var(--overlay)] z-[100] flex justify-center pt-[120px]" data-testid="wb-palette">
+          <div onClick={(e) => e.stopPropagation()} className="w-[520px] h-fit bg-[var(--surface)] border border-[var(--border)] rounded-none shadow-[0_24px_60px_rgba(0,0,0,.35)] overflow-hidden animate-[awup_.18s_ease]">
+            <input ref={paletteInput} value={paletteQ} onChange={(e) => setPaletteQ(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter' && commands[0]) commands[0].run(); }} placeholder="Type a command or destination…" className="w-full box-border bg-transparent border-0 border-b border-[var(--hair)] py-[14px] px-[18px] font-ui font-normal text-[14px] text-[var(--text)] outline-none" />
+            <div className="max-h-[320px] overflow-y-auto p-1.5">
               {commands.map((c) => (
-                <div key={c.title} onClick={c.run} className="aw-hover-raise" style={{ cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '9px 12px', borderRadius: 0, fontSize: 13 }}>
-                  <span>{c.title}</span><span className="aw-mono" style={{ fontSize: 9.5, fontWeight: 500, color: 'var(--text3)' }}>{c.hint}</span>
+                <div key={c.title} onClick={c.run} className="aw-hover-raise cursor-pointer flex justify-between items-center py-[9px] px-3 rounded-none text-[13px]">
+                  <span>{c.title}</span><span className="aw-mono text-[9.5px] font-medium text-[var(--text3)]">{c.hint}</span>
                 </div>
               ))}
             </div>
@@ -864,8 +864,8 @@ export default function Workbench() {
 
       {/* toast */}
       {toast && (
-        <div style={{ position: 'fixed', bottom: 26, left: '50%', transform: 'translateX(-50%)', zIndex: 200, background: 'var(--raised)', border: '1px solid var(--accent-bd)', color: 'var(--text)', font: "500 12px 'Instrument Sans',sans-serif", borderRadius: 0, padding: '10px 18px', boxShadow: '0 8px 30px rgba(0,0,0,.3)', animation: 'awup .2s ease', display: 'flex', alignItems: 'center', gap: 8 }} data-testid="wb-toast">
-          <span style={{ color: 'var(--accent)' }}>✓</span>{toast}
+        <div className="fixed bottom-[26px] left-1/2 -translate-x-1/2 z-[200] bg-[var(--raised)] border border-[var(--accent-bd)] text-[var(--text)] font-ui font-medium text-[12px] rounded-none py-2.5 px-[18px] shadow-[0_8px_30px_rgba(0,0,0,.3)] animate-[awup_.2s_ease] flex items-center gap-2" data-testid="wb-toast">
+          <span className="text-[var(--accent)]">✓</span>{toast}
         </div>
       )}
     </div>
