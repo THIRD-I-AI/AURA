@@ -1,13 +1,13 @@
 /* Query History — native panel. shadcn/ui + Tailwind (frontend/CLAUDE.md):
    ui-kit primitives + token utilities, no inline styles. Lists real executed
-   queries from GET /query-history via analyticsService. */
+   queries from GET /query-history via analyticsService. Rendered as the
+   ui-kit DataTable (sortable TIME/STATUS/ROWS, filterable) — reference
+   implementation for the DataTable primitive. */
 import { useCallback, useEffect, useState } from 'react';
 import { RefreshCw } from 'lucide-react';
 
-import { Panel } from '@/components/ui-kit/panel';
 import { Button } from '@/components/ui-kit/button';
-import { EmptyState } from '@/components/ui-kit/empty-state';
-import { Skeleton } from '@/components/ui-kit/skeleton';
+import { DataTable, type ColumnDef } from '@/components/ui-kit/data-table';
 import { cn } from '@/lib/cn';
 import { analyticsService } from '../../services/api';
 
@@ -21,6 +21,61 @@ function statusTone(s?: string): { dot: string; text: string } {
   if (s === 'error' || s === 'failed') return { dot: 'bg-danger', text: 'text-danger' };
   return { dot: 'bg-warn', text: 'text-warn' };
 }
+
+function fmtTime(ts?: string): string {
+  if (!ts) return '—';
+  const d = new Date(ts);
+  return Number.isNaN(d.getTime()) ? ts : d.toLocaleString();
+}
+
+// A column-table row has no space left for the old full SQL preview
+// sub-row; the QUERY cell's `title` tooltip (via `truncate: true`) carries
+// the full prompt/sql text instead — an accepted trade for the density win.
+const columns: ColumnDef<QueryRow>[] = [
+  {
+    key: 'time',
+    header: 'Time',
+    accessor: (q) => <span className="text-text-secondary">{fmtTime(q.timestamp)}</span>,
+    sortable: true,
+    sortValue: (q) => q.timestamp ?? '',
+    className: 'w-44',
+  },
+  {
+    key: 'query',
+    header: 'Query',
+    accessor: (q) => q.prompt || q.sql || '(query)',
+    filterValue: (q) => `${q.prompt ?? ''} ${q.sql ?? ''}`,
+    truncate: true,
+  },
+  {
+    key: 'status',
+    header: 'Status',
+    accessor: (q) => {
+      const tone = statusTone(q.status);
+      return (
+        <span className="inline-flex items-center gap-2">
+          <span className={cn('size-1.5 shrink-0', tone.dot)} />
+          <span className={cn('font-mono text-2xs font-bold tracking-wider', tone.text)}>
+            {(q.status || 'unknown').toUpperCase()}
+          </span>
+        </span>
+      );
+    },
+    sortable: true,
+    sortValue: (q) => q.status ?? '',
+    filterValue: (q) => q.status ?? '',
+    className: 'w-32',
+  },
+  {
+    key: 'rows',
+    header: 'Rows',
+    accessor: (q) => (typeof q.row_count === 'number' ? q.row_count : '—'),
+    sortable: true,
+    sortValue: (q) => q.row_count ?? -1,
+    align: 'right',
+    className: 'w-20',
+  },
+];
 
 export default function QueryHistoryPanel() {
   const [rows, setRows] = useState<QueryRow[] | null>(null);
@@ -52,45 +107,21 @@ export default function QueryHistoryPanel() {
         </Button>
       </div>
 
-      {error && <div className="border border-border bg-secondary px-3 py-1.5 font-mono text-xs text-danger">{error}</div>}
+      {error && rows !== null && (
+        <div className="border border-border bg-secondary px-3 py-1.5 font-mono text-xs text-danger">{error}</div>
+      )}
 
-      <Panel>
-        {rows === null && !error && (
-          <div aria-label="Loading query history" role="status">
-            {[0, 1, 2].map((i) => (
-              <div key={i} className={cn('flex items-center gap-2.5 px-4 py-3', i > 0 && 'border-t border-border')}>
-                <Skeleton className="size-1.5 shrink-0" />
-                <Skeleton className="h-3.5 w-2/3" />
-                <div className="flex-1" />
-                <Skeleton className="h-2.5 w-14" />
-              </div>
-            ))}
-          </div>
-        )}
-        {error && rows === null && (
-          <EmptyState intent="error" title="Unavailable" action={<Button variant="outline" size="sm" onClick={load}>Retry</Button>} />
-        )}
-        {rows !== null && count === 0 && !error && (
-          <EmptyState intent="empty" title="No queries yet" description="Ask a question in Ask AURA — it lands here with its generated SQL and status." />
-        )}
-        {(rows ?? []).map((q, i) => {
-          const tone = statusTone(q.status);
-          return (
-            <div key={i} className={cn('flex flex-col gap-1.5 px-4 py-3', i > 0 && 'border-t border-border')}>
-              <div className="flex items-center gap-2.5">
-                <span className={cn('size-1.5 shrink-0', tone.dot)} />
-                <span className="truncate text-sm text-card-foreground">{q.prompt || q.sql || '(query)'}</span>
-                <div className="flex-1" />
-                <span className={cn('font-mono text-2xs font-bold tracking-wider', tone.text)}>{(q.status || 'unknown').toUpperCase()}</span>
-                {typeof q.row_count === 'number' && <span className="font-mono text-2xs text-text-tertiary">{q.row_count} rows</span>}
-              </div>
-              {q.sql && (
-                <div className="truncate border border-border bg-secondary px-2.5 py-1.5 font-mono text-2xs text-text-secondary">{q.sql}</div>
-              )}
-            </div>
-          );
-        })}
-      </Panel>
+      <DataTable
+        columns={columns}
+        rows={rows}
+        error={error}
+        onRetry={load}
+        errorTitle="Unavailable"
+        emptyTitle="No queries yet"
+        emptyDescription="Ask a question in Ask AURA — it lands here with its generated SQL and status."
+        filterPlaceholder="Filter queries…"
+        getRowKey={(q, i) => `${q.timestamp ?? i}-${i}`}
+      />
     </div>
   );
 }
