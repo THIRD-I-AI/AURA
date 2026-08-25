@@ -606,42 +606,42 @@ export default function Workbench() {
             </div>
           )}
 
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(min(470px,100%),1fr))', gap: 16, alignItems: 'start' }}>
+          <div className="grid grid-cols-[repeat(auto-fit,minmax(min(470px,100%),1fr))] gap-4 items-start">
             {showChat && (
-              <div className="aw-panel" style={{ display: 'flex', flexDirection: 'column' }} data-testid="wb-chat">
+              <div className="aw-panel flex flex-col" data-testid="wb-chat">
                 <div className="aw-panel-head" style={{ padding: '14px 18px' }}>
-                  <div style={{ fontSize: 14, fontWeight: 600 }}>Ask AURA</div>
+                  <div className="text-[14px] font-semibold">Ask AURA</div>
                   <div className="aw-chip aw-pill-outline">generator ⇄ critic</div>
                   <div className="aw-chip aw-pill-accent">DPC cross-check</div>
-                  <div style={{ flex: 1 }} />
-                  <div style={{ fontSize: 11, color: 'var(--text3)' }}>DuckDB lake</div>
+                  <div className="flex-1" />
+                  <div className="text-[11px] text-[var(--text3)]">DuckDB lake</div>
                 </div>
-                <div style={{ padding: '16px 18px', display: 'flex', flexDirection: 'column', gap: 14, maxHeight: 560, overflowY: 'auto' }}>
+                <div className="py-4 px-[18px] flex flex-col gap-3.5 max-h-[560px] overflow-y-auto">
                   {messages.length === 0 && !thinking && (
-                    <div style={{ fontSize: 12.5, color: 'var(--text3)', lineHeight: 1.7, padding: '10px 0' }}>
+                    <div className="text-[12.5px] text-[var(--text3)] leading-[1.7] py-2.5 px-0">
                       No conversation yet. Ask about your loaded datasets — the commander generates SQL,
                       executes it in the sandbox, and streams the verified answer here.
                     </div>
                   )}
                   {messages.map((m, i) => (
-                    <div key={i} style={{ display: 'flex', flexDirection: 'column', gap: 10, animation: 'awup .25s ease' }}>
-                      <div style={{ alignSelf: 'flex-end', maxWidth: '70%', background: 'var(--raised)', border: '1px solid var(--border)', borderRadius: '10px 10px 3px 10px', padding: '9px 14px', fontSize: 13 }}>{m.q}</div>
-                      {m.sql && <div className="aw-mono" style={{ background: 'var(--sunken)', border: '1px solid var(--hair)', borderRadius: 0, padding: '12px 14px', fontSize: 11.5, lineHeight: 1.65, color: 'var(--text2)', whiteSpace: 'pre-wrap' }}>{m.sql}</div>}
-                      {m.critic && <div style={{ fontSize: 11, color: 'var(--text3)' }}>{m.critic}</div>}
+                    <div key={i} className="flex flex-col gap-2.5 animate-[awup_.25s_ease]">
+                      <div className="self-end max-w-[70%] bg-[var(--raised)] border border-[var(--border)] rounded-[10px_10px_3px_10px] py-[9px] px-3.5 text-[13px]">{m.q}</div>
+                      {m.sql && <div className="aw-mono bg-[var(--sunken)] border border-[var(--hair)] rounded-none py-3 px-3.5 text-[11.5px] leading-[1.65] text-[var(--text2)] whitespace-pre-wrap">{m.sql}</div>}
+                      {m.critic && <div className="text-[11px] text-[var(--text3)]">{m.critic}</div>}
                       {m.columns && m.rows && (
-                        <div style={{ border: '1px solid var(--hair)', borderRadius: 0, overflow: 'hidden' }}>
-                          <div style={{ display: 'flex', background: 'var(--raised)' }}>{m.columns.map((c) => <div key={c} className="aw-mono" style={{ flex: 1, padding: '7px 14px', fontSize: 10, fontWeight: 600, color: 'var(--text3)', letterSpacing: '.06em' }}>{c}</div>)}</div>
-                          {m.rows.map((r, ri) => <div key={ri} style={{ display: 'flex', borderTop: '1px solid var(--hair)' }}>{r.map((cell, ci) => <div key={ci} className="aw-mono" style={{ flex: 1, padding: '7px 14px', fontSize: 11.5 }}>{cell}</div>)}</div>)}
+                        <div className="border border-[var(--hair)] rounded-none overflow-hidden">
+                          <div className="flex bg-[var(--raised)]">{m.columns.map((c) => <div key={c} className="aw-mono flex-1 py-[7px] px-3.5 text-[10px] font-semibold text-[var(--text3)] tracking-[0.06em]">{c}</div>)}</div>
+                          {m.rows.map((r, ri) => <div key={ri} className="flex border-t border-[var(--hair)]">{r.map((cell, ci) => <div key={ci} className="aw-mono flex-1 py-[7px] px-3.5 text-[11.5px]">{cell}</div>)}</div>)}
                         </div>
                       )}
-                      {m.answer && <div style={{ fontSize: 13, lineHeight: 1.55 }}>{m.answer}</div>}
+                      {m.answer && <div className="text-[13px] leading-[1.55]">{m.answer}</div>}
                     </div>
                   ))}
-                  {thinking && <div className="aw-mono" style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 11, fontWeight: 500, color: 'var(--text3)' }}><span className="aw-spinner" />{thinking}</div>}
+                  {thinking && <div className="aw-mono flex items-center gap-2.5 text-[11px] font-medium text-[var(--text3)]"><span className="aw-spinner" />{thinking}</div>}
                 </div>
-                <div style={{ padding: '12px 18px 16px', borderTop: '1px solid var(--hair)', display: 'flex', gap: 8 }}>
-                  <input ref={chatInput} onKeyDown={(e) => e.key === 'Enter' && ask()} placeholder="Ask anything about your data — SQL is generated, checked, and signed" className="aw-input" style={{ flex: 1, padding: '10px 14px', fontSize: 13 }} />
-                  <button onClick={ask} className="aw-btn-accent" style={{ fontSize: 12.5, padding: '10px 18px' }}>Ask</button>
+                <div className="pt-3 px-[18px] pb-4 border-t border-[var(--hair)] flex gap-2">
+                  <input ref={chatInput} onKeyDown={(e) => e.key === 'Enter' && ask()} placeholder="Ask anything about your data — SQL is generated, checked, and signed" className="aw-input flex-1 py-2.5 px-3.5 text-[13px]" />
+                  <button onClick={ask} className="aw-btn-accent text-[12.5px] py-2.5 px-[18px]">Ask</button>
                 </div>
               </div>
             )}
@@ -649,17 +649,17 @@ export default function Workbench() {
             {showCf && (
               <div className="aw-panel" data-testid="wb-cf">
                 <div className="aw-panel-head" style={{ padding: '14px 18px' }}>
-                  <div style={{ fontSize: 14, fontWeight: 600 }}>Forensic audit</div>
-                  <div className="aw-mono" style={{ fontSize: 10, fontWeight: 500, color: 'var(--text3)' }}>{cf.status === 'done' && cf.hash ? cf.hash.slice(0, 12) + '…' : 'AS-2401 · AS-2201 · AS-2305'}</div>
-                  <div style={{ flex: 1 }} />
-                  <div className="aw-mono" style={{ display: 'flex', fontSize: 10, fontWeight: 600, border: '1px solid var(--border)', borderRadius: 0, overflow: 'hidden' }}>
+                  <div className="text-[14px] font-semibold">Forensic audit</div>
+                  <div className="aw-mono text-[10px] font-medium text-[var(--text3)]">{cf.status === 'done' && cf.hash ? cf.hash.slice(0, 12) + '…' : 'AS-2401 · AS-2201 · AS-2305'}</div>
+                  <div className="flex-1" />
+                  <div className="aw-mono flex text-[10px] font-semibold border border-[var(--border)] rounded-none overflow-hidden">
                     {(['operator', 'auditor', 'analyst'] as const).map((a) => (
-                      <div key={a} onClick={() => setAudience(a)} style={{ cursor: 'pointer', padding: '4px 9px', color: a === audience ? 'var(--accent)' : 'var(--text3)', background: a === audience ? 'var(--accent-dim)' : 'transparent' }}>{a.toUpperCase()}</div>
+                      <div key={a} onClick={() => setAudience(a)} className="cursor-pointer py-1 px-[9px]" style={{ color: a === audience ? 'var(--accent)' : 'var(--text3)', background: a === audience ? 'var(--accent-dim)' : 'transparent' }}>{a.toUpperCase()}</div>
                     ))}
                   </div>
                 </div>
-                <div style={{ padding: '16px 18px', display: 'flex', flexDirection: 'column', gap: 13 }}>
-                  <div style={{ fontSize: 13, lineHeight: 1.5, color: 'var(--text2)', fontStyle: 'italic' }}>
+                <div className="py-4 px-[18px] flex flex-col gap-[13px]">
+                  <div className="text-[13px] leading-[1.5] text-[var(--text2)] italic">
                     "Run the full forensic sweep — Benford, cutoff, three-way match, segregation of duties,
                     expectation analytics — and sign the findings to the ledger."
                   </div>
@@ -667,7 +667,7 @@ export default function Workbench() {
                       ledger (GET …/audit/financial/demo); the signing, hashing and
                       ledger chaining that follow are the real production pipeline.
                       Without this the tile reads as if it had audited the user's books. */}
-                  <div className="aw-mono" style={{ fontSize: 10.5, lineHeight: 1.6, color: 'var(--text3)', border: '1px solid var(--hair)', borderRadius: 0, padding: '7px 9px', background: 'var(--sunken)' }} data-testid="wb-cf-demo-notice">
+                  <div className="aw-mono text-[10.5px] leading-[1.6] text-[var(--text3)] border border-[var(--hair)] rounded-none py-[7px] px-[9px] bg-[var(--sunken)]" data-testid="wb-cf-demo-notice">
                     DEMO SCENARIO — runs a fixed sample ledger. The signature, record hash and
                     ledger chaining below are real. To audit your own ledger, use{' '}
                     <button
@@ -677,37 +677,37 @@ export default function Workbench() {
                     >Exception Queue</button>.
                   </div>
                   {cf.status === 'running' && (
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: 7, padding: '6px 0' }}>
+                    <div className="flex flex-col gap-[7px] py-1.5 px-0">
                       {CF_STAGES.map((label, i) => (
-                        <div key={label} className="aw-mono" style={{ display: 'flex', alignItems: 'center', gap: 9, fontSize: 11, fontWeight: 500, color: i < cf.stageIdx ? 'var(--accent)' : i === cf.stageIdx ? 'var(--text)' : 'var(--text3)' }}>
-                          <span style={{ width: 14, textAlign: 'center' }}>{i < cf.stageIdx ? '✓' : i === cf.stageIdx ? '◌' : '·'}</span>{label}
+                        <div key={label} className="aw-mono flex items-center gap-[9px] text-[11px] font-medium" style={{ color: i < cf.stageIdx ? 'var(--accent)' : i === cf.stageIdx ? 'var(--text)' : 'var(--text3)' }}>
+                          <span className="w-3.5 text-center">{i < cf.stageIdx ? '✓' : i === cf.stageIdx ? '◌' : '·'}</span>{label}
                         </div>
                       ))}
                     </div>
                   )}
                   {cf.status === 'error' && (
-                    <div style={{ fontSize: 12, color: 'var(--danger)', lineHeight: 1.6 }}>
+                    <div className="text-[12px] text-[var(--danger)] leading-[1.6]">
                       Audit service unreachable — {cf.message}. Start the counterfactual service and retry.
                     </div>
                   )}
                   {cf.status === 'done' && (
                     <>
-                      <div style={{ display: 'flex', alignItems: 'baseline', gap: 12 }}>
-                        <div className="aw-mono" style={{ fontWeight: 600, fontSize: 30, color: cf.nFindings ? 'var(--danger)' : 'var(--accent)' }}>{cf.nFindings ?? '—'}</div>
-                        <div style={{ fontSize: 12, color: 'var(--text3)' }}>findings, signed &amp; ledger-chained</div>
+                      <div className="flex items-baseline gap-3">
+                        <div className="aw-mono font-semibold text-[30px]" style={{ color: cf.nFindings ? 'var(--danger)' : 'var(--accent)' }}>{cf.nFindings ?? '—'}</div>
+                        <div className="text-[12px] text-[var(--text3)]">findings, signed &amp; ledger-chained</div>
                       </div>
-                      {cf.materiality && <div className="aw-mono" style={{ fontSize: 11, fontWeight: 500, color: 'var(--text2)' }}>AS-2110 materiality threshold {cf.materiality}</div>}
+                      {cf.materiality && <div className="aw-mono text-[11px] font-medium text-[var(--text2)]">AS-2110 materiality threshold {cf.materiality}</div>}
                       {(audience === 'auditor' || audience === 'analyst') && (
-                        <div className="aw-mono" style={{ background: 'var(--sunken)', border: '1px solid var(--hair)', borderRadius: 0, padding: '11px 13px', fontSize: 10.5, lineHeight: 1.7, color: 'var(--text2)', whiteSpace: 'pre-wrap', maxHeight: 180, overflowY: 'auto' }}>{cf.raw}</div>
+                        <div className="aw-mono bg-[var(--sunken)] border border-[var(--hair)] rounded-none py-[11px] px-[13px] text-[10.5px] leading-[1.7] text-[var(--text2)] whitespace-pre-wrap max-h-[180px] overflow-y-auto">{cf.raw}</div>
                       )}
                     </>
                   )}
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, paddingTop: 4, borderTop: '1px solid var(--hair)' }}>
+                  <div className="flex items-center gap-2 pt-1 border-t border-[var(--hair)]">
                     {cf.status === 'done' && cf.hash && (
-                      <a href={cf.verifyUrl ?? '#'} className="aw-mono" style={{ fontSize: 10, fontWeight: 500, color: 'var(--accent)', background: 'var(--sunken)', border: '1px solid var(--hair)', borderRadius: 0, padding: '3px 8px', textDecoration: 'none' }}>record {cf.hash.slice(0, 10)}… · verify ↗</a>
+                      <a href={cf.verifyUrl ?? '#'} className="aw-mono text-[10px] font-medium bg-[var(--sunken)] border border-[var(--hair)] rounded-none py-[3px] px-2 no-underline" style={{ color: 'var(--accent)' }}>record {cf.hash.slice(0, 10)}… · verify ↗</a>
                     )}
-                    <div style={{ flex: 1 }} />
-                    <button onClick={runCf} disabled={cf.status === 'running'} className="aw-btn-accent" style={{ fontSize: 11.5, padding: '5px 11px', borderRadius: 0, opacity: cf.status === 'running' ? 0.6 : 1 }}>
+                    <div className="flex-1" />
+                    <button onClick={runCf} disabled={cf.status === 'running'} className={cn('aw-btn-accent text-[11.5px] py-[5px] px-[11px] rounded-none', cf.status === 'running' && 'opacity-60')}>
                       {cf.status === 'idle' ? 'Run demo audit' : cf.status === 'running' ? 'Running…' : 'Re-run demo audit'}
                     </button>
                   </div>
