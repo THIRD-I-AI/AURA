@@ -6,7 +6,7 @@ import { RefreshCw } from 'lucide-react';
 
 import { Panel } from '@/components/ui-kit/panel';
 import { Button } from '@/components/ui-kit/button';
-import { EmptyState } from '@/components/ui-kit/empty-state';
+import { DataTable, type ColumnDef } from '@/components/ui-kit/data-table';
 import { costService } from '../../services/api';
 
 type Row = { provider: string; model: string; kind: string; tokens: number };
@@ -18,6 +18,39 @@ function fmt(n: number): string {
   if (n >= 1e3) return `${(n / 1e3).toFixed(1)}K`;
   return String(Math.round(n));
 }
+
+const columns: ColumnDef<Row>[] = [
+  {
+    key: 'provider',
+    header: 'Provider',
+    accessor: (r) => <span className="text-text-secondary">{r.provider}</span>,
+    sortable: true,
+    sortValue: (r) => r.provider,
+  },
+  {
+    key: 'model',
+    header: 'Model',
+    accessor: (r) => <span className="text-card-foreground">{r.model}</span>,
+    sortable: true,
+    sortValue: (r) => r.model,
+  },
+  {
+    key: 'kind',
+    header: 'Kind',
+    accessor: (r) => r.kind,
+    align: 'right',
+    className: 'w-28',
+  },
+  {
+    key: 'tokens',
+    header: 'Tokens',
+    accessor: (r) => <span className="text-signal">{fmt(r.tokens)}</span>,
+    sortable: true,
+    sortValue: (r) => r.tokens,
+    align: 'right',
+    className: 'w-28',
+  },
+];
 
 function Tile({ label, value, sub }: { label: string; value: string; sub: string }) {
   return (
@@ -60,7 +93,9 @@ export default function CostPanel() {
         </Button>
       </div>
 
-      {error && <div className="border border-border bg-secondary px-3 py-1.5 font-mono text-xs text-danger">{error}</div>}
+      {error && data !== null && (
+        <div className="border border-border bg-secondary px-3 py-1.5 font-mono text-xs text-danger">{error}</div>
+      )}
 
       <div className="flex flex-wrap gap-3">
         <Tile label="Prompt tokens" value={fmt(t?.prompt ?? 0)} sub="input" />
@@ -68,34 +103,17 @@ export default function CostPanel() {
         <Tile label="Cached" value={fmt(t?.cached_completion ?? 0)} sub="reused completions" />
       </div>
 
-      <Panel>
-        <div className="grid grid-cols-[1fr_1fr_100px_110px] border-b border-border px-4 py-2.5 font-mono text-2xs font-semibold uppercase tracking-widest text-text-tertiary">
-          <span>Provider</span><span>Model</span><span className="text-right">Kind</span><span className="text-right">Tokens</span>
-        </div>
-        {data === null && !error && <div className="px-4 py-3.5 text-xs text-text-tertiary">Loading…</div>}
-        {error && data === null && (
-          <EmptyState
-            intent="error"
-            title="Unavailable"
-            action={<Button variant="outline" size="sm" onClick={load}>Retry</Button>}
-          />
-        )}
-        {data !== null && rows.length === 0 && !error && (
-          <EmptyState
-            intent="awaiting"
-            title="No usage yet"
-            description="Run a query or an audit and per-model usage appears here."
-          />
-        )}
-        {rows.map((r, i) => (
-          <div key={i} className="grid grid-cols-[1fr_1fr_100px_110px] items-center border-t border-border px-4 py-2.5">
-            <div className="text-xs text-text-secondary">{r.provider}</div>
-            <div className="text-xs text-card-foreground">{r.model}</div>
-            <div className="text-right font-mono text-2xs text-text-tertiary">{r.kind}</div>
-            <div className="text-right font-mono text-xs text-signal">{fmt(r.tokens)}</div>
-          </div>
-        ))}
-      </Panel>
+      <DataTable
+        columns={columns}
+        rows={data === null ? null : rows}
+        error={error}
+        onRetry={load}
+        errorTitle="Unavailable"
+        emptyTitle="No usage yet"
+        emptyDescription="Run a query or an audit and per-model usage appears here."
+        filterPlaceholder="Filter usage…"
+        getRowKey={(r, i) => `${r.provider}-${r.model}-${r.kind}-${i}`}
+      />
     </div>
   );
 }

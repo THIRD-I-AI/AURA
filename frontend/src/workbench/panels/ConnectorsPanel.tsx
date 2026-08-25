@@ -6,14 +6,45 @@ import { RefreshCw } from 'lucide-react';
 
 import { Panel } from '@/components/ui-kit/panel';
 import { Button } from '@/components/ui-kit/button';
-import { EmptyState } from '@/components/ui-kit/empty-state';
+import { DataTable, type ColumnDef } from '@/components/ui-kit/data-table';
 import { cn } from '@/lib/cn';
 import { connectorService } from '../../services/api';
 
 type Connection = { id?: string; name?: string; type?: string; source_id?: string; status?: string };
 type SourcesResp = { connections?: Connection[]; count?: number; file_sources?: number };
 
-const sectionLabel = 'border-b border-border px-4 py-2.5 font-mono text-2xs font-semibold uppercase tracking-widest text-text-tertiary';
+const columns: ColumnDef<Connection>[] = [
+  {
+    key: 'name',
+    header: 'Name',
+    accessor: (c) => <span className="text-card-foreground">{c.name || c.source_id || '(source)'}</span>,
+    sortable: true,
+    sortValue: (c) => c.name || c.source_id || '',
+  },
+  {
+    key: 'type',
+    header: 'Type',
+    accessor: (c) => <span className="font-mono text-2xs font-semibold tracking-wider text-text-tertiary">{(c.type || 'db').toUpperCase()}</span>,
+    sortable: true,
+    sortValue: (c) => c.type ?? '',
+    className: 'w-28',
+  },
+  {
+    key: 'status',
+    header: 'Status',
+    accessor: (c) => (
+      <span className="inline-flex items-center gap-2">
+        <span className={cn('size-1.5 shrink-0', c.status === 'connected' ? 'bg-signal' : 'bg-warn')} />
+        <span className={cn('font-mono text-2xs font-bold tracking-wider', c.status === 'connected' ? 'text-signal' : 'text-warn')}>
+          {(c.status || 'unknown').toUpperCase()}
+        </span>
+      </span>
+    ),
+    sortable: true,
+    sortValue: (c) => c.status ?? '',
+    className: 'w-32',
+  },
+];
 
 export default function ConnectorsPanel() {
   const [data, setData] = useState<SourcesResp | null>(null);
@@ -46,26 +77,23 @@ export default function ConnectorsPanel() {
         </Button>
       </div>
 
-      {error && <div className="border border-border bg-secondary px-3 py-1.5 font-mono text-xs text-danger">{error}</div>}
+      {error && data !== null && (
+        <div className="border border-border bg-secondary px-3 py-1.5 font-mono text-xs text-danger">{error}</div>
+      )}
 
-      <Panel>
-        <div className={sectionLabel}>Database connections</div>
-        {data === null && !error && <div className="px-4 py-3.5 text-xs text-text-tertiary">Loading connectors…</div>}
-        {error && data === null && (
-          <EmptyState intent="error" title="Unavailable" action={<Button variant="outline" size="sm" onClick={load}>Retry</Button>} />
-        )}
-        {data !== null && conns.length === 0 && !error && (
-          <EmptyState intent="empty" title="No connections yet" description="Add PostgreSQL, MySQL, or BigQuery to query live warehouses alongside your files." />
-        )}
-        {conns.map((c, i) => (
-          <div key={c.id || c.source_id || i} className="flex items-center gap-2.5 border-t border-border px-4 py-2.5">
-            <span className={cn('size-1.5 shrink-0', c.status === 'connected' ? 'bg-signal' : 'bg-warn')} />
-            <span className="text-sm text-card-foreground">{c.name || c.source_id || '(source)'}</span>
-            <div className="flex-1" />
-            <span className="font-mono text-2xs font-semibold tracking-wider text-text-tertiary">{(c.type || 'db').toUpperCase()}</span>
-          </div>
-        ))}
-      </Panel>
+      <div className="font-mono text-2xs font-semibold uppercase tracking-widest text-text-tertiary">Database connections</div>
+
+      <DataTable
+        columns={columns}
+        rows={data === null ? null : conns}
+        error={error}
+        onRetry={load}
+        errorTitle="Unavailable"
+        emptyTitle="No connections yet"
+        emptyDescription="Add PostgreSQL, MySQL, or BigQuery to query live warehouses alongside your files."
+        filterPlaceholder="Filter connections…"
+        getRowKey={(c, i) => c.id || c.source_id || String(i)}
+      />
 
       <Panel>
         <div className="flex items-center gap-2 px-4 py-2.5">
