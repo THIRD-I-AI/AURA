@@ -1,4 +1,4 @@
-import type { PageType } from '../components/Layout/AppLayout';
+import type { PageType } from '../lib/pageTypes';
 
 /** Every navigable page id in the internal app. */
 export const PAGE_IDS: PageType[] = [
