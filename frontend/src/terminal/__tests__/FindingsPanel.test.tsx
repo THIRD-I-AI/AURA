@@ -35,4 +35,34 @@ describe('FindingsPanel', () => {
     await waitFor(() => expect(screen.queryByText(/orders mismatch/)).not.toBeInTheDocument());
     expect(screen.getByText(/anomaly in sales.csv/)).toBeInTheDocument();
   });
+
+  it('filters by free text across standard and description, composing with the dataset filter', async () => {
+    active = null;
+    runAudit.mockResolvedValue(REPORT);
+    render(<FindingsPanel {...props} />);
+    fireEvent.click(screen.getByTestId('findings-run'));
+    await waitFor(() => expect(screen.getByText(/anomaly in sales.csv/)).toBeInTheDocument());
+
+    fireEvent.change(screen.getByTestId('findings-filter'), { target: { value: 'AS-2201' } });
+    expect(screen.queryByText(/anomaly in sales.csv/)).not.toBeInTheDocument();
+    expect(screen.getByText(/orders mismatch/)).toBeInTheDocument();
+  });
+
+  it('sorts by risk severity, not alphabetically', async () => {
+    active = null;
+    runAudit.mockResolvedValue(REPORT);
+    render(<FindingsPanel {...props} />);
+    fireEvent.click(screen.getByTestId('findings-run'));
+    await waitFor(() => expect(screen.getByText(/anomaly in sales.csv/)).toBeInTheDocument());
+
+    fireEvent.click(screen.getByText('Risk'));
+    let rows = screen.getAllByRole('row').slice(1); // drop header row
+    expect(rows[0]).toHaveTextContent('Low');
+    expect(rows[1]).toHaveTextContent('High');
+
+    fireEvent.click(screen.getByText('Risk'));
+    rows = screen.getAllByRole('row').slice(1);
+    expect(rows[0]).toHaveTextContent('High');
+    expect(rows[1]).toHaveTextContent('Low');
+  });
 });
