@@ -19,6 +19,16 @@
   /* ── Typography ──────────────────────────────────────────────── */
   --font-sans: 'Inter', ui-sans-serif, system-ui, -apple-system, sans-serif;
   --font-mono: 'JetBrains Mono', ui-monospace, 'Cascadia Mono', Consolas, monospace;
+  /* Space Grotesk is already loaded (4 weights, @fontsource, see main.tsx) for
+     exactly this role — headings/display — but had no token/utility wiring
+     it to anything, so `font-display` classNames (Counterfactual.tsx,
+     PipelinesPanel.tsx) silently fell back to --font-sans. */
+  --font-display: 'Space Grotesk', 'Inter', ui-sans-serif, system-ui, sans-serif;
+  /* Instrument Sans is also already loaded (4 weights) — used only as
+     hardcoded inline `font:` shorthand in Workbench.tsx's command palette
+     and toast (dense workbench UI chrome, distinct from Inter body text).
+     Tokenizing it so those two spots can use a real utility instead. */
+  --font-ui: 'Instrument Sans', 'Inter', ui-sans-serif, system-ui, sans-serif;
 
   /* ── Surfaces ────────────────────────────────────────────────── */
   --bg-base: #0a0e14;

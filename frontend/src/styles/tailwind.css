@@ -57,6 +57,18 @@
   --color-bg-selected: var(--bg-selected);
   --color-bg-overlay: var(--bg-overlay);
   --color-bg-raised: var(--bg-raised);
+
+  /* Short aliases matching frontend/CLAUDE.md's documented "Surfaces" utility
+     names (bg-base/bg-surface/bg-surface-2/bg-sunken/bg-raised) — the
+     --color-bg-* keys above only generate bg-bg-surface etc, not bg-surface,
+     so every existing className written against the documented short names
+     was silently a no-op utility (no matching CSS rule at all, not even a
+     specificity loss) until these aliases existed. */
+  --color-base: var(--bg-base);
+  --color-surface: var(--bg-surface);
+  --color-surface-2: var(--bg-surface-2);
+  --color-sunken: var(--bg-sunken);
+  --color-raised: var(--bg-raised);
   /* shadcn `card` surface — solid (not the translucent --card-bg rgba) so
      New-York cards read as opaque panels; paired with --color-card-foreground. */
   --color-card: var(--bg-surface);
@@ -128,6 +140,8 @@
   /* ── Typography → tokens.css font stacks ── */
   --font-sans: var(--font-sans);
   --font-mono: var(--font-mono);
+  --font-display: var(--font-display);
+  --font-ui: var(--font-ui);
 
   --font-weight-light: 300;
   --font-weight-normal: 400;
