@@ -11,6 +11,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { UserMenu } from '../auth/UserMenu';
 import { useAuth } from '../auth/AuthContext';
+import { cn } from '../lib/cn';
 import {
   API_BASE_URL,
   analyticsService,
@@ -451,16 +452,16 @@ export default function Workbench() {
   if (view === 'boot') {
     return (
       <div className="aw" data-testid="wb-boot">
-        <div style={{ flex: 1, minHeight: '100vh', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 30 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}><span style={{ width: 10, height: 10, background: 'var(--accent)', borderRadius: 0, animation: 'awpulse 1.4s infinite' }} /><span className="aw-display" style={{ fontWeight: 700, fontSize: 18, letterSpacing: '.1em' }}>AURA</span></div>
-          <div style={{ width: 340, display: 'flex', flexDirection: 'column', gap: 10 }}>
+        <div className="flex flex-1 min-h-screen flex-col items-center justify-center gap-[30px]">
+          <div className="flex items-center gap-2.5"><span className="w-2.5 h-2.5 bg-[var(--accent)] rounded-none animate-[awpulse_1.4s_infinite]" /><span className="aw-display font-bold text-[18px] tracking-widest">AURA</span></div>
+          <div className="flex w-[340px] flex-col gap-2.5">
             {BOOT_STAGES.map((label, i) => (
-              <div key={label} className="aw-mono" style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 11, fontWeight: 500, color: i < bootIdx ? 'var(--accent)' : i === bootIdx ? 'var(--text)' : 'var(--text3)' }}>
-                <span style={{ width: 14, textAlign: 'center' }}>{i < bootIdx ? '✓' : i === bootIdx ? '◌' : '·'}</span>{label}
+              <div key={label} className={cn('aw-mono flex items-center gap-2.5 text-[11px] font-medium', i < bootIdx ? 'text-[var(--accent)]' : i === bootIdx ? 'text-[var(--text)]' : 'text-[var(--text3)]')}>
+                <span className="w-3.5 text-center">{i < bootIdx ? '✓' : i === bootIdx ? '◌' : '·'}</span>{label}
               </div>
             ))}
           </div>
-          <div style={{ width: 340, height: 3, background: 'var(--raised)', borderRadius: 0, overflow: 'hidden' }}><div style={{ height: '100%', background: 'var(--accent)', borderRadius: 0, transition: 'width .45s ease', width: Math.min(100, Math.round((bootIdx / BOOT_STAGES.length) * 100)) + '%' }} /></div>
+          <div className="w-[340px] h-[3px] bg-[var(--raised)] rounded-none overflow-hidden"><div className="h-full bg-[var(--accent)] rounded-none" style={{ transition: 'width .45s ease', width: Math.min(100, Math.round((bootIdx / BOOT_STAGES.length) * 100)) + '%' }} /></div>
         </div>
       </div>
     );
@@ -470,54 +471,53 @@ export default function Workbench() {
   return (
     /* height (not min-height) bounds the shell so topbar+nav stay pinned and
        ONLY the main column scrolls — the design's cockpit scroll model. */
-    <div className="aw" data-testid="wb-app" style={{ height: '100vh', overflow: 'hidden' }}>
+    <div className="aw h-screen overflow-hidden" data-testid="wb-app">
       <a href="#wb-main" className="skip-link">Skip to main content</a>
       {/* topbar */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 16, height: 54, padding: '0 24px', background: 'var(--surface)', borderBottom: '1px solid var(--border)', flex: 'none' }}>
+      <div className="flex items-center gap-4 h-[54px] px-6 bg-[var(--surface)] border-b border-[var(--border)] flex-none">
         <div className="aw-burger" onClick={() => setNavOpen((o) => !o)} role="button" aria-label="Toggle navigation">☰</div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}><span style={{ width: 8, height: 8, background: 'var(--accent)', borderRadius: 0 }} /><span className="aw-display" style={{ fontWeight: 700, fontSize: 15, letterSpacing: '.1em' }}>AURA</span></div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12.5, color: 'var(--text2)', border: '1px solid var(--border)', borderRadius: 0, padding: '4px 10px 4px 4px' }}>
-          <span className="aw-mono" style={{ width: 18, height: 18, display: 'grid', placeItems: 'center', fontSize: 9.5, fontWeight: 700, color: 'var(--accent)', background: 'var(--accent-dim)', border: '1px solid var(--accent-bd)' }}>{getCurrentWorkspaceId().slice(0, 2).toUpperCase()}</span>
+        <div className="flex items-center gap-[9px]"><span className="w-2 h-2 bg-[var(--accent)] rounded-none" /><span className="aw-display font-bold text-[15px] tracking-widest">AURA</span></div>
+        <div className="flex items-center gap-2 py-1 pr-2.5 pl-1 text-[12.5px] text-[var(--text2)] border border-[var(--border)] rounded-none">
+          <span className="aw-mono w-[18px] h-[18px] grid place-items-center text-[9.5px] font-bold text-[var(--accent)] bg-[var(--accent-dim)] border border-[var(--accent-bd)]">{getCurrentWorkspaceId().slice(0, 2).toUpperCase()}</span>
           {getCurrentWorkspaceId()}
         </div>
-        {gatewayUp === false && <div className="aw-mono" style={{ fontSize: 9.5, fontWeight: 600, letterSpacing: '.08em', color: 'var(--danger)', background: 'var(--sunken)', border: '1px solid var(--border)', borderRadius: 0, padding: '3px 7px' }}>GATEWAY OFFLINE</div>}
-        <div style={{ flex: 1 }} />
-        <div onClick={() => { setPaletteOpen(true); setTimeout(() => paletteInput.current?.focus(), 30); }} className="aw-mono aw-hover-accent-bd aw-topbar-search" style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 8, fontSize: 11, fontWeight: 500, color: 'var(--text2)', border: '1px solid var(--border)', borderRadius: 0, padding: '5px 10px' }}>
-          Search, ask, or run a command <span style={{ background: 'var(--sunken)', borderRadius: 0, padding: '1px 5px' }}>⌘K</span>
+        {gatewayUp === false && <div className="aw-mono text-[9.5px] font-semibold tracking-[0.08em] text-[var(--danger)] bg-[var(--sunken)] border border-[var(--border)] rounded-none py-[3px] px-[7px]">GATEWAY OFFLINE</div>}
+        <div className="flex-1" />
+        <div onClick={() => { setPaletteOpen(true); setTimeout(() => paletteInput.current?.focus(), 30); }} className="aw-mono aw-hover-accent-bd aw-topbar-search cursor-pointer flex items-center gap-2 text-[11px] font-medium text-[var(--text2)] border border-[var(--border)] rounded-none py-[5px] px-2.5">
+          Search, ask, or run a command <span className="bg-[var(--sunken)] rounded-none py-px px-[5px]">⌘K</span>
         </div>
         <UserMenu />
       </div>
 
-      <div style={{ display: 'flex', flex: 1, minHeight: 0 }}>
+      <div className="flex flex-1 min-h-0">
         <div className={`aw-backdrop${navOpen ? ' aw-open' : ''}`} onClick={() => setNavOpen(false)} />
         {/* nav */}
-        <div className={`aw-nav${navOpen ? ' aw-open' : ''}`} style={{ width: navCollapsed ? 56 : 204, flex: 'none', borderRight: '1px solid var(--border)', background: 'var(--surface)', padding: navCollapsed ? '10px 6px 16px' : '10px 10px 20px', display: 'flex', flexDirection: 'column', gap: 18, overflowY: 'auto', overflowX: 'hidden', transition: 'width .16s var(--ease-out)' }}>
+        <div className={cn('aw-nav', navOpen && 'aw-open', 'flex flex-none flex-col gap-[18px] overflow-y-auto overflow-x-hidden border-r border-[var(--border)] bg-[var(--surface)] pt-2.5 transition-[width] duration-[160ms] ease-[var(--ease-out)]', navCollapsed ? 'w-14 px-1.5 pb-4' : 'w-[204px] px-2.5 pb-5')}>
           <button
             type="button"
             onClick={() => setNavCollapsed((c) => !c)}
-            className="aw-hover-raise aw-topbar-search"
+            className={cn('aw-hover-raise aw-topbar-search grid place-items-center w-[22px] h-[22px] border border-[var(--border)] bg-transparent text-[var(--text3)] cursor-pointer flex-none', navCollapsed ? 'self-center' : 'self-end')}
             aria-label={navCollapsed ? 'Expand navigation' : 'Collapse navigation'}
             title={navCollapsed ? 'Expand navigation' : 'Collapse navigation'}
-            style={{ alignSelf: navCollapsed ? 'center' : 'flex-end', display: 'grid', placeItems: 'center', width: 22, height: 22, border: '1px solid var(--border)', background: 'transparent', color: 'var(--text3)', cursor: 'pointer', flex: 'none' }}
           >
             {navCollapsed ? <PanelLeftOpen size={13} /> : <PanelLeftClose size={13} />}
           </button>
           {NAV_GROUPS.map(([label, items]) => (
             <div key={label}>
-              {!navCollapsed && <div className="aw-mono" style={{ fontSize: 9.5, fontWeight: 600, letterSpacing: '.14em', color: 'var(--text3)', padding: '0 12px 6px' }}>{label}</div>}
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
+              {!navCollapsed && <div className="aw-mono text-[9.5px] font-semibold tracking-[0.14em] text-[var(--text3)] px-3 pb-1.5">{label}</div>}
+              <div className="flex flex-col gap-px">
                 {items.map((name) => {
                   const active = name === nav;
                   const badge = (name === 'Exception Queue' || name === 'Healing Queue') && pendingCount > 0 ? String(pendingCount) : null;
                   const goNav = () => { selectNav(name); setNavOpen(false); };
                   const Icon = NAV_ICONS[name];
                   return (
-                    <div key={name} role="button" tabIndex={0} aria-current={active ? 'page' : undefined} onClick={goNav} onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); goNav(); } }} title={navCollapsed ? name : undefined} className="aw-nav-item" style={{ color: active ? 'var(--text)' : 'var(--text2)', background: active ? 'var(--accent-dim)' : 'transparent', fontWeight: active ? 600 : 400, justifyContent: navCollapsed ? 'center' : 'space-between' }}>
-                      <span style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
-                        {Icon && <Icon size={15} style={{ flex: 'none', color: active ? 'var(--accent)' : 'var(--text3)' }} />}
-                        {!navCollapsed && <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{name}</span>}
+                    <div key={name} role="button" tabIndex={0} aria-current={active ? 'page' : undefined} onClick={goNav} onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); goNav(); } }} title={navCollapsed ? name : undefined} className={cn('aw-nav-item', active ? 'text-[var(--text)] bg-[var(--accent-dim)] font-semibold' : 'text-[var(--text2)] bg-transparent font-normal', navCollapsed ? 'justify-center' : 'justify-between')}>
+                      <span className="flex items-center gap-2 min-w-0">
+                        {Icon && <Icon size={15} className={cn('flex-none', active ? 'text-[var(--accent)]' : 'text-[var(--text3)]')} />}
+                        {!navCollapsed && <span className="truncate">{name}</span>}
                       </span>
-                      {!navCollapsed && badge && <span className="aw-mono" style={{ fontSize: 9.5, fontWeight: 600, color: 'var(--warn)', background: 'var(--warn-dim)', borderRadius: 0, padding: '1px 6px' }}>{badge}</span>}
+                      {!navCollapsed && badge && <span className="aw-mono text-[9.5px] font-semibold text-[var(--warn)] bg-[var(--warn-dim)] rounded-none py-px px-1.5">{badge}</span>}
                     </div>
                   );
                 })}
@@ -525,8 +525,8 @@ export default function Workbench() {
             </div>
           ))}
           {!navCollapsed && (
-            <div className="aw-mono" style={{ marginTop: 'auto', padding: '14px 12px 0', borderTop: '1px solid var(--border)', fontSize: 9.5, fontWeight: 500, color: 'var(--text3)', lineHeight: 1.9 }}>
-              {ledger ? (<>LEDGER {ledger.no}<br /><span style={{ color: ledger.intact ? 'var(--accent)' : 'var(--danger)' }}>● {ledger.intact ? 'CHAIN INTACT' : 'CHAIN BROKEN'}</span><br />sha256 {ledger.hash}</>) : (<>LEDGER —<br /><span style={ledgerDown ? { color: 'var(--warn)' } : undefined}>● {ledgerDown ? 'SERVICE OFFLINE' : 'VERIFYING…'}</span></>)}
+            <div className="aw-mono mt-auto pt-3.5 px-3 pb-0 border-t border-[var(--border)] text-[9.5px] font-medium text-[var(--text3)] leading-[1.9]">
+              {ledger ? (<>LEDGER {ledger.no}<br /><span className={ledger.intact ? 'text-[var(--accent)]' : 'text-[var(--danger)]'}>● {ledger.intact ? 'CHAIN INTACT' : 'CHAIN BROKEN'}</span><br />sha256 {ledger.hash}</>) : (<>LEDGER —<br /><span className={ledgerDown ? 'text-[var(--warn)]' : undefined}>● {ledgerDown ? 'SERVICE OFFLINE' : 'VERIFYING…'}</span></>)}
             </div>
           )}
         </div>
