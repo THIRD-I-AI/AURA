@@ -91,19 +91,23 @@ paths:
   request — this codebase already does this everywhere real fetches happen
   (`disabled={busy === r.id}` etc. in the native panels); keep doing it.
 
-## Loading states — a known gap, not yet resolved
+## Loading states — Skeleton exists now, most panels still use EmptyState
 
-`workbench.css` already defines a shimmer skeleton primitive (`.aw-skeleton`,
-gradient + `awshimmer` animation) sized to match real content shapes. It is
-**not currently exposed as a reusable `ui-kit` component**, and none of the
-native panels use it — they all use `EmptyState intent="awaiting"` (icon + one
-line of text) for loading, which is simpler but doesn't show the shape of the
-incoming data. Don't silently "upgrade" a panel to a shimmer skeleton on your
-own judgment call — that's a real, visible product decision (simple state vs.
-shaped skeleton), not a style nit. If you think a specific view needs a shaped
-skeleton, say so and ask, or build `Skeleton` as a proper `ui-kit` primitive
-first so every consumer gets it the same way, rather than hand-rolling one
-shimmer div per file.
+`@/components/ui-kit/skeleton` (`animate-pulse bg-raised rounded-none`,
+composed via className into whatever shape you need) is the real primitive
+now — wired into the Cockpit stat tiles and Query History as the reference
+usage. `workbench.css`'s older `.aw-skeleton` (gradient sweep, not a plain
+pulse) is unrelated and still unused; don't reach for it, use the `ui-kit`
+one.
+
+Most native panels still use `EmptyState intent="awaiting"` (icon + one line
+of text) for their initial loading state, and that's still correct for a
+whole-panel "nothing has loaded yet" wait. Reach for `Skeleton` instead when
+the surrounding layout is already known and showing its real shape is worth
+the extra markup (a stat tile, a table row) — same judgment call as before,
+just with the primitive now built. Don't silently convert an `EmptyState` to
+a `Skeleton` on your own judgment across the whole panel set in one pass —
+that's still a visible product decision per view, do it deliberately.
 
 ## Semantic color naming — two layers, don't cross them
 
