@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { RefreshCw, Settings } from 'lucide-react';
-import { type PageType } from '../components/Layout/AppLayout';
+import { type PageType } from '../lib/pageTypes';
 import {
   etlService,
   pipelineService,

@@ -1,5 +1,5 @@
 import { Link } from 'react-router-dom';
-import type { PageType } from '../components/Layout/AppLayout';
+import type { PageType } from '../lib/pageTypes';
 import './engagements.css';
 
 /**

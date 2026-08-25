@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { type PageType } from './Layout/AppLayout';
+import { type PageType } from '../lib/pageTypes';
 import { savedQueryService, type SavedQuery } from '../services/api';
 import { fuzzyScore } from '../utils/fuzzyScore';
 

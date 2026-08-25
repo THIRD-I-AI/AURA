@@ -1,5 +1,5 @@
 import { lazy } from 'react';
-import type { PageType } from '../components/Layout/AppLayout';
+import type { PageType } from '../lib/pageTypes';
 
 // Page-aware rail content. Pages absent here fall back to DefaultRail (the rail
 // reframes around whatever the user is doing). All slots read existing
