@@ -65,4 +65,38 @@ describe('QueryHistoryPanel', () => {
     // ascending: the null/-1 row_count (Customer churn) sorts first
     expect(within(rowsInOrder[0]).getByText('Customer churn')).toBeInTheDocument();
   });
+
+  it('opens the detail drawer with full row content on row click, and closes it', async () => {
+    getQueryHistory.mockResolvedValue({ success: true, total: 2, queries });
+    render(<QueryHistoryPanel />);
+    await waitFor(() => expect(screen.getByText('Total revenue by region')).toBeInTheDocument());
+
+    const user = userEvent.setup();
+    expect(screen.queryByText('Query detail')).not.toBeInTheDocument();
+
+    await user.click(screen.getByText('Total revenue by region'));
+
+    const drawer = screen.getByRole('dialog');
+    expect(within(drawer).getByText('Query detail')).toBeInTheDocument();
+    expect(within(drawer).getByText('select 1')).toBeInTheDocument();
+    expect(within(drawer).getByText('Total revenue by region')).toBeInTheDocument();
+    expect(within(drawer).getByText('SUCCESS')).toBeInTheDocument();
+    expect(within(drawer).getByText('12')).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: /close/i }));
+    await waitFor(() => expect(screen.queryByText('Query detail')).not.toBeInTheDocument());
+  });
+
+  it('closes the detail drawer on Escape', async () => {
+    getQueryHistory.mockResolvedValue({ success: true, total: 2, queries });
+    render(<QueryHistoryPanel />);
+    await waitFor(() => expect(screen.getByText('Total revenue by region')).toBeInTheDocument());
+
+    const user = userEvent.setup();
+    await user.click(screen.getByText('Customer churn'));
+    expect(screen.getByText('Query detail')).toBeInTheDocument();
+
+    await user.keyboard('{Escape}');
+    await waitFor(() => expect(screen.queryByText('Query detail')).not.toBeInTheDocument());
+  });
 });

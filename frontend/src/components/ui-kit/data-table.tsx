@@ -210,7 +210,9 @@ export function DataTable<T>({
                   <tr
                     key={getRowKey ? getRowKey(row, i) : i}
                     onClick={onRowClick ? () => onRowClick(row) : undefined}
-                    role={onRowClick ? 'button' : undefined}
+                    // Stay `role="row"` (the <tr> default) so table nav semantics and
+                    // getAllByRole('row') queries survive — a nested activation target
+                    // shouldn't reclassify the row itself as a generic button.
                     tabIndex={onRowClick ? 0 : undefined}
                     onKeyDown={
                       onRowClick
