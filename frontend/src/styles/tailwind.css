@@ -69,6 +69,7 @@
   --color-surface-2: var(--bg-surface-2);
   --color-sunken: var(--bg-sunken);
   --color-raised: var(--bg-raised);
+  --color-overlay: var(--bg-overlay);
   /* shadcn `card` surface — solid (not the translucent --card-bg rgba) so
      New-York cards read as opaque panels; paired with --color-card-foreground. */
   --color-card: var(--bg-surface);

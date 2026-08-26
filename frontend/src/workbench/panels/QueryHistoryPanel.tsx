@@ -3,11 +3,19 @@
    queries from GET /query-history via analyticsService. Rendered as the
    ui-kit DataTable (sortable TIME/STATUS/ROWS, filterable) — reference
    implementation for the DataTable primitive. */
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useState, type ReactNode } from 'react';
 import { RefreshCw } from 'lucide-react';
 
 import { Button } from '@/components/ui-kit/button';
 import { DataTable, type ColumnDef } from '@/components/ui-kit/data-table';
+import {
+  Sheet,
+  SheetBody,
+  SheetContent,
+  SheetDescription,
+  SheetHeader,
+  SheetTitle,
+} from '@/components/ui-kit/sheet';
 import { cn } from '@/lib/cn';
 import { analyticsService } from '../../services/api';
 
@@ -77,9 +85,21 @@ const columns: ColumnDef<QueryRow>[] = [
   },
 ];
 
+function DetailField({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <div className="flex flex-col gap-1">
+      <span className="font-mono text-2xs font-semibold uppercase tracking-wider text-text-tertiary">
+        {label}
+      </span>
+      {children}
+    </div>
+  );
+}
+
 export default function QueryHistoryPanel() {
   const [rows, setRows] = useState<QueryRow[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [selected, setSelected] = useState<QueryRow | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -121,7 +141,56 @@ export default function QueryHistoryPanel() {
         emptyDescription="Ask a question in Ask AURA — it lands here with its generated SQL and status."
         filterPlaceholder="Filter queries…"
         getRowKey={(q, i) => `${q.timestamp ?? i}-${i}`}
+        onRowClick={setSelected}
       />
+
+      <Sheet open={selected !== null} onOpenChange={(open) => { if (!open) setSelected(null); }}>
+        <SheetContent>
+          {selected && (() => {
+            const tone = statusTone(selected.status);
+            return (
+              <>
+                <SheetHeader>
+                  <SheetTitle>Query detail</SheetTitle>
+                  <SheetDescription>{fmtTime(selected.timestamp)}</SheetDescription>
+                </SheetHeader>
+                <SheetBody className="flex flex-col gap-4">
+                  <div className="flex gap-6">
+                    <DetailField label="Status">
+                      <span className="inline-flex items-center gap-2">
+                        <span className={cn('size-1.5 shrink-0', tone.dot)} />
+                        <span className={cn('font-mono text-xs font-bold tracking-wider', tone.text)}>
+                          {(selected.status || 'unknown').toUpperCase()}
+                        </span>
+                      </span>
+                    </DetailField>
+                    <DetailField label="Rows">
+                      <span className="font-mono text-xs text-text-primary">
+                        {typeof selected.row_count === 'number' ? selected.row_count : '—'}
+                      </span>
+                    </DetailField>
+                    <DetailField label="Execution time">
+                      <span className="font-mono text-xs text-text-primary">
+                        {typeof selected.execution_time_ms === 'number' ? `${selected.execution_time_ms} ms` : '—'}
+                      </span>
+                    </DetailField>
+                  </div>
+                  <DetailField label="Prompt">
+                    <p className="whitespace-pre-wrap font-mono text-xs leading-relaxed text-text-primary">
+                      {selected.prompt || '—'}
+                    </p>
+                  </DetailField>
+                  <DetailField label="SQL">
+                    <pre className="whitespace-pre-wrap break-words border border-border-hairline bg-secondary p-3 font-mono text-xs leading-relaxed text-text-primary">
+                      {selected.sql || '—'}
+                    </pre>
+                  </DetailField>
+                </SheetBody>
+              </>
+            );
+          })()}
+        </SheetContent>
+      </Sheet>
     </div>
   );
 }
