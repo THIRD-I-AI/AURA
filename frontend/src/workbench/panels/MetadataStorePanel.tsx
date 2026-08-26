@@ -62,7 +62,7 @@ export default function MetadataStorePanel() {
           />
         )}
         {(models ?? []).map((m, i) => (
-          <div key={m.id} className={cn('flex flex-col gap-2 px-4 py-3', i > 0 && 'border-t border-border')}>
+          <div key={m.id} className={cn('flex flex-col gap-2 px-4 py-2.5', i > 0 && 'border-t border-border')}>
             <div className="flex items-center gap-2.5">
               <span className="truncate text-sm font-semibold text-card-foreground">{m.name}</span>
               <div className="flex-1" />

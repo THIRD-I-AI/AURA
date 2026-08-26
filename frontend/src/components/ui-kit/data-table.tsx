@@ -112,7 +112,7 @@ export function DataTable<T>({
   const hasData = rows !== null && rows.length > 0
 
   return (
-    <div className={cn('flex flex-col gap-2', className)}>
+    <div className={cn('flex flex-col gap-1.5', className)}>
       {hasData && filterableCols.length > 0 && (
         <input
           value={filter}
@@ -131,7 +131,7 @@ export function DataTable<T>({
           {[0, 1, 2].map((r) => (
             <div
               key={r}
-              className={cn('flex items-center gap-4 px-3 py-2', r > 0 && 'border-t border-border-hairline')}
+              className={cn('flex items-center gap-4 px-3 py-1.5', r > 0 && 'border-t border-border-hairline')}
             >
               {columns.map((c, i) => (
                 <Skeleton key={c.key} className={cn('h-3', i === 0 ? 'w-1/4' : 'flex-1')} />
@@ -167,7 +167,7 @@ export function DataTable<T>({
                       sort?.key === col.key ? (sort.dir === 'asc' ? 'ascending' : 'descending') : undefined
                     }
                     className={cn(
-                      'px-3 py-2 text-left align-middle',
+                      'px-3 py-1.5 text-left align-middle',
                       col.align === 'right' && 'text-right',
                       col.className,
                     )}
@@ -241,7 +241,7 @@ export function DataTable<T>({
                         <td
                           key={col.key}
                           className={cn(
-                            'px-3 py-2 align-middle text-text-primary',
+                            'px-3 py-1.5 align-middle text-text-primary',
                             col.truncate && 'max-w-0',
                             col.align === 'right' && 'text-right',
                             col.className,

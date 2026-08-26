@@ -73,7 +73,7 @@ export default function HealingQueuePanel() {
           <EmptyState intent="awaiting" title="Queue clear" description="No recoveries awaiting approval. When drift is detected, high-risk shims land here for a human decision (WORM-logged)." />
         )}
         {(pending ?? []).map((r, i) => (
-          <div key={r.id} className={cn('flex flex-col gap-2 px-4 py-3', i > 0 && 'border-t border-border')}>
+          <div key={r.id} className={cn('flex flex-col gap-2 px-4 py-2.5', i > 0 && 'border-t border-border')}>
             <div className="flex items-center gap-2.5">
               <span className="size-1.5 shrink-0 bg-warn" />
               <span className="text-sm font-semibold text-card-foreground">{r.source_id || r.drift_event_id}</span>
