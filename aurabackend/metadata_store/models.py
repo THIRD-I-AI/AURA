@@ -171,6 +171,13 @@ class SemanticModel(Base):
     __tablename__ = "semantic_models"
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    # Tenant boundary. GET /semantic/models used to return every tenant's
+    # models because this column did not exist and the query had nothing to
+    # filter on. Nullable so pre-tenanting rows survive the migration; the read
+    # path treats NULL as "not mine", which fails closed rather than open.
+    # semantic_fields intentionally has no such column — it hangs off this
+    # model's FK, so scoping the parent scopes the children.
+    workspace_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
     name: Mapped[str] = mapped_column(String(255))
     description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     source: Mapped[Dict[str, Any]] = mapped_column(JSON, default=dict)

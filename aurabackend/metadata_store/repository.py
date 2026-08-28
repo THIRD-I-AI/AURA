@@ -169,6 +169,7 @@ class MetadataRepository:
         source: Dict[str, Any],
         tags: Optional[List[str]] = None,
         fields: Optional[List[Dict[str, Any]]] = None,
+        workspace_id: Optional[str] = None,
     ) -> SemanticModel:
         model_id = model_id or str(uuid.uuid4())
 
@@ -190,14 +191,29 @@ class MetadataRepository:
         # selectinload(.fields) eagerly populates the collection so the
         # update path can mutate it without triggering a lazy-load
         # MissingGreenlet error under async sessions.
+        # workspace_id is in the WHERE, not just on the INSERT. Without it, passing
+        # another tenant's model_id would load THEIR row and the update branch
+        # below would overwrite it — a cross-tenant WRITE, which is worse than
+        # the read this change is mainly about. Scoped this way, a foreign id
+        # simply misses and falls through to the create branch, where the new
+        # row is stamped with the caller's own workspace_id.
         result = await self._session.execute(
             select(SemanticModel)
             .options(selectinload(SemanticModel.fields))
-            .where(SemanticModel.id == model_id)
+            .where(SemanticModel.id == model_id, SemanticModel.workspace_id == workspace_id)
         )
         model = result.scalar_one_or_none()
 
         if model is None:
+            # The scoped lookup missing does NOT mean the id is free: `id` is a
+            # global primary key, so another tenant may hold it. Creating it
+            # here would raise IntegrityError -- a 500 that also confirms the id
+            # exists elsewhere, handing back the existence oracle the scoping
+            # was meant to close. Mint a fresh id instead, so a foreign id and a
+            # brand-new id are indistinguishable to the caller.
+            taken = await self._session.get(SemanticModel, model_id)
+            if taken is not None:
+                model_id = str(uuid.uuid4())
             # NEW path. Construct the model WITH its fields pre-populated
             # so SQLAlchemy never has to read the relationship from the
             # DB. Calling model.fields.clear() / .append() after add()
@@ -206,6 +222,7 @@ class MetadataRepository:
             initial_fields = _build_fields(fields) if fields is not None else []
             model = SemanticModel(
                 id=model_id,
+                workspace_id=workspace_id,
                 name=name,
                 description=description,
                 source=source,
@@ -228,13 +245,38 @@ class MetadataRepository:
         await self._session.refresh(model, ["fields"])
         return model
 
-    async def list_semantic_models(self) -> List[SemanticModel]:
-        stmt = select(SemanticModel).options(selectinload(SemanticModel.fields))
+    async def list_semantic_models(self, workspace_id: Optional[str] = None) -> List[SemanticModel]:
+        """List semantic models for ONE tenant.
+
+        This was a bare select with no WHERE, so GET /semantic/models returned
+        every tenant's models — field names, expressions and descriptions
+        derived from their data.
+
+        A None workspace_id matches only rows whose workspace_id IS NULL (pre-tenanting
+        rows), not "everything". That is the fail-closed direction: an unscoped
+        caller sees nothing rather than all of it.
+        """
+        stmt = (
+            select(SemanticModel)
+            .options(selectinload(SemanticModel.fields))
+            .where(SemanticModel.workspace_id == workspace_id)
+        )
         result = await self._session.execute(stmt)
         return list(result.scalars().all())
 
-    async def get_semantic_model(self, model_id: str) -> Optional[SemanticModel]:
-        stmt = select(SemanticModel).options(selectinload(SemanticModel.fields)).where(SemanticModel.id == model_id)
+    async def get_semantic_model(
+        self, model_id: str, workspace_id: Optional[str] = None,
+    ) -> Optional[SemanticModel]:
+        """Fetch one model, scoped to the tenant.
+
+        Returning None for another tenant's id lets the route answer 404 rather
+        than 403, so it never confirms that the id exists elsewhere.
+        """
+        stmt = (
+            select(SemanticModel)
+            .options(selectinload(SemanticModel.fields))
+            .where(SemanticModel.id == model_id, SemanticModel.workspace_id == workspace_id)
+        )
         result = await self._session.execute(stmt)
         return result.scalar_one_or_none()
 

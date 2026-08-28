@@ -364,8 +364,18 @@ def _serialize_semantic_model(model: Any) -> Dict[str, Any]:
 
 
 @router.post("/semantic/models/from-file/{file_id}")
-async def auto_generate_model_from_file(file_id: str) -> Dict[str, Any]:
-    """Auto-generate semantic model from dataset profile."""
+async def auto_generate_model_from_file(file_id: str, request: Request) -> Dict[str, Any]:
+    """Auto-generate semantic model from dataset profile.
+
+    The generated model is stamped with the caller's workspace so it is only
+    ever readable by them.
+
+    Note the remaining gap this route inherits: get_dataset_profile is still
+    unscoped, because dataset_profiles has no tenant column yet (the
+    /files/{id}/profile route contains the equivalent read by checking file
+    ownership instead). Giving that table its own column is tracked with the
+    rest of the metadata_store schema.
+    """
     if semantic_builder is None or get_repository is None:
         return {"status": "error", "error": "Semantic builder or repository not available"}
     try:
@@ -374,7 +384,7 @@ async def auto_generate_model_from_file(file_id: str) -> Dict[str, Any]:
             if profile_record is None:
                 raise HTTPException(status_code=404, detail="Dataset profile not found")
             model_payload = semantic_builder.generate_model_from_profile(file_id=file_id, dataset_name=profile_record.dataset_name or f"dataset_{file_id[:8]}", profile=profile_record.profile)
-            model = await repo.upsert_semantic_model(model_id=None, name=model_payload['name'], description=model_payload['description'], source=model_payload['source'], tags=model_payload['tags'], fields=model_payload['fields'])
+            model = await repo.upsert_semantic_model(model_id=None, name=model_payload['name'], description=model_payload['description'], source=model_payload['source'], tags=model_payload['tags'], fields=model_payload['fields'], workspace_id=current_workspace_id(request))
             break
         return {"status": "success", "model": _serialize_semantic_model(model)}
     except HTTPException:
@@ -384,12 +394,19 @@ async def auto_generate_model_from_file(file_id: str) -> Dict[str, Any]:
 
 
 @router.post("/semantic/models")
-async def upsert_semantic_model(payload: SemanticModelPayload) -> Dict[str, Any]:
+async def upsert_semantic_model(payload: SemanticModelPayload, request: Request) -> Dict[str, Any]:
+    """Create or update a semantic model within the caller's workspace.
+
+    The workspace also scopes the UPDATE lookup in the repository, not just the
+    INSERT. Without that, posting another tenant's model id would load THEIR
+    row and overwrite it — a cross-tenant write, which is worse than the read
+    this change started from.
+    """
     if get_repository is None:
         return {"status": "error", "error": "Metadata repository not available"}
     try:
         async for repo in get_repository():
-            model = await repo.upsert_semantic_model(model_id=payload.id, name=payload.name, description=payload.description, source=payload.source, tags=payload.tags, fields=[field.model_dump() for field in payload.fields])
+            model = await repo.upsert_semantic_model(model_id=payload.id, name=payload.name, description=payload.description, source=payload.source, tags=payload.tags, fields=[field.model_dump() for field in payload.fields], workspace_id=current_workspace_id(request))
             break
         return {"status": "success", "model": _serialize_semantic_model(model)}
     except Exception as e:
@@ -397,12 +414,23 @@ async def upsert_semantic_model(payload: SemanticModelPayload) -> Dict[str, Any]
 
 
 @router.get("/semantic/models")
-async def list_semantic_models() -> Dict[str, Any]:
+async def list_semantic_models(request: Request) -> Dict[str, Any]:
+    """List the CALLER'S semantic models.
+
+    This returned every tenant's models: the repository ran a bare
+    select(SemanticModel) and this route took no Request, so it had nothing to
+    scope by. A semantic model carries field names, expressions and
+    descriptions derived from the owner's data, so the leak was modelled
+    business logic, not merely row counts.
+
+    current_workspace_id is the same isolation key the pipeline routes above
+    use — derived from the verified JWT, never a client header.
+    """
     if get_repository is None:
         return {"status": "error", "error": "Metadata repository not available"}
     try:
         async for repo in get_repository():
-            models = await repo.list_semantic_models()
+            models = await repo.list_semantic_models(current_workspace_id(request))
             break
         return {"status": "success", "models": [_serialize_semantic_model(m) for m in models]}
     except Exception as e:
@@ -410,12 +438,18 @@ async def list_semantic_models() -> Dict[str, Any]:
 
 
 @router.get("/semantic/models/{model_id}")
-async def get_semantic_model(model_id: str) -> Dict[str, Any]:
+async def get_semantic_model(model_id: str, request: Request) -> Dict[str, Any]:
+    """Fetch one model, scoped to the caller's workspace.
+
+    Another tenant's id now misses the query and falls through to the existing
+    404 below — the same not-found answer as a genuinely unknown id, so this
+    never confirms that the id exists under a different tenant.
+    """
     if get_repository is None:
         return {"status": "error", "error": "Metadata repository not available"}
     try:
         async for repo in get_repository():
-            model = await repo.get_semantic_model(model_id)
+            model = await repo.get_semantic_model(model_id, current_workspace_id(request))
             break
         if model is None:
             raise HTTPException(status_code=404, detail="Semantic model not found")
