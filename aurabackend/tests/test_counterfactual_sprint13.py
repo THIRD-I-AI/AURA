@@ -99,7 +99,12 @@ async def test_bulk_replay_returns_ndjson_with_mixed_statuses(monkeypatch, tmp_p
         job_id = r.json()["job_id"]
         import time
         for _ in range(120):
-            sr = client.get(f"/counterfactual/jobs/{job_id}").json()
+            # Assert the status BEFORE indexing: an error body has no "state",
+            # so the bare .json()["state"] reported KeyError: 'state' and hid
+            # whichever real failure (404 job lost, 500) actually happened.
+            sr_resp = client.get(f"/counterfactual/jobs/{job_id}")
+            assert sr_resp.status_code == 200, sr_resp.text
+            sr = sr_resp.json()
             if sr["state"] in {"succeeded", "failed"}:
                 break
             time.sleep(0.5)
