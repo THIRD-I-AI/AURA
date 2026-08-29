@@ -36,7 +36,7 @@ statsmodels>=0.14,<1.0
 # reportlab generates the printable PDF auditor report. Pure-Python with
 # no system deps, ~5MB install. The PDF endpoint returns 503 if this
 # package is missing rather than crashing the engine.
-reportlab>=4.0,<5.0
+reportlab>=5.0.1,<6.0
 
 # Sprint 12 — EconML LinearDRLearner replaces the linear-regression stub
 # previously in the engine's ``double_ml`` slot. Doubly robust ATE with
