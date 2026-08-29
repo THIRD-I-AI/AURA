@@ -16,7 +16,7 @@
 # FAISS — in-process vector similarity (Johnson, Douze & Jegou 2019).
 # faiss-cpu is the wheel-distributed CPU build; for GPU use the
 # matching faiss-gpu wheel out-of-band.
-faiss-cpu>=1.7,<2.0
+faiss-cpu>=1.15.0,<2.0
 
 # numpy + pandas are already in requirements.txt; pinning here for
 # clarity that the FAISS connector relies on the same versions.
