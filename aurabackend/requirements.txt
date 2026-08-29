@@ -85,7 +85,7 @@ prometheus-client>=0.26.0,<1.0  # transitive, pinned for stable Counter/Histogra
 sentry-sdk[fastapi]>=2.68.0,<3.0
 
 # Distributed Tracing (OpenTelemetry)
-opentelemetry-distro>=0.45b0,<1.0
+opentelemetry-distro>=0.65b0,<1.0
 opentelemetry-exporter-otlp>=1.44.0,<2.0
 opentelemetry-instrumentation-fastapi>=0.65b0,<1.0
 
