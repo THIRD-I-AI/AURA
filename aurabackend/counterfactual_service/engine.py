@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import os
 import time
 import uuid
 from itertools import combinations
@@ -1041,13 +1042,23 @@ def _run_one_estimator(
         )
 
 
+# Read at call time (not baked into a def-time default) so tests can
+# monkeypatch.setenv per-test. A timeout substitutes a sentinel
+# CounterfactualEstimate/RefutationResult (point/ci/error all zeroed but
+# still hash-basis fields), so two back-to-back runs where only one hits
+# the timeout produce different artifact hashes — raising this env var
+# gives slow/loaded CI runs headroom without changing the 30s prod default.
+def _default_estimator_timeout_s() -> float:
+    return float(os.getenv("AURA_CF_ESTIMATOR_TIMEOUT_S", "30.0"))
+
+
 async def run_estimators(
     df: pd.DataFrame,
     treatment: InterventionSpec,
     outcome: OutcomeSpec,
     dag: dict,
     methods: Optional[List[EstimatorMethod]] = None,
-    timeout_s: float = 30.0,
+    timeout_s: Optional[float] = None,
     *,
     request_hash: str = "",
     concurrent: bool = False,
@@ -1077,6 +1088,8 @@ async def run_estimators(
     coverage (small n, degenerate split), the asymptotic CI is
     retained and ``ci_method="asymptotic"`` flags the fallback.
     """
+    if timeout_s is None:
+        timeout_s = _default_estimator_timeout_s()
     chosen: List[EstimatorMethod] = methods or list(_DOWHY_ESTIMATOR_METHODS.keys())
     loop = asyncio.get_event_loop()
 
@@ -1264,7 +1277,7 @@ async def run_refuters(
     outcome: OutcomeSpec,
     dag: dict,
     refuters: Optional[List[RefuterName]] = None,
-    timeout_s: float = 30.0,
+    timeout_s: Optional[float] = None,
     *,
     request_hash: str = "",
     concurrent: bool = False,
@@ -1275,6 +1288,8 @@ async def run_refuters(
     per-refuter numpy seed isn't trampled by thread interleaving — the
     artifact_hash is then byte-stable across re-runs.
     """
+    if timeout_s is None:
+        timeout_s = _default_estimator_timeout_s()
     chosen: List[RefuterName] = refuters or list(_DOWHY_REFUTER_METHODS.keys())
     if not _DOWHY_AVAILABLE:
         # Sorted to match the happy-path return so callers can rely on

@@ -106,6 +106,11 @@ async def test_layer10_two_engine_runs_produce_identical_hash(monkeypatch, tmp_p
     monkeypatch.setenv("AURA_AUDIT_DIR", str(tmp_path / "audit"))
     monkeypatch.setenv("AURA_ARTIFACT_DIR", str(tmp_path / "art"))
     monkeypatch.setenv("AURA_CRITIC_CACHE_DIR", str(tmp_path / "cc"))
+    # A per-method estimator timeout substitutes a sentinel estimate whose
+    # zeroed point/ci/error ARE in the hash basis (strip_for_hashing only
+    # excludes elapsed_ms) — a timeout on just one of these two back-to-back
+    # runs would fail this determinism assertion under CI load.
+    monkeypatch.setenv("AURA_CF_ESTIMATOR_TIMEOUT_S", "300")
 
     df = synthetic_dataset(n=300, seed=0xdeadbeef)
     query = CounterfactualQuery(
