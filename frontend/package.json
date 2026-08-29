@@ -24,7 +24,7 @@
     "@sentry/react": "^10.69.0",
     "@xyflow/react": "^12.11.0",
     "axios": "^1.16.1",
-    "baseline-browser-mapping": "^2.9.17",
+    "baseline-browser-mapping": "^2.11.19",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "d3-force": "^3.0.0",
