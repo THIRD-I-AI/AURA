@@ -54,7 +54,7 @@ from .numeric_semantics import (
     NumericSemanticAnalyzer,
     numeric_columns_from_rows,
 )
-from .recovery_loop import RecoveryLoop, RecoveryLoopConfig
+from .recovery_loop import RecoveryLoop
 
 logger = logging.getLogger("uasr.mapek_worker")
 
@@ -317,6 +317,16 @@ class MAPEKWorker:
                     f"drift={drift.drift_detected} type={drift.drift_type} severity={drift.severity}",
                     {"batch_id": batch.batch_id, "row_count": len(batch.rows)},
                 )
+
+                # Post-heal validation: `drift` above already reflects data
+                # AFTER apply_shims (line ~309), so this is the earliest point
+                # that can tell "the last deploy healed it" from "it didn't."
+                if self._loop.check_post_deploy(batch.source_id, drift):
+                    await self._emit(
+                        "auto_rollback",
+                        f"post-heal validation failed for {batch.source_id}; shim auto-reverted",
+                        {"batch_id": batch.batch_id, "drift_type": str(drift.drift_type)},
+                    )
 
                 # Phase-1b — numeric semantic channel (inference-only).
                 # Runs AFTER the primary detector and does not influence the

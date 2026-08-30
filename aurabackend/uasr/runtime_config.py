@@ -89,6 +89,17 @@ def s18_1_flags() -> tuple[bool, bool, bool]:
     )
 
 
+def post_heal_validation_batches() -> int:
+    """Resolve ``UASR_POST_HEAL_VALIDATION_BATCHES`` -- 0 (default) is off.
+
+    When > 0, RecoveryLoop re-checks an auto-deployed shim's drift_type on
+    the next N batches and auto-reverts it if that drift is still firing.
+    Off by default: a bad heal reverting itself is new behaviour an operator
+    should opt into, same posture as every other UASR_* opt-in here.
+    """
+    return _env_int("UASR_POST_HEAL_VALIDATION_BATCHES", 0)
+
+
 # ────────────────────────────────────────────────────────────────────
 # Redis client (lazy, shared)
 # ────────────────────────────────────────────────────────────────────
@@ -193,6 +204,7 @@ def deployment_summary() -> dict:
         summary["shim_router"],
         summary["causal_rl_evaluator"],
     ) = s18_1_flags()
+    summary["post_heal_validation_batches"] = post_heal_validation_batches()
     if state_backend == "redis" or repair_backend in ("distributed", "redis", "fleet"):
         summary["redis_url"] = _env("UASR_REDIS_URL", "redis://localhost:6379/0")
     if state_backend == "memory":

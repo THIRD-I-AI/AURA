@@ -14,13 +14,11 @@ The loop supports configurable max iterations and automatic rollback.
 from __future__ import annotations
 
 import logging
-import os
-import sys
 import time
 import uuid
 from typing import Any, Callable, Dict, List, Optional
 
-from agents.base import AgentContext, AgentStatus
+from agents.base import AgentContext
 
 from .actuator_agent import SynthesisActuatorAgent
 from .drift_detector import DriftDetector
@@ -60,6 +58,12 @@ class RecoveryLoopConfig:
         # the pre-S41 greedy behavior, so existing call sites are unchanged.
         risk_tiered: bool = False,
         mode: RecoveryMode = RecoveryMode.AUTO,
+        # Post-heal validation: after a shim auto-deploys, re-check the next
+        # N batches for the SAME drift_type it was meant to fix. If it's
+        # still firing after N batches, the shim reverts automatically
+        # instead of staying silently permanent. 0 = off (pre-existing
+        # behaviour: a deployed shim is never re-validated).
+        post_heal_validation_batches: int = 0,
     ) -> None:
         self.max_iterations = max_iterations
         self.kl_reduction_target = kl_reduction_target
@@ -68,6 +72,7 @@ class RecoveryLoopConfig:
         self.use_causal_rl_evaluator = use_causal_rl_evaluator
         self.risk_tiered = risk_tiered
         self.mode = mode
+        self.post_heal_validation_batches = post_heal_validation_batches
 
 
 class RecoveryLoop:
@@ -93,6 +98,11 @@ class RecoveryLoop:
 
         # Shim registry: source_id → [deployed shim codes]
         self._deployed_shims: Dict[str, List[str]] = {}
+
+        # Post-heal validation watch: source_id → {"drift_type", "batches_seen"}.
+        # Populated by _deploy_shim when post_heal_validation_batches > 0;
+        # consumed by check_post_deploy on each subsequent batch.
+        self._post_deploy_watch: Dict[str, Dict[str, Any]] = {}
 
         # S18.1b: lazily construct the causal-RL evaluator only when
         # opted in. The drift_score_fn delegates to the detector's
@@ -502,6 +512,12 @@ class RecoveryLoop:
             drift_result.source_id, [],
         ).append(shim.shim_code)
 
+        if self._config.post_heal_validation_batches > 0:
+            self._post_deploy_watch[drift_result.source_id] = {
+                "drift_type": drift_result.drift_type,
+                "batches_seen": 0,
+            }
+
         if self._on_shim_deployed:
             try:
                 self._on_shim_deployed(
@@ -631,6 +647,53 @@ class RecoveryLoop:
             logger.info("Rolled back last shim for source=%s", source_id)
             return True
         return False
+
+    def check_post_deploy(
+        self, source_id: str, drift_result: Optional[DriftDetectionResult],
+    ) -> bool:
+        """Advance the post-heal validation watch for ``source_id``, if any.
+
+        Call this on every batch AFTER ``apply_shims`` + drift detection have
+        already run, so ``drift_result`` reflects the healed data -- this is
+        what lets it tell "the fix worked" from "the fix is a no-op" apart.
+        No-ops (returns False) when there's no active watch, which is the
+        common case: most batches for most sources never had a shim deploy.
+
+        The watch clears the moment the tracked drift_type stops firing (the
+        heal worked). If it's still firing after
+        ``post_heal_validation_batches`` batches, the shim is reverted via
+        the same ``rollback_last_shim`` path ``/uasr/rollback`` uses, and
+        this returns True so the caller can log/emit the event -- a bad heal
+        must not stay silently permanent.
+
+        v1 scope: only shims deployed via the auto-deploy path (_deploy_shim)
+        are watched. A human-approved shim (deploy_approved_shim, S41) was
+        already vetted by a person and is deliberately not re-validated here.
+        """
+        watch = self._post_deploy_watch.get(source_id)
+        if watch is None:
+            return False
+
+        still_drifting = bool(
+            drift_result
+            and drift_result.drift_detected
+            and drift_result.drift_type == watch["drift_type"]
+        )
+        if not still_drifting:
+            del self._post_deploy_watch[source_id]
+            return False
+
+        watch["batches_seen"] += 1
+        if watch["batches_seen"] < self._config.post_heal_validation_batches:
+            return False
+
+        del self._post_deploy_watch[source_id]
+        self.rollback_last_shim(source_id)
+        logger.warning(
+            "Auto-rollback: source=%s drift_type=%s still detected after %d post-heal batches",
+            source_id, watch["drift_type"], watch["batches_seen"],
+        )
+        return True
 
     def apply_shims(self, source_id: str, rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Apply all deployed shims for a source in order."""
