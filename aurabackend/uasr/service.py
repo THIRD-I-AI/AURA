@@ -49,6 +49,7 @@ from .runtime_config import (
     build_repair_scheduler,
     build_state_store,
     deployment_summary,
+    numeric_heal_flags,
 )
 from .semantic_gateway import ReferenceContextMatrix, SemanticGateway
 
@@ -91,6 +92,21 @@ try:
     _RECOVERY_MODE = RecoveryMode(os.getenv("UASR_RECOVERY_MODE", "auto").lower())
 except ValueError:
     _RECOVERY_MODE = RecoveryMode.AUTO
+
+def _mapek_config() -> MAPEKConfig:
+    """Build the worker config from the environment.
+
+    A named seam rather than an inline ``MAPEKConfig()``: the inline version is
+    exactly how numeric value-healing stayed unreachable in every deployment --
+    the fields defaulted False and no code path outside tests ever set them, so
+    nothing failed and nothing healed. This is directly assertable.
+    """
+    use_numeric_semantics, numeric_auto_heal = numeric_heal_flags()
+    return MAPEKConfig(
+        use_numeric_semantics=use_numeric_semantics,
+        numeric_auto_heal=numeric_auto_heal,
+    )
+
 
 _loop = RecoveryLoop(
     detector=_detector,
@@ -169,7 +185,7 @@ async def _lifespan(_):
             if _repair_scheduler is not None and hasattr(_repair_scheduler, "start"):
                 await _repair_scheduler.start()
             _mapek_worker = MAPEKWorker(
-                MAPEKConfig(),
+                _mapek_config(),
                 detector=_detector,
                 recovery_loop=_loop,
                 metrics=_tracker,
