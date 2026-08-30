@@ -78,6 +78,6 @@
     "ajv": "^6.14.0"
   },
   "optionalDependencies": {
-    "@rolldown/binding-win32-x64-msvc": "^1.0.1"
+    "@rolldown/binding-win32-x64-msvc": "^1.2.6"
   }
 }
