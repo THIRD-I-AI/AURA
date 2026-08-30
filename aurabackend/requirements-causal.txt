@@ -24,7 +24,7 @@
 # networkx range we have without forcing every other AURA pod onto
 # a narrower one.
 dowhy>=0.14,<0.16
-networkx>=3.0,<4.0
+networkx>=3.6.1,<4.0
 
 # Robust partial correlation (collinearity-aware) + ADF stationarity test
 # for the causal_service guardrail that refuses attribution when training
