@@ -331,9 +331,12 @@ async def test_replay_endpoint_returns_artifact(monkeypatch, tmp_path):
         assert r.status_code == 200, r.text
         job_id = r.json()["job_id"]
 
-        # Poll
+        # Poll on a 300s wall-clock budget, not 120x0.5s: the fan-out measures
+        # ~47s unloaded, so the old 60s budget timed out under ordinary suite
+        # load and reported a still-running job as a failure.
         import time
-        for _ in range(120):
+        deadline = time.monotonic() + 300.0
+        while time.monotonic() < deadline:
             sr = client.get(f"/counterfactual/jobs/{job_id}").json()
             if sr["state"] in {"succeeded", "failed"}:
                 break

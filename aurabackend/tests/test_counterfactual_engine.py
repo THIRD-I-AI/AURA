@@ -290,21 +290,31 @@ def test_renderers_produce_three_views():
 
 # ── Service endpoints ─────────────────────────────────────────────────
 
-def _poll_until_done(client, url: str, max_iters: int = 120, sleep_s: float = 0.5):
+def _poll_until_done(client, url: str, budget_s: float = 300.0, sleep_s: float = 0.5):
     """Sync polling helper.
 
     The background job runs in the asyncio event loop's default executor
     (DoWhy is sync). With sync TestClient, each ``client.get()`` enters
     the loop briefly — we add a real ``time.sleep`` between calls so the
-    executor's worker threads have wall-clock time to make progress."""
+    executor's worker threads have wall-clock time to make progress.
+
+    The budget is wall-clock and deliberately far above the ~47s an unloaded
+    estimator fan-out measures: the old 120x0.5s gave only ~13s of headroom,
+    so ordinary suite load pushed the job past the deadline and the caller
+    reported a still-running job as a failed one. Exhausting the budget now
+    raises here instead of returning a non-terminal state, so a genuinely
+    stuck job is distinguishable from a merely slow one."""
     import time
+    deadline = time.monotonic() + budget_s
     s = None
-    for _ in range(max_iters):
+    while time.monotonic() < deadline:
         s = client.get(url).json()
         if s.get("state") in {"succeeded", "failed"}:
             return s
         time.sleep(sleep_s)
-    return s
+    raise AssertionError(
+        f"job never reached a terminal state within {budget_s}s: last={s}"
+    )
 
 
 def test_service_endpoint_roundtrip(monkeypatch, tmp_path):
