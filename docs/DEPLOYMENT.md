@@ -365,11 +365,21 @@ UASR_REPAIR_MAX_CONCURRENT=4             # per-process cap (local mode)
 UASR_STATE_TTL_SECONDS=                  # optional Redis key TTL (blank = no expiry)
 UASR_STATE_CAPACITY=                     # optional LRU cap (memory mode, blank = unbounded)
 UASR_MAPEK_ENABLED=true                  # run the autonomous MAPE-K control loop
+UASR_NUMERIC_SEMANTICS=false             # analyse numeric/unit drift (report only)
+UASR_NUMERIC_AUTO_HEAL=false             # repair drifted VALUES in flight
 ```
 
-Confirm the active mode at runtime — `GET /health` on port 8009 reports
+`UASR_NUMERIC_AUTO_HEAL` is the only knob that lets the loop rewrite data rather
+than report on it, so it ships off. Turning it on implies `UASR_NUMERIC_SEMANTICS`
+— the healer shares the analyzer's baselines, and enabling the healer alone would
+silently heal nothing. Both resolved values appear in the
+payload of `GET /uasr/deployment` as `numeric_semantics` and `numeric_auto_heal`,
+so a deployment can be checked rather than assumed.
+
+Confirm the active mode at runtime — `GET /uasr/deployment` on port 8009 reports
 `state_backend`, `repair_backend`, and `node_id`, so a fleet's replicas are
-individually identifiable.
+individually identifiable. (`/health` only reports dependency probes; it has never
+carried the deployment mode.)
 
 ---
 

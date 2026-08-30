@@ -54,6 +54,23 @@ def _truthy(name: str, default: str = "false") -> bool:
     return _env(name, default).lower() in ("1", "true", "yes", "on")
 
 
+def numeric_heal_flags() -> tuple[bool, bool]:
+    """Resolve (use_numeric_semantics, numeric_auto_heal) from the environment.
+
+    Both MAPEKConfig fields default False and nothing outside tests ever set
+    them, so NumericHealController -- the only component that repairs a drifted
+    VALUE instead of reporting it -- could not be reached from any deployment.
+
+    Auto-heal implies the semantics channel: MAPEKWorker only builds the healer
+    when both are on, and only builds the analyzer whose baselines the healer
+    shares when the first is on. Enabling UASR_NUMERIC_AUTO_HEAL alone would
+    therefore heal nothing and raise no error, so it turns the channel on rather
+    than silently doing nothing.
+    """
+    auto = _truthy("UASR_NUMERIC_AUTO_HEAL")
+    return (auto or _truthy("UASR_NUMERIC_SEMANTICS")), auto
+
+
 # ────────────────────────────────────────────────────────────────────
 # Redis client (lazy, shared)
 # ────────────────────────────────────────────────────────────────────
@@ -152,6 +169,7 @@ def deployment_summary() -> dict:
         "recovery_mode": _env("UASR_RECOVERY_MODE", "auto"),
         "risk_tiered": _truthy("UASR_RISK_TIERED"),
     }
+    summary["numeric_semantics"], summary["numeric_auto_heal"] = numeric_heal_flags()
     if state_backend == "redis" or repair_backend in ("distributed", "redis", "fleet"):
         summary["redis_url"] = _env("UASR_REDIS_URL", "redis://localhost:6379/0")
     if state_backend == "memory":

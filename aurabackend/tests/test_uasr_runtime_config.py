@@ -109,3 +109,44 @@ def test_deployment_summary_distributed(monkeypatch):
     assert s["redis_url"].startswith("redis://")
     assert s["node_id"] == "node-7"
     assert s["repair_max_global_concurrent"] == 8
+
+
+# ── numeric value-healing flags ──────────────────────────────────────
+
+def test_numeric_heal_off_by_default():
+    """Value-healing rewrites pipeline data, so it must stay opt-in."""
+    assert rc.numeric_heal_flags() == (False, False)
+    s = rc.deployment_summary()
+    assert s["numeric_semantics"] is False
+    assert s["numeric_auto_heal"] is False
+
+
+def test_numeric_semantics_alone_analyses_without_rewriting(monkeypatch):
+    monkeypatch.setenv("UASR_NUMERIC_SEMANTICS", "true")
+    assert rc.numeric_heal_flags() == (True, False)
+
+
+def test_auto_heal_alone_still_enables_the_semantics_channel(monkeypatch):
+    """AUTO_HEAL without SEMANTICS would build a healer with no analyzer.
+
+    MAPEKWorker only constructs the NumericSemanticAnalyzer when
+    use_numeric_semantics is on, and the healer shares that analyzer's
+    baselines -- so the half-configured combination heals nothing and raises
+    nothing. The resolver promotes it instead of failing silently.
+    """
+    monkeypatch.setenv("UASR_NUMERIC_AUTO_HEAL", "true")
+    assert rc.numeric_heal_flags() == (True, True)
+
+
+def test_numeric_flags_reach_the_mapek_config(monkeypatch):
+    """The reachability gap this closes: the worker was built with a bare
+    MAPEKConfig(), whose numeric fields default False, so NumericHealController
+    -- the only component that repairs a drifted VALUE instead of reporting it
+    -- could not be switched on in any deployment."""
+    from uasr.service import _mapek_config
+
+    assert _mapek_config().numeric_auto_heal is False
+    monkeypatch.setenv("UASR_NUMERIC_AUTO_HEAL", "1")
+    cfg = _mapek_config()
+    assert cfg.use_numeric_semantics is True
+    assert cfg.numeric_auto_heal is True
