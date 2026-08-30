@@ -47,7 +47,7 @@ langgraph>=1.2.11,<1.3
 # DuckDB analytics + the distributed metadata layer (CockroachDB /
 # YugabyteDB / Postgres) so agents can pull schema slices on demand
 # instead of stuffing whole catalogues into prompts.
-mcp[cli]>=2.0.0,<3.0
+mcp[cli]>=2.1.1,<3.0
 
 # Causal discovery deps moved to requirements-causal.txt — dowhy pulls in
 # scipy + scikit-learn + statsmodels, which every other service would
