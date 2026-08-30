@@ -371,6 +371,7 @@ UASR_USE_MARTINGALE_DETECTOR=false       # Wasserstein-Martingale drift detector
 UASR_USE_SHIM_ROUTER=false               # canary traffic-split shim deploy, not pause/resume (S18.1c)
 UASR_USE_CAUSAL_RL_EVALUATOR=false       # pick the shim with best counterfactual expected-improvement (S18.1b)
 UASR_POST_HEAL_VALIDATION_BATCHES=0      # 0=off; N>0 auto-reverts a shim still failing after N batches
+UASR_APPROVAL_TIMEOUT_SECONDS=0          # 0=off; N>0 auto-escalates a PENDING_APPROVAL held longer than N seconds
 ```
 
 `UASR_NUMERIC_AUTO_HEAL` is the only knob that lets the loop rewrite data rather
@@ -398,6 +399,15 @@ batches, the shim reverts automatically (the same in-memory path
 only watches shims the loop deployed itself — a human-approved shim (S41) was
 already vetted by a person and isn't re-validated. Off by default (`0`), and
 surfaces on `GET /uasr/deployment` as `post_heal_validation_batches`.
+
+`UASR_APPROVAL_TIMEOUT_SECONDS` closes a gap in S41 itself: a
+`PENDING_APPROVAL` recovery previously waited forever if no human acted —
+the human-in-the-loop guarantee had no floor. When set > 0, a background
+reaper (started in the lifespan, polling every 30s) escalates any recovery
+held past the timeout to `ESCALATED` — the exact same transition
+`POST /uasr/recovery/{id}/reject` already performs, so a queue UI needs no
+new state to render. Off by default (`0`), surfaced on `GET /uasr/deployment`
+as `approval_timeout_seconds`.
 
 Confirm the active mode at runtime — `GET /uasr/deployment` on port 8009 reports
 `state_backend`, `repair_backend`, and `node_id`, so a fleet's replicas are

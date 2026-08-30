@@ -18,7 +18,7 @@ from __future__ import annotations
 import os
 import uuid
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, AsyncGenerator, Dict, List, Optional
 
 from fastapi import Depends, HTTPException
@@ -43,6 +43,7 @@ from .models import (
 )
 from .recovery_loop import RecoveryLoop, RecoveryLoopConfig
 from .runtime_config import (
+    approval_timeout_seconds,
     build_redis_client,
     build_repair_scheduler,
     build_state_store,
@@ -130,6 +131,73 @@ _loop = RecoveryLoop(
 # scope so /uasr/mapek/status and shutdown can reach it.
 _mapek_worker: Optional[MAPEKWorker] = None
 
+_APPROVAL_TIMEOUT_SECONDS = approval_timeout_seconds()
+_approval_reaper_task: Optional[Any] = None
+
+
+async def _reap_stale_approvals(timeout_seconds: float) -> int:
+    """One reaper tick: escalate every PENDING_APPROVAL older than the timeout.
+
+    Mirrors /uasr/recovery/{id}/reject exactly (same status transition, same
+    fields set) because a timed-out approval and a human rejection mean the
+    same thing to every downstream reader: this needs a human, urgently, and
+    nothing was deployed. decided_by identifies the reaper so a queue UI can
+    tell "a human rejected this" from "nobody looked in time" apart.
+
+    Returns the number escalated, so the caller can log a non-zero tick --
+    the queue going stale with no one watching is exactly the failure mode
+    this exists to surface.
+    """
+    escalated = 0
+    # RecoveryRecord.created_at/decided_at are tz-naive DateTime columns (see
+    # the S20.2 lesson in docs/SPRINTS.md: a Postgres tz-naive column rejects
+    # a tz-aware parameter outright, and SQLite's string-stored DateTime would
+    # silently compare wrong against one). Strip tzinfo on every value that
+    # crosses into a query or gets written, same as every other producer of
+    # these columns does.
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    async for session in get_session():
+        cutoff = now - timedelta(seconds=timeout_seconds)
+        result = await session.execute(
+            select(RecoveryRecord).where(
+                RecoveryRecord.status == RecoveryStatus.PENDING_APPROVAL.value,
+                RecoveryRecord.created_at < cutoff,
+            )
+        )
+        stale = result.scalars().all()
+        for rec in stale:
+            age_seconds = (now - rec.created_at).total_seconds()
+            rec.status = RecoveryStatus.ESCALATED.value
+            rec.decided_by = "uasr-approval-reaper"
+            rec.decision_note = f"Auto-escalated: pending {age_seconds:.0f}s (> {timeout_seconds:.0f}s timeout)"
+            rec.decided_at = now
+            logger.warning(
+                "Approval-queue escalation: recovery=%s source=%s pending %.0fs (> %.0fs timeout) -- needs a human",
+                rec.id, rec.source_id, age_seconds, timeout_seconds,
+            )
+        if stale:
+            await session.commit()
+        escalated = len(stale)
+        break
+    return escalated
+
+
+async def _approval_reaper_loop(timeout_seconds: float, poll_seconds: float = 30.0) -> None:
+    """Background loop: check for stale PENDING_APPROVAL recoveries every
+    ``poll_seconds``. A single failed tick (DB hiccup) must not kill the loop
+    -- the next tick tries again -- so exceptions are logged, not raised.
+    """
+    import asyncio
+
+    while True:
+        try:
+            await _reap_stale_approvals(timeout_seconds)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.error("Approval-queue reaper tick failed (non-fatal): %s", exc)
+        await asyncio.sleep(poll_seconds)
+
 
 # ────────────────────────────────────────────────────────────────────
 # Lifespan — DB init + MAPE-K worker (opt-in)
@@ -212,9 +280,26 @@ async def _lifespan(_):
             logger.error("MAPE-K worker failed to start: %s", exc)
             _mapek_worker = None
 
+    global _approval_reaper_task
+    if _APPROVAL_TIMEOUT_SECONDS > 0:
+        import asyncio
+        _approval_reaper_task = asyncio.create_task(
+            _approval_reaper_loop(_APPROVAL_TIMEOUT_SECONDS),
+            name="uasr-approval-reaper",
+        )
+        logger.info(
+            "Approval-queue reaper started (timeout=%ds)", _APPROVAL_TIMEOUT_SECONDS,
+        )
+
     try:
         yield
     finally:
+        if _approval_reaper_task is not None:
+            _approval_reaper_task.cancel()
+            try:
+                await _approval_reaper_task
+            except Exception:
+                pass  # CancelledError expected; any other error already logged per-tick
         if _mapek_worker is not None:
             try:
                 await _mapek_worker.stop()

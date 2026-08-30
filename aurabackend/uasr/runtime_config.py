@@ -100,6 +100,18 @@ def post_heal_validation_batches() -> int:
     return _env_int("UASR_POST_HEAL_VALIDATION_BATCHES", 0)
 
 
+def approval_timeout_seconds() -> int:
+    """Resolve ``UASR_APPROVAL_TIMEOUT_SECONDS`` -- 0 (default) is off.
+
+    A PENDING_APPROVAL recovery today waits forever if no human acts --
+    S41's own human-in-the-loop guarantee is undermined by a queue nobody is
+    watching. When > 0, a background reaper flips any recovery held longer
+    than this to ESCALATED (the same status /reject already uses), which is
+    exactly "needs a human, more urgently" rather than a new state.
+    """
+    return _env_int("UASR_APPROVAL_TIMEOUT_SECONDS", 0)
+
+
 # ────────────────────────────────────────────────────────────────────
 # Redis client (lazy, shared)
 # ────────────────────────────────────────────────────────────────────
@@ -205,6 +217,7 @@ def deployment_summary() -> dict:
         summary["causal_rl_evaluator"],
     ) = s18_1_flags()
     summary["post_heal_validation_batches"] = post_heal_validation_batches()
+    summary["approval_timeout_seconds"] = approval_timeout_seconds()
     if state_backend == "redis" or repair_backend in ("distributed", "redis", "fleet"):
         summary["redis_url"] = _env("UASR_REDIS_URL", "redis://localhost:6379/0")
     if state_backend == "memory":

@@ -225,3 +225,15 @@ def test_post_heal_validation_reaches_the_recovery_loop_config(monkeypatch):
         monkeypatch.delenv("UASR_POST_HEAL_VALIDATION_BATCHES", raising=False)
         importlib.reload(service)
         assert service._loop._config.post_heal_validation_batches == 0
+
+
+# ── approval-queue timeout / escalation ────────────────────────────────
+
+def test_approval_timeout_off_by_default():
+    assert rc.approval_timeout_seconds() == 0
+    assert rc.deployment_summary()["approval_timeout_seconds"] == 0
+
+
+def test_approval_timeout_resolves_from_env(monkeypatch):
+    monkeypatch.setenv("UASR_APPROVAL_TIMEOUT_SECONDS", "3600")
+    assert rc.approval_timeout_seconds() == 3600
