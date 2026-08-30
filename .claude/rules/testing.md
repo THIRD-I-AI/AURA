@@ -51,3 +51,16 @@ test databases; a parallel run corrupts both.
 A test that passes in the suite but fails alone is a defect, not a quirk: it is
 consuming state some earlier test left behind. Make it create its own fixture
 data. Verify both orderings before calling it fixed.
+
+## Edge coverage & teardown
+
+- High-failure edges get their own explicit test, not incidental coverage:
+  timeouts, boundary/malformed inputs, and connection interruptions.
+- Every pipeline/integration test that creates transient files or tables tears
+  them down completely, even on failure (`finally:` / fixture teardown) — a
+  leftover artifact is how order-dependence bugs get born (see above).
+
+> Not added here: a generic "mock outward network endpoints in tests" rule was
+> proposed but conflicts with this repo's hard constraint (`CLAUDE.md`): **never
+> mock an external call when a local test environment exists.** Use the Tier A/B
+> pattern above for genuinely external deps instead.

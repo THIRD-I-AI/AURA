@@ -10,7 +10,7 @@ in one of the other two layers:
 | Layer | Loads | Holds |
 |---|---|---|
 | this file | always | commands, execution mode, hard constraints, shared process |
-| `.claude/rules/*.md` | only when you touch matching paths | `backend.md`, `frontend.md`, `testing.md` |
+| `.claude/rules/*.md` | only when you touch matching paths | `backend.md`, `frontend.md`, `testing.md`, `security.md`, `performance.md`, `agents.md` |
 | `CLAUDE.local.md` | always, git-ignored | machine-specific overrides (local DSNs, paths) |
 
 # 🛠️ Tech Stack & Core Commands
