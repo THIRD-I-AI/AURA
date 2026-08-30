@@ -98,7 +98,11 @@ async def test_bulk_replay_returns_ndjson_with_mixed_statuses(monkeypatch, tmp_p
         assert r.status_code == 200, r.text
         job_id = r.json()["job_id"]
         import time
-        for _ in range(120):
+        # 300s wall-clock, not 120x0.5s: the fan-out measures ~47s unloaded, so
+        # the old 60s budget timed out under ordinary suite load and reported a
+        # still-running job as a failure.
+        deadline = time.monotonic() + 300.0
+        while time.monotonic() < deadline:
             # Assert the status BEFORE indexing: an error body has no "state",
             # so the bare .json()["state"] reported KeyError: 'state' and hid
             # whichever real failure (404 job lost, 500) actually happened.
@@ -108,7 +112,7 @@ async def test_bulk_replay_returns_ndjson_with_mixed_statuses(monkeypatch, tmp_p
             if sr["state"] in {"succeeded", "failed"}:
                 break
             time.sleep(0.5)
-        assert sr["state"] == "succeeded"
+        assert sr["state"] == "succeeded", sr
         real_hash = sr["artifact"]["audit_record_hash"]
 
         # Bulk-replay with the real hash + a known-bad hash + duplicate
