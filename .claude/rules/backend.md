@@ -51,3 +51,17 @@ paths:
 - Proxy helpers must forward the caller's `Authorization` header and preserve the
   upstream status code. Returning `resp.json()` while dropping `resp.status_code`
   turns an upstream 401 into a browser-visible HTTP 200 with an error body.
+
+## General discipline
+
+- **Zero-stub compliance** — no `// TODO` / `/* fix later */` placeholders in
+  production backend logic. Ship the real implementation or don't ship the call site.
+- **Validated schema enforcement** — incoming client payloads pass a Pydantic
+  model before any processing touches them; don't hand-parse `dict`/`request.json()`.
+- **State traceability** — multi-step LangGraph/agent loops log deterministic
+  step-by-step state so a run can be reconstructed for audit, not just its final result.
+- **Idempotent data inputs** — a DB write path that can be retried or re-delivered
+  (webhooks, ingestion, queue consumers) checks a dedup/idempotency key before insert.
+- **Graceful connection recovery** — network/cloud clients (Redis, Postgres, Kafka,
+  LLM APIs) retry with exponential backoff rather than failing the request on the
+  first transient error.
