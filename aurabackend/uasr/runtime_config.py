@@ -71,6 +71,24 @@ def numeric_heal_flags() -> tuple[bool, bool]:
     return (auto or _truthy("UASR_NUMERIC_SEMANTICS")), auto
 
 
+def s18_1_flags() -> tuple[bool, bool, bool]:
+    """Resolve the three Sprint S18.1 opt-ins from the environment.
+
+    ``MAPEKConfig.use_martingale_detector``/``use_shim_router`` and
+    ``RecoveryLoopConfig.use_causal_rl_evaluator`` shipped tested (S18.1,
+    S18.1c, S18.1b) but, like the numeric-heal flags before this module
+    resolved them, had no environment binding -- a deployment could not turn
+    any of them on without a code change. Unlike numeric auto-heal, these
+    three are independent detectors/selectors with no shared-baseline
+    ordering constraint, so each resolves on its own env var.
+    """
+    return (
+        _truthy("UASR_USE_MARTINGALE_DETECTOR"),
+        _truthy("UASR_USE_SHIM_ROUTER"),
+        _truthy("UASR_USE_CAUSAL_RL_EVALUATOR"),
+    )
+
+
 # ────────────────────────────────────────────────────────────────────
 # Redis client (lazy, shared)
 # ────────────────────────────────────────────────────────────────────
@@ -170,6 +188,11 @@ def deployment_summary() -> dict:
         "risk_tiered": _truthy("UASR_RISK_TIERED"),
     }
     summary["numeric_semantics"], summary["numeric_auto_heal"] = numeric_heal_flags()
+    (
+        summary["martingale_detector"],
+        summary["shim_router"],
+        summary["causal_rl_evaluator"],
+    ) = s18_1_flags()
     if state_backend == "redis" or repair_backend in ("distributed", "redis", "fleet"):
         summary["redis_url"] = _env("UASR_REDIS_URL", "redis://localhost:6379/0")
     if state_backend == "memory":

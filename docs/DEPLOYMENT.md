@@ -367,6 +367,9 @@ UASR_STATE_CAPACITY=                     # optional LRU cap (memory mode, blank 
 UASR_MAPEK_ENABLED=true                  # run the autonomous MAPE-K control loop
 UASR_NUMERIC_SEMANTICS=false             # analyse numeric/unit drift (report only)
 UASR_NUMERIC_AUTO_HEAL=false             # repair drifted VALUES in flight
+UASR_USE_MARTINGALE_DETECTOR=false       # Wasserstein-Martingale drift detector (S18.1)
+UASR_USE_SHIM_ROUTER=false               # canary traffic-split shim deploy, not pause/resume (S18.1c)
+UASR_USE_CAUSAL_RL_EVALUATOR=false       # pick the shim with best counterfactual expected-improvement (S18.1b)
 ```
 
 `UASR_NUMERIC_AUTO_HEAL` is the only knob that lets the loop rewrite data rather
@@ -375,6 +378,15 @@ than report on it, so it ships off. Turning it on implies `UASR_NUMERIC_SEMANTIC
 silently heal nothing. Both resolved values appear in the
 payload of `GET /uasr/deployment` as `numeric_semantics` and `numeric_auto_heal`,
 so a deployment can be checked rather than assumed.
+
+The three S18.1 flags each shipped independently tested but, before this,
+had no environment binding at all — a deployment couldn't turn any of them
+on without a code change (the same class of gap `UASR_NUMERIC_*` closed
+above). Unlike the numeric pair, they don't share a baseline, so each
+resolves independently: enabling the martingale detector doesn't imply the
+shim router or the causal-RL evaluator. All three surface on
+`GET /uasr/deployment` as `martingale_detector`, `shim_router`, and
+`causal_rl_evaluator`.
 
 Confirm the active mode at runtime — `GET /uasr/deployment` on port 8009 reports
 `state_backend`, `repair_backend`, and `node_id`, so a fleet's replicas are

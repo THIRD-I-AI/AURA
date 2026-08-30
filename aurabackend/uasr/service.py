@@ -50,6 +50,7 @@ from .runtime_config import (
     build_state_store,
     deployment_summary,
     numeric_heal_flags,
+    s18_1_flags,
 )
 from .semantic_gateway import ReferenceContextMatrix, SemanticGateway
 
@@ -102,11 +103,16 @@ def _mapek_config() -> MAPEKConfig:
     nothing failed and nothing healed. This is directly assertable.
     """
     use_numeric_semantics, numeric_auto_heal = numeric_heal_flags()
+    use_martingale_detector, use_shim_router, _ = s18_1_flags()
     return MAPEKConfig(
         use_numeric_semantics=use_numeric_semantics,
         numeric_auto_heal=numeric_auto_heal,
+        use_martingale_detector=use_martingale_detector,
+        use_shim_router=use_shim_router,
     )
 
+
+_, _, _USE_CAUSAL_RL_EVALUATOR = s18_1_flags()
 
 _loop = RecoveryLoop(
     detector=_detector,
@@ -115,6 +121,7 @@ _loop = RecoveryLoop(
         auto_deploy=True,
         risk_tiered=_RISK_TIERED,
         mode=_RECOVERY_MODE,
+        use_causal_rl_evaluator=_USE_CAUSAL_RL_EVALUATOR,
     ),
 )
 
