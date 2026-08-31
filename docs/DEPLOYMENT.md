@@ -372,6 +372,7 @@ UASR_USE_SHIM_ROUTER=false               # canary traffic-split shim deploy, not
 UASR_USE_CAUSAL_RL_EVALUATOR=false       # pick the shim with best counterfactual expected-improvement (S18.1b)
 UASR_POST_HEAL_VALIDATION_BATCHES=0      # 0=off; N>0 auto-reverts a shim still failing after N batches
 UASR_APPROVAL_TIMEOUT_SECONDS=0          # 0=off; N>0 auto-escalates a PENDING_APPROVAL held longer than N seconds
+UASR_REPAIR_MAX_PER_SOURCE=0             # 0=off (local backend only); N>0 caps one source's concurrent repairs
 ```
 
 `UASR_NUMERIC_AUTO_HEAL` is the only knob that lets the loop rewrite data rather
@@ -408,6 +409,19 @@ held past the timeout to `ESCALATED` — the exact same transition
 `POST /uasr/recovery/{id}/reject` already performs, so a queue UI needs no
 new state to render. Off by default (`0`), surfaced on `GET /uasr/deployment`
 as `approval_timeout_seconds`.
+
+`UASR_REPAIR_MAX_PER_SOURCE` closes a fairness gap: `UASR_REPAIR_MAX_CONCURRENT`
+bounds total concurrency but not *whose* repairs fill those slots — one
+source's backlog of LOW-severity repairs can occupy every slot and starve a
+CRITICAL repair from a different source that hasn't arrived yet, even though
+admission is otherwise priority-ordered. When set > 0, the local
+`RepairScheduler` skips (not discards) an item whose source is already at
+its cap and admits the next eligible item instead, so other sources keep
+making progress. **Local backend only** for now — the distributed
+(Redis-coordinated) fleet-wide scheduler doesn't implement this yet; adding
+it safely needs an atomic per-source counter in the admission critical
+section, deferred as a follow-up rather than shipped half-verified. Off by
+default (`0`), surfaced on `GET /uasr/deployment` as `repair_max_per_source`.
 
 Confirm the active mode at runtime — `GET /uasr/deployment` on port 8009 reports
 `state_backend`, `repair_backend`, and `node_id`, so a fleet's replicas are
