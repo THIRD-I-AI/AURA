@@ -150,3 +150,52 @@ def test_numeric_flags_reach_the_mapek_config(monkeypatch):
     cfg = _mapek_config()
     assert cfg.use_numeric_semantics is True
     assert cfg.numeric_auto_heal is True
+
+
+# ── Sprint S18.1 reachability (martingale / shim router / causal-RL) ──
+
+def test_s18_1_flags_off_by_default():
+    assert rc.s18_1_flags() == (False, False, False)
+    s = rc.deployment_summary()
+    assert s["martingale_detector"] is False
+    assert s["shim_router"] is False
+    assert s["causal_rl_evaluator"] is False
+
+
+def test_s18_1_flags_resolve_independently(monkeypatch):
+    """Unlike numeric-heal, these three detectors share no baseline, so
+    enabling one must not imply the others."""
+    monkeypatch.setenv("UASR_USE_MARTINGALE_DETECTOR", "true")
+    assert rc.s18_1_flags() == (True, False, False)
+
+
+def test_martingale_and_shim_router_reach_the_mapek_config(monkeypatch):
+    """Same reachability gap the numeric-heal fix closed: both flags shipped
+    tested in mapek_worker.py but the bare MAPEKConfig() built in service.py
+    never set them, so neither detector could be reached from a deployment."""
+    from uasr.service import _mapek_config
+
+    assert _mapek_config().use_martingale_detector is False
+    assert _mapek_config().use_shim_router is False
+    monkeypatch.setenv("UASR_USE_MARTINGALE_DETECTOR", "1")
+    monkeypatch.setenv("UASR_USE_SHIM_ROUTER", "1")
+    cfg = _mapek_config()
+    assert cfg.use_martingale_detector is True
+    assert cfg.use_shim_router is True
+
+
+def test_causal_rl_evaluator_reaches_the_recovery_loop_config(monkeypatch):
+    """RecoveryLoopConfig.use_causal_rl_evaluator is resolved once at
+    uasr.service import time (same pattern as UASR_RISK_TIERED/UASR_RECOVERY_MODE
+    on that module) -- reload the module under the flag to prove the wiring,
+    since the module-level ``_loop`` singleton won't re-read the environment
+    on its own."""
+    monkeypatch.setenv("UASR_USE_CAUSAL_RL_EVALUATOR", "true")
+    service = importlib.import_module("uasr.service")
+    importlib.reload(service)
+    try:
+        assert service._loop._config.use_causal_rl_evaluator is True
+    finally:
+        monkeypatch.delenv("UASR_USE_CAUSAL_RL_EVALUATOR", raising=False)
+        importlib.reload(service)
+        assert service._loop._config.use_causal_rl_evaluator is False
