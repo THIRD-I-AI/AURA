@@ -22,13 +22,18 @@
 >   plus an opt-in `UASR_CORRELATION_AUTO_HEAL` extension (borrows a
 >   correlated sibling's DEPLOYED shim on this source's own recovery
 >   failure, still sandbox-validated, still S41-gated). Scoped to
->   `/uasr/ingest` + `/uasr/heal`; the Kafka MAPE-K worker path deferred
->   (it doesn't persist `RecoveryRecord` at all today, a pre-existing gap).
->   This closes every candidate in the original analysis.
-> - Deferred follow-up, not a silent gap: cross-source auto-heal fan-out
->   for the Kafka MAPE-K worker path (it doesn't persist `RecoveryRecord`
->   at all today, a pre-existing gap, not something this fairness/
->   correlation work introduced).
+>   `/uasr/ingest` + `/uasr/heal` when first shipped; the Kafka MAPE-K
+>   worker path's blocker (it didn't persist `RecoveryRecord` at all) is
+>   now closed — `MAPEKWorker._persist_recovery` writes a DriftEvent +
+>   RecoveryRecord row for every recovery attempt (deployed, pending,
+>   failed), matching the HTTP path, so Kafka-path recoveries are visible
+>   to `GET /uasr/recovery/*` and the Healing Queue UI. This closes every
+>   candidate in the original analysis.
+> - Remaining, smaller follow-up: the actual cross-source auto-heal FAN-OUT
+>   call (`_attempt_cross_source_heal`'s equivalent) is still only wired
+>   into `/uasr/ingest` + `/uasr/heal`, not into `MAPEKWorker`'s own
+>   failed-recovery branches — the persistence prerequisite is done, the
+>   fan-out call itself is a separate, still-deferred wiring step.
 
 **Goal this feeds:** UASR should reduce, not just report, the manual
 data-engineering toil of watching pipelines for drift — real autonomous

@@ -11,7 +11,15 @@ The five MAPE-K phases map onto methods of ``MAPEKWorker``:
     Plan     → ``_plan_recovery``          invoke RecoveryLoop on drift
     Execute  → ``_execute_persist`` /      either persist the batch or
                ``_execute_recovery``       pause + run recovery + replay
-    Knowledge→ ``_knowledge_update``       update baseline + healing metrics
+    Knowledge→ ``_knowledge_update`` /     update baseline + in-memory metrics,
+               ``_persist_recovery``       and write DriftEvent + RecoveryRecord
+                                            rows to the DB -- every recovery
+                                            attempt (deployed, pending, failed)
+                                            is visible to GET /uasr/recovery/*
+                                            and the Healing Queue UI, matching
+                                            what POST /uasr/ingest does for the
+                                            HTTP path (best-effort: a DB hiccup
+                                            here never blocks message processing).
 
 The "pause consumer → run LLM recovery → restart" requirement is satisfied by
 ``asyncio.Event``-gated polling: when ``_paused`` is set, the worker stops
@@ -36,17 +44,22 @@ import tempfile
 import time
 import uuid
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, List, Optional
+
+from metadata_store.db import get_session_factory  # type: ignore
 
 from .drift_detector import DriftDetector
 from .metrics import HealingMetricTracker
 from .models import (
     BatchPayload,
     DriftDetectionResult,
+    DriftEvent,
     DriftSeverity,
     DriftType,
     RecoveryLoopResult,
+    RecoveryRecord,
     RecoveryStatus,
 )
 from .numeric_heal_controller import HealState, NumericHealController
@@ -361,12 +374,15 @@ class MAPEKWorker:
                             await self._knowledge_update(
                                 batch, drift, recovery, batch_healed=False
                             )
+                            await self._persist_recovery(batch, drift, recovery)
                             await self._emit(
                                 "canary_deployed",
                                 f"shim {version} deployed as canary (weight={self._cfg.shim_router_canary_initial_weight})",
                                 {"recovery_id": recovery.recovery_id},
                             )
                         else:
+                            await self._knowledge_update(batch, drift, recovery)
+                            await self._persist_recovery(batch, drift, recovery)
                             await self._emit(
                                 "recovery_failed",
                                 f"recovery {recovery.recovery_id} status={recovery.status.value}; canary NOT deployed",
@@ -385,8 +401,11 @@ class MAPEKWorker:
                             await self._knowledge_update(
                                 batch, drift, recovery, batch_healed=True
                             )
+                            await self._persist_recovery(batch, drift, recovery)
                             self.resume()
                         else:
+                            await self._knowledge_update(batch, drift, recovery)
+                            await self._persist_recovery(batch, drift, recovery)
                             await self._emit(
                                 "recovery_failed",
                                 f"recovery {recovery.recovery_id} status={recovery.status.value}; consumer remains paused",
@@ -816,6 +835,70 @@ class MAPEKWorker:
                 self._metrics.record_from_loop_result(batch.source_id, recovery, drift)
             except Exception as exc:
                 logger.debug("Healing metrics record skipped: %s", exc)
+
+    async def _persist_recovery(
+        self,
+        batch: BatchPayload,
+        drift: DriftDetectionResult,
+        recovery: RecoveryLoopResult,
+    ) -> None:
+        """Persist a DriftEvent + RecoveryRecord for a Kafka-path recovery
+        attempt, mirroring exactly what ``POST /uasr/ingest`` does for the
+        HTTP path (uasr/service.py's ``ingest_batch``).
+
+        Before this, the Kafka MAPE-K path fed the in-memory
+        ``HealingMetricTracker`` (for /uasr/metrics dashboards and
+        cross-source correlation's sibling lookup, which is tracker-based,
+        not DB-based) but never wrote a row here -- so a Kafka-path
+        recovery was invisible to ``GET /uasr/recovery/*``, the Healing
+        Queue UI, and any tooling that reads recovery history from the DB.
+        Called for every recovery attempt (deployed, pending, failed,
+        escalated), not just successful ones -- parity with the HTTP path,
+        which persists a record for every outcome.
+
+        Best-effort: a DB hiccup here must not crash message processing --
+        the in-memory tracker (already updated by ``_knowledge_update``)
+        keeps the loop's own decision-making unaffected either way.
+        """
+        try:
+            session_factory = get_session_factory()
+            async with session_factory() as db:
+                drift_event = DriftEvent(
+                    id=recovery.drift_event_id,
+                    source_id=batch.source_id,
+                    drift_type=drift.drift_type.value if drift.drift_type else "unknown",
+                    severity=drift.severity.value if drift.severity else "medium",
+                    kl_divergence=drift.kl_divergence,
+                    cosine_distance=drift.cosine_distance,
+                    drift_vector=drift.drift_vector,
+                    details={"description": drift.details, "affected_columns": drift.affected_columns},
+                )
+                db.add(drift_event)
+                await db.flush()
+
+                recovery_rec = RecoveryRecord(
+                    id=recovery.recovery_id,
+                    drift_event_id=recovery.drift_event_id,
+                    source_id=batch.source_id,
+                    status=recovery.status.value,
+                    diagnosis=recovery.diagnosis.hypothesis if recovery.diagnosis else None,
+                    shim_code=recovery.shim.shim_code if recovery.shim else None,
+                    generation_method=recovery.shim.generation_method if recovery.shim else "template",
+                    validation_passed=recovery.shim.validation_passed if recovery.shim else None,
+                    post_kl_divergence=recovery.shim.post_kl_divergence if recovery.shim else None,
+                    latency_seconds=recovery.total_latency_seconds,
+                    completed_at=(
+                        None if recovery.status == RecoveryStatus.PENDING_APPROVAL
+                        else datetime.now(timezone.utc)
+                    ),
+                )
+                db.add(recovery_rec)
+                await db.commit()
+        except Exception as exc:
+            logger.warning(
+                "Kafka-path RecoveryRecord persistence skipped for recovery_id=%s: %s",
+                recovery.recovery_id, exc,
+            )
 
     # ── Helpers ───────────────────────────────────────────────────────
 
