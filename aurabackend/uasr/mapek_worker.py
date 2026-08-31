@@ -813,7 +813,7 @@ class MAPEKWorker:
         # don't have a "recovery event" to record (no shim, no latency).
         if recovery is not None:
             try:
-                self._metrics.record_from_loop_result(batch.source_id, recovery)
+                self._metrics.record_from_loop_result(batch.source_id, recovery, drift)
             except Exception as exc:
                 logger.debug("Healing metrics record skipped: %s", exc)
 
