@@ -15,12 +15,11 @@ from fastapi.testclient import TestClient
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from shared.auth import create_access_token
-from shared.exceptions import AuthenticationError, NotFoundError, ValidationError
+from shared.exceptions import NotFoundError, ValidationError
 from shared.middleware import (
     APIKeyMiddleware,
     JWTAuthMiddleware,
     RequestIDMiddleware,
-    RequestLoggingMiddleware,
     register_exception_handlers,
 )
 
@@ -36,6 +35,32 @@ def _make_app(**middleware_kwargs) -> FastAPI:
     @app.get("/health")
     def health():
         return {"status": "healthy"}
+
+    # BUG-005 (docs/BUG_REGISTRY.md): external cryptographic verification
+    # routes, coded and commented as intentionally public, that returned
+    # 401 in production because _PUBLIC_PATHS never listed them and every
+    # prior test of this exempted them by never installing the middleware
+    # at all (AURA_JWT_ENABLED defaults False). These routes exist here so
+    # TestJWTMiddleware -- which genuinely installs the middleware, unlike
+    # that other gap -- can assert the real behaviour.
+    @app.get("/api/v1/counterfactual/jwks")
+    def jwks():
+        return {"keys": []}
+
+    @app.get("/api/v1/counterfactual/audit/sth")
+    def sth():
+        return {"tree_size": 0}
+
+    @app.get("/api/v1/counterfactual/audit/inclusion/{proof_hash}")
+    def inclusion(proof_hash: str):
+        return {"proof_hash": proof_hash}
+
+    @app.get("/api/v1/counterfactual/audit/financial")
+    def financial_audit():
+        """NOT public -- sibling route under the same prefix, must still
+        require auth so the fix doesn't over-broaden past what BUG-005
+        actually asked for."""
+        return {"ok": True}
 
     @app.get("/error/not-found")
     def raise_not_found():
@@ -104,6 +129,12 @@ class TestAPIKeyMiddleware:
         # OPTIONS might return 405 but shouldn't be 401
         assert resp.status_code != 401
 
+    def test_jwks_exempt(self, client):
+        """BUG-005 (docs/BUG_REGISTRY.md): shared _is_public_path helper,
+        so the API-key gate must exempt it too."""
+        resp = client.get("/api/v1/counterfactual/jwks")
+        assert resp.status_code == 200
+
 
 # ── JWT Middleware ─────────────────────────────────────────────────────
 
@@ -136,6 +167,28 @@ class TestJWTMiddleware:
     def test_health_exempt(self, client):
         resp = client.get("/health")
         assert resp.status_code == 200
+
+    # ── BUG-005 regression: real fix, verified with the middleware
+    # genuinely installed (not the "auth defaults off" gap that let the
+    # bug ship in the first place) ──────────────────────────────────
+
+    def test_jwks_exempt_without_a_token(self, client):
+        resp = client.get("/api/v1/counterfactual/jwks")
+        assert resp.status_code == 200
+
+    def test_sth_exempt_without_a_token(self, client):
+        resp = client.get("/api/v1/counterfactual/audit/sth")
+        assert resp.status_code == 200
+
+    def test_inclusion_proof_exempt_without_a_token(self, client):
+        resp = client.get(f"/api/v1/counterfactual/audit/inclusion/{'a' * 64}")
+        assert resp.status_code == 200
+
+    def test_sibling_financial_audit_route_still_requires_a_token(self, client):
+        """The prefix-matched exemption must not leak past the one
+        deliberately-public parameterized route."""
+        resp = client.get("/api/v1/counterfactual/audit/financial")
+        assert resp.status_code == 401
 
 
 # ── Exception Handlers ─────────────────────────────────────────────────
