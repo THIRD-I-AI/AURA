@@ -19,6 +19,10 @@ Design properties (all covered by tests):
   * **Priority ordering** — CRITICAL > HIGH > MEDIUM > LOW; a critical repair
     submitted after a backlog of low-severity repairs is admitted next.
   * **FIFO fairness within a severity** — no starvation among equals.
+  * **Per-source fairness (opt-in)** — ``max_per_source`` caps how many of a
+    single source's repairs may run at once, so one noisy pipeline's backlog
+    can't occupy every global slot and starve every other source. 0 (default)
+    preserves the original global-only bound.
   * **Backpressure visibility** — queue depth and per-severity wait times are
     observable for the Hᵤ/observability layer.
 """
@@ -87,10 +91,19 @@ class RepairScheduler:
     if it had called it directly — the scheduler only controls *when* it runs.
     """
 
-    def __init__(self, max_concurrent: int = 4) -> None:
+    def __init__(self, max_concurrent: int = 4, max_per_source: int = 0) -> None:
         if max_concurrent < 1:
             raise ValueError("max_concurrent must be >= 1")
+        if max_per_source < 0:
+            raise ValueError("max_per_source must be >= 0 (0 = unlimited)")
         self._max_concurrent = max_concurrent
+        # Per-source fairness: 0 (default) preserves the original global-only
+        # bound -- a single noisy source can otherwise occupy every slot and
+        # starve every other source's recovery, even under priority ordering
+        # (a backlog of LOW-severity repairs from one source still queues
+        # ahead of a CRITICAL repair that hasn't arrived yet).
+        self._max_per_source = max_per_source
+        self._active_by_source: Dict[str, int] = {}
         self._heap: List[_QueueItem] = []
         self._counter = itertools.count()
         self._active = 0
@@ -126,6 +139,9 @@ class RepairScheduler:
     def active_count(self) -> int:
         return self._active
 
+    def active_count_for_source(self, source_id: str) -> int:
+        return self._active_by_source.get(source_id, 0)
+
     async def submit(
         self,
         source_id: str,
@@ -155,10 +171,23 @@ class RepairScheduler:
         """Admit queued repairs up to the concurrency bound, in priority order."""
         try:
             while not self._stop.is_set() or self._heap or self._active > 0:
-                # Admit as many as capacity allows.
+                # Admit as many as capacity allows, skipping (not discarding)
+                # any item whose source is already at its per-source cap so a
+                # lower-priority item from a DIFFERENT, uncapped source can
+                # still be admitted this tick.
+                skipped: List[_QueueItem] = []
                 while self._heap and self._active < self._max_concurrent:
                     item = heapq.heappop(self._heap)
+                    if (
+                        self._max_per_source > 0
+                        and self._active_by_source.get(item.source_id, 0) >= self._max_per_source
+                    ):
+                        skipped.append(item)
+                        continue
                     self._active += 1
+                    self._active_by_source[item.source_id] = (
+                        self._active_by_source.get(item.source_id, 0) + 1
+                    )
                     self.stats.max_observed_concurrency = max(
                         self.stats.max_observed_concurrency, self._active
                     )
@@ -171,6 +200,8 @@ class RepairScheduler:
                     task = asyncio.create_task(self._run_item(item))
                     self._inflight.add(task)
                     task.add_done_callback(self._inflight.discard)
+                for item in skipped:
+                    heapq.heappush(self._heap, item)
 
                 if self._stop.is_set() and not self._heap and self._active == 0:
                     break
@@ -195,4 +226,9 @@ class RepairScheduler:
             self.stats.failed += 1
         finally:
             self._active -= 1
+            remaining = self._active_by_source.get(item.source_id, 1) - 1
+            if remaining <= 0:
+                self._active_by_source.pop(item.source_id, None)
+            else:
+                self._active_by_source[item.source_id] = remaining
             self._wakeup.set()

@@ -11,8 +11,13 @@
 > - Candidate #2 (post-heal validation + auto-rollback) — implemented, PR #259.
 > - Candidate #3 (approval-queue timeout + escalation) — implemented, PR #260.
 > - The numeric-heal reachability gap referenced throughout — implemented, PR #256.
-> - Candidates #4–#5 (per-tenant repair fairness, cross-source correlation)
->   below remain unstarted; still the right next picks after #1–#3 merge.
+> - Candidate #4 (repair fairness) — implemented for the **local** backend only
+>   (`RepairScheduler.max_per_source`); the distributed/Redis-coordinated
+>   scheduler doesn't have this yet — deferred as its own follow-up rather than
+>   shipping unverified atomic-counter logic under time pressure. #1–#4 merged
+>   into main this session.
+> - Candidate #5 (cross-source correlation) remains unstarted — the next pick,
+>   plus the deferred distributed half of #4.
 
 **Goal this feeds:** UASR should reduce, not just report, the manual
 data-engineering toil of watching pipelines for drift — real autonomous

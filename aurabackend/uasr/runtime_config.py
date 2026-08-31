@@ -177,7 +177,8 @@ def build_repair_scheduler(redis_client: Any = None) -> Optional[Any]:
     if backend == "local":
         from .repair_scheduler import RepairScheduler
         cap = _env_int("UASR_REPAIR_MAX_CONCURRENT", 4) or 4
-        return RepairScheduler(max_concurrent=cap)
+        per_source_cap = _env_int("UASR_REPAIR_MAX_PER_SOURCE", 0)
+        return RepairScheduler(max_concurrent=cap, max_per_source=per_source_cap)
     if backend in ("distributed", "redis", "fleet"):
         from .distributed_repair import DistributedRepairCoordinator
         client = redis_client or build_redis_client()
@@ -224,6 +225,7 @@ def deployment_summary() -> dict:
         summary["state_capacity"] = _env_int("UASR_STATE_CAPACITY", None)
     if repair_backend == "local":
         summary["repair_max_concurrent"] = _env_int("UASR_REPAIR_MAX_CONCURRENT", 4)
+        summary["repair_max_per_source"] = _env_int("UASR_REPAIR_MAX_PER_SOURCE", 0)
     elif repair_backend in ("distributed", "redis", "fleet"):
         summary["repair_max_global_concurrent"] = _env_int("UASR_REPAIR_MAX_GLOBAL_CONCURRENT", 8)
     # horizontal fan-out is set by the orchestrator (replica count); we surface

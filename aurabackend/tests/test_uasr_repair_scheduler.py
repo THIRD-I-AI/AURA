@@ -147,3 +147,115 @@ async def test_wait_stats_observable():
 async def test_rejects_bad_capacity():
     with pytest.raises(ValueError):
         RepairScheduler(max_concurrent=0)
+
+
+@pytest.mark.asyncio
+async def test_rejects_negative_per_source_cap():
+    with pytest.raises(ValueError):
+        RepairScheduler(max_concurrent=4, max_per_source=-1)
+
+
+# ── per-source fairness (opt-in via max_per_source) ────────────────────
+
+@pytest.mark.asyncio
+async def test_per_source_cap_off_by_default_matches_bounded_concurrency():
+    """max_per_source=0 (the default) must not change existing behaviour --
+    one source can still fill every global slot."""
+    sched = RepairScheduler(max_concurrent=4)
+    await sched.start()
+
+    async def work():
+        await asyncio.sleep(0.02)
+        return "ok"
+
+    tasks = [
+        asyncio.create_task(sched.submit("noisy", DriftSeverity.MEDIUM, work))
+        for _ in range(40)
+    ]
+    results = await asyncio.gather(*tasks)
+    await sched.stop()
+
+    assert all(r == "ok" for r in results)
+    assert sched.stats.max_observed_concurrency == 4
+
+
+@pytest.mark.asyncio
+async def test_per_source_cap_prevents_starvation():
+    """A single noisy source's backlog must not occupy every global slot --
+    a different source's repair is admitted well before the noisy backlog
+    drains, even though it arrives after most of the backlog."""
+    sched = RepairScheduler(max_concurrent=4, max_per_source=2)
+    await sched.start()
+    admitted_order: list[str] = []
+
+    async def work(name: str):
+        admitted_order.append(name)
+        await asyncio.sleep(0.02)
+        return name
+
+    noisy = [
+        asyncio.create_task(
+            sched.submit("noisy_source", DriftSeverity.MEDIUM, functools.partial(work, f"noisy{i}"))
+        )
+        for i in range(10)
+    ]
+    await asyncio.sleep(0.002)  # let the noisy backlog queue up first
+    other = asyncio.create_task(
+        sched.submit("quiet_source", DriftSeverity.MEDIUM, functools.partial(work, "quiet"))
+    )
+    await asyncio.gather(*noisy, other)
+    await sched.stop()
+
+    # At most 2 of "noisy_source"'s repairs ran concurrently at any point --
+    # proven indirectly: "quiet" was admitted well before the 10-item noisy
+    # backlog finished draining (it would be admitted 9th/10th under a
+    # source-blind FIFO/priority queue since it arrived after the backlog).
+    assert admitted_order.index("quiet") < 8
+
+
+@pytest.mark.asyncio
+async def test_per_source_cap_never_drops_a_skipped_item():
+    """An item skipped for being over its source's cap is requeued, not
+    discarded -- it must still eventually complete."""
+    sched = RepairScheduler(max_concurrent=1, max_per_source=1)
+    await sched.start()
+
+    async def work(name: str):
+        await asyncio.sleep(0.005)
+        return name
+
+    tasks = [
+        asyncio.create_task(sched.submit("s1", DriftSeverity.MEDIUM, functools.partial(work, f"s1_{i}")))
+        for i in range(3)
+    ] + [
+        asyncio.create_task(sched.submit("s2", DriftSeverity.MEDIUM, functools.partial(work, f"s2_{i}")))
+        for i in range(3)
+    ]
+    results = await asyncio.gather(*tasks)
+    await sched.stop()
+
+    assert sorted(results) == sorted([f"s1_{i}" for i in range(3)] + [f"s2_{i}" for i in range(3)])
+    assert sched.stats.completed == 6
+
+
+@pytest.mark.asyncio
+async def test_active_count_for_source_tracks_and_clears():
+    sched = RepairScheduler(max_concurrent=4, max_per_source=2)
+    await sched.start()
+    release = asyncio.Event()
+
+    async def work():
+        await release.wait()
+        return "ok"
+
+    tasks = [
+        asyncio.create_task(sched.submit("s1", DriftSeverity.MEDIUM, work))
+        for _ in range(2)
+    ]
+    await asyncio.sleep(0.005)
+    assert sched.active_count_for_source("s1") == 2
+
+    release.set()
+    await asyncio.gather(*tasks)
+    await sched.stop()
+    assert sched.active_count_for_source("s1") == 0

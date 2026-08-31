@@ -73,6 +73,19 @@ def test_repair_none_disables(monkeypatch):
     assert rc.build_repair_scheduler() is None
 
 
+def test_repair_max_per_source_off_by_default():
+    r = rc.build_repair_scheduler()
+    assert isinstance(r, RepairScheduler)
+    assert r._max_per_source == 0
+
+
+def test_repair_max_per_source_env(monkeypatch):
+    monkeypatch.setenv("UASR_REPAIR_MAX_PER_SOURCE", "2")
+    r = rc.build_repair_scheduler()
+    assert isinstance(r, RepairScheduler)
+    assert r._max_per_source == 2
+
+
 def test_distributed_repair_backend(monkeypatch):
     fakeredis = pytest.importorskip("fakeredis")
     from uasr.distributed_repair import DistributedRepairCoordinator
@@ -96,6 +109,7 @@ def test_deployment_summary_default():
     assert s["state_backend"] == "memory"
     assert s["repair_backend"] == "local"
     assert s["repair_max_concurrent"] == 4
+    assert s["repair_max_per_source"] == 0
     assert "redis_url" not in s  # no redis dependency surfaced in default mode
 
 
