@@ -418,12 +418,33 @@ class RecoveryLoop:
                     "reason": f"KL reduced from {pre_kl:.4f} to {post_kl:.4f}",
                 }
 
-            # For schema drift: check if schema is now clean
-            if drift.drift_type == DriftType.SCHEMA and not post_drift.drift_detected:
+            # For schema drift: pass once the SCHEMA problem specifically is
+            # resolved, even if the corrected batch also shows unrelated
+            # statistical/semantic drift -- a real-world schema migration
+            # commonly co-occurs with ordinary data variation, and that is a
+            # separate problem the Monitor loop will independently diagnose
+            # on a later batch, not evidence this shim failed.
+            #
+            # Before this fix the condition was `not post_drift.drift_detected`
+            # -- provably dead code, since it can never be True here: falling
+            # into this branch already required `post_drift.drift_detected`
+            # to be True (line 339 returns first otherwise), so this could
+            # never diverge from that check. The result: a correct schema
+            # shim was silently rejected whenever the corrected batch also
+            # carried incidental statistical noise. Root-caused live against
+            # a staged deployment, 2026-08-31 (docs/superpowers/specs/
+            # 2026-08-31-uasr-live-validation-and-benchmark.md).
+            if drift.drift_type == DriftType.SCHEMA and post_drift.drift_type != DriftType.SCHEMA:
                 return {
                     "passed": True,
-                    "post_kl": 0.0,
-                    "reason": "Schema drift resolved",
+                    "post_kl": post_kl,
+                    "reason": (
+                        "Schema drift resolved"
+                        + (
+                            f" (residual {post_drift.drift_type.value} drift is a separate signal)"
+                            if post_drift.drift_detected else ""
+                        )
+                    ),
                 }
 
             return {

@@ -167,12 +167,32 @@ class HealingMetricTracker:
         if self._correlation_window_seconds > 0:
             self._maybe_log_correlation()
 
-    def record_from_loop_result(self, source_id: str, loop_result) -> None:
-        """Convenience: record directly from a RecoveryLoopResult."""
+    def record_from_loop_result(self, source_id: str, loop_result, drift_result=None) -> None:
+        """Convenience: record directly from a RecoveryLoopResult.
 
-        drift_type = DriftType.STATISTICAL   # default
+        ``drift_result`` (the ``DriftDetectionResult`` that triggered this
+        recovery) is the correct source for ``drift_type``/``severity`` --
+        pass it. The diagnosis-based fallback below is dead in practice:
+        ``DiagnosisResult`` (uasr/models.py) has no ``drift_type`` or
+        ``severity`` field at all, so ``hasattr(diag, "drift_type")`` was
+        always False and EVERY event recorded through the old code path
+        silently defaulted to STATISTICAL/LOW regardless of the real drift
+        -- not just on a failure, on every call. Root-caused live against a
+        staged deployment, 2026-08-31 (docs/superpowers/specs/2026-08-31-
+        uasr-live-validation-and-benchmark.md), where a genuine SCHEMA
+        drift event showed up under the "statistical" bucket in
+        GET /uasr/metrics. Kept as a fallback only for a caller that
+        genuinely has no DriftDetectionResult in scope; every current call
+        site passes one.
+        """
+        drift_type = DriftType.STATISTICAL   # fallback default
         severity = DriftSeverity.LOW
-        if loop_result.diagnosis:
+        if drift_result is not None:
+            if isinstance(getattr(drift_result, "drift_type", None), DriftType):
+                drift_type = drift_result.drift_type
+            if isinstance(getattr(drift_result, "severity", None), DriftSeverity):
+                severity = drift_result.severity
+        elif loop_result.diagnosis:
             diag = loop_result.diagnosis
             if hasattr(diag, "drift_type"):
                 drift_type = diag.drift_type if isinstance(diag.drift_type, DriftType) else DriftType.STATISTICAL

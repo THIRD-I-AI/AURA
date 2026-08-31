@@ -595,7 +595,7 @@ async def ingest_batch(req: IngestRequest, db: AsyncSession = Depends(get_db)):
     await db.commit()
 
     # Update in-memory metrics tracker
-    _tracker.record_from_loop_result(batch.source_id, loop_result)
+    _tracker.record_from_loop_result(batch.source_id, loop_result, drift_result)
 
     # Candidate #5, opt-in: this source's own recovery failed -- try a
     # correlated sibling's already-DEPLOYED shim before giving up.
@@ -715,7 +715,7 @@ async def heal_batch(req: IngestRequest, db: AsyncSession = Depends(get_db)):
     )
     db.add(recovery_rec)
     await db.commit()
-    _tracker.record_from_loop_result(batch.source_id, loop_result)
+    _tracker.record_from_loop_result(batch.source_id, loop_result, drift_result)
 
     # Candidate #5, opt-in: this source's own recovery failed -- try a
     # correlated sibling's already-DEPLOYED shim before giving up.
