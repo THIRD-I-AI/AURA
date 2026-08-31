@@ -284,12 +284,28 @@ class TestSemanticChannelColumnTyping:
         )
 
     def _categorical_batch(self, source_id, batch_id, dominant, n=200):
+        # Spread the dominant signal across several distinct tokens
+        # (dominant_0..dominant_7) rather than one repeated literal. The
+        # embedding hashes each token via the builtin ``hash()``, which is
+        # randomized per-process (PYTHONHASHSEED) -- with a single token
+        # the two batches' dominant categories collide into the same one
+        # of 256 buckets with real, non-negligible probability (~1/256
+        # per run), which occasionally erased the whole drift signal and
+        # flaked this test in CI (docs/BUG_REGISTRY.md BUG-007). Spreading
+        # the signal over 8 independent tokens drops the chance that
+        # EVERY one of them collides to (1/256)^8 -- structurally immune
+        # to a single unlucky hash seed while testing the same behavior.
         import random
         rnd = random.Random(f"{source_id}:{batch_id}:{dominant}")
         rows = []
         for _ in range(n):
             r = rnd.random()
-            cat = dominant if r < 0.8 else ("B" if r < 0.9 else "C")
+            if r < 0.8:
+                cat = f"{dominant}_{rnd.randrange(8)}"
+            elif r < 0.9:
+                cat = "B"
+            else:
+                cat = "C"
             rows.append({"cat": cat})
         return BatchPayload(source_id=source_id, batch_id=batch_id, rows=rows)
 

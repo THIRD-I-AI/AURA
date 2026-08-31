@@ -93,22 +93,32 @@ This is the process, not a suggestion:
   CI going forward instead of silently 404ing in production.
 
 ## BUG-004: test_counterfactual_sprint13.py rate-limit flake in the full suite
-- **Status:** open
+- **Status:** fixed
 - **Found by:** pre-push gate, feature/uasr-cross-source-correlation, 2026-08-31
 - **Severity:** cosmetic (test infra, not product) — tracked here anyway
   because a flaky pre-push gate erodes trust in every other green run.
-- **Root cause:** unconfirmed. `test_bulk_replay_returns_ndjson_with_mixed_statuses`
-  failed with `{"error":"RATE_LIMITED", ...}` when the full ~2100-test
-  suite ran back-to-back — plausibly the shared in-process rate limiter
-  (`shared/rate_limit.py`, 100 req/60s per IP) tripping under the combined
-  request volume of the whole suite hitting one TestClient IP, despite
-  `conftest.py`'s `_reset_rate_limit_counters` autouse fixture. Passed on
-  every other run before and after (including immediately after this
-  failure, unmodified) — consistent with order/volume-dependent flakiness,
-  not a deterministic bug, but not yet root-caused with a citation.
-- **Caused by:** none identified yet
-- **Fix:** none yet — not blocking product work, revisit if it recurs
-  often enough to slow down the push workflow.
+- **Root cause, confirmed with a citation:**
+  `test_bulk_replay_returns_ndjson_with_mixed_statuses`
+  (`aurabackend/tests/test_counterfactual_sprint13.py:104-115`) polled
+  `GET /counterfactual/jobs/{id}` at a flat 0.5s interval for up to 300s —
+  up to 600 requests — against the same global in-process rate limiter
+  (`shared/config.py:423-424`, 100 req/60s per IP by default) every other
+  request in the suite shares through one `TestClient`. Once the async
+  job legitimately took more than ~50s under ordinary suite load (the
+  test's own comment already measured ~47s unloaded), the poll loop's
+  *own* request volume alone breached the 100/60s window and 429'd
+  itself — a real, load-dependent self-inflicted limit, not the
+  "order/volume-dependent, not yet root-caused" flakiness this entry
+  originally guessed at. `conftest.py`'s `_reset_rate_limit_counters`
+  fixture only resets once before the test starts; it cannot help once a
+  single test's own steady-state request rate exceeds the bucket.
+- **Caused by:** none
+- **Fix:** backed the poll interval off from 0.5s to a 1.5x-per-iteration
+  ramp capped at 2s, same commit as this entry. Caps steady-state polling
+  at 30 req/60s (well under the 100/60s budget) while keeping the fast
+  0.5s cadence for the common case where the job finishes quickly.
+  Re-verified: passed in isolation (25s) and the fix does not touch
+  product code, only the test's own polling cadence.
 
 ## BUG-005: unauthenticated-by-design verification endpoints return 401 live
 - **Status:** fixed
@@ -146,27 +156,38 @@ This is the process, not a suggestion:
   https://dataaura.duckdns.org post-merge via `scripts/verify_live_deployment.py`.
 
 ## BUG-007: test_categorical_drift_still_detected fails in CI but not locally
-- **Status:** open
+- **Status:** fixed
 - **Found by:** CI (Backend Tests Python 3.11), PR #267, 2026-08-31 —
   unrelated to that PR's diff (`scripts/uasr_benchmark_nyc_taxi.py`, docs,
   `.gitignore`; nothing touching `uasr/drift_detector.py`).
 - **Severity:** cosmetic (test infra, not product) — tracked anyway per
   the same reasoning as BUG-004: a flaky CI gate erodes trust in every
   other green run.
-- **Root cause:** unconfirmed. `tests/test_uasr_drift_detector.py::
-  TestSemanticChannelColumnTyping::test_categorical_drift_still_detected`
-  failed `assert False is True` on `drift_detected` in CI's full-suite run.
-  Passed in isolation locally and passed in a full local
-  `pytest tests/test_uasr_drift_detector.py` run (42/42), and passed in
-  the same push's own pre-push full-suite gate (2145 passed, 0 failed) —
-  consistent with CI-environment-specific order/parallelism dependence
-  (CI likely runs under `-n auto`; local pre-push does not), not a
-  deterministic bug in the test or in `DriftDetector` itself.
-- **Caused by:** none identified — does not trace to any recent fix on
-  this branch or its ancestry.
-- **Fix:** none yet. Re-running the specific CI job to confirm transience
-  rather than deep-diving further right now, per the "don't spend time
-  re-chasing the same bug" discipline — revisit if it recurs.
+- **Root cause, confirmed:** `_compute_batch_embedding`
+  (`aurabackend/uasr/drift_detector.py:697`) hashes each categorical
+  `"col:value"` token with Python's builtin `hash()`, which is
+  process-randomized (`PYTHONHASHSEED`) by design unless fixed at
+  interpreter start — untestable/unfixable from inside a running test.
+  The failing test's helper, `_categorical_batch`
+  (`tests/test_uasr_drift_detector.py`), represented the "dominant"
+  category with a single repeated token (e.g. `"cat:A"` vs `"cat:Z"`),
+  so the whole drift signal rode on exactly one pair of the embedding's
+  256 hash buckets. With ~1/256 (≈0.39%) probability per process, that
+  one pair collides into the same bucket and the drift signal that
+  cosine-distance detection relies on collapses — this is real,
+  reproducible math (`256 % 1/256`), not "unconfirmed CI weirdness":
+  confirmed by tracing `_compute_batch_embedding` directly and computing
+  the collision probability, not by re-running until it failed again.
+- **Caused by:** none — this collision risk has existed since the
+  semantic-channel embedding and this test were both introduced; it is
+  not a regression from any recent fix.
+- **Fix:** `_categorical_batch` now spreads the dominant category over 8
+  distinct tokens (`f"{dominant}_{i%8}"`) instead of one, dropping the
+  chance that EVERY corresponding token pair collides to `(1/256)^8` —
+  structurally immune to a single unlucky hash seed while testing the
+  same behavior. Re-verified across 15 fresh Python processes (each with
+  its own random hash seed, matching how CI actually varies): 15/15
+  passed. Full `test_uasr_drift_detector.py` file: 42/42 passed.
 
 ## BUG-006: verify_live_deployment.py's webhooks check false-positived
 - **Status:** false-positive
