@@ -212,11 +212,15 @@ def build_repair_scheduler(redis_client: Any = None) -> Optional[Any]:
         from .distributed_repair import DistributedRepairCoordinator
         client = redis_client or build_redis_client()
         cap = _env_int("UASR_REPAIR_MAX_GLOBAL_CONCURRENT", 8) or 8
+        # Same env var as the local backend's per-source cap -- one knob,
+        # same meaning, regardless of which admission backend is active.
+        per_source_cap = _env_int("UASR_REPAIR_MAX_PER_SOURCE", 0)
         namespace = _env("UASR_REPAIR_NAMESPACE", "uasr:repair")
         lease_ms = _env_int("UASR_REPAIR_LEASE_MS", 30_000) or 30_000
         return DistributedRepairCoordinator(
             client=client,
             max_global_concurrent=cap,
+            max_per_source=per_source_cap,
             namespace=namespace,
             lease_ms=lease_ms,
         )
@@ -262,6 +266,7 @@ def deployment_summary() -> dict:
         summary["repair_max_per_source"] = _env_int("UASR_REPAIR_MAX_PER_SOURCE", 0)
     elif repair_backend in ("distributed", "redis", "fleet"):
         summary["repair_max_global_concurrent"] = _env_int("UASR_REPAIR_MAX_GLOBAL_CONCURRENT", 8)
+        summary["repair_max_per_source"] = _env_int("UASR_REPAIR_MAX_PER_SOURCE", 0)
     # horizontal fan-out is set by the orchestrator (replica count); we surface
     # this node's identity so a fleet's /health responses are distinguishable.
     summary["node_id"] = _env("UASR_NODE_ID", os.getenv("HOSTNAME", "local"))

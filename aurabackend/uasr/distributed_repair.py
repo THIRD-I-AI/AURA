@@ -21,6 +21,12 @@ Redis as the coordination substrate:
   sorted set.  A node that crashes mid-repair stops heartbeating; its lease
   expires and the slot is reclaimed automatically, so a dead node cannot
   permanently consume a global slot.
+* **Per-source fairness (opt-in, fleet-wide)** — ``max_per_source`` mirrors
+  ``RepairScheduler``'s local cap across the whole fleet: a saturated
+  source's queued entries are skipped (not discarded) when a slot frees, so
+  one noisy source can't starve every other source's recovery budget
+  cluster-wide either. A Redis hash tracks live-lease counts per source,
+  decremented on release and on crash-lease reclamation alike.
 
 Design notes
 ------------
@@ -93,6 +99,7 @@ class DistributedRepairCoordinator:
         self,
         client: Any,
         max_global_concurrent: int = 8,
+        max_per_source: int = 0,
         namespace: str = "uasr:repair",
         lease_ms: int = 30_000,
         heartbeat_ms: int = 5_000,
@@ -101,10 +108,17 @@ class DistributedRepairCoordinator:
     ) -> None:
         if max_global_concurrent < 1:
             raise ValueError("max_global_concurrent must be >= 1")
+        if max_per_source < 0:
+            raise ValueError("max_per_source must be >= 0 (0 = unlimited)")
         if heartbeat_ms >= lease_ms:
             raise ValueError("heartbeat_ms must be < lease_ms so leases stay live")
         self._r = client
         self._max = max_global_concurrent
+        # Per-source fairness (fleet-wide): mirrors RepairScheduler's local
+        # max_per_source (uasr/repair_scheduler.py) so one noisy source can't
+        # occupy every global slot across the whole fleet either. 0 (default)
+        # preserves the original global-only bound.
+        self._max_per_source = max_per_source
         self._ns = namespace
         self._lease_ms = lease_ms
         self._heartbeat_ms = heartbeat_ms
@@ -129,8 +143,21 @@ class DistributedRepairCoordinator:
     def _lockkey(self) -> str:
         return f"{self._ns}:admit_lock"
 
+    @property
+    def _active_by_source_key(self) -> str:
+        return f"{self._ns}:active_by_source"
+
     def _now_ms(self) -> int:
         return int(time.time() * 1000)
+
+    @staticmethod
+    def _decode(val: Any) -> str:
+        return val.decode("utf-8") if isinstance(val, bytes) else val
+
+    def _source_of(self, token: str) -> str:
+        # token = f"{node}:{seq}:{source_id}" -- split with maxsplit=2 so a
+        # source_id containing ':' is preserved intact.
+        return token.split(":", 2)[2]
 
     # ---- observability ---------------------------------------------
     def active_count(self) -> int:
@@ -141,12 +168,22 @@ class DistributedRepairCoordinator:
     def queue_depth(self) -> int:
         return int(self._r.zcard(self._waitq))
 
+    def active_count_for_source(self, source_id: str) -> int:
+        """Fleet-wide count of live leases for one source_id."""
+        val = self._r.hget(self._active_by_source_key, source_id)
+        return int(val) if val is not None else 0
+
     # ---- internal coordination -------------------------------------
     def _prune_expired(self) -> int:
         """Reclaim leases whose TTL has passed (a crashed node's slots)."""
-        removed = int(self._r.zremrangebyscore(self._active, 0, self._now_ms()))
-        if removed:
-            self.stats.reclaimed_leases += removed
+        now = self._now_ms()
+        expired = self._r.zrangebyscore(self._active, 0, now)
+        if not expired:
+            return 0
+        for raw in expired:
+            self._r.hincrby(self._active_by_source_key, self._source_of(self._decode(raw)), -1)
+        removed = int(self._r.zremrangebyscore(self._active, 0, now))
+        self.stats.reclaimed_leases += removed
         return removed
 
     def _score(self, severity: DriftSeverity, seq: int) -> float:
@@ -176,7 +213,16 @@ class DistributedRepairCoordinator:
 
     def _try_admit(self, token: str) -> bool:
         """Atomically admit ``token`` iff a global slot is free and it is the
-        head of the fleet-wide priority queue.  Returns True on admission."""
+        highest-priority fleet-wide queue entry not blocked by the
+        per-source cap.  Returns True on admission.
+
+        With ``max_per_source`` off (0), this is exactly "head of queue",
+        unchanged. With it on, a source already at its cap is skipped when
+        scanning for the next admittable entry -- same "skip, don't
+        discard" fairness RepairScheduler uses locally
+        (uasr/repair_scheduler.py) -- so a saturated source can't also
+        block a different, uncapped source's turn.
+        """
         lock = self._acquire_lock()
         if lock is None:
             return False
@@ -184,16 +230,31 @@ class DistributedRepairCoordinator:
             self._prune_expired()
             if int(self._r.zcard(self._active)) >= self._max:
                 return False
-            head = self._r.zrange(self._waitq, 0, 0)
-            if not head:
-                return False
-            head_tok = head[0].decode("utf-8") if isinstance(head[0], bytes) else head[0]
-            if head_tok != token:
-                return False
-            # Claim: move token from wait queue into active leases.
-            self._r.zrem(self._waitq, token)
-            self._r.zadd(self._active, {token: self._now_ms() + self._lease_ms})
-            return True
+            my_source = self._source_of(token)
+            if self._max_per_source > 0:
+                mine_active = int(self._r.hget(self._active_by_source_key, my_source) or 0)
+                if mine_active >= self._max_per_source:
+                    return False
+            # Scan the queue in priority order for the first entry eligible
+            # to run (its source under the per-source cap, or fairness off).
+            # A small bound keeps this O(1)-ish under normal queue depths;
+            # anything beyond it just means "not our turn yet" either way.
+            queue = self._r.zrange(self._waitq, 0, 199)
+            for raw in queue:
+                cand = self._decode(raw)
+                if self._max_per_source > 0:
+                    cand_source = self._source_of(cand)
+                    cand_active = int(self._r.hget(self._active_by_source_key, cand_source) or 0)
+                    if cand_active >= self._max_per_source:
+                        continue
+                if cand != token:
+                    return False
+                # Claim: move token from wait queue into active leases.
+                self._r.zrem(self._waitq, token)
+                self._r.zadd(self._active, {token: self._now_ms() + self._lease_ms})
+                self._r.hincrby(self._active_by_source_key, my_source, 1)
+                return True
+            return False
         finally:
             self._release_lock(lock)
 
@@ -202,6 +263,7 @@ class DistributedRepairCoordinator:
 
     def _release(self, token: str) -> None:
         self._r.zrem(self._active, token)
+        self._r.hincrby(self._active_by_source_key, self._source_of(token), -1)
 
     async def _heartbeat_loop(self, token: str) -> None:
         try:

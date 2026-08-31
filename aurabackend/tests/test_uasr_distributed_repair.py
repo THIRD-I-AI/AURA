@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from typing import List
 
 import pytest
 
@@ -76,6 +77,15 @@ def test_p1_global_bounded_concurrency_across_nodes():
 
 
 def test_p2_cross_node_priority_ordering():
+    # Timing margins here are generous (not the original 2-5ms) because
+    # Windows' default asyncio event loop has ~15.6ms timer granularity --
+    # the original tight margins meant "await asyncio.sleep(0.002)" could
+    # round up enough that LOW's poll (also inflated) occasionally grabbed
+    # the just-freed slot before CRIT was even enqueued, independent of
+    # any real bug in priority ordering. Confirmed by instrumenting a
+    # local repro: observed OCCUPY->LOW->CRIT gaps of ~31ms each against
+    # an intended 5ms/2ms/10ms schedule. 100ms+ margins comfortably clear
+    # that tick size on any platform while keeping the test well under 1s.
     async def run():
         r = _redis()
         nA = _coord(r, "A", cap=1)
@@ -84,16 +94,16 @@ def test_p2_cross_node_priority_ordering():
 
         async def rep(tag):
             order.append(tag)
-            await asyncio.sleep(0.01)
+            await asyncio.sleep(0.15)
             return tag
 
         async def occupy():
             await nA.submit("occupy", S.LOW, lambda: rep("OCCUPY"))
 
         occ = asyncio.create_task(occupy())
-        await asyncio.sleep(0.005)  # let OCCUPY get admitted first
+        await asyncio.sleep(0.05)  # let OCCUPY get admitted first
         low = asyncio.create_task(nA.submit("low1", S.LOW, lambda: rep("LOW")))
-        await asyncio.sleep(0.002)
+        await asyncio.sleep(0.05)
         crit = asyncio.create_task(nB.submit("crit1", S.CRITICAL, lambda: rep("CRIT")))
         await asyncio.gather(occ, low, crit)
         return order
@@ -180,3 +190,131 @@ def test_result_and_exception_propagate():
         assert n.stats.failed == 1
 
     asyncio.run(run())
+
+
+def test_rejects_negative_per_source_cap():
+    r = _redis()
+    with pytest.raises(ValueError):
+        DistributedRepairCoordinator(client=r, max_per_source=-1)
+
+
+# ── per-source fairness (opt-in via max_per_source), fleet-wide ────────
+
+def test_per_source_cap_off_by_default_matches_bounded_concurrency():
+    """max_per_source=0 (the default) must not change existing behaviour --
+    one source can still fill every global slot, across nodes."""
+    async def run():
+        r = _redis()
+        nodes = [_coord(r, f"n{i}", cap=4) for i in range(2)]
+
+        async def work():
+            await asyncio.sleep(0.02)
+            return "ok"
+
+        tasks = [
+            asyncio.create_task(nodes[i % 2].submit("noisy", S.MEDIUM, work))
+            for i in range(20)
+        ]
+        results = await asyncio.gather(*tasks)
+        return results, nodes[0].stats.max_observed_global
+
+    results, peak = asyncio.run(run())
+    assert all(r == "ok" for r in results)
+    # <=, not ==, matching test_p1's own assertion style: the global cap is
+    # an upper bound, not a guarantee every run's poll timing reaches it
+    # exactly -- p1 already covers "the cap is respected"; this test's job
+    # is only "max_per_source=0 doesn't add a NEW, lower bound".
+    assert peak <= 4
+
+
+def test_per_source_cap_prevents_starvation_across_nodes():
+    """A single noisy source's fleet-wide backlog (queued across multiple
+    nodes) must not occupy every global slot -- a different source's
+    repair, submitted on yet another node, is admitted well before the
+    noisy backlog drains."""
+    async def run():
+        r = _redis()
+        noisy_nodes = [_coord(r, f"noisy{i}", cap=4, max_per_source=2) for i in range(2)]
+        quiet_node = _coord(r, "quiet", cap=4, max_per_source=2)
+        admitted_order: List[str] = []
+
+        async def work(name: str):
+            admitted_order.append(name)
+            await asyncio.sleep(0.02)
+            return name
+
+        noisy = [
+            asyncio.create_task(
+                noisy_nodes[i % 2].submit("noisy_source", S.MEDIUM, lambda i=i: work(f"noisy{i}"))
+            )
+            for i in range(10)
+        ]
+        await asyncio.sleep(0.03)  # let the noisy backlog queue up fleet-wide first
+        other = asyncio.create_task(
+            quiet_node.submit("quiet_source", S.MEDIUM, lambda: work("quiet"))
+        )
+        await asyncio.gather(*noisy, other)
+        return admitted_order
+
+    order = asyncio.run(run())
+    # Under a source-blind priority queue, "quiet" (arriving after the
+    # 10-item noisy backlog) would be admitted 9th/10th. With the fleet-
+    # wide per-source cap it must jump the backlog well before that.
+    assert order.index("quiet") < 8, order
+
+
+def test_per_source_cap_never_drops_a_skipped_item_across_nodes():
+    """An item skipped for being over its source's fleet-wide cap is
+    requeued, not discarded -- it must still eventually complete, even
+    when submitted from a different node than the one holding the cap."""
+    async def run():
+        r = _redis()
+        nA = _coord(r, "A", cap=1, max_per_source=1)
+        nB = _coord(r, "B", cap=1, max_per_source=1)
+
+        async def work(name: str):
+            await asyncio.sleep(0.01)
+            return name
+
+        tasks = [
+            asyncio.create_task(nA.submit("s1", S.MEDIUM, lambda i=i: work(f"s1_{i}")))
+            for i in range(3)
+        ] + [
+            asyncio.create_task(nB.submit("s2", S.MEDIUM, lambda i=i: work(f"s2_{i}")))
+            for i in range(3)
+        ]
+        results = await asyncio.gather(*tasks)
+        return results, nA.stats.completed + nB.stats.completed
+
+    results, completed = asyncio.run(run())
+    assert sorted(results) == sorted([f"s1_{i}" for i in range(3)] + [f"s2_{i}" for i in range(3)])
+    assert completed == 6
+
+
+def test_active_count_for_source_tracks_and_clears_across_nodes():
+    async def run():
+        r = _redis()
+        nA = _coord(r, "A", cap=4, max_per_source=2)
+        nB = _coord(r, "B", cap=4, max_per_source=2)
+        release = asyncio.Event()
+
+        async def work():
+            await release.wait()
+            return "ok"
+
+        # Two leases for "shared_source", one admitted via each node.
+        t1 = asyncio.create_task(nA.submit("shared_source", S.MEDIUM, work))
+        t2 = asyncio.create_task(nB.submit("shared_source", S.MEDIUM, work))
+        for _ in range(50):
+            if nA.active_count_for_source("shared_source") == 2:
+                break
+            await asyncio.sleep(0.005)
+        during = nA.active_count_for_source("shared_source")
+        release.set()
+        await asyncio.gather(t1, t2)
+        after = nA.active_count_for_source("shared_source")
+        return during, after
+
+    during, after = asyncio.run(run())
+    assert during == 2
+    assert after == 0

@@ -372,7 +372,7 @@ UASR_USE_SHIM_ROUTER=false               # canary traffic-split shim deploy, not
 UASR_USE_CAUSAL_RL_EVALUATOR=false       # pick the shim with best counterfactual expected-improvement (S18.1b)
 UASR_POST_HEAL_VALIDATION_BATCHES=0      # 0=off; N>0 auto-reverts a shim still failing after N batches
 UASR_APPROVAL_TIMEOUT_SECONDS=0          # 0=off; N>0 auto-escalates a PENDING_APPROVAL held longer than N seconds
-UASR_REPAIR_MAX_PER_SOURCE=0             # 0=off (local backend only); N>0 caps one source's concurrent repairs
+UASR_REPAIR_MAX_PER_SOURCE=0             # 0=off; N>0 caps one source's concurrent repairs (local per-process, or fleet-wide under distributed)
 UASR_CORRELATION_WINDOW_SECONDS=0        # 0=off; N>0 checks for N+ sources drifting within N seconds
 UASR_CORRELATION_MIN_SOURCES=3           # distinct sources required to call it a correlated incident
 UASR_CORRELATION_AUTO_HEAL=false         # borrow a correlated sibling's DEPLOYED shim on this source's own failure
@@ -414,17 +414,19 @@ new state to render. Off by default (`0`), surfaced on `GET /uasr/deployment`
 as `approval_timeout_seconds`.
 
 `UASR_REPAIR_MAX_PER_SOURCE` closes a fairness gap: `UASR_REPAIR_MAX_CONCURRENT`
-bounds total concurrency but not *whose* repairs fill those slots — one
-source's backlog of LOW-severity repairs can occupy every slot and starve a
-CRITICAL repair from a different source that hasn't arrived yet, even though
-admission is otherwise priority-ordered. When set > 0, the local
-`RepairScheduler` skips (not discards) an item whose source is already at
-its cap and admits the next eligible item instead, so other sources keep
-making progress. **Local backend only** for now — the distributed
-(Redis-coordinated) fleet-wide scheduler doesn't implement this yet; adding
-it safely needs an atomic per-source counter in the admission critical
-section, deferred as a follow-up rather than shipped half-verified. Off by
-default (`0`), surfaced on `GET /uasr/deployment` as `repair_max_per_source`.
+(local) / `UASR_REPAIR_MAX_GLOBAL_CONCURRENT` (distributed) bound total
+concurrency but not *whose* repairs fill those slots — one source's backlog
+of LOW-severity repairs can occupy every slot and starve a CRITICAL repair
+from a different source that hasn't arrived yet, even though admission is
+otherwise priority-ordered. When set > 0, both backends skip (not discard) an
+item whose source is already at its cap and admit the next eligible item
+instead, so other sources keep making progress. Same env var, same meaning,
+regardless of backend: under `local` the cap is per-process; under
+`distributed` it's tracked fleet-wide in a Redis hash (`{namespace}:
+active_by_source`), decremented on release and on crash-lease reclamation
+alike, so a source's repairs spread across multiple nodes still can't
+collectively exceed the cap. Off by default (`0`), surfaced on
+`GET /uasr/deployment` as `repair_max_per_source`.
 
 **Cross-source drift correlation** (`UASR_CORRELATION_WINDOW_SECONDS`,
 `UASR_CORRELATION_MIN_SOURCES`) closes the last gap in the self-healing
