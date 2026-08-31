@@ -278,6 +278,17 @@ healing silently.
 One sentence for a slide: *AURA reliably tells you the pipeline drifted, proposes a repair, and will
 not deploy one it cannot validate.*
 
+### Proven on real data
+
+Not a synthetic-random-numbers demo: `scripts/uasr_benchmark_nyc_taxi.py` runs UASR against real NYC
+TLC taxi trip records, including a real, dated drift event (New York's congestion surcharge — enacted
+2019-01-01, collection actually began 2019-02-02 after a court injunction lifted; the
+`congestion_surcharge` column is 100% null in TLC's January 2019 file and populated starting February).
+Reproducible end to end with `python scripts/uasr_benchmark_nyc_taxi.py` — no docker, no LLM key, no
+staging access. Full numbers, including one honest negative result (the real event's downstream signal
+didn't cross the detector's threshold at this benchmark's sample size), are in
+[`docs/UASR_BENCHMARK_RESULTS.md`](docs/UASR_BENCHMARK_RESULTS.md).
+
 ---
 
 ## Tenancy: exactly what is scoped

@@ -111,7 +111,7 @@ This is the process, not a suggestion:
   often enough to slow down the push workflow.
 
 ## BUG-005: unauthenticated-by-design verification endpoints return 401 live
-- **Status:** open
+- **Status:** fixed
 - **Found by:** live-verify 2026-08-31 (`scripts/verify_live_deployment.py`,
   first run against https://dataaura.duckdns.org — `jwks` check failed)
 - **Severity:** blocks-feature — external cryptographic verification is a
@@ -136,7 +136,14 @@ This is the process, not a suggestion:
   actually runs under. Same class of gap as BUG-001/BUG-002: a check that
   passes in an environment shape production doesn't use.
 - **Caused by:** none
-- **Fix:** pending — next branch, `fix/uasr-public-verification-endpoints`.
+- **Fix:** #266 (`fix/uasr-public-verification-endpoints`) — added
+  `/api/v1/counterfactual/jwks` and `/api/v1/counterfactual/audit/sth` to
+  `_PUBLIC_PATHS`, and a new `_PUBLIC_PATH_PREFIXES` + `_is_public_path()`
+  helper for the parameterized `/api/v1/counterfactual/audit/inclusion/{proof_hash}`
+  route, applied to both `APIKeyMiddleware` and `JWTAuthMiddleware`. Sibling
+  route `/api/v1/counterfactual/audit/financial` deliberately left requiring
+  auth (negative test added). Re-verified live against
+  https://dataaura.duckdns.org post-merge via `scripts/verify_live_deployment.py`.
 
 ## BUG-006: verify_live_deployment.py's webhooks check false-positived
 - **Status:** false-positive
