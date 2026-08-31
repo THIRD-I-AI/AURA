@@ -1,11 +1,18 @@
 # UASR Effective Self-Healing — Gap Analysis & Next-Sprint Candidates
 
-> **Status: proposed, unclaimed.** Not yet a numbered sprint — open a GitHub
-> issue titled `Sprint S46: <goal>` (or the next free id) and self-assign per
-> `docs/SPRINTS.md` → "How to update this file" before starting build work.
-> Produced by a read-only audit of `aurabackend/uasr/` against
-> `docs/SPRINTS.md` sprint history and `docs/SUPERVISED_SELF_HEALING.md`, and
-> lightly corrected against the working tree at time of writing.
+> **Status: not yet a numbered sprint** — open a GitHub issue titled
+> `Sprint S46: <goal>` and self-assign per `docs/SPRINTS.md` → "How to update
+> this file" before merging any of the branches below to keep the registry
+> honest. Produced by a read-only audit of `aurabackend/uasr/` against
+> `docs/SPRINTS.md` sprint history and `docs/SUPERVISED_SELF_HEALING.md`.
+>
+> **Progress**, same session:
+> - Candidate #1 (S18.1 reachability wiring) — implemented, PR #258.
+> - Candidate #2 (post-heal validation + auto-rollback) — implemented, PR #259.
+> - Candidate #3 (approval-queue timeout + escalation) — implemented, PR #260.
+> - The numeric-heal reachability gap referenced throughout — implemented, PR #256.
+> - Candidates #4–#5 (per-tenant repair fairness, cross-source correlation)
+>   below remain unstarted; still the right next picks after #1–#3 merge.
 
 **Goal this feeds:** UASR should reduce, not just report, the manual
 data-engineering toil of watching pipelines for drift — real autonomous
