@@ -8,6 +8,7 @@ Runs on port 8009 and exposes:
   - GET  /uasr/recovery/{id}— details of a recovery attempt (persisted)
   - GET  /uasr/metrics       — Hᵤ & observability dashboard
   - GET  /uasr/metrics/alerts— threshold violation alerts
+  - GET  /uasr/correlation   — cross-source drift correlation (report-only heuristic)
   - POST /uasr/gate/check    — semantic gate check for a batch
   - POST /uasr/rollback      — rollback a deployed shim
   - GET  /uasr/shims/{source_id} — list deployed shims
@@ -32,10 +33,11 @@ from shared.service_factory import create_service
 from .db import get_session, init_uasr_db
 from .drift_detector import DriftDetector
 from .mapek_worker import MAPEKConfig, MAPEKWorker
-from .metrics import HealingMetricTracker
+from .metrics import HealingMetricTracker, RecoveryEvent
 from .models import (
     BatchPayload,
     DriftEvent,
+    DriftSeverity,
     HealingMetric,
     RecoveryMode,
     RecoveryRecord,
@@ -47,6 +49,7 @@ from .runtime_config import (
     build_redis_client,
     build_repair_scheduler,
     build_state_store,
+    correlation_flags,
     deployment_summary,
     numeric_heal_flags,
     post_heal_validation_batches,
@@ -84,7 +87,11 @@ _detector = DriftDetector(state_store=build_state_store(redis_client=_redis_clie
 _repair_scheduler = build_repair_scheduler(redis_client=_redis_client)
 _matrix = ReferenceContextMatrix()
 _gateway = SemanticGateway(matrix=_matrix)
-_tracker = HealingMetricTracker()
+_CORRELATION_WINDOW_SECONDS, _CORRELATION_MIN_SOURCES, _CORRELATION_AUTO_HEAL = correlation_flags()
+_tracker = HealingMetricTracker(
+    correlation_window_seconds=_CORRELATION_WINDOW_SECONDS,
+    correlation_min_sources=_CORRELATION_MIN_SOURCES,
+)
 # S41: supervised self-healing is opt-in via env so existing deployments are
 # unchanged. UASR_RISK_TIERED=true holds risky shims for human approval;
 # UASR_RECOVERY_MODE=auto|supervised|monitor_only sets how aggressive AUTO is.
@@ -460,6 +467,70 @@ def _serialize_recovery(rec: RecoveryRecord) -> Dict[str, Any]:
 # Endpoints
 # ────────────────────────────────────────────────────────────────────
 
+async def _attempt_cross_source_heal(
+    drift_result,
+    batch: BatchPayload,
+    recovery_rec: RecoveryRecord,
+    db: AsyncSession,
+):
+    """Candidate #5, opt-in: this source's own recovery just FAILED. Before
+    giving up, check whether a correlated sibling source already has a
+    DEPLOYED shim for the same drift_type, and try it against THIS source's
+    batch through the normal sandbox-validation path.
+
+    Returns the new RecoveryLoopResult on success (DEPLOYED or
+    PENDING_APPROVAL), or None if no candidate existed or it didn't
+    validate — callers must treat None as "stays FAILED, nothing changed."
+
+    Mutates and re-commits ``recovery_rec`` in place rather than inserting a
+    second row: one recovery_id, one row, whose fields reflect how it was
+    actually resolved. Never called when auto-heal is off.
+    """
+    sibling = _tracker.find_recent_deployed_shim(
+        drift_result.drift_type, batch.source_id, _CORRELATION_WINDOW_SECONDS,
+    )
+    if sibling is None:
+        return None
+    sibling_source_id, shim_code = sibling
+
+    healed = await _loop.run_with_candidate_shim(
+        drift_result, batch, shim_code, sibling_source_id,
+    )
+    if healed.status not in (RecoveryStatus.DEPLOYED, RecoveryStatus.PENDING_APPROVAL):
+        logger.info(
+            "Cross-source heal did not resolve source=%s (status=%s); leaving original FAILED result",
+            batch.source_id, healed.status.value,
+        )
+        return None
+
+    logger.info(
+        "Cross-source heal succeeded: source=%s borrowed from=%s, new_status=%s",
+        batch.source_id, sibling_source_id, healed.status.value,
+    )
+    recovery_rec.status = healed.status.value
+    recovery_rec.shim_code = healed.shim.shim_code if healed.shim else None
+    recovery_rec.generation_method = healed.shim.generation_method if healed.shim else "cross_source_borrowed"
+    recovery_rec.validation_passed = healed.shim.validation_passed if healed.shim else None
+    recovery_rec.post_kl_divergence = healed.shim.post_kl_divergence if healed.shim else None
+    recovery_rec.latency_seconds = (recovery_rec.latency_seconds or 0.0) + healed.total_latency_seconds
+    recovery_rec.completed_at = (
+        None if healed.status == RecoveryStatus.PENDING_APPROVAL else datetime.now(timezone.utc)
+    )
+    await db.commit()
+
+    _tracker.record(RecoveryEvent(
+        source_id=batch.source_id,
+        drift_type=drift_result.drift_type,
+        severity=drift_result.severity or DriftSeverity.MEDIUM,
+        status=healed.status,
+        latency_seconds=healed.total_latency_seconds,
+        recovery_id=healed.recovery_id,
+        post_kl=healed.shim.post_kl_divergence if healed.shim else 0.0,
+        shim_code=healed.shim.shim_code if healed.shim and healed.status == RecoveryStatus.DEPLOYED else None,
+    ))
+    return healed
+
+
 @app.post("/uasr/ingest")
 async def ingest_batch(req: IngestRequest, db: AsyncSession = Depends(get_db)):
     """
@@ -526,6 +597,15 @@ async def ingest_batch(req: IngestRequest, db: AsyncSession = Depends(get_db)):
     # Update in-memory metrics tracker
     _tracker.record_from_loop_result(batch.source_id, loop_result)
 
+    # Candidate #5, opt-in: this source's own recovery failed -- try a
+    # correlated sibling's already-DEPLOYED shim before giving up.
+    cross_healed = False
+    if loop_result.status == RecoveryStatus.FAILED and _CORRELATION_AUTO_HEAL:
+        healed = await _attempt_cross_source_heal(drift_result, batch, recovery_rec, db)
+        if healed is not None:
+            loop_result = healed
+            cross_healed = True
+
     return {
         "status": loop_result.status.value,
         "drift_detected": True,
@@ -537,6 +617,7 @@ async def ingest_batch(req: IngestRequest, db: AsyncSession = Depends(get_db)):
         "post_kl": loop_result.shim.post_kl_divergence if loop_result.shim else None,
         "latency_seconds": round(loop_result.total_latency_seconds, 3),
         "gate": gate_decision.to_dict(),
+        "cross_source_healed": cross_healed,
     }
 
 
@@ -618,7 +699,7 @@ async def heal_batch(req: IngestRequest, db: AsyncSession = Depends(get_db)):
 
     loop_result = await _loop.run(drift_result, batch)
 
-    db.add(RecoveryRecord(
+    recovery_rec = RecoveryRecord(
         id=loop_result.recovery_id,
         drift_event_id=event_id,
         source_id=batch.source_id,
@@ -631,9 +712,19 @@ async def heal_batch(req: IngestRequest, db: AsyncSession = Depends(get_db)):
         latency_seconds=loop_result.total_latency_seconds,
         completed_at=None if loop_result.status == RecoveryStatus.PENDING_APPROVAL
         else datetime.now(timezone.utc),
-    ))
+    )
+    db.add(recovery_rec)
     await db.commit()
     _tracker.record_from_loop_result(batch.source_id, loop_result)
+
+    # Candidate #5, opt-in: this source's own recovery failed -- try a
+    # correlated sibling's already-DEPLOYED shim before giving up.
+    cross_healed = False
+    if loop_result.status == RecoveryStatus.FAILED and _CORRELATION_AUTO_HEAL:
+        healed = await _attempt_cross_source_heal(drift_result, batch, recovery_rec, db)
+        if healed is not None:
+            loop_result = healed
+            cross_healed = True
 
     # 3. Only a DEPLOYED shim may touch the caller's data. Anything else
     #    (failed, or held for human approval) returns the rows untransformed
@@ -661,6 +752,7 @@ async def heal_batch(req: IngestRequest, db: AsyncSession = Depends(get_db)):
         "rows": batch.rows,
         "latency_seconds": round(loop_result.total_latency_seconds, 3),
         "gate": gate_decision.to_dict(),
+        "cross_source_healed": cross_healed,
     }
 
 
@@ -877,6 +969,28 @@ async def get_alerts(hu_floor: float = 0.3, resolution_floor: float = 0.5):
     """Check healing metric alert thresholds."""
     alerts = _tracker.check_alerts(hu_floor, resolution_floor)
     return {"alerts": alerts, "count": len(alerts)}
+
+
+@app.get("/uasr/correlation")
+async def get_correlation(window_seconds: Optional[float] = None, min_sources: Optional[int] = None):
+    """Cross-source drift correlation (candidate #5): are N+ distinct
+    sources currently drifting within the same window? Report-only -- a
+    time-window heuristic, not causal inference; see
+    ``metrics.CorrelatedIncident``. Query params override this node's
+    configured ``UASR_CORRELATION_*`` defaults for a one-off check; omit
+    them to use the deployment's own settings.
+    """
+    incident = _tracker.detect_correlation(window_seconds, min_sources)
+    if incident is None:
+        return {"correlated": False}
+    return {
+        "correlated": True,
+        "source_ids": incident.source_ids,
+        "drift_types": incident.drift_types,
+        "window_seconds": incident.window_seconds,
+        "earliest_event_at": incident.earliest_event_at,
+        "detected_at": incident.detected_at,
+    }
 
 
 @app.post("/uasr/gate/check")

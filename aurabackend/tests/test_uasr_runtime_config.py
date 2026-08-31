@@ -251,3 +251,35 @@ def test_approval_timeout_off_by_default():
 def test_approval_timeout_resolves_from_env(monkeypatch):
     monkeypatch.setenv("UASR_APPROVAL_TIMEOUT_SECONDS", "3600")
     assert rc.approval_timeout_seconds() == 3600
+
+
+# ── cross-source drift correlation (candidate #5) ──────────────────────
+
+def test_correlation_off_by_default():
+    assert rc.correlation_flags() == (0.0, 3, False)
+    s = rc.deployment_summary()
+    assert s["correlation_window_seconds"] == 0.0
+    assert s["correlation_min_sources"] == 3
+    assert s["correlation_auto_heal"] is False
+
+
+def test_correlation_window_resolves_from_env(monkeypatch):
+    monkeypatch.setenv("UASR_CORRELATION_WINDOW_SECONDS", "45")
+    monkeypatch.setenv("UASR_CORRELATION_MIN_SOURCES", "5")
+    assert rc.correlation_flags() == (45.0, 5, False)
+
+
+def test_auto_heal_alone_promotes_a_default_window(monkeypatch):
+    """UASR_CORRELATION_AUTO_HEAL with no window configured would build a
+    detector that never fires and a heal path nothing reaches -- same
+    reachability principle as numeric_heal_flags()."""
+    monkeypatch.setenv("UASR_CORRELATION_AUTO_HEAL", "true")
+    window, min_sources, auto_heal = rc.correlation_flags()
+    assert auto_heal is True
+    assert window == 30.0
+
+
+def test_auto_heal_does_not_override_an_explicit_window(monkeypatch):
+    monkeypatch.setenv("UASR_CORRELATION_AUTO_HEAL", "true")
+    monkeypatch.setenv("UASR_CORRELATION_WINDOW_SECONDS", "120")
+    assert rc.correlation_flags() == (120.0, 3, True)

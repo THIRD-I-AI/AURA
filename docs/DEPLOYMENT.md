@@ -373,6 +373,9 @@ UASR_USE_CAUSAL_RL_EVALUATOR=false       # pick the shim with best counterfactua
 UASR_POST_HEAL_VALIDATION_BATCHES=0      # 0=off; N>0 auto-reverts a shim still failing after N batches
 UASR_APPROVAL_TIMEOUT_SECONDS=0          # 0=off; N>0 auto-escalates a PENDING_APPROVAL held longer than N seconds
 UASR_REPAIR_MAX_PER_SOURCE=0             # 0=off (local backend only); N>0 caps one source's concurrent repairs
+UASR_CORRELATION_WINDOW_SECONDS=0        # 0=off; N>0 checks for N+ sources drifting within N seconds
+UASR_CORRELATION_MIN_SOURCES=3           # distinct sources required to call it a correlated incident
+UASR_CORRELATION_AUTO_HEAL=false         # borrow a correlated sibling's DEPLOYED shim on this source's own failure
 ```
 
 `UASR_NUMERIC_AUTO_HEAL` is the only knob that lets the loop rewrite data rather
@@ -422,6 +425,54 @@ making progress. **Local backend only** for now — the distributed
 it safely needs an atomic per-source counter in the admission critical
 section, deferred as a follow-up rather than shipped half-verified. Off by
 default (`0`), surfaced on `GET /uasr/deployment` as `repair_max_per_source`.
+
+**Cross-source drift correlation** (`UASR_CORRELATION_WINDOW_SECONDS`,
+`UASR_CORRELATION_MIN_SOURCES`) closes the last gap in the self-healing
+analysis: each source's drift was analyzed in isolation, with no signal for
+"these N sources drifted together — this looks like one upstream incident,"
+the pattern a human data engineer would spot first by eyeballing
+timestamps. When `UASR_CORRELATION_WINDOW_SECONDS` is set > 0, every
+recovery attempt (via `/uasr/ingest`, `/uasr/heal`, or the Kafka MAPE-K
+worker — all three share one `HealingMetricTracker`) checks whether
+`UASR_CORRELATION_MIN_SOURCES` (default 3) or more *distinct* sources have
+attempted recovery within the window; if so it logs a warning once per
+distinct incident (not once per event) and the same signal is queryable
+on-demand via `GET /uasr/correlation`.
+
+**Report-only, not causal inference.** AURA has no source-to-source
+lineage/topology model anywhere, so this cannot distinguish "shared
+upstream outage" from coincidence (e.g. several sources sharing a batch
+schedule). It is a time-window heuristic that surfaces a pattern for a
+human to investigate — validate whether the flagged sources actually share
+an upstream producer, database, or schema change before acting on it. Also
+only sees events that cleared the severity gate and triggered a recovery
+*attempt*; sub-threshold drift is invisible to it, same boundary the Hᵤ
+score already lives with. Off by default (`0`), surfaced on
+`GET /uasr/deployment` as `correlation_window_seconds` /
+`correlation_min_sources`.
+
+`UASR_CORRELATION_AUTO_HEAL` is the one knob in this list that acts rather
+than only reports: when a source's own recovery FAILS, it checks whether a
+correlated sibling source already has a DEPLOYED shim for the *same*
+drift_type and, if so, tries that shim against the failing source's own
+batch — through the identical sandbox-validation path any generated shim
+goes through (`RecoveryLoop.run_with_candidate_shim`). A borrowed shim that
+doesn't validate against this source's data is discarded, never
+force-deployed. The borrowed shim is tagged
+`generation_method="cross_source_borrowed"` (not `"template"`), so the
+existing S41 risk gate holds it for human approval under
+`UASR_RISK_TIERED=true` with zero new approval logic — extrapolating a fix
+across sources is exactly the kind of decision that gate exists to catch.
+Enabling `UASR_CORRELATION_AUTO_HEAL` alone promotes
+`UASR_CORRELATION_WINDOW_SECONDS` to 30s if no window was set (same
+"auto implies the base channel" precedent as `UASR_NUMERIC_AUTO_HEAL`) —
+otherwise it would build a heal path nothing ever reaches. **Scope
+boundary:** covers `/uasr/ingest` and `/uasr/heal` only; the Kafka MAPE-K
+worker does not fan out cross-source heals in this release (it also
+doesn't persist `RecoveryRecord` to the DB at all today — a pre-existing
+gap, not something this feature fixes) — deferred as a follow-up rather
+than bundled here. Off by default (`false`), surfaced on
+`GET /uasr/deployment` as `correlation_auto_heal`.
 
 Confirm the active mode at runtime — `GET /uasr/deployment` on port 8009 reports
 `state_backend`, `repair_backend`, and `node_id`, so a fleet's replicas are
