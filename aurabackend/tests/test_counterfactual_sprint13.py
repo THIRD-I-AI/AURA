@@ -101,7 +101,19 @@ async def test_bulk_replay_returns_ndjson_with_mixed_statuses(monkeypatch, tmp_p
         # 300s wall-clock, not 120x0.5s: the fan-out measures ~47s unloaded, so
         # the old 60s budget timed out under ordinary suite load and reported a
         # still-running job as a failure.
+        #
+        # Polling backs off from 0.5s to 2s (BUG-007-adjacent finding,
+        # docs/BUG_REGISTRY.md): a flat 0.5s interval issues up to 600 GETs
+        # over the 300s budget against the SAME global rate limiter
+        # (100 req/60s per IP, shared/config.py) this TestClient's requests
+        # share -- once the job legitimately takes >~50s under suite load,
+        # the poll loop's own request volume alone breaches that window and
+        # 429s itself, independent of any other test's traffic. The backoff
+        # keeps steady-state well under 60 req/60s (a 2s cadence caps it at
+        # 30/60s) while still polling fast (0.5s) for the common case where
+        # the job finishes quickly.
         deadline = time.monotonic() + 300.0
+        poll_interval = 0.5
         while time.monotonic() < deadline:
             # Assert the status BEFORE indexing: an error body has no "state",
             # so the bare .json()["state"] reported KeyError: 'state' and hid
@@ -111,7 +123,8 @@ async def test_bulk_replay_returns_ndjson_with_mixed_statuses(monkeypatch, tmp_p
             sr = sr_resp.json()
             if sr["state"] in {"succeeded", "failed"}:
                 break
-            time.sleep(0.5)
+            time.sleep(poll_interval)
+            poll_interval = min(poll_interval * 1.5, 2.0)
         assert sr["state"] == "succeeded", sr
         real_hash = sr["artifact"]["audit_record_hash"]
 

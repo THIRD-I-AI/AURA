@@ -2,6 +2,7 @@
 graphify-out/
 sprint13_demo.py
 .sprint13_demo/
+.cache/
 
 # Python
 __pycache__/

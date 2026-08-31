@@ -136,46 +136,54 @@ genuinely happened (or is realistic to that domain), and publish the
 measured before/after numbers. Fully reproducible by anyone who clones the
 repo and runs one script; no proprietary data, no staging access required.
 
-**Status: planned.** Dataset and scenario chosen below; not yet built.
+**Status: Scenario 1 built and run (2026-08-31), results published below and
+in `docs/UASR_BENCHMARK_RESULTS.md`.** Scenario 2 (cross-source
+correlation) not yet built.
 
 ### Dataset choice: NYC TLC Trip Record Data
 
 [NYC Taxi & Limousine Commission trip records](https://www1.nyc.gov/site/tlc/about/tlc-trip-record-data.page)
-— public, monthly CSV/Parquet files, no auth, no rate limit that matters
-at demo scale. Chosen over a synthetic generator for one reason: **this
-dataset has real, documented schema drift already baked into its history**
-(TLC has renamed and restructured columns across its file format
-revisions). Replaying that is an honest demonstration — "here is drift
-that actually happened to a real production data pipeline, and here is
-UASR detecting and healing it" — not a strawman injected for the demo.
+— public, monthly Parquet files, no auth, no rate limit that matters at
+demo scale, downloaded fresh at runtime (TLC's redistribution terms could
+not be confirmed — nyc.gov's Terms of Use page 403s automated fetches —
+so nothing is committed to the repo; `scripts/uasr_benchmark_nyc_taxi.py`
+downloads and caches to a gitignored `.cache/` directory).
 
-### Scenario 1 — single-source schema + numeric drift (candidates #1–#3)
+**Revised from the original plan:** a TLC-documented column *rename* with
+a citable date could not be found (TLC's data dictionary is a rolling
+current-state document, not a versioned changelog). What research did
+confirm, with a citation, is a real *value-population* event: New York's
+congestion surcharge on Manhattan-bound trips was enacted 2019-01-01 but
+blocked by a court TRO; collection genuinely began 2019-02-02
+(https://www.nyc.gov/site/tlc/about/congestion-surcharge.page). TLC's
+January 2019 file carries the `congestion_surcharge` column 100% null;
+February 2019 has it populated — confirmed both by this benchmark's own
+run (see Results) and independently at
+https://github.com/KyleHaynes/NYC-2019-01-Yellow-Taxi-Data.
 
-1. Ingest several months of trip records for one source_id
-   (`nyc_taxi_yellow`) as sequential batches — establishes the baseline.
-2. Replay the actual month where TLC's schema changed (a renamed/dropped
-   column) — this should trip schema-drift detection, generate a shim,
-   validate it, and deploy it. Every step is already implemented; the demo
-   proves it fires on real-world drift shape, not a hand-crafted test
-   fixture.
-3. Separately, inject a realistic *numeric* drift on top of a clean
-   month — e.g. a fare-amount unit error (cents vs. dollars, a real class
-   of bug) — to exercise the numeric semantics healer
-   (`UASR_NUMERIC_SEMANTICS`/`UASR_NUMERIC_AUTO_HEAL`) end to end.
-4. Turn on `UASR_POST_HEAL_VALIDATION_BATCHES` and deliberately replay a
-   batch the deployed shim does NOT fix well, to demonstrate auto-rollback
-   actually reverting a bad heal — the honest "this can also fail
-   gracefully" half of the story, not just the happy path.
+### Scenario 1 — single-source drift (built, run 2026-08-31)
 
-### Scenario 2 — cross-source correlation (candidate #5)
-
-Split trip records by borough/vendor as **separate source_ids**
-(`nyc_taxi_manhattan`, `nyc_taxi_brooklyn`, ...) and replay a month where
-TLC's schema change hit every borough's file simultaneously — a real
-correlated incident, not a fabricated one. This should trip
-`detect_correlation()` and, with `UASR_CORRELATION_AUTO_HEAL` on, show one
-borough's validated shim getting borrowed by the others instead of each
-independently re-diagnosing the same drift.
+1. Ingest sample batches of the real January 2019 file for one source_id
+   — establishes the baseline (`scripts/uasr_benchmark_nyc_taxi.py`).
+2. Replay the real February 2019 batch. **Finding, not assumption:**
+   `DriftDetector._compute_distributions` drops an all-null column from
+   the baseline entirely (`aurabackend/uasr/drift_detector.py:568-570`) —
+   correct null-handling, not a bug, but it means `congestion_surcharge`
+   itself can never be baseline-registered, so the real event's only
+   detectable surface is its downstream effect on `total_amount`. At this
+   benchmark's sample size (2000 rows/month) that shift did **not** cross
+   the adaptive KL threshold — reported honestly as a negative result
+   rather than forced. See Results below and Follow-ups.
+3. Separately, inject a realistic *numeric* drift on a clean month — a
+   fare-amount unit error (cents vs. dollars, applied to the exact rows
+   used as baseline, i.e. "this batch got reprocessed upstream with a
+   scale bug"). This is synthetic and labeled as such in the script's
+   docstring, unlike step 2. **Result: full end-to-end self-heal,
+   auto-deployed, zero residual KL divergence, no LLM call needed** (the
+   rule-based reflector's statistical-drift confidence, 0.7-0.85, always
+   clears the 0.6 LLM-fallback threshold). See Results below.
+4. `UASR_POST_HEAL_VALIDATION_BATCHES` auto-rollback demo — not built in
+   this pass; tracked as a Workstream 2 follow-up, not silently dropped.
 
 ### What gets measured and published
 
@@ -187,27 +195,51 @@ redundant diagnose+generate work (compare wall-clock/LLM-call count with
 `UASR_CORRELATION_AUTO_HEAL` on vs. off).
 
 **Deliverables:**
-- `scripts/uasr_benchmark_nyc_taxi.py` — downloads the public files (or
-  reads from a small bundled sample if full download is impractical for
-  CI), runs both scenarios against a local UASR instance
-  (`docker compose up uasr_service`), and writes a results JSON + a
-  human-readable Markdown report.
-- `docs/UASR_BENCHMARK_RESULTS.md` — the published numbers, regenerated
-  whenever the scenario re-runs; linked from the main README.
-- README gets a short "Proven on real data" section pointing at the
-  results doc, replacing any unverified claim with a linked, reproducible
-  one.
+- `scripts/uasr_benchmark_nyc_taxi.py` — built. Downloads the two public
+  monthly files at runtime (cached, gitignored, never committed — see
+  license note below), drives `DriftDetector`/`RecoveryLoop`/
+  `HealingMetricTracker` directly in-process (no LLM call needed for
+  either scenario, no docker/Kafka/Redis required — a deliberate choice
+  over the originally-planned `docker compose up uasr_service` HTTP path,
+  since the in-process modules are what the scenarios actually exercise
+  and it keeps `python scripts/uasr_benchmark_nyc_taxi.py` a true
+  one-command reproduction), and writes both a results JSON and this
+  Markdown report.
+- `docs/UASR_BENCHMARK_RESULTS.md` — built, regenerated on each run.
+- README "Proven on real data" section — done, links to the results doc.
 
-## Open questions before building Workstream 2
+## Resolved: dataset research (2026-08-31)
 
-- Exact TLC file month(s) with the schema change — needs a quick check of
-  TLC's format-change changelog before picking specific files, so the
-  "this genuinely happened" claim is accurate and citable in the results
-  doc.
-- Whether the benchmark script downloads full monthly files (large, slow,
-  not CI-friendly) or ships a trimmed representative sample committed to
-  the repo (reproducible offline, but need to confirm TLC's data license
-  permits redistributing a sample).
+- **Schema-change date:** no citable TLC-documented column *rename* found.
+  Used instead: the real, dated `congestion_surcharge` null→populated
+  transition described above (Jan/Feb 2019).
+- **Redistribution:** TLC's trip data is governed by NYC's general Terms
+  of Use (via the AWS Open Data registry listing), not a permissive
+  open-data license, and the terms page itself blocks automated fetches —
+  so the script downloads fresh from TLC's CDN at runtime rather than
+  committing any sample rows to the repo.
+
+## Follow-ups (not yet done)
+
+- Scenario 1 step 2 (the real congestion-surcharge event) did not cross
+  the drift threshold at n=2000 rows/month — worth retrying at a larger
+  sample size or narrowing to Manhattan-only trips (where the surcharge's
+  effect on `total_amount` is concentrated, rather than diluted across all
+  five boroughs) to see if the real event becomes detectable, before
+  concluding it genuinely requires a larger fleet to catch.
+- Scenario 1 step 4 (deliberate bad-heal auto-rollback demo) — not built.
+- Scenario 2 (cross-source correlation, candidate #5) — not built; the
+  design below remains the plan.
+
+### Scenario 2 — cross-source correlation (candidate #5, still planned)
+
+Split trip records by borough/vendor as **separate source_ids**
+(`nyc_taxi_manhattan`, `nyc_taxi_brooklyn`, ...) and replay a month where
+TLC's schema change hit every borough's file simultaneously — a real
+correlated incident, not a fabricated one. This should trip
+`detect_correlation()` and, with `UASR_CORRELATION_AUTO_HEAL` on, show one
+borough's validated shim getting borrowed by the others instead of each
+independently re-diagnosing the same drift.
 
 ## Results (fill in as each workstream lands)
 
@@ -225,4 +257,16 @@ redundant diagnose+generate work (compare wall-clock/LLM-call count with
   the gateway only proxied 7 of ~20 UASR endpoints — `/uasr/heal` itself
   had no route — closed on `fix/uasr-gateway-proxy-gaps` with a regression
   test that diffs UASR's route set against the gateway's.
-- Workstream 2: not started.
+- **Workstream 2 (2026-08-31):** Scenario 1 built and run against real
+  TLC data (`scripts/uasr_benchmark_nyc_taxi.py`, full numbers in
+  `docs/UASR_BENCHMARK_RESULTS.md`). The real, dated event (congestion
+  surcharge, Jan/Feb 2019) confirmed its own premise — `congestion_surcharge`
+  null rate measured 100% in January, 0% in February, exactly matching the
+  cited 2019-02-02 collection start — but did not cross the drift
+  threshold on `total_amount` at this sample size, reported as a negative
+  result rather than forced (see Follow-ups above). The synthetic
+  fare-unit-bug injection produced a full, honest end-to-end self-heal:
+  `statistical`/`critical` drift detected, template-generated rescale shim
+  auto-deployed (no LLM call, no human review — S41's template tier),
+  post-heal KL divergence `0.0`, Hᵤ = 4.615. Scenario 2 (cross-source
+  correlation) not built.
