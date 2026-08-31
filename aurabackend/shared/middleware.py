@@ -116,7 +116,32 @@ class AuditLogMiddleware(BaseHTTPMiddleware):
 _PUBLIC_PATHS = {
     "/health", "/healthz", "/ready", "/docs", "/openapi.json", "/redoc",
     "/api/v1/auth/token", "/api/v1/auth/register",
+    # External cryptographic verification (S19 TRAIGA federation): a
+    # third-party auditor's tooling verifies AURA's ED25519 signatures and
+    # RFC 6962 Merkle inclusion without an AURA login -- that is the whole
+    # point of a public JWKS/signed-tree-head surface. Each route handler
+    # was already coded and commented as intentionally unauthenticated
+    # (counterfactual.py's jwks()); this allowlist just never caught up,
+    # so the global auth gate silently defeated the feature on every
+    # deployment with auth correctly armed. Root-caused live, 2026-08-31,
+    # docs/BUG_REGISTRY.md BUG-005.
+    "/api/v1/counterfactual/jwks",
+    "/api/v1/counterfactual/audit/sth",
 }
+
+# Public path PREFIXES -- for the one public route _PUBLIC_PATHS' exact-
+# match set structurally cannot express (/audit/inclusion/{proof_hash} is
+# parameterized). Kept separate and deliberately minimal: a prefix match is
+# a wider net than an exact one, so this is not a shortcut for "exact paths
+# are inconvenient" -- every entry here must be a single, deliberately-
+# public, read-only verification route.
+_PUBLIC_PATH_PREFIXES = (
+    "/api/v1/counterfactual/audit/inclusion/",
+)
+
+
+def _is_public_path(path: str) -> bool:
+    return path in _PUBLIC_PATHS or path.startswith(_PUBLIC_PATH_PREFIXES)
 
 # The credential endpoints. Unauthenticated by necessity — you cannot present a
 # token to the endpoint that mints it — which is exactly why they must NOT
@@ -147,7 +172,7 @@ class APIKeyMiddleware(BaseHTTPMiddleware):
 
     async def dispatch(self, request: Request, call_next: Callable):
         # Always allow public paths
-        if request.url.path in _PUBLIC_PATHS:
+        if _is_public_path(request.url.path):
             return await call_next(request)
 
         # Allow CORS preflight
@@ -182,7 +207,7 @@ class JWTAuthMiddleware(BaseHTTPMiddleware):
     """
 
     async def dispatch(self, request: Request, call_next: Callable):
-        if request.url.path in _PUBLIC_PATHS or request.method == "OPTIONS":
+        if _is_public_path(request.url.path) or request.method == "OPTIONS":
             return await call_next(request)
 
         auth_header = request.headers.get("Authorization", "")
