@@ -152,8 +152,14 @@ This is the process, not a suggestion:
   helper for the parameterized `/api/v1/counterfactual/audit/inclusion/{proof_hash}`
   route, applied to both `APIKeyMiddleware` and `JWTAuthMiddleware`. Sibling
   route `/api/v1/counterfactual/audit/financial` deliberately left requiring
-  auth (negative test added). Re-verified live against
-  https://dataaura.duckdns.org post-merge via `scripts/verify_live_deployment.py`.
+  auth (negative test added). Merging the PR alone did not fix it live —
+  the box pulls images on a manual `docker compose pull && up -d`, not on
+  merge; the fix sat unreleased on `main` until the box's `AURA_TAG` was
+  bumped from the stale pinned `0.1.4` to `latest` (the tag CD actually
+  publishes on a plain push to `main`) and the stack was redeployed,
+  2026-08-31. Re-verified live post-redeploy with direct curl checks
+  against https://dataaura.duckdns.org: `jwks` → 200, `audit/sth` → 200,
+  the sibling `audit/financial` route still correctly → 401.
 
 ## BUG-007: test_categorical_drift_still_detected fails in CI but not locally
 - **Status:** fixed
