@@ -66,6 +66,7 @@ AURABACKEND = REPO_ROOT / "aurabackend"
 sys.path.insert(0, str(AURABACKEND))
 
 import httpx  # noqa: E402
+import numpy as np  # noqa: E402
 import pyarrow.parquet as pq  # noqa: E402
 
 from uasr.drift_detector import DriftDetector  # noqa: E402
@@ -117,12 +118,8 @@ def _sanitize(value: Any) -> Any:
         return None
     if isinstance(value, float) and math.isnan(value):
         return None
-    try:
-        import numpy as np
-        if isinstance(value, np.generic):
-            return value.item()
-    except ImportError:
-        pass
+    if isinstance(value, np.generic):
+        return value.item()
     if hasattr(value, "isoformat"):
         return value.isoformat()
     return value
