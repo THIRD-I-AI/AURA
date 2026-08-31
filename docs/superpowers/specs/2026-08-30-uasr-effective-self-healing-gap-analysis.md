@@ -16,8 +16,16 @@
 >   scheduler doesn't have this yet — deferred as its own follow-up rather than
 >   shipping unverified atomic-counter logic under time pressure. #1–#4 merged
 >   into main this session.
-> - Candidate #5 (cross-source correlation) remains unstarted — the next pick,
->   plus the deferred distributed half of #4.
+> - Candidate #5 (cross-source correlation) — implemented, report-only base
+>   plus an opt-in `UASR_CORRELATION_AUTO_HEAL` extension (borrows a
+>   correlated sibling's DEPLOYED shim on this source's own recovery
+>   failure, still sandbox-validated, still S41-gated). Scoped to
+>   `/uasr/ingest` + `/uasr/heal`; the Kafka MAPE-K worker path deferred
+>   (it doesn't persist `RecoveryRecord` at all today, a pre-existing gap).
+>   This closes every candidate in the original analysis.
+> - Deferred follow-ups, not silent gaps: the distributed/Redis half of
+>   candidate #4's per-source fairness, and cross-source auto-heal fan-out
+>   for the Kafka MAPE-K worker path.
 
 **Goal this feeds:** UASR should reduce, not just report, the manual
 data-engineering toil of watching pipelines for drift — real autonomous

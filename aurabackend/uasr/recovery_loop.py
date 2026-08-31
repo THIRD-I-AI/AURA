@@ -257,6 +257,70 @@ class RecoveryLoop:
         return loop_result
 
     # ────────────────────────────────────────────────────────────────
+    # Cross-source auto-heal (candidate #5, opt-in)
+    # ────────────────────────────────────────────────────────────────
+
+    async def run_with_candidate_shim(
+        self,
+        drift_result: DriftDetectionResult,
+        original_batch: BatchPayload,
+        candidate_shim_code: str,
+        sibling_source_id: str,
+    ) -> RecoveryLoopResult:
+        """Try a sibling source's already-DEPLOYED shim against this
+        source's own drifted batch, skipping diagnose+generate (no LLM
+        call). The candidate is a borrowed *hypothesis*, not a verified
+        fix for this source -- it still goes through the exact same
+        ``_validate_shim`` sandbox check any generated shim does. A
+        candidate that doesn't fit this batch fails validation and this
+        returns FAILED; nothing here bypasses validation to force a deploy.
+
+        ``generation_method="cross_source_borrowed"`` (not "template") means
+        the existing S41 risk gate already does the right thing with no new
+        logic: ``_should_deploy`` rejects any non-template shim under
+        risk_tiered=True, so a borrowed fix holds for human approval under
+        supervised deployments exactly like an LLM-generated one would.
+        """
+        start_time = time.perf_counter()
+        recovery_id = uuid.uuid4().hex[:16]
+        loop_result = RecoveryLoopResult(
+            drift_event_id=drift_result.batch_id,
+            recovery_id=recovery_id,
+            status=RecoveryStatus.VALIDATING,
+        )
+        logger.info(
+            "Cross-source heal attempt: source=%s borrowing shim from=%s, drift_event=%s",
+            drift_result.source_id, sibling_source_id, drift_result.batch_id,
+        )
+
+        shim = ShimResult(
+            recovery_id=recovery_id,
+            shim_code=candidate_shim_code,
+            generation_method="cross_source_borrowed",
+        )
+        validation = await self._validate_shim(shim, original_batch, drift_result)
+        shim.validation_passed = validation["passed"]
+        shim.post_kl_divergence = validation.get("post_kl")
+        loop_result.shim = shim
+
+        if not validation["passed"]:
+            loop_result.status = RecoveryStatus.FAILED
+            logger.info(
+                "Cross-source heal rejected: source=%s, reason=%s",
+                drift_result.source_id, validation.get("reason", "unknown"),
+            )
+        elif self._should_deploy(shim, drift_result):
+            self._deploy_shim(loop_result, shim, drift_result, recovery_id, validation)
+        elif self._config.risk_tiered:
+            self._hold_for_approval(loop_result, shim, drift_result, recovery_id)
+        else:
+            loop_result.status = RecoveryStatus.VALIDATING
+            logger.info("Cross-source shim validated but auto_deploy=False, awaiting manual deploy")
+
+        loop_result.total_latency_seconds = time.perf_counter() - start_time
+        return loop_result
+
+    # ────────────────────────────────────────────────────────────────
     # Internal steps
     # ────────────────────────────────────────────────────────────────
 

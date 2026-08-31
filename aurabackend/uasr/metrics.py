@@ -38,7 +38,6 @@ import time
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from enum import Enum
 from typing import Any, Dict, List, Optional
 
 from .models import DriftSeverity, DriftType, RecoveryStatus
@@ -61,6 +60,27 @@ class RecoveryEvent:
     timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     recovery_id: str = ""
     post_kl: float = 0.0
+    # Cross-source auto-heal (candidate #5): the deployed transform, so a
+    # sibling source's own failed recovery can try it as a candidate before
+    # giving up. None for non-DEPLOYED events or when no shim was generated.
+    shim_code: Optional[str] = None
+
+
+@dataclass
+class CorrelatedIncident:
+    """N+ distinct sources drifted within one sliding window.
+
+    Report-only signal, not causal inference -- AURA has no source-to-source
+    lineage model, so this cannot distinguish "shared upstream outage" from
+    coincidence. It is exactly what a human data engineer would notice first
+    by eyeballing timestamps across dashboards; the value is surfacing that
+    pattern automatically, not explaining it.
+    """
+    source_ids: List[str]
+    drift_types: List[str]
+    window_seconds: float
+    earliest_event_at: str
+    detected_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
 
 @dataclass
@@ -113,12 +133,24 @@ class HealingMetricTracker:
         print(report.hu_score)
     """
 
-    def __init__(self, trend_window: int = 50, sla_seconds: float = 5.0) -> None:
+    def __init__(
+        self,
+        trend_window: int = 50,
+        sla_seconds: float = 5.0,
+        correlation_window_seconds: float = 0.0,
+        correlation_min_sources: int = 3,
+    ) -> None:
         self._events: List[RecoveryEvent] = []
         self._trend_window = trend_window
         self._sla_seconds = sla_seconds
         self._hu_history: List[float] = []
         self._composite_history: List[float] = []
+        # Cross-source correlation (candidate #5): 0.0 = off, matching every
+        # other UASR opt-in this session -- no behaviour change by default.
+        self._correlation_window_seconds = correlation_window_seconds
+        self._correlation_min_sources = correlation_min_sources
+        # Dedup so a continuing incident logs one warning, not one per event.
+        self._last_correlation_sources: Optional[frozenset] = None
 
     # ── Recording ───────────────────────────────────────────────────
 
@@ -132,10 +164,11 @@ class HealingMetricTracker:
             event.status.value,
             event.latency_seconds,
         )
+        if self._correlation_window_seconds > 0:
+            self._maybe_log_correlation()
 
     def record_from_loop_result(self, source_id: str, loop_result) -> None:
         """Convenience: record directly from a RecoveryLoopResult."""
-        from .models import RecoveryLoopResult
 
         drift_type = DriftType.STATISTICAL   # default
         severity = DriftSeverity.LOW
@@ -154,8 +187,98 @@ class HealingMetricTracker:
             latency_seconds=loop_result.total_latency_seconds or 0.0,
             recovery_id=loop_result.recovery_id or "",
             post_kl=loop_result.shim.post_kl_divergence if loop_result.shim else 0.0,
+            shim_code=(
+                loop_result.shim.shim_code
+                if loop_result.shim and loop_result.status == RecoveryStatus.DEPLOYED
+                else None
+            ),
         )
         self.record(event)
+
+    # ── Cross-source correlation (candidate #5, report-only) ──────────
+
+    def detect_correlation(
+        self,
+        window_seconds: Optional[float] = None,
+        min_sources: Optional[int] = None,
+    ) -> Optional[CorrelatedIncident]:
+        """N+ distinct sources with a recovery attempt in the last
+        ``window_seconds``. Report-only -- a time-window heuristic, not
+        causal inference; see ``CorrelatedIncident`` docstring.
+
+        Both the passive hook (``record``) and the pull endpoint
+        (``GET /uasr/correlation``) call this one implementation so there is
+        exactly one definition of "correlated," not two that could drift
+        apart.
+        """
+        window = window_seconds if window_seconds is not None else self._correlation_window_seconds
+        threshold = min_sources if min_sources is not None else self._correlation_min_sources
+        if window <= 0:
+            return None
+
+        cutoff = time.time() - window
+        recent = [e for e in self._events if e.timestamp.timestamp() >= cutoff]
+        sources = {e.source_id for e in recent}
+        if len(sources) < threshold:
+            return None
+
+        drift_types = sorted({e.drift_type.value for e in recent})
+        earliest = min(recent, key=lambda e: e.timestamp)
+        return CorrelatedIncident(
+            source_ids=sorted(sources),
+            drift_types=drift_types,
+            window_seconds=window,
+            earliest_event_at=earliest.timestamp.isoformat(),
+        )
+
+    def _maybe_log_correlation(self) -> None:
+        incident = self.detect_correlation()
+        if incident is None:
+            self._last_correlation_sources = None
+            return
+        current = frozenset(incident.source_ids)
+        if current == self._last_correlation_sources:
+            return  # same incident still ongoing -- already logged
+        self._last_correlation_sources = current
+        logger.warning(
+            "Possible upstream incident: %d sources drifted within %.0fs "
+            "(sources=%s, drift_types=%s). This is a time-window heuristic, "
+            "not a confirmed shared cause -- validate whether these sources "
+            "share an upstream producer, database, or schema change.",
+            len(incident.source_ids), incident.window_seconds,
+            incident.source_ids, incident.drift_types,
+        )
+
+    def find_recent_deployed_shim(
+        self,
+        drift_type: DriftType,
+        exclude_source_id: str,
+        window_seconds: float,
+    ) -> Optional[tuple[str, str]]:
+        """Cross-source auto-heal: the most recent DEPLOYED shim for
+        ``drift_type`` from a source other than ``exclude_source_id``,
+        within the window. Returns (sibling_source_id, shim_code) or None.
+
+        This only ever returns a *candidate* -- the caller must still
+        sandbox-validate it against the failing source's own batch
+        (RecoveryLoop.run_with_candidate_shim) before it can deploy. Nothing
+        here bypasses validation.
+        """
+        cutoff = time.time() - window_seconds
+        candidates = [
+            e for e in self._events
+            if (
+                e.source_id != exclude_source_id
+                and e.drift_type == drift_type
+                and e.status == RecoveryStatus.DEPLOYED
+                and e.shim_code
+                and e.timestamp.timestamp() >= cutoff
+            )
+        ]
+        if not candidates:
+            return None
+        latest = max(candidates, key=lambda e: e.timestamp)
+        return (latest.source_id, latest.shim_code)
 
     # ── Computation ─────────────────────────────────────────────────
 

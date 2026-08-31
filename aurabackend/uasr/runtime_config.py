@@ -54,6 +54,13 @@ def _truthy(name: str, default: str = "false") -> bool:
     return _env(name, default).lower() in ("1", "true", "yes", "on")
 
 
+def _env_float(name: str, default: float) -> float:
+    raw = os.getenv(name)
+    if raw is None or raw.strip() == "":
+        return default
+    return float(raw)
+
+
 def numeric_heal_flags() -> tuple[bool, bool]:
     """Resolve (use_numeric_semantics, numeric_auto_heal) from the environment.
 
@@ -110,6 +117,28 @@ def approval_timeout_seconds() -> int:
     exactly "needs a human, more urgently" rather than a new state.
     """
     return _env_int("UASR_APPROVAL_TIMEOUT_SECONDS", 0)
+
+
+_CORRELATION_AUTO_HEAL_DEFAULT_WINDOW = 30.0
+
+
+def correlation_flags() -> tuple[float, int, bool]:
+    """Resolve (window_seconds, min_sources, auto_heal) for cross-source
+    drift correlation (candidate #5).
+
+    ``window_seconds=0`` (default) is fully off -- report-only detection
+    never runs, matching every other UASR opt-in. ``UASR_CORRELATION_AUTO_HEAL``
+    implies a window the same way ``UASR_NUMERIC_AUTO_HEAL`` implies the
+    semantics channel: enabling auto-heal with no window configured would
+    build a detector that never fires and a heal path nothing reaches, so
+    it promotes to a 30s default rather than silently doing nothing.
+    """
+    auto_heal = _truthy("UASR_CORRELATION_AUTO_HEAL")
+    window = _env_float("UASR_CORRELATION_WINDOW_SECONDS", 0.0)
+    if auto_heal and window <= 0:
+        window = _CORRELATION_AUTO_HEAL_DEFAULT_WINDOW
+    min_sources = _env_int("UASR_CORRELATION_MIN_SOURCES", 3) or 3
+    return window, min_sources, auto_heal
 
 
 # ────────────────────────────────────────────────────────────────────
@@ -219,6 +248,11 @@ def deployment_summary() -> dict:
     ) = s18_1_flags()
     summary["post_heal_validation_batches"] = post_heal_validation_batches()
     summary["approval_timeout_seconds"] = approval_timeout_seconds()
+    (
+        summary["correlation_window_seconds"],
+        summary["correlation_min_sources"],
+        summary["correlation_auto_heal"],
+    ) = correlation_flags()
     if state_backend == "redis" or repair_backend in ("distributed", "redis", "fleet"):
         summary["redis_url"] = _env("UASR_REDIS_URL", "redis://localhost:6379/0")
     if state_backend == "memory":
