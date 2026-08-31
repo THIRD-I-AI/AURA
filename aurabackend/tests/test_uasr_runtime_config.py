@@ -94,6 +94,20 @@ def test_distributed_repair_backend(monkeypatch):
     r = rc.build_repair_scheduler(redis_client=fakeredis.FakeStrictRedis())
     assert isinstance(r, DistributedRepairCoordinator)
     assert r._max == 8
+    assert r._max_per_source == 0  # off by default, same posture as local
+
+
+def test_distributed_repair_max_per_source_env(monkeypatch):
+    """The fleet-wide per-source cap shares UASR_REPAIR_MAX_PER_SOURCE with
+    the local backend -- one knob, same meaning, regardless of which
+    admission backend is active."""
+    fakeredis = pytest.importorskip("fakeredis")
+    from uasr.distributed_repair import DistributedRepairCoordinator
+    monkeypatch.setenv("UASR_REPAIR_BACKEND", "distributed")
+    monkeypatch.setenv("UASR_REPAIR_MAX_PER_SOURCE", "3")
+    r = rc.build_repair_scheduler(redis_client=fakeredis.FakeStrictRedis())
+    assert isinstance(r, DistributedRepairCoordinator)
+    assert r._max_per_source == 3
 
 
 def test_unknown_repair_backend_raises(monkeypatch):
@@ -123,6 +137,7 @@ def test_deployment_summary_distributed(monkeypatch):
     assert s["redis_url"].startswith("redis://")
     assert s["node_id"] == "node-7"
     assert s["repair_max_global_concurrent"] == 8
+    assert s["repair_max_per_source"] == 0
 
 
 # ── numeric value-healing flags ──────────────────────────────────────

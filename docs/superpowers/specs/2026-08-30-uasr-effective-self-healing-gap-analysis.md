@@ -11,11 +11,13 @@
 > - Candidate #2 (post-heal validation + auto-rollback) — implemented, PR #259.
 > - Candidate #3 (approval-queue timeout + escalation) — implemented, PR #260.
 > - The numeric-heal reachability gap referenced throughout — implemented, PR #256.
-> - Candidate #4 (repair fairness) — implemented for the **local** backend only
->   (`RepairScheduler.max_per_source`); the distributed/Redis-coordinated
->   scheduler doesn't have this yet — deferred as its own follow-up rather than
->   shipping unverified atomic-counter logic under time pressure. #1–#4 merged
->   into main this session.
+> - Candidate #4 (repair fairness) — implemented for **both** backends:
+>   `RepairScheduler.max_per_source` (local, this session) and
+>   `DistributedRepairCoordinator.max_per_source` (fleet-wide over Redis,
+>   2026-08-31) — one shared env var (`UASR_REPAIR_MAX_PER_SOURCE`), same
+>   skip-not-discard fairness semantics, tracked via a Redis hash
+>   decremented on release and on crash-lease reclamation alike. #1–#4
+>   merged into main.
 > - Candidate #5 (cross-source correlation) — implemented, report-only base
 >   plus an opt-in `UASR_CORRELATION_AUTO_HEAL` extension (borrows a
 >   correlated sibling's DEPLOYED shim on this source's own recovery
@@ -23,9 +25,10 @@
 >   `/uasr/ingest` + `/uasr/heal`; the Kafka MAPE-K worker path deferred
 >   (it doesn't persist `RecoveryRecord` at all today, a pre-existing gap).
 >   This closes every candidate in the original analysis.
-> - Deferred follow-ups, not silent gaps: the distributed/Redis half of
->   candidate #4's per-source fairness, and cross-source auto-heal fan-out
->   for the Kafka MAPE-K worker path.
+> - Deferred follow-up, not a silent gap: cross-source auto-heal fan-out
+>   for the Kafka MAPE-K worker path (it doesn't persist `RecoveryRecord`
+>   at all today, a pre-existing gap, not something this fairness/
+>   correlation work introduced).
 
 **Goal this feeds:** UASR should reduce, not just report, the manual
 data-engineering toil of watching pipelines for drift — real autonomous
