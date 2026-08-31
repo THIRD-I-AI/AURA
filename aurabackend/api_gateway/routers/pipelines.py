@@ -526,15 +526,88 @@ async def uasr_baseline(req: Dict[str, Any], request: Request):
     return await _uasr("POST", "/uasr/baseline", 30, request, json=req)
 
 
+@router.post("/uasr/heal")
+async def uasr_heal(req: Dict[str, Any], request: Request):
+    """Proxy to UASR's healed-rows endpoint.
+
+    Found unreachable through the public API during live staging
+    verification (2026-08-31, docs/superpowers/specs/2026-08-31-uasr-live-
+    validation-and-benchmark.md): only ingest/baseline/metrics/drift-status/
+    recovery-pending/approve/reject were proxied. /uasr/heal is the endpoint
+    that actually returns healed rows -- a pipeline that can only reach
+    /uasr/ingest gets a verdict and nothing more.
+    """
+    return await _uasr("POST", "/uasr/heal", 60, request, json=req)
+
+
 @router.get("/uasr/metrics")
 async def uasr_metrics(request: Request):
     return await _uasr("GET", "/uasr/metrics", 15, request)
+
+
+@router.get("/uasr/deployment")
+async def uasr_deployment(request: Request):
+    return await _uasr("GET", "/uasr/deployment", 15, request)
+
+
+@router.get("/uasr/correlation")
+async def uasr_correlation(request: Request, window_seconds: float = None, min_sources: int = None):
+    # UASR's /uasr/correlation endpoint ships in the cross-source-correlation
+    # PR (candidate #5); until that merges, UASR answers 404 for this path
+    # and the proxy honestly forwards that -- not a crash, just not live yet.
+    params: Dict[str, Any] = {}
+    if window_seconds is not None:
+        params["window_seconds"] = window_seconds
+    if min_sources is not None:
+        params["min_sources"] = min_sources
+    return await _uasr("GET", "/uasr/correlation", 15, request, params=params)
 
 
 @router.get("/uasr/drift/status")
 async def uasr_drift_status(request: Request, source_id: str = None):
     params = {"source_id": source_id} if source_id else {}
     return await _uasr("GET", "/uasr/drift/status", 15, request, params=params)
+
+
+@router.get("/uasr/drift/{drift_event_id}/recovery")
+async def uasr_recoveries_for_event(drift_event_id: str, request: Request):
+    return await _uasr("GET", f"/uasr/drift/{drift_event_id}/recovery", 15, request)
+
+
+@router.get("/uasr/metrics/history")
+async def uasr_metrics_history(request: Request, limit: int = 50):
+    return await _uasr("GET", "/uasr/metrics/history", 15, request, params={"limit": limit})
+
+
+@router.get("/uasr/metrics/alerts")
+async def uasr_metrics_alerts(request: Request, hu_floor: float = 0.3, resolution_floor: float = 0.5):
+    params = {"hu_floor": hu_floor, "resolution_floor": resolution_floor}
+    return await _uasr("GET", "/uasr/metrics/alerts", 15, request, params=params)
+
+
+@router.post("/uasr/gate/check")
+async def uasr_gate_check(req: Dict[str, Any], request: Request):
+    return await _uasr("POST", "/uasr/gate/check", 15, request, json=req)
+
+
+@router.post("/uasr/rollback")
+async def uasr_rollback(req: Dict[str, Any], request: Request):
+    return await _uasr("POST", "/uasr/rollback", 15, request, json=req)
+
+
+@router.get("/uasr/shims/{source_id}")
+async def uasr_list_shims(source_id: str, request: Request):
+    return await _uasr("GET", f"/uasr/shims/{source_id}", 15, request)
+
+
+@router.get("/uasr/references/{source_id}")
+async def uasr_list_references(source_id: str, request: Request):
+    return await _uasr("GET", f"/uasr/references/{source_id}", 15, request)
+
+
+@router.get("/uasr/sources")
+async def uasr_list_sources(request: Request):
+    return await _uasr("GET", "/uasr/sources", 15, request)
 
 
 # ── S41: supervised self-healing approval queue (proxied to UASR) ────
@@ -552,3 +625,16 @@ async def uasr_approve_recovery(recovery_id: str, req: Dict[str, Any], request: 
 @router.post("/uasr/recovery/{recovery_id}/reject")
 async def uasr_reject_recovery(recovery_id: str, req: Dict[str, Any], request: Request):
     return await _uasr("POST", f"/uasr/recovery/{recovery_id}/reject", 30, request, json=req)
+
+
+@router.get("/uasr/recovery/{recovery_id}")
+async def uasr_recovery_detail(recovery_id: str, request: Request):
+    """Declared after /uasr/recovery/pending and the /approve, /reject
+    sub-paths on purpose -- FastAPI matches route declaration order, and a
+    parameterized path declared first would swallow the literal ones
+    (backend.md). Without this route, a failed recovery's diagnosis/error
+    detail was undiagnosable through the public API -- confirmed live
+    2026-08-31 when a genuine schema-drift auto-heal failed and there was
+    no way to see why without box/log access.
+    """
+    return await _uasr("GET", f"/uasr/recovery/{recovery_id}", 15, request)
