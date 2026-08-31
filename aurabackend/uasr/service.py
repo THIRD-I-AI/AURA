@@ -21,7 +21,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any, AsyncGenerator, Dict, List, Optional
 
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -32,12 +32,10 @@ from shared.service_factory import create_service
 from .db import get_session, init_uasr_db
 from .drift_detector import DriftDetector
 from .mapek_worker import MAPEKConfig, MAPEKWorker
-from .metrics import HealingMetricTracker, RecoveryEvent
+from .metrics import HealingMetricTracker
 from .models import (
     BatchPayload,
     DriftEvent,
-    DriftSeverity,
-    DriftType,
     HealingMetric,
     RecoveryMode,
     RecoveryRecord,
@@ -50,6 +48,7 @@ from .runtime_config import (
     build_state_store,
     deployment_summary,
     numeric_heal_flags,
+    post_heal_validation_batches,
     s18_1_flags,
 )
 from .semantic_gateway import ReferenceContextMatrix, SemanticGateway
@@ -113,6 +112,7 @@ def _mapek_config() -> MAPEKConfig:
 
 
 _, _, _USE_CAUSAL_RL_EVALUATOR = s18_1_flags()
+_POST_HEAL_VALIDATION_BATCHES = post_heal_validation_batches()
 
 _loop = RecoveryLoop(
     detector=_detector,
@@ -122,6 +122,7 @@ _loop = RecoveryLoop(
         risk_tiered=_RISK_TIERED,
         mode=_RECOVERY_MODE,
         use_causal_rl_evaluator=_USE_CAUSAL_RL_EVALUATOR,
+        post_heal_validation_batches=_POST_HEAL_VALIDATION_BATCHES,
     ),
 )
 

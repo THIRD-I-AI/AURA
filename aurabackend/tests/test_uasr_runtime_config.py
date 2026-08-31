@@ -199,3 +199,29 @@ def test_causal_rl_evaluator_reaches_the_recovery_loop_config(monkeypatch):
         monkeypatch.delenv("UASR_USE_CAUSAL_RL_EVALUATOR", raising=False)
         importlib.reload(service)
         assert service._loop._config.use_causal_rl_evaluator is False
+
+
+# ── post-heal validation / auto-rollback ───────────────────────────────
+
+def test_post_heal_validation_off_by_default():
+    assert rc.post_heal_validation_batches() == 0
+    assert rc.deployment_summary()["post_heal_validation_batches"] == 0
+
+
+def test_post_heal_validation_resolves_from_env(monkeypatch):
+    monkeypatch.setenv("UASR_POST_HEAL_VALIDATION_BATCHES", "5")
+    assert rc.post_heal_validation_batches() == 5
+
+
+def test_post_heal_validation_reaches_the_recovery_loop_config(monkeypatch):
+    """Same module-level, env-resolved-at-import pattern as
+    UASR_USE_CAUSAL_RL_EVALUATOR above."""
+    monkeypatch.setenv("UASR_POST_HEAL_VALIDATION_BATCHES", "3")
+    service = importlib.import_module("uasr.service")
+    importlib.reload(service)
+    try:
+        assert service._loop._config.post_heal_validation_batches == 3
+    finally:
+        monkeypatch.delenv("UASR_POST_HEAL_VALIDATION_BATCHES", raising=False)
+        importlib.reload(service)
+        assert service._loop._config.post_heal_validation_batches == 0
