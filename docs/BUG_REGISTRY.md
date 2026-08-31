@@ -145,6 +145,29 @@ This is the process, not a suggestion:
   auth (negative test added). Re-verified live against
   https://dataaura.duckdns.org post-merge via `scripts/verify_live_deployment.py`.
 
+## BUG-007: test_categorical_drift_still_detected fails in CI but not locally
+- **Status:** open
+- **Found by:** CI (Backend Tests Python 3.11), PR #267, 2026-08-31 —
+  unrelated to that PR's diff (`scripts/uasr_benchmark_nyc_taxi.py`, docs,
+  `.gitignore`; nothing touching `uasr/drift_detector.py`).
+- **Severity:** cosmetic (test infra, not product) — tracked anyway per
+  the same reasoning as BUG-004: a flaky CI gate erodes trust in every
+  other green run.
+- **Root cause:** unconfirmed. `tests/test_uasr_drift_detector.py::
+  TestSemanticChannelColumnTyping::test_categorical_drift_still_detected`
+  failed `assert False is True` on `drift_detected` in CI's full-suite run.
+  Passed in isolation locally and passed in a full local
+  `pytest tests/test_uasr_drift_detector.py` run (42/42), and passed in
+  the same push's own pre-push full-suite gate (2145 passed, 0 failed) —
+  consistent with CI-environment-specific order/parallelism dependence
+  (CI likely runs under `-n auto`; local pre-push does not), not a
+  deterministic bug in the test or in `DriftDetector` itself.
+- **Caused by:** none identified — does not trace to any recent fix on
+  this branch or its ancestry.
+- **Fix:** none yet. Re-running the specific CI job to confirm transience
+  rather than deep-diving further right now, per the "don't spend time
+  re-chasing the same bug" discipline — revisit if it recurs.
+
 ## BUG-006: verify_live_deployment.py's webhooks check false-positived
 - **Status:** false-positive
 - **Found by:** live-verify 2026-08-31 (first run)
