@@ -212,7 +212,11 @@ def check_webhooks(v: Verifier) -> str:
     )
     r.raise_for_status()
     sub = r.json()
-    sub_id = sub.get("id") or sub.get("subscription", {}).get("id")
+    # Response is {"status": "success", "webhook": {"id": ..., ...}} --
+    # confirmed live 2026-08-31 (BUG-006 in docs/BUG_REGISTRY.md: an earlier
+    # version of this check assumed "id" at the top level and false-
+    # positived on a working webhook create).
+    sub_id = sub.get("webhook", {}).get("id")
     if not sub_id:
         raise AssertionError(f"webhook create returned no id: {sub}")
 

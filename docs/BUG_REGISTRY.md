@@ -109,3 +109,46 @@ This is the process, not a suggestion:
 - **Caused by:** none identified yet
 - **Fix:** none yet — not blocking product work, revisit if it recurs
   often enough to slow down the push workflow.
+
+## BUG-005: unauthenticated-by-design verification endpoints return 401 live
+- **Status:** open
+- **Found by:** live-verify 2026-08-31 (`scripts/verify_live_deployment.py`,
+  first run against https://dataaura.duckdns.org — `jwks` check failed)
+- **Severity:** blocks-feature — external cryptographic verification is a
+  core promised capability (TRAIGA federation, S19): a third-party auditor
+  is supposed to verify AURA's ED25519 signatures via `/jwks` and RFC 6962
+  Merkle proofs via `/audit/sth` + `/audit/inclusion/{proof}` *without* an
+  AURA login. On any deployment with auth correctly armed, none of them
+  are reachable, which defeats the entire point of the feature.
+- **Root cause:** `aurabackend/shared/middleware.py:116-119` —
+  `_PUBLIC_PATHS` (the global `JWTAuthMiddleware`'s allowlist) never
+  included `/api/v1/counterfactual/jwks`, `/api/v1/counterfactual/audit/sth`,
+  or `/api/v1/counterfactual/audit/inclusion/{proof}` — despite each route
+  handler being explicitly coded and commented as intentionally
+  unauthenticated (`counterfactual.py`'s `jwks()`: *"Service route is
+  unauthed (public key material), so this proxy takes no auth either"*).
+  The existing regression tests (`test_jwks_reachable_unauthenticated`,
+  `test_sth_reachable_unauthenticated`, `test_inclusion_proof_reachable_
+  unauthenticated` in `tests/test_gateway_facade_coverage.py`) all pass
+  today only because `AURA_JWT_ENABLED` defaults to `False` in the test
+  environment, so `JWTAuthMiddleware` is never installed in that test run
+  at all — they never exercise the "auth armed" configuration production
+  actually runs under. Same class of gap as BUG-001/BUG-002: a check that
+  passes in an environment shape production doesn't use.
+- **Caused by:** none
+- **Fix:** pending — next branch, `fix/uasr-public-verification-endpoints`.
+
+## BUG-006: verify_live_deployment.py's webhooks check false-positived
+- **Status:** false-positive
+- **Found by:** live-verify 2026-08-31 (first run)
+- **Severity:** cosmetic (test tooling, not product)
+- **Root cause:** `scripts/verify_live_deployment.py`'s `check_webhooks`
+  assumed the create-webhook response had `id` at the top level
+  (`sub.get("id")`); the real, correct response nests it as
+  `{"status": "success", "webhook": {"id": ..., ...}}`. The webhook was
+  created successfully (confirmed by inspecting the raw response body in
+  the failure detail) — the product worked, the check's own shape
+  assumption was wrong.
+- **Caused by:** none (script bug, not a regression from any prior fix)
+- **Fix:** corrected inline in `scripts/verify_live_deployment.py`
+  (same commit as this registry entry) — `sub.get("webhook", {}).get("id")`.
