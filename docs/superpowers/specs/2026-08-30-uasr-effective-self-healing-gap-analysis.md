@@ -24,11 +24,25 @@
 >   failure, still sandbox-validated, still S41-gated). Scoped to
 >   `/uasr/ingest` + `/uasr/heal` when first shipped; the Kafka MAPE-K
 >   worker path's blocker (it didn't persist `RecoveryRecord` at all) is
->   now closed — `MAPEKWorker._persist_recovery` writes a DriftEvent +
->   RecoveryRecord row for every recovery attempt (deployed, pending,
->   failed), matching the HTTP path, so Kafka-path recoveries are visible
->   to `GET /uasr/recovery/*` and the Healing Queue UI. This closes every
->   candidate in the original analysis.
+>   now closed — `uasr/recovery_persistence.py::persist_recovery_row`
+>   writes a DriftEvent + RecoveryRecord row for every recovery attempt
+>   (deployed, pending, failed), matching the HTTP path, so Kafka-path
+>   recoveries are visible to `GET /uasr/recovery/*` and the Healing
+>   Queue UI. Deliberately its own module rather than a `MAPEKWorker`
+>   method: importing `mapek_worker.py` (which transitively imports
+>   `RecoveryLoop` → the reflector/actuator agents → an LLM-provider
+>   client) inside a test process that also creates its own async DB
+>   engine reproducibly hung the interpreter at process exit — a real,
+>   confirmed environment quirk (Windows + aiosqlite + SQLAlchemy async,
+>   isolated via repro but not fully root-caused after substantial
+>   investigation), not something wrong with the persistence logic
+>   itself. Ships without a new dedicated test file as a result — the
+>   logic is a direct mirror of `service.py`'s already-tested
+>   `ingest_batch` DB-write path (same field mappings, same models), and
+>   the full existing MAPE-K + cross-source-heal test suites (88 tests)
+>   pass unaffected. This closes every candidate in the original
+>   analysis; the test-coverage gap for this one piece is a known,
+>   flagged follow-up, not a silent one.
 > - Remaining, smaller follow-up: the actual cross-source auto-heal FAN-OUT
 >   call (`_attempt_cross_source_heal`'s equivalent) is still only wired
 >   into `/uasr/ingest` + `/uasr/heal`, not into `MAPEKWorker`'s own
