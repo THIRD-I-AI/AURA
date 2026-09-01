@@ -74,7 +74,7 @@ this instance yet):**
   
   The two "failures" exposed a genuine, separate bug rather than being
   pure test artifacts: `RecoveryLoop._validate_shim`
-  (`aurabackend/uasr/recovery_loop.py:358`) conflates "did this shim fix
+  (`aurabackend/uasr/recovery_loop.py:422`, pre-fix) conflates "did this shim fix
   the drift it was generated for" with "is the batch drift-free in every
   dimension." `drift_detector.detect()` checks schema drift first and
   returns early (`drift_detector.py:214-226`); once schema is clean it
@@ -82,7 +82,7 @@ this instance yet):**
   (`drift_detector.py:228-241`). If a real-world schema migration batch
   *also* carries incidental statistical variation — a completely normal
   co-occurrence — `post_drift.drift_type` comes back `STATISTICAL`, and
-  line 358's check (`drift.drift_type == SCHEMA and not
+  the check (`drift.drift_type == SCHEMA and not
   post_drift.drift_detected`) can never pass, because it requires **zero**
   drift of any kind rather than checking specifically that the schema
   problem is resolved. That line is **provably dead code today** — it's
