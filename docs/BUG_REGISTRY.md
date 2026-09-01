@@ -120,6 +120,38 @@ This is the process, not a suggestion:
   Re-verified: passed in isolation (25s) and the fix does not touch
   product code, only the test's own polling cadence.
 
+## BUG-009: test_counterfactual_sprint9.py has the identical rate-limit flake
+- **Status:** fixed
+- **Found by:** pre-push gate, feature/uasr-mapek-recovery-persistence,
+  2026-09-01 — the real cause of a push that appeared to fail outright
+  (not hang): `test_replay_endpoint_returns_artifact` failed with
+  `KeyError: 'state'` after a 3h34m pre-push run (vs. the normal ~11min),
+  itself inflated by unrelated zombie pytest processes from the BUG-008
+  investigation contending for the same shared test DB during most of
+  that run.
+- **Severity:** cosmetic (test infra, not product) — same reasoning as
+  BUG-004.
+- **Root cause:** `test_replay_endpoint_returns_artifact`
+  (`aurabackend/tests/test_counterfactual_sprint9.py:329-345`) has the
+  exact same copy-pasted 300s/flat-0.5s poll loop BUG-004 fixed in
+  `test_counterfactual_sprint13.py` — a sibling file that fix never
+  touched. Confirmed by re-running the test in isolation post-fix-attempt:
+  it failed there too (with a *different* `KeyError` each time —
+  `'public_key_pem'` in the contaminated run, `'state'` in a clean
+  isolated re-run), consistent with the same self-inflicted-rate-limit
+  mechanism as BUG-004, not the concurrent-process contamination alone.
+- **Caused by:** none — pre-existing, copy-pasted from the same origin
+  as BUG-004's bug, just never caught in that fix's scope.
+- **Fix:** identical backoff (0.5s ramping to 2s, same commit as this
+  entry), plus an explicit `assert resp.status_code == 200` before
+  indexing the JSON body, so a future rate-limit hit fails with a readable
+  message instead of a bare `KeyError`. Re-verified: passed in isolation
+  (65.8s).
+- **Note:** `aurabackend/tests/test_synthetic_api.py:113-121` has a
+  related but lower-risk pattern (same flat-0.5s poll, but already
+  guarded by `assert jr.status_code == 200` and a shorter 120s budget) —
+  not fixed here, flagged for the next person who touches that file.
+
 ## BUG-005: unauthenticated-by-design verification endpoints return 401 live
 - **Status:** fixed
 - **Found by:** live-verify 2026-08-31 (`scripts/verify_live_deployment.py`,
