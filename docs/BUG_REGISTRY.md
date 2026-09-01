@@ -411,3 +411,53 @@ This is the process, not a suggestion:
 - **Caused by:** none (script bug, not a regression from any prior fix)
 - **Fix:** corrected inline in `scripts/verify_live_deployment.py`
   (same commit as this registry entry) — `sub.get("webhook", {}).get("id")`.
+
+## BUG-010: four undocumented silent-stub call sites (zero-stub-compliance audit)
+- **Status:** open — requires a product decision (raise vs. implement vs.
+  document), not a mechanical fix. Filed so it doesn't evaporate as an
+  unlogged agent report, per this registry's own process.
+- **Found by:** dedicated zero-stub-compliance audit of `aurabackend/`
+  (excluding tests/migrations), 2026-09-01, cross-checked against
+  `STATUS.md`/`README.md`/`docs/DEPLOYMENT.md`.
+- **Severity:** mixed, see each item below.
+- **Findings:**
+  1. **`aurabackend/pipeline/engine.py:421-649`** (`_step_to_sql`) — no
+     branch for `StepType.UNION` (a real enum member,
+     `aurabackend/pipeline/models.py:58`). A pipeline step of type
+     `"union"` silently falls through to `return None`, which the caller
+     (`engine.py:402-405`) treats as "skip," incrementing
+     `steps_skipped` but never erroring or messaging the user. The LLM
+     pipeline *generator* is told not to emit union steps
+     (`pipeline/generator.py:85`), but nothing stops a hand-built or
+     API-submitted pipeline from silently no-oping one — a real
+     silent-wrong-result path, undocumented anywhere top-level.
+     **Severity: degrades-accuracy, reachable via the pipeline API today.**
+  2. **`aurabackend/scheduler_service/executor.py:383-385`**
+     (`_calculate_next_execution`) — `ScheduleType.CRON` (a documented,
+     API-exposed option) isn't parsed; any cron-scheduled job silently
+     runs hourly instead. Disclosed in the scheduler service's own
+     `README.md`/`IMPLEMENTATION.md` (labeled "Placeholder"/"Future
+     Enhancement" needing `croniter`), but not in top-level docs.
+     **Mitigated: `STATUS.md` already states the scheduler service has no
+     gateway route in the current deployment, so currently unreachable
+     by an end user — real gap, currently inert.**
+  3. **`aurabackend/scheduler_service/distributed_queue.py`** — its own
+     module docstring says these primitives (leader election,
+     LISTEN/NOTIFY) are "NOT YET wired into `worker.py`." Honestly
+     labeled in-repo, infra-only, no user-visible impact in a
+     single-worker deployment. **Severity: cosmetic for now.**
+  4. **`aurabackend/ingestion_service/main.py:45-52,138-148`**
+     (`map_erc_to_internal_id`) — explicitly commented
+     `# --- ERC Mapping Logic (Mock/Stub for Phase 1) ---`; the wired
+     endpoint `GET /api/v1/ingest/erc-map/{erc}` fabricates an ID
+     (`f"AURA-NORM-{system_origin}-{erc}"`) with no real lookup.
+     **Mitigated: `STATUS.md` states `ingestion_service` never starts in
+     the current deployment — currently unreachable.**
+- **Caused by:** none — pre-existing across a long project history, not a
+  regression from any recent change.
+- **Fix:** none yet. Item 1 (the UNION pipeline step) is the only one
+  reachable in the current deployment and is the one worth prioritizing
+  if this is picked up — either implement UNION support or make the
+  fall-through raise a clear error instead of silently dropping the step.
+  Items 2-4 are honestly disclosed already or currently unreachable;
+  revisit if the scheduler/ingestion services become reachable.
