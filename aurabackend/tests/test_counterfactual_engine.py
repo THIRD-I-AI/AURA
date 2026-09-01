@@ -303,15 +303,28 @@ def _poll_until_done(client, url: str, budget_s: float = 300.0, sleep_s: float =
     so ordinary suite load pushed the job past the deadline and the caller
     reported a still-running job as a failed one. Exhausting the budget now
     raises here instead of returning a non-terminal state, so a genuinely
-    stuck job is distinguishable from a merely slow one."""
+    stuck job is distinguishable from a merely slow one.
+
+    Polling backs off from ``sleep_s`` to 2s (same fix as BUG-004/BUG-009,
+    docs/BUG_REGISTRY.md): a flat 0.5s interval issues up to 2 req/s — 120
+    over any 60s window — against the SAME global rate limiter (100 req/60s
+    per IP, shared/config.py) this TestClient's requests share, which alone
+    exceeds the budget once the job legitimately runs past ~50s, independent
+    of any other test's traffic. The backoff caps steady-state at 30 req/60s
+    while keeping the fast cadence for the common case where the job
+    finishes quickly."""
     import time
     deadline = time.monotonic() + budget_s
+    poll_interval = sleep_s
     s = None
     while time.monotonic() < deadline:
-        s = client.get(url).json()
+        resp = client.get(url)
+        assert resp.status_code == 200, resp.text
+        s = resp.json()
         if s.get("state") in {"succeeded", "failed"}:
             return s
-        time.sleep(sleep_s)
+        time.sleep(poll_interval)
+        poll_interval = min(poll_interval * 1.5, 2.0)
     raise AssertionError(
         f"job never reached a terminal state within {budget_s}s: last={s}"
     )

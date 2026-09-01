@@ -152,6 +152,35 @@ This is the process, not a suggestion:
   guarded by `assert jr.status_code == 200` and a shorter 120s budget) —
   not fixed here, flagged for the next person who touches that file.
 
+## BUG-011: test_counterfactual_engine.py's _poll_until_done has the identical rate-limit flake
+- **Status:** fixed
+- **Found by:** repo-wide sweep for the BUG-004/BUG-009 poll-loop pattern,
+  2026-09-01.
+- **Severity:** cosmetic (test infra, not product) — same reasoning as
+  BUG-004/BUG-009.
+- **Root cause:** `_poll_until_done`
+  (`aurabackend/tests/test_counterfactual_engine.py:293-317`), used by
+  `test_service_endpoint_roundtrip` and `test_gateway_proxies_
+  counterfactual`, is a third, independently-named copy of the same
+  flat-0.5s/300s-budget poll loop BUG-004 and BUG-009 fixed in the
+  sprint13 and sprint9 files — this file's helper was never in either
+  fix's scope. A flat 0.5s interval is 2 req/s, i.e. up to 120 req/60s
+  sustained — already above the shared rate limiter's 100 req/60s budget
+  (`shared/config.py:423-424`) on its own once the DoWhy job's
+  ~47s-unloaded fan-out runs long under suite load, independent of any
+  other test's traffic. The helper also called `client.get(url).json()`
+  directly with no `status_code` check.
+- **Caused by:** none — pre-existing, copy-pasted from the same origin as
+  BUG-004/BUG-009's bug, just in a file neither fix's scope touched.
+- **Fix:** same backoff as BUG-009 (0.5s ramping to 2s), plus an explicit
+  `assert resp.status_code == 200` before indexing the JSON body.
+  Re-verified: `test_counterfactual_engine.py` full file, 10/10 passed
+  (325.5s).
+- **Note:** swept the rest of `aurabackend/tests/` for the same pattern
+  and found no further unfixed instances — `test_synthetic_api.py`'s copy
+  (already flagged as lower-risk by BUG-009's note) is the only other
+  one, left as-is per that note.
+
 ## BUG-005: unauthenticated-by-design verification endpoints return 401 live
 - **Status:** fixed
 - **Found by:** live-verify 2026-08-31 (`scripts/verify_live_deployment.py`,
@@ -194,7 +223,12 @@ This is the process, not a suggestion:
   the sibling `audit/financial` route still correctly → 401.
 
 ## BUG-008: importing uasr.mapek_worker alongside an async DB engine hangs pytest at exit
-- **Status:** open (worked around, not root-caused)
+- **Status:** root-caused (2026-09-01). The `uasr.mapek_worker` /
+  LLM-provider-chain import is **not** the trigger — it was a correlation
+  in the original narrowing, not the cause. See the 2026-09-01 update
+  below. The `recovery_persistence.py` workaround from the original
+  investigation is unaffected by this update (still a reasonable module
+  boundary) but is no longer necessary to avoid this hang specifically.
 - **Found by:** writing tests for the Kafka MAPE-K RecoveryRecord
   persistence feature, 2026-08-31, while investigating why the pre-push
   hook for `feature/uasr-mapek-recovery-persistence` never exited despite
@@ -203,46 +237,130 @@ This is the process, not a suggestion:
   hangs the pre-push hook and any bare-script repro indefinitely, with no
   error message, only diagnosable via `ps aux` showing a live process
   past its expected exit.
-- **Root cause, confirmed but not fully explained:** a Python process
-  that (a) imports `uasr.mapek_worker` (even without constructing
-  `MAPEKWorker` — the import alone is sufficient; that module
-  transitively imports `RecoveryLoop` → the reflector/actuator agents →
-  an LLM-provider client) and (b) also creates/uses an async SQLAlchemy
-  engine (via `metadata_store.db`'s `get_engine`/`get_session_factory`,
-  even a fresh isolated one) hangs at interpreter shutdown instead of
-  exiting — aiosqlite's non-daemon connection-worker threads never join,
-  blocking `threading._shutdown` forever (same class of hang
-  `tests/conftest.py`'s own session-end engine-dispose cleanup already
-  documents and guards against for other cases). Confirmed via a dozen+
-  isolated repros narrowing the trigger to exactly this combination:
-  neither half alone hangs (bare `MAPEKWorker` construction with no DB
-  work exits fine; DB engine + session work with no `mapek_worker` import
-  exits fine), but the two together do, reliably, both in bare
-  `asyncio.run()` scripts and under pytest. The exact mechanism inside
-  the LLM-provider-client / agent-construction chain that leaves a
-  thread or resource alive was not isolated further — substantial time
-  was spent narrowing the trigger condition; further root-causing the
-  *why* was deprioritized in favor of a real fix.
-- **Caused by:** none — pre-existing interaction, not a regression from
-  any recent change; only surfaced now because this was the first test
-  to combine these two things in one process.
-- **Fix:** not fixed at the root. Worked around by extracting the
-  Kafka-path DB-persistence logic into its own module,
-  `uasr/recovery_persistence.py` (`persist_recovery_row`), which imports
-  only `uasr.db`/`uasr.models` — no agent/LLM-provider chain — so it can
-  be imported and tested without ever importing `uasr.mapek_worker`.
-  `mapek_worker.py` imports the function from there. A dedicated test
-  file for this function was attempted but still hung even after the
-  extraction in early iterations (before the extraction was fully
-  isolated from all `mapek_worker` re-imports); given the size of the
-  investigation already sunk, the test file was dropped rather than
-  chased further — the function's logic is a direct mirror of
-  `service.py`'s already-tested `ingest_batch` DB-write path (same field
-  mappings, same models), and the full existing MAPE-K test suite (46
-  tests) plus `test_uasr_service_cross_source_heal.py` (4 tests) pass
-  unaffected, confirming no regression. Revisit if someone has budget to
-  root-cause the LLM-provider-client/asyncio interaction properly, or if
-  a dedicated test for `persist_recovery_row` is later needed and hits
+- **Original root cause (2026-08-31), confirmed but not fully explained:**
+  a Python process that (a) imports `uasr.mapek_worker` (even without
+  constructing `MAPEKWorker`) and (b) also creates/uses an async
+  SQLAlchemy engine hangs at interpreter shutdown instead of exiting —
+  aiosqlite's non-daemon connection-worker threads never join, blocking
+  `threading._shutdown` forever. Narrowed to "neither half alone hangs,
+  but the two together do" via a dozen+ repros, but the exact mechanism
+  was not isolated further.
+- **2026-09-01 update — actual mechanism, fully isolated:** the
+  `uasr.mapek_worker` import is a red herring. Re-tested against the
+  puzzle of why `tests/test_uasr_service_cross_source_heal.py` — which
+  imports `uasr.service` (itself importing `uasr.mapek_worker` at line 35
+  and constructing a full `RecoveryLoop` at module scope, ~line 125, the
+  same "heavy chain" the original investigation flagged as the trigger)
+  plus an isolated DB engine — does *not* hang, while the bare-script
+  repro with the same ingredients does. Fresh isolated repros (`aiosqlite`
+  Windows/Python 3.13, run from `aurabackend/`) established, in order:
+  1. A bare script identical to the original BUG-008 repro (imports
+     `uasr.mapek_worker`, calls `init_uasr_db()`, opens one session) hangs
+     — reconfirmed exit code 124 under a hard timeout after printing
+     `"script fully done"`.
+  2. The same script but *without* importing `uasr.mapek_worker` at all —
+     just `metadata_store.db` + `uasr.db.init_uasr_db()` + one session —
+     **also hangs**, identically. This directly falsifies "DB engine +
+     session work with no `mapek_worker` import exits fine" from the
+     original entry: it does not, once `init_uasr_db()` (or any real
+     query) actually opens a connection.
+  3. A script that creates the engine/session-factory and opens a session
+     but issues *no real query* (`async with sf() as db: pass` with no
+     preceding `init_uasr_db()`) exits cleanly every time, with or without
+     `mapek_worker` imported. SQLAlchemy's async session connects lazily;
+     with no query, no `aiosqlite.Connection` — and therefore no
+     `threading.Thread(target=_connection_worker_thread)` (aiosqlite
+     `core.py` line 90, **not** created with `daemon=True`) — is ever
+     spawned. This is the real precondition the original investigation
+     was circling: not "import X", but "did a real query open an
+     aiosqlite connection."
+  4. Once a connection thread exists, whether the process hangs at exit
+     depends entirely on whether that thread receives aiosqlite's
+     `_STOP_RUNNING_SENTINEL` before `threading._shutdown()` starts
+     joining non-daemon threads. Nothing in this codebase calls
+     `await engine.dispose()` before dropping engine references (neither
+     the BUG-008 repro nor, in production, `metadata_store.db` itself —
+     the module-level `_engine` simply lives for the process's lifetime).
+     The only way the sentinel gets sent without an explicit `dispose()`
+     is via `aiosqlite.Connection.__del__` (core.py line 98), which fires
+     when the connection object's refcount drops to zero — and
+     `AsyncEngine` → connection-pool → pooled-DBAPI-connection forms a
+     reference **cycle**, so plain refcounting never frees it; it needs a
+     real pass of CPython's generational cyclic garbage collector.
+  5. Direct proof: taking script #1 (hangs) and adding **only** an
+     explicit `gc.collect()` after nulling the module's `_engine` /
+     `_session_factory` globals (no other change) makes it exit cleanly
+     every time — confirmed via `threading.enumerate()` printed
+     immediately beforehand, showing the worker thread still nominally
+     alive at that instant yet the process still exits 0 milliseconds
+     later once the sentinel is in-flight. Nulling the globals *without*
+     an explicit `gc.collect()` (i.e. exactly what
+     `test_uasr_service_cross_source_heal.py`'s `_isolated_metadata_db`
+     fixture teardown does) is **not**, by itself, sufficient — a bare
+     script doing only that still hangs.
+  6. So why does the real pytest file pass reliably (3/3 fresh runs, and
+     5/5 in this session's re-verification, each ~3-5s)? Because pytest's
+     own ordinary object churn — test collection, fixture setup/teardown,
+     `unittest.mock` patch objects, 4 test functions' worth of allocation
+     — crosses CPython's default gen0/gen1 GC thresholds (confirmed via
+     `gc.set_debug(gc.DEBUG_STATS)`: multiple automatic gen0 collections
+     and at least one automatic gen1 collection fire during the run) many
+     times over before the process exits, incidentally reclaiming the
+     engine/pool cycle in time. This was verified directly: a bare script
+     with the exact fixture-style null-and-no-explicit-gc pattern hangs
+     when it does nothing else afterward, but exits cleanly once ~20,000
+     iterations of plain cyclic-object allocation (unrelated to
+     SQLAlchemy or aiosqlite — plain `_Node` objects with `self`
+     references) are added after the DB work, with or without
+     `uasr.mapek_worker` imported. This is not deterministic on principle
+     — it depends on allocation-count timing relative to GC thresholds —
+     but is deterministic *in practice* for this specific test file
+     because the same fixed sequence of pytest internals runs every time.
+  7. The deterministic, non-luck-dependent fix is `await engine.dispose()`
+     before the last reference to the engine is dropped: confirmed via a
+     repro identical to #1 except for one added line
+     (`await get_engine().dispose()` before `asyncio.run()` returns) —
+     `threading.enumerate()` immediately before exit shows **zero**
+     non-MainThread threads (not just "about to die"), and the process
+     exits cleanly every time. Independently re-verified in a fresh
+     session: the exact original hanging repro (import `mapek_worker`,
+     construct `MAPEKWorker`, open a session) plus one added
+     `await get_engine().dispose()` line exits with code 0 every time.
+  - **Conclusion:** `uasr.mapek_worker` / the LLM-provider chain never
+    mattered. The real cause is generic to this codebase's pattern of
+    never calling `engine.dispose()` on `metadata_store.db`'s (or any
+    similar) async SQLAlchemy engine combined with aiosqlite's
+    non-daemon-by-default connection worker thread (`core.py:90`) —
+    identical in kind to the `loky`/`joblib` non-daemon-thread hang
+    `tests/conftest.py`'s `pytest_sessionfinish` already guards against,
+    and to `backend.md`'s documented `api_gateway/persistence.py` /
+    `TestClient` lifespan hang. It only reliably surfaces as a hang in a
+    short bare script (too little allocation churn to trigger a GC pass
+    before shutdown) and only reliably *doesn't* hang inside pytest
+    (enough incidental churn most of the time) — which is exactly the
+    contradictory behavior this investigation was asked to explain.
+    Production servers never hit this at all, since they never drop the
+    engine reference while the process is still running.
+- **Caused by:** none — pre-existing interaction (aiosqlite's non-daemon
+  thread design + this repo never calling `engine.dispose()`), not a
+  regression from any recent change.
+- **Fix:** not changed as part of this update — `recovery_persistence.py`
+  remains in place from the original investigation (a reasonable module
+  boundary regardless) but per the finding above it was not actually
+  necessary to dodge this specific hang; the true fix, if this is ever
+  worth hardening beyond "add allocation churn accidentally," is an
+  explicit `await get_engine().dispose()` at the end of any
+  short-lived/throwaway script or fixture that creates a fresh
+  `metadata_store.db` engine (mirroring what `tests/conftest.py`'s
+  `pytest_sessionfinish` already does for the *long-lived* module-level
+  engines it can still find a reference to) — not "avoid importing
+  `uasr.mapek_worker`," which was never the actual condition. A dedicated
+  test for `persist_recovery_row` was dropped in the original
+  investigation "given the size of the investigation already sunk" —
+  revisit now that the wall it hit is understood: any hang there would
+  have been the same GC-timing race, not an `uasr.mapek_worker`-specific
+  problem, so it's safe to re-attempt with an explicit `dispose()` in its
+  fixture teardown instead of avoiding the import.
   the same wall.
 
 ## BUG-007: test_categorical_drift_still_detected fails in CI but not locally
