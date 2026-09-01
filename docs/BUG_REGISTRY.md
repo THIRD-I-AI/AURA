@@ -51,7 +51,8 @@ This is the process, not a suggestion:
 - **Status:** fixed
 - **Found by:** live-verify 2026-08-31 (manual, staging: https://dataaura.duckdns.org)
 - **Severity:** blocks-feature (UASR schema-drift auto-heal)
-- **Root cause:** `aurabackend/uasr/recovery_loop.py:358` — the schema-drift
+- **Root cause:** `aurabackend/uasr/recovery_loop.py:422` (pre-fix; the
+  now-fixed check lives at line 437) — the schema-drift
   success check required `not post_drift.drift_detected` (zero drift of
   ANY kind), which was provably dead code: reaching that line already
   required `post_drift.drift_detected` to be True, so it could never

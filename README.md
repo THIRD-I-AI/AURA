@@ -259,8 +259,11 @@ diagnoses a cause, synthesizes a candidate repair shim, and validates it before 
 Proposals can be routed to a **Healing Queue** for signed human approval
 (`/api/v1/uasr/recovery/pending|approve|reject`), and `Hᵤ` healing metrics are exposed.
 
-**Not yet demonstrated end-to-end.** Unattended repair of arbitrary drift. Two concrete reasons, both
-in the code:
+**Demonstrated end-to-end**, live: a staged-deployment schema-rename drift was detected, diagnosed,
+repaired, and auto-deployed with zero residual KL divergence, and a synthetic numeric unit-scale bug
+against real NYC taxi data auto-deployed the same way (see [Proven on real data](#proven-on-real-data)
+below). **Still not demonstrated for arbitrary drift**, though — two concrete gaps remain, both in the
+code:
 
 - The actuator only emits a real transform when `max_kl > zeta * 5`
   (`aurabackend/uasr/actuator_agent.py:300`). On observed drift of `max_kl ≈ 3.43` against an adaptive
@@ -272,8 +275,10 @@ in the code:
   it means the repair library is narrower than the detector.
 
 **Also true:** risk-tiered auto-deploy is **opt-in and off by default** (`UASR_RISK_TIERED=false`,
-`aurabackend/uasr/service.py:89`), and deployed shims are tracked in-memory, so a service restart stops
-healing silently.
+`aurabackend/uasr/service.py:98`). Deployed shims are applied from a process-local, in-memory registry,
+but it is rehydrated from the DB's `DEPLOYED` `RecoveryRecord` rows on every startup
+(`service.py:220-258`, `hydrate_deployed_shims`), so a restart or a second replica does not silently
+stop healing previously-healed sources.
 
 One sentence for a slide: *AURA reliably tells you the pipeline drifted, proposes a repair, and will
 not deploy one it cannot validate.*
