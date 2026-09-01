@@ -48,6 +48,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
+from .cross_source_heal import attempt_cross_source_heal
 from .drift_detector import DriftDetector
 from .metrics import HealingMetricTracker
 from .models import (
@@ -145,10 +146,36 @@ class MAPEKConfig:
     numeric_heal_k_confirm: int = 3
     numeric_heal_revert_patience: int = 3
 
+    # ── Candidate #5 opt-in: cross-source auto-heal fan-out ───────
+    # Mirrors service.py's module-level _CORRELATION_WINDOW_SECONDS /
+    # _CORRELATION_AUTO_HEAL (both resolved from the same
+    # runtime_config.correlation_flags()) so the Kafka path honors the
+    # identical UASR_CORRELATION_* env vars as the HTTP path. Plain
+    # False/0.0 defaults here, not a default_factory reading the
+    # environment directly -- same reasoning as numeric_auto_heal above:
+    # an inline ``MAPEKConfig()`` must resolve to genuinely off, and only
+    # ``service._mapek_config()`` (the one seam every deployment actually
+    # goes through) wires the env value in.
+    correlation_window_seconds: float = 0.0
+    correlation_auto_heal: bool = False
+
 
 # ── Progress callback signature ───────────────────────────────────────
 # (phase, message, payload) → awaitable
 ProgressCb = Callable[[str, str, Dict[str, Any]], Awaitable[None]]
+
+
+def _make_canary_transform(shim_code: str) -> Callable[[str, List[Dict[str, Any]]], List[Dict[str, Any]]]:
+    """Wrap a shim's sandboxed code as a ShimRouter transform callable.
+
+    Module-level (not a method) because it closes over nothing from
+    ``MAPEKWorker`` -- shared by the normal canary-deploy path and the
+    cross-source-heal canary path so they wrap a borrowed shim identically
+    to a freshly-generated one.
+    """
+    def transform(source_id: str, rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        return RecoveryLoop._sandbox_execute(shim_code, rows)
+    return transform
 
 
 # ── Worker ────────────────────────────────────────────────────────────
@@ -354,17 +381,10 @@ class MAPEKWorker:
                         recovery = await self._plan_recovery(drift, batch)
                         if recovery.status == RecoveryStatus.DEPLOYED and recovery.shim:
                             version = f"v_{recovery.recovery_id}"
-                            code = recovery.shim.shim_code
-
-                            def _make_transform(c: str):
-                                def transform(sid: str, rows):
-                                    return RecoveryLoop._sandbox_execute(c, rows)
-                                return transform
-
                             await self._shim_router.add_canary(
                                 batch.source_id,
                                 version,
-                                _make_transform(code),
+                                _make_canary_transform(recovery.shim.shim_code),
                                 initial_weight=self._cfg.shim_router_canary_initial_weight,
                             )
                             await self._execute_persist(batch)
@@ -379,12 +399,37 @@ class MAPEKWorker:
                             )
                         else:
                             await self._knowledge_update(batch, drift, recovery)
-                            await persist_recovery_row(batch, drift, recovery)
-                            await self._emit(
-                                "recovery_failed",
-                                f"recovery {recovery.recovery_id} status={recovery.status.value}; canary NOT deployed",
-                                {"recovery_id": recovery.recovery_id, "drift_event_id": drift.batch_id},
-                            )
+                            healed = await self._persist_and_maybe_cross_heal(batch, drift, recovery)
+                            if healed is not None and healed.status == RecoveryStatus.DEPLOYED and healed.shim:
+                                version = f"v_{healed.recovery_id}"
+                                await self._shim_router.add_canary(
+                                    batch.source_id,
+                                    version,
+                                    _make_canary_transform(healed.shim.shim_code),
+                                    initial_weight=self._cfg.shim_router_canary_initial_weight,
+                                )
+                                await self._execute_persist(batch)
+                                await self._emit(
+                                    "cross_source_healed",
+                                    f"borrowed shim {version} deployed as canary after recovery "
+                                    f"{recovery.recovery_id} failed "
+                                    f"(weight={self._cfg.shim_router_canary_initial_weight})",
+                                    {"recovery_id": healed.recovery_id, "original_recovery_id": recovery.recovery_id},
+                                )
+                            else:
+                                detail = (
+                                    " (cross-source borrow held for approval)"
+                                    if healed is not None and healed.status == RecoveryStatus.PENDING_APPROVAL
+                                    else " (cross-source heal did not resolve it)"
+                                    if self._cfg.correlation_auto_heal
+                                    else ""
+                                )
+                                await self._emit(
+                                    "recovery_failed",
+                                    f"recovery {recovery.recovery_id} status={recovery.status.value}; "
+                                    f"canary NOT deployed{detail}",
+                                    {"recovery_id": recovery.recovery_id, "drift_event_id": drift.batch_id},
+                                )
                     else:
                         # ── Original pause/resume path ────────────────
                         self.pause(reason=f"drift {drift.drift_type}/{drift.severity}")
@@ -402,14 +447,38 @@ class MAPEKWorker:
                             self.resume()
                         else:
                             await self._knowledge_update(batch, drift, recovery)
-                            await persist_recovery_row(batch, drift, recovery)
-                            await self._emit(
-                                "recovery_failed",
-                                f"recovery {recovery.recovery_id} status={recovery.status.value}; consumer remains paused",
-                                {"recovery_id": recovery.recovery_id, "drift_event_id": drift.batch_id},
-                            )
-                            await self._stop_signal.wait()
-                            break
+                            healed = await self._persist_and_maybe_cross_heal(batch, drift, recovery)
+                            if healed is not None and healed.status == RecoveryStatus.DEPLOYED and healed.shim:
+                                applied = self._loop.apply_shims(batch.source_id, batch.rows)
+                                batch.rows = applied
+                                batch.columns = list(applied[0].keys()) if applied else batch.columns
+                                await self._execute_persist(batch)
+                                dists = self._detector._compute_distributions(batch)
+                                if dists:
+                                    self._detector.register_baseline(batch.source_id, dists)
+                                await self._emit(
+                                    "cross_source_healed",
+                                    f"borrowed shim resolved recovery {recovery.recovery_id} after it "
+                                    f"failed; resuming",
+                                    {"recovery_id": healed.recovery_id, "original_recovery_id": recovery.recovery_id},
+                                )
+                                self.resume()
+                            else:
+                                detail = (
+                                    " (cross-source borrow held for approval)"
+                                    if healed is not None and healed.status == RecoveryStatus.PENDING_APPROVAL
+                                    else " (cross-source heal did not resolve it)"
+                                    if self._cfg.correlation_auto_heal
+                                    else ""
+                                )
+                                await self._emit(
+                                    "recovery_failed",
+                                    f"recovery {recovery.recovery_id} status={recovery.status.value}; "
+                                    f"consumer remains paused{detail}",
+                                    {"recovery_id": recovery.recovery_id, "drift_event_id": drift.batch_id},
+                                )
+                                await self._stop_signal.wait()
+                                break
                 else:
                     # ── Execute (happy path) ───────────────────────────
                     await self._execute_persist(batch)
@@ -793,6 +862,50 @@ class MAPEKWorker:
                     row[col_name] = float(row[col_name]) * factor
                 except (TypeError, ValueError):
                     continue
+
+    async def _persist_and_maybe_cross_heal(
+        self,
+        batch: BatchPayload,
+        drift: DriftDetectionResult,
+        recovery: RecoveryLoopResult,
+    ) -> Optional[RecoveryLoopResult]:
+        """Persist ``recovery`` (a FAILED attempt), then -- when
+        cross-source auto-heal (candidate #5) is on -- try a correlated
+        sibling's already-DEPLOYED shim against this batch before giving up.
+
+        Requesting ``return_row=True`` from ``persist_recovery_row`` only
+        when the feature is on keeps the default (off) path byte-for-byte
+        identical to before this feature existed: one write, session closed
+        out the same way. Returns the new, already-persisted
+        ``RecoveryLoopResult`` on a successful borrow (DEPLOYED or
+        PENDING_APPROVAL), or None when the feature is off, persistence
+        itself failed, no correlated candidate existed, or the borrowed
+        shim didn't validate against this batch -- callers must treat None
+        as "stays FAILED, nothing changed."
+        """
+        persisted = await persist_recovery_row(
+            batch, drift, recovery, return_row=self._cfg.correlation_auto_heal,
+        )
+        if persisted is None or not self._cfg.correlation_auto_heal:
+            return None
+        db, recovery_rec = persisted
+        try:
+            return await attempt_cross_source_heal(
+                drift, batch, recovery_rec, db,
+                self._metrics, self._loop, self._cfg.correlation_window_seconds,
+            )
+        finally:
+            # Close explicitly rather than leaving it for GC: an async
+            # generator's cleanup runs as a separately-scheduled task, not
+            # synchronously when the reference drops, so the very next batch's
+            # own persist_recovery_row() call can race it for the same SQLite
+            # file and hit "database is locked" (reproduced while testing this
+            # -- see tests/test_uasr_recovery_persistence.py). Postgres (prod)
+            # tolerates a leaked connection far longer, but leaking one on
+            # every cross-source-heal attempt still exhausts the pool
+            # eventually; closing costs nothing since nothing else uses this
+            # session after attempt_cross_source_heal returns.
+            await db.close()
 
     async def _knowledge_update(
         self,
