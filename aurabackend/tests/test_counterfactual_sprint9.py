@@ -334,14 +334,30 @@ async def test_replay_endpoint_returns_artifact(monkeypatch, tmp_path):
         # Poll on a 300s wall-clock budget, not 120x0.5s: the fan-out measures
         # ~47s unloaded, so the old 60s budget timed out under ordinary suite
         # load and reported a still-running job as a failure.
+        #
+        # Polling backs off from 0.5s to 2s (same fix as BUG-004 in
+        # docs/BUG_REGISTRY.md, applied here to a sibling test with the
+        # identical pattern that BUG-004's fix didn't touch): a flat 0.5s
+        # interval issues up to 600 GETs over the 300s budget against the
+        # same global rate limiter (100 req/60s per IP) every other test
+        # in the suite shares. Once the job legitimately takes >~50s under
+        # load, the poll loop's own volume alone breaches the window and
+        # 429s itself -- observed live as `sr["state"]` raising KeyError
+        # because the response body was a rate-limit error, not a status
+        # payload.
         import time
         deadline = time.monotonic() + 300.0
+        poll_interval = 0.5
+        sr = None
         while time.monotonic() < deadline:
-            sr = client.get(f"/counterfactual/jobs/{job_id}").json()
+            resp = client.get(f"/counterfactual/jobs/{job_id}")
+            assert resp.status_code == 200, resp.text
+            sr = resp.json()
             if sr["state"] in {"succeeded", "failed"}:
                 break
-            time.sleep(0.5)
-        assert sr["state"] == "succeeded", sr
+            time.sleep(poll_interval)
+            poll_interval = min(poll_interval * 1.5, 2.0)
+        assert sr is not None and sr["state"] == "succeeded", sr
         record_hash = sr["artifact"]["audit_record_hash"]
 
         replay = client.get(f"/counterfactual/artifacts/{record_hash}")

@@ -11,7 +11,16 @@ The five MAPE-K phases map onto methods of ``MAPEKWorker``:
     Plan     → ``_plan_recovery``          invoke RecoveryLoop on drift
     Execute  → ``_execute_persist`` /      either persist the batch or
                ``_execute_recovery``       pause + run recovery + replay
-    Knowledge→ ``_knowledge_update``       update baseline + healing metrics
+    Knowledge→ ``_knowledge_update`` /     update baseline + in-memory metrics,
+               ``persist_recovery_row``    and write DriftEvent + RecoveryRecord
+                                            (uasr/recovery_persistence.py) --
+                                            every recovery
+                                            attempt (deployed, pending, failed)
+                                            is visible to GET /uasr/recovery/*
+                                            and the Healing Queue UI, matching
+                                            what POST /uasr/ingest does for the
+                                            HTTP path (best-effort: a DB hiccup
+                                            here never blocks message processing).
 
 The "pause consumer → run LLM recovery → restart" requirement is satisfied by
 ``asyncio.Event``-gated polling: when ``_paused`` is set, the worker stops
@@ -55,6 +64,7 @@ from .numeric_semantics import (
     numeric_columns_from_rows,
 )
 from .recovery_loop import RecoveryLoop
+from .recovery_persistence import persist_recovery_row
 
 logger = logging.getLogger("uasr.mapek_worker")
 
@@ -361,12 +371,15 @@ class MAPEKWorker:
                             await self._knowledge_update(
                                 batch, drift, recovery, batch_healed=False
                             )
+                            await persist_recovery_row(batch, drift, recovery)
                             await self._emit(
                                 "canary_deployed",
                                 f"shim {version} deployed as canary (weight={self._cfg.shim_router_canary_initial_weight})",
                                 {"recovery_id": recovery.recovery_id},
                             )
                         else:
+                            await self._knowledge_update(batch, drift, recovery)
+                            await persist_recovery_row(batch, drift, recovery)
                             await self._emit(
                                 "recovery_failed",
                                 f"recovery {recovery.recovery_id} status={recovery.status.value}; canary NOT deployed",
@@ -385,8 +398,11 @@ class MAPEKWorker:
                             await self._knowledge_update(
                                 batch, drift, recovery, batch_healed=True
                             )
+                            await persist_recovery_row(batch, drift, recovery)
                             self.resume()
                         else:
+                            await self._knowledge_update(batch, drift, recovery)
+                            await persist_recovery_row(batch, drift, recovery)
                             await self._emit(
                                 "recovery_failed",
                                 f"recovery {recovery.recovery_id} status={recovery.status.value}; consumer remains paused",
