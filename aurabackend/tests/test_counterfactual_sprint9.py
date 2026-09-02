@@ -255,6 +255,39 @@ async def test_layer10_replay_returns_byte_identical_artifact(monkeypatch, tmp_p
 
 @ENGINE_TESTS
 @pytest.mark.asyncio
+async def test_run_job_refuses_to_sign_with_a_revoked_key(monkeypatch, tmp_path):
+    """BUG-027: run_job() used to call signing.sign_bytes() unconditionally,
+    ignoring the admin key-revocation flag that financial_report.py's
+    _sign_document already respects. After the fix, a revoked key must
+    produce signature_status="unsigned" with no signature_b64, exactly like
+    the financial-audit signing path (test_financial_audit.py's
+    test_revoked_key_yields_unsigned)."""
+    install_mock(monkeypatch, UnifiedMockLLM(default_response='{"challenges": []}'))
+    monkeypatch.setenv("AURA_AUDIT_DIR", str(tmp_path / "audit"))
+    monkeypatch.setenv("AURA_ARTIFACT_DIR", str(tmp_path / "artifacts"))
+    monkeypatch.setenv("AURA_CRITIC_CACHE_DIR", str(tmp_path / "cc"))
+    seed = bytes(range(32)).hex()
+    monkeypatch.setenv("AURA_SIGNING_PRIVATE_KEY_HEX", seed)
+
+    from counterfactual_service import engine as engine_module
+    monkeypatch.setattr(engine_module.cryptography, "is_revoked", lambda kid=None: True)
+
+    df = synthetic_dataset(n=400)
+    query = CounterfactualQuery(
+        question="revoked key",
+        treatment=InterventionSpec(column="treatment", actual=1.0, counterfactual=0.0),
+        outcome=OutcomeSpec(column="outcome", agg="sum", window=("2025-01-01", "2025-12-31")),
+        dag=DAGSpec(edges=synthetic_dag_full()["edges"]),
+        dataset=DatasetRef(source_id="revoked-key"),
+    )
+
+    art = await run_job(query, df=df)
+    assert art.signature_status == "unsigned"
+    assert art.signature_b64 is None
+
+
+@ENGINE_TESTS
+@pytest.mark.asyncio
 async def test_critic_cache_hit_sets_regenerated_critic_to_false(monkeypatch, tmp_path):
     """The Sprint 9 critic-cache contract: same query, second call hits
     the cache, ``regenerated_critic`` flips to False, and the cached

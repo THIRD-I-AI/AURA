@@ -25,7 +25,7 @@ from typing import Any, Dict, List, Literal, Optional
 
 import pandas as pd
 
-from . import critic_cache, persistence, signing
+from . import critic_cache, cryptography, persistence, signing
 from .canonical import canonical_dumps, sha256_canonical
 from .schemas import (
     AdversarialChallenge,
@@ -1808,8 +1808,13 @@ async def run_job(
 
     # Sign the canonical bytes of the (still-hash-stable) payload. The
     # signed bytes are exactly what sha256_canonical hashed, so a verifier
-    # can independently reconstruct what was signed.
-    sig_b64 = signing.sign_bytes(canonical_dumps(payload).encode("utf-8"))
+    # can independently reconstruct what was signed. signing.sign_bytes()
+    # itself never checks revocation (BUG-027) — mirrors financial_report.py's
+    # _sign_document, the one signing path that already gets this right.
+    sig_b64 = (
+        None if cryptography.is_revoked()
+        else signing.sign_bytes(canonical_dumps(payload).encode("utf-8"))
+    )
     if sig_b64 is not None:
         artifact.signature_b64 = sig_b64
         artifact.signature_status = "signed"
