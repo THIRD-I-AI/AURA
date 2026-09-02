@@ -607,9 +607,11 @@ This is the process, not a suggestion:
   open question, not silently resolved by this fix.
 
 ## BUG-010: four undocumented silent-stub call sites (zero-stub-compliance audit)
-- **Status:** open — requires a product decision (raise vs. implement vs.
-  document), not a mechanical fix. Filed so it doesn't evaporate as an
-  unlogged agent report, per this registry's own process.
+- **Status:** partially fixed. Item 1 (the only reachable one) fixed
+  2026-09-02 — see its entry below. Items 2-4 remain open but are
+  currently unreachable / already honestly disclosed, per each item's
+  own note. Filed so it doesn't evaporate as an unlogged agent report,
+  per this registry's own process.
 - **Found by:** dedicated zero-stub-compliance audit of `aurabackend/`
   (excluding tests/migrations), 2026-09-01, cross-checked against
   `STATUS.md`/`README.md`/`docs/DEPLOYMENT.md`.
@@ -649,9 +651,18 @@ This is the process, not a suggestion:
      the current deployment — currently unreachable.**
 - **Caused by:** none — pre-existing across a long project history, not a
   regression from any recent change.
-- **Fix:** none yet. Item 1 (the UNION pipeline step) is the only one
-  reachable in the current deployment and is the one worth prioritizing
-  if this is picked up — either implement UNION support or make the
-  fall-through raise a clear error instead of silently dropping the step.
-  Items 2-4 are honestly disclosed already or currently unreachable;
-  revisit if the scheduler/ingestion services become reachable.
+- **Fix:** Item 1 fixed 2026-09-02 — `PipelineEngine._step_to_sql`'s final
+  fall-through (`aurabackend/pipeline/engine.py`, previously a bare
+  `return None`) now raises `ValueError(f"Pipeline step type {t.value!r}
+  is not implemented")` instead. The caller's existing top-level
+  `except Exception` (engine.py:197-200) turns this into
+  `run.status = FAILED` with a real `run.error` message — a UNION step
+  submitted directly to the pipeline API now fails loudly instead of
+  silently no-oping and returning SUCCESS with the step dropped. Full
+  UNION SQL generation was NOT implemented (no schema exists yet for
+  which source/columns to union — a real product decision, not a
+  mechanical one) — this closes the silent-wrong-result path only.
+  Regression test: `test_union_step_fails_run_instead_of_silently_skipping`
+  in `aurabackend/tests/test_pipeline_execution.py`. Items 2-4 are
+  honestly disclosed already or currently unreachable; revisit if the
+  scheduler/ingestion services become reachable.
