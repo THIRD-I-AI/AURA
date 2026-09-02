@@ -62,6 +62,18 @@ def _make_app(**middleware_kwargs) -> FastAPI:
         actually asked for."""
         return {"ok": True}
 
+    # BUG-017 (docs/BUG_REGISTRY.md): the inbound-hooks public trigger is
+    # gated only by its own optional per-hook HMAC secret, checked inside
+    # the handler -- not an AURA Bearer token, since the external systems
+    # that fire it have no AURA login. Stand-in for the real handler in
+    # inbound_hooks.py::fire_hook: no hook named "unknown-slug" exists, so
+    # reaching this body (a 404, not a 401) proves the request got past
+    # JWTAuthMiddleware to the HMAC-gated logic.
+    @app.post("/api/v1/hooks/fire/{slug}")
+    def fire_hook_stub(slug: str):
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail="Hook not found")
+
     @app.get("/error/not-found")
     def raise_not_found():
         raise NotFoundError("Widget", "42")
@@ -183,6 +195,26 @@ class TestJWTMiddleware:
     def test_inclusion_proof_exempt_without_a_token(self, client):
         resp = client.get(f"/api/v1/counterfactual/audit/inclusion/{'a' * 64}")
         assert resp.status_code == 200
+
+    # ── BUG-017 regression: real fix, verified with JWTAuthMiddleware
+    # genuinely installed. Before the fix this returned 401
+    # AUTHENTICATION_REQUIRED and never reached the handler at all. ──
+
+    def test_fire_hook_reaches_handler_without_a_token(self, client):
+        resp = client.post("/api/v1/hooks/fire/unknown-slug")
+        assert resp.status_code != 401
+        assert resp.status_code == 404
+
+    def test_fire_hook_is_not_gated_by_a_bearer_token(self, client):
+        """A caller with no Authorization header at all must reach the
+        HMAC-gated handler logic, not get rejected by JWTAuthMiddleware --
+        that IS the bug: external systems firing this hook have no AURA
+        login to present."""
+        resp = client.post(
+            "/api/v1/hooks/fire/unknown-slug",
+            headers={"Authorization": ""},
+        )
+        assert resp.status_code != 401
 
     def test_sibling_financial_audit_route_still_requires_a_token(self, client):
         """The prefix-matched exemption must not leak past the one

@@ -70,6 +70,11 @@ class WebhookSubscription:
     headers: Dict[str, str] = field(default_factory=dict)
     retries: int = 3
     description: str = ""
+    # BUG-016: the tenant/workspace that owns this subscription. Every CRUD
+    # and test-fire path in the router must filter by this — the store used
+    # to be a flat dict keyed only by `id`, so any authenticated caller could
+    # list/read/edit/delete/test-fire any other tenant's webhooks.
+    workspace_id: str = ""
     created_at: str = field(
         default_factory=lambda: datetime.now(timezone.utc).isoformat()
     )
@@ -98,6 +103,7 @@ class DeliveryRecord:
     http_status: Optional[int]
     attempts: int
     error: Optional[str]
+    workspace_id: str = ""
     timestamp: str = field(
         default_factory=lambda: datetime.now(timezone.utc).isoformat()
     )
@@ -181,14 +187,18 @@ class WebhookDispatcher:
 
     # ── CRUD ───────────────────────────────────────────────────────
 
-    def list(self) -> List[WebhookSubscription]:
-        return list(self._subs.values())
+    def list(self, workspace_id: str) -> List[WebhookSubscription]:
+        return [s for s in self._subs.values() if s.workspace_id == workspace_id]
 
-    def get(self, sub_id: str) -> Optional[WebhookSubscription]:
-        return self._subs.get(sub_id)
+    def get(self, sub_id: str, workspace_id: str) -> Optional[WebhookSubscription]:
+        sub = self._subs.get(sub_id)
+        if sub is None or sub.workspace_id != workspace_id:
+            return None
+        return sub
 
     def register(
         self,
+        workspace_id: str,
         url: str,
         events: Iterable[str],
         secret: Optional[str] = None,
@@ -204,29 +214,34 @@ class WebhookDispatcher:
             headers=headers or {},
             retries=max(0, min(retries, 10)),
             description=description,
+            workspace_id=workspace_id,
         )
         self._subs[sub.id] = sub
         self._save()
         return sub
 
-    def update(self, sub_id: str, **fields) -> Optional[WebhookSubscription]:
-        sub = self._subs.get(sub_id)
+    def update(self, sub_id: str, workspace_id: str, **fields) -> Optional[WebhookSubscription]:
+        sub = self.get(sub_id, workspace_id)
         if not sub:
             return None
         for k, v in fields.items():
+            if k == "workspace_id":
+                continue
             if hasattr(sub, k) and v is not None:
                 setattr(sub, k, v)
         self._save()
         return sub
 
-    def delete(self, sub_id: str) -> bool:
-        existed = self._subs.pop(sub_id, None) is not None
-        if existed:
-            self._save()
-        return existed
+    def delete(self, sub_id: str, workspace_id: str) -> bool:
+        sub = self.get(sub_id, workspace_id)
+        if sub is None:
+            return False
+        self._subs.pop(sub_id, None)
+        self._save()
+        return True
 
-    def deliveries(self) -> List[DeliveryRecord]:
-        return list(self._log)
+    def deliveries(self, workspace_id: str) -> List[DeliveryRecord]:
+        return [d for d in self._log if d.workspace_id == workspace_id]
 
     # ── Lifecycle ──────────────────────────────────────────────────
 
@@ -346,6 +361,7 @@ class WebhookDispatcher:
             http_status=last_status,
             attempts=attempts,
             error=None if ok else last_err,
+            workspace_id=sub.workspace_id,
         )
         self._log.append(record)
         if not ok:
@@ -366,9 +382,11 @@ class WebhookDispatcher:
         except Exception:
             pass
 
-    async def fire_test(self, sub_id: str, event_type: str = "test.ping") -> Optional[DeliveryRecord]:
+    async def fire_test(
+        self, sub_id: str, workspace_id: str, event_type: str = "test.ping",
+    ) -> Optional[DeliveryRecord]:
         """Manually trigger a test delivery for a registered subscription."""
-        sub = self._subs.get(sub_id)
+        sub = self.get(sub_id, workspace_id)
         if not sub:
             return None
         payload = {

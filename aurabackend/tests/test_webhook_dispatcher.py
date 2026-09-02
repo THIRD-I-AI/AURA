@@ -170,44 +170,45 @@ class TestDispatcherCRUD:
     def test_register(self):
         d = _make_dispatcher()
         with patch.object(d, "_save"):
-            sub = d.register("http://example.com/hook", ["pipeline.complete"])
+            sub = d.register("ws-a", "http://example.com/hook", ["pipeline.complete"])
         assert sub.url == "http://example.com/hook"
         assert sub.events == ["pipeline.complete"]
         assert sub.active is True
-        assert sub.id in [s.id for s in d.list()]
+        assert sub.workspace_id == "ws-a"
+        assert sub.id in [s.id for s in d.list("ws-a")]
 
     def test_register_with_secret(self):
         d = _make_dispatcher()
         with patch.object(d, "_save"):
-            sub = d.register("http://x", ["*"], secret="my-secret", retries=5)
+            sub = d.register("ws-a", "http://x", ["*"], secret="my-secret", retries=5)
         assert sub.secret == "my-secret"
         assert sub.retries == 5
 
     def test_register_clamps_retries(self):
         d = _make_dispatcher()
         with patch.object(d, "_save"):
-            sub = d.register("http://x", ["*"], retries=99)
+            sub = d.register("ws-a", "http://x", ["*"], retries=99)
         assert sub.retries == 10  # clamped
 
     def test_get(self):
         d = _make_dispatcher()
         with patch.object(d, "_save"):
-            sub = d.register("http://x", ["*"])
-        assert d.get(sub.id) is sub
-        assert d.get("nonexistent") is None
+            sub = d.register("ws-a", "http://x", ["*"])
+        assert d.get(sub.id, "ws-a") is sub
+        assert d.get("nonexistent", "ws-a") is None
 
     def test_list(self):
         d = _make_dispatcher()
         with patch.object(d, "_save"):
-            d.register("http://a", ["*"])
-            d.register("http://b", ["pipeline.*"])
-        assert len(d.list()) == 2
+            d.register("ws-a", "http://a", ["*"])
+            d.register("ws-a", "http://b", ["pipeline.*"])
+        assert len(d.list("ws-a")) == 2
 
     def test_update(self):
         d = _make_dispatcher()
         with patch.object(d, "_save"):
-            sub = d.register("http://x", ["*"])
-            updated = d.update(sub.id, url="http://new-url", retries=1)
+            sub = d.register("ws-a", "http://x", ["*"])
+            updated = d.update(sub.id, "ws-a", url="http://new-url", retries=1)
         assert updated is not None
         assert updated.url == "http://new-url"
         assert updated.retries == 1
@@ -215,23 +216,85 @@ class TestDispatcherCRUD:
     def test_update_nonexistent(self):
         d = _make_dispatcher()
         with patch.object(d, "_save"):
-            assert d.update("nope", url="http://x") is None
+            assert d.update("nope", "ws-a", url="http://x") is None
 
     def test_delete(self):
         d = _make_dispatcher()
         with patch.object(d, "_save"):
-            sub = d.register("http://x", ["*"])
-            assert d.delete(sub.id) is True
-            assert d.get(sub.id) is None
+            sub = d.register("ws-a", "http://x", ["*"])
+            assert d.delete(sub.id, "ws-a") is True
+            assert d.get(sub.id, "ws-a") is None
 
     def test_delete_nonexistent(self):
         d = _make_dispatcher()
         with patch.object(d, "_save"):
-            assert d.delete("nope") is False
+            assert d.delete("nope", "ws-a") is False
+
+
+# ── Cross-tenant isolation (BUG-016) ───────────────────────────────
+
+class TestCrossTenantIsolation:
+    """The store used to be keyed only by bare sub_id, with no workspace
+    filter at all -- any authenticated caller could list/read/edit/delete/
+    test-fire any other tenant's webhook. Pin the fix: a request scoped to
+    the wrong workspace must come back empty/None/False, never the other
+    tenant's data."""
+
+    def test_list_does_not_leak_other_tenants(self):
+        d = _make_dispatcher()
+        with patch.object(d, "_save"):
+            d.register("org-a", "http://a", ["*"])
+            d.register("org-b", "http://b", ["*"])
+        assert len(d.list("org-a")) == 1
+        assert len(d.list("org-b")) == 1
+        assert d.list("org-a")[0].url == "http://a"
+
+    def test_get_returns_none_for_wrong_tenant(self):
+        d = _make_dispatcher()
+        with patch.object(d, "_save"):
+            sub = d.register("org-a", "http://secret", ["*"])
+        assert d.get(sub.id, "org-b") is None
+        assert d.get(sub.id, "org-a") is sub
+
+    def test_update_is_rejected_for_wrong_tenant(self):
+        d = _make_dispatcher()
+        with patch.object(d, "_save"):
+            sub = d.register("org-a", "http://x", ["*"])
+            assert d.update(sub.id, "org-b", url="http://hijacked") is None
+        assert sub.url == "http://x"  # unchanged
+
+    def test_delete_is_rejected_for_wrong_tenant(self):
+        d = _make_dispatcher()
+        with patch.object(d, "_save"):
+            sub = d.register("org-a", "http://x", ["*"])
+            assert d.delete(sub.id, "org-b") is False
+        assert d.get(sub.id, "org-a") is not None  # still there
+
+    @pytest.mark.asyncio
+    async def test_fire_test_is_rejected_for_wrong_tenant(self):
+        d = _make_dispatcher()
+        with patch.object(d, "_save"):
+            sub = d.register("org-a", "http://x", ["*"])
+        assert await d.fire_test(sub.id, "org-b") is None
+
+    def test_deliveries_are_scoped_per_tenant(self):
+        d = _make_dispatcher()
+        d._log.append(DeliveryRecord(
+            id="d1", subscription_id="s1", event_type="t", url="http://a",
+            status="success", http_status=200, attempts=1, error=None,
+            workspace_id="org-a",
+        ))
+        d._log.append(DeliveryRecord(
+            id="d2", subscription_id="s2", event_type="t", url="http://b",
+            status="success", http_status=200, attempts=1, error=None,
+            workspace_id="org-b",
+        ))
+        assert [r.id for r in d.deliveries("org-a")] == ["d1"]
+        assert [r.id for r in d.deliveries("org-b")] == ["d2"]
 
     def test_deliveries_empty(self):
         d = _make_dispatcher()
-        assert d.deliveries() == []
+        assert d.deliveries("ws-a") == []
 
 
 # ── build_payload ─────────────────────────────────────────────────
@@ -263,7 +326,7 @@ class TestDelivery:
         d._client = mock_client
 
         with patch.object(d, "_save"):
-            sub = d.register("http://target/hook", ["*"])
+            sub = d.register("ws-a", "http://target/hook", ["*"])
 
         payload = {"id": "e1", "event": "test", "topic": "t", "timestamp": "now", "data": {}}
 
@@ -271,8 +334,8 @@ class TestDelivery:
             mock_sm.publish = AsyncMock()
             await d._deliver(sub, "test.ping", payload)
 
-        assert len(d.deliveries()) == 1
-        rec = d.deliveries()[0]
+        assert len(d.deliveries("ws-a")) == 1
+        rec = d.deliveries("ws-a")[0]
         assert rec.status == "success"
         assert rec.http_status == 200
         assert rec.attempts == 1
@@ -287,7 +350,7 @@ class TestDelivery:
         d._client = mock_client
 
         with patch.object(d, "_save"):
-            sub = d.register("http://target/hook", ["*"], retries=0)
+            sub = d.register("ws-a", "http://target/hook", ["*"], retries=0)
 
         payload = {"id": "e1", "event": "test", "topic": "t", "timestamp": "now", "data": {}}
 
@@ -295,7 +358,7 @@ class TestDelivery:
             mock_sm.publish = AsyncMock()
             await d._deliver(sub, "test.ping", payload)
 
-        rec = d.deliveries()[0]
+        rec = d.deliveries("ws-a")[0]
         assert rec.status == "failed"
         assert rec.http_status == 500
         assert rec.error == "HTTP 500"
@@ -310,7 +373,7 @@ class TestDelivery:
         d._client = mock_client
 
         with patch.object(d, "_save"):
-            sub = d.register("http://target", ["*"], secret="test-secret", retries=0)
+            sub = d.register("ws-a", "http://target", ["*"], secret="test-secret", retries=0)
 
         payload = {"id": "e1", "event": "test", "topic": "t", "timestamp": "now", "data": {}}
 
@@ -332,7 +395,7 @@ class TestDelivery:
         d._client = mock_client
 
         with patch.object(d, "_save"):
-            sub = d.register("http://target", ["*"], retries=1)
+            sub = d.register("ws-a", "http://target", ["*"], retries=1)
 
         payload = {"id": "e1", "event": "test", "topic": "t", "timestamp": "now", "data": {}}
 
@@ -341,7 +404,7 @@ class TestDelivery:
             with patch("asyncio.sleep", new_callable=AsyncMock):
                 await d._deliver(sub, "test.ping", payload)
 
-        rec = d.deliveries()[0]
+        rec = d.deliveries("ws-a")[0]
         assert rec.status == "failed"
         assert rec.attempts == 2  # 1 initial + 1 retry
 
@@ -355,11 +418,11 @@ class TestDelivery:
         d._client = mock_client
 
         with patch.object(d, "_save"):
-            sub = d.register("http://target", ["*"], retries=0)
+            sub = d.register("ws-a", "http://target", ["*"], retries=0)
 
         with patch("shared.webhook_dispatcher.streaming_manager") as mock_sm:
             mock_sm.publish = AsyncMock()
-            rec = await d.fire_test(sub.id)
+            rec = await d.fire_test(sub.id, "ws-a")
 
         assert rec is not None
         assert rec.status == "success"
@@ -367,7 +430,7 @@ class TestDelivery:
     @pytest.mark.asyncio
     async def test_fire_test_unknown_sub(self):
         d = _make_dispatcher()
-        result = await d.fire_test("nonexistent")
+        result = await d.fire_test("nonexistent", "ws-a")
         assert result is None
 
 

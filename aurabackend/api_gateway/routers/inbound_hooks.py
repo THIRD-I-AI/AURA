@@ -28,6 +28,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
+from api_gateway.routers.workspaces import current_workspace_id
 from shared.inbound_hooks import inbound_hooks
 from shared.logging_config import get_logger
 from shared.streaming_manager import TOPIC_AGENT, TOPIC_PIPELINE, StreamEvent, streaming_manager
@@ -61,14 +62,18 @@ class HookUpdateRequest(BaseModel):
 # ── CRUD ───────────────────────────────────────────────────────────
 
 @router.get("/hooks")
-async def list_hooks() -> Dict[str, Any]:
-    return {"status": "success", "hooks": [h.to_dict() for h in inbound_hooks.list()]}
+async def list_hooks(request: Request) -> Dict[str, Any]:
+    return {
+        "status": "success",
+        "hooks": [h.to_dict() for h in inbound_hooks.list(current_workspace_id(request))],
+    }
 
 
 @router.post("/hooks")
-async def create_hook(req: HookCreateRequest) -> Dict[str, Any]:
+async def create_hook(req: HookCreateRequest, request: Request) -> Dict[str, Any]:
     try:
         hook = inbound_hooks.register(
+            workspace_id=current_workspace_id(request),
             slug=req.slug,
             kind=req.kind,
             target=req.target,
@@ -82,17 +87,19 @@ async def create_hook(req: HookCreateRequest) -> Dict[str, Any]:
 
 
 @router.get("/hooks/{hook_id}")
-async def get_hook(hook_id: str) -> Dict[str, Any]:
-    h = inbound_hooks.get(hook_id)
+async def get_hook(hook_id: str, request: Request) -> Dict[str, Any]:
+    h = inbound_hooks.get(hook_id, current_workspace_id(request))
     if not h:
         raise HTTPException(status_code=404, detail="Hook not found")
     return {"status": "success", "hook": h.to_dict()}
 
 
 @router.patch("/hooks/{hook_id}")
-async def update_hook(hook_id: str, req: HookUpdateRequest) -> Dict[str, Any]:
+async def update_hook(hook_id: str, req: HookUpdateRequest, request: Request) -> Dict[str, Any]:
     try:
-        h = inbound_hooks.update(hook_id, **req.model_dump(exclude_none=True))
+        h = inbound_hooks.update(
+            hook_id, current_workspace_id(request), **req.model_dump(exclude_none=True),
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     if not h:
@@ -101,8 +108,8 @@ async def update_hook(hook_id: str, req: HookUpdateRequest) -> Dict[str, Any]:
 
 
 @router.delete("/hooks/{hook_id}")
-async def delete_hook(hook_id: str) -> Dict[str, Any]:
-    if not inbound_hooks.delete(hook_id):
+async def delete_hook(hook_id: str, request: Request) -> Dict[str, Any]:
+    if not inbound_hooks.delete(hook_id, current_workspace_id(request)):
         raise HTTPException(status_code=404, detail="Hook not found")
     return {"status": "success", "deleted": hook_id}
 

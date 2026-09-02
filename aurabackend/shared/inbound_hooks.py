@@ -47,6 +47,11 @@ class InboundHook:
                                            # the agent context (default: ignored)
     last_fired_at: Optional[str] = None
     fire_count: int = 0
+    # BUG-016: the tenant/workspace that owns this hook. CRUD routes must
+    # filter by this — `by_slug()` stays unscoped on purpose, since the
+    # public `/hooks/fire/{slug}` trigger endpoint is the auth boundary for
+    # firing (its own optional HMAC secret), not the caller's tenant.
+    workspace_id: str = ""
     created_at: str = field(
         default_factory=lambda: datetime.now(timezone.utc).isoformat()
     )
@@ -93,17 +98,24 @@ class InboundHookRegistry:
 
     # ── CRUD ───────────────────────────────────────────────────────
 
-    def list(self) -> List[InboundHook]:
-        return list(self._hooks.values())
+    def list(self, workspace_id: str) -> List[InboundHook]:
+        return [h for h in self._hooks.values() if h.workspace_id == workspace_id]
 
-    def get(self, hook_id: str) -> Optional[InboundHook]:
-        return self._hooks.get(hook_id)
+    def get(self, hook_id: str, workspace_id: str) -> Optional[InboundHook]:
+        h = self._hooks.get(hook_id)
+        if h is None or h.workspace_id != workspace_id:
+            return None
+        return h
 
     def by_slug(self, slug: str) -> Optional[InboundHook]:
+        # Intentionally unscoped: the public /hooks/fire/{slug} endpoint's
+        # auth boundary is the hook's own optional HMAC secret, not the
+        # caller's tenant — see the class docstring.
         return self._by_slug.get(slug)
 
     def register(
         self,
+        workspace_id: str,
         slug: str,
         kind: str,
         target: str,
@@ -123,14 +135,15 @@ class InboundHookRegistry:
             secret=secret,
             description=description,
             pass_payload_as=pass_payload_as,
+            workspace_id=workspace_id,
         )
         self._hooks[hook.id] = hook
         self._by_slug[hook.slug] = hook
         self._save()
         return hook
 
-    def update(self, hook_id: str, **fields) -> Optional[InboundHook]:
-        h = self._hooks.get(hook_id)
+    def update(self, hook_id: str, workspace_id: str, **fields) -> Optional[InboundHook]:
+        h = self.get(hook_id, workspace_id)
         if not h:
             return None
         new_slug = fields.get("slug")
@@ -141,17 +154,18 @@ class InboundHookRegistry:
             h.slug = new_slug
             self._by_slug[new_slug] = h
         for k, v in fields.items():
-            if k == "slug":
+            if k in ("slug", "workspace_id"):
                 continue
             if hasattr(h, k) and v is not None:
                 setattr(h, k, v)
         self._save()
         return h
 
-    def delete(self, hook_id: str) -> bool:
-        h = self._hooks.pop(hook_id, None)
+    def delete(self, hook_id: str, workspace_id: str) -> bool:
+        h = self.get(hook_id, workspace_id)
         if h is None:
             return False
+        self._hooks.pop(hook_id, None)
         self._by_slug.pop(h.slug, None)
         self._save()
         return True
