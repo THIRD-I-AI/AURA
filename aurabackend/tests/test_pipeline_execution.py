@@ -151,6 +151,66 @@ def test_get_file_schema_reads_real_csv_through_tenant_upload_dir(tmp_path):
     assert schema["row_count"] == 3
 
 
+@pytest.mark.asyncio
+async def test_pg_sink_quotes_table_name_containing_double_quote(monkeypatch):
+    """BUG-020 #1: sink.table is raw pipeline-definition input; it must be
+    quoted via quote_identifier before splicing into DROP/CREATE/INSERT,
+    not spliced in raw where a `"` could break out of the identifier."""
+    import connectors
+    from pipeline.engine import PipelineEngine
+    from pipeline.models import PipelineRun, PipelineSink, PipelineStatus, SinkType
+
+    executed_sql: list = []
+
+    class FakePgConn:
+        async def execute(self, sql, *args):
+            executed_sql.append(sql)
+
+        async def executemany(self, sql, rows):
+            executed_sql.append(sql)
+
+    class FakeAcquireCtx:
+        async def __aenter__(self):
+            return FakePgConn()
+
+        async def __aexit__(self, *exc):
+            return False
+
+    class FakePool:
+        def acquire(self):
+            return FakeAcquireCtx()
+
+    class FakePostgreSQLConnector:
+        def __init__(self, config):
+            self.pool = FakePool()
+
+        async def connect(self):
+            return True
+
+        async def disconnect(self):
+            return True
+
+    monkeypatch.setattr(connectors, "PostgreSQLConnector", FakePostgreSQLConnector)
+
+    con = duckdb.connect(":memory:")
+    con.execute("CREATE TABLE pipeline_output (id INTEGER)")
+    con.execute("INSERT INTO pipeline_output VALUES (1), (2)")
+
+    evil_table = 'evil"; DROP TABLE users; --'
+    sink = PipelineSink(type=SinkType.POSTGRESQL, table=evil_table, if_exists="replace")
+    run = PipelineRun(pipeline_id="p1", status=PipelineStatus.RUNNING)
+
+    engine = PipelineEngine()
+    await engine._write_pg_sink(con, "pipeline_output", sink, run)
+
+    # The identifier must be quoted with embedded `"` doubled — never
+    # spliced raw where it could terminate the identifier early.
+    expected_quoted = '"' + evil_table.replace('"', '""') + '"'
+    assert any(expected_quoted in sql for sql in executed_sql), executed_sql
+    assert not any(f"DROP TABLE IF EXISTS {evil_table}" in sql for sql in executed_sql)
+    assert not any(f"INSERT INTO {evil_table}" in sql for sql in executed_sql)
+
+
 def test_get_file_schema_rejects_path_traversal(tmp_path):
     """A traversal file_name must never escape the tenant upload dir to
     read an unrelated file elsewhere on disk (e.g. a signing key)."""

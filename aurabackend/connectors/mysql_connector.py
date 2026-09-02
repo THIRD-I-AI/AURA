@@ -8,6 +8,8 @@ from typing import Any, Dict, List, Optional
 
 import aiomysql
 
+from shared.sql_identifiers import quote_identifier
+
 from .base import BaseConnector, ConnectorConfig
 
 logger = logging.getLogger("aura.connectors.mysql")
@@ -81,7 +83,7 @@ class MySQLConnector(BaseConnector):
             async with self.pool.acquire() as conn:
                 async with conn.cursor() as cur:
                     await cur.execute(
-                        f"DESC {table_name}"
+                        f"DESC {quote_identifier(table_name)}"
                     )
                     rows = await cur.fetchall()
 
@@ -113,7 +115,7 @@ class MySQLConnector(BaseConnector):
         try:
             async with self.pool.acquire() as conn:
                 async with conn.cursor(aiomysql.DictCursor) as cur:
-                    await cur.execute(f"SELECT * FROM {table_name} LIMIT {limit}")
+                    await cur.execute(f"SELECT * FROM {quote_identifier(table_name)} LIMIT {limit}")
                     rows = await cur.fetchall()
                     return rows or []
         except Exception as e:
@@ -151,7 +153,7 @@ class MySQLConnector(BaseConnector):
             # Count rows
             async with self.pool.acquire() as conn:
                 async with conn.cursor() as cur:
-                    await cur.execute(f"SELECT COUNT(*) FROM {table_name}")
+                    await cur.execute(f"SELECT COUNT(*) FROM {quote_identifier(table_name)}")
                     row_count = (await cur.fetchone())[0]
 
             # Profile each column

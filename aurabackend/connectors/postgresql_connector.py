@@ -13,6 +13,8 @@ try:
 except ImportError:  # pragma: no cover - exercised only when driver absent
     asyncpg = None
 
+from shared.sql_identifiers import quote_identifier
+
 from .base import BaseConnector, ConnectorConfig
 
 logger = logging.getLogger("aura.connectors.postgresql")
@@ -129,7 +131,7 @@ class PostgreSQLConnector(BaseConnector):
         try:
             async with self.pool.acquire() as conn:
                 rows = await conn.fetch(
-                    f"SELECT * FROM {table_name} LIMIT {limit}"
+                    f"SELECT * FROM {quote_identifier(table_name)} LIMIT {limit}"
                 )
                 return [dict(row) for row in rows]
         except Exception as e:
@@ -164,7 +166,7 @@ class PostgreSQLConnector(BaseConnector):
 
             # Count rows
             async with self.pool.acquire() as conn:
-                row_count = await conn.fetchval(f"SELECT COUNT(*) FROM {table_name}")
+                row_count = await conn.fetchval(f"SELECT COUNT(*) FROM {quote_identifier(table_name)}")
 
             # Profile each column
             columns_profile = {}

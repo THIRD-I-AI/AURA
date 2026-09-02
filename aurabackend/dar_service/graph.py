@@ -28,6 +28,7 @@ from pydantic import ValidationError
 
 from agents.base import AgentContext, AgentStatus
 from agents.specialists.dar_research_agent import DARResearchAgent
+from shared.sql_identifiers import quote_identifier
 
 from .schemas import (
     ColumnProfile,
@@ -75,7 +76,7 @@ def introspect_node(state: DARState) -> Dict[str, Any]:
     try:
         con = _open_duckdb(state.duckdb_path)
         try:
-            descr = con.execute(f'DESCRIBE "{state.table_name}"').fetchall()
+            descr = con.execute(f'DESCRIBE {quote_identifier(state.table_name)}').fetchall()
         finally:
             con.close()
     except Exception as exc:
@@ -107,10 +108,11 @@ def profile_node(state: DARState) -> Dict[str, Any]:
         return _err(state, "profile", f"DuckDB open failed: {exc}")
 
     profiled: List[ColumnProfile] = []
+    q_table = quote_identifier(state.table_name)
     try:
         try:
             total = con.execute(
-                f'SELECT COUNT(*) FROM "{state.table_name}"'
+                f'SELECT COUNT(*) FROM {q_table}'
             ).fetchone()[0]
         except Exception as exc:
             return _err(state, "profile", f"row count failed: {exc}",
@@ -119,10 +121,10 @@ def profile_node(state: DARState) -> Dict[str, Any]:
             return _err(state, "profile", f"table {state.table_name} is empty")
 
         for col in state.schema_columns:
-            ident = f'"{state.table_name}"."{col.column}"'
+            ident = f'{q_table}.{quote_identifier(col.column)}'
             try:
                 null_count = con.execute(
-                    f'SELECT COUNT(*) FROM "{state.table_name}" WHERE {ident} IS NULL'
+                    f'SELECT COUNT(*) FROM {q_table} WHERE {ident} IS NULL'
                 ).fetchone()[0]
                 col_null_rate = float(null_count) / max(total, 1)
             except Exception:
@@ -131,7 +133,7 @@ def profile_node(state: DARState) -> Dict[str, Any]:
             distinct: Optional[int] = None
             try:
                 distinct = con.execute(
-                    f'SELECT COUNT(DISTINCT {ident}) FROM "{state.table_name}"'
+                    f'SELECT COUNT(DISTINCT {ident}) FROM {q_table}'
                 ).fetchone()[0]
             except Exception:
                 pass
@@ -147,7 +149,7 @@ def profile_node(state: DARState) -> Dict[str, Any]:
                     stats = con.execute(
                         f'SELECT AVG({ident}), STDDEV({ident}), '
                         f'MIN({ident}), MAX({ident}) '
-                        f'FROM "{state.table_name}"'
+                        f'FROM {q_table}'
                     ).fetchone()
                     updated = updated.model_copy(update={
                         "mean": _safe_float(stats[0]),
@@ -162,7 +164,7 @@ def profile_node(state: DARState) -> Dict[str, Any]:
                 try:
                     rows = con.execute(
                         f'SELECT {ident} AS v, COUNT(*) AS n '
-                        f'FROM "{state.table_name}" '
+                        f'FROM {q_table} '
                         f'WHERE {ident} IS NOT NULL '
                         f'GROUP BY {ident} ORDER BY n DESC LIMIT 3'
                     ).fetchall()

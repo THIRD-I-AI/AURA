@@ -30,6 +30,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
+from shared.sql_identifiers import quote_identifier
+
 logger = logging.getLogger("aura.shared.database_adapter")
 
 # ======================== Types ========================
@@ -293,10 +295,12 @@ class PostgresAdapter(DatabaseAdapter):
             raise NotImplementedError("pgvector extension is not installed")
         op = "<=>" if metric == "cosine" else "<->" if metric == "l2" else "<=>"
         vec_literal = "[" + ",".join(str(v) for v in embedding) + "]"
+        q_table = quote_identifier(table)
+        q_column = quote_identifier(column)
         query = (
-            f"SELECT *, 1 - ({column} {op} $1::vector) AS similarity "
-            f"FROM {table} WHERE {column} IS NOT NULL "
-            f"ORDER BY {column} {op} $1::vector LIMIT {limit}"
+            f"SELECT *, 1 - ({q_column} {op} $1::vector) AS similarity "
+            f"FROM {q_table} WHERE {q_column} IS NOT NULL "
+            f"ORDER BY {q_column} {op} $1::vector LIMIT {limit}"
         )
         return await self.execute_query(query, [vec_literal])
 
@@ -316,7 +320,7 @@ class PostgresAdapter(DatabaseAdapter):
         vec_literal = "[" + ",".join(str(v) for v in embedding) + "]"
         values = list(data.values()) + [vec_literal]
         query = (
-            f"INSERT INTO {table} ({', '.join(cols)}) "
+            f"INSERT INTO {quote_identifier(table)} ({', '.join(quote_identifier(c) for c in cols)}) "
             f"VALUES ({', '.join(placeholders)}) RETURNING *"
         )
         rows = await self.execute_query(query, values)
@@ -347,7 +351,7 @@ class PostgresAdapter(DatabaseAdapter):
         placeholders.append(f"ST_SetSRID(ST_MakePoint(${idx+1}, ${idx+2}, ${idx+3}), {srid})")
         values = list(data.values()) + [x, y, z]
         query = (
-            f"INSERT INTO {table} ({', '.join(cols)}) "
+            f"INSERT INTO {quote_identifier(table)} ({', '.join(quote_identifier(c) for c in cols)}) "
             f"VALUES ({', '.join(placeholders)}) RETURNING *"
         )
         rows = await self.execute_query(query, values)

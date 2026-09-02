@@ -39,6 +39,8 @@ import logging
 import os
 from typing import Any, Dict, List, Optional
 
+from shared.sql_identifiers import quote_identifier
+
 logger = logging.getLogger("aura.mcp.server")
 
 # ── Optional deps — fail loudly only when actually invoked ────────────
@@ -202,7 +204,7 @@ def build_server() -> "FastMCP":
         ).fetchone()
         if not existing:
             raise ValueError(f"Unknown table: {table}")
-        cur = con.execute(f'SELECT * FROM "{table}" LIMIT ?', [n])
+        cur = con.execute(f'SELECT * FROM {quote_identifier(table)} LIMIT ?', [n])
         cols = [d[0] for d in cur.description]
         rows = cur.fetchall()
         return {
