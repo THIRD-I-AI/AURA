@@ -216,12 +216,17 @@ class PipelineEngine:
         upload_dir: Optional[str] = None,
     ) -> str:
         """Load source data into DuckDB and return the table name."""
+        # _load_file_source (a network LLM call via smart_load_file) and
+        # _load_duckdb_source (ATTACH + CREATE TABLE AS on a large external
+        # file) both block; the deployment runs one uvicorn worker, so
+        # running either inline would freeze every concurrent request for
+        # its duration (same reasoning as the conn.execute calls below).
         if source.type == SourceType.FILE:
-            return self._load_file_source(conn, source, upload_dir)
+            return await asyncio.to_thread(self._load_file_source, conn, source, upload_dir)
         elif source.type in (SourceType.POSTGRESQL, SourceType.MYSQL):
             return await self._load_db_source(conn, source)
         elif source.type == SourceType.DUCKDB:
-            return self._load_duckdb_source(conn, source, upload_dir)
+            return await asyncio.to_thread(self._load_duckdb_source, conn, source, upload_dir)
         elif source.type == SourceType.KAFKA:
             return await self._load_kafka_source(conn, source, progress_cb)
         else:
@@ -280,13 +285,18 @@ class PipelineEngine:
         table_name = "source_data"
         columns = list(rows[0].keys())
         col_defs = ", ".join(f'"{_sanitize_id(c)}" VARCHAR' for c in columns)
-        conn.execute(f"CREATE TABLE {_q(table_name)} ({col_defs})")
 
-        placeholders = ", ".join(["?"] * len(columns))
-        insert_sql = f"INSERT INTO {_q(table_name)} VALUES ({placeholders})"
-        for row in rows:
-            values = [str(v) if v is not None else None for v in row.values()]
-            conn.execute(insert_sql, values)
+        def _create_and_insert() -> None:
+            conn.execute(f"CREATE TABLE {_q(table_name)} ({col_defs})")
+            placeholders = ", ".join(["?"] * len(columns))
+            insert_sql = f"INSERT INTO {_q(table_name)} VALUES ({placeholders})"
+            for row in rows:
+                values = [str(v) if v is not None else None for v in row.values()]
+                conn.execute(insert_sql, values)
+
+        # Same reasoning as _load_source's dispatch: the per-row insert
+        # loop blocks the sole uvicorn worker for its whole duration.
+        await asyncio.to_thread(_create_and_insert)
 
         return table_name
 

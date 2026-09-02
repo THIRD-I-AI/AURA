@@ -122,8 +122,8 @@ def test_live_crashed_node_lease_reclamation(live_redis):
     async def run():
         nDead = _coord(live_redis, "DEAD", cap=1, lease_ms=80, heartbeat_ms=40)
         nLive = _coord(live_redis, "LIVE", cap=1, lease_ms=80, heartbeat_ms=40)
-        tok = nDead._enqueue("crashed_src", S.HIGH)
-        assert nDead._try_admit(tok), "setup: dead node should grab the slot"
+        tok = await nDead._enqueue("crashed_src", S.HIGH)
+        assert await nDead._try_admit(tok), "setup: dead node should grab the slot"
 
         ran = []
 

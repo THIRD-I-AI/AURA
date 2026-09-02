@@ -17,6 +17,7 @@ Runs on port 8009 and exposes:
 """
 from __future__ import annotations
 
+import asyncio
 import os
 import uuid
 from contextlib import asynccontextmanager
@@ -539,7 +540,10 @@ async def ingest_batch(req: IngestRequest, db: AsyncSession = Depends(get_db)):
     )
 
     gate_decision = _gateway.check(batch)
-    drift_result = _detector.detect(batch)
+    # DriftDetector.detect() may hit a blocking Redis round-trip under the
+    # distributed/redis UASR backends (state_store.py); the sole uvicorn
+    # worker must not stall on it (backend.md async-safety rule).
+    drift_result = await asyncio.to_thread(_detector.detect, batch)
 
     if not drift_result.drift_detected:
         return {
@@ -658,7 +662,9 @@ async def heal_batch(req: IngestRequest, db: AsyncSession = Depends(get_db)):
         batch.columns = list(batch.rows[0].keys()) if batch.rows else batch.columns
 
     gate_decision = _gateway.check(batch)
-    drift_result = _detector.detect(batch)
+    # See ingest_batch's identical comment: offload the potentially
+    # Redis-blocking detect() call off the single uvicorn worker.
+    drift_result = await asyncio.to_thread(_detector.detect, batch)
 
     if not drift_result.drift_detected:
         return {
@@ -758,7 +764,9 @@ async def register_baseline(req: BaselineRequest):
         schema_snapshot=req.schema_snapshot,
     )
 
-    _detector.register_baseline(batch.source_id, batch)
+    # register_baseline() may hit a blocking Redis round-trip under the
+    # distributed/redis UASR backends -- offload it (backend.md).
+    await asyncio.to_thread(_detector.register_baseline, batch.source_id, batch)
     version_id = _gateway.register_baseline(batch, desc="manual-baseline")
 
     return {
@@ -798,7 +806,10 @@ async def declare_schema_intent(req: SchemaIntentRequest):
     ttl_seconds = (
         req.ttl_seconds if req.ttl_seconds is not None else _SCHEMA_INTENT_DEFAULT_TTL_SECONDS
     )
-    _detector.declare_schema_intent(
+    # declare_schema_intent() may hit a blocking Redis round-trip under the
+    # distributed/redis UASR backends -- offload it (backend.md).
+    await asyncio.to_thread(
+        _detector.declare_schema_intent,
         req.source_id,
         added=req.added_columns,
         removed=req.removed_columns,

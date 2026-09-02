@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import os
 import sys
 from typing import Any, Dict
@@ -107,5 +108,9 @@ _engine = CodeGenerationEngine()
 async def generate_code(step: PlanStep) -> Dict[str, Any]:
     if not step.step:
         raise HTTPException(status_code=400, detail="plan step description is required")
-    result = _engine.generate(step)
+    # _engine.generate() makes a blocking LLM HTTP call (up to
+    # AURA_LLM_TIMEOUT, default 120s); the deployment runs one uvicorn
+    # worker, so running it inline would freeze every concurrent request
+    # for the duration (.claude/rules/backend.md async-safety rule).
+    result = await asyncio.to_thread(_engine.generate, step)
     return result

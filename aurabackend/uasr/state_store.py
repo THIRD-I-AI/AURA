@@ -264,9 +264,11 @@ class RedisStateStore(StateStore):
         self._r.delete(self._key(source_id))
 
     def source_ids(self) -> List[str]:
-        keys = self._r.keys(f"{self._prefix}*")
+        # SCAN, not KEYS: KEYS is O(N) and blocks the Redis server itself
+        # for every other client sharing the instance while it walks the
+        # whole keyspace; scan_iter cursors through incrementally instead.
         out = []
-        for k in keys:
+        for k in self._r.scan_iter(f"{self._prefix}*"):
             if isinstance(k, bytes):
                 k = k.decode("utf-8")
             out.append(k[len(self._prefix):])

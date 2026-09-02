@@ -198,6 +198,13 @@ class _FakeRedis:
         prefix = pattern.rstrip("*")
         return [k for k in self.kv if k.startswith(prefix)]
 
+    def scan_iter(self, pattern):
+        # RedisStateStore.source_ids() now uses SCAN instead of KEYS
+        # (BUG-021) -- mirror real redis-py's scan_iter as a plain
+        # generator over matching keys.
+        prefix = pattern.rstrip("*")
+        return (k for k in self.kv if k.startswith(prefix))
+
 
 class TestRedisStateStore:
     def test_roundtrip_via_fake_client(self):
