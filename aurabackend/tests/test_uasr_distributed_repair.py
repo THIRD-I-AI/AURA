@@ -148,8 +148,8 @@ def test_p4_crashed_node_lease_reclamation():
         nDead = _coord(r, "DEAD", cap=1, lease_ms=80, heartbeat_ms=40)
         nLive = _coord(r, "LIVE", cap=1, lease_ms=80, heartbeat_ms=40)
         # Simulate a crash: DEAD grabs the only slot and never heartbeats/releases.
-        tok = nDead._enqueue("crashed_src", S.HIGH)
-        assert nDead._try_admit(tok), "setup: dead node should grab the slot"
+        tok = await nDead._enqueue("crashed_src", S.HIGH)
+        assert await nDead._try_admit(tok), "setup: dead node should grab the slot"
 
         ran = []
 
@@ -185,7 +185,7 @@ def test_result_and_exception_propagate():
         with pytest.raises(RuntimeError, match="repair failed"):
             await n.submit("s2", S.LOW, boom)
         # slot released on both success and failure -> nothing left active
-        assert n.active_count() == 0
+        assert await n.active_count() == 0
         assert n.stats.completed == 1
         assert n.stats.failed == 1
 
@@ -238,9 +238,16 @@ def test_per_source_cap_prevents_starvation_across_nodes():
         quiet_node = _coord(r, "quiet", cap=4, max_per_source=2)
         admitted_order: List[str] = []
 
+        # Work/pre-sleep durations widened well past the original 0.02s/0.03s
+        # (BUG-021 fix): _try_admit's redis calls now go through
+        # asyncio.to_thread, so 11 concurrently-polling submit() loops
+        # create real thread-pool dispatch contention/jitter instead of the
+        # old instant in-process call -- the original tight margins didn't
+        # leave enough headroom for the per-source-cap skip to reliably win
+        # against that jitter before the noisy backlog drains.
         async def work(name: str):
             admitted_order.append(name)
-            await asyncio.sleep(0.02)
+            await asyncio.sleep(0.25)
             return name
 
         noisy = [
@@ -249,7 +256,7 @@ def test_per_source_cap_prevents_starvation_across_nodes():
             )
             for i in range(10)
         ]
-        await asyncio.sleep(0.03)  # let the noisy backlog queue up fleet-wide first
+        await asyncio.sleep(0.15)  # let the noisy backlog queue up fleet-wide first
         other = asyncio.create_task(
             quiet_node.submit("quiet_source", S.MEDIUM, lambda: work("quiet"))
         )
@@ -306,13 +313,13 @@ def test_active_count_for_source_tracks_and_clears_across_nodes():
         t1 = asyncio.create_task(nA.submit("shared_source", S.MEDIUM, work))
         t2 = asyncio.create_task(nB.submit("shared_source", S.MEDIUM, work))
         for _ in range(50):
-            if nA.active_count_for_source("shared_source") == 2:
+            if await nA.active_count_for_source("shared_source") == 2:
                 break
             await asyncio.sleep(0.005)
-        during = nA.active_count_for_source("shared_source")
+        during = await nA.active_count_for_source("shared_source")
         release.set()
         await asyncio.gather(t1, t2)
-        after = nA.active_count_for_source("shared_source")
+        after = await nA.active_count_for_source("shared_source")
         return during, after
 
     during, after = asyncio.run(run())

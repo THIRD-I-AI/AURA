@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import sys
@@ -75,7 +76,11 @@ async def generate_query(request: ChatRequest) -> AgentResponse:
     if not request.session_id:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="session_id is required")
 
-    response = coordinator.execute(request)
+    # coordinator.execute() chains up to 6 sequential blocking LLM calls
+    # (generator + critic, up to max_depth rounds); the deployment runs one
+    # uvicorn worker, so running it inline would freeze every concurrent
+    # request for the duration (.claude/rules/backend.md async-safety rule).
+    response = await asyncio.to_thread(coordinator.execute, request)
     if not response.final_query:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="Agent mesh returned empty query")
 

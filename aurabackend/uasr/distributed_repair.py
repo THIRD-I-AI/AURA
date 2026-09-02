@@ -160,29 +160,38 @@ class DistributedRepairCoordinator:
         return token.split(":", 2)[2]
 
     # ---- observability ---------------------------------------------
-    def active_count(self) -> int:
+    # Every method below does real synchronous redis-py network I/O
+    # (``self._r.*``). The deployment runs one uvicorn worker, so each call
+    # is wrapped in ``asyncio.to_thread`` -- otherwise a single admission
+    # poll or heartbeat would stall every concurrent tenant's request for
+    # the round-trip's duration (see .claude/rules/backend.md). This makes
+    # every method here a coroutine; callers (including the tests) must
+    # ``await`` them.
+    async def active_count(self) -> int:
         """Global count of live (non-expired) leases across the fleet."""
-        self._prune_expired()
-        return int(self._r.zcard(self._active))
+        await self._prune_expired()
+        return int(await asyncio.to_thread(self._r.zcard, self._active))
 
-    def queue_depth(self) -> int:
-        return int(self._r.zcard(self._waitq))
+    async def queue_depth(self) -> int:
+        return int(await asyncio.to_thread(self._r.zcard, self._waitq))
 
-    def active_count_for_source(self, source_id: str) -> int:
+    async def active_count_for_source(self, source_id: str) -> int:
         """Fleet-wide count of live leases for one source_id."""
-        val = self._r.hget(self._active_by_source_key, source_id)
+        val = await asyncio.to_thread(self._r.hget, self._active_by_source_key, source_id)
         return int(val) if val is not None else 0
 
     # ---- internal coordination -------------------------------------
-    def _prune_expired(self) -> int:
+    async def _prune_expired(self) -> int:
         """Reclaim leases whose TTL has passed (a crashed node's slots)."""
         now = self._now_ms()
-        expired = self._r.zrangebyscore(self._active, 0, now)
+        expired = await asyncio.to_thread(self._r.zrangebyscore, self._active, 0, now)
         if not expired:
             return 0
         for raw in expired:
-            self._r.hincrby(self._active_by_source_key, self._source_of(self._decode(raw)), -1)
-        removed = int(self._r.zremrangebyscore(self._active, 0, now))
+            await asyncio.to_thread(
+                self._r.hincrby, self._active_by_source_key, self._source_of(self._decode(raw)), -1
+            )
+        removed = int(await asyncio.to_thread(self._r.zremrangebyscore, self._active, 0, now))
         self.stats.reclaimed_leases += removed
         return removed
 
@@ -191,27 +200,27 @@ class DistributedRepairCoordinator:
         # lower score = admitted first: invert rank, then add arrival seq
         return (_RANK_BASE - rank) * _SEQ_SPACE + seq
 
-    def _enqueue(self, source_id: str, severity: DriftSeverity) -> str:
-        seq = int(self._r.incr(self._seqkey))
+    async def _enqueue(self, source_id: str, severity: DriftSeverity) -> str:
+        seq = int(await asyncio.to_thread(self._r.incr, self._seqkey))
         token = f"{self._node}:{seq}:{source_id}"
-        self._r.zadd(self._waitq, {token: self._score(severity, seq)})
+        await asyncio.to_thread(self._r.zadd, self._waitq, {token: self._score(severity, seq)})
         return token
 
-    def _acquire_lock(self) -> Optional[str]:
+    async def _acquire_lock(self) -> Optional[str]:
         val = uuid.uuid4().hex
-        ok = self._r.set(self._lockkey, val, nx=True, px=2000)
+        ok = await asyncio.to_thread(self._r.set, self._lockkey, val, nx=True, px=2000)
         return val if ok else None
 
-    def _release_lock(self, val: str) -> None:
+    async def _release_lock(self, val: str) -> None:
         # Best-effort compare-and-delete; the PX TTL is the crash backstop.
-        cur = self._r.get(self._lockkey)
+        cur = await asyncio.to_thread(self._r.get, self._lockkey)
         if cur is not None:
             if isinstance(cur, bytes):
                 cur = cur.decode("utf-8")
             if cur == val:
-                self._r.delete(self._lockkey)
+                await asyncio.to_thread(self._r.delete, self._lockkey)
 
-    def _try_admit(self, token: str) -> bool:
+    async def _try_admit(self, token: str) -> bool:
         """Atomically admit ``token`` iff a global slot is free and it is the
         highest-priority fleet-wide queue entry not blocked by the
         per-source cap.  Returns True on admission.
@@ -223,53 +232,59 @@ class DistributedRepairCoordinator:
         (uasr/repair_scheduler.py) -- so a saturated source can't also
         block a different, uncapped source's turn.
         """
-        lock = self._acquire_lock()
+        lock = await self._acquire_lock()
         if lock is None:
             return False
         try:
-            self._prune_expired()
-            if int(self._r.zcard(self._active)) >= self._max:
+            await self._prune_expired()
+            if int(await asyncio.to_thread(self._r.zcard, self._active)) >= self._max:
                 return False
             my_source = self._source_of(token)
             if self._max_per_source > 0:
-                mine_active = int(self._r.hget(self._active_by_source_key, my_source) or 0)
+                mine_active = int(
+                    await asyncio.to_thread(self._r.hget, self._active_by_source_key, my_source) or 0
+                )
                 if mine_active >= self._max_per_source:
                     return False
             # Scan the queue in priority order for the first entry eligible
             # to run (its source under the per-source cap, or fairness off).
             # A small bound keeps this O(1)-ish under normal queue depths;
             # anything beyond it just means "not our turn yet" either way.
-            queue = self._r.zrange(self._waitq, 0, 199)
+            queue = await asyncio.to_thread(self._r.zrange, self._waitq, 0, 199)
             for raw in queue:
                 cand = self._decode(raw)
                 if self._max_per_source > 0:
                     cand_source = self._source_of(cand)
-                    cand_active = int(self._r.hget(self._active_by_source_key, cand_source) or 0)
+                    cand_active = int(
+                        await asyncio.to_thread(self._r.hget, self._active_by_source_key, cand_source) or 0
+                    )
                     if cand_active >= self._max_per_source:
                         continue
                 if cand != token:
                     return False
                 # Claim: move token from wait queue into active leases.
-                self._r.zrem(self._waitq, token)
-                self._r.zadd(self._active, {token: self._now_ms() + self._lease_ms})
-                self._r.hincrby(self._active_by_source_key, my_source, 1)
+                await asyncio.to_thread(self._r.zrem, self._waitq, token)
+                await asyncio.to_thread(
+                    self._r.zadd, self._active, {token: self._now_ms() + self._lease_ms}
+                )
+                await asyncio.to_thread(self._r.hincrby, self._active_by_source_key, my_source, 1)
                 return True
             return False
         finally:
-            self._release_lock(lock)
+            await self._release_lock(lock)
 
-    def _heartbeat(self, token: str) -> None:
-        self._r.zadd(self._active, {token: self._now_ms() + self._lease_ms})
+    async def _heartbeat(self, token: str) -> None:
+        await asyncio.to_thread(self._r.zadd, self._active, {token: self._now_ms() + self._lease_ms})
 
-    def _release(self, token: str) -> None:
-        self._r.zrem(self._active, token)
-        self._r.hincrby(self._active_by_source_key, self._source_of(token), -1)
+    async def _release(self, token: str) -> None:
+        await asyncio.to_thread(self._r.zrem, self._active, token)
+        await asyncio.to_thread(self._r.hincrby, self._active_by_source_key, self._source_of(token), -1)
 
     async def _heartbeat_loop(self, token: str) -> None:
         try:
             while True:
                 await asyncio.sleep(self._heartbeat_ms / 1000.0)
-                self._heartbeat(token)
+                await self._heartbeat(token)
         except asyncio.CancelledError:
             raise
 
@@ -285,10 +300,10 @@ class DistributedRepairCoordinator:
         repair's result (or re-raises its exception)."""
         self.stats.submitted += 1
         enqueued_at = time.perf_counter()
-        token = self._enqueue(source_id, severity)
+        token = await self._enqueue(source_id, severity)
 
         # Cooperative wait until admitted.
-        while not self._try_admit(token):
+        while not await self._try_admit(token):
             await asyncio.sleep(self._poll)
 
         wait_ms = (time.perf_counter() - enqueued_at) * 1000.0
@@ -297,7 +312,7 @@ class DistributedRepairCoordinator:
         self.stats.per_severity_admitted[sev] = self.stats.per_severity_admitted.get(sev, 0) + 1
         self.stats.per_severity_wait_ms.setdefault(sev, []).append(wait_ms)
         self.stats.max_observed_global = max(
-            self.stats.max_observed_global, int(self._r.zcard(self._active))
+            self.stats.max_observed_global, int(await asyncio.to_thread(self._r.zcard, self._active))
         )
 
         hb = asyncio.create_task(self._heartbeat_loop(token))
@@ -314,4 +329,4 @@ class DistributedRepairCoordinator:
                 await hb
             except asyncio.CancelledError:
                 pass
-            self._release(token)
+            await self._release(token)
