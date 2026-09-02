@@ -282,9 +282,11 @@ class PipelineEngine:
         col_defs = ", ".join(f'"{_sanitize_id(c)}" VARCHAR' for c in columns)
         conn.execute(f"CREATE TABLE {_q(table_name)} ({col_defs})")
 
+        placeholders = ", ".join(["?"] * len(columns))
+        insert_sql = f"INSERT INTO {_q(table_name)} VALUES ({placeholders})"
         for row in rows:
-            values = ", ".join(f"'{str(v).replace(chr(39), chr(39)+chr(39))}'" if v is not None else "NULL" for v in row.values())
-            conn.execute(f"INSERT INTO {_q(table_name)} VALUES ({values})")
+            values = [str(v) if v is not None else None for v in row.values()]
+            conn.execute(insert_sql, values)
 
         return table_name
 
@@ -730,7 +732,7 @@ class PipelineEngine:
             async with pg.pool.acquire() as pg_conn:
                 # Drop + recreate if replace mode
                 if sink.if_exists == "replace":
-                    await pg_conn.execute(f"DROP TABLE IF EXISTS {table_name}")
+                    await pg_conn.execute(f"DROP TABLE IF EXISTS {_q(table_name)}")
 
                 # Build CREATE TABLE from DuckDB column info
                 duck_schema = conn.execute(f"DESCRIBE {_q(final_table)}").fetchall()
@@ -743,17 +745,17 @@ class PipelineEngine:
                 for row in duck_schema:
                     duck_type = row[1].upper()
                     pg_type = pg_type_map.get(duck_type, "TEXT")
-                    col_defs.append(f'"{row[0]}" {pg_type}')
+                    col_defs.append(f'{_q(row[0])} {pg_type}')
 
                 if sink.if_exists in ("replace", "fail"):
                     await pg_conn.execute(
-                        f"CREATE TABLE IF NOT EXISTS {table_name} ({', '.join(col_defs)})"
+                        f"CREATE TABLE IF NOT EXISTS {_q(table_name)} ({', '.join(col_defs)})"
                     )
 
                 # Insert rows in batches
                 if rows:
                     placeholders = ", ".join(f"${i+1}" for i in range(len(col_names)))
-                    insert_sql = f"INSERT INTO {table_name} VALUES ({placeholders})"
+                    insert_sql = f"INSERT INTO {_q(table_name)} VALUES ({placeholders})"
                     await pg_conn.executemany(insert_sql, rows)
 
             run.output_table = table_name

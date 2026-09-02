@@ -8,6 +8,8 @@ import logging
 import os
 from typing import Any, Dict, List, Optional
 
+from shared.sql_identifiers import quote_identifier
+
 from .base import BaseConnector, ConnectorConfig
 
 logger = logging.getLogger("aura.connectors.duckdb")
@@ -119,7 +121,7 @@ class DuckDBConnector(BaseConnector):
         if not self._conn:
             return {}
         try:
-            result = self._conn.execute(f"DESCRIBE {table_name}")
+            result = self._conn.execute(f"DESCRIBE {quote_identifier(table_name)}")
             cols = [desc[0] for desc in result.description]
             rows = result.fetchall()
             return {
@@ -138,7 +140,7 @@ class DuckDBConnector(BaseConnector):
             return {}
 
     async def sample_rows(self, table_name: str, limit: int = 100) -> List[Dict[str, Any]]:
-        return await self.execute_query(f"SELECT * FROM {table_name} LIMIT {limit}")
+        return await self.execute_query(f"SELECT * FROM {quote_identifier(table_name)} LIMIT {limit}")
 
     async def execute_query(self, query: str, limit: int = 1000) -> List[Dict[str, Any]]:
         if not self._conn:
@@ -156,7 +158,7 @@ class DuckDBConnector(BaseConnector):
             return {}
         try:
             schema = await self.get_table_schema(table_name)
-            count_result = self._conn.execute(f"SELECT COUNT(*) FROM {table_name}")
+            count_result = self._conn.execute(f"SELECT COUNT(*) FROM {quote_identifier(table_name)}")
             row_count = count_result.fetchone()[0]
             return {
                 "table_name": table_name,

@@ -6,6 +6,7 @@ from typing import Any
 
 from shared.llm_provider import get_llm
 from shared.secret_resolver import secret_resolver
+from shared.sql_identifiers import quote_identifier
 
 logger = logging.getLogger("aura.orchestration.generator")
 
@@ -130,21 +131,24 @@ class GeneratorAgent:
         if not columns or len(columns) == 0:
             columns = ["column_0", "column_1", "column_2"]  # Safe default for headerless CSV
 
+        q_table = quote_identifier(table_name)
+
         # Build a useful summary: row count + distinct counts per column, plus a top-frequency sample on the first column
         summary_select_parts = ["COUNT(*) AS row_count"]
         for col in columns:
-            summary_select_parts.append(f"COUNT(DISTINCT {col}) AS distinct_{col}")
-        summary_query = f"SELECT {', '.join(summary_select_parts)} FROM {table_name}"
+            summary_select_parts.append(f"COUNT(DISTINCT {quote_identifier(col)}) AS distinct_{col}")
+        summary_query = f"SELECT {', '.join(summary_select_parts)} FROM {q_table}"
 
         # Top frequency for the first column (helps when asking for sales data or categories)
+        q_first_col = quote_identifier(columns[0])
         top_freq_query = (
-            f"SELECT {columns[0]}, COUNT(*) AS count FROM {table_name} "
-            f"GROUP BY {columns[0]} ORDER BY count DESC LIMIT 5"
+            f"SELECT {q_first_col}, COUNT(*) AS count FROM {q_table} "
+            f"GROUP BY {q_first_col} ORDER BY count DESC LIMIT 5"
         )
 
         # Quick preview of first rows with up to five columns
-        preview_cols = ", ".join(columns[:5])
-        preview_query = f"SELECT {preview_cols} FROM {table_name} LIMIT 5"
+        preview_cols = ", ".join(quote_identifier(c) for c in columns[:5])
+        preview_query = f"SELECT {preview_cols} FROM {q_table} LIMIT 5"
 
         # If the user explicitly asks for a summary/report, return the richer bundle
         if "summary" in prompt_lower or "report" in prompt_lower or "sales" in prompt_lower:

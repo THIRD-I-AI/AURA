@@ -28,12 +28,27 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from metadata_store.db import get_session, init_db
 from metadata_store.models import DARInsight
+from shared.safe_paths import PathTraversalError, safe_join
 from shared.service_factory import create_service
 
 from .daemon import DARDaemon, DARDaemonConfig
 from .graph import run_dar
 
 logger = logging.getLogger("aura.dar.main")
+
+# The analytics lake root. A caller-supplied duckdb_path is a filename
+# (or subpath) resolved against this directory, not an arbitrary
+# filesystem path — see BUG-020 #3.
+_ANALYTICS_LAKE_DIR = os.getenv("AURA_ANALYTICS_LAKE_DIR", "data")
+
+
+def _resolve_duckdb_path(user_path: Optional[str]) -> str:
+    if not user_path:
+        return os.getenv("UASR_DUCKDB_PATH", "data/uasr_lake.duckdb")
+    try:
+        return str(safe_join(_ANALYTICS_LAKE_DIR, user_path))
+    except PathTraversalError as exc:
+        raise HTTPException(status_code=400, detail=f"invalid duckdb_path: {exc}")
 
 
 # ── Singletons ────────────────────────────────────────────────────────
@@ -127,7 +142,7 @@ async def trigger_research_run(req: ResearchRunRequest) -> Dict[str, Any]:
     """Run one DAR cycle synchronously. Returns the run summary plus
     the IDs of any findings persisted. For long-running workloads use
     the daemon; this endpoint is for ad-hoc / on-demand runs."""
-    duckdb_path = req.duckdb_path or os.getenv("UASR_DUCKDB_PATH", "data/uasr_lake.duckdb")
+    duckdb_path = _resolve_duckdb_path(req.duckdb_path)
     state = await run_dar(req.source_id, req.table_name, duckdb_path=duckdb_path)
     return {
         "run_id": state.run_id,

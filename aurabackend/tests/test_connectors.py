@@ -170,6 +170,36 @@ class TestDuckDBConnectorQueries:
         assert "source_id" in d
 
 
+# ── DuckDBConnector — identifier quoting (BUG-020) ─────────────────────────────
+
+class TestDuckDBConnectorIdentifierQuoting:
+    """A table name containing a double quote must be safely quoted, not
+    splice raw into the SQL string and break out of the identifier."""
+
+    @pytest.fixture
+    def conn_with_quoted_table(self):
+        c = DuckDBConnector(_duckdb_config())
+        _run(c.connect())
+        # DuckDB identifier containing an embedded double quote (doubled to escape).
+        c._conn.execute('CREATE TABLE "weird""table" (id INTEGER)')
+        c._conn.execute('INSERT INTO "weird""table" VALUES (1), (2)')
+        yield c
+        _run(c.disconnect())
+
+    def test_sample_rows_with_quote_in_table_name(self, conn_with_quoted_table):
+        rows = _run(conn_with_quoted_table.sample_rows('weird"table', limit=10))
+        assert len(rows) == 2
+
+    def test_profile_table_with_quote_in_table_name(self, conn_with_quoted_table):
+        profile = _run(conn_with_quoted_table.profile_table('weird"table'))
+        assert profile["rows"] == 2
+
+    def test_get_table_schema_with_quote_in_table_name(self, conn_with_quoted_table):
+        schema = _run(conn_with_quoted_table.get_table_schema('weird"table'))
+        col_names = [c["name"] for c in schema["columns"]]
+        assert "id" in col_names
+
+
 # ── DuckDBConnector — file queries ────────────────────────────────────────────
 
 class TestDuckDBFileQuery:
