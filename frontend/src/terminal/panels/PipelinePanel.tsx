@@ -287,7 +287,7 @@ export default function PipelinePanel(_props: IDockviewPanelProps) {
 /** UASR recovery approvals — fetched on demand when the sidecar node is open. */
 function UasrRecoveries({ note, setNote }: { note: string; setNote: (s: string) => void }) {
   const [pending, setPending] = useState<PendingRecovery[]>([]);
-  const [loaded, setLoaded] = useState(false);
+  const [, setLoaded] = useState(false);
   const [busyId, setBusyId] = useState<string | null>(null);
 
   const load = useCallback(async () => {
@@ -301,8 +301,11 @@ function UasrRecoveries({ note, setNote }: { note: string; setNote: (s: string) 
     }
   }, []);
 
-  // lazy first load
-  if (!loaded) { void load(); }
+  // mount-only fetch — inline in render body re-fired on every parent
+  // telemetry re-render that landed before `loaded` flipped (BUG-028)
+  useEffect(() => {
+    void load();
+  }, [load]);
 
   const decide = useCallback(async (id: string, kind: 'approve' | 'reject') => {
     setBusyId(id);
