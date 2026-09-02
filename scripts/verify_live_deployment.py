@@ -252,11 +252,20 @@ def check_file_upload_profile(v: Verifier) -> str:
         raise AssertionError(f"upload did not report success: {body}")
     file_id = body.get("filename") or filename
 
-    r2 = v.client.get(f"{V1}/files/{file_id}/profile", headers=v._auth_headers())
-    r2.raise_for_status()
-    profile = r2.json()
-    if profile.get("status") != "success":
-        raise AssertionError(f"profile fetch did not report success: {profile}")
+    # The profile write is intentionally backgrounded (fire_and_forget,
+    # non-blocking -- BUG-030's fix) rather than part of the upload
+    # response's own request/response cycle, so it can genuinely still be
+    # in flight the instant this check asks for it. Poll briefly rather
+    # than asserting on the very next request.
+    profile = None
+    for _ in range(10):
+        r2 = v.client.get(f"{V1}/files/{file_id}/profile", headers=v._auth_headers())
+        if r2.status_code == 200 and r2.json().get("status") == "success":
+            profile = r2.json()
+            break
+        time.sleep(0.5)
+    if profile is None:
+        raise AssertionError(f"profile never became available after 5s: last response {r2.status_code} {r2.text[:200]}")
     return (
         f"uploaded {file_id} ({body.get('bytes')}B) + profiled "
         f"({profile.get('columns_count')} cols, {profile.get('rows_count')} rows)"
