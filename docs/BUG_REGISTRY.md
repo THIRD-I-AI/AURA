@@ -649,9 +649,159 @@ This is the process, not a suggestion:
      the current deployment — currently unreachable.**
 - **Caused by:** none — pre-existing across a long project history, not a
   regression from any recent change.
-- **Fix:** none yet. Item 1 (the UNION pipeline step) is the only one
-  reachable in the current deployment and is the one worth prioritizing
-  if this is picked up — either implement UNION support or make the
-  fall-through raise a clear error instead of silently dropping the step.
-  Items 2-4 are honestly disclosed already or currently unreachable;
-  revisit if the scheduler/ingestion services become reachable.
+- **Fix:** Item 1 fixed 2026-09-02 — `PipelineEngine._step_to_sql`'s final
+  fall-through (`aurabackend/pipeline/engine.py`, previously a bare
+  `return None`) now raises `ValueError(f"Pipeline step type {t.value!r}
+  is not implemented")` instead. The caller's existing top-level
+  `except Exception` (engine.py:197-200) turns this into
+  `run.status = FAILED` with a real `run.error` message — a UNION step
+  submitted directly to the pipeline API now fails loudly instead of
+  silently no-oping and returning SUCCESS with the step dropped. Full
+  UNION SQL generation was NOT implemented (no schema exists yet for
+  which source/columns to union — a real product decision, not a
+  mechanical one) — this closes the silent-wrong-result path only.
+  Regression test: `test_union_step_fails_run_instead_of_silently_skipping`
+  in `aurabackend/tests/test_pipeline_execution.py`. Items 2-4 are
+  honestly disclosed already or currently unreachable; revisit if the
+  scheduler/ingestion services become reachable.
+
+## BUG-016: webhooks.py + inbound_hooks.py CRUD has zero tenant scoping (cross-tenant IDOR)
+- **Status:** open
+- **Found by:** codebase-quality-audit workflow, 2026-09-02 (13-agent subsystem sweep + adversarial verify pass over the whole repo, `wf_74a1105c-a1e`).
+- **Severity:** blocks-feature (security) — any authenticated caller can enumerate/read/edit/delete/test-fire any OTHER tenant's outbound webhook subscriptions and inbound hooks.
+- **Root cause:** `aurabackend/api_gateway/routers/webhooks.py` (create/list/get/patch/delete/test, lines 83-148) and `inbound_hooks.py`'s CRUD routes (lines 63-107) call the module-level `webhook_dispatcher`/`inbound_hooks` singleton registries keyed only by bare `sub_id`/`hook_id`, unlike every other stateful router in this package (`connections.py`, `dashboards.py`, `chat.py`, `pipelines.py`, `files.py`, `queries.py`) which derives `workspace_id`/tenant via `current_workspace_id()`/`_request_tenant()` and filters every read/write by it. `shared/webhook_dispatcher.py` and `shared/inbound_hooks.py`'s underlying stores have no workspace/tenant field at all — this is a direct regression against security.md's "Least-privilege scope" rule, not a documented tradeoff.
+- **Caused by:** none — pre-existing since these routers were added.
+- **Fix:** add `workspace_id`/tenant to both underlying stores (`shared/webhook_dispatcher.py`, `shared/inbound_hooks.py`), derive it via the same `current_workspace_id()`/`_request_tenant()` pattern already used elsewhere, and filter every CRUD/test-fire call by it (404, not a cross-tenant peek, on a foreign id). Not yet fixed.
+
+## BUG-017: inbound_hooks fire_hook not in JWT public-path allowlist — blocks its own intended external HMAC callers
+- **Status:** open
+- **Found by:** codebase-quality-audit workflow, 2026-09-02.
+- **Severity:** blocks-feature — the inbound-hooks feature is unreachable by the external systems it's built for on any deployment with JWT auth armed (the production default; `config.py`'s `_require_jwt_for_tenant_isolation_in_production` validator makes `AURA_JWT_ENABLED=true` mandatory, not optional, in production).
+- **Root cause:** `POST /api/v1/hooks/fire/{slug}` (`inbound_hooks.py:122-135`) takes no `Depends(require_user)` and is meant to be gated solely by its own optional per-hook HMAC secret check — but it is absent from `shared/middleware.py`'s `_PUBLIC_PATHS`/`_PUBLIC_PATH_PREFIXES` allowlist, so `JWTAuthMiddleware` 401s any caller with no AURA Bearer token before the handler (and its HMAC check) ever runs. This is the identical failure class already root-caused once for a different route (see this file's own BUG-005 history: "the global auth gate silently defeated the feature on every deployment with auth correctly armed") but was not applied here. `tests/test_inbound_hooks.py` never wires `JWTAuthMiddleware` into its test app, so CI stays green while the feature is unreachable in the one mode it exists for.
+- **Caused by:** none — same class as BUG-005 but a distinct route, not a regression from that fix.
+- **Fix:** add `/api/v1/hooks/fire/` (prefix match, since `{slug}` varies) to `shared/middleware.py`'s public-path allowlist, and add a test that drives this route through the real `JWTAuthMiddleware` with no Bearer token, asserting it reaches `_verify_signature` instead of 401ing. Do this together with BUG-016's tenant-scoping fix for the surrounding file, since they touch the same router. Not yet fixed.
+
+## BUG-018: metadata_store HTTP service has zero tenant scoping on semantic-model / dataset-profile / user endpoints
+- **Status:** open
+- **Found by:** codebase-quality-audit workflow, 2026-09-02.
+- **Severity:** blocks-feature (security) — every semantic model/dataset profile created or read through this service's own HTTP surface (port 8007) is pinned to `workspace_id=None`, a cross-tenant blind spot; `get_user` returns any user's name/email for any `user_id` with no identity check.
+- **Root cause:** `aurabackend/metadata_store/main.py`'s `list_semantic_models`/`get_semantic_model`/`upsert_semantic_model`/`get_dataset_profile` (lines 63-189) call the repository layer without ever passing `workspace_id`, even though `repository.py` (lines 172, 248, 267) added that exact parameter specifically to close a documented prior cross-tenant leak. The fix landed in the repository layer and is correctly used by the gateway's in-process callers (`api_gateway/routers/pipelines.py`, deriving `current_workspace_id(request)` from the verified JWT) — but this standalone HTTP service was never updated to match, and its own JWT/API-key auth is only opt-in (`AURA_JWT_ENABLED=true`), so with auth off this is an unauthenticated, tenant-blind duplicate of the gateway's API.
+- **Caused by:** none — the repository-layer fix (already shipped) was applied to one caller (the gateway) and not this one, not a regression it introduced.
+- **Fix:** thread a `workspace_id`/tenant identity through `metadata_store/main.py`'s request handlers (mirroring the gateway's `current_workspace_id()` pattern) and pass it into every `repo.*` call already built to accept it. Not yet fixed.
+
+## BUG-019: evolution subsystem has zero tenant scoping, an unvalidated status-bypass, and an unbounded rating field
+- **Status:** open
+- **Found by:** codebase-quality-audit workflow, 2026-09-02.
+- **Severity:** blocks-feature (security + data-integrity) — three related gaps in `aurabackend/evolution/`:
+  1. `models.py`'s four tables (`ExecutionPattern`, `ImprovementProposal`, `SystemEvolutionLog`, `AgentFeedback`) have no `tenant_id` column, and none of `api.py`'s GET routes (`/patterns`, `/proposals`, `/proposals/{id}`, `/log`, `/feedback/summary`, lines 114-262) filter by tenant — any authenticated caller sees every other tenant's prompts, agent output, and pattern stats. `POST /evolution/feedback` also accepts an arbitrary `session_id` with no ownership check.
+  2. `PATCH /evolution/proposals/{id}` (`api.py:61,197`) writes the client-supplied `status` string straight onto the ORM row with no validation against the `ImprovementStatus` enum, letting a caller set a proposal to `"deployed"` directly, bypassing the confidence-threshold deploy gate `engine.py`'s own docstring promises ("never deploys changes destructively... only when confidence ≥ threshold").
+  3. `FeedbackRequest.user_rating` (`api.py:50`) has no `Field(ge=1, le=5)` despite being documented and stored as a 1-5 rating (`models.py:107`), so out-of-range values silently corrupt feedback aggregates.
+- **Root cause:** this subsystem was never brought in line with the tenant-isolation and schema-validation invariants (security.md, backend.md) the rest of the codebase enforces.
+- **Caused by:** none — pre-existing since the subsystem was added.
+- **Fix:** add a `tenant_id` column (Alembic migration) to all four tables and filter every read/write by it; change `ProposalUpdateRequest.status` to the `ImprovementStatus` enum/`Literal` type instead of bare `str`; add `Field(ge=1, le=5)` to `user_rating`. Not yet fixed — the tenant-scoping half needs a migration, larger than the other two one-line Pydantic fixes.
+
+## BUG-020: SQL-injection sweep — 7 call sites splice identifiers/values into raw SQL instead of the one shared quoter
+- **Status:** open
+- **Found by:** codebase-quality-audit workflow, 2026-09-02.
+- **Severity:** blocks-feature (security) for the reachable ones; the repo already treats this class as HIGH per its CodeQL history (security.md, Sec-2..Sec-8).
+- **Root cause:** backend.md mandates one shared quoter (`shared/sql_identifiers.py::quote_identifier`/`quote_literal`) for exactly this reason ("LLM-generated column names get spliced into raw DDL... 68 call sites unprotected" was the last time this happened repo-wide). Seven more sites were found still hand-rolling or skipping it entirely:
+  1. `aurabackend/pipeline/engine.py:733` `_write_pg_sink` splices `sink.table` (raw pipeline-definition input) unquoted into `DROP TABLE`/`CREATE TABLE`/`INSERT INTO` — reachable via the pipeline API. The sibling `_write_duckdb_sink` two functions below does this correctly.
+  2. `aurabackend/pipeline/engine.py:285` `_load_db_source` hand-escapes literal values via manual quote-doubling in a per-row insert loop instead of bound parameters — the sibling `_load_kafka_source` right below does this correctly with `?` placeholders.
+  3. `aurabackend/dar_service/main.py:87` `/dar/research/run` accepts a caller-supplied `duckdb_path` with zero validation (opens ANY DuckDB file reachable on the host) and splices `table_name` unescaped into f-string SQL in `graph.py`.
+  4. `aurabackend/connectors/postgresql_connector.py:132,167` (and the same pattern in `mysql_connector.py`, `duckdb_connector.py`) splice `table_name` unquoted; reachable unvalidated via `/connectors/{type}/profile` (one of two call sites bypasses even the ad-hoc `_IDENT_RE` regex guard the sibling materialize/preview endpoints apply).
+  5. `aurabackend/orchestration_service/agents/generator_agent.py:133-147`'s deterministic SQL fallback (fires whenever the LLM is unavailable — not a rare path) splices `table_name`/columns parsed from free-text schema context, unquoted.
+  6. `aurabackend/mcp_servers/aura_mcp_server.py:205` `duckdb_sample_table` hand-rolls `f'SELECT * FROM "{table}"'` instead of `quote_identifier`.
+  7. `aurabackend/shared/database_adapter.py:296-352` (`vector_search`/`store_vector`/`store_point`) splices table/column names unquoted — not exploitable today (only caller, `vault_client.py`, passes hardcoded literals) but the shared adapter itself provides no protection the moment any caller passes a dynamic name.
+- **Caused by:** none — same recurring class as the original 68-site sweep, not a regression from a recent change.
+- **Fix:** run every identifier above through `quote_identifier`, values through bound parameters/`quote_literal`; for dar_service, also allow-list `duckdb_path` to the configured analytics-lake directory instead of accepting an arbitrary filesystem path. Not yet fixed.
+
+## BUG-021: uasr distributed-repair + Redis state store block the single uvicorn worker on synchronous Redis I/O
+- **Status:** open
+- **Found by:** codebase-quality-audit workflow, 2026-09-02.
+- **Severity:** blocks-feature — under `UASR_REPAIR_BACKEND=distributed`/`UASR_STATE_BACKEND=redis` (the documented fleet-mode config), every drift repair submission and every `/uasr/ingest`, `/uasr/heal`, `/uasr/baseline` call blocks the sole uvicorn worker on real network round-trips, freezing every concurrent tenant's request for the duration.
+- **Root cause:** `runtime_config.build_redis_client()` (`runtime_config.py:164`) returns the synchronous `redis.Redis.from_url(url)` client (not `redis.asyncio`), used directly with no `asyncio.to_thread` offload by `DistributedRepairCoordinator._try_admit`/`_prune_expired`/`_enqueue`/`_heartbeat` (`distributed_repair.py`, ~8 sequential calls per invocation) and by `RedisStateStore.load`/`save`/`contains`/`delete`/`source_ids` (`state_store.py:245-273`, called synchronously from `DriftDetector.detect()`/`.register_baseline()`, themselves called directly from the async `ingest_batch`/`heal_batch`/`register_baseline` handlers in `service.py`). `source_ids()` additionally uses the blocking O(N) `KEYS` command instead of `SCAN`, which also blocks Redis server-side for every other client sharing that instance. Direct violation of backend.md's async-safety rule.
+- **Caused by:** none — pre-existing since the Redis fleet-mode backends were added.
+- **Fix:** wrap every `self._r.*` call in both files with `asyncio.to_thread` (or switch to `redis.asyncio.Redis`, the cleaner fix given the call volume), and replace `KEYS` with `SCAN` in `source_ids()`. Not yet fixed.
+
+## BUG-022: three more services call blocking LLM/file-load code directly from async handlers with no to_thread offload
+- **Status:** open
+- **Found by:** codebase-quality-audit workflow, 2026-09-02.
+- **Severity:** blocks-feature — each freezes its single uvicorn worker for every concurrent caller for the duration of the blocking call.
+- **Root cause:** three call chains never got the `asyncio.to_thread` wrapping backend.md requires for exactly this pattern:
+  1. `aurabackend/pipeline/engine.py:220` `_load_source` dispatches FILE sources to `_load_file_source` (`smart_load_file(..., use_llm=True)` — a network LLM call), DUCKDB sources to `_load_duckdb_source` (ATTACH + CREATE TABLE AS on a large external file), and DB sources to a synchronous per-row insert loop — none offloaded, even though every other `conn.execute` in the same `execute()` function IS wrapped with an explicit comment explaining why.
+  2. `aurabackend/code_generation_service/main.py:107` `/generate_code` calls `CodeGenerationEngine.generate()` synchronously, which calls a synchronous `shared/llm_provider.py` provider method doing a blocking `httpx.post` (up to `AURA_LLM_TIMEOUT`, default 120s).
+  3. `aurabackend/orchestration_service/main.py:78` calls `TinyRecursiveCoordinator.execute()` synchronously, chaining up to 6 sequential blocking LLM calls (generator + critic, up to `max_depth=3` rounds).
+- **Caused by:** none — pre-existing.
+- **Fix:** wrap each of the three call sites above in `asyncio.to_thread`. Not yet fixed.
+
+## BUG-023: scheduler_service — a variable-shadowing crash in error handling, and an unvalidated schedule_config crash
+- **Status:** open
+- **Found by:** codebase-quality-audit workflow, 2026-09-02.
+- **Severity:** blocks-feature.
+- **Root cause:** two independent bugs in the same service:
+  1. `aurabackend/scheduler_service/main.py:416-431` `list_executions`'s `status: Optional[JobStatus] = None` parameter shadows the module-level `from fastapi import ... status` import for the whole function body; its own `except Exception` block then does `status_code=status.HTTP_500_INTERNAL_SERVER_ERROR`, which resolves to the local parameter (`None` or a `JobStatus` value, not the fastapi module) — so any exception this endpoint hits raises `AttributeError` instead of returning a structured 500.
+  2. `aurabackend/scheduler_service/executor.py:344-381` `_calculate_next_execution`'s daily/weekly/monthly branches feed unvalidated `schedule_config` values (`day`/`hour`/`minute`) straight into `datetime.replace()` with no bounds check. Since this call happens inside `execute_job`'s SUCCESS path (right after a query already succeeded and its results were stored), a `ValueError` here (e.g. `day=31` in a 30-day month) is caught by the outer generic exception handler and the run is retried/reported as FAILED — a successful query silently misreported.
+- **Caused by:** none — pre-existing.
+- **Fix:** rename the `status` parameter (e.g. `status_filter`) in `list_executions`; add `Field(ge=1,le=31)`/`ge=0,le=23`/`ge=0,le=59` (or equivalent runtime bounds check) to `CreateJobRequest.schedule_config`'s day/hour/minute before they reach `datetime.replace()`. Not yet fixed.
+
+## BUG-024: three routers leak raw exception text to the client instead of routing through sanitize_error
+- **Status:** open
+- **Found by:** codebase-quality-audit workflow, 2026-09-02.
+- **Severity:** degrades-accuracy (info leak) — DB-driver/DuckDB error text can carry file paths, table/column names, connection strings, or query fragments.
+- **Root cause:** security.md mandates every caught exception route through `shared/error_handler.py::sanitize_error` before reaching a client response; three routers don't:
+  1. `aurabackend/api_gateway/routers/dashboards.py:196-208` `_run_tile`'s except clause sets `"error": str(exc)` directly — the executed text is caller-supplied SQL run through DuckDB. `dashboards.py` never imports `sanitize_error`, unlike its siblings `etl.py`/`files.py`/`chat.py`/`queries.py`.
+  2. `aurabackend/insights_service/main.py:104-126` (`/analyze`, `/chart-suggestions`) puts `str(e)` directly into `HTTPException(detail=...)`.
+  3. `aurabackend/connectors/main.py` (8 call sites: lines 118-123, 152-156, 246-250, 306-310, 388-392, 452-456, 482-486, 506-510) does the same for connector test/query errors, which can carry DB credentials/hostnames.
+- **Caused by:** none — pre-existing; `counterfactual_service/main.py` already follows the correct pattern as the reference sibling.
+- **Fix:** import and route every caught exception in these three files through `sanitize_error` before it reaches the response, matching `etl.py`/`files.py`/`counterfactual_service/main.py`. Not yet fixed.
+
+## BUG-025: mapek_worker.py mislabels a real canary-shim failure as "no routes yet"; financial_auditor.py skips its own overflow guard for two checks
+- **Status:** open
+- **Found by:** codebase-quality-audit workflow, 2026-09-02.
+- **Severity:** degrades-accuracy.
+- **Root cause:** two independent bugs:
+  1. `aurabackend/uasr/mapek_worker.py:339-344` wraps `self._shim_router.apply(...)` in `except Exception: pass  # no routes yet — use raw rows`. But `ShimRouter.apply()` already returns a normal dict (never raises) for both "no routes" cases — the only way it raises is a genuine canary-shim `transform()` failure on live batch rows, which this bare except then swallows with no log/metric/event while misnaming the cause, directly the anti-pattern CLAUDE.md warns about ("a handler that maps a broad exception to one narrated reason will eventually lie").
+  2. `aurabackend/agents/specialists/financial_auditor.py`'s `execute_as2305_analytical_procedures` (line 193) and `execute_as2401_fraud_detection` (line 310) read raw `entry.get("amount", 0)` and compare it directly (`>`, `%`, `abs()`), unlike the same file's `_money()` helper (used correctly two other places in the same file) built specifically to swallow non-numeric amounts instead of raising — a single bad row (plausible from arbitrary uploaded ledger data) crashes the entire audit batch with no try/except anywhere in `run_full_audit`'s call chain.
+- **Caused by:** none — pre-existing.
+- **Fix:** replace the bare except in `mapek_worker.py` with a logged warning + emitted event naming the real cause (canary transform failure); route the two `financial_auditor.py` amount reads through the existing `_money()` helper. Not yet fixed.
+
+## BUG-026: ToolRegistry.call() never enforces requires_approval/is_destructive despite the flags existing to prevent unattended destructive actions
+- **Status:** open
+- **Found by:** codebase-quality-audit workflow, 2026-09-02.
+- **Severity:** blocks-feature (safety) — a future tool registered with `requires_approval=True` would run unattended.
+- **Root cause:** `aurabackend/agents/tool_registry.py`'s docstring promises "permission checks for free"; `Tool.requires_approval`/`is_destructive` (lines 21-22) are defined, but `ToolRegistry.call()` (line 86) goes straight from lookup to `await tool.fn(**kwargs)` — the flags are read only for display badges in `describe_tools()`, never as a gate. Compounding this, `agents/tools.py`'s `execute_sql` tool hardcodes `"approved": True` in its payload to the execution sandbox, so the one place downstream that does check an approval flag (`execution_sandbox_service/main.py`'s `if not job.approved: raise HTTPException(403,...)`) is unconditionally satisfied by the tool itself.
+- **Caused by:** none — pre-existing.
+- **Fix:** add an actual gate in `ToolRegistry.call()` that pauses/rejects when `tool.requires_approval` (or `is_destructive`) is set and no approval has been granted, instead of only rendering it as text; stop hardcoding `"approved": True` in `execute_sql`. Not yet fixed — this is a safety-behavior change, review carefully before landing.
+
+## BUG-027: counterfactual engine.py's signing path ignores the admin key-revocation flag
+- **Status:** open
+- **Found by:** codebase-quality-audit workflow, 2026-09-02.
+- **Severity:** blocks-feature (compliance) — `POST /counterfactual/admin/revoke-key` does not actually stop the revoked key from signing new fair-lending/hiring/insurance audit certificates.
+- **Root cause:** `aurabackend/counterfactual_service/engine.py:1812`'s `run_job()` calls `signing.sign_bytes(...)` unconditionally, with no `cryptography.is_revoked()` check — unlike `financial_report.py:103`, which explicitly documents and implements "refuses to sign if the active key is revoked." `main.py:1101`'s `get_sth` (Merkle-tree-head signing) has the same gap. The revoked flag is only ever read in two places (the JWKS endpoint, and `financial_report.py`) — never in the primary counterfactual-audit product this service exists for.
+- **Caused by:** none — pre-existing; the revocation mechanism itself works, it's just not consulted by these two signing paths.
+- **Fix:** add the same `is_revoked()` gate `financial_report.py` already uses to `engine.py`'s `run_job()` and `main.py`'s `get_sth()` before calling `signing.sign_bytes`. Not yet fixed.
+
+## BUG-028: frontend — chat errors collapse to one message; a UASR panel re-fires its fetch on every parent re-render
+- **Status:** open
+- **Found by:** codebase-quality-audit workflow, 2026-09-02.
+- **Severity:** cosmetic / degrades-accuracy (not a backend/security issue).
+- **Root cause:** two independent frontend bugs:
+  1. `frontend/src/workbench/Workbench.tsx:281-293`'s chat handler wraps `chatService.streamMessage(...)` in a bare `catch {}` with no parameter, collapsing every failure mode (expired JWT, 5xx, network abort, JSON parse error) into one hardcoded "Commander offline" message — a user hitting an auth failure is told to "connect a gateway" instead of to re-authenticate.
+  2. `frontend/src/terminal/panels/PipelinePanel.tsx:305`'s `UasrRecoveries` component does `if (!loaded) { void load(); }` directly in the render body instead of inside a `useEffect` — since the parent re-renders every ~8s telemetry tick/SSE event and `loaded` only flips once the async fetch resolves, any re-render landing before that resolution re-fires a duplicate `GET /uasr/recovery/pending`. Self-corrects once `loaded` becomes true; not a hang, just redundant requests.
+- **Caused by:** none — pre-existing.
+- **Fix:** (1) inspect the caught error's status/type in `Workbench.tsx` and branch the message accordingly (401 → re-auth, 5xx/network → offline). (2) move `PipelinePanel.tsx`'s `load()` call into a `useEffect(() => { load() }, [])`. Not yet fixed.
+
+## BUG-029: lower-priority items from the 2026-09-02 codebase-quality audit (logged, not yet triaged for a fix)
+- **Status:** open — logged so these don't evaporate; lower severity than BUG-016 through BUG-028, deferred.
+- **Found by:** codebase-quality-audit workflow, 2026-09-02 (7 low-severity findings, not run through the adversarial verify pass — that pass was reserved for medium/high findings; treat these as plausible, not confirmed).
+- **Severity:** low (cosmetic/duplication/readability) except where noted.
+- **Findings:**
+  1. `aurabackend/connectors/main.py:324` — `_connection_store` (meant to map `connection_id` → connector config) is never written anywhere in the codebase; every `/connections/{id}/query` call silently falls through to one global env-configured DB regardless of `connection_id`. **Severity: production-gap, medium** — worth the same treatment as BUG-010's UNION step (raise a clear error instead of silently misrouting) if not implementing real per-connection routing.
+  2. `aurabackend/ingestion_service/kafka_client.py:27` — no application-level idempotency/dedup key check before publish; `enable_idempotence=True`'s comment overstates what it actually guarantees (only dedups broker-retries within one send call, not two independent client re-POSTs of the same `batch_id`). Same "ingestion_service doesn't start in this deployment" mitigating caveat as BUG-010.
+  3. `aurabackend/shared/file_service.py:82` — `FileService.save_file`/`process_file` are dead in production (the live `/upload` route uses `shared/storage`+`shared/data_utils.py` instead) but still exist, untested-by-integration, and would violate the async-safety rule if ever wired in (`process_file` runs blocking pandas I/O with no `to_thread`).
+  4. `aurabackend/evolution/api.py:240` — `feedback_summary()` does `__import__("datetime").datetime.now(...)` instead of just adding `datetime` to the existing `from datetime import timedelta, timezone` two lines above.
+  5. `frontend/src/pages/PipelinesPanel.tsx:868` — the AI-pipeline-run and visual-builder result blocks are near-duplicate ~70-line JSX structures that should share one `<PipelineResultCard>` component.
+  6. `frontend/src/pages/PipelinesPanel.tsx:372` — nine unconditional `console.log`/`console.error` calls dump full pipeline payloads (including AI prompts) to the browser console in production, not gated behind a dev flag.
+  7. `frontend/src/workbench/Workbench.tsx:90` — 873-line single component combining shell chrome, chat, forensic-audit, healing-queue approvals, and the live radar model; each concern is independently extractable but the merge into "one shell" was noted as a deliberate earlier design choice per the file's own comments — a real maintainability cost but not a bug, and a large refactor out of scope for a surgical fix.
+- **Caused by:** none — pre-existing across a long project history.
+- **Fix:** none yet — item 1 is worth prioritizing (mirrors BUG-010's precedent); items 2-3 have the same "currently unreachable service" mitigation as BUG-010's items 2 and 4; items 4-7 are readability/duplication nits, pick up opportunistically.
