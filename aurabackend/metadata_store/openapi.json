@@ -196,7 +196,7 @@
     },
     "/semantic-models": {
       "get": {
-        "description": "List all semantic models.",
+        "description": "List the caller's semantic models, scoped to their tenant.",
         "operationId": "list_semantic_models_semantic_models_get",
         "responses": {
           "200": {
@@ -215,7 +215,7 @@
         "summary": "List Semantic Models"
       },
       "post": {
-        "description": "Create or update a semantic model.",
+        "description": "Create or update a semantic model within the caller's tenant.",
         "operationId": "upsert_semantic_model_semantic_models_post",
         "requestBody": {
           "content": {
@@ -258,7 +258,7 @@
     },
     "/semantic-models/{model_id}": {
       "get": {
-        "description": "Get a semantic model by ID.",
+        "description": "Get a semantic model by ID, scoped to the caller's tenant.",
         "operationId": "get_semantic_model_semantic_models__model_id__get",
         "parameters": [
           {
