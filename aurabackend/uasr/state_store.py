@@ -36,7 +36,7 @@ import json
 from abc import ABC, abstractmethod
 from collections import OrderedDict
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from .models import ColumnDistribution
 
@@ -52,6 +52,11 @@ class SourceState:
     schema: Optional[Dict[str, str]] = None
     kl_history: List[float] = field(default_factory=list)
     embeddings: List[List[float]] = field(default_factory=list)
+    # Declared upcoming schema change (schema-evolution intent, opt-in via
+    # UASR_SCHEMA_INTENT_ENABLED). Shape:
+    # {"added": {col: type}, "removed": [col...], "type_changes": {col: type},
+    #  "expires_at": epoch_float, "note": str|None, "actor": str|None}
+    schema_intent: Optional[Dict[str, Any]] = None
 
     def is_empty(self) -> bool:
         return (
@@ -59,6 +64,7 @@ class SourceState:
             and self.schema is None
             and not self.kl_history
             and not self.embeddings
+            and self.schema_intent is None
         )
 
     # ---- serialization (used by RedisStateStore / any wire backend) ----
@@ -73,6 +79,7 @@ class SourceState:
                 "schema": self.schema,
                 "kl_history": self.kl_history,
                 "embeddings": self.embeddings,
+                "schema_intent": self.schema_intent,
             }
         )
 
@@ -89,6 +96,7 @@ class SourceState:
             schema=d.get("schema"),
             kl_history=list(d.get("kl_history") or []),
             embeddings=[list(e) for e in (d.get("embeddings") or [])],
+            schema_intent=d.get("schema_intent"),
         )
 
 

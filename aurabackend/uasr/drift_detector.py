@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import logging
 import math
+import time
 from collections import Counter
 from dataclasses import replace
 from typing import Any, Dict, List, Optional, Tuple
@@ -58,11 +59,18 @@ class DriftDetector:
         semantic_threshold: float = 0.25,
         state_store: Optional[StateStore] = None,
         warmup_batches: int = 5,
+        schema_intent_enabled: bool = False,
     ) -> None:
         # ζ — KL-divergence threshold.  Adapted dynamically per source.
         self._default_zeta = default_zeta
         self._schema_strict = schema_strict
         self._semantic_threshold = semantic_threshold
+        # Opt-in (UASR_SCHEMA_INTENT_ENABLED): when on, a declared
+        # schema-change intent (declare_schema_intent) that covers the
+        # observed added/removed/retyped columns is adopted as the new
+        # baseline instead of raising drift. Off by default -- unchanged
+        # behaviour for every existing deployment.
+        self._schema_intent_enabled = schema_intent_enabled
         # Cold-start suppression: the adaptive ζ needs ≥5 KL samples before
         # it reflects a source's real noise floor.  Until then, a 50-bin
         # histogram estimated off ~500 rows carries enough Poisson bin-noise
@@ -175,6 +183,53 @@ class DriftDetector:
         st = self._store.load(source_id)
         st.embeddings.append(embedding)
         self._store.save(source_id, st)
+
+    def declare_schema_intent(
+        self,
+        source_id: str,
+        added: Optional[Dict[str, str]] = None,
+        removed: Optional[List[str]] = None,
+        type_changes: Optional[Dict[str, str]] = None,
+        ttl_seconds: float = 3600.0,
+        note: Optional[str] = None,
+        actor: Optional[str] = None,
+    ) -> None:
+        """Declare a sanctioned upcoming schema change for a source.
+
+        Once declared, ``_check_schema_drift`` treats an observed
+        added/removed/retyped-column diff as non-drift -- adopting it as
+        the new baseline instead -- as long as the diff is fully covered by
+        what was declared here and the intent hasn't expired. One active
+        intent per source; a new declaration overwrites the previous one.
+
+        No-ops when the feature is off (``schema_intent_enabled=False``) --
+        the HTTP boundary (POST /uasr/schema-intent) is expected to gate
+        first and fail closed (400), but this keeps the detector itself
+        safe to call directly (e.g. from tests) without the flag.
+        """
+        if not self._schema_intent_enabled:
+            return
+        st = self._store.load(source_id)
+        st.schema_intent = {
+            "added": dict(added or {}),
+            "removed": list(removed or []),
+            "type_changes": dict(type_changes or {}),
+            "expires_at": time.time() + float(ttl_seconds),
+            "note": note,
+            "actor": actor,
+        }
+        self._store.save(source_id, st)
+        logger.info(
+            "Declared schema intent for source=%s added=%s removed=%s type_changes=%s "
+            "ttl_seconds=%.0f actor=%s note=%s",
+            source_id,
+            list(st.schema_intent["added"]),
+            st.schema_intent["removed"],
+            list(st.schema_intent["type_changes"]),
+            ttl_seconds,
+            actor,
+            note,
+        )
 
     # ────────────────────────────────────────────────────────────────
     # Main detection
@@ -292,6 +347,10 @@ class DriftDetector:
                     if col in baseline_schema and baseline_schema[col] != dtype and baseline_schema[col] != "unknown":
                         type_changes.append(col)
                 if type_changes:
+                    type_changed_types = {c: batch.schema_snapshot[c] for c in type_changes}
+                    if self._schema_intent_covers(st, {}, set(), type_changed_types):
+                        self._adopt_schema_from_intent(batch, st)
+                        return None, True
                     return {
                         "type": "type_change",
                         "affected_columns": type_changes,
@@ -301,6 +360,13 @@ class DriftDetector:
                         "new_types": {c: batch.schema_snapshot[c] for c in type_changes},
                     }, False
             return None, False
+
+        added_types = {
+            c: (batch.schema_snapshot.get(c) if batch.schema_snapshot else None) for c in added
+        }
+        if self._schema_intent_covers(st, added_types, removed, {}):
+            self._adopt_schema_from_intent(batch, st)
+            return None, True
 
         severity = DriftSeverity.HIGH if removed else DriftSeverity.MEDIUM
         if len(removed) > len(baseline_cols) * 0.5:
@@ -314,6 +380,94 @@ class DriftDetector:
             "severity": severity,
             "details": f"Added: {list(added)}, Removed: {list(removed)}",
         }, False
+
+    def _schema_intent_covers(
+        self,
+        st: SourceState,
+        added: Dict[str, Optional[str]],
+        removed: set,
+        type_changed: Dict[str, str],
+    ) -> bool:
+        """True if a live, unexpired declared intent covers this exact diff.
+
+        Coverage is a subset check per change kind -- an undeclared extra
+        column change (an addition on top of a declared one, say) falls
+        through to the ordinary drift path unchanged, which is the
+        guarantee that an intent only ever suppresses the specific change
+        it named.
+
+        ``added`` and ``type_changed`` map column -> the batch's *observed*
+        new type (``None`` when the batch carried no ``schema_snapshot`` and
+        the type genuinely can't be known). Matching by column name alone
+        would let a declared intent for e.g. "a: int -> float" silently
+        absorb ANY subsequent type on "a" (say a corrupt "a: int -> string")
+        for the rest of the TTL window -- so when the observed type is
+        known, it must equal the declared target type, not just share the
+        column name.
+        """
+        if not self._schema_intent_enabled:
+            return False
+        intent = st.schema_intent
+        if not intent:
+            return False
+        if intent.get("expires_at", 0.0) <= time.time():
+            return False
+        declared_added = dict(intent.get("added") or {})
+        declared_removed = set(intent.get("removed") or [])
+        declared_type_changes = dict(intent.get("type_changes") or {})
+
+        if not removed <= declared_removed:
+            return False
+        for col, observed_type in added.items():
+            if col not in declared_added:
+                return False
+            if observed_type is not None and observed_type != declared_added[col]:
+                return False
+        for col, observed_type in type_changed.items():
+            if col not in declared_type_changes:
+                return False
+            if observed_type is not None and observed_type != declared_type_changes[col]:
+                return False
+        return True
+
+    @staticmethod
+    def _adopt_schema_from_intent(batch: BatchPayload, st: SourceState) -> None:
+        """Adopt the batch's schema as the new baseline (intent-covered change).
+
+        Mirrors the first-time-seen assignment in ``_check_schema_drift``.
+        Clears the intent once the schema has fully reached the declared
+        target -- every declared add present, no declared removal still
+        present, AND every declared type change actually landed at its
+        target type -- so a multi-batch rollout across app instances (only
+        some columns changed this batch) keeps being tolerated until then,
+        or until TTL expiry. Checking only added/removed here let a
+        multi-column type-change intent get cleared after just the first
+        column's type changed, spuriously flagging the still-pending
+        declared columns as drift once the intent was already gone.
+        """
+        if batch.schema_snapshot:
+            st.schema = dict(batch.schema_snapshot)
+        elif batch.columns:
+            st.schema = {c: "unknown" for c in batch.columns}
+
+        intent = st.schema_intent
+        if intent is None:
+            return
+        declared_added = set(intent.get("added") or {})
+        declared_removed = set(intent.get("removed") or [])
+        declared_type_changes = dict(intent.get("type_changes") or {})
+        new_schema = st.schema or {}
+        new_cols = set(new_schema.keys())
+        target_reached = (
+            declared_added <= new_cols
+            and not (declared_removed & new_cols)
+            and all(
+                new_schema.get(col) == target_type
+                for col, target_type in declared_type_changes.items()
+            )
+        )
+        if target_reached:
+            st.schema_intent = None
 
     # ────────────────────────────────────────────────────────────────
     # Statistical drift — KL-Divergence

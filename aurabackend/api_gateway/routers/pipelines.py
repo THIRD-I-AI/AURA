@@ -4,7 +4,6 @@ Pipelines Router
 AI-driven pipeline management, semantic models, and UASR proxy endpoints.
 """
 
-import asyncio
 import os
 import uuid
 from pathlib import Path
@@ -524,6 +523,11 @@ async def uasr_ingest(req: Dict[str, Any], request: Request):
 @router.post("/uasr/baseline")
 async def uasr_baseline(req: Dict[str, Any], request: Request):
     return await _uasr("POST", "/uasr/baseline", 30, request, json=req)
+
+
+@router.post("/uasr/schema-intent")
+async def uasr_schema_intent(req: Dict[str, Any], request: Request):
+    return await _uasr("POST", "/uasr/schema-intent", 30, request, json=req)
 
 
 @router.post("/uasr/heal")
