@@ -673,7 +673,24 @@ export const connectorService = {
     const resp = await client.get<{ success: boolean; schema: Record<string, string[]> }>(`/connections/${connectionId}/schema`);
     return resp.schema;
   },
+
+  /** Materializes `table_name` as a parquet snapshot chat can query (POST /connections/:id/sync). */
+  async syncTable(connectionId: string, tableName: string, maxRows?: number): Promise<ConnectionSyncResult> {
+    return client.post<ConnectionSyncResult>(`/connections/${connectionId}/sync`, {
+      table_name: tableName,
+      ...(maxRows != null ? { max_rows: maxRows } : {}),
+    });
+  },
 };
+
+export interface ConnectionSyncResult {
+  success: boolean;
+  connection_id: string;
+  table_name: string;
+  file_name: string;
+  row_count: number;
+  synced_at: string;
+}
 
 /**
  * Analytics Service - Dashboard metrics and insights
