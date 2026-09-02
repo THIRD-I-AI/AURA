@@ -642,3 +642,58 @@ async def uasr_recovery_detail(recovery_id: str, request: Request):
     no way to see why without box/log access.
     """
     return await _uasr("GET", f"/uasr/recovery/{recovery_id}", 15, request)
+
+
+# ── Causal Discovery proxy routes ────────────────────────────────────
+# causal_service is a separately-deployed microservice (DoWhy-GCM root-cause
+# attribution, falls back to partial-correlation when dowhy isn't installed
+# there) -- see aurabackend/causal_service/. Proxied the same way as UASR
+# above, not mounted in-process: unlike counterfactual_service, it has no
+# lifespan/signing coupling to the gateway process and its dowhy import is
+# heavy enough (~150MB, see requirements-causal.txt) that isolating it in its
+# own container keeps that weight off the gateway's memory budget.
+
+_CAUSAL_URL = os.getenv("AURA_CAUSAL_URL", "http://localhost:8010")
+
+
+async def _causal(
+    method: str,
+    path: str,
+    timeout: float,
+    request: Optional[Request] = None,
+    **kwargs: Any,
+) -> Any:
+    """Proxy a call to causal_service, failing honestly when it is absent.
+
+    Same reasoning as `_uasr` above: not every deployment profile runs this
+    service, so an unreachable upstream must read as 503, not a generic 500
+    that looks like a crash inside the gateway itself.
+    """
+    headers = {}
+    if request is not None:
+        auth = request.headers.get("Authorization")
+        if auth:
+            headers["Authorization"] = auth
+
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            resp = await client.request(method, f"{_CAUSAL_URL}{path}", headers=headers, **kwargs)
+    except httpx.RequestError as exc:
+        logger.warning("causal_service unreachable at %s%s: %s", _CAUSAL_URL, path, exc)
+        raise ServiceUnavailableError("Causal discovery service") from exc
+
+    try:
+        payload = resp.json()
+    except ValueError:
+        payload = {"error": "UPSTREAM_NOT_JSON", "message": resp.text[:500]}
+    return JSONResponse(status_code=resp.status_code, content=payload)
+
+
+@router.post("/causal/discover")
+async def causal_discover(req: Dict[str, Any], request: Request):
+    return await _causal("POST", "/causal/discover", 60, request, json=req)
+
+
+@router.get("/causal/info")
+async def causal_info(request: Request):
+    return await _causal("GET", "/causal/info", 15, request)
