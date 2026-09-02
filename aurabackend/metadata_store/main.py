@@ -5,7 +5,7 @@ import sys
 from contextlib import asynccontextmanager
 from typing import Any, AsyncGenerator, Dict
 
-from fastapi import Body, Depends, FastAPI, HTTPException
+from fastapi import Body, Depends, FastAPI, HTTPException, Request
 from sqlalchemy import text
 
 from shared.config import settings
@@ -17,6 +17,26 @@ from .models import User
 from .repository import MetadataRepository, get_repository
 
 logger = get_logger("aura.metadata_store")
+
+
+def _workspace_id(request: Request) -> str | None:
+    """Tenant-scoping key for this service's HTTP handlers.
+
+    Mirrors api_gateway/routers/workspaces.py::current_workspace_id — the
+    isolation boundary for an authenticated caller is the org_id/sub
+    JWTAuthMiddleware verified and stashed on request.state.user, never a
+    client-supplied header. This is a standalone service (port 8007) with
+    JWT opt-in via AURA_JWT_ENABLED, so an unauthenticated (dev/open mode)
+    request falls back to the X-Workspace-Id header, and to None (matching
+    only pre-tenanting rows — fail closed) when even that is absent.
+    """
+    user = getattr(request.state, "user", None)
+    if isinstance(user, dict):
+        tenant = user.get("org_id") or user.get("sub")
+        if tenant:
+            return str(tenant)
+    header = (request.headers.get("X-Workspace-Id") or "").strip()
+    return header or None
 
 
 @asynccontextmanager
@@ -151,20 +171,22 @@ def _serialize_semantic_model(model) -> Dict[str, Any]:
 
 @metadata_app.get("/semantic-models")
 async def list_semantic_models(
+    request: Request,
     repo: MetadataRepository = Depends(get_repository),
 ) -> Dict[str, Any]:
-    """List all semantic models."""
-    models = await repo.list_semantic_models()
+    """List the caller's semantic models, scoped to their tenant."""
+    models = await repo.list_semantic_models(_workspace_id(request))
     return {"models": [_serialize_semantic_model(m) for m in models], "count": len(models)}
 
 
 @metadata_app.get("/semantic-models/{model_id}")
 async def get_semantic_model(
     model_id: str,
+    request: Request,
     repo: MetadataRepository = Depends(get_repository),
 ) -> Dict[str, Any]:
-    """Get a semantic model by ID."""
-    model = await repo.get_semantic_model(model_id)
+    """Get a semantic model by ID, scoped to the caller's tenant."""
+    model = await repo.get_semantic_model(model_id, _workspace_id(request))
     if model is None:
         raise HTTPException(status_code=404, detail="Semantic model not found")
     return {"model": _serialize_semantic_model(model)}
@@ -172,10 +194,11 @@ async def get_semantic_model(
 
 @metadata_app.post("/semantic-models")
 async def upsert_semantic_model(
+    request: Request,
     payload: Dict[str, Any] = Body(...),
     repo: MetadataRepository = Depends(get_repository),
 ) -> Dict[str, Any]:
-    """Create or update a semantic model."""
+    """Create or update a semantic model within the caller's tenant."""
     if not payload.get("name"):
         raise HTTPException(status_code=400, detail="'name' is required")
     model = await repo.upsert_semantic_model(
@@ -185,6 +208,7 @@ async def upsert_semantic_model(
         source=payload.get("source", {}),
         tags=payload.get("tags"),
         fields=payload.get("fields"),
+        workspace_id=_workspace_id(request),
     )
     return {"model": _serialize_semantic_model(model)}
 
