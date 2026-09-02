@@ -22,9 +22,10 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
+from api_gateway.routers.workspaces import current_workspace_id
 from shared.logging_config import get_logger
 from shared.webhook_dispatcher import WebhookSubscription, webhook_dispatcher
 
@@ -81,10 +82,11 @@ def _serialize(sub: WebhookSubscription) -> Dict[str, Any]:
 # ── Routes ─────────────────────────────────────────────────────────
 
 @router.post("/webhooks")
-async def create_webhook(req: WebhookCreateRequest) -> Dict[str, Any]:
+async def create_webhook(req: WebhookCreateRequest, request: Request) -> Dict[str, Any]:
     if not req.url.startswith(("http://", "https://")):
         raise HTTPException(status_code=400, detail="url must be http(s)")
     sub = webhook_dispatcher.register(
+        workspace_id=current_workspace_id(request),
         url=req.url,
         events=req.events,
         secret=req.secret,
@@ -96,10 +98,10 @@ async def create_webhook(req: WebhookCreateRequest) -> Dict[str, Any]:
 
 
 @router.get("/webhooks")
-async def list_webhooks() -> Dict[str, Any]:
+async def list_webhooks(request: Request) -> Dict[str, Any]:
     return {
         "status": "success",
-        "webhooks": [_serialize(s) for s in webhook_dispatcher.list()],
+        "webhooks": [_serialize(s) for s in webhook_dispatcher.list(current_workspace_id(request))],
     }
 
 
@@ -109,39 +111,41 @@ async def list_known_events() -> Dict[str, Any]:
 
 
 @router.get("/webhooks/deliveries")
-async def list_deliveries() -> Dict[str, Any]:
+async def list_deliveries(request: Request) -> Dict[str, Any]:
     return {
         "status": "success",
-        "deliveries": [d.__dict__ for d in webhook_dispatcher.deliveries()],
+        "deliveries": [d.__dict__ for d in webhook_dispatcher.deliveries(current_workspace_id(request))],
     }
 
 
 @router.get("/webhooks/{sub_id}")
-async def get_webhook(sub_id: str) -> Dict[str, Any]:
-    sub = webhook_dispatcher.get(sub_id)
+async def get_webhook(sub_id: str, request: Request) -> Dict[str, Any]:
+    sub = webhook_dispatcher.get(sub_id, current_workspace_id(request))
     if not sub:
         raise HTTPException(status_code=404, detail="Webhook not found")
     return {"status": "success", "webhook": _serialize(sub)}
 
 
 @router.patch("/webhooks/{sub_id}")
-async def update_webhook(sub_id: str, req: WebhookUpdateRequest) -> Dict[str, Any]:
-    sub = webhook_dispatcher.update(sub_id, **req.model_dump(exclude_none=True))
+async def update_webhook(sub_id: str, req: WebhookUpdateRequest, request: Request) -> Dict[str, Any]:
+    sub = webhook_dispatcher.update(
+        sub_id, current_workspace_id(request), **req.model_dump(exclude_none=True),
+    )
     if not sub:
         raise HTTPException(status_code=404, detail="Webhook not found")
     return {"status": "success", "webhook": _serialize(sub)}
 
 
 @router.delete("/webhooks/{sub_id}")
-async def delete_webhook(sub_id: str) -> Dict[str, Any]:
-    if not webhook_dispatcher.delete(sub_id):
+async def delete_webhook(sub_id: str, request: Request) -> Dict[str, Any]:
+    if not webhook_dispatcher.delete(sub_id, current_workspace_id(request)):
         raise HTTPException(status_code=404, detail="Webhook not found")
     return {"status": "success", "deleted": sub_id}
 
 
 @router.post("/webhooks/{sub_id}/test")
-async def test_webhook(sub_id: str) -> Dict[str, Any]:
-    record = await webhook_dispatcher.fire_test(sub_id)
+async def test_webhook(sub_id: str, request: Request) -> Dict[str, Any]:
+    record = await webhook_dispatcher.fire_test(sub_id, current_workspace_id(request))
     if record is None:
         raise HTTPException(status_code=404, detail="Webhook not found")
     return {"status": "success", "delivery": record.__dict__}

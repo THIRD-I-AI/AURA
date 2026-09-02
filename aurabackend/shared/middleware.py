@@ -137,6 +137,15 @@ _PUBLIC_PATHS = {
 # public, read-only verification route.
 _PUBLIC_PATH_PREFIXES = (
     "/api/v1/counterfactual/audit/inclusion/",
+    # BUG-016/BUG-017 (docs/BUG_REGISTRY.md): the inbound-hooks public
+    # trigger is meant to be gated only by its own optional per-hook HMAC
+    # secret (checked in inbound_hooks.py's fire_hook), not an AURA
+    # Bearer token -- external systems firing this hook have no AURA
+    # login. This allowlist never caught up, so JWTAuthMiddleware 401'd
+    # every caller before the HMAC check ever ran, making the feature
+    # unreachable on any deployment with JWT auth armed (the production
+    # default).
+    "/api/v1/hooks/fire/",
 )
 
 

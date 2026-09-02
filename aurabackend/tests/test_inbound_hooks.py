@@ -75,37 +75,37 @@ class TestRegistryCRUD:
     def test_register_pipeline(self):
         r = _make_registry()
         with patch.object(r, "_save"):
-            h = r.register("my-slug", "pipeline", "pipe-123")
+            h = r.register("ws-a", "my-slug", "pipeline", "pipe-123")
         assert h.slug == "my-slug"
         assert h.kind == "pipeline"
         assert h.target == "pipe-123"
         assert h.id  # auto-generated
-        assert len(r.list()) == 1
+        assert len(r.list("ws-a")) == 1
 
     def test_register_agent(self):
         r = _make_registry()
         with patch.object(r, "_save"):
-            h = r.register("agent-hook", "agent", "Analyse {{data}}")
+            h = r.register("ws-a", "agent-hook", "agent", "Analyse {{data}}")
         assert h.kind == "agent"
 
     def test_register_invalid_kind(self):
         r = _make_registry()
         with patch.object(r, "_save"):
             with pytest.raises(ValueError, match="kind must be"):
-                r.register("bad", "invalid_kind", "target")
+                r.register("ws-a", "bad", "invalid_kind", "target")
 
     def test_register_duplicate_slug(self):
         r = _make_registry()
         with patch.object(r, "_save"):
-            r.register("unique-slug", "pipeline", "t")
+            r.register("ws-a", "unique-slug", "pipeline", "t")
             with pytest.raises(ValueError, match="already registered"):
-                r.register("unique-slug", "agent", "t2")
+                r.register("ws-a", "unique-slug", "agent", "t2")
 
     def test_register_with_optional_fields(self):
         r = _make_registry()
         with patch.object(r, "_save"):
             h = r.register(
-                "hook1", "pipeline", "pipe-1",
+                "ws-a", "hook1", "pipeline", "pipe-1",
                 secret="sec", description="A hook", pass_payload_as="data",
             )
         assert h.secret == "sec"
@@ -115,23 +115,23 @@ class TestRegistryCRUD:
     def test_get_by_id(self):
         r = _make_registry()
         with patch.object(r, "_save"):
-            h = r.register("s1", "pipeline", "t")
-        assert r.get(h.id) is h
-        assert r.get("nonexistent") is None
+            h = r.register("ws-a", "s1", "pipeline", "t")
+        assert r.get(h.id, "ws-a") is h
+        assert r.get("nonexistent", "ws-a") is None
 
     def test_by_slug(self):
         r = _make_registry()
         with patch.object(r, "_save"):
-            h = r.register("my-slug", "pipeline", "t")
+            h = r.register("ws-a", "my-slug", "pipeline", "t")
         assert r.by_slug("my-slug") is h
         assert r.by_slug("other") is None
 
     def test_list(self):
         r = _make_registry()
         with patch.object(r, "_save"):
-            r.register("s1", "pipeline", "t1")
-            r.register("s2", "agent", "t2")
-        hooks = r.list()
+            r.register("ws-a", "s1", "pipeline", "t1")
+            r.register("ws-a", "s2", "agent", "t2")
+        hooks = r.list("ws-a")
         assert len(hooks) == 2
         slugs = {h.slug for h in hooks}
         assert slugs == {"s1", "s2"}
@@ -139,15 +139,15 @@ class TestRegistryCRUD:
     def test_delete(self):
         r = _make_registry()
         with patch.object(r, "_save"):
-            h = r.register("s1", "pipeline", "t")
-            assert r.delete(h.id) is True
-        assert r.get(h.id) is None
+            h = r.register("ws-a", "s1", "pipeline", "t")
+            assert r.delete(h.id, "ws-a") is True
+        assert r.get(h.id, "ws-a") is None
         assert r.by_slug("s1") is None
 
     def test_delete_nonexistent(self):
         r = _make_registry()
         with patch.object(r, "_save"):
-            assert r.delete("nope") is False
+            assert r.delete("nope", "ws-a") is False
 
 
 # ── Update ────────────────────────────────────────────────────────
@@ -156,8 +156,8 @@ class TestRegistryUpdate:
     def test_update_fields(self):
         r = _make_registry()
         with patch.object(r, "_save"):
-            h = r.register("s1", "pipeline", "t")
-            updated = r.update(h.id, target="new-target", description="updated")
+            h = r.register("ws-a", "s1", "pipeline", "t")
+            updated = r.update(h.id, "ws-a", target="new-target", description="updated")
         assert updated is not None
         assert updated.target == "new-target"
         assert updated.description == "updated"
@@ -165,8 +165,8 @@ class TestRegistryUpdate:
     def test_update_slug(self):
         r = _make_registry()
         with patch.object(r, "_save"):
-            h = r.register("old-slug", "pipeline", "t")
-            updated = r.update(h.id, slug="new-slug")
+            h = r.register("ws-a", "old-slug", "pipeline", "t")
+            updated = r.update(h.id, "ws-a", slug="new-slug")
         assert updated.slug == "new-slug"
         assert r.by_slug("new-slug") is updated
         assert r.by_slug("old-slug") is None
@@ -174,21 +174,21 @@ class TestRegistryUpdate:
     def test_update_slug_conflict(self):
         r = _make_registry()
         with patch.object(r, "_save"):
-            r.register("slug-a", "pipeline", "t1")
-            h2 = r.register("slug-b", "pipeline", "t2")
+            r.register("ws-a", "slug-a", "pipeline", "t1")
+            h2 = r.register("ws-a", "slug-b", "pipeline", "t2")
             with pytest.raises(ValueError, match="already registered"):
-                r.update(h2.id, slug="slug-a")
+                r.update(h2.id, "ws-a", slug="slug-a")
 
     def test_update_nonexistent(self):
         r = _make_registry()
         with patch.object(r, "_save"):
-            assert r.update("nope", target="x") is None
+            assert r.update("nope", "ws-a", target="x") is None
 
     def test_update_ignores_none_values(self):
         r = _make_registry()
         with patch.object(r, "_save"):
-            h = r.register("s1", "pipeline", "original-target")
-            r.update(h.id, target=None)
+            h = r.register("ws-a", "s1", "pipeline", "original-target")
+            r.update(h.id, "ws-a", target=None)
         assert h.target == "original-target"  # unchanged
 
 
@@ -198,7 +198,7 @@ class TestRecordFire:
     def test_increments_count(self):
         r = _make_registry()
         with patch.object(r, "_save"):
-            h = r.register("s1", "pipeline", "t")
+            h = r.register("ws-a", "s1", "pipeline", "t")
             assert h.fire_count == 0
             r.record_fire(h)
             assert h.fire_count == 1
@@ -219,6 +219,7 @@ class TestPersistence:
                 "description": "", "pass_payload_as": None,
                 "last_fired_at": None, "fire_count": 0,
                 "created_at": "2026-01-01T00:00:00+00:00",
+                "workspace_id": "ws-a",
             }
         ]
         store.write_text(json.dumps(data))
@@ -226,22 +227,65 @@ class TestPersistence:
         with patch("shared.inbound_hooks._STORE_PATH", str(store)):
             reg = InboundHookRegistry()
 
-        assert len(reg.list()) == 1
+        assert len(reg.list("ws-a")) == 1
         assert reg.by_slug("hook-one") is not None
 
     def test_load_missing_file(self, tmp_path):
         with patch("shared.inbound_hooks._STORE_PATH", str(tmp_path / "missing.json")):
             reg = InboundHookRegistry()
-        assert reg.list() == []
+        assert reg.list("ws-a") == []
 
     def test_save(self, tmp_path):
         store = tmp_path / "inbound.json"
         with patch("shared.inbound_hooks._STORE_PATH", str(store)):
             with patch("shared.inbound_hooks._DATA_DIR", str(tmp_path)):
                 reg = InboundHookRegistry()
-                reg.register("s1", "pipeline", "t")
+                reg.register("ws-a", "s1", "pipeline", "t")
 
         assert store.exists()
         saved = json.loads(store.read_text())
         assert len(saved) == 1
         assert saved[0]["slug"] == "s1"
+
+
+# ── Cross-tenant isolation (BUG-016) ───────────────────────────────
+
+class TestCrossTenantIsolation:
+    """The registry used to be keyed only by bare hook_id, with no
+    workspace filter at all -- any authenticated caller could list/read/
+    edit/delete any other tenant's inbound hook. Pin the fix: a request
+    scoped to the wrong workspace must come back empty/None/False, never
+    the other tenant's data. `by_slug` stays intentionally unscoped --
+    that's the public fire-trigger lookup, gated by the hook's own HMAC
+    secret instead."""
+
+    def test_list_does_not_leak_other_tenants(self):
+        r = _make_registry()
+        with patch.object(r, "_save"):
+            r.register("org-a", "slug-a", "pipeline", "t1")
+            r.register("org-b", "slug-b", "pipeline", "t2")
+        assert len(r.list("org-a")) == 1
+        assert len(r.list("org-b")) == 1
+        assert r.list("org-a")[0].slug == "slug-a"
+
+    def test_get_returns_none_for_wrong_tenant(self):
+        r = _make_registry()
+        with patch.object(r, "_save"):
+            h = r.register("org-a", "secret-hook", "pipeline", "t")
+        assert r.get(h.id, "org-b") is None
+        assert r.get(h.id, "org-a") is h
+
+    def test_update_is_rejected_for_wrong_tenant(self):
+        r = _make_registry()
+        with patch.object(r, "_save"):
+            h = r.register("org-a", "s1", "pipeline", "t")
+            assert r.update(h.id, "org-b", target="hijacked") is None
+        assert h.target == "t"  # unchanged
+
+    def test_delete_is_rejected_for_wrong_tenant(self):
+        r = _make_registry()
+        with patch.object(r, "_save"):
+            h = r.register("org-a", "s1", "pipeline", "t")
+            assert r.delete(h.id, "org-b") is False
+        assert r.get(h.id, "org-a") is not None  # still there
+        assert r.by_slug("s1") is not None
