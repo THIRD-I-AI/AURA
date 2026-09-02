@@ -8,11 +8,12 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from api_gateway.routers.workspaces import current_workspace_id
 from metadata_store.db import get_session
 
 from .db import init_evolution_db
@@ -47,7 +48,7 @@ class FeedbackRequest(BaseModel):
     agent_output: Dict[str, Any] = Field(default_factory=dict)
     success: bool = True
     duration_ms: float = 0.0
-    user_rating: Optional[int] = None
+    user_rating: Optional[int] = Field(default=None, ge=1, le=5)
     correction: Optional[str] = None
 
 
@@ -58,7 +59,7 @@ class PatternSearchRequest(BaseModel):
 
 
 class ProposalUpdateRequest(BaseModel):
-    status: str
+    status: ImprovementStatus
     test_results: Optional[Dict[str, Any]] = None
     confidence_score: Optional[float] = None
 
@@ -85,8 +86,14 @@ async def trigger_cycle():
 
 
 @router.post("/feedback")
-async def submit_feedback(req: FeedbackRequest):
-    """Submit agent execution feedback for learning."""
+async def submit_feedback(req: FeedbackRequest, request: Request):
+    """Submit agent execution feedback for learning.
+
+    A session only ever "belongs" to whichever tenant recorded feedback under
+    it -- workspace_id is derived from the caller's verified identity, never
+    accepted from the client, so a caller cannot attach feedback to another
+    tenant's session_id.
+    """
     engine = get_evolution_engine()
     await engine.record_feedback(
         session_id=req.session_id,
@@ -98,21 +105,27 @@ async def submit_feedback(req: FeedbackRequest):
         duration_ms=req.duration_ms,
         user_rating=req.user_rating,
         correction=req.correction,
+        workspace_id=current_workspace_id(request),
     )
     return {"status": "recorded"}
 
 
 @router.post("/patterns/search")
-async def search_patterns(req: PatternSearchRequest, db: AsyncSession = Depends(get_db)):
+async def search_patterns(
+    req: PatternSearchRequest, request: Request, db: AsyncSession = Depends(get_db),
+):
     """Find similar past execution patterns for a given intent."""
     pt = PatternType(req.pattern_type) if req.pattern_type else None
     lib = PatternLibrary(db)
-    patterns = await lib.find_similar(req.intent, pt, limit=req.limit)
+    patterns = await lib.find_similar(
+        req.intent, pt, limit=req.limit, workspace_id=current_workspace_id(request),
+    )
     return {"patterns": patterns, "count": len(patterns)}
 
 
 @router.get("/patterns")
 async def list_patterns(
+    request: Request,
     pattern_type: Optional[str] = None,
     limit: int = 20,
     db: AsyncSession = Depends(get_db),
@@ -120,20 +133,24 @@ async def list_patterns(
     """List top performing execution patterns."""
     lib = PatternLibrary(db)
     pt = PatternType(pattern_type) if pattern_type else None
-    patterns = await lib.top_patterns(pt, limit)
+    patterns = await lib.top_patterns(pt, limit, workspace_id=current_workspace_id(request))
     return {"patterns": patterns, "count": len(patterns)}
 
 
 @router.get("/proposals")
 async def list_proposals(
+    request: Request,
     status: Optional[str] = None,
     limit: int = 50,
     db: AsyncSession = Depends(get_db),
 ):
     """List improvement proposals."""
-    stmt = select(ImprovementProposal).order_by(
-        ImprovementProposal.created_at.desc()
-    ).limit(limit)
+    stmt = (
+        select(ImprovementProposal)
+        .where(ImprovementProposal.workspace_id == current_workspace_id(request))
+        .order_by(ImprovementProposal.created_at.desc())
+        .limit(limit)
+    )
     if status:
         stmt = stmt.where(ImprovementProposal.status == status)
     result = await db.execute(stmt)
@@ -157,10 +174,12 @@ async def list_proposals(
 
 
 @router.get("/proposals/{proposal_id}")
-async def get_proposal(proposal_id: str, db: AsyncSession = Depends(get_db)):
+async def get_proposal(proposal_id: str, request: Request, db: AsyncSession = Depends(get_db)):
     """Get full details of an improvement proposal."""
     result = await db.execute(
-        select(ImprovementProposal).where(ImprovementProposal.id == proposal_id)
+        select(ImprovementProposal)
+        .where(ImprovementProposal.id == proposal_id)
+        .where(ImprovementProposal.workspace_id == current_workspace_id(request))
     )
     p = result.scalar_one_or_none()
     if not p:
@@ -184,17 +203,20 @@ async def get_proposal(proposal_id: str, db: AsyncSession = Depends(get_db)):
 async def update_proposal(
     proposal_id: str,
     req: ProposalUpdateRequest,
+    request: Request,
     db: AsyncSession = Depends(get_db),
 ):
     """Update a proposal's status or test results (e.g. after manual review)."""
     result = await db.execute(
-        select(ImprovementProposal).where(ImprovementProposal.id == proposal_id)
+        select(ImprovementProposal)
+        .where(ImprovementProposal.id == proposal_id)
+        .where(ImprovementProposal.workspace_id == current_workspace_id(request))
     )
     p = result.scalar_one_or_none()
     if not p:
         raise HTTPException(status_code=404, detail="Proposal not found")
 
-    p.status = req.status
+    p.status = req.status.value
     if req.test_results is not None:
         p.test_results = req.test_results
     if req.confidence_score is not None:
@@ -205,10 +227,13 @@ async def update_proposal(
 
 
 @router.get("/log")
-async def get_evolution_log(limit: int = 100, db: AsyncSession = Depends(get_db)):
+async def get_evolution_log(
+    request: Request, limit: int = 100, db: AsyncSession = Depends(get_db),
+):
     """Return the system evolution audit log."""
     result = await db.execute(
         select(SystemEvolutionLog)
+        .where(SystemEvolutionLog.workspace_id == current_workspace_id(request))
         .order_by(SystemEvolutionLog.created_at.desc())
         .limit(limit)
     )
@@ -231,13 +256,15 @@ async def get_evolution_log(limit: int = 100, db: AsyncSession = Depends(get_db)
 
 
 @router.get("/feedback/summary")
-async def feedback_summary(days: int = 7, db: AsyncSession = Depends(get_db)):
+async def feedback_summary(
+    request: Request, days: int = 7, db: AsyncSession = Depends(get_db),
+):
     """Aggregate feedback statistics for the past N days."""
-    from datetime import timedelta, timezone
+    from datetime import datetime, timedelta, timezone
 
     from sqlalchemy import func
 
-    since = __import__("datetime").datetime.now(timezone.utc) - timedelta(days=days)
+    since = datetime.now(timezone.utc) - timedelta(days=days)
     result = await db.execute(
         select(
             AgentFeedback.agent_name,
@@ -245,6 +272,7 @@ async def feedback_summary(days: int = 7, db: AsyncSession = Depends(get_db)):
             func.avg(AgentFeedback.duration_ms).label("avg_ms"),
         )
         .where(AgentFeedback.created_at >= since)
+        .where(AgentFeedback.workspace_id == current_workspace_id(request))
         .group_by(AgentFeedback.agent_name)
         .order_by(func.count().desc())
     )
