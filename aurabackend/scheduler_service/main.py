@@ -10,7 +10,7 @@ from typing import Any, AsyncGenerator, Dict, List, Optional
 
 # Add parent directory to path for imports
 from fastapi import FastAPI, HTTPException, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from scheduler_service.executor import JobExecutor
 from scheduler_service.models import JobStatus, ScheduleType
@@ -67,6 +67,31 @@ scheduler_app = create_service(
 )
 
 
+# schedule_config bounds — validated here rather than at datetime.replace() time
+# in executor.py, so a bad value fails job creation/update instead of crashing a
+# later successful execution (BUG-023b).
+_SCHEDULE_CONFIG_BOUNDS = {
+    "day": (1, 31),
+    "day_of_week": (0, 6),
+    "hour": (0, 23),
+    "minute": (0, 59),
+}
+
+
+def _validate_schedule_config(config: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    if not config:
+        return config
+    for key, (lo, hi) in _SCHEDULE_CONFIG_BOUNDS.items():
+        if key not in config:
+            continue
+        value = config[key]
+        if not isinstance(value, int) or isinstance(value, bool) or not (lo <= value <= hi):
+            raise ValueError(
+                f"schedule_config.{key} must be an integer between {lo} and {hi}, got {value!r}"
+            )
+    return config
+
+
 # Pydantic models for API requests/responses
 class CreateJobRequest(BaseModel):
     name: str = Field(..., min_length=1, max_length=200)
@@ -88,6 +113,11 @@ class CreateJobRequest(BaseModel):
     store_results: bool = Field(True, description="Whether to store query results")
     is_active: bool = Field(True, description="Whether job is active")
 
+    @field_validator("schedule_config")
+    @classmethod
+    def _check_schedule_config(cls, v):
+        return _validate_schedule_config(v)
+
 
 class UpdateJobRequest(BaseModel):
     name: Optional[str] = Field(None, min_length=1, max_length=200)
@@ -101,6 +131,11 @@ class UpdateJobRequest(BaseModel):
     retry_delay_seconds: Optional[int] = Field(None, ge=1, le=3600)
     store_results: Optional[bool] = None
     is_active: Optional[bool] = None
+
+    @field_validator("schedule_config")
+    @classmethod
+    def _check_schedule_config(cls, v):
+        return _validate_schedule_config(v)
 
 
 class JobResponse(BaseModel):
@@ -416,12 +451,12 @@ async def execute_job_now(job_id: str):
 @scheduler_app.get("/executions", response_model=List[ExecutionResponse])
 async def list_executions(
     job_id: Optional[str] = None,
-    status: Optional[JobStatus] = None,
+    status_filter: Optional[JobStatus] = None,
     limit: int = 100
 ):
     """List job executions"""
     try:
-        executions = await repository.list_executions(job_id, status)
+        executions = await repository.list_executions(job_id, status_filter)
         return executions[:limit]
     except Exception as e:
         logger.error(f"Failed to list executions: {e}", exc_info=True)

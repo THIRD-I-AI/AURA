@@ -19,6 +19,7 @@ from connectors import (
     SourceType,
     available_connectors,
 )
+from shared.error_handler import sanitize_error
 from shared.logging_config import get_logger
 
 # Add parent directory to path for imports
@@ -116,10 +117,11 @@ async def test_connector(request: ConnectorTestRequest):
             )
 
     except Exception as e:
+        safe_message = sanitize_error(e, logger=logger, context="connector test")
         return ConnectorTestResponse(
             success=False,
-            message=f"Test failed: {str(e)}",
-            error=str(e),
+            message=f"Test failed: {safe_message}",
+            error=safe_message,
         )
 
 
@@ -152,7 +154,7 @@ async def list_tables(request: TableListRequest):
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(e),
+            detail=sanitize_error(e, logger=logger, context="connectors list tables"),
         )
 
 
@@ -246,7 +248,7 @@ async def ingest_file(request: IngestRequest):
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Ingest failed: {str(e)}",
+            detail=sanitize_error(e, logger=logger, context="connectors ingest"),
         )
 
 
@@ -306,7 +308,7 @@ async def introspect_database(request: IntrospectRequest):
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Introspection failed: {str(e)}",
+            detail=sanitize_error(e, logger=logger, context="connectors introspect"),
         )
 
 
@@ -388,7 +390,7 @@ async def execute_query(connection_id: str, request: QueryRequest):
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Query execution failed: {str(e)}",
+            detail=sanitize_error(e, logger=logger, context="connectors execute query"),
         )
 
 
@@ -452,7 +454,7 @@ async def vault_query(request: VaultQueryRequest):
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Vault query failed: {e}",
+            detail=sanitize_error(e, logger=logger, context="vault query"),
         )
 
 
@@ -482,7 +484,7 @@ async def vault_vector_search(request: VectorSearchRequest):
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Vector search failed: {e}",
+            detail=sanitize_error(e, logger=logger, context="vault vector search"),
         )
 
 
@@ -506,7 +508,7 @@ async def vault_spatial_query(request: SpatialQueryRequest):
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Spatial query failed: {e}",
+            detail=sanitize_error(e, logger=logger, context="vault spatial query"),
         )
 
 
