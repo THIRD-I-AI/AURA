@@ -228,6 +228,102 @@ def check_webhooks(v: Verifier) -> str:
     return f"created + listed + test-fired ({sub_id})"
 
 
+def check_file_upload_profile(v: Verifier) -> str:
+    """README row: "File upload -> profile -> query, Gateway-native,
+    /data/uploads volume" (deploy/aws-free-tier/README.md). Builds a tiny
+    synthetic CSV entirely in-process -- no dependency on any file already
+    on the box -- and drives POST /upload (aurabackend/api_gateway/routers/
+    files.py:97) then GET /files/{file_id}/profile (files.py:276).
+
+    file_id is the filename itself, not a generated id -- confirmed by the
+    profile route's own comment ("file_id is a filename (\"sales.csv\"),
+    not an unguessable id") -- so the upload response's `filename` is
+    reused directly as the path param.
+    """
+    filename = f"{v.ns('upload')}.csv"
+    csv_body = "id,name,amount\n1,alpha,10.5\n2,beta,20.25\n3,gamma,30.75\n"
+    r = v.client.post(
+        f"{V1}/upload", headers=v._auth_headers(),
+        files={"file": (filename, csv_body.encode("utf-8"), "text/csv")},
+    )
+    r.raise_for_status()
+    body = r.json()
+    if body.get("status") != "success":
+        raise AssertionError(f"upload did not report success: {body}")
+    file_id = body.get("filename") or filename
+
+    r2 = v.client.get(f"{V1}/files/{file_id}/profile", headers=v._auth_headers())
+    r2.raise_for_status()
+    profile = r2.json()
+    if profile.get("status") != "success":
+        raise AssertionError(f"profile fetch did not report success: {profile}")
+    return (
+        f"uploaded {file_id} ({body.get('bytes')}B) + profiled "
+        f"({profile.get('columns_count')} cols, {profile.get('rows_count')} rows)"
+    )
+
+
+def check_ledger_proof(v: Verifier) -> str:
+    """README row: "External verification: /jwks, signed tree head, Merkle
+    proofs, Gateway-native" (deploy/aws-free-tier/README.md). Exercises the
+    durable, tenant-scoped audit ledger (Subsystem C) end to end: run a small
+    signed financial audit under our own tenant (POST /counterfactual/audit/
+    financial, aurabackend/counterfactual_service/main.py:678-694, proxied at
+    aurabackend/api_gateway/routers/counterfactual.py:181), then prove it via
+    the chain-verify and RFC 6962 Merkle inclusion-proof reads (GET
+    /counterfactual/audit/ledger/verify and GET /counterfactual/audit/ledger/
+    proof/{cert_hash}, counterfactual.py:202-218).
+
+    Deliberately does NOT reuse /counterfactual/audit/financial/demo for the
+    write half: that route always signs anonymously (user=None) and its
+    ledger entry permanently chains under the "default" tenant (see
+    forensic_demo.py's dataset and main.py:754's own comment), which would
+    almost never match our authenticated caller's JWT tenant on
+    /audit/ledger/proof (tenant is taken from require_tenant, never a body
+    field) -- so that combination would 404 by construction, not because
+    anything is broken.
+
+    Also deliberately does NOT target GET /counterfactual/audit/sth + GET
+    /counterfactual/audit/inclusion/{record_hash} (the OTHER Merkle surface,
+    Sprint 19 TRAIGA's literal "Signed Tree Head", main.py:1067-1152): no
+    endpoint anywhere returns the chain's own record_hash for a given
+    action, only the unrelated inner report hash -- so there is no way for
+    an HTTP-only client to discover a real record_hash to fetch an inclusion
+    proof for. The ledger pair above is the one "signed + Merkle-provable"
+    path that is actually drivable end-to-end from outside the box.
+    """
+    r = v.client.post(
+        f"{V1}/counterfactual/audit/financial", headers=v._auth_headers(),
+        json={
+            "tenant_id": "ignored-tenant-comes-from-jwt",
+            "subject_id": v.ns("ledger"),
+            "preparer_id": "live-verify",
+            "ledger": [{"internal_id": "verify-L1", "account_code": "4000", "amount": 100.0}],
+        },
+    )
+    r.raise_for_status()
+    body = r.json()
+    cert_hash = body.get("record_hash")
+    if not cert_hash:
+        raise AssertionError(f"financial audit did not return record_hash: {list(body.keys())}")
+
+    r2 = v.client.get(f"{V1}/counterfactual/audit/ledger/verify", headers=v._auth_headers())
+    r2.raise_for_status()
+    verify_body = r2.json()
+    if not verify_body.get("ok"):
+        raise AssertionError(f"ledger chain failed verification: {verify_body}")
+
+    r3 = v.client.get(f"{V1}/counterfactual/audit/ledger/proof/{cert_hash}", headers=v._auth_headers())
+    r3.raise_for_status()
+    proof = r3.json()
+    if "root_hash_hex" not in proof or "proof_hex" not in proof:
+        raise AssertionError(f"unexpected inclusion-proof shape: {list(proof.keys())}")
+    return (
+        f"signed audit {cert_hash[:12]}... chained + verified "
+        f"(tree_size={proof.get('tree_size')}, leaf_index={proof.get('leaf_index')})"
+    )
+
+
 def check_uasr_self_heal(v: Verifier) -> str:
     """Regression check for the exact bug fixed in fix/uasr-schema-
     validation-false-reject: identical values, only a column renamed --
@@ -258,6 +354,8 @@ CHECKS: List[tuple[str, Callable[[Verifier], Optional[str]]]] = [
     ("login", check_login),
     ("jwks", check_jwks),
     ("financial_audit_demo", check_financial_audit_demo),
+    ("file_upload_profile", check_file_upload_profile),
+    ("ledger_proof", check_ledger_proof),
     ("query_history", check_query_history),
     ("saved_queries", check_saved_queries),
     ("dashboards_list", check_dashboards_list),
