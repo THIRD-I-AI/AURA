@@ -224,7 +224,8 @@ This is the process, not a suggestion:
   the sibling `audit/financial` route still correctly → 401.
 
 ## BUG-008: importing uasr.mapek_worker alongside an async DB engine hangs pytest at exit
-- **Status:** root-caused (2026-09-01). The `uasr.mapek_worker` /
+- **Status:** fixed (2026-09-02).
+- **Original status note (2026-09-01, root-caused):** the `uasr.mapek_worker` /
   LLM-provider-chain import is **not** the trigger — it was a correlation
   in the original narrowing, not the cause. See the 2026-09-01 update
   below. The `recovery_persistence.py` workaround from the original
@@ -363,6 +364,30 @@ This is the process, not a suggestion:
   problem, so it's safe to re-attempt with an explicit `dispose()` in its
   fixture teardown instead of avoiding the import.
   the same wall.
+- **Fix (2026-09-02):** swept the repo for the two qualifying call-site
+  shapes above. No standalone/throwaway script against
+  `metadata_store.db` was found (`alembic/env.py` already calls
+  `await connectable.dispose()`; `dar_service/main.py` and
+  `api_gateway/main.py` are long-lived servers, exempt per the finding).
+  Two test-module fixtures were swapping `metadata_store.db`'s engine to
+  a temp-file DB and restoring the original module attributes over the
+  swapped-in one without disposing it first — an orphaned engine
+  `tests/conftest.py`'s `pytest_sessionfinish` can no longer find, since
+  by session-end the module attribute points at the pre-test value
+  again — the exact `_isolated_metadata_db` gap `test_uasr_cross_source_
+  heal.py` and `test_uasr_recovery_persistence.py` had already closed.
+  Applied that same explicit-`dispose()`-on-a-throwaway-loop pattern to
+  `aurabackend/tests/test_uasr_approval_reaper.py` and
+  `aurabackend/tests/test_uasr_service_cross_source_heal.py`. Also
+  re-added the `persist_recovery_row` regression test dropped in the
+  original investigation — it now lives in
+  `aurabackend/tests/test_uasr_recovery_persistence.py` (3 tests:
+  default write, `return_row=True`, and parity between the two modes),
+  whose fixture already used the explicit-`dispose()` pattern above.
+  Verified: `pytest tests/test_uasr_approval_reaper.py tests/
+  test_uasr_service_cross_source_heal.py tests/
+  test_uasr_recovery_persistence.py --tb=short` — 9/9 passed, process
+  exited immediately with no hang.
 
 ## BUG-007: test_categorical_drift_still_detected fails in CI but not locally
 - **Status:** fixed

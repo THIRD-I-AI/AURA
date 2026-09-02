@@ -66,6 +66,23 @@ def _isolated_metadata_db():
 
     yield
 
+    # Dispose the engine THIS fixture created before restoring the original
+    # module attributes over it -- an orphaned aiosqlite connection pool
+    # (each connection a NON-DAEMON worker thread) blocks interpreter exit
+    # at threading._shutdown once nothing still references it for
+    # tests/conftest.py's own pytest_sessionfinish disposal hook to find.
+    # See tests/test_uasr_recovery_persistence.py's identical fixture for
+    # the full story (reproduced and root-caused there; docs/BUG_REGISTRY.md
+    # BUG-008).
+    leaked_engine = _metadata_db._engine
+    if leaked_engine is not None:
+        import asyncio as _asyncio
+        _loop = _asyncio.new_event_loop()
+        try:
+            _loop.run_until_complete(leaked_engine.dispose())
+        finally:
+            _loop.close()
+
     _metadata_db.DATABASE_URL = original_url
     _metadata_db._engine = original_engine
     _metadata_db._session_factory = original_factory
