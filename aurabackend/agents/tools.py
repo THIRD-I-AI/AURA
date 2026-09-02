@@ -52,18 +52,27 @@ async def _get(base: str, path: str, params: Dict[str, Any] | None = None) -> An
 
 # ── Tool functions ────────────────────────────────────────────────────
 
-async def execute_sql(*, query: str, connection_id: str = "default") -> Any:
+async def execute_sql(*, query: str, connection_id: str = "default", approved: bool = True) -> Any:
     """Execute a SQL query via the Execution Sandbox.
 
     Sandbox route: POST /execute_sql
     Body schema: ExecutionJob(job_id, sql, connection_id, limit, approved)
+
+    ``approved`` used to be hardcoded ``True`` in the sandbox payload
+    regardless of caller intent (BUG-026) — the one downstream check that
+    reads it (execution_sandbox_service/main.py's ``if not job.approved``)
+    was unconditionally satisfied by this tool itself. It now reflects the
+    real decision: ``ToolRegistry.call()`` forwards its own resolved
+    approval status here (True once its requires_approval/is_destructive
+    gate has been passed), and a direct caller may still pass approved=False
+    explicitly to have the sandbox reject the job.
     """
     return await _post(_SANDBOX, "/execute_sql", {
         "job_id": str(uuid.uuid4()),
         "sql": query,
         "connection_id": connection_id,
         "limit": int(os.getenv("DEFAULT_QUERY_LIMIT", "1000")),
-        "approved": True,
+        "approved": approved,
     })
 
 

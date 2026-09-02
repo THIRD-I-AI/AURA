@@ -1098,7 +1098,10 @@ async def get_sth(day: Optional[str] = None) -> STHResponse:
         day=merkle_info["day"],
         service_tag=merkle_info["service_tag"],
     )
-    sig_b64 = signing.sign_bytes(canonical)
+    # signing.sign_bytes() itself never checks revocation (BUG-027) — mirror
+    # financial_report.py's _sign_document, the one signing path that
+    # already refuses to sign with a revoked key.
+    sig_b64 = None if cryptography.is_revoked() else signing.sign_bytes(canonical)
     import base64 as _b64
     return STHResponse(
         tree_size=merkle_info["tree_size"],

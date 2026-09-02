@@ -6,9 +6,17 @@ This gives us logging, rate-limiting, dry-run mode, and permission checks for fr
 """
 from __future__ import annotations
 
+import inspect
 import time
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Dict, List, Optional
+
+
+class ToolApprovalRequiredError(PermissionError):
+    """Raised by ToolRegistry.call() when a tool flagged requires_approval /
+    is_destructive is invoked without approved=True. Callers must obtain
+    approval (whatever that means for their flow) and retry with
+    approved=True — the call never reaches tool.fn until then."""
 
 
 @dataclass
@@ -83,10 +91,36 @@ class ToolRegistry:
 
     # ── invocation ──────────────────────────────────────────────────
 
-    async def call(self, name: str, **kwargs: Any) -> Any:
+    async def call(self, name: str, *, approved: bool = False, **kwargs: Any) -> Any:
         tool = self._tools.get(name)
         if tool is None:
             raise KeyError(f"Tool '{name}' not found. Available: {self.tool_names()}")
+
+        # Gate: requires_approval/is_destructive were previously only read for
+        # describe_tools() display badges — nothing stopped an unattended call
+        # from reaching tool.fn (BUG-026). A flagged tool must be explicitly
+        # approved (approved=True) before it ever executes, dry-run or not.
+        needs_approval = tool.requires_approval or tool.is_destructive
+        if needs_approval and not approved:
+            self._history.append(ToolCallRecord(
+                tool_name=name,
+                input_args=kwargs,
+                output=None,
+                duration_ms=0,
+                approved=False,
+            ))
+            raise ToolApprovalRequiredError(
+                f"Tool '{name}' requires approval before it can run "
+                f"(requires_approval={tool.requires_approval}, "
+                f"is_destructive={tool.is_destructive}). Call again with "
+                "approved=True once a human/approval-flow has authorized it."
+            )
+
+        # Real (not hardcoded) approval status, forwarded only to tool
+        # functions that actually declare an `approved` parameter — most
+        # tools don't take one and are unaffected.
+        if "approved" in inspect.signature(tool.fn).parameters:
+            kwargs.setdefault("approved", True)
 
         if self.dry_run:
             record = ToolCallRecord(
@@ -108,6 +142,7 @@ class ToolRegistry:
             input_args=kwargs,
             output=output,
             duration_ms=elapsed,
+            approved=True,
         ))
         return output
 
