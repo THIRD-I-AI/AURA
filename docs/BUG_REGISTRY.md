@@ -607,9 +607,11 @@ This is the process, not a suggestion:
   open question, not silently resolved by this fix.
 
 ## BUG-010: four undocumented silent-stub call sites (zero-stub-compliance audit)
-- **Status:** open — requires a product decision (raise vs. implement vs.
-  document), not a mechanical fix. Filed so it doesn't evaporate as an
-  unlogged agent report, per this registry's own process.
+- **Status:** partially fixed. Item 1 (the only reachable one) fixed
+  2026-09-02 — see its entry below. Items 2-4 remain open but are
+  currently unreachable / already honestly disclosed, per each item's
+  own note. Filed so it doesn't evaporate as an unlogged agent report,
+  per this registry's own process.
 - **Found by:** dedicated zero-stub-compliance audit of `aurabackend/`
   (excluding tests/migrations), 2026-09-01, cross-checked against
   `STATUS.md`/`README.md`/`docs/DEPLOYMENT.md`.
