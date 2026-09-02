@@ -8,7 +8,7 @@ Regenerate with:
         --output sdk_clients/aura_scheduler_client \
         --package-name aura_scheduler_client
 
-Source schema fingerprint: 746a8fd1a630c245
+Source schema fingerprint: 44935e3cf048ae28
 """
 from __future__ import annotations
 
@@ -246,12 +246,12 @@ class Client:
         response = self._request("GET", url, params=params, json=json_body)
         return response
 
-    def list_executions(self, job_id: Optional[str] = None, status: Optional["JobStatus"] = None, limit: Optional[int] = None) -> Dict[str, Any]:
+    def list_executions(self, job_id: Optional[str] = None, status_filter: Optional["JobStatus"] = None, limit: Optional[int] = None) -> Dict[str, Any]:
         """List Executions"""
         url = "/executions"
         params = {
             "job_id": job_id,
-            "status": status,
+            "status_filter": status_filter,
             "limit": limit,
         }
         params = {k: v for k, v in params.items() if v is not None}
@@ -467,12 +467,12 @@ class AsyncClient:
         response = await self._request("GET", url, params=params, json=json_body)
         return response
 
-    async def list_executions(self, job_id: Optional[str] = None, status: Optional["JobStatus"] = None, limit: Optional[int] = None) -> Dict[str, Any]:
+    async def list_executions(self, job_id: Optional[str] = None, status_filter: Optional["JobStatus"] = None, limit: Optional[int] = None) -> Dict[str, Any]:
         """List Executions"""
         url = "/executions"
         params = {
             "job_id": job_id,
-            "status": status,
+            "status_filter": status_filter,
             "limit": limit,
         }
         params = {k: v for k, v in params.items() if v is not None}

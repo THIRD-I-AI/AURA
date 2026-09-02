@@ -711,7 +711,7 @@
           },
           {
             "in": "query",
-            "name": "status",
+            "name": "status_filter",
             "required": false,
             "schema": {
               "anyOf": [
@@ -722,7 +722,7 @@
                   "type": "null"
                 }
               ],
-              "title": "Status"
+              "title": "Status Filter"
             }
           },
           {
