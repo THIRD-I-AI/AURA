@@ -646,7 +646,12 @@ class PipelineEngine:
             # Custom SQL must reference {{prev}} as the upstream table
             return expression.replace("{{prev}}", _q(prev))
 
-        return None
+        # Every StepType above has a branch; reaching here means a step type
+        # (e.g. UNION) has no SQL generation implemented yet. Silently
+        # returning None here would make the caller skip the step and keep
+        # going, producing a wrong result with no error (BUG-010 item 1) —
+        # fail the run instead so the caller sees why.
+        raise ValueError(f"Pipeline step type {t.value!r} is not implemented")
 
     # ── Sink Writing ──────────────────────────────────────────────────
 

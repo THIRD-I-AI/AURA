@@ -34,8 +34,10 @@ from pipeline.models import (
     PipelineSink,
     PipelineSource,
     PipelineStatus,
+    ProcessingStep,
     SinkType,
     SourceType,
+    StepType,
 )
 
 
@@ -97,6 +99,33 @@ async def test_duckdb_source_reads_real_external_db_table(tmp_path):
     assert run.rows_read == 3
     populations = {row["population"] for row in run.preview_data}
     assert populations == {1000, 2000, 1500}
+
+
+@pytest.mark.asyncio
+async def test_union_step_fails_run_instead_of_silently_skipping(tmp_path):
+    """StepType.UNION has no SQL-generation branch in _step_to_sql. Before
+    this fix it fell through to `return None`, which the caller treats as
+    "skip" — the run reported SUCCESS with the union step silently dropped,
+    a wrong result with no error (BUG-010 item 1). It must now fail the run
+    with a clear message instead."""
+    tenant_dir = tmp_path / "uploads" / "tenant_abc123"
+    tenant_dir.mkdir(parents=True)
+    (tenant_dir / "customers.csv").write_text(
+        "id,name\n1,Alice\n2,Bob\n", encoding="utf-8"
+    )
+
+    pipeline = Pipeline(
+        name="union-step-test",
+        source=PipelineSource(type=SourceType.FILE, file_name="customers.csv"),
+        steps=[ProcessingStep(type=StepType.UNION, config={})],
+        sink=PipelineSink(type=SinkType.PREVIEW),
+    )
+
+    engine = PipelineEngine()
+    run = await engine.execute(pipeline, preview_only=True, upload_dir=str(tenant_dir))
+
+    assert run.status == PipelineStatus.FAILED
+    assert "union" in run.error.lower()
 
 
 def _generator() -> PipelineGenerator:
