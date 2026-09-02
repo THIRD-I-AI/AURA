@@ -62,7 +62,7 @@ Scored by "would this stop an enterprise deployment?", not by lines changed.
 |---|---|---|
 | **Connectors don't work end-to-end** | The *engineer* role can't query an external database. Gateway and connectors service hold separate stores. Needs an architecture decision (shared DB vs credentials over inter-service traffic vs callback). | Medium — **decision needed first** |
 | **Data-movement layer unaudited** | Pipelines, streaming, upload→queryable, webhooks have never been assessed. Unknown whether any silently produces *wrong* data. | Medium |
-| **Scheduler service unreachable** | Standalone distributed scheduler has no gateway route at all — only a `/health` ping. | Small–medium |
+| ~~**Scheduler service unreachable**~~ | Fixed: gateway now proxies scheduler_service's full route set under `/api/v1/scheduler/*` (see `test_scheduler_gateway_facade_coverage.py`). scheduler_service still isn't part of the aws-free-tier single-box profile, so these routes only reach a live service on the full docker-compose stack. | — |
 | **`semantic_builder` never written** | A live route imports it and always returns an error with HTTP 200. | Small |
 | **PII masking on the wrong service** | Mounted only on `ingestion_service`, which never starts. Cannot be mounted wholesale on the gateway — it rewrites inbound bodies and would redact `email`, breaking login. Needs scoping to data paths. | Small–medium |
 | **No correlation ID across service hops** | A single user action can't be traced across services. | Small |

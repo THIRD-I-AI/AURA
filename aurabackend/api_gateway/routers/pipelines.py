@@ -697,3 +697,125 @@ async def causal_discover(req: Dict[str, Any], request: Request):
 @router.get("/causal/info")
 async def causal_info(request: Request):
     return await _causal("GET", "/causal/info", 15, request)
+
+
+# ── Scheduler service proxy routes ───────────────────────────────────
+# scheduler_service (S20a/S20b/S20.2: Postgres LISTEN/NOTIFY wake,
+# pg_advisory_lock leader election) had no gateway route at all -- only
+# /system/health's port-8004 probe referenced it. Not part of the
+# aws-free-tier single-box profile (see deploy/aws-free-tier/README.md);
+# these routes matter for anyone running the full docker-compose stack.
+
+_SCHEDULER_URL = os.getenv("AURA_SCHEDULER_URL", "http://localhost:8004")
+
+
+async def _scheduler(
+    method: str,
+    path: str,
+    timeout: float,
+    request: Optional[Request] = None,
+    **kwargs: Any,
+) -> Any:
+    """Proxy a call to the scheduler service, failing honestly when it is absent.
+
+    Same shape as `_uasr` above: 503 for an unreachable dependency (not a
+    500 that reads as a crash inside AURA), Authorization header forwarded,
+    and upstream status code preserved rather than collapsed to 200.
+    """
+    headers = {}
+    if request is not None:
+        auth = request.headers.get("Authorization")
+        if auth:
+            headers["Authorization"] = auth
+
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            resp = await client.request(method, f"{_SCHEDULER_URL}{path}", headers=headers, **kwargs)
+    except httpx.RequestError as exc:
+        logger.warning("Scheduler service unreachable at %s%s: %s", _SCHEDULER_URL, path, exc)
+        raise ServiceUnavailableError("Scheduler service") from exc
+
+    try:
+        payload = resp.json()
+    except ValueError:
+        payload = {"error": "UPSTREAM_NOT_JSON", "message": resp.text[:500]}
+    return JSONResponse(status_code=resp.status_code, content=payload)
+
+
+@router.post("/scheduler/jobs")
+async def scheduler_create_job(req: Dict[str, Any], request: Request):
+    return await _scheduler("POST", "/jobs", 30, request, json=req)
+
+
+@router.get("/scheduler/jobs")
+async def scheduler_list_jobs(request: Request, is_active: Optional[bool] = None):
+    params = {"is_active": is_active} if is_active is not None else {}
+    return await _scheduler("GET", "/jobs", 15, request, params=params)
+
+
+@router.get("/scheduler/jobs/{job_id}")
+async def scheduler_get_job(job_id: str, request: Request):
+    return await _scheduler("GET", f"/jobs/{job_id}", 15, request)
+
+
+@router.put("/scheduler/jobs/{job_id}")
+async def scheduler_update_job(job_id: str, req: Dict[str, Any], request: Request):
+    return await _scheduler("PUT", f"/jobs/{job_id}", 30, request, json=req)
+
+
+@router.delete("/scheduler/jobs/{job_id}")
+async def scheduler_delete_job(job_id: str, request: Request):
+    return await _scheduler("DELETE", f"/jobs/{job_id}", 15, request)
+
+
+@router.post("/scheduler/jobs/{job_id}/pause")
+async def scheduler_pause_job(job_id: str, request: Request):
+    return await _scheduler("POST", f"/jobs/{job_id}/pause", 15, request)
+
+
+@router.post("/scheduler/jobs/{job_id}/resume")
+async def scheduler_resume_job(job_id: str, request: Request):
+    return await _scheduler("POST", f"/jobs/{job_id}/resume", 15, request)
+
+
+@router.post("/scheduler/jobs/{job_id}/execute")
+async def scheduler_execute_job(job_id: str, request: Request):
+    return await _scheduler("POST", f"/jobs/{job_id}/execute", 300, request)
+
+
+@router.post("/scheduler/jobs/{job_id}/run")
+async def scheduler_trigger_job_run(job_id: str, request: Request):
+    return await _scheduler("POST", f"/jobs/{job_id}/run", 15, request)
+
+
+@router.get("/scheduler/executions")
+async def scheduler_list_executions(
+    request: Request,
+    job_id: Optional[str] = None,
+    status: Optional[str] = None,
+    limit: int = 100,
+):
+    params: Dict[str, Any] = {"limit": limit}
+    if job_id is not None:
+        params["job_id"] = job_id
+    if status is not None:
+        params["status"] = status
+    return await _scheduler("GET", "/executions", 15, request, params=params)
+
+
+@router.get("/scheduler/executions/{execution_id}")
+async def scheduler_get_execution(execution_id: str, request: Request):
+    return await _scheduler("GET", f"/executions/{execution_id}", 15, request)
+
+
+@router.get("/scheduler/executions/{execution_id}/logs")
+async def scheduler_get_execution_logs(execution_id: str, request: Request, level: Optional[str] = None):
+    params = {"level": level} if level is not None else {}
+    return await _scheduler("GET", f"/executions/{execution_id}/logs", 15, request, params=params)
+
+
+@router.post("/scheduler/admin/cleanup")
+async def scheduler_cleanup_old_executions(request: Request, retention_days: int = 30):
+    return await _scheduler(
+        "POST", "/admin/cleanup", 30, request, params={"retention_days": retention_days},
+    )

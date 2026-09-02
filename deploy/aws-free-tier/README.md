@@ -29,7 +29,7 @@ topology — and the reduction is honest about what it costs.
 | Counterfactual estimators (TMLE, DR-learner, IV-2SLS) | `base-runtime` image excludes dowhy/econml. Switch to `causal-runtime` **only** if you upsize the instance — the causal tier will not fit in 1 GB. |
 | External-DB connectors | Already broken end-to-end before deploy — see the connectors gap in `STATUS.md`. Not a deploy regression. |
 | Kafka streaming | Needs the `streaming-runtime` tier and a broker. |
-| Distributed scheduler | Standalone service, no gateway route yet (`STATUS.md`). |
+| Distributed scheduler | Gateway now proxies it (`/api/v1/scheduler/*`), but scheduler_service isn't in this profile's docker-compose — the routes have nothing to talk to here. Live only on the full stack (`docker-compose.yml`). |
 
 This table is the point of the file. A deploy that silently 500s on
 Counterfactuals is worse than one that tells you up front it isn't included.
