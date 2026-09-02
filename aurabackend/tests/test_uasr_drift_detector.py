@@ -484,3 +484,65 @@ class TestColdStartWarmup:
         assert r.drift_detected is True
         assert r.drift_type == DriftType.STATISTICAL
 
+
+# ── BUG-010: near-zero float-noise std on a constant column ───────
+
+class TestNearConstantColumnFeedbackOverflow:
+    """A column that is truly constant in real data (e.g. TLC's
+    ``improvement_surcharge``, always 0.3) gets a NON-zero std from
+    float-rounding noise (``numpy.std`` over N copies of the same float64
+    -> ~1e-17), not the mathematically-true 0. The old
+    ``ref_dist.std if ref_dist.std > 0 else 1.0`` guard only caught the
+    exact-zero case, so this noise floor became the denominator of a
+    location-shift "sigma" score: any later batch whose mean differed by a
+    single float-precision residual produced an astronomically large fake
+    sigma count, which fed straight into the persisted, unbounded
+    ``kl_history`` the adaptive threshold reads back on the next batch --
+    compounding across batches until KL overflowed a Python float
+    (``OverflowError``), permanently breaking detection for that source.
+    See docs/BUG_REGISTRY.md BUG-010 (found via scripts/uasr_benchmark_nyc_
+    taxi.py against real TLC data, where improvement_surcharge is 0.3 on
+    effectively every row).
+    """
+
+    def test_constant_column_does_not_explode_across_batches(self):
+        det = DriftDetector(default_zeta=0.15, warmup_batches=3)
+        det.register_baseline(
+            "s", BatchPayload(source_id="s", batch_id="base",
+                               rows=[{"fee": 0.3, "amount": 50.0} for _ in range(200)]),
+        )
+        # amount varies healthily batch to batch (real data always carries
+        # some noise); fee stays bit-for-bit the constant 0.3. Must never
+        # raise, and KL must stay bounded -- not compound toward infinity.
+        import random
+        rnd = random.Random("bug-010")
+        max_kl = 0.0
+        for i in range(80):
+            rows = [
+                {"fee": 0.3, "amount": rnd.gauss(50.0, 5.0)}
+                for _ in range(200)
+            ]
+            result = det.detect(BatchPayload(source_id="s", batch_id=str(i), rows=rows))
+            if result.kl_divergence is not None:
+                max_kl = max(max_kl, result.kl_divergence)
+        assert max_kl < 1000.0, f"KL divergence compounded out of control: {max_kl}"
+
+    def test_near_zero_std_treated_as_exactly_zero(self):
+        """A baseline std of pure float noise (5.55e-17, not exactly 0.0)
+        must fall back to the scale=1.0 branch exactly like std==0.0 does."""
+        det = DriftDetector(default_zeta=0.15, warmup_batches=0)
+        det.register_baseline(
+            "s", BatchPayload(source_id="s", batch_id="base", rows=[{"fee": 0.3} for _ in range(200)]),
+        )
+        baseline_std = det._store.peek("s").baseline["fee"].std
+        assert 0.0 < baseline_std < 1e-10, "fixture no longer reproduces float noise -- adjust it"
+
+        # A batch whose "fee" mean is bit-identical to the baseline should
+        # never report drift on this column: 0/scale is 0 either way, but a
+        # regression to the pre-fix `> 0` guard alongside any nonzero
+        # residual is exactly the failure mode BUG-010 exercises above.
+        result = det.detect(
+            BatchPayload(source_id="s", batch_id="b1", rows=[{"fee": 0.3} for _ in range(200)]),
+        )
+        assert "fee" not in (result.affected_columns or [])
+
