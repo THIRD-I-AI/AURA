@@ -38,7 +38,7 @@ vi.mock('./views', () => ({
   ViewHost: ({ nav }: { nav: string }) => <div data-testid="wb-view">mounted:{nav}</div>,
 }));
 
-import { healingService } from '../services/api';
+import { chatService, healingService } from '../services/api';
 import { MemoryRouter, Routes, Route } from 'react-router-dom';
 import Workbench from './Workbench';
 
@@ -141,5 +141,51 @@ describe('Workbench', () => {
     fireEvent.click(screen.getByText('Scheduler'));
     expect(screen.getByTestId('wb-stub')).toBeInTheDocument();
     vi.useRealTimers();
+  });
+
+  // BUG-028: streamMessage's caught error was collapsed into one hardcoded
+  // "Commander offline" message regardless of cause — a 401 told the user to
+  // "connect a gateway" instead of to re-authenticate. Assert the two failure
+  // modes now produce genuinely different copy.
+  describe('Ask AURA chat error branching (BUG-028)', () => {
+    const ask = async (question: string) => {
+      const input = screen.getByPlaceholderText(/Ask anything about your data/i) as HTMLInputElement;
+      fireEvent.change(input, { target: { value: question } });
+      fireEvent.keyDown(input, { key: 'Enter' });
+      await act(async () => {});
+    };
+
+    it('a 401 from streamMessage tells the user to re-authenticate', async () => {
+      vi.useFakeTimers();
+      vi.mocked(chatService.streamMessage).mockRejectedValueOnce(new Error('stream failed: 401'));
+      await boot();
+      await ask('what changed last week?');
+      expect(await screen.findByText(/session has expired.*sign in again/i)).toBeInTheDocument();
+      vi.useRealTimers();
+    });
+
+    it('a network failure (no status) tells the user the gateway is offline', async () => {
+      vi.useFakeTimers();
+      vi.mocked(chatService.streamMessage).mockRejectedValueOnce(new TypeError('Failed to fetch'));
+      await boot();
+      await ask('what changed last week?');
+      expect(await screen.findByText(/Commander offline/i)).toBeInTheDocument();
+      vi.useRealTimers();
+    });
+
+    it('401 and network-failure messages are different', async () => {
+      vi.useFakeTimers();
+      vi.mocked(chatService.streamMessage).mockRejectedValueOnce(new Error('stream failed: 401'));
+      await boot();
+      await ask('q1');
+      const authMsg = (await screen.findByText(/session has expired/i)).textContent;
+
+      vi.mocked(chatService.streamMessage).mockRejectedValueOnce(new TypeError('Failed to fetch'));
+      await ask('q2');
+      const offlineMsg = (await screen.findByText(/Commander offline/i)).textContent;
+
+      expect(authMsg).not.toEqual(offlineMsg);
+      vi.useRealTimers();
+    });
   });
 });

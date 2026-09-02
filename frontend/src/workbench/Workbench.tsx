@@ -81,6 +81,26 @@ const BOOT_STAGES = [
   'Restoring cockpit layout',
 ];
 const now = () => new Date().toTimeString().slice(0, 5);
+
+/* chatService.streamMessage throws plain Errors: 'commander_disabled' on 404,
+   `stream failed: ${status}` on any other non-ok response, or whatever the
+   fetch layer itself throws for a network/abort failure (no `status`, no
+   parseable message) — branch the user-facing copy on which one it actually
+   was instead of collapsing every cause into "offline". */
+function describeChatError(err: unknown): string {
+  const message = err instanceof Error ? err.message : String(err);
+  const name = err instanceof Error ? err.name : undefined;
+  if (name === 'AbortError') return 'Request cancelled.';
+  const statusMatch = /^stream failed: (\d+)$/.exec(message);
+  const status = statusMatch ? Number(statusMatch[1]) : null;
+  if (status === 401 || status === 403) {
+    return 'Your session has expired — please sign in again to continue.';
+  }
+  if (status !== null && status >= 500) {
+    return 'Commander is temporarily unavailable (server error) — try again shortly.';
+  }
+  return 'Commander offline — showing the workflow with the connected gateway is required for live answers.';
+}
 type CfState =
   | { status: 'idle' }
   | { status: 'running'; stageIdx: number }
@@ -288,8 +308,8 @@ export default function Workbench() {
           else if (ev.event === 'error') answer = `Error: ${d.message}`;
         },
       });
-    } catch {
-      answer = 'Commander offline — showing the workflow with the connected gateway is required for live answers.';
+    } catch (err) {
+      answer = describeChatError(err);
     }
     setThinking(null);
     setMessages((m) => {
