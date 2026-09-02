@@ -30,6 +30,12 @@ REF="${1:-origin/main}"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 COMPOSE_DIR="$REPO_ROOT/deploy/aws-free-tier"
 
+# Running via `sudo` (interactively or from cron) hits git's dubious-ownership
+# check whenever $REPO_ROOT isn't owned by root -- idempotent, so safe to run
+# every time rather than requiring a one-time manual `git config` step that
+# an unattended cron job can't do for itself.
+sudo git config --global --add safe.directory "$REPO_ROOT"
+
 echo "==> Fetching..."
 cd "$REPO_ROOT"
 sudo git fetch origin

@@ -165,19 +165,37 @@ docker stats --no-stream               # memory headroom — the number that mat
 ### Redeploying
 
 `AURA_TAG=latest` — `cd.yml` builds and pushes a fresh `latest-*` image on
-every merge to `main`, but that alone never reaches this box: nothing here
-auto-deploys. A full redeploy is really two independent steps (pull this repo
-for `docker-compose.yml`/`Caddyfile` changes, then pull+recreate the
-containers for new images) — doing only one half is exactly how the box went
-15 days stale in 2026-08-31/09-02 (see `docs/BUG_REGISTRY.md` BUG-015: an
-`.env` tag fix landed without the matching `git checkout`, so new services
-and env vars silently couldn't exist). Use the script, which does both
-atomically and refuses to leave a half-applied deploy:
+every merge to `main`, but that alone never reaches this box on its own. A
+full redeploy is really two independent steps (pull this repo for
+`docker-compose.yml`/`Caddyfile` changes, then pull+recreate the containers
+for new images) — doing only one half is exactly how the box went 15 days
+stale in 2026-08-31/09-02 (see `docs/BUG_REGISTRY.md` BUG-015: an `.env` tag
+fix landed without the matching `git checkout`, so new services and env vars
+silently couldn't exist). `redeploy.sh` does both atomically and refuses to
+leave a half-applied deploy:
 
 ```sh
 ./redeploy.sh                # deploy origin/main
 ./redeploy.sh v0.1.5         # deploy a specific tag/branch/commit
 ```
+
+This box polls it via cron every 15 minutes (still no push-based CI/CD —
+this is pull-based, so the worst-case staleness is now ~15 minutes, not
+weeks). Idempotent by construction: `git checkout` onto an unchanged ref and
+`docker compose up -d` against unchanged images/config are both no-ops, so
+running it constantly does not restart healthy containers or cause
+unnecessary downtime. `flock -n` skips a run outright rather than queuing if
+a previous run is still in flight (a slow image pull, say), so runs never
+stack up:
+
+```sh
+crontab -l   # confirm what's actually scheduled -- don't trust this README
+*/15 * * * * flock -n /tmp/aura-redeploy.lock /opt/aura/deploy/aws-free-tier/redeploy.sh >> /opt/aura/deploy/aws-free-tier/redeploy.log 2>&1
+```
+
+`crontab` was not installed on this box as of 2026-09-02 (see BUG-015) — if
+setting this up fresh, `sudo dnf install -y cronie && sudo systemctl enable
+--now crond` first, same as the backup job above.
 
 If the gateway OOM-loops, check `docker stats` first. The usual causes are a
 `--workers` value above 1, or swapping to the `causal-runtime` image. Both
