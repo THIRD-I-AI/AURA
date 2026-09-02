@@ -340,8 +340,20 @@ class MAPEKWorker:
                     try:
                         routed = await self._shim_router.apply(batch.source_id, batch.rows)
                         batch.rows = routed["rows"]
-                    except Exception:
-                        pass  # no routes yet — use raw rows
+                    except Exception as exc:
+                        # ShimRouter.apply() returns a normal dict for "no
+                        # routes yet" — it only raises on a genuine canary-shim
+                        # transform() failure. Fall back to raw rows but name
+                        # the real cause instead of silently swallowing it.
+                        logger.warning(
+                            "canary-shim transform failed for source=%s, using raw rows: %s",
+                            batch.source_id, exc,
+                        )
+                        await self._emit(
+                            "monitor",
+                            f"canary-shim transform failed, using raw rows: {exc}",
+                            {"batch_id": batch.batch_id, "source_id": batch.source_id},
+                        )
                 else:
                     healed_rows = self._loop.apply_shims(batch.source_id, batch.rows)
                     batch.rows = healed_rows

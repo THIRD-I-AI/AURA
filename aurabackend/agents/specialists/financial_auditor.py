@@ -190,7 +190,7 @@ class FinancialAuditorAgent:
             expectations = {a: float(sums[a] / counts[a]) for a in sums}
 
         for entry in ledger_batch:
-            amount = entry.get("amount", 0)
+            amount = float(_money(entry.get("amount")))
             acct = entry.get("account_code")
             if amount > materiality_threshold:
                 finding = AuditFinding(
@@ -307,7 +307,7 @@ class FinancialAuditorAgent:
         # so distinct legitimate entries that merely share an amount don't collide.
         seen: set = set()
         for je in journal_entries:
-            amt = je.get("amount", 0)
+            amt = float(_money(je.get("amount")))
             dup_key = (amt, je.get("account_code"), je.get("vendor_id"))
             if amt and dup_key in seen:
                 finding = AuditFinding(

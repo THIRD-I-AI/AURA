@@ -11,6 +11,7 @@ from fastapi import HTTPException, status
 from pydantic import BaseModel, Field
 
 from insights_service.engine import InsightsEngine
+from shared.error_handler import sanitize_error
 from shared.logging_config import get_logger
 
 # Add parent directory to path for imports
@@ -103,7 +104,7 @@ async def analyze_results(request: AnalyzeRequest):
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Analysis failed: {str(e)}",
+            detail=sanitize_error(e, logger=logger, context="insights analyze"),
         )
 
 
@@ -122,7 +123,7 @@ async def suggest_charts(request: ChartSuggestionRequest):
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Chart suggestion failed: {str(e)}",
+            detail=sanitize_error(e, logger=logger, context="insights chart-suggestions"),
         )
 
 

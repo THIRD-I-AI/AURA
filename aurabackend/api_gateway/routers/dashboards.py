@@ -29,6 +29,7 @@ from api_gateway.routers.workspaces import (
     current_workspace_id,
     tenant_upload_dir,
 )
+from shared.error_handler import sanitize_error
 from shared.logging_config import get_logger
 
 logger = get_logger("aura.api_gateway.dashboards")
@@ -200,7 +201,7 @@ async def _run_tile(tile: Dict[str, Any], saved_queries: List[Dict[str, Any]], r
             "title": tile.get("title") or sq.get("name"),
             "chart_type": tile.get("chart_type", "table"),
             "status": "error",
-            "error": str(exc),
+            "error": sanitize_error(exc, logger=logger, context="dashboard tile run"),
             "columns": [],
             "rows": [],
             "row_count": 0,

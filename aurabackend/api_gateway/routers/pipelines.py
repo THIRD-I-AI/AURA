@@ -799,7 +799,10 @@ async def scheduler_list_executions(
     if job_id is not None:
         params["job_id"] = job_id
     if status is not None:
-        params["status"] = status
+        # scheduler_service's own query param is `status_filter` (BUG-023a:
+        # `status` there shadowed fastapi's `status` module). The gateway's
+        # public param name stays `status` for API compatibility.
+        params["status_filter"] = status
     return await _scheduler("GET", "/executions", 15, request, params=params)
 
 

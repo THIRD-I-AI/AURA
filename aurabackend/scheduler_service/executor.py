@@ -4,6 +4,7 @@ Handles actual query execution, retry logic, and result storage
 """
 
 import asyncio
+import calendar
 import logging
 import os
 import smtplib
@@ -370,6 +371,12 @@ class JobExecutor:
             day = config.get("day", 1)
             hour = config.get("hour", 0)
             minute = config.get("minute", 0)
+
+            # day is validated as 1-31 at job-creation time (BUG-023b), but not
+            # every month has 31 days — clamp to the current month's last day
+            # instead of letting datetime.replace() raise and fail a successful run.
+            _, days_in_month = calendar.monthrange(now.year, now.month)
+            day = min(day, days_in_month)
 
             next_run = now.replace(day=day, hour=hour, minute=minute, second=0, microsecond=0)
             if next_run <= now:

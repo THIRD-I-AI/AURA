@@ -737,17 +737,17 @@ This is the process, not a suggestion:
 - **Fix:** wrap each of the three call sites above in `asyncio.to_thread`. Not yet fixed.
 
 ## BUG-023: scheduler_service — a variable-shadowing crash in error handling, and an unvalidated schedule_config crash
-- **Status:** open
+- **Status:** fixed
 - **Found by:** codebase-quality-audit workflow, 2026-09-02.
 - **Severity:** blocks-feature.
 - **Root cause:** two independent bugs in the same service:
   1. `aurabackend/scheduler_service/main.py:416-431` `list_executions`'s `status: Optional[JobStatus] = None` parameter shadows the module-level `from fastapi import ... status` import for the whole function body; its own `except Exception` block then does `status_code=status.HTTP_500_INTERNAL_SERVER_ERROR`, which resolves to the local parameter (`None` or a `JobStatus` value, not the fastapi module) — so any exception this endpoint hits raises `AttributeError` instead of returning a structured 500.
   2. `aurabackend/scheduler_service/executor.py:344-381` `_calculate_next_execution`'s daily/weekly/monthly branches feed unvalidated `schedule_config` values (`day`/`hour`/`minute`) straight into `datetime.replace()` with no bounds check. Since this call happens inside `execute_job`'s SUCCESS path (right after a query already succeeded and its results were stored), a `ValueError` here (e.g. `day=31` in a 30-day month) is caught by the outer generic exception handler and the run is retried/reported as FAILED — a successful query silently misreported.
 - **Caused by:** none — pre-existing.
-- **Fix:** rename the `status` parameter (e.g. `status_filter`) in `list_executions`; add `Field(ge=1,le=31)`/`ge=0,le=23`/`ge=0,le=59` (or equivalent runtime bounds check) to `CreateJobRequest.schedule_config`'s day/hour/minute before they reach `datetime.replace()`. Not yet fixed.
+- **Fix:** renamed the `status` parameter to `status_filter` in `list_executions` (`aurabackend/scheduler_service/main.py`); updated the gateway's `scheduler_list_executions` proxy (`aurabackend/api_gateway/routers/pipelines.py`) to forward its own `status` query param as `status_filter` downstream so the rename doesn't silently break status filtering through the gateway. Added a `_validate_schedule_config` field validator on `CreateJobRequest`/`UpdateJobRequest` bounding `day` (1-31), `day_of_week` (0-6), `hour` (0-23), `minute` (0-59) — an out-of-range value now fails job creation/update with a clear 422 instead of crashing a later successful execution. Also added a defense-in-depth clamp in `_calculate_next_execution`'s monthly branch (`aurabackend/scheduler_service/executor.py`) to the current month's actual last day via `calendar.monthrange`, since a `day=31` in a 30-day month is in-bounds but still not `datetime.replace()`-safe. Tests: `aurabackend/tests/test_scheduler_bug023.py` (new — 6 tests covering the shadowing crash, the renamed query param, schedule_config bounds validation, and the monthly-clamp); full `test_scheduler_*` suite still green.
 
 ## BUG-024: three routers leak raw exception text to the client instead of routing through sanitize_error
-- **Status:** open
+- **Status:** fixed
 - **Found by:** codebase-quality-audit workflow, 2026-09-02.
 - **Severity:** degrades-accuracy (info leak) — DB-driver/DuckDB error text can carry file paths, table/column names, connection strings, or query fragments.
 - **Root cause:** security.md mandates every caught exception route through `shared/error_handler.py::sanitize_error` before reaching a client response; three routers don't:
@@ -755,17 +755,17 @@ This is the process, not a suggestion:
   2. `aurabackend/insights_service/main.py:104-126` (`/analyze`, `/chart-suggestions`) puts `str(e)` directly into `HTTPException(detail=...)`.
   3. `aurabackend/connectors/main.py` (8 call sites: lines 118-123, 152-156, 246-250, 306-310, 388-392, 452-456, 482-486, 506-510) does the same for connector test/query errors, which can carry DB credentials/hostnames.
 - **Caused by:** none — pre-existing; `counterfactual_service/main.py` already follows the correct pattern as the reference sibling.
-- **Fix:** import and route every caught exception in these three files through `sanitize_error` before it reaches the response, matching `etl.py`/`files.py`/`counterfactual_service/main.py`. Not yet fixed.
+- **Fix:** imported and routed every caught exception in all three files through `sanitize_error`, matching `etl.py`/`files.py`/`counterfactual_service/main.py`: `dashboards.py`'s `_run_tile` except clause, `insights_service/main.py`'s `/analyze` and `/chart-suggestions`, and all 8 `connectors/main.py` call sites (connector test, list-tables, ingest, introspect, execute-query, vault query/vector-search/spatial-query — the two `NotImplementedError` handlers at 481/505 were left as-is, they're not the leaking-raw-text path). Verified: `aurabackend/tests/test_dashboards_persistence.py`, `test_insights.py`, `test_connectors.py`, `test_connectors_duckdb_spatial.py`, `test_connectors_faiss.py` all still pass.
 
 ## BUG-025: mapek_worker.py mislabels a real canary-shim failure as "no routes yet"; financial_auditor.py skips its own overflow guard for two checks
-- **Status:** open
+- **Status:** fixed
 - **Found by:** codebase-quality-audit workflow, 2026-09-02.
 - **Severity:** degrades-accuracy.
 - **Root cause:** two independent bugs:
   1. `aurabackend/uasr/mapek_worker.py:339-344` wraps `self._shim_router.apply(...)` in `except Exception: pass  # no routes yet — use raw rows`. But `ShimRouter.apply()` already returns a normal dict (never raises) for both "no routes" cases — the only way it raises is a genuine canary-shim `transform()` failure on live batch rows, which this bare except then swallows with no log/metric/event while misnaming the cause, directly the anti-pattern CLAUDE.md warns about ("a handler that maps a broad exception to one narrated reason will eventually lie").
   2. `aurabackend/agents/specialists/financial_auditor.py`'s `execute_as2305_analytical_procedures` (line 193) and `execute_as2401_fraud_detection` (line 310) read raw `entry.get("amount", 0)` and compare it directly (`>`, `%`, `abs()`), unlike the same file's `_money()` helper (used correctly two other places in the same file) built specifically to swallow non-numeric amounts instead of raising — a single bad row (plausible from arbitrary uploaded ledger data) crashes the entire audit batch with no try/except anywhere in `run_full_audit`'s call chain.
 - **Caused by:** none — pre-existing.
-- **Fix:** replace the bare except in `mapek_worker.py` with a logged warning + emitted event naming the real cause (canary transform failure); route the two `financial_auditor.py` amount reads through the existing `_money()` helper. Not yet fixed.
+- **Fix:** replaced the bare except in `mapek_worker.py:339-344` with a `logger.warning` naming the real cause (canary-shim transform failure) plus an `await self._emit("monitor", ...)` call, matching the module's existing event mechanism (used elsewhere for analyze/other phases) — raw rows are still used as the fallback, but the failure is no longer silent. Routed both `financial_auditor.py` amount reads (AS 2305 line ~193, AS 2401 line ~310) through `_money()` (returned as `float(...)` to stay compatible with the surrounding float-typed materiality thresholds and expectations, since `Decimal`/`float` arithmetic raises `TypeError` on subtraction). Tests: `aurabackend/tests/test_financial_auditor_bug025.py` (new — 3 tests: a non-numeric AS-2305 amount no longer crashes the batch, a non-numeric/missing AS-2401 amount no longer crashes duplicate/round-dollar detection, and `run_full_audit` survives a `NaN` row); full `test_materiality.py`, `test_mapek_shim_router_integration.py`, and the other `test_mapek_*` files still pass.
 
 ## BUG-026: ToolRegistry.call() never enforces requires_approval/is_destructive despite the flags existing to prevent unattended destructive actions
 - **Status:** open
