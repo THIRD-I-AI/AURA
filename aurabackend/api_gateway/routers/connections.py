@@ -4,7 +4,9 @@ Connections Router
 Database connection CRUD, testing, schema introspection, and connector proxies.
 """
 
+import io
 import os
+import re
 import uuid as _uuid
 from datetime import datetime
 from typing import Any, Dict, List, Optional
@@ -13,7 +15,7 @@ from fastapi import APIRouter, HTTPException, Request, status
 from pydantic import BaseModel, Field
 
 from api_gateway import persistence
-from api_gateway.routers.workspaces import current_workspace_id
+from api_gateway.routers.workspaces import _request_tenant, current_workspace_id
 from connectors import (
     ConnectorConfig,
     SourceType,
@@ -366,7 +368,7 @@ async def test_database_connection(db_type: str):
 _UASR_URL = os.getenv("AURA_UASR_URL", "http://localhost:8009")
 
 # Conservative identifier guard for table names interpolated into SQL.
-_IDENT_RE = __import__("re").compile(r"^[A-Za-z_][A-Za-z0-9_.\"]*$")
+_IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.\"]*$")
 
 
 class ConnectorIngestRequest(BaseModel):
@@ -521,3 +523,160 @@ async def ingest_connector_data(connector_type: str, req: ConnectorIngestRequest
         "profile_recorded": profile_recorded,
         "detail": batches,
     }
+
+
+# ── Connection -> Chat bridge ("sync to chat") ────────────────────────
+# Chat's SQL generation and DPC dual-paradigm pandas cross-check are both
+# built around DuckDB (shared.duckdb_factory.new_connection(), run_orchestrator
+# with duckdb_con=con), so making them dialect-aware per connector type would
+# be a large, risky rewrite of the orchestrator, SQL-gen agent, and DPC
+# verifier. Instead: materialize a connector table as a parquet file in the
+# tenant's upload directory. shared/data_utils.py::build_schema_context_cached
+# already scans that directory for .csv/.parquet/.json files, so chat picks
+# up a synced table on the NEXT request with zero changes to chat.py, the
+# LangGraph orchestrator, or the DPC verifier.
+
+# Filename-safe slug for the "<connection>__<table>.parquet" snapshot name.
+_FILENAME_UNSAFE_RE = re.compile(r"[^A-Za-z0-9_.-]")
+
+
+def _safe_filename_component(s: str) -> str:
+    slug = _FILENAME_UNSAFE_RE.sub("_", s).strip("._")
+    return slug or "x"
+
+
+# Above this row count, an unbounded sync is refused unless the caller sets
+# max_rows explicitly. This is a best-effort guard: it relies on
+# connector.profile_table()'s COUNT(*), which not every connector implements
+# cheaply (or at all) — when it's unavailable we fall through and rely on
+# batch_size/max_rows pagination alone as the hard memory bound.
+_SYNC_ROW_CEILING = 2_000_000
+
+
+class ConnectionSyncRequest(BaseModel):
+    """Pull a connector table's rows and materialize them into the tenant's
+    upload directory as a parquet snapshot, so chat can query it."""
+    table_name: str
+    max_rows: Optional[int] = None
+    batch_size: int = 5000
+
+
+@router.post("/connections/{connection_id}/sync")
+async def sync_connection_table(connection_id: str, req: ConnectionSyncRequest, request: Request) -> Dict[str, Any]:
+    """Materialize ``table_name`` from a registered connection into the
+    caller's upload directory as ``<connection_name>__<table_name>.parquet``.
+
+    Re-syncing the same connection+table OVERWRITES the previous snapshot
+    (the filename is deterministic), so this is safe to call repeatedly —
+    it does not accumulate duplicate files.
+    """
+    if not _IDENT_RE.match(req.table_name):
+        raise HTTPException(status_code=400, detail=f"Invalid table name: {req.table_name!r}")
+    if req.batch_size < 1 or req.batch_size > 50000:
+        raise HTTPException(status_code=400, detail="batch_size must be in [1, 50000]")
+    if req.max_rows is not None and req.max_rows < 1:
+        raise HTTPException(status_code=400, detail="max_rows must be positive")
+
+    wsid = current_workspace_id(request)
+    conn = await persistence.get_connection(connection_id, wsid)
+    if not conn:
+        # 404 for another workspace's id too — same reasoning as
+        # test_connection_by_id: a 403 would confirm the id exists.
+        raise HTTPException(status_code=404, detail="Connection not found")
+
+    # Decrypt only here, where a real connection is about to be opened.
+    password = await persistence.get_connection_secret(connection_id, wsid)
+    connector_config = ConnectorConfig(
+        source_type=SourceType(conn["type"]), name=conn["name"],
+        host=conn.get("host") or "", port=conn.get("port") or 5432,
+        username=conn.get("username") or "", password=password or "",
+        database=conn.get("database") or "",
+    )
+    connector = _make_connector(conn["type"], connector_config)
+    if connector is None:
+        raise HTTPException(status_code=400, detail=f"Connector type '{conn['type']}' does not support sync")
+
+    try:
+        connected = await connector.connect()
+        if not connected:
+            raise HTTPException(status_code=502, detail=f"Could not connect to {conn['type']} source")
+
+        try:
+            if req.max_rows is None:
+                try:
+                    profile = await connector.profile_table(req.table_name)
+                    row_estimate = profile.get("rows") if isinstance(profile, dict) else None
+                except Exception:
+                    row_estimate = None
+                if isinstance(row_estimate, int) and row_estimate > _SYNC_ROW_CEILING:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=(
+                            f"Table '{req.table_name}' has ~{row_estimate:,} rows, above "
+                            f"the {_SYNC_ROW_CEILING:,}-row safety ceiling. Pass max_rows "
+                            "to sync a bounded slice."
+                        ),
+                    )
+
+            # Page through the table so an unbounded remote table is never
+            # loaded in one shot; max_rows is the caller's safety valve when
+            # the cheap COUNT(*) above wasn't available.
+            all_rows: List[Dict[str, Any]] = []
+            offset = 0
+            while True:
+                remaining = None if req.max_rows is None else max(0, req.max_rows - len(all_rows))
+                if remaining == 0:
+                    break
+                limit = req.batch_size if remaining is None else min(req.batch_size, remaining)
+                query = f'SELECT * FROM {req.table_name} LIMIT {limit} OFFSET {offset}'
+                rows = await connector.execute_query(query, limit=limit)
+                if not rows:
+                    break
+                all_rows.extend(rows)
+                offset += len(rows)
+                if len(rows) < limit:
+                    break
+        finally:
+            await connector.disconnect()
+
+        import pandas as pd
+
+        df = pd.DataFrame(all_rows)
+        buf = io.BytesIO()
+        df.to_parquet(buf, index=False)
+
+        file_name = f"{_safe_filename_component(conn['name'])}__{_safe_filename_component(req.table_name)}.parquet"
+
+        from shared.storage import get_storage_backend
+
+        tenant = _request_tenant(request)
+        get_storage_backend().write(tenant, file_name, buf.getvalue())
+
+        # Same post-write step POST /upload takes (files.py) — the DuckDB
+        # schema-context cache is keyed on a fingerprint of the upload dir's
+        # contents, so a stale cache entry would otherwise hide the new
+        # table from chat until that fingerprint's TTL/next natural miss.
+        from shared.data_utils import invalidate_schema_cache
+        await invalidate_schema_cache()
+
+        row_count = len(all_rows)
+        synced_at = datetime.now().isoformat()
+        logger.info(
+            "Synced connection %s table %s -> %s (%d rows)",
+            connection_id, req.table_name, file_name, row_count,
+        )
+        return {
+            "success": True,
+            "connection_id": connection_id,
+            "table_name": req.table_name,
+            "file_name": file_name,
+            "row_count": row_count,
+            "synced_at": synced_at,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=sanitize_error(e, logger=logger, context="connection sync"),
+        )
