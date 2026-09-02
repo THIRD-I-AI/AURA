@@ -6,7 +6,7 @@ Reuses the shared metadata store engine so everything lives in one DB.
 """
 from __future__ import annotations
 
-from metadata_store.db import Base, get_engine, get_session  # type: ignore
+from metadata_store.db import Base, get_engine, get_session, get_session_factory  # type: ignore
 
 # Importing the models ensures SQLAlchemy registers the table metadata
 from .models import (  # noqa: F401
@@ -25,4 +25,4 @@ async def init_uasr_db() -> None:
         await conn.run_sync(Base.metadata.create_all)
 
 
-__all__ = ["init_uasr_db", "get_session"]
+__all__ = ["init_uasr_db", "get_session", "get_session_factory"]

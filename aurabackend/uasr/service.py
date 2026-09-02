@@ -30,14 +30,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from shared.logging_config import get_logger
 from shared.service_factory import create_service
 
+from .cross_source_heal import attempt_cross_source_heal
 from .db import get_session, init_uasr_db
 from .drift_detector import DriftDetector
 from .mapek_worker import MAPEKConfig, MAPEKWorker
-from .metrics import HealingMetricTracker, RecoveryEvent
+from .metrics import HealingMetricTracker
 from .models import (
     BatchPayload,
     DriftEvent,
-    DriftSeverity,
     HealingMetric,
     RecoveryMode,
     RecoveryRecord,
@@ -111,11 +111,14 @@ def _mapek_config() -> MAPEKConfig:
     """
     use_numeric_semantics, numeric_auto_heal = numeric_heal_flags()
     use_martingale_detector, use_shim_router, _ = s18_1_flags()
+    correlation_window_seconds, _, correlation_auto_heal = correlation_flags()
     return MAPEKConfig(
         use_numeric_semantics=use_numeric_semantics,
         numeric_auto_heal=numeric_auto_heal,
         use_martingale_detector=use_martingale_detector,
         use_shim_router=use_shim_router,
+        correlation_window_seconds=correlation_window_seconds,
+        correlation_auto_heal=correlation_auto_heal,
     )
 
 
@@ -473,62 +476,17 @@ async def _attempt_cross_source_heal(
     recovery_rec: RecoveryRecord,
     db: AsyncSession,
 ):
-    """Candidate #5, opt-in: this source's own recovery just FAILED. Before
-    giving up, check whether a correlated sibling source already has a
-    DEPLOYED shim for the same drift_type, and try it against THIS source's
-    batch through the normal sandbox-validation path.
-
-    Returns the new RecoveryLoopResult on success (DEPLOYED or
-    PENDING_APPROVAL), or None if no candidate existed or it didn't
-    validate — callers must treat None as "stays FAILED, nothing changed."
-
-    Mutates and re-commits ``recovery_rec`` in place rather than inserting a
-    second row: one recovery_id, one row, whose fields reflect how it was
-    actually resolved. Never called when auto-heal is off.
+    """Thin wrapper around the shared ``cross_source_heal.attempt_cross_source_heal``,
+    binding it to this module's ``_tracker``/``_loop`` singletons and
+    ``_CORRELATION_WINDOW_SECONDS``. Kept as a module-level function (rather
+    than inlined at each call site) so existing tests can still patch
+    ``uasr.service._tracker``/``uasr.service._loop`` and call this directly —
+    the actual borrow-and-revalidate logic lives in ``cross_source_heal.py``,
+    shared with the Kafka MAPE-K worker.
     """
-    sibling = _tracker.find_recent_deployed_shim(
-        drift_result.drift_type, batch.source_id, _CORRELATION_WINDOW_SECONDS,
+    return await attempt_cross_source_heal(
+        drift_result, batch, recovery_rec, db, _tracker, _loop, _CORRELATION_WINDOW_SECONDS,
     )
-    if sibling is None:
-        return None
-    sibling_source_id, shim_code = sibling
-
-    healed = await _loop.run_with_candidate_shim(
-        drift_result, batch, shim_code, sibling_source_id,
-    )
-    if healed.status not in (RecoveryStatus.DEPLOYED, RecoveryStatus.PENDING_APPROVAL):
-        logger.info(
-            "Cross-source heal did not resolve source=%s (status=%s); leaving original FAILED result",
-            batch.source_id, healed.status.value,
-        )
-        return None
-
-    logger.info(
-        "Cross-source heal succeeded: source=%s borrowed from=%s, new_status=%s",
-        batch.source_id, sibling_source_id, healed.status.value,
-    )
-    recovery_rec.status = healed.status.value
-    recovery_rec.shim_code = healed.shim.shim_code if healed.shim else None
-    recovery_rec.generation_method = healed.shim.generation_method if healed.shim else "cross_source_borrowed"
-    recovery_rec.validation_passed = healed.shim.validation_passed if healed.shim else None
-    recovery_rec.post_kl_divergence = healed.shim.post_kl_divergence if healed.shim else None
-    recovery_rec.latency_seconds = (recovery_rec.latency_seconds or 0.0) + healed.total_latency_seconds
-    recovery_rec.completed_at = (
-        None if healed.status == RecoveryStatus.PENDING_APPROVAL else datetime.now(timezone.utc)
-    )
-    await db.commit()
-
-    _tracker.record(RecoveryEvent(
-        source_id=batch.source_id,
-        drift_type=drift_result.drift_type,
-        severity=drift_result.severity or DriftSeverity.MEDIUM,
-        status=healed.status,
-        latency_seconds=healed.total_latency_seconds,
-        recovery_id=healed.recovery_id,
-        post_kl=healed.shim.post_kl_divergence if healed.shim else 0.0,
-        shim_code=healed.shim.shim_code if healed.shim and healed.status == RecoveryStatus.DEPLOYED else None,
-    ))
-    return healed
 
 
 @app.post("/uasr/ingest")
