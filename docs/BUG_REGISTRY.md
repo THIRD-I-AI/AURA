@@ -554,6 +554,58 @@ This is the process, not a suggestion:
   `pyproject.toml`) on the next failing run, and correlate with system
   load at the time.
 
+## BUG-015: live deployment was 15 days / 127 commits stale, no deploy process caught it
+- **Status:** fixed
+- **Found by:** the BUG-013 redeploy, 2026-09-02 — `git log HEAD..origin/main`
+  on the box returned 127 commits, not the handful expected from "apply one
+  config fix."
+- **Severity:** blocks-feature (indirectly) — every merged fix/feature since
+  2026-08-18 was silently inert on the one deployment real users hit, with
+  nothing anywhere signaling that.
+- **Root cause:** three compounding gaps, plus one real incident:
+  1. **No CI/CD auto-deploy.** `.github/workflows/cd.yml` builds and pushes
+     `latest-*` images to GHCR on every merge to `main` but never touches the
+     box — a human has always had to SSH in and pull.
+  2. **No working scheduled redeploy either.** `crontab` was not even
+     installed on the box (`which crontab` → not found), so no cron job —
+     including the one this README already documented for `backup.sh` — was
+     ever actually running. That documented cron line also named the wrong
+     path (`/home/ec2-user/AURA`, the deploy actually lives at `/opt/aura`),
+     so it would have failed even if crontab had existed.
+  3. **The manual redeploy runbook was two independent, unlinked steps**
+     (`git pull` the repo for `docker-compose.yml`/`Caddyfile` changes;
+     `docker compose pull && up -d` for new images) with nothing tying them
+     together or verifying both happened.
+  4. **The incident this produced, reconstructed from `.env` backups on the
+     box:** on 2026-08-31 17:56 UTC someone did a partial fix — switched
+     `AURA_TAG` from a pinned `0.1.4` to `latest` (confirmed via
+     `diff .env.bak.20260831T175603Z-pre-latest .env`, single-line change)
+     — but never ran the matching `git checkout`. The box's
+     `docker-compose.yml` stayed frozen at commit `0c4bd76`
+     (2026-08-18), so even after the tag fix, `docker compose pull && up -d`
+     could only ever produce containers running new *code* inside old
+     *orchestration* — a service or env var added after 2026-08-18 (e.g.
+     BUG-013's own `UASR_APPROVAL_TIMEOUT_SECONDS`) had no way to exist on
+     the box no matter how many times the image-pull half was repeated.
+- **Caused by:** none — pre-existing process gap; the 2026-08-31 incident is
+  a symptom of it, not a separate regression.
+- **Fix:** brought the box to `origin/main` (`git checkout` + `docker compose
+  pull && up -d`), re-verified live: `GET /uasr/deployment` now reports
+  `approval_timeout_seconds: 1800`, `repair_max_per_source: 2` (BUG-013's
+  fix, finally armed); full `scripts/verify_live_deployment.py` sweep 12/12
+  passed post-redeploy. Added `deploy/aws-free-tier/redeploy.sh` — a single
+  atomic script (fetch → checkout → image pull → recreate → health-check,
+  `set -euo pipefail` throughout) replacing the two-step manual sequence so
+  a future redeploy can't be done "half" the way 08-31's was; updated
+  `README.md`'s Operating/Rollback sections to reference it and corrected
+  the stale `AURA_TAG=latest` vs. "never latest" rollback claim and the
+  wrong cron path. **Not fixed, and worth a follow-up decision:** there is
+  still no automated trigger (CI/CD push-to-box, or even a working cron) —
+  a redeploy remains a manual `./redeploy.sh` run; whether to add real CI/CD
+  (needs SSH credentials as a GitHub secret — a security-posture decision)
+  or just get `crontab` installed and this script scheduled is an explicit
+  open question, not silently resolved by this fix.
+
 ## BUG-010: four undocumented silent-stub call sites (zero-stub-compliance audit)
 - **Status:** open — requires a product decision (raise vs. implement vs.
   document), not a mechanical fix. Filed so it doesn't evaporate as an

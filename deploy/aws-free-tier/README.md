@@ -158,8 +158,25 @@ Two things that will surprise you if nobody says them out loud:
 
 ```sh
 docker compose logs -f api_gateway     # logs
-docker compose pull && docker compose up -d   # deploy a new tag
+./redeploy.sh                          # bring the box to origin/main + latest images (see below)
 docker stats --no-stream               # memory headroom — the number that matters
+```
+
+### Redeploying
+
+`AURA_TAG=latest` — `cd.yml` builds and pushes a fresh `latest-*` image on
+every merge to `main`, but that alone never reaches this box: nothing here
+auto-deploys. A full redeploy is really two independent steps (pull this repo
+for `docker-compose.yml`/`Caddyfile` changes, then pull+recreate the
+containers for new images) — doing only one half is exactly how the box went
+15 days stale in 2026-08-31/09-02 (see `docs/BUG_REGISTRY.md` BUG-015: an
+`.env` tag fix landed without the matching `git checkout`, so new services
+and env vars silently couldn't exist). Use the script, which does both
+atomically and refuses to leave a half-applied deploy:
+
+```sh
+./redeploy.sh                # deploy origin/main
+./redeploy.sh v0.1.5         # deploy a specific tag/branch/commit
 ```
 
 If the gateway OOM-loops, check `docker stats` first. The usual causes are a
@@ -178,10 +195,16 @@ lives in one unreplicated volume. `docker compose down -v`, a stray
 AURA_S3_BACKUP_BUCKET=my-bucket ./backup.sh    # also syncs off the box
 ```
 
-Install it as a daily cron entry — a backup nobody runs is not a backup:
+Install it as a daily cron entry — a backup nobody runs is not a backup.
+**Confirm `crontab` is even installed first** (`which crontab` — it was
+missing entirely on the live box as of 2026-09-02, so this job had silently
+never run despite being documented here; install via
+`sudo dnf install -y cronie && sudo systemctl enable --now crond` on Amazon
+Linux 2023). The path below must match wherever this repo is actually
+checked out on the box (confirm with `pwd`, not this example):
 
 ```sh
-15 3 * * * cd /home/ec2-user/AURA/deploy/aws-free-tier && ./backup.sh >> backup.log 2>&1
+15 3 * * * cd /opt/aura/deploy/aws-free-tier && ./backup.sh >> backup.log 2>&1
 ```
 
 The databases are copied with SQLite's online backup API, not `cp`: copying a
@@ -205,10 +228,11 @@ docker compose up -d
 
 ### Rolling back a bad deploy
 
-The image tag is pinned in `.env`, never `latest`, so a rollback is just the
-previous tag:
+`.env` pins `AURA_TAG=latest` (moving), so rolling back means checking out the
+last known-good git ref AND its matching image tag together — `redeploy.sh`
+does both atomically, same as a forward deploy:
 
 ```sh
-sed -i 's/^AURA_TAG=.*/AURA_TAG=v0.1.3/' .env    # the last known-good tag
-docker compose pull && docker compose up -d
+./redeploy.sh v0.1.4                              # last known-good release tag, or...
+sed -i 's/^AURA_TAG=.*/AURA_TAG=v0.1.4/' .env && ./redeploy.sh v0.1.4   # if that tag's images aren't under `latest`
 ```
