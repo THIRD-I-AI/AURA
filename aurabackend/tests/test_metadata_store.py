@@ -450,3 +450,193 @@ class TestRepositorySemanticModels:
         repo = MetadataRepository(db_session)
         model = await repo.get_semantic_model("nonexistent")
         assert model is None
+
+
+@pytest.mark.asyncio
+class TestRepositoryTenantIsolation:
+    """BUG-018: two workspaces' semantic models must not leak into each
+    other's list/get results."""
+
+    async def test_list_does_not_leak_across_workspaces(self, db_session):
+        from metadata_store.repository import MetadataRepository
+        repo = MetadataRepository(db_session)
+        common = dict(description=None, source={}, tags=[], fields=[])
+        await repo.upsert_semantic_model(model_id="m-a", name="Tenant A Model", workspace_id="tenant-a", **common)
+        await repo.upsert_semantic_model(model_id="m-b", name="Tenant B Model", workspace_id="tenant-b", **common)
+
+        tenant_a_models = {m.name for m in await repo.list_semantic_models("tenant-a")}
+        tenant_b_models = {m.name for m in await repo.list_semantic_models("tenant-b")}
+
+        assert tenant_a_models == {"Tenant A Model"}
+        assert tenant_b_models == {"Tenant B Model"}
+
+    async def test_get_does_not_leak_another_tenants_model(self, db_session):
+        from metadata_store.repository import MetadataRepository
+        repo = MetadataRepository(db_session)
+        await repo.upsert_semantic_model(
+            model_id="shared-id", name="Tenant A Secret", description=None,
+            source={}, tags=[], fields=[], workspace_id="tenant-a",
+        )
+
+        leaked = await repo.get_semantic_model("shared-id", "tenant-b")
+        own = await repo.get_semantic_model("shared-id", "tenant-a")
+
+        assert leaked is None, "tenant B was able to read tenant A's model"
+        assert own is not None
+        assert own.name == "Tenant A Secret"
+
+    async def test_upsert_does_not_overwrite_another_tenants_model(self, db_session):
+        from metadata_store.repository import MetadataRepository
+        repo = MetadataRepository(db_session)
+        common = dict(description=None, source={}, tags=[], fields=[])
+        await repo.upsert_semantic_model(model_id="m-b", name="B-model", workspace_id="tenant-b", **common)
+
+        hijack = await repo.upsert_semantic_model(model_id="m-b", name="HIJACKED", workspace_id="tenant-a", **common)
+        after_b = {m.name for m in await repo.list_semantic_models("tenant-b")}
+
+        assert hijack.id != "m-b", "a foreign model_id was reused instead of minting a new one"
+        assert after_b == {"B-model"}, f"tenant B's model was overwritten: {after_b}"
+
+
+# ── metadata_store/main.py (port 8007) HTTP handlers — BUG-018 ────────
+#
+# The repository has always accepted workspace_id (see
+# TestRepositoryTenantIsolation above). The bug was that main.py's own HTTP
+# handlers never derived or passed one, so every request through this
+# standalone service was pinned to workspace_id=None -- a cross-tenant blind
+# spot upstream of (and independent from) the gateway-side fix.
+
+class TestWorkspaceIdHelper:
+    """_workspace_id() mirrors api_gateway/routers/workspaces.py::current_workspace_id."""
+
+    @staticmethod
+    def _request(headers=None, user=None):
+        from starlette.requests import Request
+
+        headers = headers or {}
+        scope = {
+            "type": "http",
+            "headers": [(k.lower().encode(), v.encode()) for k, v in headers.items()],
+        }
+        req = Request(scope)
+        if user is not None:
+            req.state.user = user
+        return req
+
+    def test_uses_verified_jwt_org_id_over_header(self):
+        from metadata_store.main import _workspace_id
+        req = self._request(headers={"X-Workspace-Id": "hdr-ws"}, user={"org_id": "org-1", "sub": "user-1"})
+        assert _workspace_id(req) == "org-1"
+
+    def test_falls_back_to_sub_when_no_org_id_claim(self):
+        from metadata_store.main import _workspace_id
+        req = self._request(user={"sub": "user-2"})
+        assert _workspace_id(req) == "user-2"
+
+    def test_unauthenticated_falls_back_to_header(self):
+        from metadata_store.main import _workspace_id
+        req = self._request(headers={"X-Workspace-Id": "ws-A"})
+        assert _workspace_id(req) == "ws-A"
+
+    def test_unauthenticated_no_header_returns_none(self):
+        from metadata_store.main import _workspace_id
+        req = self._request()
+        assert _workspace_id(req) is None
+
+
+class TestSemanticModelRoutesPassWorkspaceScope:
+    """The routes must hand the repository a workspace id, not call it bare.
+
+    Each stub repository records what it was called with: reverting a route
+    to the bare (unscoped) repository call raises TypeError, and passing
+    None instead of the caller's workspace fails the assertion -- either way
+    this test goes red.
+    """
+
+    def test_list_route_passes_workspace_id(self):
+        import metadata_store.main as main_mod
+
+        received = {}
+
+        class _Repo:
+            async def list_semantic_models(self, workspace_id):
+                received["workspace_id"] = workspace_id
+                return []
+
+        async def _fake_get_repository():
+            yield _Repo()
+
+        from fastapi.testclient import TestClient
+
+        main_mod.metadata_app.dependency_overrides[main_mod.get_repository] = _fake_get_repository
+        try:
+            resp = TestClient(main_mod.metadata_app).get(
+                "/semantic-models", headers={"X-Workspace-Id": "tenant-a"},
+            )
+        finally:
+            main_mod.metadata_app.dependency_overrides.clear()
+
+        assert resp.status_code == 200, resp.text
+        assert received["workspace_id"] == "tenant-a"
+
+    def test_get_route_passes_workspace_id(self):
+        import metadata_store.main as main_mod
+
+        received = {}
+
+        class _Repo:
+            async def get_semantic_model(self, model_id, workspace_id):
+                received["workspace_id"] = workspace_id
+                return None
+
+        async def _fake_get_repository():
+            yield _Repo()
+
+        from fastapi.testclient import TestClient
+
+        main_mod.metadata_app.dependency_overrides[main_mod.get_repository] = _fake_get_repository
+        try:
+            resp = TestClient(main_mod.metadata_app).get(
+                "/semantic-models/m1", headers={"X-Workspace-Id": "tenant-b"},
+            )
+        finally:
+            main_mod.metadata_app.dependency_overrides.clear()
+
+        assert resp.status_code == 404
+        assert received["workspace_id"] == "tenant-b"
+
+    def test_upsert_route_passes_workspace_id(self):
+        import metadata_store.main as main_mod
+
+        received = {}
+
+        class _Model:
+            id = "m1"
+            name = "Revenue"
+            description = None
+            source = {}
+            tags = []
+            fields = []
+            created_at = None
+            updated_at = None
+
+        class _Repo:
+            async def upsert_semantic_model(self, **kwargs):
+                received["workspace_id"] = kwargs.get("workspace_id")
+                return _Model()
+
+        async def _fake_get_repository():
+            yield _Repo()
+
+        from fastapi.testclient import TestClient
+
+        main_mod.metadata_app.dependency_overrides[main_mod.get_repository] = _fake_get_repository
+        try:
+            resp = TestClient(main_mod.metadata_app).post(
+                "/semantic-models", json={"name": "Revenue"}, headers={"X-Workspace-Id": "tenant-c"},
+            )
+        finally:
+            main_mod.metadata_app.dependency_overrides.clear()
+
+        assert resp.status_code == 200, resp.text
+        assert received["workspace_id"] == "tenant-c"
