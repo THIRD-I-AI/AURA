@@ -4,6 +4,7 @@ Files Router
 File upload, listing, profiling, deletion, and supported-formats endpoints.
 """
 
+import asyncio
 import io
 import os
 import uuid
@@ -229,6 +230,41 @@ async def upload_universal(
             logger.warning(
                 "schema_context rebuild dispatch failed (non-fatal): %s", _ctx_exc,
             )
+
+        # BUG-030: a plain upload never wrote a dataset profile — only the
+        # external-DB connector sync (connections.py) and the pipeline
+        # semantic-model route did — so GET /files/{file_id}/profile always
+        # 404'd for a file uploaded through this endpoint, even though the
+        # read side is fully implemented. Same best-effort, non-blocking
+        # pattern as the two hooks above; get_file_schema does blocking
+        # DuckDB I/O, so it's offloaded via asyncio.to_thread.
+        try:
+            from metadata_store.repository import get_repository
+            from pipeline.generator import PipelineGenerator
+            from shared.tasks import fire_and_forget
+
+            async def _record_upload_profile(upload_dir: str) -> None:
+                gen = PipelineGenerator.__new__(PipelineGenerator)
+                schema = await asyncio.to_thread(gen.get_file_schema, safe_name, upload_dir)
+                if "error" in schema:
+                    logger.warning("dataset profile skipped for %s: %s", safe_name, schema["error"])
+                    return
+                async for repo in get_repository():
+                    await repo.upsert_dataset_profile(
+                        file_id=safe_name,
+                        dataset_name=safe_name,
+                        profile={"columns": schema["columns"], "sample_data": schema.get("sample_data")},
+                        rows_count=schema.get("row_count"),
+                        columns_count=len(schema.get("columns") or []),
+                    )
+                    break
+
+            fire_and_forget(
+                _record_upload_profile(tenant_upload_dir(request)),
+                name=f"dataset-profile-{upload_id}",
+            )
+        except Exception as _profile_exc:
+            logger.warning("dataset profile dispatch failed (non-fatal): %s", _profile_exc)
 
         await streaming_manager.publish_complete(TOPIC_UPLOAD, upload_id, result)
         return result
