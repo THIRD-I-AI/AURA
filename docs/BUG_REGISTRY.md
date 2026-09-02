@@ -413,6 +413,147 @@ This is the process, not a suggestion:
 - **Fix:** corrected inline in `scripts/verify_live_deployment.py`
   (same commit as this registry entry) — `sub.get("webhook", {}).get("id")`.
 
+## BUG-012: DriftDetector overflows and permanently stops detecting on a near-constant column
+- **Status:** fixed
+- **Found by:** running the NYC-taxi benchmark's congestion-surcharge
+  retry at n=20,000 rows/month (`scripts/uasr_benchmark_nyc_taxi.py`),
+  2026-09-01 — not part of the original benchmark plan, a real bug
+  surfaced by real-world data at scale.
+- **Severity:** blocks-feature — once triggered, drift detection is
+  permanently broken for the affected source (every subsequent batch
+  raises `OverflowError`), not a one-off bad reading.
+- **Root cause:** `aurabackend/uasr/drift_detector.py`'s location-shift
+  scale guard, `scale = ref_dist.std if ref_dist.std > 0 else 1.0`, only
+  catches an exact `0.0` standard deviation. A column that is truly
+  constant in real data (e.g. TLC's `improvement_surcharge`, always
+  `0.3`) gets a non-zero std from float rounding — `numpy.std` on N
+  copies of the same `float64` returns `~5.55e-17`, not the
+  mathematically-true `0`. That float-noise floor becomes the
+  denominator of a "sigma" score (`loc_shift = abs(batch_dist.mean -
+  ref_dist.mean) / scale`), turning any later batch's float-precision
+  mean residual into an astronomically large fake sigma count. That
+  fake value feeds `kl_history`, which the adaptive threshold reads back
+  on every subsequent batch — confirmed geometric growth across 45
+  batches (`8.1e13 → 8.3e25 → 1.8e38 → ... → 2.5e159`) until it overflows
+  a Python float.
+- **Caused by:** none — pre-existing float-precision gap, not a
+  regression from any recent change; only surfaced now because this was
+  the first real-data run at large enough scale/enough batches to
+  compound the error into an overflow.
+- **Fix:** floor the guard at the module's existing `_EPS = 1e-10`
+  constant (same epsilon already used for the KL calculation) instead of
+  `0` — `scale = ref_dist.std if ref_dist.std > _EPS else 1.0`. A std
+  indistinguishable from float noise is now treated as the exact-zero
+  case already handled. Re-verified against the same 20,000-row replay
+  that originally crashed (now completes cleanly, max KL 22.88); 2 new
+  regression tests in
+  `aurabackend/tests/test_uasr_drift_detector.py::TestNearConstantColumnFeedbackOverflow`.
+
+## BUG-013: approval-queue escalation and per-tenant repair fairness are implemented but not armed in production
+- **Status:** fixed (config only — requires a redeploy to take effect,
+  see note)
+- **Found by:** live-verification of gap-analysis candidates #3/#4
+  (`docs/superpowers/specs/2026-08-30-uasr-effective-self-healing-gap-analysis.md`),
+  2026-09-01, via `GET /uasr/deployment` config introspection against
+  `https://dataaura.duckdns.org`.
+- **Severity:** degrades-accuracy — the code path is correct and tested,
+  but its safety guarantee (S41's human-in-the-loop queue actually gets
+  escalated; one noisy source can't starve every other source's repair
+  budget) was silently inert in the one place it matters, production.
+- **Root cause:** `deploy/aws-free-tier/docker-compose.yml` never set
+  `UASR_APPROVAL_TIMEOUT_SECONDS` or `UASR_REPAIR_MAX_PER_SOURCE` in the
+  `uasr_service` environment block. Both default to `0` (off) per
+  `runtime_config.py`'s deliberate opt-in-by-default-off convention —
+  correct as a library default, but nobody ever flipped them on for the
+  actual deployment. Live confirmation: `GET /uasr/deployment` returned
+  `"approval_timeout_seconds":0,"repair_max_per_source":0`. Per
+  `service.py`, the approval-timeout reaper task is only started when
+  `approval_timeout_seconds() > 0` — on the live box it was simply never
+  running, so any `PENDING_APPROVAL` recovery would have waited forever
+  (S41's own human-in-the-loop guarantee undermined by an unwatched
+  queue), and the repair scheduler's per-source cap was `0` = no ceiling,
+  so a single source's drift storm could consume the entire 4-slot
+  global repair budget.
+- **Adjacent finding, not fixed here:** the same introspection call
+  returned `"risk_tiered":false`. `PENDING_APPROVAL` is only reachable
+  when risk-tiering is on (`recovery_loop.py`), so with it off,
+  recoveries may never reach `PENDING_APPROVAL` in the first place —
+  meaning even with the reaper now armed, there is currently nothing for
+  it to escalate. Turning on `risk_tiered` is a materially bigger
+  behavior change (every non-deterministic-template fix starts requiring
+  human approval, not just a reachability flag) and needs its own
+  explicit decision rather than being bundled into this fix.
+- **Caused by:** none — a deployment-config gap, not a code regression;
+  both features were correctly implemented and tested, just never wired
+  into the one running deployment's environment.
+- **Fix:** `deploy/aws-free-tier/docker-compose.yml` now sets
+  `UASR_APPROVAL_TIMEOUT_SECONDS=1800` (30 min — long enough for a
+  genuine human review window, short enough to actually escalate) and
+  `UASR_REPAIR_MAX_PER_SOURCE=2` (half the 4-slot global concurrent
+  budget, leaving headroom for at least one other source). **This
+  registry entry and the compose-file change do not themselves change
+  live behavior** — per BUG-005's precedent, the running container needs
+  an operator-run `docker compose pull && docker compose up -d` (or
+  equivalent redeploy) on the box for the new env vars to take effect;
+  re-verify via `GET /uasr/deployment` after redeploying.
+
+## BUG-014: test_demo_endpoints.py had 4 failures in one full-suite pre-push run, unreproducible since
+- **Status:** unconfirmed — investigated, could not reproduce; documented
+  rather than silently dropped, per this registry's own process.
+- **Found by:** the `fix/uasr-cross-source-heal-fanout` branch's pre-push
+  hook, 2026-09-01. Full run: `4 failed, 2199 passed, 22 skipped` in
+  5113.89s (1h25m13s) — `test_unknown_scenario_404` (`assert 401 == 404`),
+  `test_demo_cold_cache_returns_503_not_blocking_audit`
+  (`assert 401 == 503`), `test_demo_serves_prewarmed_artifact_instantly`
+  (`assert 401 == 200`), `test_another_tenant_cannot_read_this_tenants_job`
+  (`KeyError: 'job_id'` — downstream of the same 401: the POST response
+  has no `job_id` key when auth fails).
+- **Severity:** cosmetic (test infra) unless it recurs and turns out to be
+  real — see Fix/next-steps below.
+- **Investigation:** `test_demo_endpoints.py`'s module-level `client =
+  TestClient(app, headers=_auth())` (line 23) signs its JWT once at
+  collection time via `shared.auth.create_access_token`, reading
+  `settings.secret_key`. All 4 failures are consistent with that token
+  later failing signature/mode verification (401) at request time.
+  Ruled out: (1) `test_demo_endpoints.py` passes 11/11 standalone,
+  repeatedly, both in the branch's own working tree and in a clean
+  worktree; (2) a dedicated investigation ran the exact 50-file prefix
+  that precedes `test_demo_endpoints.py` in collection order (confirmed
+  identical file set in both the branch's tree and a clean `main`
+  worktree — none of this branch's new/changed files fall in that
+  prefix) plus `test_demo_endpoints.py` itself: 684 passed, 0 failed,
+  clean; (3) no `pytest-randomly` or custom
+  `pytest_collection_modifyitems` hook is installed/configured
+  (`pyproject.toml`, `tests/conftest.py` checked) — collection order is
+  deterministic, so this isn't seed-dependent flakiness in the usual
+  sense; (4) **the exact same full-suite command, run again from a clean
+  worktree on a slightly older commit, passed 100% clean — `2165 passed,
+  22 skipped, 0 failed` in 15m06s** — over 5x faster than the original
+  failing run's 1h25m13s wall time. That last point is the strongest
+  signal: this environment showed heavy, variable slowdown this session
+  (a different branch's own pre-push run separately took ~80 minutes to
+  reach 22% before suddenly catching up), and this repo already has a
+  documented hazard in the exact same family — BUG-008's aiosqlite
+  non-daemon connection-thread / GC-timing race, and `conftest.py`'s own
+  `pytest_sessionfinish` comment about a CI runner once wedging for
+  6+ hours with zero diagnostic output. A thread-scheduling or
+  resource-contention race under heavy system load, not a deterministic
+  state leak, best fits every data point gathered: reproducible only
+  once, not reproducible on retry at the same or larger scale, no seed
+  dependence, no leaking-test candidate found despite a real dynamic
+  bisection effort.
+- **Caused by:** none confirmed — see above; if a future recurrence
+  pins it to a real leak, update this entry rather than filing a
+  duplicate.
+- **Fix:** none applied — there is nothing to fix without a reproduction.
+  Left `open`-in-spirit/unconfirmed rather than closed: if this recurs,
+  the next investigation should start from the two ruled-out mechanisms
+  above (state leak, seed dependence) and instead pursue a timing/race
+  hypothesis — e.g. capture `faulthandler`/thread-stack output
+  (`faulthandler_timeout = 1200` is already configured in
+  `pyproject.toml`) on the next failing run, and correlate with system
+  load at the time.
+
 ## BUG-010: four undocumented silent-stub call sites (zero-stub-compliance audit)
 - **Status:** open — requires a product decision (raise vs. implement vs.
   document), not a mechanical fix. Filed so it doesn't evaporate as an

@@ -136,9 +136,10 @@ genuinely happened (or is realistic to that domain), and publish the
 measured before/after numbers. Fully reproducible by anyone who clones the
 repo and runs one script; no proprietary data, no staging access required.
 
-**Status: Scenario 1 built and run (2026-08-31), results published below and
-in `docs/UASR_BENCHMARK_RESULTS.md`.** Scenario 2 (cross-source
-correlation) not yet built.
+**Status: Scenario 1, the congestion-surcharge retry follow-up, the
+deliberate-rollback demo, and Scenario 2 (cross-source correlation) are all
+built and run (2026-09-01), results published below and in
+`docs/UASR_BENCHMARK_RESULTS.md`.**
 
 ### Dataset choice: NYC TLC Trip Record Data
 
@@ -182,8 +183,13 @@ https://github.com/KyleHaynes/NYC-2019-01-Yellow-Taxi-Data.
    auto-deployed, zero residual KL divergence, no LLM call needed** (the
    rule-based reflector's statistical-drift confidence, 0.7-0.85, always
    clears the 0.6 LLM-fallback threshold). See Results below.
-4. `UASR_POST_HEAL_VALIDATION_BATCHES` auto-rollback demo — not built in
-   this pass; tracked as a Workstream 2 follow-up, not silently dropped.
+4. `UASR_POST_HEAL_VALIDATION_BATCHES` auto-rollback demo — built as a
+   follow-up (see below): deploys a rescale shim for an injected x100
+   fare-unit bug, then replays batches carrying a *different*, uncorrected
+   x1000 scale error the deployed shim does not fix. **Result: the shim
+   auto-reverted after 2 post-heal batches still showed the same drift
+   type**, exactly as designed — proving the mechanism actually reverts a
+   bad heal instead of leaving it silently permanent. See Results below.
 
 ### What gets measured and published
 
@@ -219,27 +225,53 @@ redundant diagnose+generate work (compare wall-clock/LLM-call count with
   so the script downloads fresh from TLC's CDN at runtime rather than
   committing any sample rows to the repo.
 
-## Follow-ups (not yet done)
+## Follow-ups
 
-- Scenario 1 step 2 (the real congestion-surcharge event) did not cross
-  the drift threshold at n=2000 rows/month — worth retrying at a larger
-  sample size or narrowing to Manhattan-only trips (where the surcharge's
-  effect on `total_amount` is concentrated, rather than diluted across all
-  five boroughs) to see if the real event becomes detectable, before
-  concluding it genuinely requires a larger fleet to catch.
-- Scenario 1 step 4 (deliberate bad-heal auto-rollback demo) — not built.
-- Scenario 2 (cross-source correlation, candidate #5) — not built; the
-  design below remains the plan.
+All three follow-ups below (retry at scale, rollback demo, Scenario 2) are
+now built and run — `scripts/uasr_benchmark_nyc_taxi.py`,
+2026-09-01. What's left is genuinely open, not silently dropped:
 
-### Scenario 2 — cross-source correlation (candidate #5, still planned)
+- The retry (larger sample, Manhattan-only) still did not make the real
+  congestion-surcharge event detectable on `total_amount` — see Results
+  below. Whether a larger fleet (more months, more rows) would finally
+  cross the threshold is untested; this benchmark's scale ceiling is
+  ~20,000 raw rows/month for a tractable runtime.
+- **A real bug was found and fixed while running the retry at n=20,000
+  rows/month**, not part of the original plan: `DriftDetector` overflowed
+  and permanently stopped detecting for a source when a baseline column is
+  effectively constant (float-rounding noise instead of an exact 0.0 std).
+  See `docs/BUG_REGISTRY.md` BUG-012 and Results below.
+- The cross-source correlation Part A (the real event, replayed per
+  borough) did trip `detect_correlation()`, but investigation showed the
+  three boroughs' affected columns don't share a cause traceable to the
+  surcharge — see the "Honest read" note in
+  `docs/UASR_BENCHMARK_RESULTS.md`'s Scenario 2 section. Part B (synthetic,
+  identical bug across boroughs) is what actually proves the
+  detect-correlation + shim-borrowing mechanism end to end with a known
+  common cause.
+- `UASR_CORRELATION_AUTO_HEAL` (the env-var-gated auto-heal path, as
+  opposed to calling `run_with_candidate_shim` directly the way the
+  benchmark script does) was not exercised — the script drives
+  `find_recent_deployed_shim` + `run_with_candidate_shim` directly
+  in-process rather than through the env-var-gated service wiring, matching
+  this benchmark's existing no-Docker/no-service-process design. The
+  service-level wiring is already covered by
+  `aurabackend/tests/test_uasr_service_cross_source_heal.py`.
 
-Split trip records by borough/vendor as **separate source_ids**
-(`nyc_taxi_manhattan`, `nyc_taxi_brooklyn`, ...) and replay a month where
-TLC's schema change hit every borough's file simultaneously — a real
-correlated incident, not a fabricated one. This should trip
-`detect_correlation()` and, with `UASR_CORRELATION_AUTO_HEAL` on, show one
-borough's validated shim getting borrowed by the others instead of each
-independently re-diagnosing the same drift.
+### Scenario 2 — cross-source correlation (candidate #5, built)
+
+Split trip records by borough as **separate source_ids**
+(`nyc_taxi_manhattan`, `nyc_taxi_queens`, `nyc_taxi_brooklyn` — Bronx and
+Staten Island excluded, yellow-cab volume there is too sparse for a stable
+baseline at a tractable sample size) and replayed two variants: Part A, the
+real congestion-surcharge event per borough; Part B, the same synthetic
+x100 fare-unit bug injected identically into all three. Part B trips
+`detect_correlation()` and demonstrates the cross-source shim-borrowing
+path (`find_recent_deployed_shim` + `RecoveryLoop.run_with_candidate_shim`)
+end to end: Manhattan diagnoses+generates+deploys normally, Queens and
+Brooklyn each borrow and validate a sibling's shim (skipping diagnose+
+generate) rather than independently re-diagnosing the same drift. See
+Results below for numbers.
 
 ## Results (fill in as each workstream lands)
 
@@ -257,16 +289,91 @@ independently re-diagnosing the same drift.
   the gateway only proxied 7 of ~20 UASR endpoints — `/uasr/heal` itself
   had no route — closed on `fix/uasr-gateway-proxy-gaps` with a regression
   test that diffs UASR's route set against the gateway's.
-- **Workstream 2 (2026-08-31):** Scenario 1 built and run against real
-  TLC data (`scripts/uasr_benchmark_nyc_taxi.py`, full numbers in
-  `docs/UASR_BENCHMARK_RESULTS.md`). The real, dated event (congestion
-  surcharge, Jan/Feb 2019) confirmed its own premise — `congestion_surcharge`
-  null rate measured 100% in January, 0% in February, exactly matching the
-  cited 2019-02-02 collection start — but did not cross the drift
-  threshold on `total_amount` at this sample size, reported as a negative
-  result rather than forced (see Follow-ups above). The synthetic
+- **Workstream 2 (2026-08-31, extended 2026-09-01):** Scenario 1 built and
+  run against real TLC data (`scripts/uasr_benchmark_nyc_taxi.py`, full
+  numbers in `docs/UASR_BENCHMARK_RESULTS.md`). The real, dated event
+  (congestion surcharge, Jan/Feb 2019) confirmed its own premise —
+  `congestion_surcharge` null rate measured 100% in January, 0% in
+  February, exactly matching the cited 2019-02-02 collection start — but
+  did not cross the drift threshold on `total_amount` at n=2000 rows/month,
+  reported as a negative result rather than forced. The synthetic
   fare-unit-bug injection produced a full, honest end-to-end self-heal:
   `statistical`/`critical` drift detected, template-generated rescale shim
   auto-deployed (no LLM call, no human review — S41's template tier),
-  post-heal KL divergence `0.0`, Hᵤ = 4.615. Scenario 2 (cross-source
-  correlation) not built.
+  post-heal KL divergence `0.0`, Hᵤ = 4.615.
+
+  **Follow-ups (2026-09-01):**
+  - **Congestion-surcharge retry at n=20,000 rows/month, all boroughs and
+    Manhattan-only:** `drift_detected` flips to `True` in both — but
+    `total_amount` itself is not among the affected columns in either run,
+    and its own KL (1.77 all-boroughs, 0.73 Manhattan-only) stays well
+    below each run's adaptive threshold zeta (6.86, 7.08 respectively).
+    What actually crosses threshold is `VendorID` (a mundane which-
+    vendor-recorded-more-trips mix shift between the sampled Jan and Feb
+    slices) and, in the all-boroughs run, `mta_tax` (a normally-constant
+    $0.50 column with a single anomalous $0.00 row interacting with the KL
+    calculator's known sensitivity to near-constant columns). **Remains a
+    negative result for the real event** — larger scale and Manhattan-only
+    filtering surfaced unrelated month-to-month noise, not the surcharge's
+    effect on `total_amount`.
+  - **Real bug found and fixed while running the retry (BUG-012,
+    `docs/BUG_REGISTRY.md`):** `aurabackend/uasr/drift_detector.py`'s
+    near-zero-std guard (`ref_dist.std > 0`) only caught an exact `0.0`
+    std, not the float-rounding noise (`~5.55e-17`) `numpy.std` returns for
+    a genuinely-constant real column (TLC's `improvement_surcharge`, always
+    $0.30). That noise floor became the denominator of a location-shift
+    score, turning any later batch's float-precision mean residual into an
+    astronomically large fake "sigma" count — which then poisoned the
+    persisted, unbounded `kl_history` the adaptive threshold reads back on
+    every subsequent batch, compounding roughly geometrically until KL
+    overflowed a Python float (`OverflowError`), permanently breaking
+    detection for that source. Fixed by flooring the guard at the module's
+    own existing `_EPS = 1e-10` instead of `0`; re-verified against the
+    same 20,000-row replay that originally crashed (now completes cleanly,
+    max KL 22.88) plus two new regression tests in
+    `aurabackend/tests/test_uasr_drift_detector.py::TestNearConstantColumnFeedbackOverflow`.
+  - **Deliberate-rollback demo
+    (`UASR_POST_HEAL_VALIDATION_BATCHES=2`):** deployed a rescale shim for
+    an injected x100 fare-unit bug (`deployed`, `post_kl: 0.0`), then
+    replayed 2 batches carrying a *different*, uncorrected x1000 scale
+    error the deployed shim does not fix. Both post-heal batches still
+    showed `statistical` drift; on the 2nd, `RecoveryLoop.check_post_deploy`
+    correctly auto-reverted the shim (`rollback_last_shim`) — deployed-shim
+    count for the source went from 1 to 0. Confirms the auto-rollback path
+    genuinely reverts a bad heal rather than leaving it silently permanent.
+  - **Scenario 2, cross-source correlation (candidate #5), built and run:**
+    Part A (real event, per borough) tripped `detect_correlation()` (3
+    boroughs within a 300s window), but each borough's affected columns
+    differ and are largely unrelated to `total_amount` — consistent with
+    independent per-borough sampling noise coinciding in time, not a shared
+    cause; `CorrelatedIncident` is deliberately report-only, not causal
+    inference, and this result is exactly the caveat its own docstring
+    makes. Part B (synthetic, identical x100 bug across Manhattan/Queens/
+    Brooklyn) is what proves the mechanism end to end: Manhattan
+    diagnoses+generates+deploys normally (`full_loop`), Queens and Brooklyn
+    each borrow and validate a sibling's shim via
+    `find_recent_deployed_shim` + `RecoveryLoop.run_with_candidate_shim`
+    (`cross_source_borrowed`, skipping diagnose+generate) rather than
+    independently re-diagnosing the same drift — all three deploy
+    successfully, and `detect_correlation()` fires. Latency savings from
+    skipping diagnose+generate are not dramatic here (~10-13ms either way)
+    because none of this benchmark's scenarios need an LLM call (the
+    rule-based reflector always clears the 0.6 LLM-fallback confidence
+    threshold) — the larger savings this mechanism is designed for (an
+    LLM round-trip avoided per sibling) is not exercised by this benchmark
+    by construction.
+- **Workstream 1, full-suite re-verification (2026-09-01):** ran the
+  general-purpose `scripts/verify_live_deployment.py` (all 12 promised-
+  feature checks, not just UASR) against the live box for the first time
+  since it was written. No existing STAGING_EMAIL/STAGING_PASSWORD test
+  account could be found anywhere in the repo or shell env, so a new
+  dedicated verify-only bot account was registered directly via
+  `POST /api/v1/auth/register` (id `5351fe51-0320-4dd7-bd88-98ed9fe5f507`,
+  name "AURA Live-Verify Bot") — leave it in place for future runs rather
+  than re-provisioning each time. Result: **12/12 passed, 0 failed, 0
+  skipped** — health, login, jwks, financial_audit_demo, query_history,
+  saved_queries, dashboards_list, dashboard_create, chat, pipeline_generate,
+  webhooks, uasr_self_heal all green. Full report:
+  `live_verify_20260901_203313.md` (repo root, gitignored scratch output).
+  No new bugs found; every promised feature on this deployment works live
+  as of this run.

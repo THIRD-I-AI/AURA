@@ -17,10 +17,8 @@ from __future__ import annotations
 
 import logging
 import math
-import uuid
 from collections import Counter
 from dataclasses import replace
-from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
@@ -353,7 +351,18 @@ class DriftDetector:
                 and batch_dist.mean is not None
                 and ref_dist.std is not None
             ):
-                scale = ref_dist.std if ref_dist.std > 0 else 1.0
+                # BUG-012 (docs/BUG_REGISTRY.md): a column that is truly constant in
+                # real data (e.g. improvement_surcharge, always 0.3) gets a non-zero
+                # std from float rounding (numpy.std on N copies of the same float64
+                # -> ~1e-17), not the mathematically-true 0. `> 0` only caught the
+                # exact-zero case, so this noise floor became the denominator of a
+                # "sigma" score -- turning a float-precision residual into an
+                # astronomical fake sigma count that then poisons the persisted
+                # kl_history the adaptive threshold reads back on every later batch.
+                # Floor at _EPS, same epsilon already used for the KL calculation
+                # below, so a std indistinguishable from float noise is treated as
+                # the exact-zero case already handled.
+                scale = ref_dist.std if ref_dist.std > _EPS else 1.0
                 loc_shift = abs(batch_dist.mean - ref_dist.mean) / scale
                 max_loc_shift = max(max_loc_shift, loc_shift)
                 # Treat a >2-sigma shift as additional KL
