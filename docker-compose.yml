@@ -32,6 +32,7 @@ services:
       - AURA_SANDBOX_URL=http://execution_sandbox:8003
       - AURA_SCHEDULER_URL=http://scheduler_service:8004
       - AURA_INSIGHTS_URL=http://insights_service:8005
+      - AURA_CAUSAL_URL=http://causal_service:8010
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health').read()"]
       interval: 30s
@@ -167,6 +168,23 @@ services:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8009/health').read()"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ── Port 8010 — Causal Discovery (DoWhy-GCM root-cause attribution) ──
+  causal_service:
+    <<: *common
+    build:
+      context: ./aurabackend
+      target: causal-runtime
+    command: uvicorn causal_service.main:app --host 0.0.0.0 --port 8010 --reload
+    ports:
+      - "8010:8010"
+    environment:
+      - PYTHONPATH=/app
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8010/health').read()"]
       interval: 30s
       timeout: 10s
       retries: 3

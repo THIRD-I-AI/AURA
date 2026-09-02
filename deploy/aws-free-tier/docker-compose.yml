@@ -19,6 +19,20 @@
 #      its 520m ceiling, no OOM. uasr_service stays on base (numpy only), so
 #      only one container pays for the causal wheels.
 #
+# causal_service (aurabackend/causal_service/, DoWhy-GCM root-cause
+# attribution over an ad-hoc metric/table, distinct from the in-process
+# counterfactual engine above) is deliberately NOT added here. It needs its
+# own container (it is proxied over HTTP, not mounted in-process — see
+# api_gateway/routers/pipelines.py's `_causal` helper), and a second process
+# importing dowhy/scipy/sklearn/statsmodels is realistically another
+# ~150-250MB, which this box does not have: the gateway is already at 402MiB
+# peak of its 520m ceiling on the causal-runtime image, uasr_service holds
+# 220m, and the box has 916m total. Wiring this in on the free tier needs a
+# real budget decision (bump the instance, or share dowhy in-process instead
+# of a second copy) — flagging rather than silently adding a service that
+# would OOM the box on first real request. It IS added to the full/root
+# docker-compose.yml, which has no such ceiling.
+#
 # The other eight services are absent, not disabled. The counterfactual and
 # financial-audit engines run IN-PROCESS inside the gateway (see CLAUDE.md), so
 # the analyst path and the audit path both work without them. Features that DO
