@@ -258,7 +258,7 @@ def test_martingale_diagnostics_observable_post_update(worker_with_baseline: MAP
     assert "martingale" in diag
 
 
-# ── BUG-032 regression: martingale drift must produce a real shim, not a
+# ── BUG-033 regression: martingale drift must produce a real shim, not a
 #    vacuous no-op pass-through ──────────────────────────────────────────
 
 

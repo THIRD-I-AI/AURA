@@ -623,7 +623,7 @@ class MAPEKWorker:
         # _statistical_shim) can fire on a martingale-caught unit-bug the
         # same way it already does for classical-detector drift. Without
         # this the martingale path always fell through to the vacuous
-        # pass-through shim (see BUG-032).
+        # pass-through shim (see BUG-033).
         col_stats: Dict[str, Dict[str, float]] = {}
         for col in alarms:
             baseline_mean, baseline_std = self._martingale.baseline_stats(

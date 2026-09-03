@@ -341,7 +341,7 @@ class SynthesisActuatorAgent(BaseAgent):
             # factor, and max_kl is always 0 for this detector so the clip
             # branch above never triggers either). A no-op pass-through shim
             # here would auto-deploy as "fixed" while the real drift the
-            # martingale caught goes untouched (see BUG-032) -- return None so
+            # martingale caught goes untouched (see BUG-033) -- return None so
             # _run falls through to LLM generation instead of committing a
             # vacuous template.
             return None

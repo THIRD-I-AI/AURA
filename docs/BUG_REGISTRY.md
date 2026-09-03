@@ -875,7 +875,7 @@ This is the process, not a suggestion:
   Test: `aurabackend/tests/test_uasr_schema_intent.py::TestDeploymentSummaryReportsSchemaIntent` — reuses this file's existing `importlib.reload(uasr.service)` pattern (the flag is resolved once at module-import time) to set `UASR_SCHEMA_INTENT_ENABLED` true/false via `monkeypatch`, calls `uasr_deployment()` directly (no ASGI lifespan, per BUG-008), and asserts `schema_intent_enabled`/`schema_intent_default_ttl_seconds` reflect it. 22/22 tests pass in `test_uasr_schema_intent.py`.
 - **Note:** the same "recover the box, then verify the fix by re-running the script itself" discipline BUG-015 established was followed here too — this closes with the redeploy mechanism actually proven working, not just assumed working from the earlier session's test.
 
-## BUG-032: Martingale-detected drift always synthesizes a no-op pass-through shim that vacuously passes post-heal validation and auto-deploys as "fixed"
+## BUG-033: Martingale-detected drift always synthesizes a no-op pass-through shim that vacuously passes post-heal validation and auto-deploys as "fixed"
 - **Status:** fixed
 - **Found by:** uasr gap-analysis re-run, sprint-backlog-and-uasr-gaps workflow, 2026-09-03
 - **Severity:** blocks-feature
