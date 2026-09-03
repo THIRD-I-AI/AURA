@@ -103,3 +103,75 @@ def test_room_disappears_only_after_last_client_leaves(client):
         }
     # Both gone — room evicted.
     assert client.get("/collab/rooms").json()["total"] == 0
+
+
+# ── BUG-038: JWT-armed auth + tenant isolation ──────────────────────────
+# JWTAuthMiddleware never runs for WebSocket connections (only intercepts
+# scope["type"] == "http"), so /ws/collab was reachable with zero auth
+# regardless of any HTTP-level allowlist. These tests arm AURA_JWT_ENABLED
+# and verify the socket enforces its own token check.
+#
+# The plain `client` fixture deliberately mounts only collab_router with no
+# middleware (keeps the base tests isolated from gateway startup). The
+# HTTP-side isolation check (GET /collab/rooms) needs JWTAuthMiddleware
+# actually installed to populate request.state.user from the Authorization
+# header, so these tests use a dedicated app/fixture instead of `client`.
+
+@pytest.fixture
+def jwt_client(monkeypatch):
+    from fastapi import FastAPI
+
+    from shared.config import settings
+    from shared.middleware import JWTAuthMiddleware
+    monkeypatch.setattr(settings, "jwt_enabled", True)
+    app = FastAPI()
+    app.add_middleware(JWTAuthMiddleware)
+    app.include_router(collab_router)
+    with TestClient(app) as c:
+        yield c
+    collab_module._rooms.clear()
+
+
+def _token(org_id: str) -> str:
+    from shared.auth import create_access_token
+    return create_access_token({"sub": f"user-{org_id}", "org_id": org_id})
+
+
+def test_ws_connection_rejected_without_a_token(jwt_client):
+    from starlette.websockets import WebSocketDisconnect
+    with pytest.raises(WebSocketDisconnect):
+        with jwt_client.websocket_connect("/ws/collab/room-secure"):
+            pass
+
+
+def test_ws_connection_rejected_with_an_invalid_token(jwt_client):
+    from starlette.websockets import WebSocketDisconnect
+    with pytest.raises(WebSocketDisconnect):
+        with jwt_client.websocket_connect("/ws/collab/room-secure?token=garbage"):
+            pass
+
+
+def test_ws_connection_accepted_with_a_valid_token(jwt_client):
+    token = _token("orgA")
+    with jwt_client.websocket_connect(f"/ws/collab/room-secure?token={token}"):
+        pass  # no disconnect raised == accepted
+
+
+def test_collab_rooms_lists_only_the_callers_tenant(jwt_client):
+    """Two tenants using the IDENTICAL room_id string must land in
+    separate rooms, not share one -- proven via room counts, since a
+    shared room would show one room with 2 occupants instead of two
+    rooms with 1 each."""
+    token_a = _token("orgA")
+    token_b = _token("orgB")
+    headers_a = {"Authorization": f"Bearer {token_a}"}
+    headers_b = {"Authorization": f"Bearer {token_b}"}
+    with jwt_client.websocket_connect(f"/ws/collab/room-1?token={token_a}"):
+        with jwt_client.websocket_connect(f"/ws/collab/room-1?token={token_b}"):
+            resp_a = jwt_client.get("/collab/rooms", headers=headers_a)
+            resp_b = jwt_client.get("/collab/rooms", headers=headers_b)
+            # Each caller sees only their own room, with the bare
+            # (un-namespaced) room_id -- not the other tenant's occupant,
+            # and not the internal "<tenant>:<room_id>" storage key.
+            assert resp_a.json() == {"rooms": {"room-1": 1}, "total": 1}
+            assert resp_b.json() == {"rooms": {"room-1": 1}, "total": 1}
