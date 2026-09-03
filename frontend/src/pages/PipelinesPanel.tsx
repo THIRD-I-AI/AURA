@@ -860,77 +860,18 @@ const PipelinesPanel: React.FC<PipelinesPanelProps> = () => {
 
           {/* ── AI Run Result ── */}
           {aiRun && (
-            <div className={RESULT_WRAP}>
-              <div className={RESULT_HEADER}>
-                <h3 className="text-sm font-semibold text-card-foreground">
-                  {aiRun.status === 'success' ? 'Pipeline Complete' : 'Pipeline Failed'}
-                </h3>
-                <div className="flex flex-wrap items-center gap-3">
-                  <span className={STAT}>
-                    Source: <strong className="font-mono font-bold text-card-foreground">{aiRun.rows_read.toLocaleString()}</strong> rows
-                  </span>
-                  <span className="text-text-tertiary">→</span>
-                  <span className={STAT}>
-                    Output: <strong className="font-mono font-bold text-card-foreground">{aiRun.rows_written.toLocaleString()}</strong> rows
-                  </span>
-                  <span className={STAT_MUTED}>
-                    {aiRun.steps_executed} steps · {aiRun.duration_ms.toFixed(0)}ms
-                  </span>
-                </div>
-              </div>
-
-              {aiRun.error && (
-                <div className={cn(ERROR_BANNER, 'm-4')}>{aiRun.error}</div>
-              )}
-
-              {/* Output columns */}
-              {aiRun.columns_out.length > 0 && (
-                <div className="flex flex-wrap gap-1.5 px-4 py-2.5">
-                  {aiRun.columns_out.map(col => (
-                    <span key={col} className={CHIP_OUTPUT}>{col}</span>
-                  ))}
-                </div>
-              )}
-
-              {/* SQL Used */}
-              {aiRun.sql_generated && (
-                <details className="px-4 pb-3">
-                  <summary className="cursor-pointer py-1 text-xs text-text-tertiary hover:text-text-secondary">Generated SQL</summary>
-                  <pre className="mt-2 overflow-x-auto whitespace-pre rounded-none border border-border bg-card p-3 font-mono text-xs leading-relaxed text-info">{aiRun.sql_generated}</pre>
-                </details>
-              )}
-
-              {/* Preview Table */}
-              {aiRun.preview_data && aiRun.preview_data.length > 0 && (
-                <div className={cn(TABLE_WRAP, 'mx-4 mb-3')}>
-                  <table className={TABLE}>
-                    <thead>
-                      <tr>
-                        {aiRun.columns_out.map(c => <th key={c} className={TH_RESULT}>{c}</th>)}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {aiRun.preview_data.map((row, i) => (
-                        <tr key={i}>
-                          {aiRun.columns_out.map(c => (
-                            <td key={c} className={TD}>{String(row[c] ?? '')}</td>
-                          ))}
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-
-              {/* Download button */}
-              {aiRun.output_file && (
-                <div className="px-4 pb-4">
-                  <Button type="button" onClick={handleAiDownload}>
-                    Download {aiRun.output_file}
-                  </Button>
-                </div>
-              )}
-            </div>
+            <PipelineResultCard
+              title={aiRun.status === 'success' ? 'Pipeline Complete' : 'Pipeline Failed'}
+              error={aiRun.error}
+              sourceRows={aiRun.rows_read}
+              outputRows={aiRun.rows_written}
+              statsLabel={`${aiRun.steps_executed} steps · ${aiRun.duration_ms.toFixed(0)}ms`}
+              columns={aiRun.columns_out.map(name => ({ name }))}
+              sql={aiRun.sql_generated}
+              previewData={aiRun.preview_data ?? []}
+              downloadFile={aiRun.output_file}
+              onDownload={handleAiDownload}
+            />
           )}
         </div>
       )}
@@ -1140,73 +1081,17 @@ const PipelinesPanel: React.FC<PipelinesPanelProps> = () => {
 
       {/* ── Result ── */}
       {result && (
-        <div className={RESULT_WRAP}>
-          <div className={RESULT_HEADER}>
-            <h3 className="text-sm font-semibold text-card-foreground">
-              {result.preview_only ? 'Preview Result' : 'Pipeline Complete'}
-            </h3>
-            <div className="flex flex-wrap items-center gap-3">
-              <span className={STAT}>
-                Source: <strong className="font-mono font-bold text-card-foreground">{result.source.row_count.toLocaleString()}</strong> rows
-              </span>
-              <span className="text-text-tertiary">→</span>
-              <span className={STAT}>
-                Output: <strong className="font-mono font-bold text-card-foreground">{result.output.row_count.toLocaleString()}</strong> rows
-              </span>
-              <span className={STAT_MUTED}>
-                {result.transforms_applied} transform{result.transforms_applied !== 1 ? 's' : ''} · {result.execution_time_ms.toFixed(0)}ms
-              </span>
-            </div>
-          </div>
-
-          {/* Output columns */}
-          <div className="flex flex-wrap gap-1.5 px-4 py-2.5">
-            {result.output.columns.map(col => (
-              <span key={col.name} className={CHIP_OUTPUT} title={col.type}>
-                {col.name} <span className="text-signal/70">{col.type}</span>
-              </span>
-            ))}
-          </div>
-
-          {/* SQL Used */}
-          {result.transform_sql && (
-            <details className="px-4 pb-3">
-              <summary className="cursor-pointer py-1 text-xs text-text-tertiary hover:text-text-secondary">Generated SQL</summary>
-              <pre className="mt-2 overflow-x-auto whitespace-pre rounded-none border border-border bg-card p-3 font-mono text-xs leading-relaxed text-info">{result.transform_sql}</pre>
-            </details>
-          )}
-
-          {/* Preview Table */}
-          {result.preview.length > 0 && (
-            <div className={cn(TABLE_WRAP, 'mx-4 mb-3')}>
-              <table className={TABLE}>
-                <thead>
-                  <tr>
-                    {result.output.columns.map(c => <th key={c.name} className={TH_RESULT}>{c.name}</th>)}
-                  </tr>
-                </thead>
-                <tbody>
-                  {result.preview.map((row, i) => (
-                    <tr key={i}>
-                      {result.output.columns.map(c => (
-                        <td key={c.name} className={TD}>{String(row[c.name] ?? '')}</td>
-                      ))}
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-
-          {/* Download button */}
-          {!result.preview_only && result.output.file && (
-            <div className="px-4 pb-4">
-              <Button type="button" onClick={handleDownload}>
-                Download {result.output.file}
-              </Button>
-            </div>
-          )}
-        </div>
+        <PipelineResultCard
+          title={result.preview_only ? 'Preview Result' : 'Pipeline Complete'}
+          sourceRows={result.source.row_count}
+          outputRows={result.output.row_count}
+          statsLabel={`${result.transforms_applied} transform${result.transforms_applied !== 1 ? 's' : ''} · ${result.execution_time_ms.toFixed(0)}ms`}
+          columns={result.output.columns}
+          sql={result.transform_sql}
+          previewData={result.preview}
+          downloadFile={!result.preview_only ? result.output.file : null}
+          onDownload={handleDownload}
+        />
       )}
 
         </div>
@@ -1342,6 +1227,119 @@ const PipelinesPanel: React.FC<PipelinesPanelProps> = () => {
     </div>
   );
 };
+
+/* ================================================================
+   PipelineResultCard — shared result card for both the AI-pipeline
+   run and the visual-builder run (BUG-029 item 5: these two result
+   blocks were near-identical ~70-line JSX structures).
+   ================================================================ */
+
+interface PipelineResultColumn {
+  name: string;
+  type?: string;
+}
+
+interface PipelineResultCardProps {
+  title: string;
+  error?: string;
+  sourceRows: number;
+  outputRows: number;
+  statsLabel: React.ReactNode;
+  columns: PipelineResultColumn[];
+  sql?: string;
+  previewData: Array<Record<string, any>>;
+  downloadFile?: string | null;
+  onDownload: () => void;
+}
+
+const PipelineResultCard: React.FC<PipelineResultCardProps> = ({
+  title,
+  error,
+  sourceRows,
+  outputRows,
+  statsLabel,
+  columns,
+  sql,
+  previewData,
+  downloadFile,
+  onDownload,
+}) => (
+  <div className={RESULT_WRAP}>
+    <div className={RESULT_HEADER}>
+      <h3 className="text-sm font-semibold text-card-foreground">{title}</h3>
+      <div className="flex flex-wrap items-center gap-3">
+        <span className={STAT}>
+          Source: <strong className="font-mono font-bold text-card-foreground">{sourceRows.toLocaleString()}</strong> rows
+        </span>
+        <span className="text-text-tertiary">→</span>
+        <span className={STAT}>
+          Output: <strong className="font-mono font-bold text-card-foreground">{outputRows.toLocaleString()}</strong> rows
+        </span>
+        <span className={STAT_MUTED}>{statsLabel}</span>
+      </div>
+    </div>
+
+    {error && (
+      <div className={cn(ERROR_BANNER, 'm-4')}>{error}</div>
+    )}
+
+    {/* Output columns */}
+    {columns.length > 0 && (
+      <div className="flex flex-wrap gap-1.5 px-4 py-2.5">
+        {columns.map(col => (
+          <span key={col.name} className={CHIP_OUTPUT} title={col.type}>
+            {col.name}
+            {col.type && (
+              <>
+                {' '}
+                <span className="text-signal/70">{col.type}</span>
+              </>
+            )}
+          </span>
+        ))}
+      </div>
+    )}
+
+    {/* SQL Used */}
+    {sql && (
+      <details className="px-4 pb-3">
+        <summary className="cursor-pointer py-1 text-xs text-text-tertiary hover:text-text-secondary">Generated SQL</summary>
+        <pre className="mt-2 overflow-x-auto whitespace-pre rounded-none border border-border bg-card p-3 font-mono text-xs leading-relaxed text-info">{sql}</pre>
+      </details>
+    )}
+
+    {/* Preview Table */}
+    {previewData.length > 0 && (
+      <div className={cn(TABLE_WRAP, 'mx-4 mb-3')}>
+        <table className={TABLE}>
+          <thead>
+            <tr>
+              {columns.map(c => <th key={c.name} className={TH_RESULT}>{c.name}</th>)}
+            </tr>
+          </thead>
+          <tbody>
+            {previewData.map((row, i) => (
+              <tr key={i}>
+                {columns.map(c => (
+                  <td key={c.name} className={TD}>{String(row[c.name] ?? '')}</td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    )}
+
+    {/* Download button */}
+    {downloadFile && (
+      <div className="px-4 pb-4">
+        <Button type="button" onClick={onDownload}>
+          Download {downloadFile}
+        </Button>
+      </div>
+    )}
+  </div>
+);
 
 /* ================================================================
    TransformStepCard — config card for one transform step
