@@ -829,7 +829,7 @@ This is the process, not a suggestion:
   Verified: `npx tsc --noEmit`, `npx eslint src --max-warnings 0`, `npx vitest run` (67 files / 311 tests) all clean from `frontend/`.
 
 ## BUG-029: lower-priority items from the 2026-09-02 codebase-quality audit (logged, not yet triaged for a fix)
-- **Status:** partially fixed — items 1, 4, and 6 fixed 2026-09-02; items 2-3, 5, 7 remain open (deferred).
+- **Status:** partially fixed — items 1, 4, 5, and 6 fixed; items 2-3, 7 remain open (deferred).
 - **Found by:** codebase-quality-audit workflow, 2026-09-02 (7 low-severity findings, not run through the adversarial verify pass — that pass was reserved for medium/high findings; treat the still-open ones as plausible, not confirmed).
 - **Severity:** low (cosmetic/duplication/readability) except where noted.
 - **Findings:**
@@ -837,11 +837,11 @@ This is the process, not a suggestion:
   2. `aurabackend/ingestion_service/kafka_client.py:27` — no application-level idempotency/dedup key check before publish; `enable_idempotence=True`'s comment overstates what it actually guarantees (only dedups broker-retries within one send call, not two independent client re-POSTs of the same `batch_id`). Same "ingestion_service doesn't start in this deployment" mitigating caveat as BUG-010.
   3. `aurabackend/shared/file_service.py:82` — `FileService.save_file`/`process_file` are dead in production (the live `/upload` route uses `shared/storage`+`shared/data_utils.py` instead) but still exist, untested-by-integration, and would violate the async-safety rule if ever wired in (`process_file` runs blocking pandas I/O with no `to_thread`).
   4. **Fixed 2026-09-02** (landed opportunistically in PR #298 alongside BUG-019). `aurabackend/evolution/api.py:240` — `feedback_summary()` did `__import__("datetime").datetime.now(...)` instead of just adding `datetime` to the existing `from datetime import timedelta, timezone` two lines above; now `from datetime import datetime, timedelta, timezone`.
-  5. `frontend/src/pages/PipelinesPanel.tsx:868` — the AI-pipeline-run and visual-builder result blocks are near-duplicate ~70-line JSX structures that should share one `<PipelineResultCard>` component.
+  5. **Fixed.** `frontend/src/pages/PipelinesPanel.tsx:868` — the AI-pipeline-run and visual-builder result blocks were near-duplicate ~70-line JSX structures. Extracted a shared `PipelineResultCard` component (composed from `@/components/ui-kit` per house style) that both call sites now render, passing through the fields that vary (title, error, row counts, stats label, output columns, generated SQL, preview rows, download file/handler). Pure refactor — no behavior change; `tsc --noEmit`, `eslint --max-warnings 0`, and `vitest run` (311/311) all clean.
   6. **Fixed.** `frontend/src/pages/PipelinesPanel.tsx:372` (and 5 other sites) — six unconditional `console.log` calls dumping full pipeline payloads (including AI prompts and `JSON.stringify`'d execution configs) to the browser console in production, not gated behind a dev flag. Removed all six; the three `console.error` calls in the same file were kept (legitimate failure diagnostics, not payload dumps) — `tsc --noEmit` and `eslint --max-warnings 0` both clean.
   7. `frontend/src/workbench/Workbench.tsx:90` — 873-line single component combining shell chrome, chat, forensic-audit, healing-queue approvals, and the live radar model; each concern is independently extractable but the merge into "one shell" was noted as a deliberate earlier design choice per the file's own comments — a real maintainability cost but not a bug, and a large refactor out of scope for a surgical fix.
 - **Caused by:** none — pre-existing across a long project history.
-- **Fix:** items 1, 4, and 6 fixed (see above). Items 2-3 have the same "currently unreachable service" mitigation as BUG-010's items 2 and 4 — low priority, deliberately deferred. Items 5 and 7 are larger refactors (component-splitting), deliberately out of scope for a surgical fix.
+- **Fix:** items 1, 4, 5, and 6 fixed (see above). Items 2-3 have the same "currently unreachable service" mitigation as BUG-010's items 2 and 4 — low priority, deliberately deferred. Item 7 is a larger refactor (component-splitting), deliberately out of scope for a surgical fix.
 
 ## BUG-030: file upload never wrote a dataset profile, so GET /files/{id}/profile always 404'd
 - **Status:** fixed
