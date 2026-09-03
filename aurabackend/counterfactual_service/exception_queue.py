@@ -82,13 +82,23 @@ def pending_exceptions(report_hash: str) -> Dict[str, Any]:
 
 
 def record_decision(report_hash: str, finding_id: str, human_auditor_id: str,
-                    rationale: str, approved: bool) -> Dict[str, Any]:
+                    rationale: str, approved: bool,
+                    tenant_id: str | None = None) -> Dict[str, Any]:
     """Sign + persist a HumanOverrideRecord, append the WORM contradiction
     record, and mark the finding decided. Raises LookupError (unknown
-    report/finding), AlreadyDecidedError, or ValueError (blank rationale)."""
+    report/finding, or a report/finding belonging to a different tenant
+    than ``tenant_id``), AlreadyDecidedError, or ValueError (blank
+    rationale)."""
     if not (rationale or "").strip():
         raise ValueError("AS 1215 requires a rationale for every human decision")
     report = _load_report(report_hash)
+    if tenant_id is not None:
+        report_tenant = report.get("tenant_id")
+        if report_tenant and report_tenant != tenant_id:
+            # Same 404 as a genuinely unknown report — never confirm a
+            # cross-tenant record_hash exists to the caller (BUG-016/036
+            # pattern: an ownership mismatch reports identically to "not found").
+            raise LookupError(f"no completion document for {report_hash}")
     reviewable = {
         f.get("finding_id") for f in report.get("findings", [])
         if f.get("requires_human_review")

@@ -845,7 +845,8 @@ async def financial_audit_decide(record_hash: str, finding_id: str,
         raise HTTPException(422, "AS 1215 requires a non-blank rationale")
     try:
         stored = exception_queue.record_decision(
-            record_hash, finding_id, user["sub"], req.rationale, req.approved)
+            record_hash, finding_id, user["sub"], req.rationale, req.approved,
+            tenant_id=_ledger_tenant(user))
     except exception_queue.AlreadyDecidedError as exc:
         raise HTTPException(409, str(exc))
     except (LookupError, ValueError) as exc:
