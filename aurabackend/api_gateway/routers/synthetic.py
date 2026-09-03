@@ -21,7 +21,7 @@ import time
 import uuid as _uuid
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, Request, status
 from pydantic import BaseModel, Field
 
 from shared.error_handler import sanitize_error
@@ -33,6 +33,8 @@ from synthetic import (
     parse_size,
     plan_generation,
 )
+
+from .workspaces import current_workspace_id
 
 logger = get_logger("aura.api_gateway.synthetic")
 router = APIRouter(tags=["Synthetic Data"])
@@ -140,7 +142,7 @@ def _run_job(job_id: str, req: GenerateRequest) -> None:
 
 
 @router.post("/synthetic/generate")
-async def synthetic_generate(req: GenerateRequest):
+async def synthetic_generate(req: GenerateRequest, request: Request):
     """Launch a background generation job; returns a job_id to poll."""
     try:
         # Validate schema + size eagerly so bad requests fail fast (not in the thread).
@@ -153,6 +155,7 @@ async def synthetic_generate(req: GenerateRequest):
     with _jobs_lock:
         _jobs[job_id] = {
             "job_id": job_id,
+            "workspace_id": current_workspace_id(request),
             "status": "queued",
             "output_uri": req.output_uri,
             "target_size": req.target_size,
@@ -167,15 +170,29 @@ async def synthetic_generate(req: GenerateRequest):
 
 
 @router.get("/synthetic/jobs")
-async def list_synthetic_jobs():
+async def list_synthetic_jobs(request: Request):
+    """List the CALLER's synthetic-data jobs, scoped by the verified workspace.
+
+    _jobs was a bare in-memory dict with no tenant field at all -- every
+    caller saw every other tenant's job list (output URIs, schema, sizes).
+    """
+    workspace_id = current_workspace_id(request)
     with _jobs_lock:
-        return {"jobs": sorted(_jobs.values(), key=lambda j: j["created_at"], reverse=True)}
+        jobs = [j for j in _jobs.values() if j.get("workspace_id") == workspace_id]
+        return {"jobs": sorted(jobs, key=lambda j: j["created_at"], reverse=True)}
 
 
 @router.get("/synthetic/jobs/{job_id}")
-async def get_synthetic_job(job_id: str):
+async def get_synthetic_job(job_id: str, request: Request):
+    """Fetch one job, scoped to the caller's workspace.
+
+    Previously had no ownership check at all -- any tenant could poll
+    another tenant's job by id. A mismatched workspace_id now reports the
+    same 404 as a genuinely unknown id, never confirming the job exists
+    under a different tenant.
+    """
     with _jobs_lock:
         job = _jobs.get(job_id)
-        if job is None:
+        if job is None or job.get("workspace_id") != current_workspace_id(request):
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"job {job_id} not found")
         return dict(job)
