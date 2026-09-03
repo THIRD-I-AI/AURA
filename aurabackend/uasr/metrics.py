@@ -139,12 +139,20 @@ class HealingMetricTracker:
         sla_seconds: float = 5.0,
         correlation_window_seconds: float = 0.0,
         correlation_min_sources: int = 3,
+        trend_min_interval_seconds: float = 30.0,
     ) -> None:
         self._events: List[RecoveryEvent] = []
         self._trend_window = trend_window
         self._sla_seconds = sla_seconds
         self._hu_history: List[float] = []
         self._composite_history: List[float] = []
+        # Trend samples are recorded on wall-clock cadence, not on every
+        # compute() call -- otherwise the "declining for 5 readings" alert's
+        # true detection window shrinks or grows with however many consumers
+        # (dashboard, alerting bot, a human curling the endpoint) happen to
+        # be polling /uasr/metrics at once, independent of any config change.
+        self._trend_min_interval_seconds = trend_min_interval_seconds
+        self._last_trend_recorded_at: float = 0.0
         # Cross-source correlation (candidate #5): 0.0 = off, matching every
         # other UASR opt-in this session -- no behaviour change by default.
         self._correlation_window_seconds = correlation_window_seconds
@@ -406,9 +414,13 @@ class HealingMetricTracker:
         global_quality = quality_sum / D if D > 0 else 0.0
         global_speed = speed_sum / D if D > 0 else 0.0
 
-        # Record trends
-        self._hu_history.append(hu_score)
-        self._composite_history.append(hu_composite)
+        # Record trends -- gated on wall-clock interval, not on every call
+        # (see __init__ note on trend_min_interval_seconds).
+        now = time.time()
+        if now - self._last_trend_recorded_at >= self._trend_min_interval_seconds:
+            self._hu_history.append(hu_score)
+            self._composite_history.append(hu_composite)
+            self._last_trend_recorded_at = now
 
         report = HealingReport(
             hu_score=round(hu_score, 6),
@@ -532,3 +544,4 @@ class HealingMetricTracker:
         self._events.clear()
         self._hu_history.clear()
         self._composite_history.clear()
+        self._last_trend_recorded_at = 0.0
