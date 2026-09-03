@@ -335,6 +335,16 @@ class SynthesisActuatorAgent(BaseAgent):
                 '        result.append(row)\n'
                 '    return result\n'
             )
+        elif drift_vector.get("detector") == "wasserstein_martingale":
+            # A martingale alarm fired but neither the rescale heal above nor
+            # the severe-clip branch found a fix (no col_stats-derived rescale
+            # factor, and max_kl is always 0 for this detector so the clip
+            # branch above never triggers either). A no-op pass-through shim
+            # here would auto-deploy as "fixed" while the real drift the
+            # martingale caught goes untouched (see BUG-033) -- return None so
+            # _run falls through to LLM generation instead of committing a
+            # vacuous template.
+            return None
         else:
             # Mild - just log and pass through
             cols_str = ", ".join(f'"{c}"' for c in affected)
