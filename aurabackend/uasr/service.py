@@ -1165,6 +1165,8 @@ async def uasr_deployment() -> Dict[str, Any]:
     summary["state_store_class"] = (
         type(_detector._store).__name__ if hasattr(_detector, "_store") else None
     )
+    summary["schema_intent_enabled"] = _SCHEMA_INTENT_ENABLED
+    summary["schema_intent_default_ttl_seconds"] = _SCHEMA_INTENT_DEFAULT_TTL_SECONDS
     return summary
 
 
