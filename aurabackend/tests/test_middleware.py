@@ -74,6 +74,25 @@ def _make_app(**middleware_kwargs) -> FastAPI:
         from fastapi import HTTPException
         raise HTTPException(status_code=404, detail="Hook not found")
 
+    # BUG-037 (docs/BUG_REGISTRY.md): OIDC SSO login-flow routes are reached
+    # by a browser with no AURA JWT yet -- each handler was already coded as
+    # intentionally unauthenticated, but _PUBLIC_PATHS never caught up.
+    @app.get("/api/v1/auth/oidc/status")
+    def oidc_status_stub():
+        return {"enabled": False}
+
+    @app.get("/api/v1/auth/oidc/login")
+    def oidc_login_stub():
+        return {"redirect": "https://idp.example/authorize"}
+
+    @app.get("/api/v1/auth/oidc/callback")
+    def oidc_callback_stub():
+        return {"ok": True}
+
+    @app.post("/api/v1/auth/oidc/exchange")
+    def oidc_exchange_stub():
+        return {"access_token": "stub", "token_type": "bearer"}
+
     @app.get("/error/not-found")
     def raise_not_found():
         raise NotFoundError("Widget", "42")
@@ -221,6 +240,27 @@ class TestJWTMiddleware:
         deliberately-public parameterized route."""
         resp = client.get("/api/v1/counterfactual/audit/financial")
         assert resp.status_code == 401
+
+    # ── BUG-037 regression: real fix, verified with JWTAuthMiddleware
+    # genuinely installed. Before the fix every one of these returned 401
+    # AUTHENTICATION_REQUIRED and never reached the handler -- unreachable
+    # SSO on any deployment with JWT auth armed (the production default). ─
+
+    def test_oidc_status_reachable_without_a_token(self, client):
+        resp = client.get("/api/v1/auth/oidc/status")
+        assert resp.status_code == 200
+
+    def test_oidc_login_reachable_without_a_token(self, client):
+        resp = client.get("/api/v1/auth/oidc/login")
+        assert resp.status_code == 200
+
+    def test_oidc_callback_reachable_without_a_token(self, client):
+        resp = client.get("/api/v1/auth/oidc/callback")
+        assert resp.status_code == 200
+
+    def test_oidc_exchange_reachable_without_a_token(self, client):
+        resp = client.post("/api/v1/auth/oidc/exchange")
+        assert resp.status_code == 200
 
 
 # ── Exception Handlers ─────────────────────────────────────────────────

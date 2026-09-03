@@ -127,6 +127,20 @@ _PUBLIC_PATHS = {
     # docs/BUG_REGISTRY.md BUG-005.
     "/api/v1/counterfactual/jwks",
     "/api/v1/counterfactual/audit/sth",
+    # OIDC SSO login flow (BUG-037): every one of these routes is reached by
+    # a browser that has no AURA JWT yet -- oidc_login() redirects to the
+    # IdP before login, oidc_callback() is hit by the IdP's redirect with
+    # only a fresh SSO state cookie, oidc_exchange() is the very call that
+    # mints the caller's first AURA token, and oidc_status() is polled by
+    # the login page to decide whether to show an SSO button. Each handler
+    # was already coded as intentionally unauthenticated; this allowlist
+    # never caught up, so SSO was unreachable on any deployment with JWT
+    # auth armed (the mandatory production config) -- same class of gap as
+    # BUG-005/BUG-017.
+    "/api/v1/auth/oidc/status",
+    "/api/v1/auth/oidc/login",
+    "/api/v1/auth/oidc/callback",
+    "/api/v1/auth/oidc/exchange",
 }
 
 # Public path PREFIXES -- for the one public route _PUBLIC_PATHS' exact-
@@ -158,7 +172,16 @@ def _is_public_path(path: str) -> bool:
 # an API key?", a different question from "does this need throttling?". Left
 # conflated, /auth/token accepted unlimited password guesses and /auth/register
 # unlimited account creation from a single IP.
-_AUTH_PATHS = {"/api/v1/auth/token", "/api/v1/auth/register"}
+_AUTH_PATHS = {
+    "/api/v1/auth/token", "/api/v1/auth/register",
+    # oidc_callback and oidc_exchange both mint a real AURA credential
+    # (a handoff code / a JWT respectively) from caller-supplied input, the
+    # same class of endpoint /auth/token is -- excluded from the rate-limit
+    # exemption below so they're throttled like any other credential mint,
+    # not treated as free infrastructure traffic. oidc_status/oidc_login
+    # mint nothing and stay exempt.
+    "/api/v1/auth/oidc/callback", "/api/v1/auth/oidc/exchange",
+}
 
 # Infrastructure paths that genuinely need no throttling: liveness probes get
 # polled hard by orchestrators, and the docs are static.
