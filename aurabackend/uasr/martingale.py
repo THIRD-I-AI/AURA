@@ -278,6 +278,25 @@ class WassersteinMartingaleDetector:
         ):
             d.pop(source_id, None)
 
+    def baseline_stats(
+        self, source_id: str, column: str,
+    ) -> "tuple[Optional[float], Optional[float]]":
+        """Mean and population stdev of the registered baseline samples
+        for ``(source_id, column)``. Returns ``(None, None)`` if no
+        baseline is registered for that column, or if it's empty.
+
+        Public accessor so callers (e.g. ``mapek_worker._analyze_martingale``)
+        can build ``drift_vector["col_stats"]`` without reaching into the
+        private ``self._baselines`` dict.
+        """
+        samples = self._baselines.get(source_id, {}).get(column)
+        if not samples:
+            return None, None
+        n = len(samples)
+        mean = sum(samples) / n
+        variance = sum((x - mean) ** 2 for x in samples) / n
+        return mean, math.sqrt(variance)
+
     def expected_distance(self, source_id: str, column: str) -> Optional[float]:
         """Mean of distances seen during the baseline-learning
         period. None if we're still inside that window."""

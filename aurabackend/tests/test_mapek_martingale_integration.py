@@ -34,8 +34,9 @@ from typing import Any, Dict, List
 import numpy as np
 import pytest
 
+from uasr.actuator_agent import SynthesisActuatorAgent
 from uasr.mapek_worker import MAPEKConfig, MAPEKWorker
-from uasr.models import BatchPayload, DriftSeverity, DriftType
+from uasr.models import BatchPayload, DiagnosisResult, DriftSeverity, DriftType
 
 
 def _make_batch(rows: List[Dict[str, Any]], source_id: str = "test_src") -> BatchPayload:
@@ -255,3 +256,98 @@ def test_martingale_diagnostics_observable_post_update(worker_with_baseline: MAP
     assert "step" in diag
     assert diag["step"] > 0
     assert "martingale" in diag
+
+
+# ── BUG-032 regression: martingale drift must produce a real shim, not a
+#    vacuous no-op pass-through ──────────────────────────────────────────
+
+
+def test_martingale_rescale_drift_produces_col_stats_and_real_shim() -> None:
+    """A unit-scale-bug batch (values inflated x100) caught by the martingale
+    detector must populate drift_vector['col_stats'] so the actuator's
+    deterministic rescale heal (SynthesisActuatorAgent._statistical_shim) can
+    build a shim that actually divides the column back to baseline units —
+    not a no-op pass-through that gets committed as generation_method=
+    'template' and auto-deploys with zero rows changed."""
+    w = _worker(use_martingale=True, alpha=0.05)
+    rng = np.random.default_rng(seed=7)
+    baseline_samples = (rng.standard_normal(100) * 5 + 100).tolist()  # N(100, 5)
+    w._martingale.register_baseline("test_src", {"metric": baseline_samples})
+    for _ in range(25):
+        warm = (rng.standard_normal(50) * 5 + 100).tolist()
+        w._martingale.update("test_src", "metric", warm)
+
+    result = None
+    for _ in range(20):
+        # Unit bug: values inflated x100 (e.g. cents mislabelled as dollars).
+        batch_samples = ((rng.standard_normal(50) * 5 + 100) * 100).tolist()
+        batch = _make_batch([{"metric": v} for v in batch_samples])
+        r = w._analyze_detect_drift(batch)
+        if (
+            r.drift_detected
+            and r.drift_vector
+            and r.drift_vector.get("detector") == "wasserstein_martingale"
+        ):
+            result = r
+            break
+    assert result is not None, "martingale failed to fire on x100 unit-bug drift"
+
+    col_stats = result.drift_vector.get("col_stats", {})
+    assert "metric" in col_stats, "col_stats must be populated for every alarmed column"
+    cs = col_stats["metric"]
+    assert cs["baseline_mean"] == pytest.approx(100.0, abs=5)
+    assert cs["baseline_std"] > 0
+    assert cs["batch_mean"] == pytest.approx(cs["baseline_mean"] * 100, rel=0.15)
+    assert result.drift_vector.get("affected_columns") == ["metric"]
+
+    actuator = SynthesisActuatorAgent.__new__(SynthesisActuatorAgent)
+    diag = DiagnosisResult(drift_event_id="e1", root_cause="martingale rescale drift")
+    shim_code = actuator._statistical_shim(result.drift_vector, diag)
+
+    assert shim_code is not None, (
+        "actuator produced no shim for a col_stats-backed rescale drift"
+    )
+    assert "Unit Rescale" in shim_code, (
+        f"expected the deterministic rescale template, got:\n{shim_code}"
+    )
+
+    ns: dict = {}
+    exec(compile(shim_code, "<shim>", "exec"), ns)  # noqa: S102
+    fn = ns["transform"]
+    out = fn([{"metric": 10000.0}])
+    assert out[0]["metric"] == pytest.approx(100.0), (
+        "rescale shim must actually transform the affected column, "
+        "not pass it through unchanged"
+    )
+
+
+def test_martingale_non_rescalable_drift_falls_through_to_llm_not_noop() -> None:
+    """A martingale alarm with col_stats populated but no clean rescale
+    factor (a real distributional shift, not a unit bug) must NOT fall into
+    the old vacuous 'log and pass through' branch and auto-deploy as
+    generation_method='template'. `_template_shim` must return None so
+    `SynthesisActuatorAgent._run` falls through to LLM/fallback generation
+    instead."""
+    drift_vector = {
+        "detector": "wasserstein_martingale",
+        "alpha": 0.05,
+        "alarms": ["metric"],
+        "affected_columns": ["metric"],
+        "max_wasserstein_1": 3.1,
+        "col_stats": {
+            "metric": {
+                "baseline_mean": 100.0,
+                "batch_mean": 106.0,  # ratio 1.06 — not close to any rescale candidate
+                "baseline_std": 5.0,
+            },
+        },
+    }
+    actuator = SynthesisActuatorAgent.__new__(SynthesisActuatorAgent)
+    diag = DiagnosisResult(drift_event_id="e2", root_cause="martingale drift, no rescale")
+
+    shim_code = actuator._template_shim("statistical", drift_vector, diag)
+
+    assert shim_code is None, (
+        "a non-rescalable martingale drift must not produce a template shim "
+        "(it would be a no-op pass-through that vacuously passes validation)"
+    )

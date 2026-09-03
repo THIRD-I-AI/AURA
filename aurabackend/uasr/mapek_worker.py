@@ -587,6 +587,7 @@ class MAPEKWorker:
         assert self._martingale is not None
         alarms: List[str] = []
         max_distance: float = 0.0
+        col_samples: Dict[str, List[float]] = {}
         for col in batch.columns:
             # Extract numeric samples from this column. Skip strings,
             # None, dicts — only Wasserstein-comparable values.
@@ -597,6 +598,7 @@ class MAPEKWorker:
                     samples.append(float(v))
             if not samples:
                 continue
+            col_samples[col] = samples
             try:
                 fired = self._martingale.update(batch.source_id, col, samples)
             except Exception as exc:
@@ -616,6 +618,25 @@ class MAPEKWorker:
             if self._cfg.martingale_alarm_severity_high
             else DriftSeverity.MEDIUM
         )
+        # Populate col_stats for every alarmed column so the actuator's
+        # deterministic rescale-detection (actuator_agent.py's
+        # _statistical_shim) can fire on a martingale-caught unit-bug the
+        # same way it already does for classical-detector drift. Without
+        # this the martingale path always fell through to the vacuous
+        # pass-through shim (see BUG-032).
+        col_stats: Dict[str, Dict[str, float]] = {}
+        for col in alarms:
+            baseline_mean, baseline_std = self._martingale.baseline_stats(
+                batch.source_id, col,
+            )
+            samples = col_samples.get(col)
+            if baseline_mean is None or not samples:
+                continue
+            col_stats[col] = {
+                "baseline_mean": baseline_mean,
+                "batch_mean": sum(samples) / len(samples),
+                "baseline_std": baseline_std,
+            }
         return DriftDetectionResult(
             source_id=batch.source_id,
             batch_id=batch.batch_id,
@@ -628,7 +649,14 @@ class MAPEKWorker:
                 "detector": "wasserstein_martingale",
                 "alpha": self._cfg.martingale_alpha,
                 "alarms": alarms,
+                # Mirrors the classical detector's drift_vector shape
+                # (drift_detector.py always sets this key) — the actuator's
+                # _statistical_shim reads drift_vector["affected_columns"],
+                # not the top-level DriftDetectionResult.affected_columns
+                # field, to decide which columns to heal.
+                "affected_columns": alarms,
                 "max_wasserstein_1": max_distance,
+                "col_stats": col_stats,
             },
             details=(
                 f"Wasserstein-Martingale alarm on columns {alarms!r} "
