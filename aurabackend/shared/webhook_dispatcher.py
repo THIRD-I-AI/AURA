@@ -378,6 +378,7 @@ class WebhookDispatcher:
                 topic="webhooks:deliveries",
                 event_type="data",
                 payload=record.__dict__,
+                workspace_id=record.workspace_id,
             ))
         except Exception:
             pass

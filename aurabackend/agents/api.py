@@ -15,7 +15,7 @@ import json
 import uuid
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -25,6 +25,7 @@ from agents.memory import AgentMemory
 from agents.planner import PlannerAgent
 from agents.tool_registry import ToolRegistry
 from agents.tools import ingest_and_profile, register_all_tools
+from api_gateway.routers.workspaces import current_workspace_id
 from shared.streaming_manager import TOPIC_AGENT, StreamEvent, streaming_manager
 
 router = APIRouter(prefix="/agent", tags=["Agentic DE"])
@@ -212,7 +213,7 @@ class AgentAsyncResponse(BaseModel):
 
 
 @router.post("/execute/async", response_model=AgentAsyncResponse)
-async def execute_prompt_async(req: AgentExecuteRequest):
+async def execute_prompt_async(req: AgentExecuteRequest, request: Request):
     """Kick off plan + execute in the background.
 
     Returns ``{session_id, topic}`` immediately. The caller subscribes to
@@ -220,12 +221,16 @@ async def execute_prompt_async(req: AgentExecuteRequest):
     events published through the universal streaming bus.
     """
     session_id = uuid.uuid4().hex
+    # Resolved eagerly, in the request handler — the background task below
+    # outlives the request and must not depend on request.state still being
+    # valid by the time it runs.
+    workspace_id = current_workspace_id(request)
 
     async def _run() -> None:
         try:
             await streaming_manager.publish_progress(
                 TOPIC_AGENT, session_id, "Enriching schema", 0.02,
-                extra={"stage": "schema"},
+                extra={"stage": "schema"}, workspace_id=workspace_id,
             )
             registry = _make_registry()
             memory = AgentMemory()
@@ -238,12 +243,12 @@ async def execute_prompt_async(req: AgentExecuteRequest):
                     p = 0.0
                 await streaming_manager.publish_progress(
                     TOPIC_AGENT, session_id, message, p,
-                    extra={"agent": agent},
+                    extra={"agent": agent}, workspace_id=workspace_id,
                 )
 
             await streaming_manager.publish_progress(
                 TOPIC_AGENT, session_id, "Planning", 0.05,
-                extra={"stage": "planning"},
+                extra={"stage": "planning"}, workspace_id=workspace_id,
             )
             planner = PlannerAgent()
             planner.set_progress_callback(_cb)
@@ -261,7 +266,7 @@ async def execute_prompt_async(req: AgentExecuteRequest):
                 await streaming_manager.publish_error(
                     TOPIC_AGENT, session_id,
                     plan_result.error or "Planning failed",
-                    code="PLANNING_FAILED",
+                    code="PLANNING_FAILED", workspace_id=workspace_id,
                 )
                 return
 
@@ -275,6 +280,7 @@ async def execute_prompt_async(req: AgentExecuteRequest):
                     "summary": plan.summary,
                     "tasks": [t.to_dict() if hasattr(t, "to_dict") else _task_dict(t) for t in plan.tasks],
                 },
+                workspace_id=workspace_id,
             ))
 
             executor = DAGExecutor(
@@ -288,11 +294,12 @@ async def execute_prompt_async(req: AgentExecuteRequest):
                 schema_context=schema,
             )
             await streaming_manager.publish_complete(
-                TOPIC_AGENT, session_id, report.to_dict(),
+                TOPIC_AGENT, session_id, report.to_dict(), workspace_id=workspace_id,
             )
         except Exception as exc:  # pragma: no cover
             await streaming_manager.publish_error(
                 TOPIC_AGENT, session_id, str(exc), code="AGENT_FAILED",
+                workspace_id=workspace_id,
             )
 
     from shared.tasks import fire_and_forget

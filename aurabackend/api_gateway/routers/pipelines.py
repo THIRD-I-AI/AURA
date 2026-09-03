@@ -176,6 +176,7 @@ async def pipeline_execute_async(req: PipelineExecuteRequest, request: Request):
     # below outlives the request and must not depend on request.state
     # still being valid by the time it runs.
     tenant = _request_tenant(request)
+    workspace_id = current_workspace_id(request)
     run_id = uuid.uuid4().hex
 
     async def _run() -> None:
@@ -196,15 +197,16 @@ async def pipeline_execute_async(req: PipelineExecuteRequest, request: Request):
                     "sink": getattr(getattr(pipeline.sink, "type", ""), "value", ""),
                     "steps": steps_meta,
                 },
+                workspace_id=workspace_id,
             ))
 
             await streaming_manager.publish_progress(
                 TOPIC_PIPELINE, run_id, "Loading source", 0.10,
-                extra={"stage": "source"},
+                extra={"stage": "source"}, workspace_id=workspace_id,
             )
             await streaming_manager.publish_progress(
                 TOPIC_PIPELINE, run_id, "Building transform SQL", 0.25,
-                extra={"stage": "build_sql"},
+                extra={"stage": "build_sql"}, workspace_id=workspace_id,
             )
 
             # Publish a "running" event per declared step (coarse — engine
@@ -216,6 +218,7 @@ async def pipeline_execute_async(req: PipelineExecuteRequest, request: Request):
                     TOPIC_PIPELINE, run_id,
                     f"Running step: {s['name']}", pct,
                     extra={"stage": "transform", "step_id": s["id"], "step_index": i},
+                    workspace_id=workspace_id,
                 )
 
             async def _kafka_cb(consumed: int, lag: Optional[int]) -> None:
@@ -231,6 +234,7 @@ async def pipeline_execute_async(req: PipelineExecuteRequest, request: Request):
                         "consumed": consumed,
                         "lag": lag,
                     },
+                    workspace_id=workspace_id,
                 ))
 
             run = await _pipeline_engine.execute(
@@ -242,18 +246,19 @@ async def pipeline_execute_async(req: PipelineExecuteRequest, request: Request):
             await streaming_manager.publish_progress(
                 TOPIC_PIPELINE, run_id,
                 "Sink complete" if not req.preview_only else "Preview ready",
-                0.95, extra={"stage": "sink"},
+                0.95, extra={"stage": "sink"}, workspace_id=workspace_id,
             )
 
             if run.status.value == "failed":
                 await streaming_manager.publish_error(
                     TOPIC_PIPELINE, run_id,
                     run.error or "Pipeline failed", code="PIPELINE_FAILED",
+                    workspace_id=workspace_id,
                 )
                 return
 
             await streaming_manager.publish_complete(
-                TOPIC_PIPELINE, run_id, run.model_dump(),
+                TOPIC_PIPELINE, run_id, run.model_dump(), workspace_id=workspace_id,
             )
         except Exception as exc:
             # Sec-2 #27: don't echo raw exception text out over the
@@ -262,6 +267,7 @@ async def pipeline_execute_async(req: PipelineExecuteRequest, request: Request):
             logger.error("[Pipeline] Async run %s failed: %s", run_id, exc, exc_info=True)
             await streaming_manager.publish_error(
                 TOPIC_PIPELINE, run_id, "Pipeline failed", code="PIPELINE_FAILED",
+                workspace_id=workspace_id,
             )
 
     from shared.tasks import fire_and_forget

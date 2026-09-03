@@ -18,7 +18,7 @@ from shared.logging_config import get_logger
 from shared.storage import get_storage_backend
 from shared.streaming_manager import TOPIC_UPLOAD, streaming_manager
 
-from .workspaces import _request_tenant, tenant_dir_name, tenant_upload_dir
+from .workspaces import _request_tenant, current_workspace_id, tenant_dir_name, tenant_upload_dir
 
 logger = get_logger("aura.api_gateway.files")
 
@@ -130,12 +130,14 @@ async def upload_universal(
         raise HTTPException(status_code=400, detail="Invalid filename")
 
     tenant = _request_tenant(request)
+    workspace_id = current_workspace_id(request)
 
     try:
         await streaming_manager.publish_progress(
             TOPIC_UPLOAD, upload_id,
             f"Receiving {target_file.filename}", 0.05,
             extra={"stage": "receiving", "filename": target_file.filename},
+            workspace_id=workspace_id,
         )
 
         buf = io.BytesIO()
@@ -154,6 +156,7 @@ async def upload_universal(
                     f"Streaming {bytes_written // 1024} KB",
                     pct,
                     extra={"stage": "streaming", "bytes": bytes_written, "total": total},
+                    workspace_id=workspace_id,
                 )
 
         data = buf.getvalue()
@@ -163,6 +166,7 @@ async def upload_universal(
             TOPIC_UPLOAD, upload_id,
             "Saved to storage", 0.90,
             extra={"stage": "saved", "uri": obj_info.duckdb_uri, "bytes": bytes_written},
+            workspace_id=workspace_id,
         )
 
         logger.info("File stored as %s (%d bytes)", obj_info.duckdb_uri, bytes_written)
@@ -270,12 +274,12 @@ async def upload_universal(
         except Exception as _profile_exc:
             logger.warning("dataset profile dispatch failed (non-fatal): %s", _profile_exc)
 
-        await streaming_manager.publish_complete(TOPIC_UPLOAD, upload_id, result)
+        await streaming_manager.publish_complete(TOPIC_UPLOAD, upload_id, result, workspace_id=workspace_id)
         return result
     except Exception as e:
         safe_message = sanitize_error(e, logger=logger, context=f"upload {upload_id}")
         await streaming_manager.publish_error(
-            TOPIC_UPLOAD, upload_id, safe_message, code="UPLOAD_FAILED",
+            TOPIC_UPLOAD, upload_id, safe_message, code="UPLOAD_FAILED", workspace_id=workspace_id,
         )
         raise HTTPException(status_code=500, detail=safe_message)
 

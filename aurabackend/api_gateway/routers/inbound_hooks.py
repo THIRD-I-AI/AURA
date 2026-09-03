@@ -157,6 +157,7 @@ async def fire_hook(slug: str, request: Request) -> Dict[str, Any]:
                 "hook_id": hook.id, "slug": hook.slug, "kind": hook.kind,
                 "fire_count": hook.fire_count,
             },
+            workspace_id=hook.workspace_id,
         ))
     except Exception:
         pass
@@ -164,7 +165,7 @@ async def fire_hook(slug: str, request: Request) -> Dict[str, Any]:
     if hook.kind == "pipeline":
         return await _fire_pipeline(hook.target, payload)
     elif hook.kind == "agent":
-        return await _fire_agent(hook.target, payload, hook.pass_payload_as)
+        return await _fire_agent(hook.target, payload, hook.pass_payload_as, hook.workspace_id)
     else:
         raise HTTPException(status_code=500, detail=f"Unknown hook kind: {hook.kind}")
 
@@ -203,6 +204,7 @@ async def _fire_pipeline(pipeline_id: str, payload: Dict[str, Any]) -> Dict[str,
                 payload={"kind": "plan", "pipeline_id": pipeline.id,
                          "pipeline_name": pipeline.name,
                          "trigger": "inbound-hook"},
+                workspace_id=workspace_id,
             ))
 
             async def _kafka_cb(consumed: int, lag: Optional[int]) -> None:
@@ -210,6 +212,7 @@ async def _fire_pipeline(pipeline_id: str, payload: Dict[str, Any]) -> Dict[str,
                     topic=topic, event_type="progress",
                     payload={"message": f"Kafka consumed {consumed} rows",
                              "stage": "source", "consumed": consumed, "lag": lag},
+                    workspace_id=workspace_id,
                 ))
 
             run = await engine.execute(
@@ -219,15 +222,16 @@ async def _fire_pipeline(pipeline_id: str, payload: Dict[str, Any]) -> Dict[str,
             if run.status.value == "failed":
                 await streaming_manager.publish_error(
                     TOPIC_PIPELINE, run_id, run.error or "Pipeline failed",
-                    code="PIPELINE_FAILED",
+                    code="PIPELINE_FAILED", workspace_id=workspace_id,
                 )
                 return
             await streaming_manager.publish_complete(
-                TOPIC_PIPELINE, run_id, run.model_dump(),
+                TOPIC_PIPELINE, run_id, run.model_dump(), workspace_id=workspace_id,
             )
         except Exception as exc:
             await streaming_manager.publish_error(
                 TOPIC_PIPELINE, run_id, str(exc), code="PIPELINE_FAILED",
+                workspace_id=workspace_id,
             )
 
     from shared.tasks import fire_and_forget
@@ -243,6 +247,7 @@ async def _fire_agent(
     prompt_template: str,
     payload: Dict[str, Any],
     pass_payload_as: Optional[str],
+    workspace_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     from agents.base import AgentContext, AgentStatus
     from agents.executor import DAGExecutor
@@ -265,7 +270,7 @@ async def _fire_agent(
             async def _cb(message: str, agent: str, pct: float) -> None:
                 await streaming_manager.publish_progress(
                     TOPIC_AGENT, session_id, message, float(pct or 0.0),
-                    extra={"agent": agent},
+                    extra={"agent": agent}, workspace_id=workspace_id,
                 )
 
             planner = PlannerAgent()
@@ -284,6 +289,7 @@ async def _fire_agent(
                 await streaming_manager.publish_error(
                     TOPIC_AGENT, session_id,
                     plan_result.error or "Planning failed", code="PLANNING_FAILED",
+                    workspace_id=workspace_id,
                 )
                 return
 
@@ -294,11 +300,12 @@ async def _fire_agent(
                 files=[], schema_context=schema_context,
             )
             await streaming_manager.publish_complete(
-                TOPIC_AGENT, session_id, report.to_dict(),
+                TOPIC_AGENT, session_id, report.to_dict(), workspace_id=workspace_id,
             )
         except Exception as exc:
             await streaming_manager.publish_error(
                 TOPIC_AGENT, session_id, str(exc), code="AGENT_FAILED",
+                workspace_id=workspace_id,
             )
 
     from shared.tasks import fire_and_forget
