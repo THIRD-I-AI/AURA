@@ -492,3 +492,52 @@ class TestSchemaIntentEndpoint:
             assert result["expires_in_seconds"] == 120
         finally:
             self._restore(monkeypatch)
+
+
+# ── GET /uasr/deployment reports schema-intent arming (BUG-013 pattern) ──
+
+
+class TestDeploymentSummaryReportsSchemaIntent:
+    """GET /uasr/deployment is the one place an operator checks whether an
+    opt-in flag actually took effect on the live deployment, without either
+    reading the env on the box or triggering a live POST that may 400 (see
+    docs/BUG_REGISTRY.md BUG-013 for the failure mode this recurs). Every
+    other opt-in flag is threaded through uasr_deployment() already --
+    schema_intent must be too.
+    """
+
+    def _reload_with_flag(self, monkeypatch, enabled: bool):
+        monkeypatch.setenv("UASR_SCHEMA_INTENT_ENABLED", "true" if enabled else "false")
+        service_module = importlib.import_module("uasr.service")
+        importlib.reload(service_module)
+        return service_module
+
+    def _restore(self, monkeypatch):
+        monkeypatch.delenv("UASR_SCHEMA_INTENT_ENABLED", raising=False)
+        service_module = importlib.import_module("uasr.service")
+        importlib.reload(service_module)
+        assert service_module._SCHEMA_INTENT_ENABLED is False
+
+    def test_deployment_summary_reports_enabled(self, monkeypatch):
+        import asyncio
+
+        service_module = self._reload_with_flag(monkeypatch, enabled=True)
+        try:
+            result = asyncio.run(service_module.uasr_deployment())
+            assert result["schema_intent_enabled"] is True
+            assert (
+                result["schema_intent_default_ttl_seconds"]
+                == service_module._SCHEMA_INTENT_DEFAULT_TTL_SECONDS
+            )
+        finally:
+            self._restore(monkeypatch)
+
+    def test_deployment_summary_reports_disabled(self, monkeypatch):
+        import asyncio
+
+        service_module = self._reload_with_flag(monkeypatch, enabled=False)
+        try:
+            result = asyncio.run(service_module.uasr_deployment())
+            assert result["schema_intent_enabled"] is False
+        finally:
+            self._restore(monkeypatch)
