@@ -95,6 +95,7 @@ class QueryHistoryRow(Base):
     __tablename__ = "gateway_query_history"
 
     id = Column(String(64), primary_key=True)
+    workspace_id = Column(String(64), nullable=True, index=True)
     prompt = Column(Text, nullable=False, default="")
     sql = Column(Text, nullable=False, default="")
     status = Column(String(32), nullable=False, default="success")
@@ -568,6 +569,7 @@ async def insert_query_history(record: Dict[str, Any]) -> None:
     async with session_scope() as s:
         row = QueryHistoryRow(
             id=record["id"],
+            workspace_id=record.get("workspace_id"),
             prompt=record.get("prompt", "") or "",
             sql=record.get("sql", "") or "",
             status=record.get("status", "success"),
@@ -599,14 +601,18 @@ async def insert_query_history(record: Dict[str, Any]) -> None:
 
 async def list_query_history(
     *,
+    workspace_id: str,
     limit: int = 50,
     status_filter: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
-    """Newest-first slice of the history. ``status_filter`` is an
-    exact-match constraint (or 'all' / None to skip filtering)."""
+    """Newest-first slice of the history, scoped to ``workspace_id``.
+    ``status_filter`` is an exact-match constraint (or 'all' / None to
+    skip filtering)."""
     async with session_scope() as s:
-        stmt = select(QueryHistoryRow).order_by(
-            QueryHistoryRow.created_ts.desc(),
+        stmt = (
+            select(QueryHistoryRow)
+            .where(QueryHistoryRow.workspace_id == workspace_id)
+            .order_by(QueryHistoryRow.created_ts.desc())
         )
         if status_filter and status_filter != "all":
             stmt = stmt.where(QueryHistoryRow.status == status_filter)

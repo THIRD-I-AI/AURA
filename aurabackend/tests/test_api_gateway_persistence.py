@@ -61,9 +61,10 @@ async def gateway_db(tmp_path, monkeypatch):
 # ── Query history ────────────────────────────────────────────────────
 
 
-def _history_record(i: int = 1, status: str = "success") -> dict:
+def _history_record(i: int = 1, status: str = "success", workspace_id: str = "ws1") -> dict:
     return {
         "id": f"q_{i}",
+        "workspace_id": workspace_id,
         "prompt": f"prompt {i}",
         "sql": f"SELECT {i}",
         "status": status,
@@ -77,7 +78,7 @@ def _history_record(i: int = 1, status: str = "success") -> dict:
 async def test_query_history_insert_then_list(gateway_db) -> None:
     """Single insert → single row in the list."""
     await persistence.insert_query_history(_history_record(1))
-    rows = await persistence.list_query_history(limit=10)
+    rows = await persistence.list_query_history(limit=10, workspace_id="ws1")
     assert len(rows) == 1
     assert rows[0]["id"] == "q_1"
     # Wire shape MUST match the legacy in-memory dict.
@@ -93,7 +94,7 @@ async def test_query_history_returns_newest_first(gateway_db) -> None:
         await persistence.insert_query_history(_history_record(i))
         # Force a tiny gap so created_ts differs deterministically.
         await asyncio.sleep(0.01)
-    rows = await persistence.list_query_history(limit=10)
+    rows = await persistence.list_query_history(limit=10, workspace_id="ws1")
     assert [r["id"] for r in rows] == ["q_3", "q_2", "q_1"]
 
 
@@ -103,11 +104,11 @@ async def test_query_history_status_filter(gateway_db) -> None:
     returns everything."""
     await persistence.insert_query_history(_history_record(1, status="success"))
     await persistence.insert_query_history(_history_record(2, status="failed"))
-    successes = await persistence.list_query_history(status_filter="success")
+    successes = await persistence.list_query_history(status_filter="success", workspace_id="ws1")
     assert [r["id"] for r in successes] == ["q_1"]
-    all_rows = await persistence.list_query_history(status_filter="all")
+    all_rows = await persistence.list_query_history(status_filter="all", workspace_id="ws1")
     assert len(all_rows) == 2
-    none_filter = await persistence.list_query_history(status_filter=None)
+    none_filter = await persistence.list_query_history(status_filter=None, workspace_id="ws1")
     assert len(none_filter) == 2
 
 
@@ -120,7 +121,7 @@ async def test_query_history_cap_enforces_200_rows(gateway_db) -> None:
     for i in range(210):
         rec = _history_record(i)
         await persistence.insert_query_history(rec)
-    rows = await persistence.list_query_history(limit=300)
+    rows = await persistence.list_query_history(limit=300, workspace_id="ws1")
     assert len(rows) == persistence.QUERY_HISTORY_CAP
 
 

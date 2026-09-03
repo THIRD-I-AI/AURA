@@ -152,7 +152,7 @@ from datetime import datetime
 
 # ── Shared helpers (imported by other routers too) ───────────────────
 
-async def _track_query(prompt: str, sql: str, status: str, rows: int, execution_time_ms: float):
+async def _track_query(prompt: str, sql: str, status: str, rows: int, execution_time_ms: float, workspace_id: str):
     """Record a query execution in the persistence layer.
 
     Sprint P-1 made the underlying ``track_query`` async (it now writes
@@ -162,7 +162,7 @@ async def _track_query(prompt: str, sql: str, status: str, rows: int, execution_
     """
     try:
         from api_gateway.routers.queries import track_query
-        await track_query(prompt, sql, status, rows, execution_time_ms)
+        await track_query(prompt, sql, status, rows, execution_time_ms, workspace_id)
     except Exception:
         pass
 
@@ -614,7 +614,10 @@ async def chat_endpoint(request: ChatRequest, http_request: Request) -> ChatResp
     # ── Track query in server-side history ──────────────────────────
     if generated_sql:
         q_status = "success" if execution_result.success else "error"
-        await _track_query(message, generated_sql, q_status, execution_result.row_count, elapsed_ms)
+        await _track_query(
+            message, generated_sql, q_status, execution_result.row_count,
+            elapsed_ms, current_workspace_id(http_request),
+        )
 
     CHAT_REQUESTS.labels(status="ok" if error_message is None else "error").inc()
     return ChatResponse(
