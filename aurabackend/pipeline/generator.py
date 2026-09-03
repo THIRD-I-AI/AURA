@@ -18,11 +18,9 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from pipeline.engine import _resolve_in_dir
 from pipeline.local_parser import LocalPipelineParser
 from pipeline.models import (
     Pipeline,
@@ -37,14 +35,6 @@ from pipeline.models import (
 from shared.llm_provider import LLMRateLimitError
 
 logger = logging.getLogger("aura.pipeline.generator")
-
-# Fallback for callers that pass no upload_dir (tests, CLI use). Real
-# HTTP requests get a tenant-scoped dir passed in by the router (see
-# get_file_schema()/generate()'s upload_dir param) — mirrors the same
-# fallback in pipeline/engine.py.
-UPLOAD_DIR = os.getenv("AURA_UPLOADS_ROOT") or os.path.join(
-    os.path.dirname(os.path.dirname(__file__)), "data", "uploads"
-)
 
 # ────────────────────────────────────────────────────────────────────
 # System prompt template — injected with available context
@@ -140,7 +130,7 @@ class PipelineGenerator:
         available_files: Optional[List[str]] = None,
         schema_context: Optional[Dict[str, Any]] = None,
         connections: Optional[List[Dict[str, str]]] = None,
-        upload_dir: Optional[str] = None,
+        tenant: Optional[str] = None,
     ) -> Pipeline:
         """
         Convert a natural-language prompt into a Pipeline object.
@@ -149,10 +139,12 @@ class PipelineGenerator:
           1. Local rule-based parser (instant, no LLM)
           2. Cloud/local LLM fallback (Groq → Gemini → Ollama → OpenAI)
 
-        ``upload_dir``: the caller's resolved (tenant-scoped) upload
-        directory — e.g. ``api_gateway.routers.workspaces.tenant_upload_dir(request)``.
-        Only consulted when ``available_files`` isn't already supplied;
-        callers with no request context (CLI, tests) may omit it.
+        ``tenant``: the caller's tenant id — e.g.
+        ``api_gateway.routers.workspaces._request_tenant(request)`` — used to
+        list uploaded files through the active ``shared.storage``
+        ``StorageBackend`` (BUG-035). Only consulted when ``available_files``
+        isn't already supplied; callers with no request context (CLI, tests)
+        may omit it.
         """
         # ── Tier 1: Local rule-based parser ──────────────────────────
         try:
@@ -165,7 +157,7 @@ class PipelineGenerator:
             result = self._local_parser.parse(
                 prompt,
                 schema_context=schema_context,
-                available_files=available_files or self._discover_files(upload_dir),
+                available_files=available_files or self._discover_files(tenant),
                 source_file=source_file,
             )
             if result is not None:
@@ -186,7 +178,7 @@ class PipelineGenerator:
             local_fallback = None
 
         # ── Tier 2: LLM-based generation ─────────────────────────────
-        context = self._build_context(available_files, schema_context, connections, upload_dir)
+        context = self._build_context(available_files, schema_context, connections, tenant)
         user_message = f"{context}\n\nUser request: {prompt}"
         logger.info(f"[Generator] Falling back to LLM for: {prompt[:120]}...")
 
@@ -261,12 +253,12 @@ class PipelineGenerator:
         available_files: Optional[List[str]],
         schema_context: Optional[Dict[str, Any]],
         connections: Optional[List[Dict[str, str]]],
-        upload_dir: Optional[str] = None,
+        tenant: Optional[str] = None,
     ) -> str:
         parts: List[str] = []
 
         # Available files
-        files = available_files or self._discover_files(upload_dir)
+        files = available_files or self._discover_files(tenant)
         if files:
             parts.append(f"Available uploaded files: {', '.join(files)}")
 
@@ -307,20 +299,19 @@ class PipelineGenerator:
 
         return "\n\n".join(parts) if parts else "No specific context available."
 
-    def _discover_files(self, upload_dir: Optional[str] = None) -> List[str]:
-        """List uploaded data files in the caller's (tenant-scoped) upload dir."""
-        base_dir = upload_dir or UPLOAD_DIR
-        if not os.path.isdir(base_dir):
-            return []
-        skip = {".gitkeep", ".DS_Store"}
-        data_exts = {".csv", ".parquet", ".json", ".xlsx", ".tsv"}
-        files = []
-        for f in sorted(os.listdir(base_dir)):
-            if f in skip:
-                continue
-            if Path(f).suffix.lower() in data_exts:
-                files.append(f)
-        return files
+    def _discover_files(self, tenant: Optional[str] = None) -> List[str]:
+        """List uploaded data files for the caller's tenant via the active
+        StorageBackend (BUG-035) instead of scanning a local directory.
+
+        Tradeoff: StorageBackend.list() only returns the extensions each
+        backend already indexes for reading (.csv/.parquet/.json) — .xlsx and
+        .tsv, which the old local-directory scan also surfaced, are not
+        listed here. Widening that is a shared/storage change, out of scope
+        for this router-level storage-routing fix.
+        """
+        from shared.storage import get_storage_backend
+
+        return [obj.name for obj in get_storage_backend().list(tenant)]
 
     # ── Parsing Helpers ───────────────────────────────────────────────
 
@@ -396,33 +387,38 @@ class PipelineGenerator:
 
     # ── Schema Discovery ──────────────────────────────────────────────
 
-    def get_file_schema(self, file_name: str, upload_dir: Optional[str] = None) -> Dict[str, Any]:
+    def get_file_schema(self, file_name: str, tenant: Optional[str] = None) -> Dict[str, Any]:
         """
         Quick-read column names and types from a file using DuckDB with smart header detection.
         Returns {"columns": [{"name": ..., "type": ...}], "row_count": N, "sample_data": [...]}
 
-        ``upload_dir``: the caller's resolved (tenant-scoped) upload
-        directory. Callers with no request context (CLI, tests) may
-        omit it and fall back to the module-level UPLOAD_DIR.
-        ``file_name`` is user input (pipeline definition / request body),
-        so it's resolved via the same basename + containment check the
-        engine uses for FILE sources (pipeline.engine._resolve_in_dir).
+        BUG-035: resolved through the active StorageBackend (mirrors
+        api_gateway/routers/etl.py) instead of a local-filesystem-only path,
+        so this works under both AURA_STORAGE_BACKEND=local and =s3.
+        ``tenant``: the caller's tenant id — e.g.
+        ``api_gateway.routers.workspaces._request_tenant(request)``. Callers
+        with no request context (CLI, tests) may omit it. ``file_name`` is
+        user input (pipeline definition / request body); safe_object_name()
+        is the path-traversal guard.
         """
-        import duckdb
-
         from shared.data_utils import smart_load_file
+        from shared.duckdb_factory import new_connection
+        from shared.storage import get_storage_backend
+        from shared.storage.base import safe_object_name
 
+        backend = get_storage_backend()
         try:
-            file_path = _resolve_in_dir(upload_dir or UPLOAD_DIR, file_name)
+            safe_name = safe_object_name(file_name)
         except ValueError:
             return {"error": f"Invalid file name: {file_name}"}
-        if not os.path.exists(file_path):
+        if not backend.exists(tenant, safe_name):
             return {"error": f"File not found: {file_name}"}
+        duckdb_uri = backend.duckdb_uri(tenant, safe_name)
 
         table_name = Path(file_name).stem.replace("-", "_").replace(" ", "_")
-        conn = duckdb.connect(":memory:")
+        conn = new_connection()
         try:
-            info = smart_load_file(conn, file_path, table_name, use_llm=True)
+            info = smart_load_file(conn, duckdb_uri, table_name, use_llm=True)
             return {
                 "file_name": file_name,
                 "columns": info["columns"],

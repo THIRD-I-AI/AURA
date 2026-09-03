@@ -138,3 +138,66 @@ def test_etl_preview_and_execute_read_uploaded_file_from_s3(monkeypatch):
     body = r.json()
     assert body["status"] == "success", body
     assert {row["region"]: row["total"] for row in body["preview"]} == {"N": 150, "S": 200}
+
+
+def test_pipeline_execute_reads_uploaded_file_from_s3(monkeypatch):
+    """BUG-035 (pipelines.py's half of the same gap): /pipeline/execute and
+    /pipeline/schema/{file_name} used to read the local tenant upload dir
+    directly, bypassing the S45 StorageBackend abstraction entirely -- so a
+    file uploaded under AURA_STORAGE_BACKEND=s3 was unreachable by either
+    endpoint. Drives both routes end-to-end through the real HTTP app
+    against MinIO, mirroring test_etl_preview_and_execute_read_uploaded_file_
+    from_s3 above."""
+    _env(monkeypatch)
+    import boto3
+
+    try:
+        boto3.client(
+            "s3",
+            endpoint_url=os.environ["AURA_S3_TEST_ENDPOINT"],
+            aws_access_key_id=os.environ["AURA_S3_TEST_KEY"],
+            aws_secret_access_key=os.environ["AURA_S3_TEST_SECRET"],
+        ).create_bucket(Bucket=os.environ.get("AURA_S3_TEST_BUCKET", "aura-test"))
+    except Exception:
+        pass  # already exists or race with another test -- fine
+
+    from shared.storage import get_storage_backend
+    get_storage_backend().write(
+        "default", "pipeline_sales.csv", b"region,revenue\nN,100\nS,200\nN,50\n",
+    )
+
+    from fastapi.testclient import TestClient
+
+    from api_gateway.main import app
+
+    # TestClient WITHOUT `with` -- driving the ASGI lifespan leaves non-daemon
+    # aiosqlite threads that hang pytest on exit (see test_synthetic_api.py).
+    client = TestClient(app)
+
+    r = client.get("/api/v1/pipeline/schema/pipeline_sales.csv")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["status"] == "success", body
+    assert {c["name"] for c in body["schema"]["columns"]} == {"region", "revenue"}
+
+    r = client.post("/api/v1/pipeline/execute", json={
+        "pipeline": {
+            "name": "s3-pipeline-test",
+            "source": {"type": "file", "file_name": "pipeline_sales.csv"},
+            "steps": [{
+                "type": "aggregate",
+                "config": {
+                    "group_by": ["region"],
+                    "aggregations": [{"function": "SUM", "column": "revenue", "alias": "total"}],
+                },
+            }],
+            "sink": {"type": "preview"},
+        },
+        "preview_only": True,
+    })
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["status"] == "success", body
+    run = body["run"]
+    assert run["status"] == "success", run
+    assert {row["region"]: row["total"] for row in run["preview_data"]} == {"N": 150, "S": 200}

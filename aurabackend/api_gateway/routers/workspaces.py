@@ -101,6 +101,35 @@ def workspace_exists(wsid: str) -> bool:
         return any(w["id"] == wsid for w in _workspaces_store)
 
 
+def tenant_from_workspace_id(workspace_id: Optional[str]) -> Optional[str]:
+    """Best-effort recovery of the storage tenant that owns a workspace id,
+    for background/webhook paths (inbound_hooks.py's pipeline trigger) that
+    have no Request to read the verified JWT from directly.
+
+    current_workspace_id() builds an authenticated id as
+    ``"<tenant>::<folder>"`` (a default folder collapses to the bare
+    tenant), so splitting on the first "::" recovers the storage tenant
+    exactly for every authenticated workspace — the same tenant
+    get_storage_backend().write()/exists() were called with at upload time.
+
+    Residual gap (documented, not fixed here): an UNAUTHENTICATED caller's
+    workspace id is the raw client-supplied X-Workspace-Id header value (or
+    "default"), which does NOT identify the storage tenant a file was
+    uploaded under — an unauthenticated upload always lands in the shared
+    "default" storage bucket regardless of that header, because
+    _request_tenant() returns None for it. A pipeline saved under a custom
+    unauthenticated workspace folder therefore recovers the WRONG storage
+    tenant here. This only matters for a deployment running fully open (no
+    JWT middleware) AND using non-default X-Workspace-Id folders AND
+    triggering pipelines via inbound webhooks — narrow enough that fixing it
+    needs its own design pass on workspace_id itself, not a fix folded into
+    BUG-035's router-level storage-backend change.
+    """
+    if not workspace_id:
+        return None
+    return workspace_id.split("::", 1)[0]
+
+
 # ── Tenant upload-directory helpers ─────────────────────────────────
 
 _TENANT_SLUG_RE = re.compile(r"[^A-Za-z0-9_-]")

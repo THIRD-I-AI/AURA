@@ -32,16 +32,6 @@ from pipeline.models import (
 
 logger = logging.getLogger("aura.pipeline.engine")
 
-# Fallback for callers that pass no upload_dir (tests, CLI use). Real
-# HTTP requests get a tenant-scoped dir passed in by the router (see
-# execute()'s upload_dir param) since a module-level constant computed
-# at import time can't see a per-request tenant. Still honours
-# AURA_UPLOADS_ROOT so this fallback at least agrees with the rest of
-# the app (api_gateway/routers/workspaces.py::_UPLOADS_ROOT) about
-# where the shared root is, even though it can't add the tenant segment.
-UPLOAD_DIR = os.getenv("AURA_UPLOADS_ROOT") or os.path.join(
-    os.path.dirname(os.path.dirname(__file__)), "data", "uploads"
-)
 OUTPUT_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "processed")
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
@@ -61,43 +51,7 @@ def _sanitize_id(name: str) -> str:
 # the SQL-injection hardening — so two of the three "quote an identifier"
 # implementations in this repo silently missed that guard while the third had
 # it. Aliasing covers every existing call site without touching them.
-from shared.safe_paths import PathTraversalError, safe_join  # noqa: E402
 from shared.sql_identifiers import quote_identifier as _q  # noqa: E402
-
-
-def _resolve_in_dir(base_dir: str, raw_name: str) -> str:
-    """Resolve a user-supplied name to a path INSIDE base_dir.
-
-    source.file_name and source.connection["database"] come from a
-    pipeline definition (user input, not trusted). Mirrors the
-    containment check in api_gateway/routers/files.py::_safe_upload_path:
-    basename the input (drops any path/traversal component), then verify
-    the join still resolves inside base_dir. Raises ValueError for a
-    degenerate name or an attempted escape.
-    """
-    safe_name = os.path.basename(str(raw_name or "").replace("\\", "/")).strip()
-    if not safe_name or safe_name in (".", ".."):
-        raise ValueError("Invalid source path")
-    # Containment is delegated to shared.safe_paths.safe_join rather than
-    # re-implemented here. Two reasons, and the second is not cosmetic:
-    #
-    #  1. One path guard, not several that drift apart. The same partial sweep
-    #     that left three SQL identifier quoters disagreeing also produced four
-    #     copies of "resolve a user path inside a base dir"; this removes one.
-    #  2. The old check compared os.path.commonpath against abspath(base). That
-    #     is CORRECT, but CodeQL's py/path-injection model does not recognise it
-    #     as a sanitizer, so every caller downstream stayed tainted and the
-    #     header-sidecar writes in shared/data_utils.py were reported as
-    #     high-severity path injection. safe_join uses realpath +
-    #     startswith(base + os.sep), which the standard model does recognise —
-    #     clearing the flow for real instead of suppressing the alert.
-    #
-    # basename() above still runs first, so subdirectory components are dropped
-    # exactly as before — safe_join alone would permit "sub/file.csv".
-    try:
-        return str(safe_join(base_dir, safe_name))
-    except PathTraversalError as exc:
-        raise ValueError("Invalid source path") from exc
 
 
 class PipelineEngine:
@@ -117,27 +71,33 @@ class PipelineEngine:
         preview_only: bool = False,
         preview_limit: int = 50,
         source_progress_cb: Optional[Callable[[int, Optional[int]], Awaitable[None]]] = None,
-        upload_dir: Optional[str] = None,
+        tenant: Optional[str] = None,
     ) -> PipelineRun:
         """
         Run the full pipeline: Source → Process → Sink.
         Returns a PipelineRun with results/metadata.
 
-        ``upload_dir``: the caller's resolved (tenant-scoped) upload
-        directory — e.g. ``api_gateway.routers.workspaces.tenant_upload_dir(request)``.
-        Callers with no request context (CLI, tests) may omit it; FILE
-        and external-file DUCKDB sources then fall back to the
-        module-level UPLOAD_DIR.
+        ``tenant``: the caller's tenant id — e.g.
+        ``api_gateway.routers.workspaces._request_tenant(request)`` — used to
+        scope FILE and external-file DUCKDB sources through the active
+        ``shared.storage`` ``StorageBackend`` (BUG-035; mirrors etl.py's
+        endpoints). ``None`` resolves to the backend's shared "default"
+        tenant bucket, matching an unauthenticated request's upload target.
+        Callers with no request context (CLI, tests) may omit it.
         """
-        import duckdb
+        from shared.duckdb_factory import new_connection
 
         t0 = time.perf_counter()
         run = PipelineRun(pipeline_id=pipeline.id)
-        conn = duckdb.connect(":memory:")
+        # new_connection() (not a bare duckdb.connect) so the active storage
+        # backend gets to configure_duckdb() this connection — S3 mode needs
+        # httpfs installed + its secret registered before a FILE/DUCKDB
+        # source's s3:// URI can be read at all.
+        conn = new_connection()
 
         try:
             # ── 1. LOAD SOURCE ────────────────────────────────────────
-            source_table = await self._load_source(conn, pipeline.source, source_progress_cb, upload_dir)
+            source_table = await self._load_source(conn, pipeline.source, source_progress_cb, tenant)
             logger.info(f"[Pipeline:{pipeline.id}] Source loaded as '{source_table}'")
 
             # Count source rows
@@ -213,7 +173,7 @@ class PipelineEngine:
         conn: Any,
         source: PipelineSource,
         progress_cb: Optional[Callable[[int, Optional[int]], Awaitable[None]]] = None,
-        upload_dir: Optional[str] = None,
+        tenant: Optional[str] = None,
     ) -> str:
         """Load source data into DuckDB and return the table name."""
         # _load_file_source (a network LLM call via smart_load_file) and
@@ -222,30 +182,45 @@ class PipelineEngine:
         # running either inline would freeze every concurrent request for
         # its duration (same reasoning as the conn.execute calls below).
         if source.type == SourceType.FILE:
-            return await asyncio.to_thread(self._load_file_source, conn, source, upload_dir)
+            return await asyncio.to_thread(self._load_file_source, conn, source, tenant)
         elif source.type in (SourceType.POSTGRESQL, SourceType.MYSQL):
             return await self._load_db_source(conn, source)
         elif source.type == SourceType.DUCKDB:
-            return await asyncio.to_thread(self._load_duckdb_source, conn, source, upload_dir)
+            return await asyncio.to_thread(self._load_duckdb_source, conn, source, tenant)
         elif source.type == SourceType.KAFKA:
             return await self._load_kafka_source(conn, source, progress_cb)
         else:
             raise ValueError(f"Unsupported source type: {source.type}")
 
-    def _load_file_source(self, conn: Any, source: PipelineSource, upload_dir: Optional[str] = None) -> str:
-        """Load a CSV/Parquet/JSON file into DuckDB with smart header detection."""
+    def _load_file_source(self, conn: Any, source: PipelineSource, tenant: Optional[str] = None) -> str:
+        """Load a CSV/Parquet/JSON file into DuckDB with smart header detection.
+
+        BUG-035: reads through the active StorageBackend (mirrors
+        api_gateway/routers/etl.py's etl_execute/etl_preview_source) instead
+        of a local-filesystem-only path, so this works under both
+        AURA_STORAGE_BACKEND=local and =s3. safe_object_name() is the
+        path-traversal guard — same containment guarantee _resolve_in_dir
+        used to provide, enforced at the layer the backend itself owns.
+        """
         from shared.data_utils import smart_load_file
+        from shared.storage import get_storage_backend
+        from shared.storage.base import safe_object_name
 
         fname = source.file_name
         if not fname:
             raise ValueError("File source requires file_name")
 
-        file_path = _resolve_in_dir(upload_dir or UPLOAD_DIR, fname)
-        if not os.path.exists(file_path):
+        backend = get_storage_backend()
+        try:
+            safe_name = safe_object_name(fname)
+        except ValueError:
+            raise ValueError(f"Invalid source file name: {fname}")
+        if not backend.exists(tenant, safe_name):
             raise FileNotFoundError(f"Source file not found: {fname}")
+        duckdb_uri = backend.duckdb_uri(tenant, safe_name)
 
         table_name = "source_data"
-        smart_load_file(conn, file_path, table_name, use_llm=True)
+        smart_load_file(conn, duckdb_uri, table_name, use_llm=True)
         return table_name
 
     async def _load_db_source(self, conn: Any, source: PipelineSource) -> str:
@@ -348,7 +323,7 @@ class PipelineEngine:
         logger.info("[Pipeline] Kafka source loaded %d rows from %s", len(rows), cfg.get("topic"))
         return table_name
 
-    def _load_duckdb_source(self, conn: Any, source: PipelineSource, upload_dir: Optional[str] = None) -> str:
+    def _load_duckdb_source(self, conn: Any, source: PipelineSource, tenant: Optional[str] = None) -> str:
         """Load from an existing table/query on the engine's own
         in-memory connection, or ATTACH an external .duckdb file named
         in source.connection["database"] and load from that.
@@ -358,21 +333,50 @@ class PipelineEngine:
         execute() opens, so any real external table raised
         "Catalog Error: Table with name X does not exist!" even though
         the table exists on disk.
+
+        BUG-035: db_path is resolved through the active StorageBackend, same
+        as a FILE source. DuckDB's ATTACH has no equivalent of read_csv_auto
+        reading an s3:// URI directly for a full external database file —
+        that's a materially larger feature (S3 range reads over the whole
+        .duckdb file format) than this router-level storage-routing fix, so
+        it stays deferred under S3 mode; see the "://" check below.
         """
         from shared.sql_identifiers import quote_literal
+        from shared.storage import get_storage_backend
+        from shared.storage.base import safe_object_name
 
         cfg = source.connection or {}
         db_path = cfg.get("database") or cfg.get("path")
 
         if db_path:
             # SECURITY: db_path is user input (pipeline definition).
-            # Same containment as a FILE source — resolved inside the
-            # caller's upload dir, never spliced raw into SQL.
-            attach_path = _resolve_in_dir(upload_dir or UPLOAD_DIR, db_path)
-            if not os.path.exists(attach_path):
+            # safe_object_name is the same containment guarantee
+            # _resolve_in_dir used to provide, enforced at the layer the
+            # backend itself owns — never spliced raw into SQL.
+            backend = get_storage_backend()
+            try:
+                safe_name = safe_object_name(db_path)
+            except ValueError:
+                raise ValueError(f"Invalid DuckDB source file name: {db_path}")
+
+            # duckdb_uri() is pure string formatting for every backend (no
+            # I/O) -- checked BEFORE backend.exists() so the S3 deferral
+            # below is reachable with zero network calls, never a redundant
+            # existence probe against a file DuckDB's ATTACH can't read
+            # anyway. Reordering this would silently reintroduce a network
+            # dependency on the deferred path.
+            uri = backend.duckdb_uri(tenant, safe_name)
+            if "://" in uri:
+                raise ValueError(
+                    "DUCKDB source type with an external database file is not "
+                    "supported under AURA_STORAGE_BACKEND=s3 (deferred — see "
+                    "BUG-035); use a FILE source instead, or run this pipeline "
+                    "under AURA_STORAGE_BACKEND=local."
+                )
+            if not backend.exists(tenant, safe_name):
                 raise FileNotFoundError(f"DuckDB source file not found: {os.path.basename(str(db_path))}")
 
-            conn.execute(f"ATTACH {quote_literal(attach_path)} AS ext_src (READ_ONLY)")
+            conn.execute(f"ATTACH {quote_literal(uri)} AS ext_src (READ_ONLY)")
             if source.query:
                 conn.execute(f"CREATE TABLE source_data AS {source.query}")
             elif source.table:
