@@ -21,10 +21,11 @@ from pydantic import BaseModel, Field
 
 from shared.error_handler import sanitize_error
 from shared.logging_config import get_logger
-from shared.safe_paths import PathTraversalError, safe_join
+from shared.storage import get_storage_backend
+from shared.storage.base import safe_object_name
 from shared.streaming_manager import TOPIC_ETL, streaming_manager
 
-from .workspaces import tenant_upload_dir
+from .workspaces import _request_tenant
 
 logger = get_logger("aura.api_gateway.etl")
 
@@ -259,29 +260,29 @@ async def etl_preview_source(payload: Dict[str, Any], request: Request):
 
     source_file = payload.get("source_file", "")
     limit = payload.get("limit", 20)
-    upload_dir = Path(tenant_upload_dir(request))
+    tenant = _request_tenant(request)
+    backend = get_storage_backend()
 
-    # Sec-2 #36: user-supplied source_file must be sandboxed under upload_dir.
-    # This endpoint was missed when its two siblings below (run-pipeline and
-    # preview-transform) were hardened. A plain `upload_dir / source_file` is
-    # not merely weak here, it is no barrier at all: pathlib lets an ABSOLUTE
-    # right-hand side replace the base outright, so "/etc/passwd" escapes the
-    # tenant sandbox without containing a single "..". The read then flows into
-    # smart_load_file, which also writes a header sidecar next to whatever it
-    # loaded (mkdir(parents=True) + os.replace) — so an unsandboxed path here
-    # is an arbitrary file READ and an arbitrary directory/file WRITE.
+    # Sec-2 #36 / S45: user-supplied source_file must be sandboxed under the
+    # tenant's storage namespace, and read through the active StorageBackend
+    # (not a hardcoded local path) so this works under both
+    # AURA_STORAGE_BACKEND=local and =s3 (see BUG-035). This endpoint was
+    # missed when its two siblings below (run-pipeline and natural-language)
+    # were hardened for path traversal — safe_object_name() rejects the same
+    # class of attack (absolute paths, "..", separators, NUL) that
+    # safe_join() did, at the object-name layer the backend itself enforces.
     try:
-        resolved = safe_join(upload_dir, source_file)
-    except PathTraversalError:
+        safe_name = safe_object_name(source_file)
+    except ValueError:
         raise HTTPException(status_code=400, detail="Invalid source filename")
-    if not resolved.exists():
+    if not backend.exists(tenant, safe_name):
         raise HTTPException(status_code=404, detail=f"Source file '{source_file}' not found in uploads")
-    file_path = str(resolved)
+    duckdb_uri = backend.duckdb_uri(tenant, safe_name)
 
     try:
         con = new_connection()
         table_name = re.sub(r"[^A-Za-z0-9_]", "_", Path(source_file).stem)
-        file_info = smart_load_file(con, file_path, table_name, use_llm=True)
+        file_info = smart_load_file(con, duckdb_uri, table_name, use_llm=True)
 
         columns = file_info["columns"]
         row_count = file_info["row_count"]
@@ -317,23 +318,27 @@ async def etl_execute(pipeline: ETLPipelineRequest, request: Request):
 
     t0 = time.perf_counter()
     base = Path(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-    upload_dir = Path(tenant_upload_dir(request))
     output_dir = base / "data" / "processed"
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Sec-2 #36: user-supplied source_file must be sandboxed under upload_dir.
+    # Sec-2 #36 / S45: user-supplied source_file must be sandboxed under the
+    # tenant's storage namespace, and read through the active StorageBackend
+    # so this works under both AURA_STORAGE_BACKEND=local and =s3 (BUG-035).
+    tenant = _request_tenant(request)
+    backend = get_storage_backend()
     try:
-        file_path = safe_join(upload_dir, pipeline.source_file)
-    except PathTraversalError:
+        safe_name = safe_object_name(pipeline.source_file)
+    except ValueError:
         raise HTTPException(status_code=400, detail="Invalid source filename")
-    if not file_path.exists():
+    if not backend.exists(tenant, safe_name):
         raise HTTPException(status_code=404, detail="Source file not found")
+    duckdb_uri = backend.duckdb_uri(tenant, safe_name)
 
     try:
         con = new_connection()
         table_name = re.sub(r"[^A-Za-z0-9_]", "_", Path(pipeline.source_file).stem)
         await streaming_manager.publish_progress(TOPIC_ETL, run_id, f"Loading source file '{pipeline.source_file}'", 0.2)
-        file_info = smart_load_file(con, str(file_path), table_name, use_llm=True)
+        file_info = smart_load_file(con, duckdb_uri, table_name, use_llm=True)
         source_count = file_info["row_count"]
         source_columns = file_info["columns"]
 
@@ -438,19 +443,23 @@ async def etl_from_natural_language(req: ETLNaturalLanguageRequest, request: Req
     from shared.duckdb_factory import new_connection
     from shared.llm_provider import get_llm
 
-    upload_dir = Path(tenant_upload_dir(request))
-    # Sec-2 #39: source_file is user-supplied; sandbox under upload_dir.
+    # Sec-2 #39 / S45: source_file is user-supplied; sandbox under the
+    # tenant's storage namespace and read through the active StorageBackend
+    # so this works under both AURA_STORAGE_BACKEND=local and =s3 (BUG-035).
+    tenant = _request_tenant(request)
+    backend = get_storage_backend()
     try:
-        file_path = safe_join(upload_dir, req.source_file)
-    except PathTraversalError:
+        safe_name = safe_object_name(req.source_file)
+    except ValueError:
         raise HTTPException(status_code=400, detail="Invalid source filename")
-    if not file_path.exists():
+    if not backend.exists(tenant, safe_name):
         raise HTTPException(status_code=404, detail="Source file not found")
+    duckdb_uri = backend.duckdb_uri(tenant, safe_name)
 
     try:
         con = new_connection()
         table_name = re.sub(r"[^A-Za-z0-9_]", "_", Path(req.source_file).stem)
-        file_info = smart_load_file(con, str(file_path), table_name, use_llm=True)
+        file_info = smart_load_file(con, duckdb_uri, table_name, use_llm=True)
         schema_rows = [(c["name"], c["type"]) for c in file_info["columns"]]
         col_names = [c["name"] for c in file_info["columns"]]
         sample = con.execute(f'SELECT * FROM "{table_name}" LIMIT 5').fetchall()
