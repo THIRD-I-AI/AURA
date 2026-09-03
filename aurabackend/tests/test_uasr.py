@@ -9,6 +9,7 @@ import asyncio
 import math
 import os
 import sys
+import time
 
 import pytest
 
@@ -285,6 +286,64 @@ class TestHealingMetrics:
         alerts = tracker.check_alerts(hu_floor=0.3, resolution_floor=0.5)
         assert len(alerts) >= 1
         assert any(a["metric"] == "hu_score" for a in alerts)
+
+    def _record_one(self, tracker, resolved: bool = True) -> None:
+        tracker.record(RecoveryEvent(
+            source_id="src1",
+            drift_type=DriftType.STATISTICAL,
+            severity=DriftSeverity.MEDIUM,
+            status=RecoveryStatus.DEPLOYED if resolved else RecoveryStatus.FAILED,
+            latency_seconds=1.0,
+        ))
+
+    def test_trend_not_recorded_within_min_interval(self, monkeypatch):
+        # Regression: compute() used to append a trend sample on every call,
+        # so the "declining for 5 readings" alert's real time window shrank
+        # or grew with whatever mix of clients happened to be polling
+        # /uasr/metrics and /uasr/metrics/alerts. Two polls inside the min
+        # interval must extend the trend list only once.
+        tracker = HealingMetricTracker(trend_min_interval_seconds=30.0)
+        self._record_one(tracker)
+
+        fake_now = [1_000_000.0]
+        monkeypatch.setattr(time, "time", lambda: fake_now[0])
+
+        report1 = tracker.compute()
+        assert len(tracker._hu_history) == 1
+        assert report1.trend == tracker._hu_history
+
+        fake_now[0] += 5.0  # well inside the 30s interval
+        report2 = tracker.compute()
+        assert len(tracker._hu_history) == 1  # not appended again
+        assert report2.hu_score == report1.hu_score  # freshly computed regardless
+
+    def test_trend_recorded_after_min_interval_elapses(self, monkeypatch):
+        tracker = HealingMetricTracker(trend_min_interval_seconds=30.0)
+        self._record_one(tracker)
+
+        fake_now = [1_000_000.0]
+        monkeypatch.setattr(time, "time", lambda: fake_now[0])
+
+        tracker.compute()
+        assert len(tracker._hu_history) == 1
+
+        fake_now[0] += 31.0  # past the 30s interval
+        tracker.compute()
+        assert len(tracker._hu_history) == 2
+
+    def test_hu_trend_alert_uses_wall_clock_samples_not_poll_count(self, monkeypatch):
+        # Ten rapid polls within the min interval must not fabricate a
+        # 5-reading decline out of noise from poll frequency alone.
+        tracker = HealingMetricTracker(trend_min_interval_seconds=30.0)
+        fake_now = [1_000_000.0]
+        monkeypatch.setattr(time, "time", lambda: fake_now[0])
+
+        for i in range(10):
+            self._record_one(tracker, resolved=(i % 2 == 0))
+            fake_now[0] += 1.0  # 1s apart -- all inside the 30s interval
+            tracker.check_alerts()
+
+        assert len(tracker._hu_history) <= 1
 
 
 # ────────────────────────────────────────────────────────────────
