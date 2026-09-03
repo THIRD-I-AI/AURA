@@ -43,7 +43,7 @@ def upgrade() -> None:
         sa.Column('workspace_id', sa.String(length=64), nullable=True),
     )
     op.create_index(
-        'ix_query_history_workspace_id',
+        'ix_gateway_query_history_workspace_id',
         'gateway_query_history',
         ['workspace_id'],
         unique=False,
@@ -51,5 +51,5 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.drop_index('ix_query_history_workspace_id', table_name='gateway_query_history')
+    op.drop_index('ix_gateway_query_history_workspace_id', table_name='gateway_query_history')
     op.drop_column('gateway_query_history', 'workspace_id')
