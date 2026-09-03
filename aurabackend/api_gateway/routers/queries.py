@@ -152,7 +152,7 @@ async def close_all_pg_pools() -> None:
 # Re-use the connections store from the connections router
 
 
-async def track_query(prompt: str, sql: str, q_status: str, rows: int, execution_time_ms: float):
+async def track_query(prompt: str, sql: str, q_status: str, rows: int, execution_time_ms: float, workspace_id: str):
     """Record a query execution — called by chat router too.
 
     Sprint P-1: persists to the gateway's SQLAlchemy ``gateway_query_history``
@@ -163,6 +163,7 @@ async def track_query(prompt: str, sql: str, q_status: str, rows: int, execution
     from api_gateway import persistence
     record = {
         "id": f"q_{int(datetime.now().timestamp() * 1000)}",
+        "workspace_id": workspace_id,
         "prompt": prompt,
         "sql": sql,
         "status": q_status,
@@ -468,12 +469,14 @@ async def analyze_results(query: str, results: List[Dict[str, Any]], column_prof
 # ── Query History ────────────────────────────────────────────────────
 
 @router.get("/query-history")
-async def get_query_history(limit: int = 50, status_filter: Optional[str] = None):
-    """Get server-side query history. Sprint P-1: persisted in
-    SQLAlchemy, indexed newest-first on ``created_ts``."""
+async def get_query_history(request: Request, limit: int = 50, status_filter: Optional[str] = None):
+    """Get server-side query history, scoped to the caller's workspace.
+    Sprint P-1: persisted in SQLAlchemy, indexed newest-first on
+    ``created_ts``."""
     from api_gateway import persistence
+    wsid = current_workspace_id(request)
     records = await persistence.list_query_history(
-        limit=limit, status_filter=status_filter,
+        limit=limit, status_filter=status_filter, workspace_id=wsid,
     )
     return {"success": True, "queries": records, "total": len(records)}
 
@@ -895,13 +898,19 @@ async def stop_saved_query_scheduler() -> None:
 
 
 @router.post("/query-history")
-async def save_query_history(payload: Dict[str, Any]):
-    """Save a query execution record. Sprint P-1: backed by
-    ``gateway_query_history`` with the 200-row cap enforced inside
-    the persistence layer."""
+async def save_query_history(payload: Dict[str, Any], request: Request):
+    """Save a query execution record, stamped with the caller's own
+    workspace. Sprint P-1: backed by ``gateway_query_history`` with the
+    200-row cap enforced inside the persistence layer.
+
+    ``workspace_id`` is derived from the verified caller identity, never
+    from the client payload — a client-supplied tenant field would let a
+    caller write an entry into another tenant's history."""
     from api_gateway import persistence
+    wsid = current_workspace_id(request)
     record = {
         "id": payload.get("id", f"q_{int(datetime.now().timestamp() * 1000)}"),
+        "workspace_id": wsid,
         "prompt": payload.get("prompt", ""), "sql": payload.get("sql", ""),
         "status": payload.get("status", "success"), "rows": payload.get("rows", 0),
         "executionTime": payload.get("executionTime", 0),
