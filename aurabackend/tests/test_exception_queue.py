@@ -148,7 +148,7 @@ def test_exception_endpoints_e2e(monkeypatch, tmp_path):
     assert "Ada" not in str(q["pending"])     # egress redaction
 
     fid = q["pending"][0]["finding_id"]
-    auditor = {"sub": "auditor-7", "role": "auditor"}
+    auditor = {"sub": "auditor-7", "role": "auditor", "org_id": "t1"}
     body = m.ExceptionDecisionRequest(rationale="confirmed with vendor", approved=True)
     decision = asyncio.run(m.financial_audit_decide(rh, fid, body, user=auditor))
     assert decision["document_type"] == "HumanOverrideRecord"
@@ -211,6 +211,46 @@ def test_decision_identity_comes_from_token_not_body(monkeypatch, tmp_path):
 
     decision = asyncio.run(m.financial_audit_decide(
         rh, fid, m.ExceptionDecisionRequest(rationale="vendor confirmed", approved=True),
-        user={"sub": "auditor-jwt-9", "role": "auditor"}))
+        user={"sub": "auditor-jwt-9", "role": "auditor", "org_id": "t1"}))
     assert decision["human_auditor_id"] == "auditor-jwt-9"
     assert asyncio.run(m.financial_audit_verify(decision["record_hash"]))["verified"] is True
+
+
+# ── BUG-040: cross-tenant HITL exception decision ─────────────────────
+
+
+def test_record_decision_rejects_cross_tenant_auditor(monkeypatch, tmp_path):
+    _, _, report = _signed_report(monkeypatch, tmp_path)
+    fid = report["findings"][0]["finding_id"]
+    with pytest.raises(LookupError):
+        eq.record_decision(report["record_hash"], fid, "auditor-from-other-org",
+                           "trying to decide someone else's finding", approved=True,
+                           tenant_id="a-different-tenant")
+    # Same-tenant decision still succeeds — the fix does not break legitimate use.
+    eq.record_decision(report["record_hash"], fid, "auditor-7",
+                       "legit same-tenant decision", approved=True, tenant_id="t1")
+
+
+def test_exception_decide_rejects_cross_tenant_auditor_e2e(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_ARTIFACT_DIR", str(tmp_path))
+    _store(monkeypatch)
+    from fastapi import HTTPException
+
+    import counterfactual_service.main as m
+
+    report = asyncio.run(m.financial_audit(m.FinancialAuditRequest(
+        tenant_id="t1",
+        ledger=[{"internal_id": "L1", "account_code": "4000", "amount": 250000.0}],
+        purchase_orders=[{"po_number": "PO-1"}],
+        invoices=[{"invoice_number": "INV-9", "po_number": "PO-MISSING", "employee_name": "Ada"}],
+        journal_entries=[],
+    ), user={"org_id": "t1", "sub": "t1"}))
+    rh = report["record_hash"]
+    q = asyncio.run(m.financial_audit_exceptions(rh))
+    fid = q["pending"][0]["finding_id"]
+
+    cross_tenant_auditor = {"sub": "auditor-from-t2", "role": "auditor", "org_id": "t2"}
+    body = m.ExceptionDecisionRequest(rationale="not my report", approved=True)
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(m.financial_audit_decide(rh, fid, body, user=cross_tenant_auditor))
+    assert exc_info.value.status_code == 404
