@@ -30,8 +30,9 @@ from shared.llm_provider import get_llm
 from shared.logging_config import get_logger
 from shared.observability import CHAT_REQUESTS
 from shared.sql_identifiers import quote_identifier
+from shared.storage import get_storage_backend
 
-from .workspaces import _request_tenant, current_workspace_id, tenant_upload_dir
+from .workspaces import _request_tenant, current_workspace_id
 
 # Commander Core (Subsystem A): the streaming POST /chat/stream loop, gated by
 # settings.commander_enabled. Built once; the registry is stateless.
@@ -413,15 +414,14 @@ async def chat_endpoint(request: ChatRequest, http_request: Request) -> ChatResp
             from api_gateway.persistence import save_pipeline
             from api_gateway.routers.pipelines import _get_generator
             gen = _get_generator()
-            upload_dir = tenant_upload_dir(http_request)
-            data_exts = {".csv", ".parquet", ".json", ".xlsx", ".tsv"}
-            available_files = (
-                [f for f in sorted(os.listdir(upload_dir))
-                 if os.path.splitext(f)[1].lower() in data_exts]
-                if os.path.isdir(upload_dir) else []
-            )
+            # BUG-035: list the caller's uploaded files through the active
+            # StorageBackend rather than scanning a local directory, so this
+            # works under both AURA_STORAGE_BACKEND=local and =s3 — mirrors
+            # api_gateway/routers/pipelines.py::pipeline_generate.
+            tenant = _request_tenant(http_request)
+            available_files = [obj.name for obj in get_storage_backend().list(tenant)]
             pipeline = await gen.generate(
-                prompt=message, available_files=available_files, schema_context=None,
+                prompt=message, available_files=available_files, schema_context=None, tenant=tenant,
             )
             saved = await save_pipeline({
                 "id": pipeline.id,

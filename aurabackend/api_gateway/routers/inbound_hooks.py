@@ -172,9 +172,11 @@ async def fire_hook(slug: str, request: Request) -> Dict[str, Any]:
 # ── Trigger helpers ────────────────────────────────────────────────
 
 async def _fire_pipeline(pipeline_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
-    from api_gateway.persistence import get_pipeline
+    from api_gateway.persistence import get_pipeline, get_pipeline_workspace_id
     from pipeline.engine import PipelineEngine
     from pipeline.models import Pipeline as PipelineModel
+
+    from .workspaces import tenant_from_workspace_id
 
     # Trusted internal path (the registered hook is the auth boundary), so the
     # pipeline is fetched unscoped from the durable store and rebuilt (S50).
@@ -183,6 +185,12 @@ async def _fire_pipeline(pipeline_id: str, payload: Dict[str, Any]) -> Dict[str,
         raise HTTPException(status_code=404, detail=f"Pipeline '{pipeline_id}' not found")
     pipeline: PipelineModel = PipelineModel(**definition)
     engine = PipelineEngine()
+
+    # BUG-035: no Request here to read a verified tenant from — recover it
+    # from the pipeline's owning workspace instead (documented residual gap:
+    # api_gateway.routers.workspaces.tenant_from_workspace_id).
+    workspace_id = await get_pipeline_workspace_id(pipeline_id)
+    tenant = tenant_from_workspace_id(workspace_id)
 
     run_id = uuid.uuid4().hex
     preview_only = bool(payload.get("preview_only", False))
@@ -206,6 +214,7 @@ async def _fire_pipeline(pipeline_id: str, payload: Dict[str, Any]) -> Dict[str,
 
             run = await engine.execute(
                 pipeline, preview_only=preview_only, source_progress_cb=_kafka_cb,
+                tenant=tenant,
             )
             if run.status.value == "failed":
                 await streaming_manager.publish_error(

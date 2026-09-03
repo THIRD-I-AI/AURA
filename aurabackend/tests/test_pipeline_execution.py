@@ -3,24 +3,28 @@ Pipeline Execution Tests
 ========================
 Hermetic, no-network tests that a pipeline run actually reads data.
 
-Two live bugs made every pipeline run return status "failed" /
+Three live bugs made every pipeline run return status "failed" /
 rows_read 0 with HTTP 200:
 
 1. FILE sources: the engine resolved uploads against a hardcoded,
    import-time constant that ignored AURA_UPLOADS_ROOT and the
-   per-tenant upload subfolder the rest of the app writes to
-   (api_gateway/routers/workspaces.py::tenant_upload_dir). The engine
-   must be told the caller's resolved upload dir per-request.
+   per-tenant upload subfolder the rest of the app writes to.
 2. DUCKDB sources: the engine only ever opened an empty ":memory:"
    connection and never ATTACHed the external .duckdb file named in
    source.connection["database"], so any table reference raised
    "Catalog Error: Table with name X does not exist!" even though the
    table exists on disk.
+3. (BUG-035) Both source types read the local filesystem directly
+   instead of going through the active shared.storage StorageBackend,
+   so a file uploaded under AURA_STORAGE_BACKEND=s3 was unreachable —
+   see aurabackend/tests/test_pipeline_storage_backend.py and
+   test_storage_s3_duckdb.py for the router-level, real-S3-backed proof.
 
-Both tests below exercise PipelineEngine.execute(..., upload_dir=...) —
-the fixed public contract the router (pipelines.py) calls through — and
-must fail against the pre-fix engine.py (which has no upload_dir
-parameter at all).
+The tests below exercise PipelineEngine.execute(..., tenant=...) — the
+StorageBackend-routed public contract the router (pipelines.py) calls
+through — writing their fixture files via get_storage_backend().write()
+under an isolated AURA_UPLOADS_ROOT (local mode), exactly as a real
+upload would.
 """
 from __future__ import annotations
 
@@ -41,14 +45,26 @@ from pipeline.models import (
 )
 
 
+def _isolate_storage(tmp_path, monkeypatch):
+    """Point the storage backend at an isolated, per-test root (local mode)."""
+    monkeypatch.setenv("AURA_UPLOADS_ROOT", str(tmp_path))
+    monkeypatch.delenv("AURA_STORAGE_BACKEND", raising=False)
+    from shared.storage import reset_storage_backend
+    reset_storage_backend()
+
+
 @pytest.mark.asyncio
-async def test_file_source_reads_real_csv_through_tenant_upload_dir(tmp_path):
-    """A FILE source resolves through a tenant-scoped upload dir (not a
-    flat/hardcoded one) and reports the real row count + values."""
-    tenant_dir = tmp_path / "uploads" / "tenant_abc123"
-    tenant_dir.mkdir(parents=True)
-    csv_path = tenant_dir / "customers.csv"
-    csv_path.write_text("id,name,revenue\n1,Alice,100\n2,Bob,250\n3,Carol,75\n", encoding="utf-8")
+async def test_file_source_reads_real_csv_through_storage_backend(tmp_path, monkeypatch):
+    """A FILE source resolves through the active StorageBackend (BUG-035),
+    scoped by tenant rather than a flat/hardcoded local path, and reports
+    the real row count + values."""
+    _isolate_storage(tmp_path, monkeypatch)
+    from shared.storage import get_storage_backend
+    tenant = "tenant_abc123"
+    get_storage_backend().write(
+        tenant, "customers.csv",
+        b"id,name,revenue\n1,Alice,100\n2,Bob,250\n3,Carol,75\n",
+    )
 
     pipeline = Pipeline(
         name="file-source-test",
@@ -57,7 +73,7 @@ async def test_file_source_reads_real_csv_through_tenant_upload_dir(tmp_path):
     )
 
     engine = PipelineEngine()
-    run = await engine.execute(pipeline, preview_only=True, upload_dir=str(tenant_dir))
+    run = await engine.execute(pipeline, preview_only=True, tenant=tenant)
 
     assert run.status == PipelineStatus.SUCCESS, run.error
     assert run.rows_read == 3
@@ -67,20 +83,25 @@ async def test_file_source_reads_real_csv_through_tenant_upload_dir(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_duckdb_source_reads_real_external_db_table(tmp_path):
+async def test_duckdb_source_reads_real_external_db_table(tmp_path, monkeypatch):
     """A DUCKDB source with connection.database names an external .duckdb
-    file; the engine must ATTACH it (not just query an empty :memory:)."""
-    tenant_dir = tmp_path / "uploads" / "tenant_abc123"
-    tenant_dir.mkdir(parents=True)
-    db_path = tenant_dir / "warehouse.duckdb"
+    file; the engine must ATTACH it (not just query an empty :memory:), read
+    through the active StorageBackend (BUG-035)."""
+    _isolate_storage(tmp_path, monkeypatch)
+    from shared.storage import get_storage_backend
+    tenant = "tenant_abc123"
 
-    con = duckdb.connect(str(db_path))
+    # Build the .duckdb file on a scratch path, then write its bytes through
+    # the backend exactly as a real upload would.
+    scratch_db = tmp_path / "scratch_warehouse.duckdb"
+    con = duckdb.connect(str(scratch_db))
     con.execute("CREATE TABLE regions (id INTEGER, name VARCHAR, population BIGINT)")
     con.executemany(
         "INSERT INTO regions VALUES (?, ?, ?)",
         [(1, "North", 1000), (2, "South", 2000), (3, "East", 1500)],
     )
     con.close()
+    get_storage_backend().write(tenant, "warehouse.duckdb", scratch_db.read_bytes())
 
     pipeline = Pipeline(
         name="duckdb-source-test",
@@ -93,7 +114,7 @@ async def test_duckdb_source_reads_real_external_db_table(tmp_path):
     )
 
     engine = PipelineEngine()
-    run = await engine.execute(pipeline, preview_only=True, upload_dir=str(tenant_dir))
+    run = await engine.execute(pipeline, preview_only=True, tenant=tenant)
 
     assert run.status == PipelineStatus.SUCCESS, run.error
     assert run.rows_read == 3
@@ -102,17 +123,76 @@ async def test_duckdb_source_reads_real_external_db_table(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_union_step_fails_run_instead_of_silently_skipping(tmp_path):
+async def test_duckdb_source_missing_file_reports_failed_run(tmp_path, monkeypatch):
+    """A DUCKDB source naming a .duckdb file that was never uploaded must
+    fail the run with a clear FileNotFoundError message (local mode), not
+    raise an unhandled exception."""
+    _isolate_storage(tmp_path, monkeypatch)
+
+    pipeline = Pipeline(
+        name="duckdb-source-missing-test",
+        source=PipelineSource(
+            type=SourceType.DUCKDB,
+            table="regions",
+            connection={"database": "does_not_exist.duckdb"},
+        ),
+        sink=PipelineSink(type=SinkType.PREVIEW),
+    )
+
+    engine = PipelineEngine()
+    run = await engine.execute(pipeline, preview_only=True, tenant="tenant_abc123")
+
+    assert run.status == PipelineStatus.FAILED
+    assert "not found" in run.error.lower()
+
+
+def test_duckdb_source_s3_deferral_raises_before_any_network_call(monkeypatch):
+    """BUG-035 fix #2: the DUCKDB source's db_path branch must check the
+    resolved URI for '://' (pure string formatting, no I/O for any backend)
+    BEFORE calling backend.exists() — otherwise the S3-deferral path would
+    make a network call it has no need to make. Point the S3 endpoint at a
+    port nothing listens on: if the ordering regressed and exists() ran
+    first, this would raise a connection error instead of the intended
+    ValueError, failing the test either way."""
+    monkeypatch.setenv("AURA_STORAGE_BACKEND", "s3")
+    monkeypatch.setenv("AURA_S3_BUCKET", "aura-test")
+    monkeypatch.setenv("AURA_S3_ENDPOINT_URL", "http://127.0.0.1:1")
+    monkeypatch.setenv("AURA_S3_ACCESS_KEY_ID", "test")
+    monkeypatch.setenv("AURA_S3_SECRET_ACCESS_KEY", "test")
+    from shared.config import reload_settings
+    reload_settings()
+    from shared.storage import reset_storage_backend
+    reset_storage_backend()
+
+    from pipeline.models import PipelineSource
+
+    source = PipelineSource(
+        type=SourceType.DUCKDB,
+        table="regions",
+        connection={"database": "warehouse.duckdb"},
+    )
+
+    engine = PipelineEngine()
+    con = duckdb.connect(":memory:")
+    try:
+        with pytest.raises(ValueError, match="deferred"):
+            engine._load_duckdb_source(con, source, tenant="acme")
+    finally:
+        con.close()
+        reset_storage_backend()
+
+
+@pytest.mark.asyncio
+async def test_union_step_fails_run_instead_of_silently_skipping(tmp_path, monkeypatch):
     """StepType.UNION has no SQL-generation branch in _step_to_sql. Before
     this fix it fell through to `return None`, which the caller treats as
     "skip" — the run reported SUCCESS with the union step silently dropped,
     a wrong result with no error (BUG-010 item 1). It must now fail the run
     with a clear message instead."""
-    tenant_dir = tmp_path / "uploads" / "tenant_abc123"
-    tenant_dir.mkdir(parents=True)
-    (tenant_dir / "customers.csv").write_text(
-        "id,name\n1,Alice\n2,Bob\n", encoding="utf-8"
-    )
+    _isolate_storage(tmp_path, monkeypatch)
+    from shared.storage import get_storage_backend
+    tenant = "tenant_abc123"
+    get_storage_backend().write(tenant, "customers.csv", b"id,name\n1,Alice\n2,Bob\n")
 
     pipeline = Pipeline(
         name="union-step-test",
@@ -122,7 +202,7 @@ async def test_union_step_fails_run_instead_of_silently_skipping(tmp_path):
     )
 
     engine = PipelineEngine()
-    run = await engine.execute(pipeline, preview_only=True, upload_dir=str(tenant_dir))
+    run = await engine.execute(pipeline, preview_only=True, tenant=tenant)
 
     assert run.status == PipelineStatus.FAILED
     assert "union" in run.error.lower()
@@ -134,17 +214,19 @@ def _generator() -> PipelineGenerator:
     return PipelineGenerator.__new__(PipelineGenerator)
 
 
-def test_get_file_schema_reads_real_csv_through_tenant_upload_dir(tmp_path):
-    """generator.get_file_schema() must resolve through the SAME
-    tenant-scoped upload dir the engine uses (not a hardcoded/flat
-    UPLOAD_DIR) and report the file's real columns."""
-    tenant_dir = tmp_path / "uploads" / "tenant_abc123"
-    tenant_dir.mkdir(parents=True)
-    (tenant_dir / "customers.csv").write_text(
-        "id,name,revenue\n1,Alice,100\n2,Bob,250\n3,Carol,75\n", encoding="utf-8"
+def test_get_file_schema_reads_real_csv_through_storage_backend(tmp_path, monkeypatch):
+    """generator.get_file_schema() must resolve through the active
+    StorageBackend (BUG-035), scoped by tenant rather than a hardcoded/flat
+    local directory, and report the file's real columns."""
+    _isolate_storage(tmp_path, monkeypatch)
+    from shared.storage import get_storage_backend
+    tenant = "tenant_abc123"
+    get_storage_backend().write(
+        tenant, "customers.csv",
+        b"id,name,revenue\n1,Alice,100\n2,Bob,250\n3,Carol,75\n",
     )
 
-    schema = _generator().get_file_schema("customers.csv", upload_dir=str(tenant_dir))
+    schema = _generator().get_file_schema("customers.csv", tenant=tenant)
 
     assert "error" not in schema, schema
     assert [c["name"] for c in schema["columns"]] == ["id", "name", "revenue"]
@@ -211,11 +293,12 @@ async def test_pg_sink_quotes_table_name_containing_double_quote(monkeypatch):
     assert not any(f"INSERT INTO {evil_table}" in sql for sql in executed_sql)
 
 
-def test_get_file_schema_rejects_path_traversal(tmp_path):
-    """A traversal file_name must never escape the tenant upload dir to
-    read an unrelated file elsewhere on disk (e.g. a signing key)."""
-    tenant_dir = tmp_path / "uploads" / "tenant_abc123"
-    tenant_dir.mkdir(parents=True)
+def test_get_file_schema_rejects_path_traversal(tmp_path, monkeypatch):
+    """A traversal file_name must never escape the tenant's storage
+    namespace to read an unrelated file elsewhere on disk (e.g. a signing
+    key). safe_object_name() rejects any separator outright (BUG-035),
+    before the name ever reaches a path join."""
+    _isolate_storage(tmp_path, monkeypatch)
     secret_dir = tmp_path / "keys"
     secret_dir.mkdir()
     (secret_dir / "signing_ed25519.pem").write_text(
@@ -223,6 +306,6 @@ def test_get_file_schema_rejects_path_traversal(tmp_path):
     )
 
     gen = _generator()
-    for evil in ("../keys/signing_ed25519.pem", "../../etc/passwd"):
-        schema = gen.get_file_schema(evil, upload_dir=str(tenant_dir))
+    for evil in ("../keys/signing_ed25519.pem", "../../etc/passwd", "/etc/passwd"):
+        schema = gen.get_file_schema(evil, tenant="tenant_abc123")
         assert "error" in schema, f"traversal not rejected for {evil!r}: {schema}"

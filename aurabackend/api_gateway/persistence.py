@@ -1422,6 +1422,24 @@ async def get_pipeline(
             return None
 
 
+async def get_pipeline_workspace_id(pipeline_id: str) -> Optional[str]:
+    """Return the workspace_id a pipeline belongs to, without loading (and
+    JSON-parsing) its full definition.
+
+    BUG-035: the webhook-triggered execution path (inbound_hooks.py's
+    _fire_pipeline) has no Request to read the caller's verified tenant
+    from — get_pipeline() itself returns the pipeline's raw definition_json
+    (the Pipeline model dump), which carries no workspace_id field. This is
+    the additive lookup that lets that path recover the owning workspace id
+    and derive a storage tenant from it via
+    api_gateway.routers.workspaces.tenant_from_workspace_id.
+    """
+    async with session_scope() as s:
+        return (await s.execute(
+            select(PipelineRow.workspace_id).where(PipelineRow.id == pipeline_id)
+        )).scalar_one_or_none()
+
+
 async def delete_pipeline(pipeline_id: str, workspace_id: str) -> bool:
     """Delete a pipeline within its workspace. False if not found there."""
     async with session_scope() as s:

@@ -23,9 +23,10 @@ from api_gateway.persistence import (
 from shared.error_handler import sanitize_error
 from shared.exceptions import ServiceUnavailableError
 from shared.logging_config import get_logger
+from shared.storage import get_storage_backend
 from shared.streaming_manager import TOPIC_PIPELINE, StreamEvent, streaming_manager
 
-from .workspaces import current_workspace_id, tenant_upload_dir
+from .workspaces import _request_tenant, current_workspace_id
 
 logger = get_logger("aura.api_gateway.pipelines")
 
@@ -108,12 +109,13 @@ async def pipeline_generate(req: PipelineGenerateRequest, request: Request):
     gen = _get_generator()
 
     schema_context = None
-    available_files = None
-    upload_dir = tenant_upload_dir(request)
-    skip = {".gitkeep", ".DS_Store"}
-    data_exts = {".csv", ".parquet", ".json", ".xlsx", ".tsv"}
-    if os.path.isdir(upload_dir):
-        available_files = [f for f in sorted(os.listdir(upload_dir)) if f not in skip and os.path.splitext(f)[1].lower() in data_exts]
+    tenant = _request_tenant(request)
+    # BUG-035: list the caller's uploaded files through the active
+    # StorageBackend rather than scanning a local directory, so this works
+    # under both AURA_STORAGE_BACKEND=local and =s3. Tradeoff: the backend
+    # only lists the extensions it already indexes for reading
+    # (.csv/.parquet/.json) — .xlsx/.tsv are no longer discovered here.
+    available_files = [obj.name for obj in get_storage_backend().list(tenant)]
 
     if req.include_schema:
         schema_context = {}
@@ -122,13 +124,13 @@ async def pipeline_generate(req: PipelineGenerateRequest, request: Request):
             target_file = available_files[0]
         if target_file:
             try:
-                schema_context[target_file] = gen.get_file_schema(target_file, upload_dir)
+                schema_context[target_file] = gen.get_file_schema(target_file, tenant)
             except Exception as e:
                 logger.warning("[Pipeline] Schema read failed for %s: %s", target_file, e)
 
     try:
         pipeline = await gen.generate(
-            prompt=req.prompt, available_files=available_files, schema_context=schema_context, upload_dir=upload_dir,
+            prompt=req.prompt, available_files=available_files, schema_context=schema_context, tenant=tenant,
         )
         if req.source_file and pipeline.source.type.value == "file":
             pipeline.source.file_name = req.source_file
@@ -150,7 +152,7 @@ async def pipeline_execute(req: PipelineExecuteRequest, request: Request):
         raise HTTPException(status_code=400, detail="Invalid pipeline payload")
     try:
         run = await _pipeline_engine.execute(
-            pipeline, preview_only=req.preview_only, upload_dir=tenant_upload_dir(request),
+            pipeline, preview_only=req.preview_only, tenant=_request_tenant(request),
         )
         return {"status": "success", "run": run.model_dump()}
     except Exception as e:
@@ -173,7 +175,7 @@ async def pipeline_execute_async(req: PipelineExecuteRequest, request: Request):
     # Resolved eagerly, in the request handler — the background task
     # below outlives the request and must not depend on request.state
     # still being valid by the time it runs.
-    upload_dir = tenant_upload_dir(request)
+    tenant = _request_tenant(request)
     run_id = uuid.uuid4().hex
 
     async def _run() -> None:
@@ -234,7 +236,7 @@ async def pipeline_execute_async(req: PipelineExecuteRequest, request: Request):
             run = await _pipeline_engine.execute(
                 pipeline, preview_only=req.preview_only,
                 source_progress_cb=_kafka_cb,
-                upload_dir=upload_dir,
+                tenant=tenant,
             )
 
             await streaming_manager.publish_progress(
@@ -322,7 +324,7 @@ async def pipeline_file_schema(file_name: str, request: Request):
     """Get column schema for a file."""
     gen = _get_generator()
     try:
-        schema = gen.get_file_schema(file_name, tenant_upload_dir(request))
+        schema = gen.get_file_schema(file_name, _request_tenant(request))
         return {"status": "success", "schema": schema}
     except Exception as e:
         return {"status": "error", "error": sanitize_error(e, logger=logger, context="pipeline file schema")}

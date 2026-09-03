@@ -243,9 +243,9 @@ async def upload_universal(
             from pipeline.generator import PipelineGenerator
             from shared.tasks import fire_and_forget
 
-            async def _record_upload_profile(upload_dir: str) -> None:
+            async def _record_upload_profile(tenant: Optional[str]) -> None:
                 gen = PipelineGenerator.__new__(PipelineGenerator)
-                schema = await asyncio.to_thread(gen.get_file_schema, safe_name, upload_dir)
+                schema = await asyncio.to_thread(gen.get_file_schema, safe_name, tenant)
                 if "error" in schema:
                     logger.warning("dataset profile skipped for %s: %s", safe_name, schema["error"])
                     return
@@ -259,8 +259,12 @@ async def upload_universal(
                     )
                     break
 
+            # BUG-035: get_file_schema() now reads through the active
+            # StorageBackend, keyed by tenant — not a local upload_dir path —
+            # so this must pass the bare tenant (same one write() above used),
+            # not tenant_upload_dir(request)'s local-filesystem directory.
             fire_and_forget(
-                _record_upload_profile(tenant_upload_dir(request)),
+                _record_upload_profile(_request_tenant(request)),
                 name=f"dataset-profile-{upload_id}",
             )
         except Exception as _profile_exc:
