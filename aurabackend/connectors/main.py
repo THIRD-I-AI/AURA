@@ -335,6 +335,22 @@ async def execute_query(connection_id: str, request: QueryRequest):
     # Look up stored connection config, or use env defaults
     conn_cfg = _connection_store.get(connection_id)
     if not conn_cfg:
+        # _connection_store is never written anywhere in this codebase (no
+        # registration endpoint exists yet), so any connection_id other than
+        # the documented "default" sentinel silently fell through to the
+        # single global env-configured DB below -- a caller asking for a
+        # specific connection_id got a different one, with no error
+        # (BUG-029 item 1). Fail loudly for a real (unregistered) id instead
+        # of misrouting; "default" keeps its existing env-fallback behavior.
+        if connection_id != "default":
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=(
+                    f"Connection '{connection_id}' is not registered. "
+                    "Per-connection routing is not yet implemented; only the "
+                    "'default' connection_id falls back to the env-configured DB."
+                ),
+            )
         # Try environment-variable based defaults
         db_host = os.getenv("DB_HOST", "")
         db_port = os.getenv("DB_PORT", "5432")

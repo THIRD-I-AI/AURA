@@ -292,7 +292,6 @@ const PipelinesPanel: React.FC<PipelinesPanelProps> = () => {
           .map((f: any) => f.name || f.filename)
           .filter((n: string) => n && DATA_EXTENSIONS.some(ext => n.toLowerCase().endsWith(ext)));
         setSourceFiles(names);
-        console.log('[ETL] Source files loaded:', names);
       }
     } catch (err) {
       console.error('[ETL] Failed to fetch source files:', err);
@@ -369,11 +368,8 @@ const PipelinesPanel: React.FC<PipelinesPanelProps> = () => {
       transforms,
       preview_only: previewOnly,
     };
-    console.log('[ETL] Executing pipeline:', JSON.stringify(payload, null, 2));
-
     try {
       const res = await etlService.execute(payload);
-      console.log('[ETL] Pipeline response:', res);
       if (res.status === 'error') {
         const errMsg = res.error || 'Pipeline execution failed';
         console.error('[ETL] Pipeline error:', errMsg);
@@ -404,10 +400,8 @@ const PipelinesPanel: React.FC<PipelinesPanelProps> = () => {
     setAiError(null);
     setAiPipeline(null);
     setAiRun(null);
-    console.log('[AI Pipeline] Generating from prompt:', aiPrompt.trim());
     try {
       const resp = await pipelineService.generate(aiPrompt.trim(), selectedSource || undefined);
-      console.log('[AI Pipeline] Generate response:', resp);
       if (resp.status === 'success' && resp.pipeline) {
         setAiPipeline(resp.pipeline);
       } else {
@@ -427,7 +421,6 @@ const PipelinesPanel: React.FC<PipelinesPanelProps> = () => {
     setAiError(null);
     setAiRun(null);
     setAiRunId(null);
-    console.log('[AI Pipeline] Executing live (preview=%s):', previewOnly, aiPipeline.name);
 
     // Apply Kafka source override if enabled
     let pipelineToRun = aiPipeline;
