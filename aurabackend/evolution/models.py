@@ -42,6 +42,7 @@ class ExecutionPattern(Base):
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True,
                                      default=lambda: uuid.uuid4().hex[:16])
+    workspace_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
     pattern_type: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
     intent_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     intent_summary: Mapped[str] = mapped_column(Text, nullable=False)
@@ -61,6 +62,7 @@ class ImprovementProposal(Base):
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True,
                                      default=lambda: uuid.uuid4().hex[:16])
+    workspace_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
     target: Mapped[str] = mapped_column(String(128), nullable=False)  # e.g. "PipelineAgent"
     improvement_type: Mapped[str] = mapped_column(String(64), nullable=False)
     description: Mapped[str] = mapped_column(Text, nullable=False)
@@ -81,6 +83,7 @@ class SystemEvolutionLog(Base):
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True,
                                      default=lambda: uuid.uuid4().hex[:16])
+    workspace_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
     cycle_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     event_type: Mapped[str] = mapped_column(String(64), nullable=False)
     component: Mapped[str] = mapped_column(String(128), nullable=False)
@@ -97,6 +100,7 @@ class AgentFeedback(Base):
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True,
                                      default=lambda: uuid.uuid4().hex[:16])
+    workspace_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
     session_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     agent_name: Mapped[str] = mapped_column(String(128), nullable=False)
     task_type: Mapped[str] = mapped_column(String(64), nullable=False)

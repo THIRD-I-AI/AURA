@@ -42,6 +42,7 @@ class PatternLibrary:
         intent: str,
         pattern_data: Dict[str, Any],
         duration_ms: float = 0.0,
+        workspace_id: Optional[str] = None,
     ) -> ExecutionPattern:
         """Record a successful execution as a reusable pattern."""
         ih = _intent_hash(intent)
@@ -49,6 +50,7 @@ class PatternLibrary:
             select(ExecutionPattern)
             .where(ExecutionPattern.intent_hash == ih)
             .where(ExecutionPattern.pattern_type == pattern_type.value)
+            .where(ExecutionPattern.workspace_id == workspace_id)
         )
         existing = result.scalar_one_or_none()
 
@@ -65,6 +67,7 @@ class PatternLibrary:
             return existing
         else:
             pattern = ExecutionPattern(
+                workspace_id=workspace_id,
                 pattern_type=pattern_type.value,
                 intent_hash=ih,
                 intent_summary=intent[:500],
@@ -81,6 +84,7 @@ class PatternLibrary:
         self,
         pattern_type: PatternType,
         intent: str,
+        workspace_id: Optional[str] = None,
     ) -> None:
         """Increment failure count for a pattern."""
         ih = _intent_hash(intent)
@@ -88,6 +92,7 @@ class PatternLibrary:
             update(ExecutionPattern)
             .where(ExecutionPattern.intent_hash == ih)
             .where(ExecutionPattern.pattern_type == pattern_type.value)
+            .where(ExecutionPattern.workspace_id == workspace_id)
             .values(failure_count=ExecutionPattern.failure_count + 1)
         )
         await self._db.commit()
@@ -98,15 +103,21 @@ class PatternLibrary:
         pattern_type: Optional[PatternType] = None,
         min_success_rate: float = 0.6,
         limit: int = 5,
+        workspace_id: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """
-        Find the best matching patterns for a given intent.
+        Find the best matching patterns for a given intent, scoped to the
+        caller's tenant.
         Returns patterns sorted by success_rate × usage_frequency.
         """
         ih = _intent_hash(intent)
 
         # Exact match first
-        stmt = select(ExecutionPattern).where(ExecutionPattern.intent_hash == ih)
+        stmt = (
+            select(ExecutionPattern)
+            .where(ExecutionPattern.intent_hash == ih)
+            .where(ExecutionPattern.workspace_id == workspace_id)
+        )
         if pattern_type:
             stmt = stmt.where(ExecutionPattern.pattern_type == pattern_type.value)
         result = await self._db.execute(stmt)
@@ -114,9 +125,12 @@ class PatternLibrary:
 
         # Fallback: top patterns by type sorted by success rate
         if not exact:
-            stmt = select(ExecutionPattern).order_by(
-                ExecutionPattern.success_count.desc()
-            ).limit(limit * 2)
+            stmt = (
+                select(ExecutionPattern)
+                .where(ExecutionPattern.workspace_id == workspace_id)
+                .order_by(ExecutionPattern.success_count.desc())
+                .limit(limit * 2)
+            )
             if pattern_type:
                 stmt = stmt.where(ExecutionPattern.pattern_type == pattern_type.value)
             result = await self._db.execute(stmt)
@@ -147,11 +161,15 @@ class PatternLibrary:
         self,
         pattern_type: Optional[PatternType] = None,
         limit: int = 20,
+        workspace_id: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
-        """Return the top performing patterns overall."""
-        stmt = select(ExecutionPattern).order_by(
-            ExecutionPattern.success_count.desc()
-        ).limit(limit)
+        """Return the top performing patterns overall, scoped to the caller's tenant."""
+        stmt = (
+            select(ExecutionPattern)
+            .where(ExecutionPattern.workspace_id == workspace_id)
+            .order_by(ExecutionPattern.success_count.desc())
+            .limit(limit)
+        )
         if pattern_type:
             stmt = stmt.where(ExecutionPattern.pattern_type == pattern_type.value)
         result = await self._db.execute(stmt)

@@ -361,10 +361,18 @@ class EvolutionEngine:
         duration_ms: float,
         user_rating: Optional[int] = None,
         correction: Optional[str] = None,
+        workspace_id: Optional[str] = None,
     ) -> None:
-        """Record agent execution feedback (called by agent framework)."""
+        """Record agent execution feedback (called by agent framework).
+
+        A session only ever "belongs" to whichever tenant recorded feedback
+        under it -- callers with no request-bound tenant (background agent
+        framework) write workspace_id=None, which the read path treats as
+        "not mine", never "everyone's".
+        """
         async for db in get_session():
             feedback = AgentFeedback(
+                workspace_id=workspace_id,
                 session_id=session_id,
                 agent_name=agent_name,
                 task_type=task_type,
@@ -386,25 +394,30 @@ class EvolutionEngine:
         pattern_data: Dict[str, Any],
         duration_ms: float,
         success: bool,
+        workspace_id: Optional[str] = None,
     ) -> None:
         """Record an execution pattern (called after successful agent runs)."""
         async for db in get_session():
             lib = PatternLibrary(db)
             if success:
-                await lib.record_success(pattern_type, intent, pattern_data, duration_ms)
+                await lib.record_success(
+                    pattern_type, intent, pattern_data, duration_ms,
+                    workspace_id=workspace_id,
+                )
             else:
-                await lib.record_failure(pattern_type, intent)
+                await lib.record_failure(pattern_type, intent, workspace_id=workspace_id)
             break
 
     async def get_similar_patterns(
         self,
         intent: str,
         pattern_type: Optional[PatternType] = None,
+        workspace_id: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """Retrieve similar patterns to seed a new execution plan."""
         async for db in get_session():
             lib = PatternLibrary(db)
-            return await lib.find_similar(intent, pattern_type)
+            return await lib.find_similar(intent, pattern_type, workspace_id=workspace_id)
         return []
 
     async def trigger_cycle(self) -> Dict[str, Any]:
