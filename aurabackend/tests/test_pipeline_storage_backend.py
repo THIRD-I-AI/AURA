@@ -96,8 +96,33 @@ def test_pipeline_schema_endpoint_reads_uploaded_file_via_backend(tmp_path, monk
 def test_pipeline_generate_reads_explicit_source_file_via_backend(tmp_path, monkeypatch):
     """pipeline_generate's schema_context lookup (gen.get_file_schema) must
     resolve the requested source_file through the backend rather than
-    404ing before the local parser / LLM ever runs."""
+    404ing before the local parser / LLM ever runs.
+
+    PipelineGenerator.generate() itself is stubbed out -- whether the local
+    rule-based parser or an LLM fallback can turn "show me the data" into a
+    real Pipeline depends on what's configured in the environment (no LLM
+    key in CI), which is unrelated to what this test proves. Capturing
+    generate()'s kwargs instead confirms get_file_schema ran (schema_context
+    is populated for the requested file) and a tenant was threaded through,
+    without depending on generation actually succeeding.
+    """
     client = _client(tmp_path, monkeypatch)
+
+    captured = {}
+
+    async def _fake_generate(self, prompt, available_files=None, schema_context=None, connections=None, tenant=None):
+        captured["schema_context"] = schema_context
+        captured["tenant"] = tenant
+        from pipeline.models import Pipeline, PipelineSink, PipelineSource, SinkType, SourceType
+        return Pipeline(
+            name="generate-test",
+            source=PipelineSource(type=SourceType.FILE, file_name="sales.csv"),
+            sink=PipelineSink(type=SinkType.PREVIEW),
+        )
+
+    import pipeline.generator as generator_module
+    monkeypatch.setattr(generator_module.PipelineGenerator, "generate", _fake_generate)
+
     r = client.post("/api/v1/pipeline/generate", json={
         "prompt": "show me the data",
         "source_file": "sales.csv",
@@ -106,6 +131,8 @@ def test_pipeline_generate_reads_explicit_source_file_via_backend(tmp_path, monk
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["status"] == "success", body
+    assert "sales.csv" in captured["schema_context"], captured
+    assert {c["name"] for c in captured["schema_context"]["sales.csv"]["columns"]} == {"region", "revenue"}
 
 
 def test_upload_dataset_profile_reflects_real_uploaded_columns(tmp_path, monkeypatch):
