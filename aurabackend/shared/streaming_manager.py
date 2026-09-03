@@ -66,6 +66,7 @@ class StreamEvent:
     topic: str
     event_type: str   # "progress" | "complete" | "error" | "data" | "heartbeat"
     payload: Dict[str, Any]
+    workspace_id: Optional[str] = None
     event_id: str = field(default_factory=lambda: uuid.uuid4().hex[:12])
     timestamp: str = field(
         default_factory=lambda: datetime.now(timezone.utc).isoformat()
@@ -103,22 +104,24 @@ class StreamingManager:
     _BUFFER_LEN = 50
 
     def __init__(self) -> None:
-        # sub_id → (pattern, queue)
-        self._subscribers: Dict[str, Tuple[str, asyncio.Queue]] = {}
+        # sub_id → (pattern, workspace_id, queue)
+        self._subscribers: Dict[str, Tuple[str, Optional[str], asyncio.Queue]] = {}
         # topic → deque of recent events (for replay)
         self._buffers: Dict[str, List[StreamEvent]] = {}
         self._lock = asyncio.Lock()
 
     # ── Subscribe / Unsubscribe ────────────────────────────────────
 
-    def subscribe(self, topic_pattern: str) -> Tuple[str, asyncio.Queue]:
+    def subscribe(
+        self, topic_pattern: str, workspace_id: Optional[str] = None,
+    ) -> Tuple[str, asyncio.Queue]:
         """
         Register a subscriber.
         Returns (subscriber_id, queue).
         """
         sub_id = uuid.uuid4().hex
         queue: asyncio.Queue = asyncio.Queue(maxsize=self._MAX_QUEUE)
-        self._subscribers[sub_id] = (topic_pattern, queue)
+        self._subscribers[sub_id] = (topic_pattern, workspace_id, queue)
         logger.debug("New subscriber %s for pattern '%s'", sub_id[:8], topic_pattern)
         return sub_id, queue
 
@@ -130,14 +133,14 @@ class StreamingManager:
         if topic is None:
             return len(self._subscribers)
         return sum(
-            1 for pat, _ in self._subscribers.values()
+            1 for pat, _wsid, _q in self._subscribers.values()
             if self._matches(topic, pat)
         )
 
     # ── Publish ────────────────────────────────────────────────────
 
     async def publish(self, event: StreamEvent) -> None:
-        """Fanout event to all matching subscriber queues."""
+        """Fanout event to all matching, tenant-authorized subscriber queues."""
         # Buffer event for replay
         buf = self._buffers.setdefault(event.topic, [])
         buf.append(event)
@@ -145,8 +148,10 @@ class StreamingManager:
             buf.pop(0)
 
         # Fanout to subscribers
-        for sub_id, (pattern, queue) in list(self._subscribers.items()):
+        for sub_id, (pattern, sub_workspace_id, queue) in list(self._subscribers.items()):
             if not self._matches(event.topic, pattern):
+                continue
+            if not self._workspace_allowed(event.workspace_id, sub_workspace_id):
                 continue
             try:
                 if queue.full():
@@ -161,12 +166,17 @@ class StreamingManager:
     def get_buffered_events(
         self,
         topic: str,
+        workspace_id: Optional[str] = None,
         after_event_id: Optional[str] = None,
     ) -> List[StreamEvent]:
-        """Return buffered events for Last-Event-ID replay."""
-        buf = self._buffers.get(topic, [])
+        """Return buffered events for Last-Event-ID replay, filtered to the
+        subscriber's own tenant (see ``_workspace_allowed``)."""
+        buf = [
+            ev for ev in self._buffers.get(topic, [])
+            if self._workspace_allowed(ev.workspace_id, workspace_id)
+        ]
         if after_event_id is None:
-            return list(buf)
+            return buf
         found = False
         result = []
         for ev in buf:
@@ -185,6 +195,7 @@ class StreamingManager:
         message: str,
         percent: float,
         extra: Optional[Dict[str, Any]] = None,
+        workspace_id: Optional[str] = None,
     ) -> None:
         await self.publish(StreamEvent(
             topic=f"{namespace}:{job_id}",
@@ -195,6 +206,7 @@ class StreamingManager:
                 "job_id": job_id,
                 **(extra or {}),
             },
+            workspace_id=workspace_id,
         ))
 
     async def publish_complete(
@@ -202,11 +214,13 @@ class StreamingManager:
         namespace: str,
         job_id: str,
         result: Dict[str, Any],
+        workspace_id: Optional[str] = None,
     ) -> None:
         await self.publish(StreamEvent(
             topic=f"{namespace}:{job_id}",
             event_type="complete",
             payload={"job_id": job_id, "result": result},
+            workspace_id=workspace_id,
         ))
 
     async def publish_error(
@@ -215,11 +229,13 @@ class StreamingManager:
         job_id: str,
         error: str,
         code: str = "OPERATION_FAILED",
+        workspace_id: Optional[str] = None,
     ) -> None:
         await self.publish(StreamEvent(
             topic=f"{namespace}:{job_id}",
             event_type="error",
             payload={"job_id": job_id, "error": error, "code": code},
+            workspace_id=workspace_id,
         ))
 
     async def broadcast(
@@ -227,15 +243,29 @@ class StreamingManager:
         namespace: str,
         event_type: str,
         payload: Dict[str, Any],
+        workspace_id: Optional[str] = None,
     ) -> None:
         """Broadcast to the namespace wildcard topic (e.g. monitor:* subscribers)."""
         await self.publish(StreamEvent(
             topic=f"{namespace}:broadcast",
             event_type=event_type,
             payload=payload,
+            workspace_id=workspace_id,
         ))
 
     # ── Internal ──────────────────────────────────────────────────
+
+    @staticmethod
+    def _workspace_allowed(
+        event_workspace_id: Optional[str], subscriber_workspace_id: Optional[str],
+    ) -> bool:
+        """A subscriber sees an event when either side is untenanted (global
+        broadcast, or an unauthenticated dev-mode subscriber — same
+        fail-open-only-in-open-mode contract as current_workspace_id()), or
+        both tenants match exactly."""
+        if event_workspace_id is None or subscriber_workspace_id is None:
+            return True
+        return event_workspace_id == subscriber_workspace_id
 
     @staticmethod
     def _matches(topic: str, pattern: str) -> bool:

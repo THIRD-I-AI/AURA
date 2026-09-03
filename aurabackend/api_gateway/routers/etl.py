@@ -25,7 +25,7 @@ from shared.storage import get_storage_backend
 from shared.storage.base import safe_object_name
 from shared.streaming_manager import TOPIC_ETL, streaming_manager
 
-from .workspaces import _request_tenant
+from .workspaces import _request_tenant, current_workspace_id
 
 logger = get_logger("aura.api_gateway.etl")
 
@@ -314,7 +314,8 @@ async def etl_execute(pipeline: ETLPipelineRequest, request: Request):
     logger.info("ETL execute: pipeline='%s' source='%s' transforms=%d preview_only=%s", pipeline.name, pipeline.source_file, len(pipeline.transforms), pipeline.preview_only)
 
     run_id = f"etl-{int(time.time()*1000)}"
-    await streaming_manager.publish_progress(TOPIC_ETL, run_id, f"Starting ETL pipeline '{pipeline.name}'", 0.05)
+    workspace_id = current_workspace_id(request)
+    await streaming_manager.publish_progress(TOPIC_ETL, run_id, f"Starting ETL pipeline '{pipeline.name}'", 0.05, workspace_id=workspace_id)
 
     t0 = time.perf_counter()
     base = Path(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
@@ -337,12 +338,12 @@ async def etl_execute(pipeline: ETLPipelineRequest, request: Request):
     try:
         con = new_connection()
         table_name = re.sub(r"[^A-Za-z0-9_]", "_", Path(pipeline.source_file).stem)
-        await streaming_manager.publish_progress(TOPIC_ETL, run_id, f"Loading source file '{pipeline.source_file}'", 0.2)
+        await streaming_manager.publish_progress(TOPIC_ETL, run_id, f"Loading source file '{pipeline.source_file}'", 0.2, workspace_id=workspace_id)
         file_info = smart_load_file(con, duckdb_uri, table_name, use_llm=True)
         source_count = file_info["row_count"]
         source_columns = file_info["columns"]
 
-        await streaming_manager.publish_progress(TOPIC_ETL, run_id, f"Applying {len(pipeline.transforms)} transform(s)", 0.5)
+        await streaming_manager.publish_progress(TOPIC_ETL, run_id, f"Applying {len(pipeline.transforms)} transform(s)", 0.5, workspace_id=workspace_id)
         transform_sql = _build_transform_sql(table_name, pipeline.transforms, con=con)
         con.execute(f"CREATE TABLE _etl_output AS {transform_sql}")
 
@@ -388,7 +389,7 @@ async def etl_execute(pipeline: ETLPipelineRequest, request: Request):
             "source_rows": source_count,
             "output_rows": output_count,
             "execution_time_ms": round(elapsed_ms, 1),
-        })
+        }, workspace_id=workspace_id)
 
         return {
             "status": "success", "pipeline_name": pipeline.name, "run_id": run_id,
@@ -405,7 +406,7 @@ async def etl_execute(pipeline: ETLPipelineRequest, request: Request):
         # SSE stream — log + send a sanitized message. The full
         # traceback is in the server log under "etl execute".
         safe_message = sanitize_error(e, logger=logger, context=f"etl execute pipeline={pipeline.name!r}")
-        await streaming_manager.publish_error(TOPIC_ETL, run_id, safe_message)
+        await streaming_manager.publish_error(TOPIC_ETL, run_id, safe_message, workspace_id=workspace_id)
         return {"status": "error", "run_id": run_id, "error": safe_message, "transform_sql": "", "preview": []}
 
 

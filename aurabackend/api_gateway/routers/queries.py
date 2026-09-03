@@ -252,6 +252,7 @@ async def execute_for_chat(req: _ChatExecuteRequest, request: Request):
     # If there's a connection_id, proxy to the sandbox
     if req.connection_id:
         sandbox_url = os.getenv("EXECUTION_SANDBOX_URL", "http://localhost:8003")
+        workspace_id = current_workspace_id(request)
         job_id = f"chat-{int(time.time()*1000)}"
         payload = {
             "job_id": job_id,
@@ -261,7 +262,7 @@ async def execute_for_chat(req: _ChatExecuteRequest, request: Request):
             "limit": int(os.getenv("DEFAULT_QUERY_LIMIT", "1000")),
         }
         breaker = get_breaker("execution_sandbox")
-        await streaming_manager.publish_progress(TOPIC_QUERY, job_id, "Sending to execution sandbox", 0.2)
+        await streaming_manager.publish_progress(TOPIC_QUERY, job_id, "Sending to execution sandbox", 0.2, workspace_id=workspace_id)
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
                 resp = await breaker.call(
@@ -269,7 +270,7 @@ async def execute_for_chat(req: _ChatExecuteRequest, request: Request):
                     fallback=None,
                 )
             if resp is None:
-                await streaming_manager.publish_error(TOPIC_QUERY, job_id, "Execution sandbox unavailable")
+                await streaming_manager.publish_error(TOPIC_QUERY, job_id, "Execution sandbox unavailable", workspace_id=workspace_id)
                 return {"success": False, "error": "Execution sandbox unavailable (circuit open)", "data": [], "columns": []}
             resp.raise_for_status()
             data = resp.json()
@@ -277,7 +278,7 @@ async def execute_for_chat(req: _ChatExecuteRequest, request: Request):
             rows = data.get("rows", [])
             records = [dict(zip(columns, row)) for row in rows]
             elapsed = (time.perf_counter() - start) * 1000
-            await streaming_manager.publish_complete(TOPIC_QUERY, job_id, {"rows": len(records), "execution_time_ms": round(elapsed, 1)})
+            await streaming_manager.publish_complete(TOPIC_QUERY, job_id, {"rows": len(records), "execution_time_ms": round(elapsed, 1)}, workspace_id=workspace_id)
             return {
                 "success": True, "data": records, "columns": columns,
                 "row_count": len(records), "execution_time_ms": round(elapsed, 1),
@@ -289,11 +290,11 @@ async def execute_for_chat(req: _ChatExecuteRequest, request: Request):
                 detail = exc.response.json().get("detail", detail)
             except Exception:
                 pass
-            await streaming_manager.publish_error(TOPIC_QUERY, job_id, str(detail))
+            await streaming_manager.publish_error(TOPIC_QUERY, job_id, str(detail), workspace_id=workspace_id)
             return {"success": False, "error": str(detail), "data": [], "columns": []}
         except Exception as exc:
             safe_message = sanitize_error(exc, logger=logger, context=f"query execute job={job_id}")
-            await streaming_manager.publish_error(TOPIC_QUERY, job_id, safe_message)
+            await streaming_manager.publish_error(TOPIC_QUERY, job_id, safe_message, workspace_id=workspace_id)
             return {"success": False, "error": safe_message, "data": [], "columns": []}
 
     # No connection: execute against uploaded files via DuckDB

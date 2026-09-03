@@ -30,6 +30,7 @@ from typing import AsyncGenerator, Optional
 from fastapi import APIRouter, Header, Query, Request
 from fastapi.responses import StreamingResponse
 
+from api_gateway.routers.workspaces import current_workspace_id
 from shared.streaming_manager import StreamEvent, streaming_manager
 
 logger = logging.getLogger("aura.stream")
@@ -45,13 +46,16 @@ async def _event_generator(
     request: Request,
 ) -> AsyncGenerator[str, None]:
     """Core generator: subscribes, replays missed events, then streams live."""
-    sub_id, queue = streaming_manager.subscribe(topic)
+    workspace_id = current_workspace_id(request)
+    sub_id, queue = streaming_manager.subscribe(topic, workspace_id)
     logger.debug("SSE client connected to topic '%s' (sub=%s)", topic, sub_id[:8])
 
     try:
         # ── Replay buffered events if Last-Event-ID supplied ───────────
         if last_event_id:
-            missed = streaming_manager.get_buffered_events(topic, after_event_id=last_event_id)
+            missed = streaming_manager.get_buffered_events(
+                topic, workspace_id, after_event_id=last_event_id,
+            )
             for ev in missed:
                 yield ev.to_sse()
 
@@ -94,18 +98,20 @@ async def stream_topic(
         /stream/monitor:*   — all monitor events
         /stream/*           — every event on the bus
     """
+    workspace_id = current_workspace_id(request)
+
     # For replay=true without a Last-Event-ID, send all buffered events
     effective_last_id: Optional[str] = last_event_id
     if replay and not last_event_id:
         # Use a sentinel that will never match, so all buffered events are returned
-        buf = streaming_manager.get_buffered_events(topic)
+        buf = streaming_manager.get_buffered_events(topic, workspace_id)
         if buf:
             effective_last_id = None  # will be handled by replay=True path below
 
     async def _gen() -> AsyncGenerator[str, None]:
         if replay and not last_event_id:
             # Replay ALL buffered events
-            for ev in streaming_manager.get_buffered_events(topic):
+            for ev in streaming_manager.get_buffered_events(topic, workspace_id):
                 yield ev.to_sse()
         async for chunk in _event_generator(topic, effective_last_id, request):
             yield chunk
