@@ -28,7 +28,7 @@
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "d3-force": "^3.0.0",
-    "dockview-react": "^6.6.1",
+    "dockview-react": "^8.2.0",
     "lucide-react": "^0.562.0",
     "motion": "^13.1.0",
     "radix-ui": "^1.6.7",
