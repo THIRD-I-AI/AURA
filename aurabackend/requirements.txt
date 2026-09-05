@@ -102,7 +102,7 @@ cassandra-driver>=3.29,<4.0
 duckdb>=1.5.5,<2.0
 
 # Cryptography (for ED25519 deterministic signatures)
-cryptography>=42.0.0
+cryptography>=50.0.1
 
 # Async Kafka for enterprise ingestion resilience
 aiokafka>=0.10.0
