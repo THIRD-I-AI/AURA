@@ -12,6 +12,7 @@ Given a drift vector D⃗ and associated metadata, the Reflector:
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -265,7 +266,7 @@ class DiagnosticReflectorAgent(BaseAgent):
                 ),
             ]
 
-            resp = llm.generate_json(prompt)
+            resp = await asyncio.to_thread(llm.generate_json, prompt)
             if resp and "root_cause" in resp:
                 return DiagnosisResult(
                     drift_event_id=drift.batch_id,

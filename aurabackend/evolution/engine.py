@@ -309,7 +309,11 @@ class EvolutionEngine:
         )
 
         try:
-            response = llm.generate_json(prompt)
+            # llm.generate_json() is a sync httpx/SDK call (e.g. Gemini's
+            # blocking generate_content). The deployment runs a single
+            # uvicorn worker, so running it inline here would freeze every
+            # concurrent request until it returns.
+            response = await asyncio.to_thread(llm.generate_json, prompt)
             if not response:
                 return None
 

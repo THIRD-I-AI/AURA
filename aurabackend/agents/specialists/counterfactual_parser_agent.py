@@ -14,6 +14,7 @@ fall back to the regular SQL path.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 
@@ -62,7 +63,7 @@ class CounterfactualParserAgent(BaseAgent):
         result.add_step(action="parser_prompt_built")
 
         try:
-            raw = self.llm.generate(prompt) or "{}"
+            raw = await asyncio.to_thread(self.llm.generate, prompt) or "{}"
         except Exception as exc:
             result.error = f"LLM generate failed: {exc}"
             result.status = AgentStatus.FAILED

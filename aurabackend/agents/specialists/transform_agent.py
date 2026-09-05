@@ -6,6 +6,7 @@ pivots, type casting, deduplication, and derived column creation.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from typing import Any, Dict, List, Optional
@@ -100,7 +101,7 @@ class TransformAgent(BaseAgent):
         if self._llm.is_available():
             try:
                 prompt = _TRANSFORM_PROMPT.format(schema=schema, request=request)
-                parsed = self._llm.generate_json(prompt)
+                parsed = await asyncio.to_thread(self._llm.generate_json, prompt)
                 if isinstance(parsed, list):
                     return [s for s in parsed if isinstance(s, str)]
             except Exception:

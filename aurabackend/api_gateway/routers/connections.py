@@ -4,6 +4,7 @@ Connections Router
 Database connection CRUD, testing, schema introspection, and connector proxies.
 """
 
+import asyncio
 import io
 import os
 import re
@@ -641,16 +642,20 @@ async def sync_connection_table(connection_id: str, req: ConnectionSyncRequest, 
 
         import pandas as pd
 
-        df = pd.DataFrame(all_rows)
-        buf = io.BytesIO()
-        df.to_parquet(buf, index=False)
+        def _to_parquet_bytes() -> bytes:
+            df = pd.DataFrame(all_rows)
+            buf = io.BytesIO()
+            df.to_parquet(buf, index=False)
+            return buf.getvalue()
+
+        parquet_bytes = await asyncio.to_thread(_to_parquet_bytes)
 
         file_name = f"{_safe_filename_component(conn['name'])}__{_safe_filename_component(req.table_name)}.parquet"
 
         from shared.storage import get_storage_backend
 
         tenant = _request_tenant(request)
-        get_storage_backend().write(tenant, file_name, buf.getvalue())
+        get_storage_backend().write(tenant, file_name, parquet_bytes)
 
         # Same post-write step POST /upload takes (files.py) — the DuckDB
         # schema-context cache is keyed on a fingerprint of the upload dir's

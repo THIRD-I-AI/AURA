@@ -6,6 +6,7 @@ service and adds schema-aware context injection + validation.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -206,7 +207,7 @@ class SQLGeneratorAgent(BaseAgent):
             try:
                 prompt = _SQL_GEN_PROMPT.format(schema=schema, question=question)
                 logger.debug("SQL generator prompt (len=%d)", len(prompt))
-                text = self._llm.generate(prompt)
+                text = await asyncio.to_thread(self._llm.generate, prompt)
                 logger.debug("SQL generator output (len=%d)", len(text) if text else 0)
                 if text:
                     return self._strip_fences(text), None
@@ -250,7 +251,7 @@ class SQLGeneratorAgent(BaseAgent):
             return None
         try:
             prompt = _SQL_EXPLAIN_PROMPT.format(sql=sql[:2000])
-            text = self._llm.generate(prompt)
+            text = await asyncio.to_thread(self._llm.generate, prompt)
             if not text:
                 return None
             # Collapse whitespace, strip fences, cap length.

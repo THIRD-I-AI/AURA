@@ -6,6 +6,7 @@ strategy, materialized view suggestions, and EXPLAIN plan interpretation.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from typing import Any, Dict, List, Optional
@@ -109,7 +110,7 @@ class OptimizationAgent(BaseAgent):
         if self._llm.is_available():
             try:
                 prompt = _OPTIMIZE_PROMPT.format(schema=schema, request=request)
-                parsed = self._llm.generate_json(prompt)
+                parsed = await asyncio.to_thread(self._llm.generate_json, prompt)
                 if isinstance(parsed, dict):
                     return parsed
             except Exception:

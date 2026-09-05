@@ -7,6 +7,7 @@ steps, dependencies, and cron schedules.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import uuid
@@ -125,7 +126,7 @@ class PipelineAgent(BaseAgent):
                     schema=schema_text,
                     upstream=upstream_text,
                 )
-                parsed = self._llm.generate_json(prompt)
+                parsed = await asyncio.to_thread(self._llm.generate_json, prompt)
                 if isinstance(parsed, dict) and "steps" in parsed:
                     return parsed
             except Exception:

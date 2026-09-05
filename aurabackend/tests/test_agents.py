@@ -15,6 +15,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from agents.base import AgentContext, AgentResult, AgentStatus, BaseAgent, Severity
 from agents.planner import ExecutionPlan, PlannerAgent, TaskNode, TaskType
+from agents.specialists.optimization_agent import OptimizationAgent
 
 # ── AgentResult Tests ────────────────────────────────────────────────
 
@@ -120,6 +121,131 @@ class TestPlannerFallback:
         assert "summary" in plan
         assert "estimated_duration_sec" in plan
         assert plan["estimated_duration_sec"] > 0
+
+
+# ── PlannerAgent._call_llm Async-Safety Tests ────────────────────────
+# Single-uvicorn-worker deployment (see .claude/rules/backend.md "Async
+# safety"): _call_llm must offload the synchronous LLM SDK call via
+# asyncio.to_thread so it never blocks the event loop.
+
+class _FakeSyncLLM:
+    """Stand-in for the provider wrapper's synchronous generate_json.
+
+    Not a mock of an external network call — it's a local stand-in with the
+    same blocking-call *shape* the real SDKs have, used to prove _call_llm
+    offloads onto a worker thread instead of running in the event loop.
+    """
+
+    def __init__(self):
+        self.call_thread = None
+
+    def is_available(self):
+        return True
+
+    def generate_json(self, messages):
+        import threading
+        self.call_thread = threading.current_thread()
+        return {"summary": "ok", "tasks": []}
+
+
+class TestPlannerCallLlmAsyncSafety:
+    def test_call_llm_runs_off_the_event_loop_thread(self):
+        """generate_json must execute on a to_thread worker, not the event loop."""
+        import threading
+
+        planner = PlannerAgent.__new__(PlannerAgent)
+        fake_llm = _FakeSyncLLM()
+        planner._llm = fake_llm
+
+        main_thread = threading.current_thread()
+        result = asyncio.run(planner._call_llm("system", "user"))
+
+        assert result == {"summary": "ok", "tasks": []}
+        assert fake_llm.call_thread is not None
+        assert fake_llm.call_thread is not main_thread
+
+    def test_call_llm_does_not_block_concurrent_coroutines(self):
+        """While generate_json 'blocks' (sleeps), other coroutines must still run."""
+        import time
+
+        class _SlowSyncLLM:
+            def is_available(self):
+                return True
+
+            def generate_json(self, messages):
+                time.sleep(0.3)
+                return {"summary": "slow", "tasks": []}
+
+        planner = PlannerAgent.__new__(PlannerAgent)
+        planner._llm = _SlowSyncLLM()
+
+        events = []
+
+        async def ticker():
+            for _ in range(6):
+                await asyncio.sleep(0.05)
+                events.append("tick")
+
+        async def main():
+            await asyncio.gather(planner._call_llm("system", "user"), ticker())
+
+        asyncio.run(main())
+
+        # If _call_llm blocked the loop, the ticker couldn't have interleaved
+        # ticks while the 0.3s "blocking" call was in flight.
+        assert len(events) >= 4
+
+
+# ── OptimizationAgent._generate_recommendations Async-Safety Tests ──
+# Single-uvicorn-worker deployment (see .claude/rules/backend.md "Async
+# safety"): _generate_recommendations must offload the synchronous LLM
+# SDK call via asyncio.to_thread so it never blocks the event loop.
+
+class TestOptimizationGenerateRecommendationsAsyncSafety:
+    def test_generate_recommendations_runs_off_the_event_loop_thread(self):
+        """generate_json must execute on a to_thread worker, not the event loop."""
+        import threading
+
+        agent = OptimizationAgent.__new__(OptimizationAgent)
+        agent._llm = _FakeSyncLLM()
+
+        main_thread = threading.current_thread()
+        recs = asyncio.run(agent._generate_recommendations("optimize", "{}"))
+
+        assert recs == {"summary": "ok", "tasks": []}
+        assert agent._llm.call_thread is not None
+        assert agent._llm.call_thread is not main_thread
+
+    def test_generate_recommendations_does_not_block_concurrent_coroutines(self):
+        """While generate_json 'blocks' (sleeps), other coroutines must still run."""
+        import time
+
+        class _SlowSyncLLM:
+            def is_available(self):
+                return True
+
+            def generate_json(self, prompt):
+                time.sleep(0.3)
+                return {"indexes": [], "partitioning": [], "materialized_views": [], "query_rewrites": []}
+
+        agent = OptimizationAgent.__new__(OptimizationAgent)
+        agent._llm = _SlowSyncLLM()
+
+        events = []
+
+        async def ticker():
+            for _ in range(6):
+                await asyncio.sleep(0.05)
+                events.append("tick")
+
+        async def main():
+            await asyncio.gather(agent._generate_recommendations("optimize", "{}"), ticker())
+
+        asyncio.run(main())
+
+        # If _generate_recommendations blocked the loop, the ticker couldn't
+        # have interleaved ticks while the 0.3s "blocking" call was in flight.
+        assert len(events) >= 4
 
 
 # ── ExecutionPlan Dependency Resolution ──────────────────────────────

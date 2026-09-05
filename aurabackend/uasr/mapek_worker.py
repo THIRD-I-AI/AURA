@@ -360,7 +360,10 @@ class MAPEKWorker:
                 batch.columns = list(batch.rows[0].keys()) if batch.rows else batch.columns
 
                 # ── Analyze ────────────────────────────────────────────
-                drift = self._analyze_detect_drift(batch)
+                # Offloaded like service.py's HTTP handlers: detect() can hit a
+                # blocking Redis round-trip under the redis state backend, and
+                # this loop shares the single uvicorn event loop with the app.
+                drift = await asyncio.to_thread(self._analyze_detect_drift, batch)
                 await self._emit(
                     "analyze",
                     f"drift={drift.drift_detected} type={drift.drift_type} severity={drift.severity}",

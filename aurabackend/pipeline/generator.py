@@ -16,6 +16,7 @@ Usage:
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from pathlib import Path
@@ -183,9 +184,9 @@ class PipelineGenerator:
         logger.info(f"[Generator] Falling back to LLM for: {prompt[:120]}...")
 
         try:
-            raw = self._llm.generate_json([_SYSTEM_PROMPT, user_message])
+            raw = await asyncio.to_thread(self._llm.generate_json, [_SYSTEM_PROMPT, user_message])
             if raw is None:
-                text = self._llm.generate([_SYSTEM_PROMPT, user_message])
+                text = await asyncio.to_thread(self._llm.generate, [_SYSTEM_PROMPT, user_message])
                 if text:
                     raw = self._parse_json(text)
         except LLMRateLimitError as e:
@@ -233,9 +234,9 @@ class PipelineGenerator:
             "Output a JSON array of step objects."
         )
 
-        raw = self._llm.generate_json([_SYSTEM_PROMPT, user_msg])
+        raw = await asyncio.to_thread(self._llm.generate_json, [_SYSTEM_PROMPT, user_msg])
         if raw is None:
-            text = self._llm.generate([_SYSTEM_PROMPT, user_msg])
+            text = await asyncio.to_thread(self._llm.generate, [_SYSTEM_PROMPT, user_msg])
             if text:
                 raw = self._parse_json(text)
 

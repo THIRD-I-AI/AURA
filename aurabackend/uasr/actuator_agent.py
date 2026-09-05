@@ -10,6 +10,7 @@ Given a DiagnosisResult, the Actuator:
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -447,7 +448,7 @@ class SynthesisActuatorAgent(BaseAgent):
                 }),
             ]
 
-            code = llm.generate(prompt)
+            code = await asyncio.to_thread(llm.generate, prompt)
             if code and "def transform" in code:
                 # Strip markdown fences if present
                 cleaned = code.strip()

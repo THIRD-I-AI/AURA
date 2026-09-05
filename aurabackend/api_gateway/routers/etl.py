@@ -5,6 +5,7 @@ ETL pipeline endpoints: preview source, execute transforms, natural language,
 and file download.
 """
 
+import asyncio
 import decimal
 import json
 import math
@@ -282,13 +283,18 @@ async def etl_preview_source(payload: Dict[str, Any], request: Request):
     try:
         con = new_connection()
         table_name = re.sub(r"[^A-Za-z0-9_]", "_", Path(source_file).stem)
-        file_info = smart_load_file(con, duckdb_uri, table_name, use_llm=True)
+
+        def _load_and_preview():
+            file_info = smart_load_file(con, duckdb_uri, table_name, use_llm=True)
+            preview = con.execute(f'SELECT * FROM "{table_name}" LIMIT {limit}').fetchall()
+            return file_info, preview
+
+        file_info, preview = await asyncio.to_thread(_load_and_preview)
 
         columns = file_info["columns"]
         row_count = file_info["row_count"]
         col_names = [c["name"] for c in columns]
 
-        preview = con.execute(f'SELECT * FROM "{table_name}" LIMIT {limit}').fetchall()
         preview_records = [
             {col: _serialize_value(val) for col, val in zip(col_names, row)}
             for row in preview
@@ -336,52 +342,84 @@ async def etl_execute(pipeline: ETLPipelineRequest, request: Request):
     duckdb_uri = backend.duckdb_uri(tenant, safe_name)
 
     try:
-        con = new_connection()
         table_name = re.sub(r"[^A-Za-z0-9_]", "_", Path(pipeline.source_file).stem)
-        await streaming_manager.publish_progress(TOPIC_ETL, run_id, f"Loading source file '{pipeline.source_file}'", 0.2, workspace_id=workspace_id)
-        file_info = smart_load_file(con, duckdb_uri, table_name, use_llm=True)
-        source_count = file_info["row_count"]
-        source_columns = file_info["columns"]
 
-        await streaming_manager.publish_progress(TOPIC_ETL, run_id, f"Applying {len(pipeline.transforms)} transform(s)", 0.5, workspace_id=workspace_id)
-        transform_sql = _build_transform_sql(table_name, pipeline.transforms, con=con)
-        con.execute(f"CREATE TABLE _etl_output AS {transform_sql}")
+        # BUG fix: smart_load_file, the CREATE TABLE transform materialization,
+        # DESCRIBE/preview fetchall, and the COPY ... TO writes are all
+        # synchronous DuckDB/file-IO calls. On the single uvicorn worker this
+        # deployment runs (see backend.md "Async safety"), running them
+        # in-line here blocks every other tenant's requests for the full ETL
+        # run. Offload the whole load→transform→COPY sequence to a thread,
+        # mirroring dashboards.py's `_run_tile` pattern.
+        def _run_pipeline():
+            file_info = smart_load_file(con, duckdb_uri, table_name, use_llm=True)
+            source_count = file_info["row_count"]
+            source_columns = file_info["columns"]
 
-        output_count = con.execute("SELECT COUNT(*) FROM _etl_output").fetchone()[0]
-        output_schema = con.execute("DESCRIBE _etl_output").fetchall()
-        output_columns = [{"name": r[0], "type": r[1]} for r in output_schema]
+            transform_sql = _build_transform_sql(table_name, pipeline.transforms, con=con)
+            con.execute(f"CREATE TABLE _etl_output AS {transform_sql}")
 
-        preview_result = con.execute("SELECT * FROM _etl_output LIMIT 50").fetchall()
-        col_names = [c["name"] for c in output_columns]
-        preview_records = [
-            {col: _serialize_value(val) for col, val in zip(col_names, row)}
-            for row in preview_result
-        ]
+            output_count = con.execute("SELECT COUNT(*) FROM _etl_output").fetchone()[0]
+            output_schema = con.execute("DESCRIBE _etl_output").fetchall()
+            output_columns = [{"name": r[0], "type": r[1]} for r in output_schema]
 
-        output_path = None
-        download_filename = None
+            preview_result = con.execute("SELECT * FROM _etl_output LIMIT 50").fetchall()
+            col_names = [c["name"] for c in output_columns]
+            preview_records = [
+                {col: _serialize_value(val) for col, val in zip(col_names, row)}
+                for row in preview_result
+            ]
 
-        if not pipeline.preview_only:
-            raw_dest = pipeline.destination_filename or f"{table_name}_transformed"
-            dest_name = Path(raw_dest).stem
-            fmt = pipeline.destination_format.lower()
+            output_path = None
+            download_filename = None
 
-            if fmt == "csv":
-                download_filename = f"{dest_name}.csv"
-                output_path = str(output_dir / download_filename)
-                con.execute(f"COPY _etl_output TO '{output_path}' (HEADER, DELIMITER ',')")
-            elif fmt == "parquet":
-                download_filename = f"{dest_name}.parquet"
-                output_path = str(output_dir / download_filename)
-                con.execute(f"COPY _etl_output TO '{output_path}' (FORMAT PARQUET)")
-            elif fmt == "json":
-                download_filename = f"{dest_name}.json"
-                output_path = str(output_dir / download_filename)
-                con.execute(f"COPY _etl_output TO '{output_path}' (FORMAT JSON, ARRAY true)")
-            else:
-                raise HTTPException(status_code=400, detail=f"Unsupported destination format: {fmt}")
+            if not pipeline.preview_only:
+                raw_dest = pipeline.destination_filename or f"{table_name}_transformed"
+                dest_name = Path(raw_dest).stem
+                fmt = pipeline.destination_format.lower()
 
-        con.close()
+                if fmt == "csv":
+                    download_filename = f"{dest_name}.csv"
+                    output_path = str(output_dir / download_filename)
+                    con.execute(f"COPY _etl_output TO '{output_path}' (HEADER, DELIMITER ',')")
+                elif fmt == "parquet":
+                    download_filename = f"{dest_name}.parquet"
+                    output_path = str(output_dir / download_filename)
+                    con.execute(f"COPY _etl_output TO '{output_path}' (FORMAT PARQUET)")
+                elif fmt == "json":
+                    download_filename = f"{dest_name}.json"
+                    output_path = str(output_dir / download_filename)
+                    con.execute(f"COPY _etl_output TO '{output_path}' (FORMAT JSON, ARRAY true)")
+                else:
+                    raise HTTPException(status_code=400, detail=f"Unsupported destination format: {fmt}")
+
+            return {
+                "source_count": source_count,
+                "source_columns": source_columns,
+                "transform_sql": transform_sql,
+                "output_count": output_count,
+                "output_columns": output_columns,
+                "preview_records": preview_records,
+                "output_path": output_path,
+                "download_filename": download_filename,
+            }
+
+        con = new_connection()
+        try:
+            await streaming_manager.publish_progress(TOPIC_ETL, run_id, f"Loading source file '{pipeline.source_file}'", 0.2, workspace_id=workspace_id)
+            await streaming_manager.publish_progress(TOPIC_ETL, run_id, f"Applying {len(pipeline.transforms)} transform(s)", 0.5, workspace_id=workspace_id)
+            result = await asyncio.to_thread(_run_pipeline)
+        finally:
+            con.close()
+
+        source_count = result["source_count"]
+        source_columns = result["source_columns"]
+        transform_sql = result["transform_sql"]
+        output_count = result["output_count"]
+        output_columns = result["output_columns"]
+        preview_records = result["preview_records"]
+        download_filename = result["download_filename"]
+
         elapsed_ms = (time.perf_counter() - t0) * 1000
 
         await streaming_manager.publish_complete(TOPIC_ETL, run_id, {
@@ -460,10 +498,15 @@ async def etl_from_natural_language(req: ETLNaturalLanguageRequest, request: Req
     try:
         con = new_connection()
         table_name = re.sub(r"[^A-Za-z0-9_]", "_", Path(req.source_file).stem)
-        file_info = smart_load_file(con, duckdb_uri, table_name, use_llm=True)
+
+        def _load_and_sample():
+            file_info = smart_load_file(con, duckdb_uri, table_name, use_llm=True)
+            sample = con.execute(f'SELECT * FROM "{table_name}" LIMIT 5').fetchall()
+            return file_info, sample
+
+        file_info, sample = await asyncio.to_thread(_load_and_sample)
         schema_rows = [(c["name"], c["type"]) for c in file_info["columns"]]
         col_names = [c["name"] for c in file_info["columns"]]
-        sample = con.execute(f'SELECT * FROM "{table_name}" LIMIT 5').fetchall()
         sample_records = [dict(zip(col_names, row)) for row in sample]
         con.close()
         schema_text = ", ".join(f"{r[0]} ({r[1]})" for r in schema_rows)
@@ -506,7 +549,7 @@ Return ONLY the JSON array, no markdown, no explanation."""
     llm_error = None
     if llm.is_available():
         try:
-            parsed = llm.generate_json(prompt)
+            parsed = await asyncio.to_thread(llm.generate_json, prompt)
             if isinstance(parsed, list):
                 transforms = parsed
             elif isinstance(parsed, dict) and "transforms" in parsed:

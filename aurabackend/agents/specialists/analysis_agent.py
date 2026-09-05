@@ -11,6 +11,7 @@ column profile and a small sample of rows.
 """
 from __future__ import annotations
 
+import asyncio
 import math
 from typing import Any, Dict, List, Optional
 
@@ -212,7 +213,7 @@ class AnalysisAgent(BaseAgent):
                 "4. Stay under 4 sentences total. Friendly, professional tone."
             )
 
-            conclusion = self.llm.generate(conclusion_prompt)
+            conclusion = await asyncio.to_thread(self.llm.generate, conclusion_prompt)
 
             result.add_step(
                 action="conclusion_ready",

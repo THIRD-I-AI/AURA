@@ -58,3 +58,40 @@ def test_preview_source_rejects_traversal_and_absolute_but_allows_legit_file(tmp
     body = r.json()
     assert body["status"] == "success"
     assert body["row_count"] == 1
+
+
+def test_preview_source_offloads_blocking_load_to_thread(tmp_path, monkeypatch):
+    """
+    Regression test — smart_load_file() and the preview con.execute/fetchall()
+    are synchronous blocking calls (file I/O, DuckDB, optional LLM header
+    inference). Under the single-uvicorn-worker deployment (backend.md "Async
+    safety"), running them directly inside the async handler stalls every
+    concurrent tenant request until they return. They must run via
+    asyncio.to_thread, not inline on the event loop.
+    """
+    monkeypatch.setenv("AURA_UPLOADS_ROOT", str(tmp_path))
+    monkeypatch.delenv("AURA_STORAGE_BACKEND", raising=False)
+    from shared.storage import get_storage_backend, reset_storage_backend
+    reset_storage_backend()
+
+    get_storage_backend().write("default", "legit2.json", b'[{"a": 1, "b": 2}]')
+
+    from api_gateway.routers import etl as etl_router
+
+    calls = []
+    real_to_thread = etl_router.asyncio.to_thread
+
+    async def spy_to_thread(func, *args, **kwargs):
+        calls.append(func)
+        return await real_to_thread(func, *args, **kwargs)
+
+    monkeypatch.setattr(etl_router.asyncio, "to_thread", spy_to_thread)
+
+    client = TestClient(app)
+    r = client.post(_API, json={"source_file": "legit2.json"})
+
+    assert r.status_code == 200, r.text
+    assert r.json()["status"] == "success"
+    # The blocking load+preview must have been dispatched through to_thread,
+    # not called directly on the event loop.
+    assert len(calls) == 1

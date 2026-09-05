@@ -12,6 +12,7 @@ Supports two modes (controlled by ``AURA_AUTH_MODE``):
 """
 from __future__ import annotations
 
+import asyncio
 import uuid
 
 from fastapi import APIRouter, Cookie, Depends
@@ -112,7 +113,7 @@ async def _issue_token_password(body: TokenRequest) -> TokenResponse:
     if user is None or not user.password_hash:
         raise AuthenticationError("Invalid credentials")
 
-    if not verify_password(body.password, user.password_hash):
+    if not await asyncio.to_thread(verify_password, body.password, user.password_hash):
         raise AuthenticationError("Invalid credentials")
 
     claims = {
@@ -155,11 +156,12 @@ async def register_user(body: RegisterRequest):
         if result.scalar_one_or_none() is not None:
             raise ConflictError(f"User with email '{body.email}' already exists")
 
+        password_hash = await asyncio.to_thread(hash_password, body.password)
         user = User(
             id=str(uuid.uuid4()),
             name=body.name,
             email=body.email,
-            password_hash=hash_password(body.password),
+            password_hash=password_hash,
             role=body.role,
             # New users get their own org (single-user tenant); org invites
             # that add members to an existing org come in a later phase.

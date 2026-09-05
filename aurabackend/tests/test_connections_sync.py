@@ -161,6 +161,56 @@ async def test_another_workspaces_connection_404s(client, duckdb_source):
 
 
 @pytest.mark.asyncio
+async def test_parquet_serialization_runs_off_the_event_loop_thread(client, duckdb_source, tmp_path):
+    """Regression for the blocking-call bug: df.to_parquet() used to run
+    synchronously inside the async handler, which would stall the single
+    uvicorn worker for every tenant during a large sync. It must now run in
+    a worker thread (asyncio.to_thread), not on the event loop's thread.
+
+    The test client dispatches the request from a portal thread that is
+    *not* the pytest thread, so the event-loop thread id is captured from
+    another `await`ed step of the same handler (invalidate_schema_cache,
+    called on the loop right after the write) rather than from
+    threading.get_ident() in the test body itself.
+    """
+    import threading
+    import unittest.mock as mock
+
+    import pandas as pd
+
+    loop_thread_ids = []
+    parquet_thread_ids = []
+
+    original_to_parquet = pd.DataFrame.to_parquet
+
+    def _recording_to_parquet(self, *args, **kwargs):
+        parquet_thread_ids.append(threading.get_ident())
+        return original_to_parquet(self, *args, **kwargs)
+
+    import shared.data_utils as data_utils
+    original_invalidate = data_utils.invalidate_schema_cache
+
+    async def _recording_invalidate(*args, **kwargs):
+        loop_thread_ids.append(threading.get_ident())
+        return await original_invalidate(*args, **kwargs)
+
+    conn = await _register_connection("default", duckdb_source)
+
+    with mock.patch.object(pd.DataFrame, "to_parquet", _recording_to_parquet), \
+            mock.patch.object(data_utils, "invalidate_schema_cache", _recording_invalidate):
+        resp = client.post(f"{V1}/connections/{conn['id']}/sync", json={"table_name": "customers"})
+
+    assert resp.status_code == 200, resp.text
+    assert len(seen := parquet_thread_ids) == 1
+    assert len(loop_thread_ids) == 1
+    assert seen[0] != loop_thread_ids[0], (
+        "df.to_parquet() ran on the same thread as the rest of the async "
+        "handler (the event loop thread); it must be wrapped in "
+        "asyncio.to_thread so it doesn't block the single uvicorn worker."
+    )
+
+
+@pytest.mark.asyncio
 async def test_synced_table_is_picked_up_by_chat_schema_context(client, duckdb_source, tmp_path):
     """Integration proof of the core design claim: once synced, the table
     shows up in build_schema_context_cached's scan with ZERO chat-side

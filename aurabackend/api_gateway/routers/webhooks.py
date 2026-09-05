@@ -20,6 +20,7 @@ Routes
 """
 from __future__ import annotations
 
+import asyncio
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException, Request
@@ -85,7 +86,8 @@ def _serialize(sub: WebhookSubscription) -> Dict[str, Any]:
 async def create_webhook(req: WebhookCreateRequest, request: Request) -> Dict[str, Any]:
     if not req.url.startswith(("http://", "https://")):
         raise HTTPException(status_code=400, detail="url must be http(s)")
-    sub = webhook_dispatcher.register(
+    sub = await asyncio.to_thread(
+        webhook_dispatcher.register,
         workspace_id=current_workspace_id(request),
         url=req.url,
         events=req.events,
@@ -128,7 +130,8 @@ async def get_webhook(sub_id: str, request: Request) -> Dict[str, Any]:
 
 @router.patch("/webhooks/{sub_id}")
 async def update_webhook(sub_id: str, req: WebhookUpdateRequest, request: Request) -> Dict[str, Any]:
-    sub = webhook_dispatcher.update(
+    sub = await asyncio.to_thread(
+        webhook_dispatcher.update,
         sub_id, current_workspace_id(request), **req.model_dump(exclude_none=True),
     )
     if not sub:
@@ -138,7 +141,7 @@ async def update_webhook(sub_id: str, req: WebhookUpdateRequest, request: Reques
 
 @router.delete("/webhooks/{sub_id}")
 async def delete_webhook(sub_id: str, request: Request) -> Dict[str, Any]:
-    if not webhook_dispatcher.delete(sub_id, current_workspace_id(request)):
+    if not await asyncio.to_thread(webhook_dispatcher.delete, sub_id, current_workspace_id(request)):
         raise HTTPException(status_code=404, detail="Webhook not found")
     return {"status": "success", "deleted": sub_id}
 

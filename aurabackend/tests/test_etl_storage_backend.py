@@ -73,3 +73,114 @@ def test_etl_natural_language_reads_uploaded_file_via_backend(tmp_path, monkeypa
     # shapes include "schema", which is what actually proves the source file
     # was read via the backend rather than 404ing before the LLM call.
     assert {c["name"] for c in body["schema"]} == {"region", "revenue"}, body
+
+
+def test_etl_natural_language_runs_blocking_calls_off_the_event_loop(tmp_path, monkeypatch):
+    """Single-uvicorn-worker constraint (see .claude/rules/backend.md "Async
+    safety"): smart_load_file/con.execute and llm.generate_json are
+    synchronous and must run via asyncio.to_thread so they don't block every
+    other tenant's request while a file loads or the LLM round-trips.
+    Regression test for the fix -- records which thread each blocking call
+    actually executed on and asserts it is NOT the event-loop thread."""
+    import threading
+
+    main_thread = threading.current_thread()
+    call_threads = {}
+
+    import shared.data_utils as data_utils_module
+    import shared.llm_provider as llm_provider_module
+
+    orig_smart_load_file = data_utils_module.smart_load_file
+
+    def tracking_smart_load_file(*args, **kwargs):
+        call_threads["smart_load_file"] = threading.current_thread()
+        return orig_smart_load_file(*args, **kwargs)
+
+    class FakeLLM:
+        def is_available(self):
+            return True
+
+        def generate_json(self, prompt):
+            call_threads["generate_json"] = threading.current_thread()
+            return [{"type": "custom_sql", "description": "x", "config": {"sql": "SELECT * FROM {{input}}"}}]
+
+    monkeypatch.setattr(data_utils_module, "smart_load_file", tracking_smart_load_file)
+    monkeypatch.setattr(llm_provider_module, "get_llm", lambda: FakeLLM())
+
+    client = _client(tmp_path, monkeypatch)
+    r = client.post("/api/v1/etl/natural-language", json={
+        "source_file": "sales.csv",
+        "instruction": "sum revenue by region",
+    })
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["status"] == "success", body
+
+    assert "smart_load_file" in call_threads, "smart_load_file was never called"
+    assert "generate_json" in call_threads, "llm.generate_json was never called"
+    assert call_threads["smart_load_file"] is not main_thread, (
+        "smart_load_file ran on the event-loop thread -- it must be wrapped in asyncio.to_thread"
+    )
+    assert call_threads["generate_json"] is not main_thread, (
+        "llm.generate_json ran on the event-loop thread -- it must be wrapped in asyncio.to_thread"
+    )
+
+
+def test_etl_execute_runs_blocking_calls_off_the_event_loop(tmp_path, monkeypatch):
+    """Single-uvicorn-worker constraint (see .claude/rules/backend.md "Async
+    safety"): /etl/execute's smart_load_file, transform materialization
+    (CREATE TABLE ... AS), DESCRIBE/preview fetchall, and the COPY ... TO
+    destination write are all synchronous DuckDB/file-IO calls and must run
+    via asyncio.to_thread so they don't block every other tenant's request
+    for the full ETL run. Regression test for the fix -- records which
+    thread each blocking call actually executed on and asserts it is NOT
+    the event-loop thread."""
+    import threading
+
+    main_thread = threading.current_thread()
+    call_threads = {}
+
+    import shared.data_utils as data_utils_module
+
+    orig_smart_load_file = data_utils_module.smart_load_file
+
+    def tracking_smart_load_file(*args, **kwargs):
+        call_threads["smart_load_file"] = threading.current_thread()
+        return orig_smart_load_file(*args, **kwargs)
+
+    monkeypatch.setattr(data_utils_module, "smart_load_file", tracking_smart_load_file)
+
+    import api_gateway.routers.etl as etl_module
+
+    orig_build_transform_sql = etl_module._build_transform_sql
+
+    def tracking_build_transform_sql(*args, **kwargs):
+        call_threads["build_transform_sql"] = threading.current_thread()
+        return orig_build_transform_sql(*args, **kwargs)
+
+    monkeypatch.setattr(etl_module, "_build_transform_sql", tracking_build_transform_sql)
+
+    client = _client(tmp_path, monkeypatch)
+    r = client.post("/api/v1/etl/execute", json={
+        "source_file": "sales.csv",
+        "transforms": [{"type": "aggregate", "config": {
+            "group_by": ["region"],
+            "aggregations": [{"column": "revenue", "func": "SUM", "alias": "total"}],
+        }}],
+        "destination_format": "csv",
+        "preview_only": False,
+    })
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["status"] == "success", body
+    assert body["output"]["file"], "expected a destination file to have been written"
+
+    assert "smart_load_file" in call_threads, "smart_load_file was never called"
+    assert "build_transform_sql" in call_threads, "_build_transform_sql was never called"
+    assert call_threads["smart_load_file"] is not main_thread, (
+        "smart_load_file ran on the event-loop thread -- it must be wrapped in asyncio.to_thread"
+    )
+    assert call_threads["build_transform_sql"] is not main_thread, (
+        "_build_transform_sql (which drives CREATE TABLE/DESCRIBE/COPY) ran on the "
+        "event-loop thread -- it must be wrapped in asyncio.to_thread"
+    )

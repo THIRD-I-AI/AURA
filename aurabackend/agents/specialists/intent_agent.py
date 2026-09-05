@@ -1,3 +1,4 @@
+import asyncio
 from typing import Any
 
 from agents.base import AgentContext, AgentResult, AgentStatus, BaseAgent
@@ -73,7 +74,10 @@ Respond STRICTLY with a JSON object (no markdown code blocks, just raw JSON):
 {{"intent": "sql" | "pipeline" | "audit" | "conversation", "message": "If conversation, put your helpful natural language response here; otherwise leave blank."}}
 """
             result.add_step(action="classify_intent", input_summary=f"User prompt: {ctx.user_prompt}")
-            classifier_result = self.llm.generate_json(intent_prompt)
+            # self.llm.generate_json() is a sync httpx/SDK call. The deployment
+            # runs a single uvicorn worker, so running it inline here would
+            # freeze every concurrent request until it returns.
+            classifier_result = await asyncio.to_thread(self.llm.generate_json, intent_prompt)
             result.output = classifier_result or {"intent": "sql"}
             result.status = AgentStatus.SUCCESS
             result.add_step(action="intent_classified", output_summary=result.output.get("intent", "sql"))
