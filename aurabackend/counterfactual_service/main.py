@@ -165,7 +165,7 @@ def register_dataset(source_id: str, df: pd.DataFrame) -> None:
     _datasets[source_id] = df
 
 
-def _resolve_dataset(source_id: str) -> pd.DataFrame:
+async def _resolve_dataset(source_id: str) -> pd.DataFrame:
     if source_id in _datasets:
         return _datasets[source_id].copy()
 
@@ -189,14 +189,18 @@ def _resolve_dataset(source_id: str) -> pd.DataFrame:
                 continue
             if p.is_file() and p.suffix.lower() in _READ_FN_BY_EXT:
                 # Use the same read function the chat upload pipeline does
-                # so column names come back identical.
+                # so column names come back identical. Offloaded to a thread:
+                # this runs on the shared single-worker event loop (called from
+                # _run_async/_run_demo_async), and parsing a tenant's own
+                # audit-sized CSV/Parquet/JSON is a genuine multi-ms-to-second
+                # blocking call with no async-native reader available.
                 read_fn = _READ_FN_BY_EXT[p.suffix.lower()]
                 if read_fn == "read_csv_auto":
-                    return pd.read_csv(p)
+                    return await asyncio.to_thread(pd.read_csv, p)
                 if read_fn == "read_parquet":
-                    return pd.read_parquet(p)
+                    return await asyncio.to_thread(pd.read_parquet, p)
                 if read_fn == "read_json_auto":
-                    return pd.read_json(p)
+                    return await asyncio.to_thread(pd.read_json, p)
         raise HTTPException(404, f"file not found in any uploads dir: {name}")
 
     raise HTTPException(404, f"unknown dataset source_id: {source_id!r}")
@@ -207,7 +211,7 @@ def _resolve_dataset(source_id: str) -> pd.DataFrame:
 async def _run_async(job_id: str, query: CounterfactualQuery) -> None:
     _jobs[job_id]["state"] = "running"
     try:
-        df = _resolve_dataset(query.dataset.source_id)
+        df = await _resolve_dataset(query.dataset.source_id)
         artifact = await run_job(query, df=df)
         artifact.rendered = render(artifact, query.audience)
         _jobs[job_id].update(
@@ -232,7 +236,7 @@ async def _run_demo_async(job_id: str, scenario_id: str, query: CounterfactualQu
     good artifact (degraded) so the demo never shows a broken state."""
     _jobs[job_id]["state"] = "running"
     try:
-        df = _resolve_dataset(query.dataset.source_id)
+        df = await _resolve_dataset(query.dataset.source_id)
         artifact = await run_job(query, df=df, methods=_DEMO_METHODS)
         artifact.rendered = render(artifact, query.audience)
         art_dict = artifact.model_dump(mode="json")
@@ -503,7 +507,7 @@ async def run_audit(req: AuditRequest,
     if path is None:
         raise HTTPException(404, f"uploaded file not found: {req.uploaded_file!r}")
     if path.suffix.lower() == ".csv":
-        header = _csv_header_columns(path)
+        header = await asyncio.to_thread(_csv_header_columns, path)
         needed = [req.treatment, req.outcome, *req.confounders] + (
             [req.instrument] if req.instrument else [])
         missing = [c for c in needed if c not in header]
@@ -533,7 +537,7 @@ async def get_artifact(record_hash: str) -> Dict[str, Any]:
     persisted, parsed back into a dict for the JSON response. The
     audit_record_hash in the body must equal the URL parameter.
     """
-    art = persistence.read_artifact(record_hash)
+    art = await asyncio.to_thread(persistence.read_artifact, record_hash)
     if art is None:
         raise HTTPException(404, f"artifact {record_hash} not found")
     return art
@@ -571,6 +575,20 @@ async def get_artifact_pdf(record_hash: str) -> Response:
     )
 
 
+def _load_verify_inputs(
+    record_hash: str,
+) -> tuple[Optional[bytes], Optional[str], Dict[str, Any]]:
+    """Synchronous filesystem reads for verify_artifact — run via to_thread.
+
+    Single-uvicorn-worker deployment: three back-to-back blocking reads
+    directly in the async handler would stall every concurrent request.
+    """
+    art_bytes = persistence.read_artifact_bytes(record_hash)
+    sig_b64 = persistence.read_signature(record_hash)
+    art_dict = persistence.read_artifact(record_hash) or {}
+    return art_bytes, sig_b64, art_dict
+
+
 @app.get("/counterfactual/artifacts/{record_hash}/verify")
 async def verify_artifact(record_hash: str) -> Dict[str, Any]:
     """Verify the persisted ED25519 signature against the persisted bytes.
@@ -579,12 +597,12 @@ async def verify_artifact(record_hash: str) -> Dict[str, Any]:
     Auditors can run this through any HTTP client without needing the
     private key.
     """
-    art_bytes = persistence.read_artifact_bytes(record_hash)
-    sig_b64 = persistence.read_signature(record_hash)
+    art_bytes, sig_b64, art_dict = await asyncio.to_thread(
+        _load_verify_inputs, record_hash
+    )
     if art_bytes is None:
         raise HTTPException(404, f"artifact {record_hash} not found")
 
-    art_dict = persistence.read_artifact(record_hash) or {}
     sig_status = art_dict.get("signature_status", "unsigned")
 
     if sig_status == "unsigned" or sig_b64 is None:
@@ -705,7 +723,7 @@ async def financial_audit(req: FinancialAuditRequest,
     doc = build_completion_document(
         tenant, result["findings"], fingerprint, result["materiality_threshold"],
         subject_id=req.subject_id, subject_type=req.subject_type, preparer_id=req.preparer_id)
-    stored = sign_and_persist(doc)
+    stored = await asyncio.to_thread(sign_and_persist, doc)
 
     # Always-on durable ledger: chain this signed audit into the tenant's
     # tamper-evident history (Subsystem C). The completion document is already
@@ -757,7 +775,7 @@ async def financial_audit_demo() -> Dict[str, Any]:
 @app.get("/audit/financial/verify/{record_hash}")
 async def financial_audit_verify(record_hash: str) -> Dict[str, Any]:
     from .financial_report import verify_report
-    return verify_report(record_hash)
+    return await asyncio.to_thread(verify_report, record_hash)
 
 
 # ── Subsystem C — durable audit ledger verification surface ──────────────
@@ -827,7 +845,7 @@ async def financial_audit_exceptions(record_hash: str) -> Dict[str, Any]:
     decision (PII redacted at egress)."""
     from . import exception_queue
     try:
-        return exception_queue.pending_exceptions(record_hash)
+        return await asyncio.to_thread(exception_queue.pending_exceptions, record_hash)
     except (LookupError, ValueError) as exc:
         raise HTTPException(404, str(exc))
 
@@ -844,7 +862,8 @@ async def financial_audit_decide(record_hash: str, finding_id: str,
     if not req.rationale.strip():
         raise HTTPException(422, "AS 1215 requires a non-blank rationale")
     try:
-        stored = exception_queue.record_decision(
+        stored = await asyncio.to_thread(
+            exception_queue.record_decision,
             record_hash, finding_id, user["sub"], req.rationale, req.approved,
             tenant_id=_ledger_tenant(user))
     except exception_queue.AlreadyDecidedError as exc:
@@ -974,10 +993,13 @@ async def replay_bulk(req: BulkReplayRequest) -> StreamingResponse:
         # Each verify is sub-millisecond (signature check + canonical
         # dumps) but persistence read is filesystem-bound. Run them
         # one at a time — the bottleneck is disk, not CPU, and
-        # streaming results keeps the latency-to-first-byte low.
+        # streaming results keeps the latency-to-first-byte low. The
+        # single uvicorn worker (backend.md) must still yield between
+        # hashes, so the blocking read runs via asyncio.to_thread
+        # rather than inline on the event loop.
         for h in ordered_unique:
             try:
-                result = _verify_one_artifact(h)
+                result = await asyncio.to_thread(_verify_one_artifact, h)
             except Exception as exc:
                 # Defensive: _verify_one_artifact is already supposed
                 # to swallow all failures, but a totally unexpected

@@ -254,3 +254,116 @@ def test_exception_decide_rejects_cross_tenant_auditor_e2e(monkeypatch, tmp_path
     with pytest.raises(HTTPException) as exc_info:
         asyncio.run(m.financial_audit_decide(rh, fid, body, user=cross_tenant_auditor))
     assert exc_info.value.status_code == 404
+
+
+def test_decide_endpoint_offloads_blocking_record_decision(monkeypatch, tmp_path):
+    """record_decision does several sequential blocking file reads/writes
+    (report load, decisions-index read/write, signed-artifact write, WORM
+    append). On the single-uvicorn-worker deployment (backend.md), that must
+    run via asyncio.to_thread so it can't freeze the event loop for every
+    other concurrent request. Proven by racing a fast ticker coroutine
+    against a deliberately slowed record_decision: if the call is offloaded,
+    the loop stays free to advance the ticker while the thread sleeps; if it
+    runs inline, the ticker never gets a chance to tick."""
+    import time
+
+    monkeypatch.setenv("AURA_ARTIFACT_DIR", str(tmp_path))
+    _store(monkeypatch)
+
+    import counterfactual_service.main as m
+
+    report = asyncio.run(m.financial_audit(m.FinancialAuditRequest(
+        tenant_id="t1",
+        ledger=[{"internal_id": "L1", "account_code": "4000", "amount": 250000.0}],
+        purchase_orders=[{"po_number": "PO-1"}],
+        invoices=[{"invoice_number": "INV-9", "po_number": "PO-MISSING",
+                   "employee_name": "Ada"}],
+        journal_entries=[],
+    ), user={"org_id": "t1", "sub": "t1"}))
+    rh = report["record_hash"]
+    fid = asyncio.run(m.financial_audit_exceptions(rh))["pending"][0]["finding_id"]
+
+    real_record_decision = eq.record_decision
+
+    def slow_record_decision(*a, **k):
+        time.sleep(0.3)
+        return real_record_decision(*a, **k)
+
+    monkeypatch.setattr(eq, "record_decision", slow_record_decision)
+
+    async def run():
+        ticks = 0
+
+        async def ticker():
+            nonlocal ticks
+            for _ in range(20):
+                await asyncio.sleep(0.02)
+                ticks += 1
+
+        ticker_task = asyncio.create_task(ticker())
+        body = m.ExceptionDecisionRequest(rationale="offload check", approved=True)
+        auditor = {"sub": "auditor-offload", "role": "auditor", "org_id": "t1"}
+        decision = await m.financial_audit_decide(rh, fid, body, user=auditor)
+        ticker_task.cancel()
+        return decision, ticks
+
+    decision, ticks = asyncio.run(run())
+    assert decision["document_type"] == "HumanOverrideRecord"
+    # If record_decision ran inline on the loop, its blocking time.sleep(0.3)
+    # would execute before the loop ever yielded to the ticker task, so
+    # ticks would still be 0 here.
+    assert ticks >= 5
+
+
+def test_exceptions_endpoint_offloads_blocking_pending_exceptions(monkeypatch, tmp_path):
+    """pending_exceptions does blocking file reads (report load + decisions-
+    index read). On the single-uvicorn-worker deployment (backend.md), that
+    must run via asyncio.to_thread so it can't freeze the event loop for
+    every other concurrent request. Proven the same way as the sibling
+    record_decision offload test above: race a fast ticker coroutine against
+    a deliberately slowed pending_exceptions."""
+    import time
+
+    monkeypatch.setenv("AURA_ARTIFACT_DIR", str(tmp_path))
+    _store(monkeypatch)
+
+    import counterfactual_service.main as m
+
+    report = asyncio.run(m.financial_audit(m.FinancialAuditRequest(
+        tenant_id="t1",
+        ledger=[{"internal_id": "L1", "account_code": "4000", "amount": 250000.0}],
+        purchase_orders=[{"po_number": "PO-1"}],
+        invoices=[{"invoice_number": "INV-9", "po_number": "PO-MISSING",
+                   "employee_name": "Ada"}],
+        journal_entries=[],
+    ), user={"org_id": "t1", "sub": "t1"}))
+    rh = report["record_hash"]
+
+    real_pending_exceptions = eq.pending_exceptions
+
+    def slow_pending_exceptions(*a, **k):
+        time.sleep(0.3)
+        return real_pending_exceptions(*a, **k)
+
+    monkeypatch.setattr(eq, "pending_exceptions", slow_pending_exceptions)
+
+    async def run():
+        ticks = 0
+
+        async def ticker():
+            nonlocal ticks
+            for _ in range(20):
+                await asyncio.sleep(0.02)
+                ticks += 1
+
+        ticker_task = asyncio.create_task(ticker())
+        q = await m.financial_audit_exceptions(rh)
+        ticker_task.cancel()
+        return q, ticks
+
+    q, ticks = asyncio.run(run())
+    assert q["n_pending"] == 2
+    # If pending_exceptions ran inline on the loop, its blocking time.sleep(0.3)
+    # would execute before the loop ever yielded to the ticker task, so
+    # ticks would still be 0 here.
+    assert ticks >= 5

@@ -159,6 +159,59 @@ def test_bulk_replay_rejects_empty_list():
         assert r.status_code == 422
 
 
+def test_bulk_replay_runs_verify_off_the_event_loop_thread(monkeypatch):
+    """Regression for the P-blocking-call finding: _verify_one_artifact does
+    synchronous filesystem reads (persistence.read_artifact_bytes/etc.), and
+    the single-uvicorn-worker deployment (backend.md) freezes every other
+    tenant's request if that runs inline on the event loop. Assert each call
+    actually lands on a worker thread distinct from the event-loop thread,
+    not just that asyncio.to_thread appears in the source."""
+    import asyncio
+    import threading
+
+    from fastapi.testclient import TestClient
+
+    import counterfactual_service.main as main_mod
+
+    loop_thread_id: list[int] = []
+    call_threads: list[int] = []
+
+    real_to_thread = asyncio.to_thread
+
+    async def _spy_to_thread(func, *args, **kwargs):
+        loop_thread_id.append(threading.get_ident())
+        return await real_to_thread(func, *args, **kwargs)
+
+    def _fake_verify(record_hash: str):
+        call_threads.append(threading.get_ident())
+        return {"record_hash": record_hash, "status": "not_found"}
+
+    monkeypatch.setattr(main_mod, "_verify_one_artifact", _fake_verify)
+    monkeypatch.setattr(main_mod.asyncio, "to_thread", _spy_to_thread)
+
+    with TestClient(main_mod.app, headers=_auth()) as client:
+        resp = client.post(
+            "/counterfactual/replay/bulk",
+            json={"hashes": ["0" * 64, "1" * 64]},
+        )
+        assert resp.status_code == 200, resp.text
+        rows = [json.loads(line) for line in resp.text.splitlines() if line.strip()]
+        assert len(rows) == 2
+
+    # asyncio.to_thread was invoked once per hash (proves the call site
+    # is wrapped), and the actual verify work ran off the event-loop
+    # thread that invoked to_thread (proves it isn't a no-op wrapper).
+    assert len(loop_thread_id) == 2
+    assert len(call_threads) == 2
+    for lt, ct in zip(loop_thread_id, call_threads):
+        assert ct != lt, (
+            "_verify_one_artifact ran on the event-loop thread — the "
+            "blocking filesystem read is no longer offloaded via "
+            "asyncio.to_thread, which will freeze the single uvicorn "
+            "worker for every tenant during a bulk-replay sweep."
+        )
+
+
 def test_bulk_replay_caps_batch_at_256():
     """max_length=256 prevents accidental DoS via 100k-hash sweep."""
     from fastapi.testclient import TestClient

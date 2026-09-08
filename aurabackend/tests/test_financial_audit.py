@@ -132,3 +132,64 @@ def test_financial_audit_endpoint_e2e(monkeypatch):
     assert "Ada" not in str(report["findings"])           # egress redaction applied
     v = asyncio.run(m.financial_audit_verify(report["record_hash"]))
     assert v["verified"] is True
+
+
+def test_financial_audit_verify_offloads_blocking_read(monkeypatch):
+    """financial_audit_verify must not call verify_report's blocking
+    persistence.read_artifact directly on the event loop thread (single-
+    uvicorn-worker deployment — see .claude/rules/backend.md)."""
+    import threading
+
+    import counterfactual_service.main as m
+    from counterfactual_service import financial_report as fr
+
+    _store(monkeypatch)
+    stored = fr.sign_and_persist(_doc())
+
+    main_thread_id = threading.get_ident()
+    call_thread_ids = []
+    real_verify_report = fr.verify_report
+
+    def spying_verify_report(record_hash):
+        call_thread_ids.append(threading.get_ident())
+        return real_verify_report(record_hash)
+
+    monkeypatch.setattr(fr, "verify_report", spying_verify_report)
+
+    v = asyncio.run(m.financial_audit_verify(stored["record_hash"]))
+
+    assert v["verified"] is True
+    assert len(call_thread_ids) == 1
+    assert call_thread_ids[0] != main_thread_id  # ran in asyncio.to_thread's worker, not the loop thread
+
+
+def test_financial_audit_sign_and_persist_offloaded_to_thread(monkeypatch):
+    """Regression test: financial_audit's sign_and_persist (canonical-JSON
+    disk write + WORM audit-log append, both blocking filesystem I/O) must go
+    through asyncio.to_thread, not run synchronously on the event loop -- a
+    single-uvicorn-worker blocking call would stall every concurrent
+    request/tenant (see .claude/rules/backend.md "Async safety")."""
+    _store(monkeypatch)
+    import counterfactual_service.main as m
+
+    calls = []
+    real_to_thread = asyncio.to_thread
+
+    async def spy_to_thread(func, *args, **kwargs):
+        calls.append(func)
+        return await real_to_thread(func, *args, **kwargs)
+
+    monkeypatch.setattr(m.asyncio, "to_thread", spy_to_thread)
+
+    req = m.FinancialAuditRequest(
+        tenant_id="t1",
+        ledger=[{"internal_id": "L1", "account_code": "4000", "amount": 250000.0}],
+        purchase_orders=[{"po_number": "PO-1"}],
+        invoices=[{"invoice_number": "INV-9", "po_number": "PO-MISSING", "employee_name": "Ada"}],
+        journal_entries=[{"internal_id": "J1", "amount": 5000.0, "account_code": "6000", "vendor_id": "V1"}],
+    )
+    report = asyncio.run(m.financial_audit(req, user={"org_id": "t1", "sub": "t1"}))
+    assert report["signature_status"] == "signed"
+    assert fr.sign_and_persist in calls or any(
+        getattr(c, "__name__", None) == "sign_and_persist" for c in calls), (
+        "sign_and_persist must be dispatched via asyncio.to_thread")

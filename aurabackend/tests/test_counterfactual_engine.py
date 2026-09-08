@@ -148,6 +148,8 @@ async def test_critic_flags_missing_confounder(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_parser_extracts_treatment_outcome(monkeypatch):
+    import threading
+
     from agents.base import AgentContext
     from agents.specialists.counterfactual_parser_agent import CounterfactualParserAgent
 
@@ -159,8 +161,19 @@ async def test_parser_extracts_treatment_outcome(monkeypatch):
             "window": ["2025-07-01", "2025-09-30"],
         },
     })
+
+    call_threads: list[str] = []
+
+    def _record_and_respond(_text: str) -> str:
+        # Proves the blocking self.llm.generate() runs off the event
+        # loop thread (asyncio.to_thread) — a regression back to a
+        # direct in-loop call would show this thread as MainThread and
+        # fail the assertion below.
+        call_threads.append(threading.current_thread().name)
+        return canned
+
     install_mock(monkeypatch, UnifiedMockLLM(rules=[
-        MockRule(re.compile(r"counterfactual|parse", re.I), canned),
+        MockRule(re.compile(r"counterfactual|parse", re.I), _record_and_respond),
     ]))
 
     agent = CounterfactualParserAgent()
@@ -174,6 +187,13 @@ async def test_parser_extracts_treatment_outcome(monkeypatch):
     out = res.output
     assert out["treatment"]["column"] == "price_change_may"
     assert out["outcome"]["agg"] == "sum"
+
+    assert call_threads, "mocked llm.generate was never called"
+    assert call_threads[0] != threading.current_thread().name, (
+        f"self.llm.generate ran on the event-loop thread "
+        f"{threading.current_thread().name!r} instead of a to_thread worker "
+        "(asyncio.to_thread not used — this blocks the sole uvicorn worker)"
+    )
 
 
 # ── Full engine: run_job ──────────────────────────────────────────────
