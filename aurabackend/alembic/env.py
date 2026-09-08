@@ -3,7 +3,15 @@ Alembic migration environment for AURA.
 
 - Pulls the database URL from `metadata_store.db.DATABASE_URL` (which already
   honours METADATA_DATABASE_URL / defaults to aiosqlite) so there is one
-  source of truth across runtime and migrations.
+  source of truth across runtime and migrations — for deployments where
+  GATEWAY_DATABASE_URL / AURA_LEDGER_DATABASE_URL coincide with it (the
+  Postgres production topology, where all three point at the same `db`
+  service). When they DON'T coincide (the local/free-tier SQLite fallback,
+  where each resolves to its own file), running every migration against only
+  the metadata URL silently misses `api_gateway.persistence`'s and
+  `shared.audit_ledger`'s tables entirely — see BUG-044. `_run_split_db_pass`
+  below closes that gap for the split case without changing anything about
+  the single-URL path, which stays exactly as before.
 - Imports the model modules so every Base-registered table shows up in
   `target_metadata` — this is what `--autogenerate` diffs against.
 - Runs async engines synchronously via `connection.run_sync()`, which is
@@ -14,8 +22,10 @@ from __future__ import annotations
 import asyncio
 from logging.config import fileConfig
 
+from alembic.runtime.migration import MigrationContext
 from sqlalchemy import pool
 from sqlalchemy.engine import Connection
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
 from alembic import context
@@ -119,8 +129,103 @@ async def run_async_migrations() -> None:
     await connectable.dispose()
 
 
+# ── BUG-044: split-database backfill ────────────────────────────────
+#
+# Only runs when GATEWAY_DATABASE_URL / AURA_LEDGER_DATABASE_URL genuinely
+# differ from the metadata store's URL (the local/free-tier SQLite fallback
+# topology). The primary pass above already migrated the metadata URL
+# normally and correctly; this replays the SAME revision chain against each
+# other distinct URL so their tables — created via `create_all()` at
+# whatever point the app first touched them, per persistence.py's
+# lazy-init pattern — catch up on every migration that came after.
+#
+# A historical revision predating a given URL's introduction into this
+# multi-database setup is expected to already match what create_all() built
+# (same columns/tables, just never Alembic-tracked): running it hits a
+# SQLite "already exists"/"duplicate column" error, which is treated as
+# proof the revision is satisfied — rolled back to a savepoint and the
+# version table advanced without re-executing it — rather than a real
+# failure. Any OTHER error still propagates; this only swallows the exact
+# idempotency-class errors that prove the schema already matches.
+_IDEMPOTENT_ERROR_MARKERS = ("already exists", "duplicate column name")
+
+
+def _stamp(connection: Connection, revision: str) -> None:
+    connection.exec_driver_sql(
+        "CREATE TABLE IF NOT EXISTS alembic_version "
+        "(version_num VARCHAR(32) NOT NULL, CONSTRAINT alembic_version_pkc PRIMARY KEY (version_num))"
+    )
+    connection.exec_driver_sql("DELETE FROM alembic_version")
+    connection.exec_driver_sql(
+        "INSERT INTO alembic_version (version_num) VALUES (:v)", {"v": revision}
+    )
+
+
+def _do_split_db_pass(connection: Connection) -> None:
+    from alembic.operations import Operations
+    from alembic.script import ScriptDirectory
+
+    script = ScriptDirectory.from_config(config)
+    mc = MigrationContext.configure(
+        connection,
+        opts={
+            "target_metadata": target_metadata,
+            "compare_type": True,
+            "compare_server_default": False,
+            # Split-database passes only ever run against SQLite (the
+            # deployment topology this backfill exists for) — batch mode
+            # is required there for ALTER-style operations.
+            "render_as_batch": True,
+        },
+    )
+    already_applied = mc.get_current_heads()
+
+    # Oldest-first: walk_revisions(base, head) yields newest-to-oldest.
+    for rev in reversed(list(script.walk_revisions("base", "head"))):
+        if rev.revision in already_applied:
+            continue
+        module = script.get_revision(rev.revision).module
+        savepoint = connection.begin_nested()
+        try:
+            # Operations.context() binds this instance as the target of the
+            # module-level `op.*` proxy calls inside module.upgrade() — a
+            # bare Operations(mc) instance is never wired to that proxy.
+            with Operations.context(mc):
+                module.upgrade()
+        except OperationalError as exc:
+            savepoint.rollback()
+            msg = str(getattr(exc, "orig", exc)).lower()
+            if not any(marker in msg for marker in _IDEMPOTENT_ERROR_MARKERS):
+                raise
+            # Schema already matches (create_all() built it) — advance the
+            # version pointer without having actually re-run the DDL.
+        else:
+            savepoint.commit()
+        _stamp(connection, rev.revision)
+    connection.commit()
+
+
+async def _run_split_db_pass(url: str) -> None:
+    connectable = async_engine_from_config(
+        {"sqlalchemy.url": url},
+        prefix="sqlalchemy.",
+        poolclass=pool.NullPool,
+    )
+    async with connectable.connect() as connection:
+        await connection.run_sync(_do_split_db_pass)
+    await connectable.dispose()
+
+
 def run_migrations_online() -> None:
     asyncio.run(run_async_migrations())
+
+    other_urls = {
+        _gateway_persistence.database_url(),
+        _audit_ledger_models.database_url(),
+    }
+    other_urls.discard(DATABASE_URL)
+    for url in sorted(other_urls):
+        asyncio.run(_run_split_db_pass(url))
 
 
 if context.is_offline_mode():
