@@ -139,14 +139,25 @@ async def run_async_migrations() -> None:
 # whatever point the app first touched them, per persistence.py's
 # lazy-init pattern — catch up on every migration that came after.
 #
-# A historical revision predating a given URL's introduction into this
-# multi-database setup is expected to already match what create_all() built
-# (same columns/tables, just never Alembic-tracked): running it hits a
-# SQLite "already exists"/"duplicate column" error, which is treated as
-# proof the revision is satisfied — rolled back to a savepoint and the
-# version table advanced without re-executing it — rather than a real
-# failure. Any OTHER error still propagates; this only swallows the exact
-# idempotency-class errors that prove the schema already matches.
+# Two layers, both required:
+#
+# 1. Ownership pre-check (_revision_owns_a_table_in): a revision file is
+#    only even ATTEMPTED against a given split URL if its source text
+#    literally names one of that URL's owning Base's tables. Without this,
+#    a revision that creates purely metadata-store tables (e.g. `users`,
+#    `semantic_models`) would find none of them already present on
+#    gateway.db/ledger.db and happily create a full unrelated shadow copy
+#    there — this is exactly what happened in production before this
+#    check existed (see BUG-044's registry entry): 20+ metadata-only
+#    tables got cloned into gateway.db. Skipped revisions are stamped
+#    without ever calling their upgrade().
+# 2. Idempotency catch: for a revision that DOES own a table here, a
+#    historical revision predating this URL's introduction is expected to
+#    already match what create_all() built (same columns/tables, just
+#    never Alembic-tracked) — running it hits a SQLite "already exists"/
+#    "duplicate column" error, treated as proof the revision is already
+#    satisfied (rolled back to a savepoint, version advanced without
+#    re-executing) rather than a failure. Any OTHER error still propagates.
 _IDEMPOTENT_ERROR_MARKERS = ("already exists", "duplicate column name")
 
 
@@ -161,7 +172,20 @@ def _stamp(connection: Connection, revision: str) -> None:
     )
 
 
-def _do_split_db_pass(connection: Connection) -> None:
+def _revision_owns_a_table_in(script, revision: str, owned_tables: frozenset) -> bool:
+    """True if this revision's source literally names a table this split
+    database owns — a plain substring/quoted-literal check, not real
+    parsing, but migrations always pass table names as string literals to
+    op.* calls (`op.add_column('gateway_query_history', ...)`), so this is
+    a reliable proxy for "does this revision's upgrade() touch a table
+    that belongs here" without having to execute it first to find out."""
+    text = script.get_revision(revision).path
+    with open(text, encoding="utf-8") as fh:
+        content = fh.read()
+    return any(f"'{t}'" in content or f'"{t}"' in content for t in owned_tables)
+
+
+def _do_split_db_pass(connection: Connection, owned_tables: frozenset) -> None:
     from alembic.operations import Operations
     from alembic.script import ScriptDirectory
 
@@ -184,6 +208,11 @@ def _do_split_db_pass(connection: Connection) -> None:
     for rev in reversed(list(script.walk_revisions("base", "head"))):
         if rev.revision in already_applied:
             continue
+        if not _revision_owns_a_table_in(script, rev.revision, owned_tables):
+            # Doesn't touch anything belonging to this database — never
+            # attempt it, just advance the pointer past it.
+            _stamp(connection, rev.revision)
+            continue
         module = script.get_revision(rev.revision).module
         savepoint = connection.begin_nested()
         try:
@@ -205,27 +234,34 @@ def _do_split_db_pass(connection: Connection) -> None:
     connection.commit()
 
 
-async def _run_split_db_pass(url: str) -> None:
+async def _run_split_db_pass(url: str, owned_tables: frozenset) -> None:
     connectable = async_engine_from_config(
         {"sqlalchemy.url": url},
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
     )
     async with connectable.connect() as connection:
-        await connection.run_sync(_do_split_db_pass)
+        await connection.run_sync(_do_split_db_pass, owned_tables)
     await connectable.dispose()
 
 
 def run_migrations_online() -> None:
     asyncio.run(run_async_migrations())
 
-    other_urls = {
-        _gateway_persistence.database_url(),
-        _audit_ledger_models.database_url(),
-    }
-    other_urls.discard(DATABASE_URL)
-    for url in sorted(other_urls):
-        asyncio.run(_run_split_db_pass(url))
+    # Group by URL first: if two Bases happen to share a split URL, run
+    # ONE pass with the union of their table names rather than two passes
+    # racing the same alembic_version row against different ownership sets.
+    by_url: dict = {}
+    for url, metadata in (
+        (_gateway_persistence.database_url(), _gateway_persistence.Base.metadata),
+        (_audit_ledger_models.database_url(), _audit_ledger_models.Base.metadata),
+    ):
+        if url == DATABASE_URL:
+            continue
+        by_url.setdefault(url, set()).update(metadata.tables.keys())
+
+    for url in sorted(by_url):
+        asyncio.run(_run_split_db_pass(url, frozenset(by_url[url])))
 
 
 if context.is_offline_mode():
