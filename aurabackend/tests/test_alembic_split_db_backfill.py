@@ -43,6 +43,15 @@ def _table_columns(db_path: Path, table: str) -> set:
         conn.close()
 
 
+def _alembic_version(db_path: Path) -> str:
+    conn = sqlite3.connect(str(db_path))
+    try:
+        row = conn.execute("SELECT version_num FROM alembic_version").fetchone()
+        return row[0] if row else None
+    finally:
+        conn.close()
+
+
 def _tables(db_path: Path) -> set:
     conn = sqlite3.connect(str(db_path))
     try:
@@ -112,6 +121,26 @@ def test_split_database_backfill_reaches_gateway_and_ledger_dbs(tmp_path):
     metadata_tables = _tables(metadata_db)
     assert "users" in metadata_tables
     assert "semantic_models" in metadata_tables
+
+    # Regression proof for the pollution bug this same fix introduced and
+    # then corrected: migrations that only touch metadata-store-owned
+    # tables (unrelated to gateway/ledger) must NEVER get created inside
+    # gateway.db or ledger.db just because they don't already exist there.
+    for unrelated in ("users", "semantic_models", "uasr_drift_events", "evolution_system_log"):
+        assert unrelated not in gateway_tables, (
+            f"{unrelated} is metadata-store-owned and must not exist in gateway.db"
+        )
+        assert unrelated not in _tables(ledger_db), (
+            f"{unrelated} is metadata-store-owned and must not exist in ledger.db"
+        )
+
+    # Every split database must reach the SAME head as the metadata pass —
+    # a revision belonging to neither database (e.g. an evolution-table
+    # migration, which lives on the metadata Base) must be stamped past,
+    # not left as a stopping point.
+    head = _alembic_version(metadata_db)
+    assert _alembic_version(gateway_db) == head
+    assert _alembic_version(ledger_db) == head
 
 
 @pytest.mark.skipif(not VENV_PYTHON.exists(), reason="repo-root venv not present")
