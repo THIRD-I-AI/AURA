@@ -573,7 +573,19 @@ class RecoveryLoop:
             try:
                 self._on_shim_deployed(source_id, shim_code, recovery_id)
             except Exception as exc:
-                logger.warning("on_shim_deployed callback failed: %s", exc)
+                # The callback persists the recovery record / registers the
+                # route with ShimRouter. If it fails, none of that happened
+                # even though the shim ran -- undo the registry entry and
+                # re-raise so the caller (the /approve endpoint) does NOT
+                # mark the recovery DEPLOYED for a heal that silently didn't
+                # take effect.
+                self._deployed_shims[source_id].remove(shim_code)
+                logger.error(
+                    "on_shim_deployed callback failed, approved shim did not "
+                    "take effect: recovery=%s, source=%s: %s",
+                    recovery_id, source_id, exc,
+                )
+                raise
         logger.info(
             "Approved shim deployed: recovery=%s, source=%s", recovery_id, source_id,
         )
@@ -611,7 +623,25 @@ class RecoveryLoop:
                     recovery_id,
                 )
             except Exception as exc:
-                logger.warning("on_shim_deployed callback failed: %s", exc)
+                # The callback persists the recovery record / registers the
+                # route with ShimRouter. If it raises, that side effect did
+                # NOT happen even though the shim already ran in the
+                # sandbox -- reporting DEPLOYED here would tell the operator
+                # (and post-heal validation) that healing succeeded when
+                # nothing was actually wired up, which is exactly how drift
+                # keeps getting detected with no recovery record ever
+                # appearing. Fail closed: undo the registry entry and mark
+                # this attempt FAILED instead.
+                logger.error(
+                    "on_shim_deployed callback failed, deployment did not "
+                    "take effect: recovery=%s, source=%s: %s",
+                    recovery_id, drift_result.source_id, exc,
+                )
+                shim.deployed = False
+                self._deployed_shims[drift_result.source_id].remove(shim.shim_code)
+                self._post_deploy_watch.pop(drift_result.source_id, None)
+                loop_result.status = RecoveryStatus.FAILED
+                return
 
         logger.info(
             "Shim deployed: recovery=%s, post_kl=%s",
