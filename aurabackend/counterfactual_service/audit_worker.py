@@ -36,7 +36,7 @@ def run_audit_subprocess(payload: Dict[str, Any]) -> Dict[str, Any]:
     from .main import _resolve_dataset
     from .renderers import render
 
-    df = _resolve_dataset(f"uploaded_file:{payload['uploaded_file']}")
+    df = asyncio.run(_resolve_dataset(f"uploaded_file:{payload['uploaded_file']}"))
     # `eff` carries the auto-encoded column names (one-hot dummies, etc.) so the
     # DAG + identification statement adjust on the columns actually used.
     clean_df, dq, eff = validate_and_prepare(df, payload)

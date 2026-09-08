@@ -144,6 +144,49 @@ def test_audit_wiring_creates_job_and_stores_result(tmp_path, monkeypatch):
     assert art["artifact"]["data_quality"]["n_clean"] == 160
 
 
+def test_audit_csv_header_read_offloaded_to_thread(tmp_path, monkeypatch):
+    """Regression test: run_audit's CSV-header pre-validation
+    (_csv_header_columns -> pd.read_csv) must go through asyncio.to_thread,
+    not run synchronously on the event loop -- a single-uvicorn-worker
+    blocking call would stall every concurrent request/tenant."""
+    import asyncio
+
+    import pandas as pd
+
+    from counterfactual_service import main as m
+    c = _client(tmp_path, monkeypatch)
+    pd.DataFrame({"flag": [0, 1] * 80, "approved": [1, 0] * 80, "score": [0.1] * 160}).to_csv(
+        tmp_path / "data" / "uploads" / "d.csv", index=False)
+
+    calls = []
+    real_to_thread = asyncio.to_thread
+
+    async def spy_to_thread(func, *args, **kwargs):
+        calls.append(func)
+        return await real_to_thread(func, *args, **kwargs)
+
+    monkeypatch.setattr(m.asyncio, "to_thread", spy_to_thread)
+
+    def _fast_audit(payload):
+        return {
+            "audit_record_hash": "stub", "estimates": [], "signature_status": "signed",
+            "identification": "assumes no unmeasured confounding beyond: score",
+            "sensitivity_headline": "Robustness: E-value about 1.70",
+            "data_quality": {"n_input": 160, "n_clean": 160, "n_dropped": 0,
+                             "treatment_is_binary": True, "warnings": []},
+        }
+
+    monkeypatch.setattr(m, "run_audit_subprocess", _fast_audit)
+    monkeypatch.setattr(m, "get_audit_pool", lambda: None)
+
+    r = c.post("/counterfactual/audit", json={
+        "uploaded_file": "d.csv", "treatment": "flag", "outcome": "approved",
+        "confounders": ["score"]})
+    assert r.status_code == 200
+    assert m._csv_header_columns in calls, (
+        "_csv_header_columns must be dispatched via asyncio.to_thread")
+
+
 def test_audit_reachable_through_gateway(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     (tmp_path / "data" / "uploads").mkdir(parents=True, exist_ok=True)
