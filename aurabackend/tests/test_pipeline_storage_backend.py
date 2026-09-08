@@ -123,6 +123,55 @@ def test_pipeline_generate_reads_explicit_source_file_via_backend(tmp_path, monk
     import pipeline.generator as generator_module
     monkeypatch.setattr(generator_module.PipelineGenerator, "generate", _fake_generate)
 
+    # Single-uvicorn-worker regression guard: get_file_schema is synchronous
+    # (StorageBackend I/O + a fresh DuckDB connection + a possible sync LLM
+    # header-inference call) and must run off the event-loop thread via
+    # asyncio.to_thread, or one caller's schema read freezes every other
+    # tenant's concurrent request. Wrap it to record which thread actually
+    # ran it and compare against the event loop's own thread.
+    import threading
+
+    real_get_file_schema = generator_module.PipelineGenerator.get_file_schema
+    schema_call_thread_ident = {}
+
+    def _tracking_get_file_schema(self, file_name, tenant=None):
+        schema_call_thread_ident["ident"] = threading.get_ident()
+        return real_get_file_schema(self, file_name, tenant)
+
+    monkeypatch.setattr(generator_module.PipelineGenerator, "get_file_schema", _tracking_get_file_schema)
+
+    # Same guard for the StorageBackend.list() call pipeline_generate makes
+    # to build available_files -- under AURA_STORAGE_BACKEND=s3 this is a
+    # real boto3 network round-trip, and even the local backend does sync
+    # iterdir()+stat(). Wrap LocalBackend.list to record its thread.
+    from shared.storage.local import LocalBackend
+    real_list = LocalBackend.list
+    list_call_thread_ident = {}
+
+    def _tracking_list(self, tenant):
+        list_call_thread_ident["ident"] = threading.get_ident()
+        return real_list(self, tenant)
+
+    monkeypatch.setattr(LocalBackend, "list", _tracking_list)
+
+    # NOTE: comparing against threading.get_ident() from *this* (pytest)
+    # thread would not prove anything -- TestClient/httpx already runs the
+    # whole event loop on its own worker thread via anyio's portal, so the
+    # coroutine body itself never runs on the pytest thread regardless of
+    # whether the blocking calls are offloaded. The real baseline is the
+    # event-loop thread the route handler's coroutine runs on, captured
+    # from inside the coroutine via _request_tenant (called synchronously,
+    # before either blocking call, on every request).
+    import api_gateway.routers.pipelines as pipelines_module
+    real_request_tenant = pipelines_module._request_tenant
+    event_loop_thread_ident = {}
+
+    def _tracking_request_tenant(request):
+        event_loop_thread_ident["ident"] = threading.get_ident()
+        return real_request_tenant(request)
+
+    monkeypatch.setattr(pipelines_module, "_request_tenant", _tracking_request_tenant)
+
     r = client.post("/api/v1/pipeline/generate", json={
         "prompt": "show me the data",
         "source_file": "sales.csv",
@@ -133,6 +182,23 @@ def test_pipeline_generate_reads_explicit_source_file_via_backend(tmp_path, monk
     assert body["status"] == "success", body
     assert "sales.csv" in captured["schema_context"], captured
     assert {c["name"] for c in captured["schema_context"]["sales.csv"]["columns"]} == {"region", "revenue"}
+
+    assert "ident" in event_loop_thread_ident, "_request_tenant was never called"
+    event_loop_ident = event_loop_thread_ident["ident"]
+
+    assert "ident" in schema_call_thread_ident, "get_file_schema was never called"
+    assert schema_call_thread_ident["ident"] != event_loop_ident, (
+        "get_file_schema ran on the event-loop thread -- it must be offloaded "
+        "via asyncio.to_thread (see backend.md Async safety)"
+    )
+
+    assert "ident" in list_call_thread_ident, "StorageBackend.list() was never called"
+    assert list_call_thread_ident["ident"] != event_loop_ident, (
+        "StorageBackend.list() ran on the event-loop thread -- it must be "
+        "offloaded via asyncio.to_thread (see backend.md Async safety); under "
+        "AURA_STORAGE_BACKEND=s3 this is a real boto3 network call that would "
+        "otherwise block the single uvicorn worker for every tenant"
+    )
 
 
 def test_upload_dataset_profile_reflects_real_uploaded_columns(tmp_path, monkeypatch):

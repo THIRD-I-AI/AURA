@@ -17,6 +17,7 @@ before letting the result land in state.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from typing import Any, Dict, List, Optional
@@ -169,7 +170,7 @@ class DARResearchAgent(BaseAgent):
         if not self.llm.is_available():
             return None
         try:
-            return self.llm.generate_json(prompt)
+            return await asyncio.to_thread(self.llm.generate_json, prompt)
         except Exception as exc:
             logger.warning("DAR LLM call failed: %s", exc)
             return None

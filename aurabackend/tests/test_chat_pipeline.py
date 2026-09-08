@@ -61,6 +61,35 @@ def test_dashboard_stats(client):
     assert "system_health" in data
 
 
+def test_dashboard_stats_scans_upload_dir_off_event_loop(client, monkeypatch):
+    """The tenant upload-dir scan (readdir + per-entry stat) must run via
+    asyncio.to_thread, not directly on the event loop -- a single-uvicorn-
+    worker deployment freezes every tenant's requests for as long as a
+    blocking call runs inline. Regression test for that bug."""
+    import asyncio
+
+    from api_gateway.routers import queries as queries_router
+
+    calls = []
+    real_to_thread = asyncio.to_thread
+
+    async def spy_to_thread(func, *args, **kwargs):
+        calls.append(func)
+        return await real_to_thread(func, *args, **kwargs)
+
+    monkeypatch.setattr(queries_router.asyncio, "to_thread", spy_to_thread)
+    monkeypatch.setattr(
+        queries_router.dashboard_cache, "get",
+        lambda *a, **k: asyncio.sleep(0, result=None),
+    )
+
+    resp = client.get(f"{V1}/dashboard/stats")
+    assert resp.status_code == 200
+    assert queries_router._list_tracked_files in calls, (
+        "upload_dir scan must be offloaded via asyncio.to_thread"
+    )
+
+
 # ── Connections ──────────────────────────────────────────────────────
 
 def test_list_connections(client):

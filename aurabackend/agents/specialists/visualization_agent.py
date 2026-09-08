@@ -13,6 +13,7 @@ Strategy (in order):
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from typing import Any, Dict, List, Optional
@@ -80,7 +81,10 @@ class VisualizationAgent(BaseAgent):
         profiles = profile_columns(records, columns)
 
         # 1. LLM attempt
-        spec = self._llm_chart_spec(ctx.user_prompt, profiles, records)
+        # _llm_chart_spec calls the sync LLM SDK (self._llm.generate_json).
+        # The deployment runs a single uvicorn worker, so calling it inline
+        # here would freeze every concurrent request until it returns.
+        spec = await asyncio.to_thread(self._llm_chart_spec, ctx.user_prompt, profiles, records)
 
         # 2. Validate / fall back
         if not _is_valid_spec(spec, profiles):

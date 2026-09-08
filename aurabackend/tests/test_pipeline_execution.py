@@ -274,6 +274,17 @@ async def test_pg_sink_quotes_table_name_containing_double_quote(monkeypatch):
 
     monkeypatch.setattr(connectors, "PostgreSQLConnector", FakePostgreSQLConnector)
 
+    import pipeline.engine as engine_module
+
+    real_to_thread = engine_module.asyncio.to_thread
+    offloaded_funcs: list = []
+
+    async def spy_to_thread(func, *args, **kwargs):
+        offloaded_funcs.append(getattr(func, "__name__", func))
+        return await real_to_thread(func, *args, **kwargs)
+
+    monkeypatch.setattr(engine_module.asyncio, "to_thread", spy_to_thread)
+
     con = duckdb.connect(":memory:")
     con.execute("CREATE TABLE pipeline_output (id INTEGER)")
     con.execute("INSERT INTO pipeline_output VALUES (1), (2)")
@@ -291,6 +302,150 @@ async def test_pg_sink_quotes_table_name_containing_double_quote(monkeypatch):
     assert any(expected_quoted in sql for sql in executed_sql), executed_sql
     assert not any(f"DROP TABLE IF EXISTS {evil_table}" in sql for sql in executed_sql)
     assert not any(f"INSERT INTO {evil_table}" in sql for sql in executed_sql)
+
+    # BUG: the full-table SELECT/DESCRIBE + fetchall() against DuckDB are
+    # synchronous and must not run inline on the event loop (backend.md
+    # Async safety) — they must be dispatched via asyncio.to_thread.
+    assert "execute" in offloaded_funcs, (
+        f"_write_pg_sink's DuckDB SELECT/DESCRIBE must run via asyncio.to_thread, "
+        f"not inline on the event loop. Offloaded calls seen: {offloaded_funcs}"
+    )
+    assert "fetchall" in offloaded_funcs, (
+        f"_write_pg_sink's DuckDB fetchall() must run via asyncio.to_thread, "
+        f"not inline on the event loop. Offloaded calls seen: {offloaded_funcs}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_file_sink_write_offloaded_to_thread(tmp_path, monkeypatch):
+    """_write_sink's FILE branch calls the synchronous _write_file_sink,
+    which runs a blocking DuckDB `COPY ... TO ...` over the full result
+    table. Under this repo's single-uvicorn-worker deployment, calling it
+    inline would freeze every concurrent tenant's request for its duration.
+    It must be dispatched via asyncio.to_thread, matching the transform SQL
+    execution earlier in execute()."""
+    import pipeline.engine as engine_module
+
+    _isolate_storage(tmp_path, monkeypatch)
+    from shared.storage import get_storage_backend
+    tenant = "tenant_abc123"
+    get_storage_backend().write(tenant, "customers.csv", b"id,name\n1,Alice\n2,Bob\n")
+
+    real_to_thread = engine_module.asyncio.to_thread
+    offloaded_funcs: list = []
+
+    async def spy_to_thread(func, *args, **kwargs):
+        offloaded_funcs.append(getattr(func, "__name__", func))
+        return await real_to_thread(func, *args, **kwargs)
+
+    monkeypatch.setattr(engine_module.asyncio, "to_thread", spy_to_thread)
+    monkeypatch.setattr(engine_module, "OUTPUT_DIR", str(tmp_path))
+
+    pipeline = Pipeline(
+        name="file-sink-offload-test",
+        source=PipelineSource(type=SourceType.FILE, file_name="customers.csv"),
+        sink=PipelineSink(type=SinkType.FILE, format="csv", file_name="out.csv"),
+    )
+
+    engine = PipelineEngine()
+    run = await engine.execute(pipeline, preview_only=False, tenant=tenant)
+
+    assert run.status == PipelineStatus.SUCCESS, run.error
+    assert "_write_file_sink" in offloaded_funcs, (
+        f"_write_file_sink must run via asyncio.to_thread, not inline on the "
+        f"event loop (see backend.md Async safety). Offloaded calls seen: "
+        f"{offloaded_funcs}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_duckdb_sink_write_offloaded_to_thread(tmp_path, monkeypatch):
+    """_write_sink's DUCKDB branch calls the synchronous _write_duckdb_sink,
+    which runs a blocking `CREATE TABLE ... AS SELECT * FROM ...` over the
+    full result table. It must be dispatched via asyncio.to_thread for the
+    same reason as the FILE sink above."""
+    import pipeline.engine as engine_module
+
+    _isolate_storage(tmp_path, monkeypatch)
+    from shared.storage import get_storage_backend
+    tenant = "tenant_abc123"
+    get_storage_backend().write(tenant, "customers.csv", b"id,name\n1,Alice\n2,Bob\n")
+
+    real_to_thread = engine_module.asyncio.to_thread
+    offloaded_funcs: list = []
+
+    async def spy_to_thread(func, *args, **kwargs):
+        offloaded_funcs.append(getattr(func, "__name__", func))
+        return await real_to_thread(func, *args, **kwargs)
+
+    monkeypatch.setattr(engine_module.asyncio, "to_thread", spy_to_thread)
+
+    pipeline = Pipeline(
+        name="duckdb-sink-offload-test",
+        source=PipelineSource(type=SourceType.FILE, file_name="customers.csv"),
+        sink=PipelineSink(type=SinkType.DUCKDB, table="pipeline_output_saved", if_exists="replace"),
+    )
+
+    engine = PipelineEngine()
+    run = await engine.execute(pipeline, preview_only=False, tenant=tenant)
+
+    assert run.status == PipelineStatus.SUCCESS, run.error
+    assert "_write_duckdb_sink" in offloaded_funcs, (
+        f"_write_duckdb_sink must run via asyncio.to_thread, not inline on the "
+        f"event loop (see backend.md Async safety). Offloaded calls seen: "
+        f"{offloaded_funcs}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_kafka_source_create_and_insert_offloaded_to_thread(monkeypatch):
+    """_load_kafka_source's CREATE TABLE + per-row INSERT loop over every
+    consumed Kafka message is synchronous DuckDB work, same shape as
+    _load_db_source's _create_and_insert. It must run via asyncio.to_thread,
+    not inline on the event loop (single-uvicorn-worker constraint, see
+    backend.md Async safety) -- otherwise a large batch freezes every
+    concurrent tenant's request for the whole insert loop."""
+    import pipeline.engine as engine_module
+    from shared.duckdb_factory import new_connection
+
+    async def _fake_consume_batch(cfg, progress_cb=None):
+        return [
+            {"id": "1", "event": "click"},
+            {"id": "2", "event": "view"},
+            {"id": "3", "event": "click"},
+        ]
+
+    import shared.kafka_client as kafka_client_module
+    monkeypatch.setattr(kafka_client_module, "consume_batch", _fake_consume_batch)
+
+    real_to_thread = engine_module.asyncio.to_thread
+    offloaded_funcs: list = []
+
+    async def spy_to_thread(func, *args, **kwargs):
+        offloaded_funcs.append(getattr(func, "__name__", func))
+        return await real_to_thread(func, *args, **kwargs)
+
+    monkeypatch.setattr(engine_module.asyncio, "to_thread", spy_to_thread)
+
+    source = PipelineSource(
+        type=SourceType.KAFKA,
+        connection={"topic": "events", "bootstrap_servers": "localhost:9092"},
+    )
+
+    conn = new_connection()
+    try:
+        engine = PipelineEngine()
+        table_name = await engine._load_kafka_source(conn, source)
+
+        assert table_name == "source_data"
+        assert conn.execute(f"SELECT COUNT(*) FROM {table_name}").fetchone()[0] == 3
+        assert "_create_and_insert" in offloaded_funcs, (
+            f"_load_kafka_source's CREATE TABLE + per-row INSERT loop must run "
+            f"via asyncio.to_thread, not inline on the event loop (see "
+            f"backend.md Async safety). Offloaded calls seen: {offloaded_funcs}"
+        )
+    finally:
+        conn.close()
 
 
 def test_get_file_schema_rejects_path_traversal(tmp_path, monkeypatch):

@@ -937,6 +937,15 @@ async def get_llm_stats():
 
 # ── Dashboard Stats ──────────────────────────────────────────────────
 
+def _list_tracked_files(upload_dir: Path, tracked_exts: set) -> List[Path]:
+    """Blocking readdir + per-entry stat; run via asyncio.to_thread so it
+    never runs directly on the event loop (single-uvicorn-worker deployment)."""
+    if not upload_dir.exists():
+        return []
+    return [p for p in upload_dir.iterdir()
+            if p.is_file() and p.suffix.lower() in tracked_exts]
+
+
 @router.get("/dashboard/stats")
 async def get_dashboard_stats(request: Request):
     """Real-time dashboard statistics, scoped to the caller's workspace.
@@ -969,11 +978,7 @@ async def get_dashboard_stats(request: Request):
     total_file_rows = 0
     try:
         upload_dir = Path(tenant_upload_dir(request))
-        on_disk = (
-            [p for p in upload_dir.iterdir()
-             if p.is_file() and p.suffix.lower() in _tracked]
-            if upload_dir.exists() else []
-        )
+        on_disk = await asyncio.to_thread(_list_tracked_files, upload_dir, _tracked)
         file_count = len(on_disk)
         if on_disk:
             meta = {r["file_path"]: r["row_count"]

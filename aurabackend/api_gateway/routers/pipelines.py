@@ -4,6 +4,7 @@ Pipelines Router
 AI-driven pipeline management, semantic models, and UASR proxy endpoints.
 """
 
+import asyncio
 import os
 import uuid
 from pathlib import Path
@@ -115,7 +116,7 @@ async def pipeline_generate(req: PipelineGenerateRequest, request: Request):
     # under both AURA_STORAGE_BACKEND=local and =s3. Tradeoff: the backend
     # only lists the extensions it already indexes for reading
     # (.csv/.parquet/.json) — .xlsx/.tsv are no longer discovered here.
-    available_files = [obj.name for obj in get_storage_backend().list(tenant)]
+    available_files = [obj.name for obj in await asyncio.to_thread(get_storage_backend().list, tenant)]
 
     if req.include_schema:
         schema_context = {}
@@ -124,7 +125,7 @@ async def pipeline_generate(req: PipelineGenerateRequest, request: Request):
             target_file = available_files[0]
         if target_file:
             try:
-                schema_context[target_file] = gen.get_file_schema(target_file, tenant)
+                schema_context[target_file] = await asyncio.to_thread(gen.get_file_schema, target_file, tenant)
             except Exception as e:
                 logger.warning("[Pipeline] Schema read failed for %s: %s", target_file, e)
 
@@ -330,7 +331,7 @@ async def pipeline_file_schema(file_name: str, request: Request):
     """Get column schema for a file."""
     gen = _get_generator()
     try:
-        schema = gen.get_file_schema(file_name, _request_tenant(request))
+        schema = await asyncio.to_thread(gen.get_file_schema, file_name, _request_tenant(request))
         return {"status": "success", "schema": schema}
     except Exception as e:
         return {"status": "error", "error": sanitize_error(e, logger=logger, context="pipeline file schema")}

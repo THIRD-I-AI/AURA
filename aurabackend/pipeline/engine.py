@@ -303,22 +303,27 @@ class PipelineEngine:
 
         table_name = "source_data"
         col_defs = ", ".join(f'"{_sanitize_id(c)}" VARCHAR' for c in columns)
-        conn.execute(f"CREATE TABLE {_q(table_name)} ({col_defs})")
 
-        placeholders = ", ".join(["?"] * len(columns))
-        insert_sql = f"INSERT INTO {_q(table_name)} VALUES ({placeholders})"
-        for r in rows:
-            values = []
-            for c in columns:
-                v = r.get(c)
-                if v is None:
-                    values.append(None)
-                elif isinstance(v, (dict, list)):
-                    import json as _json
-                    values.append(_json.dumps(v))
-                else:
-                    values.append(str(v))
-            conn.execute(insert_sql, values)
+        def _create_and_insert() -> None:
+            conn.execute(f"CREATE TABLE {_q(table_name)} ({col_defs})")
+            placeholders = ", ".join(["?"] * len(columns))
+            insert_sql = f"INSERT INTO {_q(table_name)} VALUES ({placeholders})"
+            for r in rows:
+                values = []
+                for c in columns:
+                    v = r.get(c)
+                    if v is None:
+                        values.append(None)
+                    elif isinstance(v, (dict, list)):
+                        import json as _json
+                        values.append(_json.dumps(v))
+                    else:
+                        values.append(str(v))
+                conn.execute(insert_sql, values)
+
+        # Same reasoning as _load_db_source's dispatch: the per-row insert
+        # loop blocks the sole uvicorn worker for its whole duration.
+        await asyncio.to_thread(_create_and_insert)
 
         logger.info("[Pipeline] Kafka source loaded %d rows from %s", len(rows), cfg.get("topic"))
         return table_name
@@ -676,11 +681,14 @@ class PipelineEngine:
     ) -> None:
         """Write the final table to the configured sink."""
         if sink.type == SinkType.FILE:
-            self._write_file_sink(conn, final_table, sink, run)
+            # DuckDB COPY over the full final_table is blocking; the
+            # deployment runs one uvicorn worker, so offload it (matches
+            # the transform SQL execution above).
+            await asyncio.to_thread(self._write_file_sink, conn, final_table, sink, run)
         elif sink.type == SinkType.POSTGRESQL:
             await self._write_pg_sink(conn, final_table, sink, run)
         elif sink.type == SinkType.DUCKDB:
-            self._write_duckdb_sink(conn, final_table, sink, run)
+            await asyncio.to_thread(self._write_duckdb_sink, conn, final_table, sink, run)
         elif sink.type == SinkType.PREVIEW:
             pass  # preview_data already set
         else:
@@ -735,10 +743,10 @@ class PipelineEngine:
             raise ConnectionError("Cannot connect to PostgreSQL sink")
 
         try:
-            # Get data from DuckDB
-            result = conn.execute(f"SELECT * FROM {_q(final_table)}")
+            # Get data from DuckDB (blocking; offload so the event loop stays free)
+            result = await asyncio.to_thread(conn.execute, f"SELECT * FROM {_q(final_table)}")
             col_names = [desc[0] for desc in result.description]
-            rows = result.fetchall()
+            rows = await asyncio.to_thread(result.fetchall)
 
             if not pg.pool:
                 raise ConnectionError("PostgreSQL pool not available")
@@ -748,8 +756,10 @@ class PipelineEngine:
                 if sink.if_exists == "replace":
                     await pg_conn.execute(f"DROP TABLE IF EXISTS {_q(table_name)}")
 
-                # Build CREATE TABLE from DuckDB column info
-                duck_schema = conn.execute(f"DESCRIBE {_q(final_table)}").fetchall()
+                # Build CREATE TABLE from DuckDB column info (blocking; offload)
+                duck_schema = await asyncio.to_thread(
+                    lambda: conn.execute(f"DESCRIBE {_q(final_table)}").fetchall()
+                )
                 pg_type_map = {
                     "INTEGER": "INTEGER", "BIGINT": "BIGINT", "DOUBLE": "DOUBLE PRECISION",
                     "FLOAT": "REAL", "VARCHAR": "TEXT", "BOOLEAN": "BOOLEAN",

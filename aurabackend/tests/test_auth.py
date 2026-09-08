@@ -180,3 +180,56 @@ class TestPasswordModeAuth:
             "user_id": "not-enough",
         })
         assert resp.status_code == 422
+
+    def test_register_offloads_password_hashing_to_thread(self, password_client, monkeypatch):
+        # Regression test: hash_password (sync bcrypt.hashpw, CPU-bound) must
+        # run via asyncio.to_thread so it can't block the single uvicorn
+        # worker's event loop for other tenants' in-flight requests.
+        import api_gateway.routers.auth as auth_module
+        from shared.password import hash_password
+
+        orig_to_thread = auth_module.asyncio.to_thread
+        calls = []
+
+        async def spy_to_thread(func, *args, **kwargs):
+            calls.append(func)
+            return await orig_to_thread(func, *args, **kwargs)
+
+        monkeypatch.setattr(auth_module.asyncio, "to_thread", spy_to_thread)
+
+        resp = password_client.post(f"{V1}/auth/register", json={
+            "email": "carol@example.com",
+            "password": "another-strong-pass",
+            "name": "Carol",
+        })
+        assert resp.status_code == 201
+        assert hash_password in calls
+
+    def test_login_offloads_password_verification_to_thread(self, password_client, monkeypatch):
+        # Regression test: verify_password (sync bcrypt.checkpw, CPU-bound) must
+        # run via asyncio.to_thread so it can't block the single uvicorn
+        # worker's event loop for other tenants' in-flight requests.
+        import api_gateway.routers.auth as auth_module
+        from shared.password import verify_password
+
+        password_client.post(f"{V1}/auth/register", json={
+            "email": "dave@example.com",
+            "password": "yet-another-strong-pass",
+            "name": "Dave",
+        })
+
+        orig_to_thread = auth_module.asyncio.to_thread
+        calls = []
+
+        async def spy_to_thread(func, *args, **kwargs):
+            calls.append(func)
+            return await orig_to_thread(func, *args, **kwargs)
+
+        monkeypatch.setattr(auth_module.asyncio, "to_thread", spy_to_thread)
+
+        resp = password_client.post(f"{V1}/auth/token", json={
+            "email": "dave@example.com",
+            "password": "yet-another-strong-pass",
+        })
+        assert resp.status_code == 200
+        assert verify_password in calls

@@ -8,6 +8,7 @@ This is the "brain" of the agentic DE system.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import sys
 from dataclasses import dataclass, field
@@ -242,7 +243,7 @@ class PlannerAgent(BaseAgent):
     async def _call_llm(self, system_prompt: str, user_message: str) -> Optional[Dict[str, Any]]:
         if not self._llm.is_available():
             return None
-        return self._llm.generate_json([system_prompt, user_message])
+        return await asyncio.to_thread(self._llm.generate_json, [system_prompt, user_message])
 
     # ── fallback (no LLM) ──────────────────────────────────────────
 
