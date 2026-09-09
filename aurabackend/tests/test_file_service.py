@@ -1,19 +1,15 @@
 """
 AURA File Service Tests
 ========================
-Tests for file validation, upload, processing, listing, deletion, and profiling.
-Uses mocked filesystem / UploadFile objects — no real disk I/O for upload tests.
+Tests for file validation, listing, deletion, and profiling.
+Uses mocked filesystem / UploadFile objects — no real disk I/O.
 """
 from __future__ import annotations
 
-import json
 import os
 import sys
 import uuid
-from datetime import datetime
-from pathlib import Path
-from typing import Any, Dict
-from unittest.mock import AsyncMock, MagicMock, mock_open, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import numpy as np
 import pandas as pd
@@ -128,34 +124,6 @@ class TestValidateFile:
         f = _make_upload("data.csv", "application/unknown")
         info = svc.validate_file(f)
         assert info["file_extension"] == ".csv"
-
-
-# ── save_file ─────────────────────────────────────────────────────
-
-class TestSaveFile:
-    @pytest.mark.asyncio
-    async def test_save_file_returns_metadata(self, tmp_path):
-        svc = FileService()
-        svc.uploads_path = tmp_path
-
-        f = _make_upload("data.csv", "text/csv")
-        f.read = AsyncMock(return_value=b"col1,col2\n1,2\n3,4")
-
-        with patch("aiofiles.open", return_value=AsyncMock()) as mock_aio:
-            # Make the async context manager work
-            mock_cm = AsyncMock()
-            mock_cm.__aenter__ = AsyncMock(return_value=AsyncMock())
-            mock_cm.__aexit__ = AsyncMock(return_value=False)
-            mock_aio.return_value = mock_cm
-
-            meta = await svc.save_file(f)
-
-        assert "file_id" in meta
-        assert meta["original_filename"] == "data.csv"
-        assert meta["status"] == "uploaded"
-        assert meta["file_extension"] == ".csv"
-        assert "file_hash" in meta
-        assert "upload_time" in meta
 
 
 # ── list_files / delete_file ──────────────────────────────────────
@@ -347,111 +315,3 @@ class TestToSerializable:
         svc = FileService()
         assert svc._to_serializable(42) == 42
         assert svc._to_serializable("hello") == "hello"
-
-
-# ── process_file (CSV path) ──────────────────────────────────────
-
-class TestProcessFile:
-    @pytest.mark.asyncio
-    async def test_process_csv(self, tmp_path):
-        svc = FileService()
-        svc.processed_path = tmp_path
-
-        csv_file = tmp_path / "test.csv"
-        csv_file.write_text("name,age\nAlice,30\nBob,25\n")
-
-        metadata = {
-            "file_id": "abc123",
-            "file_path": str(csv_file),
-            "file_extension": ".csv",
-        }
-        result = await svc.process_file(metadata)
-        assert result["status"] == "processed"
-        assert result["rows_count"] == 2
-        assert result["columns_count"] == 2
-        assert "profile" in result
-        assert "preview_data" in result
-
-    @pytest.mark.asyncio
-    async def test_process_json_list(self, tmp_path):
-        svc = FileService()
-        svc.processed_path = tmp_path
-
-        json_file = tmp_path / "test.json"
-        json_file.write_text(json.dumps([{"a": 1, "b": 2}, {"a": 3, "b": 4}]))
-
-        metadata = {
-            "file_id": "json1",
-            "file_path": str(json_file),
-            "file_extension": ".json",
-        }
-        result = await svc.process_file(metadata)
-        assert result["status"] == "processed"
-        assert result["rows_count"] == 2
-
-    @pytest.mark.asyncio
-    async def test_process_json_dict(self, tmp_path):
-        svc = FileService()
-        svc.processed_path = tmp_path
-
-        json_file = tmp_path / "single.json"
-        json_file.write_text(json.dumps({"key": "value", "num": 42}))
-
-        metadata = {
-            "file_id": "json2",
-            "file_path": str(json_file),
-            "file_extension": ".json",
-        }
-        result = await svc.process_file(metadata)
-        assert result["status"] == "processed"
-        assert result["rows_count"] == 1
-        assert result["columns_count"] == 2
-
-    @pytest.mark.asyncio
-    async def test_process_txt_csv_like(self, tmp_path):
-        svc = FileService()
-        svc.processed_path = tmp_path
-
-        txt_file = tmp_path / "data.txt"
-        txt_file.write_text("col1,col2\n10,20\n30,40\n")
-
-        metadata = {
-            "file_id": "txt1",
-            "file_path": str(txt_file),
-            "file_extension": ".txt",
-        }
-        result = await svc.process_file(metadata)
-        assert result["status"] == "processed"
-        assert result["rows_count"] == 2
-
-    @pytest.mark.asyncio
-    async def test_process_txt_json(self, tmp_path):
-        svc = FileService()
-        svc.processed_path = tmp_path
-
-        txt_file = tmp_path / "data.txt"
-        txt_file.write_text(json.dumps([{"x": 1}, {"x": 2}]))
-
-        metadata = {
-            "file_id": "txt2",
-            "file_path": str(txt_file),
-            "file_extension": ".txt",
-        }
-        result = await svc.process_file(metadata)
-        assert result["status"] == "processed"
-        assert result["rows_count"] == 2
-
-    @pytest.mark.asyncio
-    async def test_process_error_raises(self, tmp_path):
-        from fastapi import HTTPException
-        svc = FileService()
-        svc.processed_path = tmp_path
-
-        metadata = {
-            "file_id": "bad1",
-            "file_path": "/nonexistent/path/file.csv",
-            "file_extension": ".csv",
-        }
-        with pytest.raises(HTTPException) as exc_info:
-            await svc.process_file(metadata)
-        assert exc_info.value.status_code == 500

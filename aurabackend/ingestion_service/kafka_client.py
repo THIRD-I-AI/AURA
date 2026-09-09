@@ -1,10 +1,17 @@
 import json
 import logging
-from typing import Any, Dict
+from collections import OrderedDict
+from typing import Any, Dict, Optional
 
 from aiokafka import AIOKafkaProducer
 
 logger = logging.getLogger("aura.ingestion.kafka")
+
+# Bounds the in-memory dedup window: old enough entries are evicted so this
+# never grows unbounded, while staying large enough to catch a client retrying
+# the same batch_id within a reasonable window (a client re-POST, not a
+# long-forgotten batch from hours ago).
+_DEDUP_WINDOW_SIZE = 10_000
 
 
 class KafkaUnavailableError(RuntimeError):
@@ -20,12 +27,20 @@ class ResilientKafkaProducer:
     def __init__(self, bootstrap_servers: str = "localhost:9092"):
         self.bootstrap_servers = bootstrap_servers
         self.producer = None
+        # Application-level dedup: enable_idempotence=True only guarantees
+        # exactly-once delivery for aiokafka's OWN internal retries of a
+        # single send_and_wait call -- it does nothing for two independent
+        # publish_with_retry calls carrying the same dedup_key (e.g. a
+        # client re-POSTing the same batch_id after a timed-out response).
+        self._recently_published: "OrderedDict[str, None]" = OrderedDict()
 
     async def start(self):
         # A broker outage at boot must NOT kill the gateway: a service that
         # fails its publishes loudly is recoverable; one that won't boot is not.
-        # enable_idempotence=True guarantees exactly-once processing even if network retries occur,
-        # perfectly matching the enterprise requirement for zero duplicate ledger entries.
+        # enable_idempotence=True only dedups aiokafka's own internal retries
+        # of a single send_and_wait call -- it does NOT dedup two independent
+        # publish_with_retry calls (e.g. a client re-POSTing the same
+        # batch_id). See _recently_published in publish_with_retry for that.
         producer = AIOKafkaProducer(
             bootstrap_servers=self.bootstrap_servers,
             enable_idempotence=True,
@@ -57,12 +72,27 @@ class ResilientKafkaProducer:
             await self.producer.stop()
             logger.info("Kafka producer stopped.")
 
-    async def publish_with_retry(self, topic: str, payload: Dict[str, Any], partition_key: str = None, max_retries: int = 3):
+    async def publish_with_retry(
+        self,
+        topic: str,
+        payload: Dict[str, Any],
+        partition_key: str = None,
+        max_retries: int = 3,
+        dedup_key: Optional[str] = None,
+    ):
         """
         Publishes a message to the target topic. If it fails beyond the aiokafka retry limit,
         routes the failed message to a Dead Letter Queue (DLQ).
         Partition keying ensures parallel node synchronization without eventual consistency delays.
+
+        dedup_key: an application-level idempotency key (e.g. a batch_id).
+        When given and already seen within the recent window, the publish is
+        skipped entirely -- this is the app-level dedup enable_idempotence
+        does not provide (see __init__/start()).
         """
+        if dedup_key is not None and dedup_key in self._recently_published:
+            logger.warning(f"Skipping duplicate publish to {topic}: dedup_key={dedup_key!r} already published")
+            return
         if not await self._ensure_started():
             raise KafkaUnavailableError(
                 f"broker {self.bootstrap_servers} down; cannot publish to {topic}")
@@ -70,6 +100,10 @@ class ResilientKafkaProducer:
             # We rely on aiokafka's internal retries for transient network issues.
             await self.producer.send_and_wait(topic, value=payload, key=partition_key)
             logger.debug(f"Successfully published event to {topic} with key {partition_key}")
+            if dedup_key is not None:
+                self._recently_published[dedup_key] = None
+                if len(self._recently_published) > _DEDUP_WINDOW_SIZE:
+                    self._recently_published.popitem(last=False)
         except Exception as e:
             logger.error(f"Failed to publish to {topic} after retries: {e}. Routing to DLQ.")
             await self._route_to_dlq(payload, error_msg=str(e), original_topic=topic)
