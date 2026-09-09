@@ -271,7 +271,7 @@ class MAPEKWorker:
         if not _AIOKAFKA_AVAILABLE:
             raise RuntimeError("aiokafka not installed — pip install aiokafka")
 
-        self._consumer = AIOKafkaConsumer(
+        consumer = AIOKafkaConsumer(
             self._cfg.topic,
             bootstrap_servers=self._cfg.bootstrap_servers,
             group_id=self._cfg.group_id,
@@ -279,7 +279,21 @@ class MAPEKWorker:
             enable_auto_commit=False,
             value_deserializer=lambda v: json.loads(v.decode("utf-8")),
         )
-        await self._consumer.start()
+        try:
+            await consumer.start()
+        except Exception:
+            # start() can allocate sockets/background tasks before the
+            # bootstrap handshake itself fails (e.g. this box's Kafka-
+            # unreachable case, retried every 60s forever by
+            # service._mapek_worker_bootstrap) -- stop() releases those
+            # before we drop the reference, or aiokafka's own finalizer
+            # logs "Unclosed AIOKafkaConsumer" on every single retry.
+            try:
+                await consumer.stop()
+            except Exception:
+                pass
+            raise
+        self._consumer = consumer
 
         self._duckdb_con = self._open_duckdb()
         Path(self._cfg.parquet_dir).mkdir(parents=True, exist_ok=True)
