@@ -154,12 +154,61 @@ _loop = RecoveryLoop(
     ),
 )
 
-# Set on lifespan startup when UASR_MAPEK_ENABLED=true. Held at module
-# scope so /uasr/mapek/status and shutdown can reach it.
+# Set once the Kafka bootstrap below succeeds. Held at module scope so
+# /uasr/mapek/status and shutdown can reach it.
 _mapek_worker: Optional[MAPEKWorker] = None
+# The retry loop itself, held so shutdown can cancel it if Kafka never came up.
+_mapek_bootstrap_task: Optional[Any] = None
 
 _APPROVAL_TIMEOUT_SECONDS = approval_timeout_seconds()
 _approval_reaper_task: Optional[Any] = None
+
+_MAPEK_RETRY_INITIAL_SECONDS = float(os.getenv("UASR_MAPEK_RETRY_INITIAL_SECONDS", "5"))
+_MAPEK_RETRY_MAX_SECONDS = float(os.getenv("UASR_MAPEK_RETRY_MAX_SECONDS", "60"))
+
+
+async def _mapek_worker_bootstrap() -> None:
+    """Start the Kafka-backed MAPE-K worker, retrying with exponential
+    backoff on failure instead of giving up for the process's lifetime.
+
+    A Kafka outage at boot used to be permanent: one failed connection
+    attempt set ``_mapek_worker = None`` forever, silently disabling
+    Monitor/Analyze/Plan/Execute for every batch that would otherwise have
+    arrived over Kafka, for the rest of the container's life -- even once
+    the broker became reachable again. That is exactly the class of bug
+    backend.md's "graceful connection recovery" rule exists to prevent for
+    every other network client (Redis, Postgres, LLM APIs); Kafka had no
+    such retry at all. This loop is cancelled cleanly on shutdown via
+    ``_mapek_bootstrap_task`` if it is still retrying.
+    """
+    global _mapek_worker
+    delay = _MAPEK_RETRY_INITIAL_SECONDS
+    while True:
+        try:
+            worker = MAPEKWorker(
+                _mapek_config(),
+                detector=_detector,
+                recovery_loop=_loop,
+                metrics=_tracker,
+                repair_scheduler=_repair_scheduler,
+            )
+            await worker.start()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.error(
+                "MAPE-K worker failed to start (retrying in %.0fs): %s",
+                delay, exc,
+            )
+            await asyncio.sleep(delay)
+            delay = min(delay * 2, _MAPEK_RETRY_MAX_SECONDS)
+            continue
+        _mapek_worker = worker
+        logger.info(
+            "MAPE-K worker started (topic=%s, group=%s)",
+            worker._cfg.topic, worker._cfg.group_id,
+        )
+        return
 
 
 async def _reap_stale_approvals(timeout_seconds: float) -> int:
@@ -232,7 +281,7 @@ async def _approval_reaper_loop(timeout_seconds: float, poll_seconds: float = 30
 
 @asynccontextmanager
 async def _lifespan(_):
-    global _mapek_worker
+    global _mapek_worker, _mapek_bootstrap_task
     await init_uasr_db()
     logger.info("UASR database tables initialised")
     logger.info("UASR deployment mode: %s", deployment_summary())
@@ -281,35 +330,22 @@ async def _lifespan(_):
     # cluster — turning it on by default would break every dev box that
     # runs the UASR service for its HTTP API only.
     if os.getenv("UASR_MAPEK_ENABLED", "false").lower() == "true":
-        try:
-            # Start the repair-admission backend if it needs a background
-            # pump (local RepairScheduler). The distributed coordinator polls
-            # inside submit() and has no start()/stop().
-            if _repair_scheduler is not None and hasattr(_repair_scheduler, "start"):
-                await _repair_scheduler.start()
-            _mapek_worker = MAPEKWorker(
-                _mapek_config(),
-                detector=_detector,
-                recovery_loop=_loop,
-                metrics=_tracker,
-                repair_scheduler=_repair_scheduler,
-            )
-            await _mapek_worker.start()
-            logger.info(
-                "MAPE-K worker started (topic=%s, group=%s)",
-                _mapek_worker._cfg.topic,
-                _mapek_worker._cfg.group_id,
-            )
-        except Exception as exc:
-            # A Kafka outage at startup must not crash the rest of the
-            # service. Log the failure and leave _mapek_worker=None so
-            # /uasr/mapek/status reports the disabled state honestly.
-            logger.error("MAPE-K worker failed to start: %s", exc)
-            _mapek_worker = None
+        # Start the repair-admission backend if it needs a background
+        # pump (local RepairScheduler). The distributed coordinator polls
+        # inside submit() and has no start()/stop().
+        if _repair_scheduler is not None and hasattr(_repair_scheduler, "start"):
+            await _repair_scheduler.start()
+        # Bootstrap in the background with retry: a Kafka outage at startup
+        # must not crash the rest of the service, AND must not permanently
+        # disable healing for the process's lifetime the way a single
+        # try/except used to. /uasr/mapek/status reports disabled (honestly)
+        # until this task's retry loop lands a working connection.
+        _mapek_bootstrap_task = asyncio.create_task(
+            _mapek_worker_bootstrap(), name="uasr-mapek-bootstrap",
+        )
 
     global _approval_reaper_task
     if _APPROVAL_TIMEOUT_SECONDS > 0:
-        import asyncio
         _approval_reaper_task = asyncio.create_task(
             _approval_reaper_loop(_APPROVAL_TIMEOUT_SECONDS),
             name="uasr-approval-reaper",
@@ -325,8 +361,20 @@ async def _lifespan(_):
             _approval_reaper_task.cancel()
             try:
                 await _approval_reaper_task
-            except Exception:
-                pass  # CancelledError expected; any other error already logged per-tick
+            # CancelledError is a BaseException (since Python 3.8), not an
+            # Exception -- `except Exception` here never actually caught it,
+            # so cancelling this task on shutdown re-raised out of this
+            # finally block instead of being swallowed as the comment
+            # intended. Any OTHER error was already logged per-tick inside
+            # the loop itself, so it's still safe to drop here.
+            except (asyncio.CancelledError, Exception):
+                pass
+        if _mapek_bootstrap_task is not None and not _mapek_bootstrap_task.done():
+            _mapek_bootstrap_task.cancel()
+            try:
+                await _mapek_bootstrap_task
+            except (asyncio.CancelledError, Exception):
+                pass  # still retrying, nothing was running
         if _mapek_worker is not None:
             try:
                 await _mapek_worker.stop()
