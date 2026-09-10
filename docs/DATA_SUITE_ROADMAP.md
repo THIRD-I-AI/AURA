@@ -64,9 +64,12 @@ PR link once merged. Items are grouped by which of the three roles they serve.
   own docstring falsely claims it replaces the LangGraph DAG that's actually
   driving `POST /chat`. Needs a decision on which is canonical before further
   work builds on any of them.
-- **DSR-011** — `open` — `agents/planner.py`'s LLM-facing agent roster only
-  knows 7 of the 12 agents `DAGExecutor` can run — 5 agent types can never be
-  targeted by a generated plan.
+- **DSR-011** — `done` — `agents/planner.py`'s LLM-facing agent roster only
+  knew 7 of the 12 agents `DAGExecutor` can run — 5 agent types could never
+  be targeted by a generated plan. Fixed: added `IntentAgent`,
+  `ExecutionAgent`, `AnalysisAgent`, `VisualizationAgent`, `MonitorAgent` to
+  `AGENT_ROSTER`, with a regression test asserting the roster and
+  `DAGExecutor`'s `AGENT_MAP` stay in sync in both directions. PR #358.
 - **DSR-012** — `open` — DPC (independent pandas cross-check) SQL verification
   is off by default on the chat path (`AURA_DPC_CHAT_ENABLED=0`) despite the
   orchestrator graph having a permanent `verify_run` node — ordinary chat
@@ -108,11 +111,16 @@ PR link once merged. Items are grouped by which of the three roles they serve.
 Mechanical, low-risk, no architectural judgment call needed — safe for an
 autonomous loop to pick up immediately (all personally re-verified against
 current `main` on 2026-09-10, not just taken from the exhaustive-read
-workflow's output): **DSR-004, DSR-003, DSR-006, DSR-001** (DSR-014 dropped
-after attempting it revealed it was already correct as-is — see above).
+workflow's output): **DSR-004, DSR-003, DSR-006, DSR-001, DSR-011** (DSR-014
+dropped after attempting it revealed it was already correct as-is — see
+above). All five are `done` as of 2026-09-10 — this mechanical pass is
+complete.
 
 Needs a product/architecture decision before code changes (flag for human
-input, do not silently pick a side): **DSR-005, DSR-010, DSR-015**.
-
-Larger, worth an ultracode workflow each: **DSR-002 (streaming wiring),
-DSR-007/DSR-009 (causal estimator correctness), DSR-011 (planner roster)**.
+input, do not silently pick a side): **DSR-002, DSR-005, DSR-007, DSR-009,
+DSR-010, DSR-012, DSR-015**. DSR-002 turned out deeper than a wiring fix on
+inspection (no API schema exists at all for the settings in question, not
+just a missed pass-through) and DSR-007/DSR-009 turned out to change
+production self-healing / audit-trail behavior if fixed for real — all
+three were re-classified into this bucket on 2026-09-10 after personal
+verification, rather than attempted as mechanical fixes.
