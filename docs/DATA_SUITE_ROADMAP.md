@@ -14,9 +14,11 @@ PR link once merged. Items are grouped by which of the three roles they serve.
 
 ## Data Engineer
 
-- **DSR-001** — `open` — ETL engine's Postgres and Kafka source loaders do
+- **DSR-001** — `done` — ETL engine's Postgres and Kafka source loaders did
   per-row `INSERT` loops instead of batched inserts (`pipeline/engine.py`),
-  violating the repo's own documented bulk-write rule.
+  violating the repo's own documented bulk-write rule. Fixed: both
+  `_load_db_source` and `_load_kafka_source` now build all row values and
+  issue a single `conn.executemany()` call. PR #356.
 - **DSR-002** — `open` — Streaming pipeline API (`pipeline/streaming/streaming_api.py::start_pipeline`)
   never passes the kwargs that would activate triggers/watermarks/barrier-alignment/
   backpressure — a substantial, correct implementation sits fully unreachable from
