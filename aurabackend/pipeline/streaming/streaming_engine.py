@@ -111,6 +111,10 @@ def _apply_transforms(event: StreamEvent, transforms) -> Optional[StreamEvent]:
                 return None
             if op == "<" and (actual is None or float(actual) >= float(value)):
                 return None
+            if op == ">=" and (actual is None or float(actual) < float(value)):
+                return None
+            if op == "<=" and (actual is None or float(actual) > float(value)):
+                return None
             if op == "in" and actual not in (value if isinstance(value, list) else [value]):
                 return None
 

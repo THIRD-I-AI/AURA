@@ -756,6 +756,38 @@ class TestStreamingEngine:
         loop.run_until_complete(engine.stop())
         loop.close()
 
+    def test_filter_transform_gte_lte_operators(self):
+        # DSR-004 regression: _apply_transforms's FILTER branch only handled
+        # ==, !=, >, <, "in" -- >= and <= fell through every `if` unmatched,
+        # so a filter configured with either operator silently passed every
+        # event through instead of filtering. Direct unit test against
+        # _apply_transforms (not the async engine E2E test above) so this is
+        # deterministic rather than depending on the simulated source's timing.
+        from pipeline.streaming.streaming_engine import _apply_transforms
+
+        gte_filter = StreamTransform(
+            type=TransformType.FILTER,
+            config={"field": "amount", "operator": ">=", "value": 100},
+        )
+        lte_filter = StreamTransform(
+            type=TransformType.FILTER,
+            config={"field": "amount", "operator": "<=", "value": 100},
+        )
+
+        below = StreamEvent(timestamp=time.time(), data={"amount": 50})
+        at = StreamEvent(timestamp=time.time(), data={"amount": 100})
+        above = StreamEvent(timestamp=time.time(), data={"amount": 150})
+
+        # >= 100: only "at" and "above" survive.
+        assert _apply_transforms(below.model_copy(), [gte_filter]) is None
+        assert _apply_transforms(at.model_copy(), [gte_filter]) is not None
+        assert _apply_transforms(above.model_copy(), [gte_filter]) is not None
+
+        # <= 100: only "below" and "at" survive.
+        assert _apply_transforms(below.model_copy(), [lte_filter]) is not None
+        assert _apply_transforms(at.model_copy(), [lte_filter]) is not None
+        assert _apply_transforms(above.model_copy(), [lte_filter]) is None
+
     def test_engine_with_file_sink(self, tmp_path):
         from pipeline.streaming.streaming_engine import StreamingEngine
 
