@@ -24,8 +24,10 @@ PR link once merged. Items are grouped by which of the three roles they serve.
 - **DSR-003** — `open` — DuckDB streaming sink's schema field name (`connection`)
   doesn't match what the sink code actually reads (`path`) — a pipeline built via
   the documented API schema silently loses all data to `:memory:`.
-- **DSR-004** — `open` — Streaming filter-transform operator (`>=`/`<=`) is
-  advertised by the API schema but is a silent no-op in the engine.
+- **DSR-004** — `done` — Streaming filter-transform operator (`>=`/`<=`) was
+  advertised by the API schema but was a silent no-op in the engine. Fixed:
+  added the two missing branches to `_apply_transforms`'s FILTER handling,
+  matching the existing `>`/`<` style. PR #350.
 - **DSR-005** — `open` — `scheduler_service/` (a fully-built distributed scheduler
   with leader election) has no gateway router mounted — unreachable from the
   frontend, which instead talks to a simpler in-process scheduler. Needs a
