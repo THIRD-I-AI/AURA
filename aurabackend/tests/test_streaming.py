@@ -531,6 +531,40 @@ class TestDatabaseSink:
 # 5. SOURCE ADAPTER TESTS
 # ════════════════════════════════════════════════════════════════
 
+class TestFileWatcherSource:
+    def test_parses_parquet_files(self, tmp_path):
+        # DSR-006 regression: FileWatcherSource's own module docstring and
+        # _parse_file's file-type dispatch claimed CSV/JSON/Parquet support,
+        # but _parse_file had no .parquet branch -- it silently returned []
+        # for any Parquet file, and the file was still marked "seen" so it
+        # was never retried, i.e. permanently and silently dropped.
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+
+        from pipeline.streaming.sources.file_watcher import FileWatcherSource
+
+        watch_dir = tmp_path / "watched"
+        watch_dir.mkdir()
+        parquet_path = watch_dir / "data.parquet"
+        table = pa.table({"id": [1, 2, 3], "amount": [10.5, 20.0, 30.25]})
+        pq.write_table(table, str(parquet_path))
+
+        src = FileWatcherSource(config={"watch_dir": str(watch_dir), "pattern": "*.parquet"})
+        loop = asyncio.new_event_loop()
+        loop.run_until_complete(src.start())
+        # start() marks pre-existing files as "seen" (matches the source's
+        # own start-of-stream semantics) -- clear that so this test can
+        # observe the file actually being picked up and parsed.
+        src._seen_files.clear()
+
+        events = loop.run_until_complete(src.read_batch(max_events=10))
+        loop.close()
+
+        assert len(events) == 3, f"expected 3 rows parsed from the parquet file, got {events}"
+        assert {e.data["id"] for e in events} == {1, 2, 3}
+        assert events[0].data["amount"] in (10.5, 20.0, 30.25)
+
+
 class TestSimulatedSource:
     def test_read_batch(self):
         from pipeline.streaming.sources.simulated import SimulatedSource
