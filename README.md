@@ -27,15 +27,15 @@ ED25519-signed and appended to a hash-chained ledger; and a MAPE-K worker watche
 
 | Capability | State | What that actually means |
 |---|---|---|
-| NL → SQL chat over your uploads | ✅ Working | Executed on DuckDB, critiqued by a second agent, returns rows + chart + narrative. |
-| Causal / counterfactual engine | ✅ Working | 7 estimators + refuters + E-value sensitivity; results replay byte-for-byte. |
+| NL → SQL chat over your uploads | ✅ Working | Executed on DuckDB, returns rows + chart + narrative. Independent-verification cross-check (DPC) exists but is **off by default** on chat (`AURA_DPC_CHAT_ENABLED=0`) — see [Known gaps](#known-gaps-we-are-not-papering-over). |
+| Causal / counterfactual engine | ✅ Working | 7 estimators + refuters + E-value sensitivity; results replay byte-for-byte. `double_ml` silently falls back to plain linear regression if `econml` isn't installed, with no signal to the caller. |
 | Forensic financial audit (PCAOB-aligned) | ✅ Working | Benford / three-way match / expectation analytics; signed AS-1215 completion doc. |
-| Signed, tamper-evident audit ledger | ✅ Working | Hash chain + Merkle root; `/audit/ledger/verify` returns an `ok` flag the UI trusts. |
+| Signed, tamper-evident audit ledger | ✅ Working | Hash chain + Merkle root; `/audit/ledger/verify` returns an `ok` flag the UI trusts. Three ledger-read endpoints take `tenant_id` as an unauthenticated query param — see [Known gaps](#known-gaps-we-are-not-papering-over). |
 | Public certificate verification | ✅ Working | Anyone can verify a signed certificate by hash without an account. |
 | Drift **detection** (UASR) | ✅ Working | Schema, statistical (KL + Wasserstein martingale), and semantic drift, live. |
-| Drift **repair** (UASR auto-heal) | 🟡 Partial | See [Self-healing](#self-healing-what-is-and-is-not-automatic). Detection is real; unattended repair is not yet demonstrated end-to-end. |
-| Multi-tenant isolation | 🟡 Partial | Enforced on uploads, files, query history, workspaces, semantic models. **Not** on several metadata tables — see [Tenancy](#tenancy-exactly-what-is-scoped). |
-| Human-in-the-loop approval queues | ✅ Working | Exception queue and Healing Queue; approve/reject decisions are themselves signed. |
+| Drift **repair** (UASR auto-heal) | ✅ Working | Demonstrated end-to-end on live production (2026-09-09/10): a Kafka bootstrap that permanently disabled itself after one failure, and failed heals silently reported as successful, were both root-caused and fixed. **Auto-deploy is unconditional by default** (`UASR_RISK_TIERED=false`) — the human-approval gate is opt-in, not the default. See [Self-healing](#self-healing-what-is-and-is-not-automatic). |
+| Multi-tenant isolation | 🟡 Partial | Enforced on uploads, files, query history, workspaces, semantic models, synthetic jobs, collab rooms, streaming topics, HITL decisions. **Not** on several metadata tables, and JWT/tenant enforcement itself is off by default outside a recognized production environment — see [Tenancy](#tenancy-exactly-what-is-scoped). |
+| Human-in-the-loop approval queues | ✅ Working | Exception queue and Healing Queue; approve/reject decisions are themselves signed. A separate, older job-approval REST pair (`/jobs/{id}/approve|cancel`) always 404s — kept only so the published OpenAPI contract stays valid, and approves nothing. |
 | Deployment | 🟡 Single-node | Runs live on one t3.micro via `deploy/aws-free-tier/`. No HA, no autoscaling, single uvicorn worker. |
 | Backups | 🟡 Script only | `deploy/aws-free-tier/backup.sh` exists; no scheduled off-box retention is configured for you. |
 
@@ -52,6 +52,20 @@ ED25519-signed and appended to a hash-chained ledger; and a MAPE-K worker watche
 - **UASR repair state is in-memory.** A restart drops deployed shims silently.
 - **`docker-compose.prod.yml` host-publishes internal service ports.** The live free-tier stack does
   not use that file; do not deploy it as-is on a public host.
+- **Three audit-ledger read endpoints take an unauthenticated `tenant_id` query param** with no
+  cross-check against the caller's verified JWT tenant (`audit_ledger_verify`, `audit_ledger_proof`,
+  `audit_ledger_subject_history`) — an unguarded cross-tenant read, in contrast to the careful
+  tenant-isolation used everywhere else in that same router.
+- **JWT/audit/auth-mode enforcement is off by default outside a recognized production environment.**
+  `config.py`'s production check is an inverted allowlist (only explicit dev/test/local/demo names
+  count as non-production); anything else is treated as production and hard-fails startup if these
+  are off. Outside that, all default off/insecure, and `metadata_store`'s workspace resolution falls
+  back to a client-supplied `X-Workspace-Id` header whenever JWT hasn't populated `request.state.user`.
+- **PII masking middleware is implemented but not wired into the shared service factory**
+  (`shared/service_factory.py::create_service()`) that every microservice's middleware stack is built
+  from — it does not run on the standard request/response path.
+- **`UASR_RISK_TIERED` defaults to `false`.** Validated self-heal shims auto-deploy unconditionally by
+  default; the human-approval gate is opt-in, not the default posture.
 
 </details>
 
