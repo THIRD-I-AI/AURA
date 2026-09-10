@@ -21,9 +21,11 @@ PR link once merged. Items are grouped by which of the three roles they serve.
   never passes the kwargs that would activate triggers/watermarks/barrier-alignment/
   backpressure — a substantial, correct implementation sits fully unreachable from
   the live HTTP API.
-- **DSR-003** — `open` — DuckDB streaming sink's schema field name (`connection`)
-  doesn't match what the sink code actually reads (`path`) — a pipeline built via
-  the documented API schema silently loses all data to `:memory:`.
+- **DSR-003** — `done` — DuckDB streaming sink's schema field name (`connection`)
+  didn't match what the sink code actually read (`path`) — a pipeline built via
+  the documented API schema silently lost all data to `:memory:`. Fixed by
+  renaming the schema field to `path`, matching every other sink's convention
+  of schema-key-equals-config-key. PR #352.
 - **DSR-004** — `done` — Streaming filter-transform operator (`>=`/`<=`) was
   advertised by the API schema but was a silent no-op in the engine. Fixed:
   added the two missing branches to `_apply_transforms`'s FILTER handling,
