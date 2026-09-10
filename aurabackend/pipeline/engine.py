@@ -265,9 +265,11 @@ class PipelineEngine:
             conn.execute(f"CREATE TABLE {_q(table_name)} ({col_defs})")
             placeholders = ", ".join(["?"] * len(columns))
             insert_sql = f"INSERT INTO {_q(table_name)} VALUES ({placeholders})"
-            for row in rows:
-                values = [str(v) if v is not None else None for v in row.values()]
-                conn.execute(insert_sql, values)
+            all_values = [
+                [str(v) if v is not None else None for v in row.values()]
+                for row in rows
+            ]
+            conn.executemany(insert_sql, all_values)
 
         # Same reasoning as _load_source's dispatch: the per-row insert
         # loop blocks the sole uvicorn worker for its whole duration.
@@ -308,7 +310,8 @@ class PipelineEngine:
             conn.execute(f"CREATE TABLE {_q(table_name)} ({col_defs})")
             placeholders = ", ".join(["?"] * len(columns))
             insert_sql = f"INSERT INTO {_q(table_name)} VALUES ({placeholders})"
-            for r in rows:
+
+            def _row_values(r: Dict[str, Any]) -> List[Any]:
                 values = []
                 for c in columns:
                     v = r.get(c)
@@ -319,7 +322,10 @@ class PipelineEngine:
                         values.append(_json.dumps(v))
                     else:
                         values.append(str(v))
-                conn.execute(insert_sql, values)
+                return values
+
+            all_values = [_row_values(r) for r in rows]
+            conn.executemany(insert_sql, all_values)
 
         # Same reasoning as _load_db_source's dispatch: the per-row insert
         # loop blocks the sole uvicorn worker for its whole duration.
