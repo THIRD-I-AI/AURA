@@ -76,9 +76,20 @@ PR link once merged. Items are grouped by which of the three roles they serve.
   workflow read the service-layer signature without confirming how its caller
   actually supplies the argument. Lesson: verify every finding against current
   code before acting on it, even from a large, well-cited automated sweep.
-- **DSR-014** — `open` — `PIIMaskingMiddleware` is correctly implemented but not
-  wired into `shared/service_factory.py::create_service()`, the single place
-  every microservice's middleware stack is built.
+- **DSR-014** — `false-positive` — the exhaustive-read workflow flagged
+  `PIIMaskingMiddleware` as "implemented but not wired into the shared service
+  factory," framed as a gap. Attempted the fix 2026-09-10: wiring it globally
+  into `create_service()` broke authentication platform-wide (`test_auth.py`,
+  `test_e2e_chat.py` — 3 failures) because `email` is in `PII_KEYS` and every
+  login/register payload carries `email` as a required credential, not PII to
+  strip. Investigated further: `ingestion_service/main.py:36-38` **already**
+  wires this middleware itself, correctly scoped to just that service — the
+  one place genuine ERP/employee PII actually flows through inbound JSON
+  bodies. The "gap" was a deliberate, correct per-service opt-in design, not
+  an oversight. Reverted the global-wiring attempt (branch abandoned locally,
+  never pushed). Lesson (second time, after DSR-013): a "not wired into X"
+  finding proves absence, not that presence would be correct — verify the
+  fix actually works before trusting the framing, not just the citation.
 - **DSR-015** — `open` — `UASR_RISK_TIERED` defaults `false`: validated self-heal
   shims auto-deploy unconditionally by default; human approval is opt-in, not
   the default posture. Needs a product decision (default-safe vs default-fast),
@@ -89,7 +100,8 @@ PR link once merged. Items are grouped by which of the three roles they serve.
 Mechanical, low-risk, no architectural judgment call needed — safe for an
 autonomous loop to pick up immediately (all personally re-verified against
 current `main` on 2026-09-10, not just taken from the exhaustive-read
-workflow's output): **DSR-014, DSR-004, DSR-003, DSR-006, DSR-001**.
+workflow's output): **DSR-004, DSR-003, DSR-006, DSR-001** (DSR-014 dropped
+after attempting it revealed it was already correct as-is — see above).
 
 Needs a product/architecture decision before code changes (flag for human
 input, do not silently pick a side): **DSR-005, DSR-010, DSR-015**.
