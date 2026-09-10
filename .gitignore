@@ -4,6 +4,9 @@ sprint13_demo.py
 .sprint13_demo/
 .cache/
 
+# Timestamped local reports from scripts/verify_live_deployment.py
+live_verify_*.md
+
 # Python
 __pycache__/
 *.py[cod]
