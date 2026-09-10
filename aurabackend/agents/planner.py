@@ -156,6 +156,11 @@ AGENT_ROSTER = {
     "PipelineAgent": "Builds scheduled ETL/ELT pipelines with the scheduler. Chains ingestion → transform → load.",
     "OptimizationAgent": "Analyzes query performance, recommends indexes, partitioning, and materialized views.",
     "SQLGeneratorAgent": "Generates ad-hoc SQL from natural language (existing Gemini code-gen).",
+    "IntentAgent": "Classifies a user message as 'sql', 'pipeline', 'audit', or 'conversation'.",
+    "ExecutionAgent": "Executes generated SQL securely against the database.",
+    "AnalysisAgent": "Synthesizes a narrative answer from query results, SQL, and chart spec.",
+    "VisualizationAgent": "Picks a chart spec from query output using an LLM + column profile.",
+    "MonitorAgent": "Monitors pipeline health, data quality, and service availability. Triggers UASR self-healing on anomaly detection.",
 }
 
 
