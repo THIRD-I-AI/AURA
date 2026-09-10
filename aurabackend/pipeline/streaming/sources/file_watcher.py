@@ -98,6 +98,8 @@ class FileWatcherSource(BaseSource):
             return self._parse_csv(file_path)
         elif ext == ".json":
             return self._parse_json(file_path)
+        elif ext == ".parquet":
+            return self._parse_parquet(file_path)
         return []
 
     def _parse_csv(self, file_path: Path) -> List[StreamEvent]:
@@ -132,6 +134,23 @@ class FileWatcherSource(BaseSource):
                         data=row,
                         source=f"file://{file_path.name}",
                     ))
+        except Exception:
+            pass
+        return events
+
+    def _parse_parquet(self, file_path: Path) -> List[StreamEvent]:
+        events: List[StreamEvent] = []
+        try:
+            import pyarrow.parquet as pq
+            rows = pq.read_table(file_path).to_pylist()
+            for row in rows:
+                self._event_count += 1
+                events.append(StreamEvent(
+                    timestamp=time.time(),
+                    key=file_path.stem,
+                    data=row,
+                    source=f"file://{file_path.name}",
+                ))
         except Exception:
             pass
         return events
