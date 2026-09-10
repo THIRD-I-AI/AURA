@@ -78,7 +78,8 @@ async def process_raw_batch_async(payload: RawIngestionPayload, system_origin: s
         await kafka_producer.publish_with_retry(
             topic="aura.ledger.ingested",
             payload={"batch_id": payload.batch_id, "entries": normalized_entries},
-            partition_key=payload.tenant_id
+            partition_key=payload.tenant_id,
+            dedup_key=payload.batch_id,
         )
     except KafkaUnavailableError as exc:
         # The batch was already 202-accepted; the WORM trail is the
