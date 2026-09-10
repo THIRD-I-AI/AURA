@@ -66,10 +66,16 @@ PR link once merged. Items are grouped by which of the three roles they serve.
 
 ## Security/coherence (cross-cutting, affects trust in the above)
 
-- **DSR-013** — `open` — Three audit-ledger read endpoints
-  (`audit_ledger_verify`, `audit_ledger_proof`, `audit_ledger_subject_history`)
-  take an unauthenticated `tenant_id` query param with no JWT cross-check —
-  unguarded cross-tenant read.
+- **DSR-013** — `false-positive` — the exhaustive code-read workflow claimed the
+  three audit-ledger read endpoints (`audit_ledger_verify`, `audit_ledger_proof`,
+  `audit_ledger_subject_history`) take an unauthenticated `tenant_id` query
+  param. Personally verified 2026-09-10: `api_gateway/routers/counterfactual.py:202-226`
+  already derives `tenant` from `Depends(require_tenant)` (the verified JWT) —
+  the service-layer function's `tenant_id` arg is fine, it's an internal helper
+  below the trust boundary, and the router docstrings explain exactly why. The
+  workflow read the service-layer signature without confirming how its caller
+  actually supplies the argument. Lesson: verify every finding against current
+  code before acting on it, even from a large, well-cited automated sweep.
 - **DSR-014** — `open` — `PIIMaskingMiddleware` is correctly implemented but not
   wired into `shared/service_factory.py::create_service()`, the single place
   every microservice's middleware stack is built.
@@ -81,8 +87,9 @@ PR link once merged. Items are grouped by which of the three roles they serve.
 ## Execution order (first pass)
 
 Mechanical, low-risk, no architectural judgment call needed — safe for an
-autonomous loop to pick up immediately: **DSR-013, DSR-014, DSR-004, DSR-003,
-DSR-006, DSR-001**.
+autonomous loop to pick up immediately (all personally re-verified against
+current `main` on 2026-09-10, not just taken from the exhaustive-read
+workflow's output): **DSR-014, DSR-004, DSR-003, DSR-006, DSR-001**.
 
 Needs a product/architecture decision before code changes (flag for human
 input, do not silently pick a side): **DSR-005, DSR-010, DSR-015**.

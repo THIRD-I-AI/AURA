@@ -30,7 +30,7 @@ ED25519-signed and appended to a hash-chained ledger; and a MAPE-K worker watche
 | NL → SQL chat over your uploads | ✅ Working | Executed on DuckDB, returns rows + chart + narrative. Independent-verification cross-check (DPC) exists but is **off by default** on chat (`AURA_DPC_CHAT_ENABLED=0`) — see [Known gaps](#known-gaps-we-are-not-papering-over). |
 | Causal / counterfactual engine | ✅ Working | 7 estimators + refuters + E-value sensitivity; results replay byte-for-byte. `double_ml` silently falls back to plain linear regression if `econml` isn't installed, with no signal to the caller. |
 | Forensic financial audit (PCAOB-aligned) | ✅ Working | Benford / three-way match / expectation analytics; signed AS-1215 completion doc. |
-| Signed, tamper-evident audit ledger | ✅ Working | Hash chain + Merkle root; `/audit/ledger/verify` returns an `ok` flag the UI trusts. Three ledger-read endpoints take `tenant_id` as an unauthenticated query param — see [Known gaps](#known-gaps-we-are-not-papering-over). |
+| Signed, tamper-evident audit ledger | ✅ Working | Hash chain + Merkle root; `/audit/ledger/verify` returns an `ok` flag the UI trusts. |
 | Public certificate verification | ✅ Working | Anyone can verify a signed certificate by hash without an account. |
 | Drift **detection** (UASR) | ✅ Working | Schema, statistical (KL + Wasserstein martingale), and semantic drift, live. |
 | Drift **repair** (UASR auto-heal) | ✅ Working | Demonstrated end-to-end on live production (2026-09-09/10): a Kafka bootstrap that permanently disabled itself after one failure, and failed heals silently reported as successful, were both root-caused and fixed. **Auto-deploy is unconditional by default** (`UASR_RISK_TIERED=false`) — the human-approval gate is opt-in, not the default. See [Self-healing](#self-healing-what-is-and-is-not-automatic). |
@@ -52,10 +52,6 @@ ED25519-signed and appended to a hash-chained ledger; and a MAPE-K worker watche
 - **UASR repair state is in-memory.** A restart drops deployed shims silently.
 - **`docker-compose.prod.yml` host-publishes internal service ports.** The live free-tier stack does
   not use that file; do not deploy it as-is on a public host.
-- **Three audit-ledger read endpoints take an unauthenticated `tenant_id` query param** with no
-  cross-check against the caller's verified JWT tenant (`audit_ledger_verify`, `audit_ledger_proof`,
-  `audit_ledger_subject_history`) — an unguarded cross-tenant read, in contrast to the careful
-  tenant-isolation used everywhere else in that same router.
 - **JWT/audit/auth-mode enforcement is off by default outside a recognized production environment.**
   `config.py`'s production check is an inverted allowlist (only explicit dev/test/local/demo names
   count as non-production); anything else is treated as production and hard-fails startup if these
