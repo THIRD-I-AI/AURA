@@ -34,9 +34,11 @@ PR link once merged. Items are grouped by which of the three roles they serve.
   with leader election) has no gateway router mounted — unreachable from the
   frontend, which instead talks to a simpler in-process scheduler. Needs a
   decision: mount it for real, or remove the dead surface/panel referencing it.
-- **DSR-006** — `open` — File-watcher streaming source claims CSV/JSON/Parquet
-  support; the parser silently returns `[]` for Parquet (and marks the file
-  "seen" so it's never retried).
+- **DSR-006** — `done` — File-watcher streaming source claimed CSV/JSON/Parquet
+  support; the parser silently returned `[]` for Parquet (and marked the file
+  "seen" so it was never retried). Fixed: added `_parse_parquet` using
+  `pyarrow.parquet`, matching the existing `_parse_csv`/`_parse_json` style.
+  PR #354.
 
 ## Data Scientist
 
