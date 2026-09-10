@@ -448,6 +448,128 @@ async def test_kafka_source_create_and_insert_offloaded_to_thread(monkeypatch):
         conn.close()
 
 
+@pytest.mark.asyncio
+async def test_kafka_source_insert_is_batched_not_per_row(monkeypatch):
+    """DSR-001 regression: _load_kafka_source's insert used a per-row
+    conn.execute() loop (one round-trip per message), violating this repo's
+    documented bulk-write performance rule. It must use conn.executemany()
+    -- a single call carrying all rows -- instead."""
+    import pipeline.engine as engine_module
+
+    async def _fake_consume_batch(cfg, progress_cb=None):
+        return [{"id": str(i), "event": "click"} for i in range(50)]
+
+    import shared.kafka_client as kafka_client_module
+    monkeypatch.setattr(kafka_client_module, "consume_batch", _fake_consume_batch)
+
+    execute_calls: list = []
+    executemany_calls: list = []
+
+    class SpyConn:
+        def __init__(self, real):
+            self._real = real
+
+        def execute(self, sql, *args, **kwargs):
+            execute_calls.append(sql)
+            return self._real.execute(sql, *args, **kwargs)
+
+        def executemany(self, sql, params):
+            executemany_calls.append((sql, params))
+            return self._real.executemany(sql, params)
+
+        def __getattr__(self, name):
+            return getattr(self._real, name)
+
+    from shared.duckdb_factory import new_connection
+    real_conn = new_connection()
+    spy_conn = SpyConn(real_conn)
+    try:
+        source = PipelineSource(
+            type=SourceType.KAFKA,
+            connection={"topic": "events", "bootstrap_servers": "localhost:9092"},
+        )
+        engine = PipelineEngine()
+        table_name = await engine._load_kafka_source(spy_conn, source)
+
+        assert real_conn.execute(f"SELECT COUNT(*) FROM {table_name}").fetchone()[0] == 50
+        assert len(execute_calls) == 1, (
+            f"expected exactly 1 execute() call (CREATE TABLE only), got "
+            f"{len(execute_calls)}: {execute_calls}"
+        )
+        assert len(executemany_calls) == 1, (
+            f"expected exactly 1 executemany() call carrying all 50 rows, "
+            f"got {len(executemany_calls)} calls -- inserts are not batched"
+        )
+        assert len(executemany_calls[0][1]) == 50
+    finally:
+        real_conn.close()
+
+
+@pytest.mark.asyncio
+async def test_db_source_insert_is_batched_not_per_row(monkeypatch):
+    """DSR-001 regression: _load_db_source's insert used the same per-row
+    conn.execute() loop as _load_kafka_source. Must use executemany()."""
+    import connectors
+
+    class FakePostgreSQLConnector:
+        def __init__(self, config):
+            pass
+
+        async def connect(self):
+            return True
+
+        async def disconnect(self):
+            return True
+
+        async def execute_query(self, query, limit=None):
+            return [{"id": str(i), "amount": str(i * 10)} for i in range(50)]
+
+    monkeypatch.setattr(connectors, "PostgreSQLConnector", FakePostgreSQLConnector)
+
+    execute_calls: list = []
+    executemany_calls: list = []
+
+    class SpyConn:
+        def __init__(self, real):
+            self._real = real
+
+        def execute(self, sql, *args, **kwargs):
+            execute_calls.append(sql)
+            return self._real.execute(sql, *args, **kwargs)
+
+        def executemany(self, sql, params):
+            executemany_calls.append((sql, params))
+            return self._real.executemany(sql, params)
+
+        def __getattr__(self, name):
+            return getattr(self._real, name)
+
+    from shared.duckdb_factory import new_connection
+    real_conn = new_connection()
+    spy_conn = SpyConn(real_conn)
+    try:
+        source = PipelineSource(
+            type=SourceType.POSTGRESQL,
+            connection={"host": "localhost", "database": "test"},
+            table="orders",
+        )
+        engine = PipelineEngine()
+        table_name = await engine._load_db_source(spy_conn, source)
+
+        assert real_conn.execute(f"SELECT COUNT(*) FROM {table_name}").fetchone()[0] == 50
+        assert len(execute_calls) == 1, (
+            f"expected exactly 1 execute() call (CREATE TABLE only), got "
+            f"{len(execute_calls)}: {execute_calls}"
+        )
+        assert len(executemany_calls) == 1, (
+            f"expected exactly 1 executemany() call carrying all 50 rows, "
+            f"got {len(executemany_calls)} calls -- inserts are not batched"
+        )
+        assert len(executemany_calls[0][1]) == 50
+    finally:
+        real_conn.close()
+
+
 def test_get_file_schema_rejects_path_traversal(tmp_path, monkeypatch):
     """A traversal file_name must never escape the tenant's storage
     namespace to read an unrelated file elsewhere on disk (e.g. a signing
