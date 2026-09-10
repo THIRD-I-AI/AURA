@@ -334,7 +334,7 @@ _SINK_SCHEMAS = {
         "description": "Inserts window results into a DuckDB table.",
         "implemented": True,
         "fields": [
-            {"key": "connection", "label": "DB Path",    "type": "text", "default": "data/streaming.duckdb", "required": True,  "help": "Path to the DuckDB file"},
+            {"key": "path",       "label": "DB Path",    "type": "text", "default": "data/streaming.duckdb", "required": True,  "help": "Path to the DuckDB file"},
             {"key": "table",      "label": "Table Name", "type": "text", "default": "stream_results",        "required": True},
         ],
     },

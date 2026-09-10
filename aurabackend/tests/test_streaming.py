@@ -482,6 +482,51 @@ class TestFileSink:
         assert len(files) >= 1
 
 
+class TestDatabaseSink:
+    def test_config_key_matches_schema_and_actually_persists(self, tmp_path):
+        # DSR-003 regression: the streaming API schema advertised this
+        # sink's config field as "connection" (pipeline/streaming/
+        # streaming_api.py), but DatabaseSink.start() only ever read
+        # config["path"] -- a pipeline built via the documented schema
+        # silently lost all data to :memory: instead of the configured
+        # file. Build the config exactly as the schema's field key names
+        # it and confirm data actually lands in a real file, not memory.
+        from pipeline.streaming.sinks.database_sink import DatabaseSink
+        from pipeline.streaming.streaming_api import _SINK_SCHEMAS
+
+        schema_fields = {f["key"] for f in _SINK_SCHEMAS["database"]["fields"]}
+        assert "path" in schema_fields, (
+            "streaming_api.py's database sink schema no longer advertises "
+            "'path' -- DatabaseSink.start() must be updated to match, or "
+            "this test updated to match a deliberate rename"
+        )
+
+        db_path = str(tmp_path / "streaming.duckdb")
+        sink = DatabaseSink(config={"path": db_path, "table": "t"})
+        loop = asyncio.new_event_loop()
+        loop.run_until_complete(sink.start())
+
+        ws = WindowState(
+            window_key="k1|0-60", window_start=0, window_end=60,
+            event_count=1, aggregations={"count": 1},
+        )
+        loop.run_until_complete(sink.emit_window(ws, "p1"))
+        loop.run_until_complete(sink.stop())
+        loop.close()
+
+        assert os.path.exists(db_path), (
+            "DatabaseSink wrote to :memory: instead of the configured path"
+        )
+
+        import duckdb
+        conn = duckdb.connect(db_path)
+        try:
+            rows = conn.execute('SELECT COUNT(*) FROM "t"').fetchone()
+            assert rows[0] == 1
+        finally:
+            conn.close()
+
+
 # ════════════════════════════════════════════════════════════════
 # 5. SOURCE ADAPTER TESTS
 # ════════════════════════════════════════════════════════════════
