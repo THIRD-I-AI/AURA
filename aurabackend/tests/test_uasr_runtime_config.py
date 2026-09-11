@@ -268,6 +268,34 @@ def test_approval_timeout_resolves_from_env(monkeypatch):
     assert rc.approval_timeout_seconds() == 3600
 
 
+# ── risk-tiered self-heal (DSR-015: default flipped to safe) ──────────
+
+def test_risk_tiered_defaults_true():
+    """DSR-015: an unreviewed self-heal shim auto-deploying into production
+    is the higher-risk default -- UASR_RISK_TIERED must default to requiring
+    human approval, not auto-deploy."""
+    assert rc.deployment_summary()["risk_tiered"] is True
+
+
+def test_risk_tiered_can_be_disabled_explicitly(monkeypatch):
+    monkeypatch.setenv("UASR_RISK_TIERED", "false")
+    assert rc.deployment_summary()["risk_tiered"] is False
+
+
+def test_risk_tiered_default_reaches_the_recovery_loop_config(monkeypatch):
+    """UASR_RISK_TIERED is resolved once at uasr.service import time (same
+    reload pattern as test_causal_rl_evaluator_reaches_the_recovery_loop_config
+    above) -- prove the safe default actually reaches the live RecoveryLoopConfig,
+    not just the reporting summary."""
+    monkeypatch.delenv("UASR_RISK_TIERED", raising=False)
+    service = importlib.import_module("uasr.service")
+    importlib.reload(service)
+    try:
+        assert service._loop._config.risk_tiered is True
+    finally:
+        importlib.reload(service)
+
+
 # ── cross-source drift correlation (candidate #5) ──────────────────────
 
 def test_correlation_off_by_default():

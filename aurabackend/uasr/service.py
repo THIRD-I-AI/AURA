@@ -109,10 +109,12 @@ _tracker = HealingMetricTracker(
     correlation_window_seconds=_CORRELATION_WINDOW_SECONDS,
     correlation_min_sources=_CORRELATION_MIN_SOURCES,
 )
-# S41: supervised self-healing is opt-in via env so existing deployments are
-# unchanged. UASR_RISK_TIERED=true holds risky shims for human approval;
-# UASR_RECOVERY_MODE=auto|supervised|monitor_only sets how aggressive AUTO is.
-_RISK_TIERED = os.getenv("UASR_RISK_TIERED", "false").lower() in ("1", "true", "yes")
+# S41: supervised self-healing. UASR_RISK_TIERED=false lets risky shims
+# auto-deploy without human approval; DSR-015 (2026-09-10) flipped the
+# default to safe (true) since UASR_RECOVERY_MODE=auto|supervised|monitor_only
+# sets how aggressive AUTO is, but auto-deploying an unreviewed self-heal
+# shim into production is the higher-risk default to ship unconditionally.
+_RISK_TIERED = os.getenv("UASR_RISK_TIERED", "true").lower() in ("1", "true", "yes")
 try:
     _RECOVERY_MODE = RecoveryMode(os.getenv("UASR_RECOVERY_MODE", "auto").lower())
 except ValueError:
