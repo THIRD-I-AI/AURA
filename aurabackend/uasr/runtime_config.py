@@ -242,7 +242,7 @@ def deployment_summary() -> dict:
         "repair_backend": repair_backend,
         "mapek_enabled": _truthy("UASR_MAPEK_ENABLED"),
         "recovery_mode": _env("UASR_RECOVERY_MODE", "auto"),
-        "risk_tiered": _truthy("UASR_RISK_TIERED"),
+        "risk_tiered": _truthy("UASR_RISK_TIERED", default="true"),
     }
     summary["numeric_semantics"], summary["numeric_auto_heal"] = numeric_heal_flags()
     (
