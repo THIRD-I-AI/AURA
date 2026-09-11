@@ -35,7 +35,7 @@ from shared.service_factory import create_service
 from .cross_source_heal import attempt_cross_source_heal
 from .db import get_session, init_uasr_db
 from .drift_detector import DriftDetector
-from .mapek_worker import MAPEKConfig, MAPEKWorker
+from .mapek_worker import MAPEKConfig, MAPEKWorker, _numeric_column_samples
 from .metrics import HealingMetricTracker
 from .models import (
     BatchPayload,
@@ -818,6 +818,17 @@ async def register_baseline(req: BaselineRequest):
     # distributed/redis UASR backends -- offload it (backend.md).
     await asyncio.to_thread(_detector.register_baseline, batch.source_id, batch)
     version_id = _gateway.register_baseline(batch, desc="manual-baseline")
+
+    # DSR-009: this manual one-shot path is the other place a baseline can
+    # be registered outside the Kafka/mapek_worker batch loop (which now
+    # re-baselines the martingale channel itself in _knowledge_update).
+    # Without this, an operator calling /uasr/baseline before any batch has
+    # flowed through Kafka would leave the martingale channel permanently
+    # un-baselined even with use_martingale_detector=True.
+    if _mapek_worker is not None and _mapek_worker._martingale is not None:
+        samples = _numeric_column_samples(batch)
+        if samples:
+            _mapek_worker._martingale.register_baseline(batch.source_id, samples)
 
     return {
         "status": "registered",
