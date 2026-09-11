@@ -1,9 +1,17 @@
 """
 Commander Loop
 ==============
-The reactive model-in-a-loop that replaces the IntentAgent + run_orchestrator
-DAG. Owns orchestration, streaming, and tenancy; calls the provider for one
-reasoning turn at a time and executes tools through the commander registry.
+DSR-010 (2026-09-10): this module's docstring previously claimed it
+"replaces the IntentAgent + run_orchestrator DAG" -- it does not. It powers
+only POST /chat/stream, which 404s unless AURA_COMMANDER_ENABLED is set
+(defaults False -- see shared/config.py); POST /chat's non-streaming path
+still runs agents/langgraph_orchestrator.py::run_orchestrator unconditionally
+and is the actual default chat engine today. Commander is an opt-in
+streaming alternative that coexists with it, not a replacement.
+
+A reactive model-in-a-loop: owns orchestration, streaming, and tenancy for
+the flag-gated streaming chat path; calls the provider for one reasoning
+turn at a time and executes tools through the commander registry.
 
 Every terminal path yields a typed event (DoneEvent or ErrorEvent) — there is
 no silent-empty path. This is the structural cure for the old chat.py behaviour
