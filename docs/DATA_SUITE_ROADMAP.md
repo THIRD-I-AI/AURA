@@ -82,10 +82,14 @@ PR link once merged. Items are grouped by which of the three roles they serve.
     simple-average-threshold rule with the causal estimate + CI, and decide
     how `CausalRLEvaluator.select_winner` relates to it (cold-start
     fallback vs. full replacement).
-- **DSR-008** — `open` — `/counterfactual/info` advertises `double_ml` as fully
-  doubly-robust regardless of whether `econml` is actually installed; when it
-  isn't, `double_ml` silently falls back to plain linear regression with no
-  signal to the caller that the requested method degraded.
+- **DSR-008** — `done` — `/counterfactual/info` advertised `double_ml` as
+  fully doubly-robust regardless of whether `econml` was actually installed;
+  when it wasn't, `double_ml` silently fell back to plain linear regression
+  with no signal to the caller that the requested method degraded. Fixed:
+  added `CounterfactualEstimate.degraded` (True iff the DoWhy fallback ran),
+  excluded from the audit-artifact hash basis for backward compat with
+  pre-existing signed artifacts, and `econml_available()` added to
+  `/counterfactual/info`. PR #368.
 - **DSR-009** — `done` — `uasr/conformal_martingale.py` (a fully-worked
   anytime-valid drift statistic) had no caller anywhere in the UASR wiring —
   implemented, never wired in. Investigated 2026-09-11: the detector it
