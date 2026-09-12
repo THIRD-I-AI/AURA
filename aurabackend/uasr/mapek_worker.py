@@ -382,6 +382,7 @@ class MAPEKWorker:
                 # S18.1c: when ShimRouter is active, use its weighted
                 # canary routing instead of the recovery loop's linear
                 # shim-chain application.
+                routed = None
                 if self._shim_router is not None:
                     try:
                         routed = await self._shim_router.apply(batch.source_id, batch.rows)
@@ -415,6 +416,23 @@ class MAPEKWorker:
                     f"drift={drift.drift_detected} type={drift.drift_type} severity={drift.severity}",
                     {"batch_id": batch.batch_id, "row_count": len(batch.rows)},
                 )
+
+                # DSR-007a: record which version ShimRouter picked for this
+                # batch and what happened, so a future causal estimate
+                # (DSR-007b/c) has real (version, outcome) history to learn
+                # from instead of comparing K candidates against one batch.
+                # Plumbing only -- drift_detected (0.0/1.0) is the outcome
+                # because it's the one signal both the classical and
+                # martingale detector paths always populate; DriftDetectionResult's
+                # other numeric fields (kl_divergence, cosine_distance) are
+                # set conditionally by the classical path and never by the
+                # martingale path, so neither is reliable across detectors.
+                if routed is not None:
+                    self._shim_router.record_outcome(
+                        batch.source_id, routed["version"],
+                        float(drift.drift_detected), time.time(),
+                        {"row_count": len(batch.rows)},
+                    )
 
                 # Post-heal validation: `drift` above already reflects data
                 # AFTER apply_shims (line ~309), so this is the earliest point
