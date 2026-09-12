@@ -183,24 +183,27 @@ async def execution_node(state: OrchestratorState) -> Dict[str, Any]:
 
 
 def _dpc_chat_enabled() -> bool:
-    """Whether to cross-check on the INLINE chat path. Defaults to OFF.
+    """Whether to cross-check on the INLINE chat path. Defaults to ON.
 
-    Separate from ``AURA_DPC_ENABLED`` (which defaults on) because that flag
-    was written for the DAGExecutor path, where DPC was additionally gated
-    behind ``params["execute"]`` and therefore never actually ran. Wiring the
-    verifier into the always-on chat DAG silently reinterpreted "available" as
-    "on for every query" — each one paying an extra LLM round-trip and up to
-    ``AURA_DPC_TIMEOUT_S`` (default 10s) of added latency. That is a product
-    decision about response time, not a bug fix, so it is opt-in.
+    Separate from ``AURA_DPC_ENABLED`` (which also defaults on) because that
+    flag was written for the DAGExecutor path, where DPC was additionally
+    gated behind ``params["execute"]`` and therefore never actually ran.
+    Wiring the verifier into the always-on chat DAG means every ordinary
+    chat query now pays an extra LLM round-trip and up to
+    ``AURA_DPC_TIMEOUT_S`` (default 10s) of added latency in exchange for an
+    independent cross-check on the answer. DSR-012 (2026-09-12): the user
+    chose default-safe (verify by default) over default-fast, given AURA's
+    audit/compliance surface — an operator who wants the faster, unverified
+    path can opt back out.
 
-    Set AURA_DPC_CHAT_ENABLED=1 to turn it on. It also respects the global
+    Set AURA_DPC_CHAT_ENABLED=0 to turn it off. It also respects the global
     AURA_DPC_ENABLED kill switch, so setting that to 0 disables both paths.
     """
     import os
 
     if not dpc_enabled():
         return False
-    return os.getenv("AURA_DPC_CHAT_ENABLED", "0") == "1"
+    return os.getenv("AURA_DPC_CHAT_ENABLED", "1") == "1"
 
 
 def _dpc_registry(con: Any) -> Any:
