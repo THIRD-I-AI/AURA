@@ -417,21 +417,31 @@ class MAPEKWorker:
                     {"batch_id": batch.batch_id, "row_count": len(batch.rows)},
                 )
 
-                # DSR-007a: record which version ShimRouter picked for this
-                # batch and what happened, so a future causal estimate
-                # (DSR-007b/c) has real (version, outcome) history to learn
-                # from instead of comparing K candidates against one batch.
-                # Plumbing only -- drift_detected (0.0/1.0) is the outcome
-                # because it's the one signal both the classical and
-                # martingale detector paths always populate; DriftDetectionResult's
-                # other numeric fields (kl_divergence, cosine_distance) are
-                # set conditionally by the classical path and never by the
-                # martingale path, so neither is reliable across detectors.
+                # DSR-007a/b: record which version ShimRouter picked for this
+                # batch and what happened, so a causal estimate (DSR-007b)
+                # has real (version, outcome) history to learn from instead
+                # of comparing K candidates against one batch.
+                #
+                # Outcome is DriftDetector.baseline_distance(): a continuous
+                # standardized distance from the registered baseline, always
+                # computable (0.0 with no baseline yet) and independent of
+                # which detector (classical or martingale) actually fired --
+                # drift_detected (0/1) was DSR-007a's placeholder because it
+                # was the only signal both detector paths always populated;
+                # this replaces it with a real magnitude now that DSR-007b
+                # needs more than a binary flag to estimate a treatment effect.
                 if routed is not None:
+                    now = time.time()
                     self._shim_router.record_outcome(
                         batch.source_id, routed["version"],
-                        float(drift.drift_detected), time.time(),
-                        {"row_count": len(batch.rows)},
+                        self._detector.baseline_distance(batch.source_id, batch),
+                        now,
+                        {
+                            "row_count": len(batch.rows),
+                            "columns_count": len(batch.columns),
+                            "hour_of_day": time.gmtime(now).tm_hour,
+                            "has_baseline": float(self._detector.has_baseline(batch.source_id)),
+                        },
                     )
 
                 # Post-heal validation: `drift` above already reflects data
