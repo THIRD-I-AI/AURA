@@ -50,7 +50,7 @@ PR link once merged. Items are grouped by which of the three roles they serve.
 
 ## Data Scientist
 
-- **DSR-007** — `open` (in-progress: design phase) — `uasr/causal_rl_evaluator.py`
+- **DSR-007** — split into staged sub-items (2026-09-11) — `uasr/causal_rl_evaluator.py`
   advertises a doubly-robust DR-Learner estimator in its docstring; the
   actual confidence interval is a hardcoded heuristic
   (`abs(improvement)*0.2 + 0.05`), and its `conformal_calibration`
@@ -59,25 +59,47 @@ PR link once merged. Items are grouped by which of the three roles they serve.
   .run_estimators` (the real DR-Learner path) requires a `treatment`,
   `outcome`, and causal `dag` — none of which exist as a concept in shim
   selection today (candidates are compared by before/after drift score, not
-  a treatment/outcome/DAG spec). Implementing the real CI means designing
-  that causal spec for shim selection first; the user chose to do this
-  properly rather than defer or fail-loudly. Design work not yet started.
+  a treatment/outcome/DAG spec). Further investigated 2026-09-11: real
+  per-row treatment variation doesn't exist anywhere in the current flow —
+  a candidate shim is applied to a whole batch or not at all. The one place
+  genuine treatment variation exists is `ShimRouter` (S18.1c), which routes
+  **whole batches** to one version at a time over a sequence of batches
+  (not rows within a batch) — so a real causal estimate needs a *history*
+  of many realized batches accumulated via canary promotion, turning shim
+  selection from a single-batch comparison into an online/incremental
+  decision. User chose to commit to this properly rather than defer or
+  fail-loudly, and approved a 3-stage breakdown:
+  - **DSR-007a** — `in-progress` — plumbing only, no causal math, no
+    behavior change: add a persistent per-source/per-version canary
+    outcome-history store to `ShimRouter`, populated from
+    `mapek_worker.py`'s batch loop.
+  - **DSR-007b** — `open` — build the treatment/outcome/DAG mapping from
+    that history and call `run_estimators` periodically (e.g. at each
+    `promote_canary` check). Needs a design proposal before implementation.
+  - **DSR-007c** — `open` — replace/augment `promote_canary`'s current
+    simple-average-threshold rule with the causal estimate + CI, and decide
+    how `CausalRLEvaluator.select_winner` relates to it (cold-start
+    fallback vs. full replacement).
 - **DSR-008** — `open` — `/counterfactual/info` advertises `double_ml` as fully
   doubly-robust regardless of whether `econml` is actually installed; when it
   isn't, `double_ml` silently falls back to plain linear regression with no
   signal to the caller that the requested method degraded.
-- **DSR-009** — `in-progress` — `uasr/conformal_martingale.py` (a fully-worked
-  anytime-valid drift statistic) has no caller anywhere in the UASR wiring —
-  implemented, never wired in. Investigated 2026-09-10: the detector it
-  would replace, `WassersteinMartingaleDetector` (`martingale.py`), is
+- **DSR-009** — `done` — `uasr/conformal_martingale.py` (a fully-worked
+  anytime-valid drift statistic) had no caller anywhere in the UASR wiring —
+  implemented, never wired in. Investigated 2026-09-11: the detector it
+  would replace, `WassersteinMartingaleDetector` (`martingale.py`), was
   itself already opt-in and off by default (`UASR_USE_MARTINGALE_DETECTOR`)
-  — AND is a complete dead no-op even when turned on, since nothing in the
-  codebase ever calls its `register_baseline()` (`mapek_worker.py` never
-  calls it, and `/uasr/baseline` in `service.py:804-818` only registers
-  baselines for the classical detector and semantic gateway). User decided:
-  wire `ConformalDriftMartingale` in as the replacement AND fix baseline
-  registration as part of the same fix, so the replacement actually fires
-  rather than shipping a differently-shaped dead detector.
+  — AND was a complete dead no-op even when turned on, since nothing in the
+  codebase ever called its `register_baseline()` (`mapek_worker.py` never
+  called it, and `/uasr/baseline` in `service.py` only registered baselines
+  for the classical detector and semantic gateway). Fixed: added a new
+  `ConformalMartingaleRegistry` adapter (`conformal_martingale.py`) exposing
+  the same public interface `WassersteinMartingaleDetector` had, so
+  `mapek_worker.py`'s `_analyze_martingale` call sites needed no changes —
+  only the constructor. Also wired real baseline registration into both
+  places the classical detector re-baselines and into `POST /uasr/baseline`,
+  so the replacement actually fires rather than shipping a differently-
+  shaped dead detector. PR #363.
 
 ## Data Analyst / platform coherence
 
@@ -150,9 +172,9 @@ complete.
 Decisions requested from the user 2026-09-10 and resolved: DSR-005
 (`wontfix` — already backend-resolved, frontend UI declined), DSR-010
 (`done` — turned out to be a docstring bug, not an architecture decision),
-DSR-015 (`done` — default-safe). DSR-007 and DSR-009 were decided (design
-the causal spec properly; wire in + fix baseline registration) and are now
-`open`/`in-progress` implementation work, tracked above.
+DSR-015 (`done` — default-safe). DSR-009 (`done` — wired in + fixed baseline
+registration) and DSR-007 (split into DSR-007a/b/c, in progress — design the
+causal spec properly, staged) were decided and are tracked above.
 
 Still needs a product/architecture decision before code changes (flag for
 human input, do not silently pick a side): **DSR-002, DSR-012**. DSR-002
