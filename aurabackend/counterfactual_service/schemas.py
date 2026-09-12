@@ -130,6 +130,13 @@ class CounterfactualEstimate(BaseModel):
     n_samples: int
     elapsed_ms: float = 0.0
     error: Optional[str] = None
+    # DSR-008: True when this method requested a doubly-robust estimator
+    # (double_ml) but ran the weaker DoWhy backdoor.linear_regression
+    # fallback instead, because econml wasn't installed. Pure provenance
+    # metadata (excluded from the hash basis, see _HASH_EXCLUDE_FIELDS) --
+    # it doesn't change what was computed, only how honestly the caller
+    # can trust the method label. Never True for any other method.
+    degraded: bool = False
     # Sprint 13: optional for backward compat with persisted artifacts.
     # Only DR-style methods (currently double_ml when econml is
     # available) populate this; DoWhy-routed estimators leave it None.
