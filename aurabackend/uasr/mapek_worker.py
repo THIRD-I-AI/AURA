@@ -165,6 +165,27 @@ class MAPEKConfig:
 ProgressCb = Callable[[str, str, Dict[str, Any]], Awaitable[None]]
 
 
+def _numeric_column_samples(batch: BatchPayload) -> Dict[str, List[float]]:
+    """Extract per-column numeric sample lists from a batch's rows.
+
+    Shared by ``_analyze_martingale`` (feeding ``update()``) and
+    ``_knowledge_update``'s martingale re-baseline (DSR-009) so both call
+    sites agree on what "a column's samples" means: skip strings, None,
+    dicts, bools — only Wasserstein-comparable numeric values. A column
+    with zero numeric values across the whole batch is omitted.
+    """
+    col_samples: Dict[str, List[float]] = {}
+    for col in batch.columns:
+        samples: List[float] = []
+        for r in batch.rows:
+            v = r.get(col)
+            if isinstance(v, (int, float)) and not isinstance(v, bool):
+                samples.append(float(v))
+        if samples:
+            col_samples[col] = samples
+    return col_samples
+
+
 def _make_canary_transform(shim_code: str) -> Callable[[str, List[Dict[str, Any]]], List[Dict[str, Any]]]:
     """Wrap a shim's sandboxed code as a ShimRouter transform callable.
 
@@ -206,15 +227,26 @@ class MAPEKWorker:
         # with identical behaviour to before.
         self._repair_scheduler = repair_scheduler
 
-        # Sprint S18.1 — lazily initialise the WassersteinMartingaleDetector
+        # Sprint S18.1 — lazily initialise the martingale drift channel
         # ONLY when the flag is on. Keeps the import + state allocation
         # off the hot path for the (default) IQR-only deployment.
+        #
+        # DSR-009 (2026-09-11): swapped WassersteinMartingaleDetector's
+        # empirical Azuma-Hoeffding bound for ConformalMartingaleRegistry's
+        # anytime-valid test martingale (Ville's inequality) -- see
+        # conformal_martingale.py's module docstring for the statistical
+        # case. `martingale_baseline_window` (batches to warm up the
+        # active phase) maps to the new detector's `warmup` (batches to
+        # populate the conformal calibration set) -- same role, different
+        # underlying math. Call-site shape in _analyze_martingale below is
+        # unchanged: the new registry exposes the same
+        # register_baseline/update/diagnostics/baseline_stats surface.
         self._martingale: Optional[Any] = None
         if self._cfg.use_martingale_detector:
-            from .martingale import WassersteinMartingaleDetector
-            self._martingale = WassersteinMartingaleDetector(
+            from .conformal_martingale import ConformalMartingaleRegistry
+            self._martingale = ConformalMartingaleRegistry(
                 alpha=self._cfg.martingale_alpha,
-                baseline_window=self._cfg.martingale_baseline_window,
+                warmup=self._cfg.martingale_baseline_window,
             )
 
         # Sprint S18.1c — lazily initialise the ShimRouter when opted in.
@@ -485,6 +517,7 @@ class MAPEKWorker:
                                 dists = self._detector._compute_distributions(batch)
                                 if dists:
                                     self._detector.register_baseline(batch.source_id, dists)
+                                self._register_martingale_baseline(batch)
                                 await self._emit(
                                     "cross_source_healed",
                                     f"borrowed shim resolved recovery {recovery.recovery_id} after it "
@@ -604,18 +637,8 @@ class MAPEKWorker:
         assert self._martingale is not None
         alarms: List[str] = []
         max_distance: float = 0.0
-        col_samples: Dict[str, List[float]] = {}
-        for col in batch.columns:
-            # Extract numeric samples from this column. Skip strings,
-            # None, dicts — only Wasserstein-comparable values.
-            samples: List[float] = []
-            for r in batch.rows:
-                v = r.get(col)
-                if isinstance(v, (int, float)) and not isinstance(v, bool):
-                    samples.append(float(v))
-            if not samples:
-                continue
-            col_samples[col] = samples
+        col_samples = _numeric_column_samples(batch)
+        for col, samples in col_samples.items():
             try:
                 fired = self._martingale.update(batch.source_id, col, samples)
             except Exception as exc:
@@ -680,6 +703,26 @@ class MAPEKWorker:
                 f"(α={self._cfg.martingale_alpha}, max W₁={max_distance:.4f})"
             ),
         )
+
+    def _register_martingale_baseline(self, batch: BatchPayload) -> None:
+        """DSR-009: re-baseline the martingale channel alongside the
+        classical detector's ``register_baseline`` call.
+
+        Before this fix, nothing anywhere called
+        ``self._martingale.register_baseline`` — even with
+        ``use_martingale_detector=True``, the channel was a permanent
+        no-op (``update()`` fails open with no baseline registered; see
+        ``ConformalMartingaleRegistry.update``/
+        ``WassersteinMartingaleDetector.update``'s doc). This mirrors the
+        classical detector's re-baseline call sites (``_knowledge_update``,
+        the cross-source-heal path) so the martingale channel tracks the
+        same "known-good" reference the classical detector does.
+        """
+        if self._martingale is None:
+            return
+        samples = _numeric_column_samples(batch)
+        if samples:
+            self._martingale.register_baseline(batch.source_id, samples)
 
     def _should_pause(self, drift: DriftDetectionResult) -> bool:
         if not drift.drift_detected or drift.severity is None:
@@ -993,6 +1036,7 @@ class MAPEKWorker:
             dists = self._detector._compute_distributions(batch)
             if dists:
                 self._detector.register_baseline(batch.source_id, dists)
+            self._register_martingale_baseline(batch)
 
         # Feed the healing tracker so /uasr/metrics dashboards update.
         # Only emit on actual recovery cycles — happy-path batches without drift

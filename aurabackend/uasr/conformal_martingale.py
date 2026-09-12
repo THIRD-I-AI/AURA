@@ -79,7 +79,7 @@ from __future__ import annotations
 import bisect
 import logging
 import math
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 logger = logging.getLogger("uasr.conformal_martingale")
 
@@ -254,3 +254,123 @@ class ConformalDriftMartingale:
     @property
     def threshold(self) -> float:
         return self._threshold
+
+    @property
+    def n_updates(self) -> int:
+        return self._n_updates
+
+
+class ConformalMartingaleRegistry:
+    """Per-(source_id, column) registry of :class:`ConformalDriftMartingale`
+    detectors, exposing the same public surface as
+    ``martingale.WassersteinMartingaleDetector`` so DSR-009's swap-in needs
+    no changes to ``mapek_worker.py``'s call sites (``_analyze_martingale``).
+
+    ``ConformalDriftMartingale`` takes its baseline directly in
+    ``__init__`` rather than through a separate ``register_baseline`` call,
+    so this registry holds the raw baseline sample lists itself (for
+    ``baseline_stats`` and to rebuild the per-column detector on
+    ``register_baseline``) alongside the live detector instances.
+    """
+
+    def __init__(
+        self,
+        alpha: float = 0.01,
+        n_grid: int = 100,
+        warmup: int = 10,
+    ) -> None:
+        self._alpha = alpha
+        self._n_grid = n_grid
+        self._warmup = warmup
+        self._baselines: Dict[str, Dict[str, List[float]]] = {}
+        self._detectors: Dict[str, Dict[str, ConformalDriftMartingale]] = {}
+        self._last_distance: Dict[str, Dict[str, float]] = {}
+
+    def register_baseline(
+        self,
+        source_id: str,
+        baselines: Dict[str, List[float]],
+    ) -> None:
+        """Store the reference distribution for each column and (re)build
+        that column's detector from it."""
+        self._baselines.setdefault(source_id, {})
+        self._detectors.setdefault(source_id, {})
+        self._last_distance.setdefault(source_id, {})
+        for col, samples in baselines.items():
+            samples = list(samples)
+            if not samples:
+                continue
+            self._baselines[source_id][col] = samples
+            self._detectors[source_id][col] = ConformalDriftMartingale(
+                samples, alpha=self._alpha, n_grid=self._n_grid, warmup=self._warmup,
+            )
+            self._last_distance[source_id][col] = -1.0
+
+    def reset_source(self, source_id: str) -> None:
+        """Drop all state for a source — mirrors
+        ``WassersteinMartingaleDetector.reset_source``."""
+        for d in (self._baselines, self._detectors, self._last_distance):
+            d.pop(source_id, None)
+
+    def update(self, source_id: str, column: str, batch_samples: List[float]) -> bool:
+        """Feed one batch's worth of samples for one column.
+
+        Returns False (no alarm) when no baseline is registered for this
+        column, matching ``WassersteinMartingaleDetector.update``'s
+        no-baseline default.
+        """
+        det = self._detectors.get(source_id, {}).get(column)
+        if det is None:
+            return False
+        baseline = self._baselines[source_id][column]
+        try:
+            self._last_distance[source_id][column] = wasserstein_1_empirical(
+                baseline, list(batch_samples),
+            )
+        except ValueError:
+            pass
+        return det.update(batch_samples)
+
+    def diagnostics(self, source_id: str, column: str) -> Dict[str, float]:
+        """Snapshot of the per-column detector state for observability.
+
+        Keeps ``step`` and ``martingale`` from
+        ``WassersteinMartingaleDetector.diagnostics`` (the operator card's
+        existing contract — see
+        test_martingale_diagnostics_observable_post_update) mapped onto
+        this detector's own statistic: ``martingale`` is the test
+        martingale's wealth (Ville's inequality bounds P(sup wealth >=
+        1/alpha), not a bounded increment sum), and adds ``wealth``/``peak``
+        as the more precise names for new consumers.
+        """
+        det = self._detectors.get(source_id, {}).get(column)
+        if det is None:
+            return {
+                "step": 0.0, "last_distance": -1.0,
+                "martingale": 1.0, "wealth": 1.0, "peak": 1.0,
+                "threshold": 1.0 / self._alpha, "alpha": self._alpha,
+            }
+        return {
+            "step": float(det.n_updates),
+            "last_distance": self._last_distance.get(source_id, {}).get(column, -1.0),
+            "martingale": det.wealth,
+            "wealth": det.wealth,
+            "peak": det.peak,
+            "threshold": det.threshold,
+            "alpha": det.alpha,
+        }
+
+    def baseline_stats(
+        self, source_id: str, column: str,
+    ) -> "tuple[Optional[float], Optional[float]]":
+        """Mean and population stdev of the registered baseline samples
+        for ``(source_id, column)``. Returns ``(None, None)`` if no
+        baseline is registered — matches
+        ``WassersteinMartingaleDetector.baseline_stats``."""
+        samples = self._baselines.get(source_id, {}).get(column)
+        if not samples:
+            return None, None
+        n = len(samples)
+        mean = sum(samples) / n
+        variance = sum((x - mean) ** 2 for x in samples) / n
+        return mean, math.sqrt(variance)

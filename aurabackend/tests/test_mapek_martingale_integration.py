@@ -36,7 +36,15 @@ import pytest
 
 from uasr.actuator_agent import SynthesisActuatorAgent
 from uasr.mapek_worker import MAPEKConfig, MAPEKWorker
-from uasr.models import BatchPayload, DiagnosisResult, DriftSeverity, DriftType
+from uasr.models import (
+    BatchPayload,
+    DiagnosisResult,
+    DriftDetectionResult,
+    DriftSeverity,
+    DriftType,
+    RecoveryLoopResult,
+    RecoveryStatus,
+)
 
 
 def _make_batch(rows: List[Dict[str, Any]], source_id: str = "test_src") -> BatchPayload:
@@ -350,4 +358,80 @@ def test_martingale_non_rescalable_drift_falls_through_to_llm_not_noop() -> None
     assert shim_code is None, (
         "a non-rescalable martingale drift must not produce a template shim "
         "(it would be a no-op pass-through that vacuously passes validation)"
+    )
+
+
+# ── DSR-009: baseline registration was never wired anywhere ────────────
+#
+# Before this fix, use_martingale_detector=True constructed a live
+# detector but nothing in production code ever called its
+# register_baseline() -- every test above works only because it calls
+# w._martingale.register_baseline(...) directly as test setup. These
+# tests instead exercise the actual production call sites
+# (_knowledge_update) to confirm the wiring gap is closed.
+
+
+@pytest.mark.asyncio
+async def test_knowledge_update_registers_martingale_baseline_on_deployed_heal() -> None:
+    """A confirmed-healed batch (recovery.status == DEPLOYED,
+    batch_healed=True) must re-baseline the martingale channel, not just
+    the classical detector. Before DSR-009 this call didn't exist at all
+    -- baseline_stats would stay (None, None) forever."""
+    w = _worker(use_martingale=True)
+    assert w._martingale.baseline_stats("test_src", "metric") == (None, None)
+
+    batch = _make_batch(
+        [{"metric": float(i)} for i in range(30)], source_id="test_src",
+    )
+    drift = DriftDetectionResult(source_id="test_src", batch_id="b1", drift_detected=True)
+    recovery = RecoveryLoopResult(
+        drift_event_id="e1", recovery_id="r1", status=RecoveryStatus.DEPLOYED,
+    )
+
+    await w._knowledge_update(batch, drift, recovery, batch_healed=True)
+
+    mean, std = w._martingale.baseline_stats("test_src", "metric")
+    assert mean is not None, (
+        "martingale baseline was not registered by _knowledge_update -- "
+        "the channel would stay a permanent no-op even with the flag on"
+    )
+    assert mean == pytest.approx(sum(range(30)) / 30)
+
+
+@pytest.mark.asyncio
+async def test_knowledge_update_does_not_register_martingale_baseline_without_flag() -> None:
+    """No martingale detector constructed when the flag is off -- the new
+    _register_martingale_baseline call must no-op cleanly (self._martingale
+    is None), not raise."""
+    w = _worker(use_martingale=False)
+    batch = _make_batch([{"metric": 1.0}], source_id="test_src")
+    drift = DriftDetectionResult(source_id="test_src", batch_id="b1", drift_detected=True)
+    recovery = RecoveryLoopResult(
+        drift_event_id="e1", recovery_id="r1", status=RecoveryStatus.DEPLOYED,
+    )
+    await w._knowledge_update(batch, drift, recovery, batch_healed=True)  # must not raise
+    assert w._martingale is None
+
+
+def test_manual_baseline_endpoint_registers_martingale(monkeypatch) -> None:
+    """DSR-009: /uasr/baseline is the other place a baseline can be
+    registered (outside the Kafka/mapek_worker batch loop). It must also
+    reach the martingale channel when a worker with the flag on exists."""
+    import asyncio as _asyncio
+
+    import uasr.service as service_module
+    from uasr.service import BaselineRequest
+
+    w = _worker(use_martingale=True)
+    monkeypatch.setattr(service_module, "_mapek_worker", w)
+
+    req = BaselineRequest(
+        source_id="test_src",
+        rows=[{"metric": float(i)} for i in range(30)],
+    )
+    _asyncio.run(service_module.register_baseline(req))
+
+    mean, std = w._martingale.baseline_stats("test_src", "metric")
+    assert mean is not None, (
+        "POST /uasr/baseline did not reach the martingale channel"
     )
