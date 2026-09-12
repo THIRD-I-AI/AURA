@@ -11,8 +11,17 @@ import time
 
 import pytest
 
+from counterfactual_service.engine import dowhy_available, econml_available
 from uasr.canary_causal_estimator import MIN_SAMPLES_PER_ARM, estimate_canary_effect
 from uasr.shim_router import OutcomeRecord, ShimRouter
+
+# Tier B: estimate_canary_effect's real (non-error-path) branch needs dowhy
+# to build the CausalModel at all. The base Backend/Streaming Tests CI lanes
+# don't install it -- only the dedicated Causal Tests lane
+# (requirements-causal.txt) does, and that lane's pytest invocation must
+# include this file for the skip below to ever actually be exercised
+# rather than silently skipped everywhere (testing.md's Tier A/B rule).
+_CAUSAL_DEPS_AVAILABLE = dowhy_available() and econml_available()
 
 
 def _records(version: str, n: int, base_outcome: float, covariates=None) -> list:
@@ -36,6 +45,7 @@ async def test_returns_none_with_no_history():
     assert await estimate_canary_effect([], "canary") is None
 
 
+@pytest.mark.skipif(not _CAUSAL_DEPS_AVAILABLE, reason="requires dowhy + econml")
 @pytest.mark.asyncio
 async def test_produces_a_real_estimate_with_enough_history():
     """Canary consistently has LOWER drift distance than baseline across a
