@@ -14,7 +14,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -106,6 +106,47 @@ class WindowConfig(BaseModel):
 
 
 # ────────────────────────────────────────────────────────────────────
+# Runtime Configuration (DSR-002)
+# ────────────────────────────────────────────────────────────────────
+# StreamingEngine (streaming_engine.py) has long accepted opt-in kwargs for
+# triggers, watermarks, barrier-alignment, and backpressure (Sprint S20.1) --
+# but streaming_api.py's start_pipeline constructs it as bare
+# StreamingEngine(pipe), so none of this was reachable from the live HTTP
+# API. This is the API surface: field names and defaults mirror
+# StreamingEngine.__init__'s kwargs exactly, so a pipeline's runtime dict
+# can be passed straight through as **kwargs. `late_data_policy_callable`
+# is deliberately excluded -- it's a Python callable, not something a JSON
+# API can carry; WindowConfig.late_data_policy already covers the
+# API-representable policy choice.
+
+class RuntimeConfig(BaseModel):
+    """Opt-in execution primitives for a streaming pipeline's engine.
+
+    Every field defaults to StreamingEngine's own default, so an unset
+    ``runtime`` reproduces the exact classical (pre-S20.1) behavior --
+    this is additive API surface, not a behavior change for existing
+    pipelines.
+    """
+    backpressure_buffer: int = 10_000
+    backpressure_strategy: Literal["block", "drop_tail", "sample"] = "block"
+
+    use_pid_backpressure: bool = False
+    pid_target_utilization: float = 0.7
+    pid_kp: float = 0.5
+    pid_ki: float = 0.1
+    pid_kd: float = 0.05
+    pid_max_sleep_seconds: float = 1.0
+
+    use_composite_watermark_tracker: bool = False
+    upstream_ids: Optional[List[str]] = None
+
+    use_dataflow_triggers: bool = False
+
+    use_barrier_alignment: bool = False
+    barrier_interval_seconds: float = 30.0
+
+
+# ────────────────────────────────────────────────────────────────────
 # Transform Step
 # ────────────────────────────────────────────────────────────────────
 
@@ -176,6 +217,10 @@ class StreamPipeline(BaseModel):
 
     # Windowing
     window: WindowConfig = Field(default_factory=WindowConfig)
+
+    # Execution primitives (DSR-002): triggers/watermarks/barrier-alignment/
+    # backpressure, passed straight through to StreamingEngine's constructor.
+    runtime: RuntimeConfig = Field(default_factory=RuntimeConfig)
 
     # Processing
     transforms: List[StreamTransform] = Field(default_factory=list)

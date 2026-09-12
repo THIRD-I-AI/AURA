@@ -22,6 +22,7 @@ from pydantic import BaseModel, Field
 
 from pipeline.streaming.models import (
     LateDataPolicy,
+    RuntimeConfig,
     StreamMetrics,
     StreamPipeline,
     StreamPipelineStatus,
@@ -59,6 +60,7 @@ class CreateStreamPipelineRequest(BaseModel):
     event_time_field: str = "timestamp"
     watermark_delay_seconds: int = 10
     window: WindowConfig = Field(default_factory=WindowConfig)
+    runtime: RuntimeConfig = Field(default_factory=RuntimeConfig)
     transforms: List[StreamTransform] = Field(default_factory=list)
     sinks: List[StreamSink] = Field(default_factory=list)
     checkpoint_interval_seconds: int = 30
@@ -72,6 +74,7 @@ class UpdateStreamPipelineRequest(BaseModel):
     event_time_field: Optional[str] = None
     watermark_delay_seconds: Optional[int] = None
     window: Optional[WindowConfig] = None
+    runtime: Optional[RuntimeConfig] = None
     transforms: Optional[List[StreamTransform]] = None
     sinks: Optional[List[StreamSink]] = None
     checkpoint_interval_seconds: Optional[int] = None
@@ -120,6 +123,7 @@ async def create_pipeline(req: CreateStreamPipelineRequest):
         event_time_field=req.event_time_field,
         watermark_delay_seconds=req.watermark_delay_seconds,
         window=req.window,
+        runtime=req.runtime,
         transforms=req.transforms,
         sinks=sinks,
         checkpoint_interval_seconds=req.checkpoint_interval_seconds,
@@ -168,7 +172,11 @@ async def start_pipeline(pipeline_id: str):
     if pipe.status == StreamPipelineStatus.RUNNING:
         raise HTTPException(status_code=409, detail="Already running")
 
-    engine = StreamingEngine(pipe)
+    # DSR-002: pipe.runtime's field names mirror StreamingEngine's kwargs
+    # exactly, so the opt-in trigger/watermark/barrier-alignment/backpressure
+    # primitives set via the API actually reach the engine -- previously
+    # this was a bare StreamingEngine(pipe), so runtime was never reachable.
+    engine = StreamingEngine(pipe, **pipe.runtime.model_dump())
     _engines[pipeline_id] = engine
     await engine.start()
     return {"status": pipe.status.value, "pipeline_id": pipeline_id}
