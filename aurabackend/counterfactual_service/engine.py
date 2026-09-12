@@ -1030,6 +1030,10 @@ def _run_one_estimator(
             ci_upper=hi,
             n_samples=len(df),
             elapsed_ms=(time.perf_counter() - t0) * 1000,
+            # DSR-008: this is the DoWhy stub path -- double_ml only lands
+            # here when econml is unavailable (see the dispatch above),
+            # so degraded is exactly "requested DR-Learner, got linear_regression."
+            degraded=(method_key == "double_ml"),
         )
     except Exception as exc:
         logger.warning("Estimator %s failed: %s", method_key, exc)
@@ -1039,6 +1043,7 @@ def _run_one_estimator(
             n_samples=len(df),
             elapsed_ms=(time.perf_counter() - t0) * 1000,
             error=f"{type(exc).__name__}: {exc}",
+            degraded=(method_key == "double_ml"),
         )
 
 
@@ -1642,7 +1647,11 @@ _HASH_EXCLUDE_FIELDS: Dict[str, Any] = {
     # every run. Strip from every estimate and every refutation so the
     # re-execution Layer 10 contract holds. Pydantic v2 ``__all__`` key
     # applies the exclude to every list element.
-    "estimates":   {"__all__": {"elapsed_ms"}},
+    # DSR-008's `degraded` flag is the same category: provenance about
+    # how the estimate was produced (econml present or not), not part
+    # of the computed answer -- excluded so adding this field doesn't
+    # break verification of any artifact signed before it existed.
+    "estimates":   {"__all__": {"elapsed_ms", "degraded"}},
     "refutations": {"__all__": {"elapsed_ms"}},
 }
 

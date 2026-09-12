@@ -42,7 +42,7 @@ from shared.service_factory import create_service
 from . import cryptography, pdf_renderer, persistence, signing
 from .audit_worker import get_audit_pool, run_audit_subprocess
 from .demo_scenarios import get_scenario, list_scenarios
-from .engine import dowhy_available, run_job
+from .engine import dowhy_available, econml_available, run_job
 from .renderers import render
 from .schemas import CounterfactualQuery
 
@@ -311,9 +311,16 @@ async def info() -> Dict[str, Any]:
     return {
         "engine_version": "0.2.0",
         "dowhy_available": dowhy_available(),
+        "econml_available": econml_available(),
         "signing_available": signing.signing_available(),
         "signing_key_source": signing.signing_key_source(),
         "pdf_available": pdf_renderer.pdf_available(),
+        # DSR-008: double_ml and forest_dr are always listed (both slots
+        # exist regardless of econml) but degrade differently without it --
+        # double_ml silently falls back to backdoor.linear_regression
+        # (see CounterfactualEstimate.degraded), forest_dr returns a
+        # structured error. econml_available above lets a caller predict
+        # which behavior to expect before submitting a job.
         "estimators": ["linear_regression", "ipw", "psm", "double_ml", "forest_dr", "tmle", "iv"],
         "refuters":   ["random_common_cause", "placebo", "data_subset", "sensitivity"],
         "audiences":  ["operator", "auditor", "analyst"],
