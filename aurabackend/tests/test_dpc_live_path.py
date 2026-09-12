@@ -25,9 +25,11 @@ from agents.schemas import ExecutionOutput, OrchestratorState, SQLGenOutput
 
 @pytest.fixture(autouse=True)
 def _enable_chat_dpc(monkeypatch):
-    """Inline chat verification is opt-in (AURA_DPC_CHAT_ENABLED, default 0)
-    because it costs an LLM round-trip and up to 10s per query. These tests
-    exercise the node itself, so they turn it on explicitly."""
+    """Inline chat verification defaults ON (DSR-012) despite costing an LLM
+    round-trip and up to 10s per query. Set explicitly here anyway so these
+    tests don't depend on the default and stay correct if it's ever
+    reconfigured via AURA_DPC_ENABLED/AURA_DPC_CHAT_ENABLED elsewhere in the
+    test run."""
     monkeypatch.setenv("AURA_DPC_CHAT_ENABLED", "1")
     yield
 
@@ -47,6 +49,26 @@ def _state(**kw) -> OrchestratorState:
     )
     base.update(kw)
     return OrchestratorState(**base)
+
+
+def test_dpc_chat_defaults_on(monkeypatch):
+    """DSR-012: default-safe -- an unset AURA_DPC_CHAT_ENABLED must verify,
+    not skip. Bypasses the module-level _enable_chat_dpc fixture's explicit
+    setenv by deleting the var, so this actually exercises the default."""
+    from agents.langgraph_orchestrator import _dpc_chat_enabled
+
+    monkeypatch.delenv("AURA_DPC_CHAT_ENABLED", raising=False)
+    monkeypatch.delenv("AURA_DPC_ENABLED", raising=False)
+    assert _dpc_chat_enabled() is True
+
+
+def test_dpc_chat_can_still_be_disabled_explicitly(monkeypatch):
+    """Default-safe must remain opt-out-able for an operator who wants the
+    faster, unverified path."""
+    from agents.langgraph_orchestrator import _dpc_chat_enabled
+
+    monkeypatch.setenv("AURA_DPC_CHAT_ENABLED", "0")
+    assert _dpc_chat_enabled() is False
 
 
 def test_verification_node_is_wired_into_the_graph():
