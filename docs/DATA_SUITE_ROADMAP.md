@@ -19,10 +19,16 @@ PR link once merged. Items are grouped by which of the three roles they serve.
   violating the repo's own documented bulk-write rule. Fixed: both
   `_load_db_source` and `_load_kafka_source` now build all row values and
   issue a single `conn.executemany()` call. PR #356.
-- **DSR-002** — `open` — Streaming pipeline API (`pipeline/streaming/streaming_api.py::start_pipeline`)
-  never passes the kwargs that would activate triggers/watermarks/barrier-alignment/
-  backpressure — a substantial, correct implementation sits fully unreachable from
-  the live HTTP API.
+- **DSR-002** — `done` — Streaming pipeline API (`pipeline/streaming/streaming_api.py::start_pipeline`)
+  never passed the kwargs that would activate triggers/watermarks/barrier-alignment/
+  backpressure — a substantial, correct implementation sat fully unreachable from
+  the live HTTP API, and `StreamPipeline` had no fields to configure any of it.
+  Fixed: added `RuntimeConfig` (field names/defaults mirroring
+  `StreamingEngine.__init__`'s kwargs exactly), wired into `StreamPipeline`,
+  `CreateStreamPipelineRequest`, and `UpdateStreamPipelineRequest`.
+  `start_pipeline` now does `StreamingEngine(pipe, **pipe.runtime.model_dump())`.
+  Additive only — an unset `runtime` reproduces classical behavior exactly.
+  PR #374.
 - **DSR-003** — `done` — DuckDB streaming sink's schema field name (`connection`)
   didn't match what the sink code actually read (`path`) — a pipeline built via
   the documented API schema silently lost all data to `:memory:`. Fixed by
@@ -201,8 +207,9 @@ DSR-015 (`done` — default-safe), DSR-012 (`done` — default-safe). DSR-009
 DSR-007a/b/c: 007a/007b `done`, 007c `open` — deciding whether the causal
 estimate should gate promotion) were decided and are tracked above.
 
+DSR-002 (`done` — added `RuntimeConfig` API surface) is also resolved.
+
 Still needs a product/architecture decision before code changes (flag for
-human input, do not silently pick a side): **DSR-002, DSR-007c**. DSR-002
-turned out deeper than a wiring fix on inspection (no API schema exists at
-all for the settings in question, not just a missed pass-through) —
-scoping was deferred pending further investigation.
+human input, do not silently pick a side): **DSR-007c** (deciding whether
+DSR-007b's causal estimate should gate canary promotion). This is the
+only open item left on the roadmap.
