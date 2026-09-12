@@ -150,7 +150,7 @@ jobs:
 
       - name: Run tests with coverage
         run: |
-          python -m pytest tests/test_counterfactual_*.py \
+          python -m pytest tests/test_counterfactual_*.py tests/test_uasr_canary_causal_estimator.py \
             --tb=short \
             -q \
             -x \
