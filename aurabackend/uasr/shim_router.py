@@ -51,7 +51,7 @@ import asyncio
 import logging
 import time
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 logger = logging.getLogger("uasr.shim_router")
 
@@ -80,6 +80,21 @@ class _Route:
     deployed_at: float = field(default_factory=time.time)
 
 
+@dataclass
+class OutcomeRecord:
+    """One realized (version, outcome) observation for a source.
+
+    DSR-007a plumbing: recorded once a batch that ``apply()`` routed to
+    some version has a known outcome (e.g. did drift persist after this
+    version's transform). Pure bookkeeping — DSR-007b is where this
+    history becomes a causal estimate's input.
+    """
+    version: str
+    outcome: float
+    timestamp: float
+    covariates: Dict[str, Any] = field(default_factory=dict)
+
+
 class ShimRouter:
     """Per-source canary router with Kramer-Magee quiescence draining.
 
@@ -104,7 +119,7 @@ class ShimRouter:
     The router is per-source — each source_id has its own route table.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, outcome_history_capacity: int = 300) -> None:
         # source_id → {version → _Route}
         self._routes: Dict[str, Dict[str, _Route]] = {}
         self._lock = asyncio.Lock()
@@ -113,6 +128,12 @@ class ShimRouter:
         # identical canary sequences produce byte-identical batch
         # routing (matches the audit-engine determinism contract).
         self._round_robin: Dict[str, int] = {}
+        # DSR-007a: per-source realized-outcome history (which version
+        # handled a batch, and what happened) — plumbing for the future
+        # causal shim-selection estimate (DSR-007b/c). No causal math
+        # here; this only records what already happened via apply().
+        self._outcome_history_capacity = outcome_history_capacity
+        self._outcome_history: Dict[str, List[OutcomeRecord]] = {}
 
     def routes(self, source_id: str) -> List[Dict[str, Any]]:
         """Snapshot of the current route table for one source.
@@ -402,5 +423,32 @@ class ShimRouter:
             table = self._routes.get(source_id, {})
             table.pop(version, None)
 
+    def record_outcome(
+        self,
+        source_id: str,
+        version: str,
+        outcome: float,
+        timestamp: float,
+        covariates: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """DSR-007a: record one realized (version, outcome) observation.
 
-__all__ = ["ShimRouter", "TransformFn", "MetricFn"]
+        Bounded per-source: once a source's history exceeds
+        ``outcome_history_capacity``, the oldest records are dropped —
+        this is an unbounded-growth process input, not durable audit
+        state (that's the persisted RecoveryRecord table).
+        """
+        history = self._outcome_history.setdefault(source_id, [])
+        history.append(OutcomeRecord(
+            version=version, outcome=outcome, timestamp=timestamp,
+            covariates=dict(covariates or {}),
+        ))
+        if len(history) > self._outcome_history_capacity:
+            del history[: len(history) - self._outcome_history_capacity]
+
+    def outcome_history(self, source_id: str) -> List[OutcomeRecord]:
+        """Snapshot of the realized-outcome history for one source."""
+        return list(self._outcome_history.get(source_id, []))
+
+
+__all__ = ["ShimRouter", "TransformFn", "MetricFn", "OutcomeRecord"]
