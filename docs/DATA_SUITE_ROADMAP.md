@@ -75,13 +75,25 @@ PR link once merged. Items are grouped by which of the three roles they serve.
     `_run_forever` right after `ShimRouter.apply()` and drift detection.
     Outcome scalar is `drift_detected` (0.0/1.0) — the one signal both the
     classical and martingale detector paths always populate. PR #366.
-  - **DSR-007b** — `open` — build the treatment/outcome/DAG mapping from
-    that history and call `run_estimators` periodically (e.g. at each
-    `promote_canary` check). Needs a design proposal before implementation.
-  - **DSR-007c** — `open` — replace/augment `promote_canary`'s current
-    simple-average-threshold rule with the causal estimate + CI, and decide
-    how `CausalRLEvaluator.select_winner` relates to it (cold-start
-    fallback vs. full replacement).
+  - **DSR-007b** — `done` — built the treatment/outcome/DAG mapping and
+    wired `run_estimators` into `promote_canary`. Design (2026-09-12):
+    treatment = 1.0 for the canary version's batches vs 0.0 for any other
+    version; outcome = `DriftDetector.baseline_distance()` (a continuous
+    standardized distance, replacing DSR-007a's `drift_detected` 0/1
+    placeholder — needed a real magnitude, not a flag, to estimate a
+    treatment effect); covariates (`row_count`, `columns_count`,
+    `hour_of_day`, `has_baseline`) wired as DAG confounders. Computed once
+    per `promote_canary` check, outside the router's lock, attached as an
+    advisory `causal_estimate` key — does not change the `promoted`
+    decision. `uasr/canary_causal_estimator.py` fails open, requires >= 5
+    samples per arm. PR #371.
+  - **DSR-007c** — `open` — `promote_canary`'s response now carries
+    DSR-007b's `causal_estimate` as an advisory diagnostic alongside the
+    existing simple-average-threshold rule; DSR-007c is deciding whether
+    and how to let that estimate actually influence the promotion
+    decision (replace the threshold rule outright, gate on top of it, or
+    leave it purely advisory), and how `CausalRLEvaluator.select_winner`
+    relates to it (cold-start fallback vs. full replacement).
 - **DSR-008** — `done` — `/counterfactual/info` advertised `double_ml` as
   fully doubly-robust regardless of whether `econml` was actually installed;
   when it wasn't, `double_ml` silently fell back to plain linear regression
@@ -127,10 +139,16 @@ PR link once merged. Items are grouped by which of the three roles they serve.
   `ExecutionAgent`, `AnalysisAgent`, `VisualizationAgent`, `MonitorAgent` to
   `AGENT_ROSTER`, with a regression test asserting the roster and
   `DAGExecutor`'s `AGENT_MAP` stay in sync in both directions. PR #358.
-- **DSR-012** — `open` — DPC (independent pandas cross-check) SQL verification
-  is off by default on the chat path (`AURA_DPC_CHAT_ENABLED=0`) despite the
-  orchestrator graph having a permanent `verify_run` node — ordinary chat
-  answers ship with no cross-check unless an operator explicitly opts in.
+- **DSR-012** — `done` — DPC (independent pandas cross-check) SQL
+  verification was off by default on the chat path
+  (`AURA_DPC_CHAT_ENABLED=0`) despite the orchestrator graph having a
+  permanent `verify_run` node — ordinary chat answers shipped with no
+  cross-check unless an operator explicitly opted in. User decided:
+  default-safe. Fixed: flipped `_dpc_chat_enabled()`'s default to on;
+  every chat query now pays an extra LLM round-trip and up to
+  `AURA_DPC_TIMEOUT_S` (default 10s) of latency in exchange for the
+  cross-check. `AURA_DPC_CHAT_ENABLED=0` remains available to opt out.
+  PR #370.
 
 ## Security/coherence (cross-cutting, affects trust in the above)
 
@@ -178,12 +196,13 @@ complete.
 Decisions requested from the user 2026-09-10 and resolved: DSR-005
 (`wontfix` — already backend-resolved, frontend UI declined), DSR-010
 (`done` — turned out to be a docstring bug, not an architecture decision),
-DSR-015 (`done` — default-safe). DSR-009 (`done` — wired in + fixed baseline
-registration) and DSR-007 (split into DSR-007a/b/c, in progress — design the
-causal spec properly, staged) were decided and are tracked above.
+DSR-015 (`done` — default-safe), DSR-012 (`done` — default-safe). DSR-009
+(`done` — wired in + fixed baseline registration) and DSR-007 (split into
+DSR-007a/b/c: 007a/007b `done`, 007c `open` — deciding whether the causal
+estimate should gate promotion) were decided and are tracked above.
 
 Still needs a product/architecture decision before code changes (flag for
-human input, do not silently pick a side): **DSR-002, DSR-012**. DSR-002
+human input, do not silently pick a side): **DSR-002, DSR-007c**. DSR-002
 turned out deeper than a wiring fix on inspection (no API schema exists at
 all for the settings in question, not just a missed pass-through) —
 scoping was deferred pending further investigation.
