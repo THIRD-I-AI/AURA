@@ -321,7 +321,29 @@ class ShimRouter:
           * ``avg_score``: the score average used for the decision
           * ``new_weight``: the version's weight after this call
           * ``reason``: human-readable explanation
+          * ``causal_estimate``: DSR-007b -- an advisory DR-Learner effect
+            estimate of this version vs every other version in the
+            outcome-history recorded by mapek_worker.py, or None when
+            there isn't enough history yet or the import/estimate itself
+            failed. Never affects ``promoted`` -- purely diagnostic,
+            computed outside the router's lock so a slow estimator call
+            can't block concurrent ``apply()``/route-table operations.
         """
+        result = await self._decide_promotion(source_id, version, ratio_step, min_avg_score, min_samples)
+        from .canary_causal_estimator import estimate_canary_effect
+        result["causal_estimate"] = await estimate_canary_effect(
+            self.outcome_history(source_id), version,
+        )
+        return result
+
+    async def _decide_promotion(
+        self,
+        source_id: str,
+        version: str,
+        ratio_step: float,
+        min_avg_score: float,
+        min_samples: int,
+    ) -> Dict[str, Any]:
         async with self._lock:
             r = self._routes.get(source_id, {}).get(version)
             if r is None:

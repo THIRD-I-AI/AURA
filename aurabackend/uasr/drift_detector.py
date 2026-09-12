@@ -178,6 +178,49 @@ class DriftDetector:
         self._store.save(source_id, st)
         logger.info("Registered baseline for source=%s (%d columns)", source_id, len(distributions))
 
+    def baseline_distance(self, source_id: str, batch: "BatchPayload") -> float:
+        """DSR-007b: a single continuous drift-distance score for a batch,
+        independent of which detector (classical or martingale) actually
+        fired.
+
+        Mean absolute standardized distance
+        ``|batch_mean - baseline_mean| / max(baseline_std, eps)`` across
+        every numeric column that has a registered baseline with a nonzero
+        sample count. Returns 0.0 when no baseline is registered yet, or
+        when no column overlaps -- callers get a real number always, never
+        None, so it can feed a canary outcome-history record unconditionally.
+
+        Deliberately reuses the summary-stat ``ColumnDistribution`` already
+        stored by ``register_baseline`` rather than retaining raw samples
+        (which the martingale channel does, at real per-source memory cost)
+        -- this is a coarser signal, but "coarse and always available" is
+        what DSR-007a/b need for a canary outcome, not a statistical test.
+        """
+        baseline = self._store.peek(source_id).baseline
+        if not baseline:
+            return 0.0
+        col_samples: Dict[str, List[float]] = {}
+        for col in batch.columns:
+            samples = [
+                float(v) for r in batch.rows
+                if isinstance((v := r.get(col)), (int, float)) and not isinstance(v, bool)
+            ]
+            if samples:
+                col_samples[col] = samples
+        distances: List[float] = []
+        for col, samples in col_samples.items():
+            dist = baseline.get(col)
+            if dist is None or dist.mean is None or dist.std is None:
+                continue
+            batch_mean = sum(samples) / len(samples)
+            std = max(dist.std, 1e-9)
+            distances.append(abs(batch_mean - dist.mean) / std)
+        return sum(distances) / len(distances) if distances else 0.0
+
+    def has_baseline(self, source_id: str) -> bool:
+        """Whether a baseline has ever been registered for this source."""
+        return bool(self._store.peek(source_id).baseline)
+
     def register_reference_embedding(self, source_id: str, embedding: List[float]) -> None:
         """Add a reference embedding vector to the source's context matrix."""
         st = self._store.load(source_id)
