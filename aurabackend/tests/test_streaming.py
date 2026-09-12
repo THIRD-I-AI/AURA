@@ -632,6 +632,53 @@ class TestStreamingAPI:
         routes = [r.path for r in router.routes]
         assert "/templates" in routes or any("/templates" in str(r) for r in routes)
 
+    def test_runtime_config_defaults_reproduce_classical_engine_defaults(self):
+        """DSR-002: an unset `runtime` on a pipeline must match
+        StreamingEngine's own kwarg defaults exactly -- this is additive
+        API surface, not a behavior change for existing pipelines."""
+        import inspect
+
+        from pipeline.streaming.streaming_engine import StreamingEngine
+
+        p = _make_pipeline()
+        engine_defaults = {
+            name: param.default
+            for name, param in inspect.signature(StreamingEngine.__init__).parameters.items()
+            if param.default is not inspect.Parameter.empty
+        }
+        for field, value in p.runtime.model_dump().items():
+            assert engine_defaults[field] == value, (
+                f"RuntimeConfig.{field} default {value!r} doesn't match "
+                f"StreamingEngine's own default {engine_defaults[field]!r}"
+            )
+
+    @pytest.mark.asyncio
+    async def test_start_pipeline_passes_runtime_kwargs_to_the_engine(self):
+        """DSR-002 regression: before this fix, start_pipeline built a bare
+        StreamingEngine(pipe) -- opt-in kwargs set via the API were silently
+        unreachable no matter what the pipeline's config said."""
+        from pipeline.streaming.models import RuntimeConfig
+        from pipeline.streaming.streaming_api import _engines, _pipelines, start_pipeline
+
+        p = _make_pipeline(runtime=RuntimeConfig(
+            use_barrier_alignment=True,
+            barrier_interval_seconds=5.0,
+            use_dataflow_triggers=True,
+            backpressure_buffer=42,
+        ))
+        _pipelines[p.id] = p
+        try:
+            await start_pipeline(p.id)
+            engine = _engines[p.id]
+            assert engine._use_barrier_alignment is True
+            assert engine._barrier_interval == 5.0
+            assert engine._use_dataflow_triggers is True
+            assert engine._bp_buffer_size == 42
+        finally:
+            await _engines[p.id].stop()
+            _pipelines.pop(p.id, None)
+            _engines.pop(p.id, None)
+
 
 # ════════════════════════════════════════════════════════════════
 # 7. BACKPRESSURE TESTS
