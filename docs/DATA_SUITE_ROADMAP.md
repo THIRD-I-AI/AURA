@@ -69,10 +69,12 @@ PR link once merged. Items are grouped by which of the three roles they serve.
   selection from a single-batch comparison into an online/incremental
   decision. User chose to commit to this properly rather than defer or
   fail-loudly, and approved a 3-stage breakdown:
-  - **DSR-007a** — `in-progress` — plumbing only, no causal math, no
-    behavior change: add a persistent per-source/per-version canary
-    outcome-history store to `ShimRouter`, populated from
-    `mapek_worker.py`'s batch loop.
+  - **DSR-007a** — `done` — plumbing only, no causal math, no behavior
+    change. Added `OutcomeRecord` + `record_outcome()`/`outcome_history()`
+    (bounded, per-source) to `ShimRouter`, wired into `mapek_worker.py`'s
+    `_run_forever` right after `ShimRouter.apply()` and drift detection.
+    Outcome scalar is `drift_detected` (0.0/1.0) — the one signal both the
+    classical and martingale detector paths always populate. PR #366.
   - **DSR-007b** — `open` — build the treatment/outcome/DAG mapping from
     that history and call `run_estimators` periodically (e.g. at each
     `promote_canary` check). Needs a design proposal before implementation.
