@@ -292,10 +292,16 @@ class ConformalMartingaleRegistry:
         baselines: Dict[str, List[float]],
     ) -> None:
         """Store the reference distribution for each column and (re)build
-        that column's detector from it."""
-        self._baselines.setdefault(source_id, {})
-        self._detectors.setdefault(source_id, {})
-        self._last_distance.setdefault(source_id, {})
+        that column's detector from it.
+
+        Replaces the whole per-source dict rather than merging, matching
+        ``WassersteinMartingaleDetector.register_baseline`` -- a column
+        dropped from a re-baseline call (e.g. all-null in that batch) must
+        lose its detector too, not keep a stale one alive indefinitely.
+        """
+        self._baselines[source_id] = {}
+        self._detectors[source_id] = {}
+        self._last_distance[source_id] = {}
         for col, samples in baselines.items():
             samples = list(samples)
             if not samples:

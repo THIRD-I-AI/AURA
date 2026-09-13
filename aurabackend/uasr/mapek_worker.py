@@ -432,15 +432,24 @@ class MAPEKWorker:
                 # needs more than a binary flag to estimate a treatment effect.
                 if routed is not None:
                     now = time.time()
+                    # Offloaded like _analyze_detect_drift above: both calls
+                    # hit the same StateStore, which is a blocking Redis
+                    # round-trip under the redis state backend.
+                    outcome_distance = await asyncio.to_thread(
+                        self._detector.baseline_distance, batch.source_id, batch
+                    )
+                    has_baseline = await asyncio.to_thread(
+                        self._detector.has_baseline, batch.source_id
+                    )
                     self._shim_router.record_outcome(
                         batch.source_id, routed["version"],
-                        self._detector.baseline_distance(batch.source_id, batch),
+                        outcome_distance,
                         now,
                         {
                             "row_count": len(batch.rows),
                             "columns_count": len(batch.columns),
                             "hour_of_day": time.gmtime(now).tm_hour,
-                            "has_baseline": float(self._detector.has_baseline(batch.source_id)),
+                            "has_baseline": float(has_baseline),
                         },
                     )
 
