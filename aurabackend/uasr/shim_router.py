@@ -312,28 +312,42 @@ class ShimRouter:
         ratio_step: float = 0.2,
         min_avg_score: float = 0.6,
         min_samples: int = 3,
+        max_causal_point: float = 0.0,
     ) -> Dict[str, Any]:
         """Promote a canary version's weight by ``ratio_step`` if its
-        recent canary scores average above ``min_avg_score``.
+        recent canary scores average above ``min_avg_score`` AND (DSR-007c)
+        the causal estimate, when one is available, doesn't show the
+        canary is worse than baseline.
+
+        The causal check is a SAFETY GATE on top of the existing rule, not
+        a replacement: it can only block a promotion the avg-score rule
+        would otherwise have approved, never force one through on its own.
+        When there isn't enough outcome history yet for an estimate (cold
+        start) or the estimate itself errored, promotion falls back to the
+        avg-score rule alone, unchanged from pre-DSR-007c behavior.
 
         Returns a dict describing the decision:
           * ``promoted``: True if weight was increased
           * ``avg_score``: the score average used for the decision
           * ``new_weight``: the version's weight after this call
           * ``reason``: human-readable explanation
-          * ``causal_estimate``: DSR-007b -- an advisory DR-Learner effect
-            estimate of this version vs every other version in the
-            outcome-history recorded by mapek_worker.py, or None when
-            there isn't enough history yet or the import/estimate itself
-            failed. Never affects ``promoted`` -- purely diagnostic,
-            computed outside the router's lock so a slow estimator call
-            can't block concurrent ``apply()``/route-table operations.
+          * ``causal_estimate``: DSR-007b's DR-Learner effect estimate of
+            this version vs every other version in the outcome-history
+            recorded by mapek_worker.py, or None when there isn't enough
+            history yet or the estimate itself failed. Computed outside
+            the router's lock so a slow estimator call can't block
+            concurrent ``apply()``/route-table operations -- the lock is
+            re-taken only for the brief comparison + weight mutation.
         """
-        result = await self._decide_promotion(source_id, version, ratio_step, min_avg_score, min_samples)
         from .canary_causal_estimator import estimate_canary_effect
-        result["causal_estimate"] = await estimate_canary_effect(
+        causal_estimate = await estimate_canary_effect(
             self.outcome_history(source_id), version,
         )
+        result = await self._decide_promotion(
+            source_id, version, ratio_step, min_avg_score, min_samples,
+            causal_estimate, max_causal_point,
+        )
+        result["causal_estimate"] = causal_estimate
         return result
 
     async def _decide_promotion(
@@ -343,6 +357,8 @@ class ShimRouter:
         ratio_step: float,
         min_avg_score: float,
         min_samples: int,
+        causal_estimate: Optional[Dict[str, Any]],
+        max_causal_point: float,
     ) -> Dict[str, Any]:
         async with self._lock:
             r = self._routes.get(source_id, {}).get(version)
@@ -364,6 +380,25 @@ class ShimRouter:
                     "promoted": False, "avg_score": avg,
                     "new_weight": r.weight,
                     "reason": f"avg_score {avg:.3f} below threshold {min_avg_score}",
+                }
+            # DSR-007c safety gate: a usable causal estimate (no error) that
+            # shows the canary is WORSE than baseline (point > max_causal_point,
+            # i.e. higher drift distance) blocks the promotion the avg-score
+            # rule just approved. No usable estimate -- cold start or a
+            # failed estimate -- falls through to the pre-DSR-007c behavior.
+            if (
+                causal_estimate is not None
+                and causal_estimate.get("error") is None
+                and causal_estimate.get("point", 0.0) > max_causal_point
+            ):
+                return {
+                    "promoted": False, "avg_score": avg,
+                    "new_weight": r.weight,
+                    "reason": (
+                        f"avg_score {avg:.3f} >= {min_avg_score} but causal estimate "
+                        f"point={causal_estimate['point']:.4f} > {max_causal_point} "
+                        f"(canary appears worse than baseline)"
+                    ),
                 }
             # Promote: shift weight from all other (non-drained) routes
             # proportionally to the canary.

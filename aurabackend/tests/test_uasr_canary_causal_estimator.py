@@ -102,8 +102,8 @@ async def _t(source_id: str, rows):
 @pytest.mark.asyncio
 async def test_promote_canary_attaches_causal_estimate_key():
     """promote_canary's response must always carry a causal_estimate key
-    (None when there's not enough history), and it must never change
-    `promoted` -- purely advisory."""
+    (None when there's not enough history). With no history, DSR-007c's
+    gate falls back to the avg-score rule alone (cold start)."""
     router = ShimRouter()
     await router.add_route("src", "v1", _t)
     await router.add_canary("src", "v2", _t, initial_weight=0.1)
@@ -111,11 +111,15 @@ async def test_promote_canary_attaches_causal_estimate_key():
     result = await router.promote_canary("src", "v2", min_samples=999)
     assert "causal_estimate" in result
     assert result["causal_estimate"] is None  # no outcome history recorded yet
-    assert result["promoted"] is False  # unaffected by the (missing) causal signal
+    assert result["promoted"] is False  # blocked by the avg-score rule (min_samples=999), not the causal gate
 
 
+@pytest.mark.skipif(not _CAUSAL_DEPS_AVAILABLE, reason="requires dowhy + econml")
 @pytest.mark.asyncio
-async def test_promote_canary_causal_estimate_populated_with_history():
+async def test_promote_canary_allows_promotion_when_canary_is_better():
+    """DSR-007c: a favorable causal estimate (canary reduces drift
+    distance, point < 0) must NOT block a promotion the avg-score rule
+    already approved."""
     router = ShimRouter()
     await router.add_route("src", "v1", _t)
     await router.add_canary("src", "v2", _t, initial_weight=0.1)
@@ -128,6 +132,37 @@ async def test_promote_canary_causal_estimate_populated_with_history():
         router.record_outcome("src", "v1", 2.0, now + i, {"row_count": 100.0 + i})
 
     result = await router.promote_canary("src", "v2", ratio_step=0.2)
-    assert result["promoted"] is True  # unchanged decision logic
     assert result["causal_estimate"] is not None
     assert result["causal_estimate"]["n_treated"] == 20
+    assert result["causal_estimate"]["point"] < 0, "canary should look better than baseline here"
+    assert result["promoted"] is True
+
+
+@pytest.mark.skipif(not _CAUSAL_DEPS_AVAILABLE, reason="requires dowhy + econml")
+@pytest.mark.asyncio
+async def test_promote_canary_blocks_promotion_when_canary_is_worse():
+    """DSR-007c's actual gate: a good avg_score alone is no longer
+    sufficient once a causal estimate exists and shows the canary is
+    WORSE than baseline (higher drift distance, point > 0) -- the
+    promotion the avg-score rule would have approved must be blocked."""
+    router = ShimRouter()
+    await router.add_route("src", "v1", _t)
+    await router.add_canary("src", "v2", _t, initial_weight=0.1)
+    for _ in range(3):
+        await router.record_canary_score("src", "v2", 0.9)  # good score -- would promote pre-DSR-007c
+
+    now = time.time()
+    for i in range(20):
+        # Canary (v2) has HIGHER drift distance than baseline (v1) -- worse.
+        router.record_outcome("src", "v2", 2.0, now + i, {"row_count": 100.0 + i})
+        router.record_outcome("src", "v1", 0.5, now + i, {"row_count": 100.0 + i})
+
+    result = await router.promote_canary("src", "v2", ratio_step=0.2)
+    assert result["causal_estimate"] is not None
+    assert result["causal_estimate"].get("error") is None
+    assert result["causal_estimate"]["point"] > 0, "canary should look worse than baseline here"
+    assert result["promoted"] is False
+    assert "causal estimate" in result["reason"]
+    # The route's weight must be unchanged -- a blocked promotion is a no-op.
+    routes = {r["version"]: r for r in router.routes("src")}
+    assert routes["v2"]["weight"] == pytest.approx(0.1)
