@@ -213,3 +213,24 @@ DSR-002 (`done` — added `RuntimeConfig` API surface) is also resolved.
 
 **Every item on this roadmap is now `done`, `wontfix`, or `false-positive`
 — nothing open.**
+
+## Post-closeout: ultracode review follow-ups
+
+With the roadmap closed, ran a full ultracode Workflow review (6 subsystem
+groups, adversarial verification of every finding) over the entire DSR
+backlog diff (`5168cc0..ac40808`, 28 files). 3 of 6 groups (streaming
+pipeline, agents orchestration, CI infra) came back clean. 4 findings
+confirmed real, 0 false positives, fixed in PR #378:
+
+- `mapek_worker._run_forever`: DSR-009's `baseline_distance()`/
+  `has_baseline()` calls weren't offloaded via `asyncio.to_thread` like
+  their sibling `_analyze_detect_drift` call, risking an event-loop freeze
+  under `UASR_STATE_BACKEND=redis`. Fixed.
+- `service.py` `POST /uasr/baseline`: the DSR-009 martingale re-baseline
+  call had the same missing offload. Fixed.
+- `ConformalMartingaleRegistry.register_baseline` merged per-column
+  baselines instead of replacing the whole per-source dict like
+  `WassersteinMartingaleDetector` did — a column dropped from a
+  re-baseline call kept a stale detector alive indefinitely. Fixed.
+- `GET /counterfactual/info`'s `econml_available` field had no
+  endpoint-level test. Added one.
