@@ -93,13 +93,15 @@ PR link once merged. Items are grouped by which of the three roles they serve.
     advisory `causal_estimate` key — does not change the `promoted`
     decision. `uasr/canary_causal_estimator.py` fails open, requires >= 5
     samples per arm. PR #371.
-  - **DSR-007c** — `open` — `promote_canary`'s response now carries
-    DSR-007b's `causal_estimate` as an advisory diagnostic alongside the
-    existing simple-average-threshold rule; DSR-007c is deciding whether
-    and how to let that estimate actually influence the promotion
-    decision (replace the threshold rule outright, gate on top of it, or
-    leave it purely advisory), and how `CausalRLEvaluator.select_winner`
-    relates to it (cold-start fallback vs. full replacement).
+  - **DSR-007c** — `done` — user decided: gate on top of the existing
+    rule rather than full replacement. `promote_canary` now takes
+    `max_causal_point` (default `0.0`); when a usable causal estimate
+    exists (no error) and its point exceeds it — the canary appears
+    worse than baseline — the promotion the avg-score rule would have
+    approved is blocked and the route's weight is left unchanged. Cold
+    start (no estimate yet) or a failed estimate falls through unchanged
+    to pre-DSR-007c behavior — the gate can only block a promotion that
+    would otherwise have happened, never force one through. PR #376.
 - **DSR-008** — `done` — `/counterfactual/info` advertised `double_ml` as
   fully doubly-robust regardless of whether `econml` was actually installed;
   when it wasn't, `double_ml` silently fell back to plain linear regression
@@ -204,12 +206,10 @@ Decisions requested from the user 2026-09-10 and resolved: DSR-005
 (`done` — turned out to be a docstring bug, not an architecture decision),
 DSR-015 (`done` — default-safe), DSR-012 (`done` — default-safe). DSR-009
 (`done` — wired in + fixed baseline registration) and DSR-007 (split into
-DSR-007a/b/c: 007a/007b `done`, 007c `open` — deciding whether the causal
-estimate should gate promotion) were decided and are tracked above.
+DSR-007a/b/c, all `done`: a/b built the plumbing and the estimate, c
+wired it in as a promotion safety gate) were decided and are tracked above.
 
 DSR-002 (`done` — added `RuntimeConfig` API surface) is also resolved.
 
-Still needs a product/architecture decision before code changes (flag for
-human input, do not silently pick a side): **DSR-007c** (deciding whether
-DSR-007b's causal estimate should gate canary promotion). This is the
-only open item left on the roadmap.
+**Every item on this roadmap is now `done`, `wontfix`, or `false-positive`
+— nothing open.**
