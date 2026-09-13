@@ -828,7 +828,12 @@ async def register_baseline(req: BaselineRequest):
     if _mapek_worker is not None and _mapek_worker._martingale is not None:
         samples = _numeric_column_samples(batch)
         if samples:
-            _mapek_worker._martingale.register_baseline(batch.source_id, samples)
+            # Offloaded like _detector.register_baseline above -- rebuilding
+            # every column's ConformalDriftMartingale can be nontrivial CPU
+            # work on the single uvicorn worker.
+            await asyncio.to_thread(
+                _mapek_worker._martingale.register_baseline, batch.source_id, samples
+            )
 
     return {
         "status": "registered",

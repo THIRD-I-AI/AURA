@@ -73,6 +73,26 @@ def test_double_ml_not_degraded_when_econml_available(monkeypatch):
     assert est.degraded is False, "the real DR-Learner path must not report degraded"
 
 
+def test_info_endpoint_reports_econml_available(monkeypatch):
+    """GET /counterfactual/info must actually surface econml_available
+    through the live endpoint, not just the underlying function -- a typo
+    in the handler (wrong key, stale value) would only be caught here."""
+    from fastapi.testclient import TestClient
+
+    from counterfactual_service.main import app
+
+    monkeypatch.setattr(engine, "_ECONML_AVAILABLE", True)
+    with TestClient(app) as client:
+        resp = client.get("/counterfactual/info")
+    assert resp.status_code == 200
+    assert resp.json()["econml_available"] is True
+
+    monkeypatch.setattr(engine, "_ECONML_AVAILABLE", False)
+    with TestClient(app) as client:
+        resp = client.get("/counterfactual/info")
+    assert resp.json()["econml_available"] is False
+
+
 def test_other_methods_never_report_degraded(monkeypatch):
     """degraded is specific to double_ml's econml dependency -- every
     other DoWhy-routed method must always report False, econml or not."""

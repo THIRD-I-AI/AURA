@@ -19,6 +19,7 @@ import asyncio
 import os
 import sys
 import tempfile
+import time
 import uuid
 
 import pytest
@@ -176,4 +177,70 @@ async def test_run_forever_records_outcome_for_a_routed_batch(monkeypatch):
         assert record.version == "v1"
         assert record.covariates.get("row_count") == 20
     finally:
+        await worker.stop()
+
+
+@pytest.mark.asyncio
+async def test_run_forever_offloads_baseline_distance_off_the_event_loop(monkeypatch):
+    """ultracode-review finding: baseline_distance()/has_baseline() are
+    called directly on the event loop in _run_forever (unlike the sibling
+    _analyze_detect_drift call, which is offloaded via asyncio.to_thread).
+    Under a blocking state-store backend (e.g. Redis), that freezes every
+    concurrent request for the single uvicorn worker. Simulate the
+    blocking call with a synchronous time.sleep and prove a concurrent
+    asyncio heartbeat keeps ticking while it runs."""
+    tmp_dir = tempfile.mkdtemp(prefix="aura_uasr_offload_test_")
+    duckdb_path = os.path.join(tmp_dir, "lake.duckdb")
+    parquet_dir = os.path.join(tmp_dir, "parquet")
+
+    cfg = MAPEKConfig(
+        source_id="src",
+        duckdb_path=duckdb_path,
+        parquet_dir=parquet_dir,
+        batch_size=20,
+        batch_window_seconds=2.0,
+        use_shim_router=True,
+    )
+    worker = MAPEKWorker(config=cfg)
+    assert worker._shim_router is not None
+    await worker._shim_router.add_route("src", "v1", _passthrough)
+
+    real_baseline_distance = worker._detector.baseline_distance
+
+    def _slow_baseline_distance(source_id, batch):
+        time.sleep(0.3)  # simulates a blocking Redis round-trip
+        return real_baseline_distance(source_id, batch)
+
+    monkeypatch.setattr(worker._detector, "baseline_distance", _slow_baseline_distance)
+    monkeypatch.setattr(mapek_worker, "AIOKafkaConsumer", _OneShotConsumer)
+    monkeypatch.setattr(mapek_worker, "_AIOKAFKA_AVAILABLE", True)
+
+    heartbeat = {"ticks": 0}
+    stop_heartbeat = asyncio.Event()
+
+    async def _heartbeat():
+        while not stop_heartbeat.is_set():
+            heartbeat["ticks"] += 1
+            await asyncio.sleep(0.01)
+
+    hb_task = asyncio.create_task(_heartbeat())
+
+    await worker.start()
+    try:
+        history = []
+        for _ in range(200):
+            history = worker._shim_router.outcome_history("src")
+            if history:
+                break
+            await asyncio.sleep(0.02)
+
+        assert history, "no outcome recorded -- the batch never made it through"
+        assert heartbeat["ticks"] >= 10, (
+            f"only {heartbeat['ticks']} heartbeat ticks during the blocking "
+            "call -- baseline_distance() is blocking the event loop instead "
+            "of running in a thread"
+        )
+    finally:
+        stop_heartbeat.set()
+        await hb_task
         await worker.stop()
