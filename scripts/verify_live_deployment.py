@@ -336,8 +336,15 @@ def check_ledger_proof(v: Verifier) -> str:
 def check_uasr_self_heal(v: Verifier) -> str:
     """Regression check for the exact bug fixed in fix/uasr-schema-
     validation-false-reject: identical values, only a column renamed --
-    must deploy correctly (post_kl: 0.0), same as verified manually
-    2026-08-31."""
+    must be detected and healed, same as verified manually 2026-08-31.
+
+    DSR-015 (2026-09-14) flipped UASR_RISK_TIERED's default to true, so a
+    validated shim is now held `pending_approval` rather than
+    auto-deployed (default-safe: human approval, not the old default-
+    unsafe auto-deploy). This drives the full path -- ingest -> pending
+    approval -> POST /uasr/recovery/{id}/approve -> deployed -- so the
+    check still proves the feature actually heals, not just that it
+    pauses (see docs/BUG_REGISTRY.md BUG-049)."""
     source_id = v.ns("uasr")
     rows = [{"user_id": i, "amount": round(10 + i * 0.37, 2), "status": "active"} for i in range(1, 11)]
     r = v.client.post(
@@ -353,9 +360,28 @@ def check_uasr_self_heal(v: Verifier) -> str:
     )
     r2.raise_for_status()
     body = r2.json()
-    if body.get("status") != "deployed":
-        raise AssertionError(f"expected auto-heal to deploy, got status={body.get('status')!r}: {body}")
-    return f"drift detected + shim deployed (post_kl={body.get('post_kl')})"
+    status = body.get("status")
+
+    if status == "deployed":
+        return f"drift detected + shim auto-deployed (post_kl={body.get('post_kl')})"
+
+    if status != "pending_approval":
+        raise AssertionError(f"expected deployed or pending_approval, got status={status!r}: {body}")
+
+    recovery_id = body.get("recovery_id")
+    if not recovery_id:
+        raise AssertionError(f"pending_approval response has no recovery_id: {body}")
+
+    r3 = v.client.post(
+        f"{V1}/uasr/recovery/{recovery_id}/approve", headers=v._auth_headers(),
+        json={"approver": "verify_live_deployment"},
+    )
+    r3.raise_for_status()
+    approved = r3.json()
+    recovery_status = approved.get("recovery", {}).get("status")
+    if recovery_status != "deployed":
+        raise AssertionError(f"expected approval to deploy the shim, got status={recovery_status!r}: {approved}")
+    return f"drift detected -> held for approval -> approved -> deployed (recovery_id={recovery_id})"
 
 
 CHECKS: List[tuple[str, Callable[[Verifier], Optional[str]]]] = [
