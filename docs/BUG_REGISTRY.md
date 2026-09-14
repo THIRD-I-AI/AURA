@@ -523,8 +523,10 @@ This is the process, not a suggestion:
   re-verify via `GET /uasr/deployment` after redeploying.
 
 ## BUG-014: test_demo_endpoints.py had 4 failures in one full-suite pre-push run, unreproducible since
-- **Status:** unconfirmed — investigated, could not reproduce; documented
-  rather than silently dropped, per this registry's own process.
+- **Status:** fixed — root-caused on a second investigation (ironclad-
+  hardening loop, iteration 1, 2026-09-14), superseding the `unconfirmed`
+  verdict below. Left the original investigation's notes intact for the
+  record; see **Second investigation** at the bottom for the actual fix.
 - **Found by:** the `fix/uasr-cross-source-heal-fanout` branch's pre-push
   hook, 2026-09-01. Full run: `4 failed, 2199 passed, 22 skipped` in
   5113.89s (1h25m13s) — `test_unknown_scenario_404` (`assert 401 == 404`),
@@ -570,14 +572,55 @@ This is the process, not a suggestion:
 - **Caused by:** none confirmed — see above; if a future recurrence
   pins it to a real leak, update this entry rather than filing a
   duplicate.
-- **Fix:** none applied — there is nothing to fix without a reproduction.
-  Left `open`-in-spirit/unconfirmed rather than closed: if this recurs,
-  the next investigation should start from the two ruled-out mechanisms
-  above (state leak, seed dependence) and instead pursue a timing/race
-  hypothesis — e.g. capture `faulthandler`/thread-stack output
-  (`faulthandler_timeout = 1200` is already configured in
-  `pyproject.toml`) on the next failing run, and correlate with system
-  load at the time.
+- **Fix (original entry, superseded):** none applied — there is nothing to
+  fix without a reproduction. Left `open`-in-spirit/unconfirmed rather
+  than closed: if this recurs, the next investigation should start from
+  the two ruled-out mechanisms above (state leak, seed dependence) and
+  instead pursue a timing/race hypothesis — e.g. capture
+  `faulthandler`/thread-stack output (`faulthandler_timeout = 1200` is
+  already configured in `pyproject.toml`) on the next failing run, and
+  correlate with system load at the time.
+
+- **Second investigation (2026-09-14, ironclad-hardening loop iteration
+  1):** the timing/race hypothesis flagged above as the next thing to try
+  turned out to be exactly right, and didn't need `faulthandler` at all —
+  the original investigation's own data already pinned it. `test_demo_
+  endpoints.py:23`'s module-level `client = TestClient(app,
+  headers=_auth())` mints its JWT once at pytest **collection** time.
+  `shared/config.py`'s `access_token_expire_minutes` defaults to 30. The
+  original failing run's own recorded wall time was **1h25m13s** — the
+  clean re-run that passed 100% clean took **15m06s**. 85 minutes is
+  comfortably past the 30-minute token TTL; 15 minutes is comfortably
+  under it. Every one of the 4 original failures (`assert 401 == 404`,
+  `assert 401 == 503`, `assert 401 == 200`, and the `KeyError: 'job_id'`
+  downstream of the same 401) is exactly what an expired-token 401 looks
+  like at each of those call sites — this is not a race or a state leak,
+  it's deterministic token expiry, and the original investigation's own
+  "reproducible only once, not on retry, no seed dependence" data point
+  is fully explained by "did this particular run happen to take >30
+  minutes before reaching this module." This is the identical bug class
+  already fixed in `test_counterfactual_sprint9.py`'s `_auth()` docstring
+  elsewhere in this same test suite (a fix this investigation only found
+  by grepping for the pattern, not by anyone connecting the two at the
+  time either fix happened) — it should have been checked against sooner.
+- **Fix:** `test_demo_endpoints.py`'s module-level `client` no longer
+  binds `headers=_auth()` at construction (`client = TestClient(app)`);
+  every one of its 7 call sites now passes `headers=_auth()` explicitly,
+  minting a fresh token at the moment of the actual HTTP call regardless
+  of how long collection or earlier tests took. Added `test_a_token_
+  bound_at_collection_time_would_have_expired_by_request_time` — a direct
+  regression test that (1) proves an expired token really does 401
+  against this app (sanity), (2) proves a freshly-minted token via
+  `_auth()` still authenticates regardless of that, and (3) a structural
+  guard asserting `client` itself carries no bound `Authorization`
+  header, so a future regression back to the old pattern fails this test
+  immediately rather than waiting on another slow-CI coincidence.
+  Confirmed non-vacuous: temporarily reverted `client` to the old
+  `TestClient(app, headers=_auth())` pattern and re-ran — the new test
+  failed exactly as expected (`client must not have a bound Authorization
+  header`); restored the fix, 12/12 pass. Ruff clean (`E,F,I,W`, CI's
+  actual ignore list).
+- **Fix:** PR to follow.
 
 ## BUG-015: live deployment was 15 days / 127 commits stale, no deploy process caught it
 - **Status:** fixed
