@@ -1163,12 +1163,13 @@ This is the process, not a suggestion:
 - **Fix:** PR to follow.
 
 ## BUG-058: POST /synthetic/generate's output_uri is a fully caller-controlled write destination (file://, s3://, gs://, abfs://) with no tenant-path confinement
-- **Status:** open
+- **Status:** fixed
 - **Found by:** same ultracode audit as BUG-050.
 - **Severity:** blocks-feature (arbitrary write / credential-scoped SSRF).
 - **Root cause:** `GenerateRequest.output_uri` (`synthetic.py:84`) is a plain `str` with no validator/allow-list, passed unmodified to `SyntheticDatasetWriter.generate` (`synthetic.py:128-132`), which resolves it directly via `pafs.FileSystem.from_uri(output_uri)` (`synthetic/writer.py:80-91`) using the process's own filesystem/cloud credentials — no scheme allow-list, no tenant-derived path prefix.
 - **Caused by:** none — pre-existing.
-- **Fix:** pending.
+- **Fix:** new `_confine_output_uri` rejects unsupported schemes and, for a local path/`file://` URI, rewrites it to `<synthetic-output-root>/<tenant_slug>/<job_id>/<requested-basename>` before it ever reaches `SyntheticDatasetWriter` — the caller can request a name, never a location. `job_id` (already generated per request) keeps each call's output unique so repeated/concurrent calls with the same requested basename never collide or silently reuse a previous run's files (caught by an initial version of this fix breaking `test_generate_job_runs_to_completion` — n_files came back 0 because a second confined path collided with a first run's leftover state; adding `job_id` to the confined path fixed it). **Deliberately NOT restricted: `s3://`/`gs://`/`abfs://` URIs pass through unchanged** — this is an enterprise bring-your-own-cloud feature where the caller names their own cloud destination by design, not this server's storage; only the local-filesystem case (unambiguously this server's own disk/credentials) is confined. New file `test_synthetic_output_uri_confinement.py` (9 tests: absolute path/file:// URI/Windows drive path/traversal all confined; different tenants get different roots; cloud URIs pass through unchanged; unsupported schemes rejected) plus `test_generate_job_runs_to_completion` updated to read the real on-disk location back from the job record instead of asserting on the caller's original (now-bypassed) path. Confirmed non-vacuous: stashed the fix, the new test file failed to import (`_confine_output_uri` didn't exist); restored, 19/19 pass across the three synthetic test files. Ruff clean (`E,F,I,W`, CI's actual ignore list).
+- **Fix:** PR to follow.
 
 ## BUG-059: Password-mode login (POST /auth/token) leaks whether an email is registered via a timing side channel
 - **Status:** open

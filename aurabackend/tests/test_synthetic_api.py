@@ -97,11 +97,15 @@ def test_plan_rejects_bad_size(client):
 
 # ── /generate + poll ─────────────────────────────────────────────────
 def test_generate_job_runs_to_completion(client, tmp_path):
-    out = tmp_path / "orders_ds"
+    # BUG-058: output_uri is now confined server-side to a per-tenant/
+    # per-job directory rather than honored verbatim -- the requested
+    # path here is just the basename hint, the real on-disk location is
+    # read back from the job record (job["output_uri"]) below.
+    requested = tmp_path / "orders_ds"
     r = client.post(f"{_API}/generate", json={
         "schema": _SCHEMA,
         "target_size": "8MB",
-        "output_uri": str(out),
+        "output_uri": str(requested),
         "seed": 42,
         "chunk_rows": 100_000,
         "file_target_bytes": 1 * 10**6,   # 1MB/file vs 8MB target -> multiple files
@@ -127,19 +131,28 @@ def test_generate_job_runs_to_completion(client, tmp_path):
     assert res["total_rows"] > 0
     assert 0.8 <= res["total_bytes"] / 8_000_000 <= 1.25   # calibrated near target
 
-    # On-disk truth matches the job's claim.
-    pq_files = sorted(glob.glob(str(out / "*.parquet")))
-    assert len(pq_files) == res["n_files"]
-    manifest = out / "_manifest.json"
-    assert manifest.exists()
-    m = json.loads(manifest.read_text())
-    assert m["seed"] == 42
-    assert m["result"]["total_rows"] == res["total_rows"]
+    out = job["output_uri"]
+    assert out != str(requested), "BUG-058: output_uri must be confined, not honored verbatim"
+    try:
+        # On-disk truth matches the job's claim.
+        pq_files = sorted(glob.glob(os.path.join(out, "*.parquet")))
+        assert len(pq_files) == res["n_files"]
+        manifest = os.path.join(out, "_manifest.json")
+        assert os.path.exists(manifest)
+        with open(manifest) as f:
+            m = json.load(f)
+        assert m["seed"] == 42
+        assert m["result"]["total_rows"] == res["total_rows"]
 
-    # Row count read back from Parquet equals the reported total.
-    import pyarrow.parquet as pq
-    total = sum(pq.ParquetFile(f).metadata.num_rows for f in pq_files)
-    assert total == res["total_rows"]
+        # Row count read back from Parquet equals the reported total.
+        import pyarrow.parquet as pq
+        total = sum(pq.ParquetFile(f).metadata.num_rows for f in pq_files)
+        assert total == res["total_rows"]
+    finally:
+        # Confined output lives outside tmp_path (that's the point of the
+        # fix), so pytest's own tmp_path cleanup won't reach it.
+        import shutil
+        shutil.rmtree(out, ignore_errors=True)
 
 
 def test_jobs_list_includes_created_job(client, tmp_path):
