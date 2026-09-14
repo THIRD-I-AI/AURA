@@ -182,7 +182,28 @@ class DistributedRepairCoordinator:
 
     # ---- internal coordination -------------------------------------
     async def _prune_expired(self) -> int:
-        """Reclaim leases whose TTL has passed (a crashed node's slots)."""
+        """Reclaim leases whose TTL has passed (a crashed node's slots).
+
+        Guarded by the admit lock: the read (``zrangebyscore``) and the
+        removal (``zremrangebyscore``) are two round trips, so an unlocked
+        caller (``active_count``/``queue_depth``) running concurrently with
+        ``_try_admit``'s own prune could both read the same expired tokens
+        before either removes them, double-decrementing
+        ``_active_by_source_key`` per token. If the lock is held elsewhere,
+        skip this round -- pruning is opportunistic and the next caller (or
+        ``_try_admit``, which always prunes under lock before admitting)
+        will catch it.
+        """
+        lock = await self._acquire_lock()
+        if lock is None:
+            return 0
+        try:
+            return await self._prune_expired_locked()
+        finally:
+            await self._release_lock(lock)
+
+    async def _prune_expired_locked(self) -> int:
+        """Body of ``_prune_expired``, for callers that already hold the lock."""
         now = self._now_ms()
         expired = await asyncio.to_thread(self._r.zrangebyscore, self._active, 0, now)
         if not expired:
@@ -236,7 +257,7 @@ class DistributedRepairCoordinator:
         if lock is None:
             return False
         try:
-            await self._prune_expired()
+            await self._prune_expired_locked()
             if int(await asyncio.to_thread(self._r.zcard, self._active)) >= self._max:
                 return False
             my_source = self._source_of(token)
