@@ -11,6 +11,7 @@ import os
 import pathlib
 import re
 import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException, Request
@@ -38,6 +39,23 @@ from .workspaces import _request_tenant, current_workspace_id
 # settings.commander_enabled. Built once; the registry is stateless.
 _COMMANDER_REGISTRY = build_default_registry()
 _STREAM_SENTINEL = object()
+
+# BUG-061: the commander worker used to run on loop.run_in_executor(None, ...)
+# -- the process's SHARED default ThreadPoolExecutor, the same pool every
+# asyncio.to_thread() call in the gateway draws from (bcrypt hashing, DuckDB
+# queries, file writes -- see backend.md's async-safety rule). A commander
+# loop is a multi-turn agentic tool loop against an LLM API and can run for
+# a long time; several concurrent or client-abandoned streams could exhaust
+# that shared pool and stall every other tenant's unrelated blocking call in
+# this single-worker gateway. A dedicated, bounded pool confines the blast
+# radius to chat streaming instead. (concurrent.futures work also can't be
+# cooperatively cancelled once started -- `worker.cancel()` below only stops
+# awaiting the result on a client disconnect, it doesn't stop the thread --
+# so isolation, not cancellation, is the actual fix.)
+_COMMANDER_EXECUTOR = ThreadPoolExecutor(
+    max_workers=int(os.getenv("AURA_COMMANDER_MAX_WORKERS", "8")),
+    thread_name_prefix="commander-worker",
+)
 
 logger = get_logger("aura.api_gateway.chat")
 
@@ -687,7 +705,7 @@ async def chat_stream(req: ChatStreamRequest, http_request: Request) -> Streamin
                 pass
 
     async def _sse():
-        worker = loop.run_in_executor(None, _worker)
+        worker = loop.run_in_executor(_COMMANDER_EXECUTOR, _worker)
         try:
             while True:
                 ev = await queue.get()
