@@ -55,6 +55,7 @@ Reuses
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 import uuid
@@ -170,17 +171,34 @@ class CausalRLEvaluator:
         if not candidates:
             return self._empty_artifact(source_id, drift_event)
 
-        drift_before = self._drift_score_fn(batch.rows)
+        # BUG-070: drift_score_fn wraps DriftDetector.detect() (CPU-heavy
+        # numpy histograms/KL-divergence, can also hit a blocking Redis
+        # round-trip under RedisStateStore — see backend.md), and a sync
+        # transform executes sandboxed shim code (recovery_loop.py's
+        # _sandbox_execute). service.py's HTTP handlers always offload the
+        # identical DriftDetector.detect() call via asyncio.to_thread;
+        # select_winner must do the same for every candidate, or a drift
+        # event with several candidates runs all of that synchronously on
+        # the single uvicorn worker's event loop, blocking every other
+        # tenant's concurrent request for the duration.
+        drift_before = await asyncio.to_thread(self._drift_score_fn, batch.rows)
         evaluations: List[CandidateEvaluation] = []
 
         for cand in candidates:
             t0 = time.perf_counter()
             try:
-                transformed = cand.transform(source_id, batch.rows)
-                # transform_fn may be async — await if so
-                if hasattr(transformed, "__await__"):
-                    transformed = await transformed   # type: ignore[misc]
-                drift_after = self._drift_score_fn(transformed)
+                if asyncio.iscoroutinefunction(cand.transform):
+                    transformed = await cand.transform(source_id, batch.rows)
+                else:
+                    # Sync transform: offload, don't call directly on the
+                    # loop. A sync callable that itself returns an
+                    # awaitable (unusual, but the prior contract allowed
+                    # it) still gets awaited after the offloaded call
+                    # returns.
+                    transformed = await asyncio.to_thread(cand.transform, source_id, batch.rows)
+                    if hasattr(transformed, "__await__"):
+                        transformed = await transformed   # type: ignore[misc]
+                drift_after = await asyncio.to_thread(self._drift_score_fn, transformed)
                 improvement = drift_before - drift_after
                 # Simple CI estimate via bootstrap-like variance on the
                 # per-row drift contributions. The DR-Learner-based
