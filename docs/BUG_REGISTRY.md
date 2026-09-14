@@ -1250,12 +1250,12 @@ the whole subsystem every time.
 - **Fix:** pending.
 
 ## BUG-067: Kafka consumer (and DuckDB connection) leak if MAPEKWorker.start() fails after consumer.start() succeeds
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode audit of `aurabackend/uasr/` (`mapek-loop` group), 2026-09-14.
 - **Severity:** degrades-accuracy (resource leak, availability risk under sustained retry) — leaks one Kafka consumer connection per retry on a persistent failure.
 - **Root cause:** `mapek_worker.py:300-336` (`start`) guards `consumer.start()` itself with a try/except that calls `consumer.stop()` on failure (lines 314-327), but the two statements immediately after — `self._open_duckdb()` (line 330) and `Path(parquet_dir).mkdir()` (line 331) — have no equivalent guard. If either raises (bad `duckdb_path`/permissions, read-only or full `parquet_dir`), `self._running` is never set `True`, so a later `stop()` call is a no-op (`if not self._running: return`, line 339) and the already-started `AIOKafkaConsumer` is never closed. `service._mapek_worker_bootstrap` retries this construction on an infinite backoff loop, so a persistent failure at this step leaks one Kafka consumer (background tasks/sockets) per retry indefinitely.
 - **Caused by:** none — pre-existing.
-- **Fix:** pending.
+- **Fix:** the `consumer.start()` try/except now wraps the whole setup sequence (`consumer.start()` → `_open_duckdb()` → `mkdir()`), and `self._consumer`/`self._duckdb_con`/`self._running` are only assigned once every step has succeeded. On any failure, whatever got created (a started consumer, an opened duckdb connection) is closed/stopped before re-raising — mirroring the existing BUG-046 cleanup pattern this file already had for `consumer.start()` alone, extended to cover the two steps after it. Two new tests in `tests/test_mapek_worker_consumer_cleanup.py`: `test_consumer_is_stopped_if_duckdb_open_fails_after_consumer_starts` and `test_duckdb_connection_is_closed_if_mkdir_fails_after_duckdb_opens`. Confirmed non-vacuous: stashed the fix, both new tests failed (`assert False` on `stop_called`/`closed["value"]`); restored, 4/4 pass. Broader `mapek`/kafka-bootstrap sweep: 6 passed. Ruff clean (`E,F,I,W`, CI's actual ignore list). PR pending merge.
 
 ## BUG-068: UASR DuckDB table name f-string-interpolated into DDL/DML instead of using shared/sql_identifiers.py's quote_identifier
 - **Status:** open
