@@ -1154,12 +1154,13 @@ This is the process, not a suggestion:
 - **Fix:** PR to follow.
 
 ## BUG-057: /workspaces CRUD (list/create/update/delete) has no tenant scoping at all — one global workspace registry shared by every tenant
-- **Status:** open
+- **Status:** fixed
 - **Found by:** same ultracode audit as BUG-050.
 - **Severity:** blocks-feature (IDOR) — cross-tenant read of all workspace names/descriptions; brute-forceable `ws_<timestamp_ms>` ids let a caller rename or delete another tenant's workspace record.
 - **Root cause:** `workspaces.py`'s `list_workspaces`/`create_workspace`/`update_workspace`/`delete_workspace` (lines 198/206/224/241) all operate on the module-level `_workspaces_store` keyed only by `id`, never calling `_request_tenant()`/`current_workspace_id()` — the two tenant-scoping helpers defined in the same file for other routers to use. `delete_workspace`'s only guard is against the literal id `"default"`, not ownership.
 - **Caused by:** none — pre-existing.
-- **Fix:** pending.
+- **Fix:** every record now carries a `tenant_id` stamped at creation (`_request_tenant(request)`); `list_workspaces` filters to records the caller owns, `update_workspace`/`delete_workspace` 404 (not just "not found by id") when the id exists but belongs to a different tenant. `DEFAULT_WORKSPACE_ID` keeps `tenant_id=None` and stays globally visible/undeletable for every caller — a shared system placeholder, not tenant data, so its existing behavior is preserved exactly. New file `test_workspaces_crud_tenant_isolation.py`: cross-tenant list leakage blocked, rename/delete of another tenant's workspace 404s even knowing the real id (and doesn't actually mutate it), the owner can still update/delete their own. Confirmed non-vacuous: stashed the fix, all 5 new tests failed with `TypeError` (the old functions didn't even accept a `request` param — structurally incapable of a tenant check); restored, 23/23 pass across the five tenant-isolation-related test files. Ruff clean (`E,F,I,W`, CI's actual ignore list).
+- **Fix:** PR to follow.
 
 ## BUG-058: POST /synthetic/generate's output_uri is a fully caller-controlled write destination (file://, s3://, gs://, abfs://) with no tenant-path confinement
 - **Status:** open

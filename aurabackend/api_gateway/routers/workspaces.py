@@ -50,6 +50,7 @@ def _seed_default() -> None:
             "description": "Default workspace (auto-created)",
             "created_at": ts,
             "updated_at": ts,
+            "tenant_id": None,
         })
 
 
@@ -194,17 +195,33 @@ class WorkspaceUpdate(BaseModel):
 
 
 # ── CRUD endpoints ──────────────────────────────────────────────────
+#
+# BUG-057: these four endpoints operated on the single module-level
+# _workspaces_store with no reference to the caller's tenant at all --
+# any authenticated caller could list every tenant's workspace records,
+# and (ids being sequential-ish `ws_<timestamp_ms>`, easily brute-forced)
+# rename or delete another tenant's workspace by id. `tenant_id` is now
+# stamped on every record at creation and enforced on read/update/delete.
+# The seeded DEFAULT_WORKSPACE_ID keeps `tenant_id=None` and stays
+# globally visible/protected-from-delete for every caller (authenticated
+# or not) -- it's a shared system placeholder, not tenant data.
+
+
+def _visible_to(record: Dict[str, Any], tenant: Optional[str]) -> bool:
+    return record["id"] == DEFAULT_WORKSPACE_ID or record.get("tenant_id") == tenant
+
 
 @router.get("/workspaces")
-async def list_workspaces():
+async def list_workspaces(request: Request):
+    tenant = _request_tenant(request)
     with _workspaces_lock:
-        records = list(_workspaces_store)
+        records = [w for w in _workspaces_store if _visible_to(w, tenant)]
     records.sort(key=lambda r: (0 if r["id"] == DEFAULT_WORKSPACE_ID else 1, r["name"].lower()))
     return {"success": True, "workspaces": records, "total": len(records)}
 
 
 @router.post("/workspaces")
-async def create_workspace(payload: WorkspaceCreate):
+async def create_workspace(payload: WorkspaceCreate, request: Request):
     name = payload.name.strip()
     if not name:
         raise HTTPException(status_code=400, detail="name is required")
@@ -215,6 +232,7 @@ async def create_workspace(payload: WorkspaceCreate):
         "description": (payload.description or "").strip() or None,
         "created_at": ts.isoformat(),
         "updated_at": ts.isoformat(),
+        "tenant_id": _request_tenant(request),
     }
     with _workspaces_lock:
         _workspaces_store.append(record)
@@ -222,9 +240,13 @@ async def create_workspace(payload: WorkspaceCreate):
 
 
 @router.patch("/workspaces/{workspace_id}")
-async def update_workspace(workspace_id: str, payload: WorkspaceUpdate):
+async def update_workspace(workspace_id: str, payload: WorkspaceUpdate, request: Request):
+    tenant = _request_tenant(request)
     with _workspaces_lock:
-        record = next((w for w in _workspaces_store if w["id"] == workspace_id), None)
+        record = next(
+            (w for w in _workspaces_store if w["id"] == workspace_id and _visible_to(w, tenant)),
+            None,
+        )
         if record is None:
             raise HTTPException(status_code=404, detail="Workspace not found")
         if payload.name is not None:
@@ -239,12 +261,15 @@ async def update_workspace(workspace_id: str, payload: WorkspaceUpdate):
 
 
 @router.delete("/workspaces/{workspace_id}")
-async def delete_workspace(workspace_id: str):
+async def delete_workspace(workspace_id: str, request: Request):
     if workspace_id == DEFAULT_WORKSPACE_ID:
         raise HTTPException(status_code=400, detail="Cannot delete the default workspace")
+    tenant = _request_tenant(request)
     with _workspaces_lock:
         before = len(_workspaces_store)
-        _workspaces_store[:] = [w for w in _workspaces_store if w["id"] != workspace_id]
+        _workspaces_store[:] = [
+            w for w in _workspaces_store if not (w["id"] == workspace_id and _visible_to(w, tenant))
+        ]
         if len(_workspaces_store) == before:
             raise HTTPException(status_code=404, detail="Workspace not found")
     return {"success": True, "id": workspace_id}
