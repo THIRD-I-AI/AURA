@@ -144,3 +144,88 @@ def test_no_recovery_no_rebaseline():
     happy = _batch("test_src", "happy", loc=10.0)
     asyncio.run(worker._knowledge_update(happy, _drift_result(), None))
     assert _mean_of_baseline(det, "test_src") == before
+
+
+# ── BUG-065/BUG-066: re-baseline must not block the event loop ───────
+#
+# _knowledge_update's re-baseline path (and the cross-source-heal branch,
+# same underlying helper) used to call DriftDetector._compute_distributions
+# and register_baseline directly on the event loop. register_baseline
+# round-trips through StateStore.load()/save(), a synchronous, blocking
+# redis-py call under RedisStateStore -- every other call site in this file
+# offloads it via asyncio.to_thread for exactly that reason.
+
+def test_knowledge_update_rebaseline_offloads_to_a_thread(monkeypatch):
+    """The re-baseline path must dispatch _compute_distributions and
+    register_baseline through asyncio.to_thread, not call them directly."""
+    det = DriftDetector()
+    worker = MAPEKWorker(config=MAPEKConfig(source_id="test_src"), detector=det)
+
+    clean = _batch("test_src", "base", loc=10.0)
+    det.register_baseline("test_src", clean)
+
+    offloaded_funcs = []
+    orig_to_thread = asyncio.to_thread
+
+    async def spy_to_thread(func, *args, **kwargs):
+        offloaded_funcs.append(func)
+        return await orig_to_thread(func, *args, **kwargs)
+
+    monkeypatch.setattr(asyncio, "to_thread", spy_to_thread)
+
+    healed = _batch("test_src", "healed", loc=12.0)
+    asyncio.run(
+        worker._knowledge_update(healed, _drift_result(), _deployed_recovery(),
+                                 batch_healed=True)
+    )
+
+    assert det._compute_distributions in offloaded_funcs
+    assert det.register_baseline in offloaded_funcs
+
+
+def test_knowledge_update_rebaseline_does_not_block_the_event_loop(monkeypatch):
+    """While the re-baseline call is in flight, a concurrently-scheduled
+    coroutine must still make progress -- proves the offload is real, not
+    just present in the code but bypassed somewhere."""
+    det = DriftDetector()
+    worker = MAPEKWorker(config=MAPEKConfig(source_id="test_src"), detector=det)
+
+    clean = _batch("test_src", "base", loc=10.0)
+    det.register_baseline("test_src", clean)
+
+    import time as _time
+
+    real_register_baseline = det.register_baseline
+
+    def slow_register_baseline(*a, **kw):
+        _time.sleep(0.3)  # simulates a blocking Redis round-trip
+        return real_register_baseline(*a, **kw)
+
+    monkeypatch.setattr(det, "register_baseline", slow_register_baseline)
+
+    tick_times = []
+
+    async def ticker():
+        loop = asyncio.get_event_loop()
+        for _ in range(20):
+            await asyncio.sleep(0.02)
+            tick_times.append(loop.time())
+
+    healed = _batch("test_src", "healed", loc=12.0)
+
+    async def runner():
+        await asyncio.gather(
+            worker._knowledge_update(healed, _drift_result(), _deployed_recovery(),
+                                     batch_healed=True),
+            ticker(),
+        )
+
+    asyncio.run(runner())
+
+    assert len(tick_times) == 20
+    gaps = [b - a for a, b in zip(tick_times, tick_times[1:])]
+    max_gap = max(gaps)
+    assert max_gap < 0.15, (
+        f"event loop was blocked: largest gap between ticks was {max_gap:.3f}s "
+        "(expected ~0.02s) while the re-baseline call was in flight"
+    )

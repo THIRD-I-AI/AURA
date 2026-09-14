@@ -551,9 +551,7 @@ class MAPEKWorker:
                                 batch.rows = applied
                                 batch.columns = list(applied[0].keys()) if applied else batch.columns
                                 await self._execute_persist(batch)
-                                dists = self._detector._compute_distributions(batch)
-                                if dists:
-                                    self._detector.register_baseline(batch.source_id, dists)
+                                await self._reregister_detector_baseline(batch)
                                 self._register_martingale_baseline(batch)
                                 await self._emit(
                                     "cross_source_healed",
@@ -740,6 +738,24 @@ class MAPEKWorker:
                 f"(α={self._cfg.martingale_alpha}, max W₁={max_distance:.4f})"
             ),
         )
+
+    async def _reregister_detector_baseline(self, batch: BatchPayload) -> None:
+        """BUG-065/BUG-066: re-baseline the classical detector off-loop.
+
+        register_baseline() round-trips through StateStore.load()/save(),
+        which under RedisStateStore is a synchronous, blocking redis-py
+        call (see state_store.py) -- every other call to detect/
+        register_baseline/baseline_distance/has_baseline in this file and
+        in service.py's HTTP handlers wraps it in asyncio.to_thread for
+        exactly that reason. These two re-baseline call sites (the
+        cross-source-heal branch and _knowledge_update) used to call it
+        directly on the event loop instead, stalling the whole single-
+        uvicorn-worker process -- every tenant's concurrent request --
+        for the duration of the Redis round-trip.
+        """
+        dists = await asyncio.to_thread(self._detector._compute_distributions, batch)
+        if dists:
+            await asyncio.to_thread(self._detector.register_baseline, batch.source_id, dists)
 
     def _register_martingale_baseline(self, batch: BatchPayload) -> None:
         """DSR-009: re-baseline the martingale channel alongside the
@@ -1070,9 +1086,7 @@ class MAPEKWorker:
             and recovery.status == RecoveryStatus.DEPLOYED
             and batch_healed
         ):
-            dists = self._detector._compute_distributions(batch)
-            if dists:
-                self._detector.register_baseline(batch.source_id, dists)
+            await self._reregister_detector_baseline(batch)
             self._register_martingale_baseline(batch)
 
         # Feed the healing tracker so /uasr/metrics dashboards update.
