@@ -338,10 +338,21 @@ async def pipeline_file_schema(file_name: str, request: Request):
 
 
 @router.get("/pipeline/download/{filename}")
-async def pipeline_download(filename: str):
-    """Download a pipeline output file."""
+async def pipeline_download(filename: str, request: Request):
+    """Download a pipeline output file.
+
+    BUG-051: outputs are written per-tenant (pipeline/engine.py's
+    _write_file_sink, tenant_slug()) -- only ever look inside the
+    requesting caller's own subdirectory, so this can never serve
+    another tenant's output regardless of filename collisions.
+    """
     from fastapi.responses import FileResponse
-    output_dir = Path(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))) / "data" / "processed"
+
+    from shared.storage.base import tenant_slug
+    output_dir = (
+        Path(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
+        / "data" / "processed" / tenant_slug(_request_tenant(request))
+    )
     # Sec-2 #40-#41: inline sanitizer (realpath + startswith) at the
     # FileResponse sink — the canonical CodeQL py/path-injection
     # sanitizer pattern that the standard model recognises directly.
