@@ -211,3 +211,83 @@ def test_llm_shim_returns_generated_code(actuator, diag, monkeypatch):
     code = asyncio.run(actuator._llm_shim("schema_change", {}, diag))
 
     assert code and "def transform" in code
+
+
+# --- BUG-073: malicious column names must not break out of the generated
+# Python string literal. A column name is schema-derived (drift_vector),
+# which can come from an upstream/externally-influenced source -- an
+# unescaped `"` used to let it inject arbitrary statements into the shim
+# before the sandbox ever validated anything. Every generator below is
+# probed with a column name containing a double-quote, and the result must
+# still compile to valid Python and treat the value as inert data (never
+# executed as code).
+
+_EVIL_COL = 'x"] = __import__(\'os\').system(\'echo pwned\'); row["y'
+
+
+def test_schema_type_change_shim_escapes_malicious_column_name(actuator, diag):
+    dv = {"type": "type_change", "old_types": {_EVIL_COL: "int"},
+          "new_types": {_EVIL_COL: "str"}}
+    code = actuator._schema_shim(dv, diag)
+    ast.parse(code)  # would raise SyntaxError if the quote broke out
+    fn = _compiles_and_defines_transform(code)
+    out = fn([{_EVIL_COL: "42"}])
+    assert out == [{_EVIL_COL: 42}]
+
+
+def test_schema_removed_column_shim_escapes_malicious_column_name(actuator, diag):
+    dv = {"type": "schema_change", "removed": [_EVIL_COL], "added": []}
+    code = actuator._schema_shim(dv, diag)
+    ast.parse(code)
+    fn = _compiles_and_defines_transform(code)
+    out = fn([{"name": "x"}])
+    assert out == [{"name": "x", _EVIL_COL: None}]
+
+
+def test_schema_added_column_shim_escapes_malicious_column_name(actuator, diag):
+    dv = {"type": "schema_change", "added": [_EVIL_COL], "removed": []}
+    code = actuator._schema_shim(dv, diag)
+    ast.parse(code)
+    fn = _compiles_and_defines_transform(code)
+    out = fn([{"name": "x", _EVIL_COL: 1}])
+    assert out == [{"name": "x"}]
+
+
+def test_schema_rename_shim_escapes_malicious_column_name(actuator, diag):
+    dv = {"type": "schema_change", "added": [_EVIL_COL], "removed": ["amount"]}
+    code = actuator._schema_shim(dv, diag)
+    ast.parse(code)
+    fn = _compiles_and_defines_transform(code)
+    out = fn([{_EVIL_COL: 10}])
+    assert out == [{"amount": 10}]
+
+
+def test_statistical_clip_shim_escapes_malicious_column_name(actuator, diag):
+    dv = {"affected_columns": [_EVIL_COL], "max_kl": 5.0, "threshold_zeta": 0.15}
+    code = actuator._statistical_shim(dv, diag)
+    ast.parse(code)
+    fn = _compiles_and_defines_transform(code)
+    out = fn([{_EVIL_COL: 3}])
+    assert out == [{_EVIL_COL: 3}]
+
+
+def test_statistical_monitor_shim_escapes_malicious_column_name(actuator, diag):
+    dv = {"affected_columns": [_EVIL_COL], "max_kl": 0.3, "threshold_zeta": 0.15}
+    code = actuator._statistical_shim(dv, diag)
+    ast.parse(code)
+    fn = _compiles_and_defines_transform(code)
+    out = fn([{_EVIL_COL: 7}])
+    assert out == [{_EVIL_COL: 7}]
+
+
+def test_statistical_rescale_shim_escapes_malicious_column_name(actuator, diag):
+    dv = {
+        "affected_columns": [_EVIL_COL], "max_kl": 25.0, "threshold_zeta": 0.15,
+        "col_stats": {_EVIL_COL: {"baseline_mean": 50.0, "batch_mean": 5000.0,
+                                   "baseline_std": 12.0}},
+    }
+    code = actuator._statistical_shim(dv, diag)
+    ast.parse(code)
+    fn = _compiles_and_defines_transform(code)
+    out = fn([{_EVIL_COL: 5000.0}])
+    assert out[0][_EVIL_COL] == pytest.approx(50.0)
