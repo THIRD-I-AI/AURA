@@ -140,14 +140,26 @@ async def upload_universal(
             workspace_id=workspace_id,
         )
 
+        # BUG-056: the advertised max_file_size (see /files/supported-formats
+        # and shared/file_service.py) was documentation only -- nothing
+        # enforced it, so an arbitrarily large body was fully buffered in
+        # process memory before any check, letting one oversized (or a few
+        # concurrent) uploads exhaust the single-worker gateway's memory.
+        max_file_size = getattr(file_service, "max_file_size", 25 * 1024 * 1024) if file_service else 25 * 1024 * 1024
+
         buf = io.BytesIO()
         bytes_written = 0
         while True:
             chunk = await target_file.read(1024 * 256)  # 256 KB
             if not chunk:
                 break
-            buf.write(chunk)
             bytes_written += len(chunk)
+            if bytes_written > max_file_size:
+                raise HTTPException(
+                    status_code=413,
+                    detail=f"File exceeds the {max_file_size // (1024 * 1024)}MB upload limit",
+                )
+            buf.write(chunk)
             total = getattr(target_file, "size", None) or 0
             if total > 0:
                 pct = min(0.85, 0.10 + 0.75 * (bytes_written / total))
@@ -280,6 +292,15 @@ async def upload_universal(
 
         await streaming_manager.publish_complete(TOPIC_UPLOAD, upload_id, result, workspace_id=workspace_id)
         return result
+    except HTTPException as e:
+        # BUG-056: a deliberate 413 (size limit) must reach the caller as
+        # a 413, not be flattened into a generic 500 by the broad except
+        # below -- matches this router's own established pattern
+        # elsewhere (get_file_profile/delete_file).
+        await streaming_manager.publish_error(
+            TOPIC_UPLOAD, upload_id, str(e.detail), code="UPLOAD_FAILED", workspace_id=workspace_id,
+        )
+        raise
     except Exception as e:
         safe_message = sanitize_error(e, logger=logger, context=f"upload {upload_id}")
         await streaming_manager.publish_error(

@@ -87,6 +87,41 @@ def test_upload_write_offloaded_to_thread(tmp_path, monkeypatch):
     )
 
 
+def test_upload_over_size_limit_rejected_with_413(tmp_path, monkeypatch):
+    """BUG-056: the advertised max_file_size was documentation only --
+    nothing enforced it, so an arbitrarily large body was fully buffered
+    in process memory before any check. Shrink the limit for the test so
+    we don't need to actually POST tens of MB."""
+    client = _client(tmp_path, monkeypatch)
+
+    import api_gateway.routers.files as files_module
+    monkeypatch.setattr(files_module.file_service, "max_file_size", 10)
+
+    oversized = b"a,b\n" + b"1,2\n" * 100  # well over 10 bytes
+    r = client.post(
+        "/api/v1/upload",
+        files={"file": ("big.csv", io.BytesIO(oversized), "text/csv")},
+    )
+    assert r.status_code == 413, r.text
+
+    from shared.storage import get_storage_backend
+    names = {o.name for o in get_storage_backend().list("default")}
+    assert "big.csv" not in names, "a rejected upload must not be written to storage"
+
+
+def test_upload_under_size_limit_still_succeeds(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch)
+
+    import api_gateway.routers.files as files_module
+    monkeypatch.setattr(files_module.file_service, "max_file_size", 1024 * 1024)
+
+    r = client.post(
+        "/api/v1/upload",
+        files={"file": ("small.csv", io.BytesIO(b"a,b\n1,2\n"), "text/csv")},
+    )
+    assert r.status_code == 200, r.text
+
+
 # ── traversal → basename-stripped, NOT rejected ───────────────────────────────
 
 def test_upload_traversal_basename_stripped(tmp_path, monkeypatch):
