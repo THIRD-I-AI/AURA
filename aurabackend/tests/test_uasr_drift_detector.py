@@ -546,3 +546,115 @@ class TestNearConstantColumnFeedbackOverflow:
         )
         assert "fee" not in (result.affected_columns or [])
 
+
+
+# ── BUG-063/BUG-064: per-source locking around load-mutate-save ──────
+#
+# register_baseline / register_reference_embedding / declare_schema_intent /
+# detect all round-trip through StateStore.load()...save() with no lock
+# across the sequence, while service.py's HTTP handlers dispatch these via
+# asyncio.to_thread -- real OS threads, not serialized by the event loop.
+# Two concurrent calls for the SAME source_id (a first-touch race on a
+# brand-new source, or two detect() calls on an existing one) could each
+# load a pre-update SourceState, mutate their own copy, and save -- the
+# second save silently clobbers the first. DriftDetector._lock_for gives
+# every load-mutate-save call site a per-source threading.Lock.
+
+class TestPerSourceLocking:
+    def test_lock_for_returns_the_same_lock_object_for_the_same_source(self):
+        det = DriftDetector()
+        assert det._lock_for("src_a") is det._lock_for("src_a")
+
+    def test_lock_for_returns_different_locks_for_different_sources(self):
+        det = DriftDetector()
+        assert det._lock_for("src_a") is not det._lock_for("src_b")
+
+    def test_same_source_id_is_strictly_serialized_across_threads(self):
+        """The defining property of the fix: N threads racing the SAME
+        source_id's lock must never be inside it concurrently."""
+        import threading
+        import time
+
+        det = DriftDetector()
+        current = 0
+        max_concurrent = 0
+        guard = threading.Lock()
+
+        def worker():
+            nonlocal current, max_concurrent
+            with det._lock_for("shared_source"):
+                with guard:
+                    current += 1
+                    max_concurrent = max(max_concurrent, current)
+                time.sleep(0.03)
+                with guard:
+                    current -= 1
+
+        threads = [threading.Thread(target=worker) for _ in range(6)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=5)
+
+        assert max_concurrent == 1, (
+            f"up to {max_concurrent} threads were inside the same source's "
+            "lock simultaneously -- the per-source lock is not mutually exclusive"
+        )
+
+    def test_different_source_ids_are_not_serialized_against_each_other(self):
+        """The lock must not over-serialize: unrelated sources should be
+        able to make progress concurrently (else this would just be a
+        single global lock wearing a per-source disguise)."""
+        import threading
+        import time
+
+        det = DriftDetector()
+        current = 0
+        max_concurrent = 0
+        guard = threading.Lock()
+
+        def worker(source_id):
+            nonlocal current, max_concurrent
+            with det._lock_for(source_id):
+                with guard:
+                    current += 1
+                    max_concurrent = max(max_concurrent, current)
+                time.sleep(0.05)
+                with guard:
+                    current -= 1
+
+        threads = [threading.Thread(target=worker, args=(f"src_{i}",)) for i in range(6)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=5)
+
+        assert max_concurrent > 1, (
+            "different source_ids were fully serialized against each other "
+            "-- the lock is too coarse (a single global lock, not per-source)"
+        )
+
+    def test_concurrent_register_calls_for_a_brand_new_source_lose_no_write(self):
+        """End-to-end BUG-063 regression: two different mutations racing the
+        SAME brand-new source_id must both survive, not have one silently
+        clobber the other via an unsynchronized load-mutate-save."""
+        import threading
+
+        det = DriftDetector()
+        source_id = "brand_new_source"
+
+        def do_baseline():
+            det.register_baseline(source_id, {"col": ColumnDistribution(column_name="col", mean=1.0, std=1.0, count=10)})
+
+        def do_embedding():
+            det.register_reference_embedding(source_id, [1.0, 2.0, 3.0])
+
+        threads = [threading.Thread(target=do_baseline), threading.Thread(target=do_embedding)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=5)
+
+        final = det._store.peek(source_id)
+        assert final.baseline is not None, "concurrent register_baseline write was lost"
+        assert final.embeddings == [[1.0, 2.0, 3.0]], "concurrent register_reference_embedding write was lost"
