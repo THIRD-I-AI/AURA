@@ -564,3 +564,104 @@ async def test_evaluator_empty_candidate_list_returns_artifact():
     artifact = await evaluator.select_winner("s1", drift, batch, [])
     assert artifact.winner_id is None
     assert "no candidates" in artifact.selection_rationale.lower()
+
+
+# ── BUG-070: select_winner must not block the event loop ─────────────
+#
+# drift_score_fn wraps DriftDetector.detect() (CPU-heavy, can hit a
+# blocking Redis round-trip under RedisStateStore), and a sync transform
+# executes sandboxed shim code -- both used to run directly on the event
+# loop instead of being offloaded via asyncio.to_thread like every other
+# call to the same underlying operations in service.py.
+
+@pytest.mark.asyncio
+async def test_select_winner_offloads_drift_score_fn_and_sync_transform(monkeypatch):
+    """Both drift_score_fn and a synchronous candidate.transform must be
+    dispatched through asyncio.to_thread, not called directly."""
+    def sync_shim(_src, rows):
+        return rows
+
+    def drift_score(rows):
+        return float(len(rows))
+
+    evaluator = CausalRLEvaluator(drift_score_fn=drift_score)
+    drift = _make_drift_event("s1", "b1")
+    batch = _make_synthetic_batch("s1", "b1", n=20)
+    candidates = [ShimCandidate(candidate_id="a", transform=sync_shim)]
+
+    offloaded_funcs = []
+    orig_to_thread = asyncio.to_thread
+
+    async def spy_to_thread(func, *args, **kwargs):
+        offloaded_funcs.append(func)
+        return await orig_to_thread(func, *args, **kwargs)
+
+    monkeypatch.setattr(asyncio, "to_thread", spy_to_thread)
+
+    await evaluator.select_winner("s1", drift, batch, candidates)
+
+    assert drift_score in offloaded_funcs
+    assert sync_shim in offloaded_funcs
+
+
+@pytest.mark.asyncio
+async def test_select_winner_does_not_block_the_event_loop(monkeypatch):
+    """While a slow synchronous drift_score_fn runs, a concurrently
+    scheduled coroutine must still make progress -- proves the offload
+    is real, not just present in the code but bypassed somewhere."""
+    import time as _time
+
+    def slow_drift_score(rows):
+        _time.sleep(0.3)  # simulates CPU-heavy detect() / blocking Redis
+        return float(len(rows))
+
+    def sync_shim(_src, rows):
+        return rows
+
+    evaluator = CausalRLEvaluator(drift_score_fn=slow_drift_score)
+    drift = _make_drift_event("s1", "b1")
+    batch = _make_synthetic_batch("s1", "b1", n=20)
+    candidates = [ShimCandidate(candidate_id="a", transform=sync_shim)]
+
+    tick_times = []
+
+    async def ticker():
+        loop = asyncio.get_event_loop()
+        for _ in range(20):
+            await asyncio.sleep(0.02)
+            tick_times.append(loop.time())
+
+    await asyncio.gather(
+        evaluator.select_winner("s1", drift, batch, candidates),
+        ticker(),
+    )
+
+    assert len(tick_times) == 20
+    gaps = [b - a for a, b in zip(tick_times, tick_times[1:])]
+    max_gap = max(gaps)
+    assert max_gap < 0.15, (
+        f"event loop was blocked: largest gap between ticks was {max_gap:.3f}s "
+        "(expected ~0.02s) while select_winner was in flight"
+    )
+
+
+@pytest.mark.asyncio
+async def test_select_winner_still_awaits_async_transform_directly():
+    """An async transform (already event-loop-safe by convention) must
+    still be awaited directly, not routed through to_thread (which
+    cannot run a coroutine)."""
+    async def async_shim(_src, rows):
+        await asyncio.sleep(0)
+        return [{**r, "x": r["x"] - 1.0} for r in rows]
+
+    def drift_score(rows):
+        return sum(abs(r["x"]) for r in rows)
+
+    evaluator = CausalRLEvaluator(drift_score_fn=drift_score)
+    drift = _make_drift_event("s1", "b1")
+    batch = _make_synthetic_batch("s1", "b1", n=20, shift=5.0)
+    candidates = [ShimCandidate(candidate_id="a", transform=async_shim)]
+
+    artifact = await evaluator.select_winner("s1", drift, batch, candidates)
+    assert artifact.winner_id == "a"
+    assert artifact.candidates[0].error is None
