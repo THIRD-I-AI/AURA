@@ -783,7 +783,19 @@ class DriftDetector:
     def _dynamic_threshold(self, history: List[float]) -> float:
         """
         Adaptive ζ based on historical KL variance.
-        ζ = mean(D_KL) + 2·std(D_KL), floored at the default.
+
+        ζ = mean(D_KL) + 2·std(D_KL), floored at HALF the default (not the
+        full default -- BUG-071: this docstring previously said "floored at
+        the default", but the `* 0.5` below has been the actual, long-
+        standing implementation since this method's introduction, with
+        existing tests asserting the resulting sensitivity. Since the
+        behavior is what production has always run and is exercised by
+        tests, this fix corrects the doc to match the code rather than
+        changing live detection thresholds).
+
+        Once a source has ≥5 KL samples, this lets ζ settle as low as
+        `default_zeta / 2` for a genuinely low-noise source -- up to 2x
+        more sensitive than the flat default before enough history exists.
         """
         if len(history) < 5:
             return self._default_zeta
