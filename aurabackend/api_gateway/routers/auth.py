@@ -13,6 +13,7 @@ Supports two modes (controlled by ``AURA_AUTH_MODE``):
 from __future__ import annotations
 
 import asyncio
+import secrets
 import uuid
 
 from fastapi import APIRouter, Cookie, Depends
@@ -23,10 +24,19 @@ from shared.auth import create_access_token, require_user
 from shared.config import settings
 from shared.exceptions import AuthenticationError, ConflictError, ForbiddenError, ValidationError
 from shared.logging_config import get_logger
+from shared.password import hash_password
 
 logger = get_logger("aura.router.auth")
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+
+# BUG-059: a fixed bcrypt hash of a random, unknown value, computed once
+# at import time -- used to run a real (equal-cost) bcrypt comparison for
+# a nonexistent email or a user with no password_hash, so response
+# latency never reveals which case caused the rejection (a "user not
+# found" path that skips bcrypt entirely is measurably faster than one
+# that runs it, letting an attacker enumerate valid emails by timing).
+_DUMMY_PASSWORD_HASH = hash_password(secrets.token_hex(32))
 
 
 # ── Request / Response schemas ──────────────────────────────────────────
@@ -111,6 +121,11 @@ async def _issue_token_password(body: TokenRequest) -> TokenResponse:
         user = result.scalar_one_or_none()
 
     if user is None or not user.password_hash:
+        # BUG-059: run the same-cost bcrypt comparison a real user would
+        # trigger, so this path takes as long as a wrong-password
+        # rejection below -- the response time must not distinguish
+        # "no such email" from "wrong password".
+        await asyncio.to_thread(verify_password, body.password, _DUMMY_PASSWORD_HASH)
         raise AuthenticationError("Invalid credentials")
 
     if not await asyncio.to_thread(verify_password, body.password, user.password_hash):
