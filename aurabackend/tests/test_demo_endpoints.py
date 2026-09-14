@@ -6,6 +6,8 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from datetime import timedelta
+
 from fastapi.testclient import TestClient
 
 from counterfactual_service import main as m
@@ -19,22 +21,68 @@ def _auth(sub: str = "demo-tester", org: str = "org-demo") -> dict:
 
 # Job endpoints are tenant-scoped now (see main._new_job), so the demo producer
 # and the job poller must present the SAME token or the poll reads as a 404.
-# Bound on the client so every request in this module is authenticated.
-client = TestClient(app, headers=_auth())
+#
+# BUG-014: `client` used to be constructed with `headers=_auth()` bound once
+# at module-collection time, minting the JWT at minute 0 of the whole pytest
+# run. `access_token_expire_minutes` defaults to 30 (shared/config.py); a
+# slow full-suite run (observed: 1h25m under load, vs ~15m unloaded) lets
+# the token expire before this module's tests execute, turning every
+# request here into a 401 -- the same class of bug already fixed in
+# test_counterfactual_sprint9.py's `_auth()`. Fresh headers per call instead.
+client = TestClient(app)
 DEMO_METHODS = {"double_ml", "tmle", "iv"}
 
 
 # ── Tier A: endpoint wiring (no real audit) ─────────────────────────
 
+def test_a_token_bound_at_collection_time_would_have_expired_by_request_time():
+    """BUG-014 regression: reproduces the exact failure mode directly.
+
+    A token minted with the same expiry the OLD module-level
+    `client = TestClient(app, headers=_auth())` would have used, but
+    already past its `exp` claim -- simulating "the pytest run took
+    longer than access_token_expire_minutes before this module's tests
+    executed". That stale header alone must 401 (auth is genuinely
+    enforced, not a broken test). The actual `client` fixture below mints
+    a fresh header per call instead of reusing one bound at import time,
+    so it is never subject to this failure mode regardless of how long
+    the surrounding suite takes.
+    """
+    stale_token = create_access_token(
+        {"sub": "demo-tester", "org_id": "org-demo"}, expires_delta=timedelta(minutes=-1),
+    )
+    r = client.get(
+        "/counterfactual/jobs/ca_whatever",
+        headers={"Authorization": f"Bearer {stale_token}"},
+    )
+    assert r.status_code == 401, "expired token should be rejected -- sanity check"
+
+    r2 = client.get("/counterfactual/jobs/ca_whatever", headers=_auth())
+    assert r2.status_code == 404, (
+        "a freshly-minted token per call must authenticate fine regardless of collection-time "
+        "timing -- 404 (job not found) proves auth passed, unlike the stale-token 401 above"
+    )
+
+    # Structural guard: `client` itself must carry no bound Authorization
+    # header -- that's what makes every call site's explicit `headers=_auth()`
+    # load-bearing instead of decorative. If this ever regresses back to
+    # `TestClient(app, headers=_auth())`, this assertion catches it even
+    # though every individual test would still pass in a fast local run.
+    assert "authorization" not in {k.lower() for k in client.headers.keys()}, (
+        "client must not have a bound Authorization header -- BUG-014 was exactly "
+        "this, a token minted once at module-collection time"
+    )
+
+
 def test_list_demo_scenarios():
-    r = client.get("/counterfactual/demo/scenarios")
+    r = client.get("/counterfactual/demo/scenarios", headers=_auth())
     assert r.status_code == 200
     ids = [s["id"] for s in r.json()["scenarios"]]
     assert "fair_lending" in ids
 
 
 def test_unknown_scenario_404():
-    r = client.post("/counterfactual/demo/does_not_exist")
+    r = client.post("/counterfactual/demo/does_not_exist", headers=_auth())
     assert r.status_code == 404
 
 
@@ -43,7 +91,7 @@ def test_demo_cold_cache_returns_503_not_blocking_audit(monkeypatch):
     (503) rather than launch a GIL-bound audit that would freeze the
     in-process gateway."""
     monkeypatch.setattr(m, "_demo_last_good", {})
-    r = client.post("/counterfactual/demo/fair_lending")
+    r = client.post("/counterfactual/demo/fair_lending", headers=_auth())
     assert r.status_code == 503
     assert "warm_demos" in r.json()["detail"]
 
@@ -68,11 +116,11 @@ def test_demo_serves_prewarmed_artifact_instantly(monkeypatch):
         "signing_key_source": "persisted_file",
     }
     monkeypatch.setitem(m._demo_last_good, "fair_lending", fake)
-    r = client.post("/counterfactual/demo/fair_lending")
+    r = client.post("/counterfactual/demo/fair_lending", headers=_auth())
     assert r.status_code == 200
     body = r.json()
     assert body["cached"] is True and body["scenario_id"] == "fair_lending"
-    jr = client.get(f"/counterfactual/jobs/{body['job_id']}").json()
+    jr = client.get(f"/counterfactual/jobs/{body['job_id']}", headers=_auth()).json()
     assert jr["state"] == "succeeded"
     assert jr["artifact"]["audit_record_hash"] == "deadbeefcafe"
 
@@ -88,7 +136,7 @@ def test_another_tenant_cannot_read_this_tenants_job(monkeypatch):
     response must be a 404, identical to a job that never existed, so it can't
     be used to confirm which ids are real."""
     monkeypatch.setitem(m._demo_last_good, "fair_lending", {"audit_record_hash": "secret"})
-    job_id = client.post("/counterfactual/demo/fair_lending").json()["job_id"]
+    job_id = client.post("/counterfactual/demo/fair_lending", headers=_auth()).json()["job_id"]
 
     intruder = TestClient(app, headers=_auth(sub="mallory", org="org-other"))
     r = intruder.get(f"/counterfactual/jobs/{job_id}")
@@ -96,7 +144,7 @@ def test_another_tenant_cannot_read_this_tenants_job(monkeypatch):
     assert "secret" not in r.text
 
     # ...and the owning tenant still reads it fine.
-    assert client.get(f"/counterfactual/jobs/{job_id}").json()["state"] == "succeeded"
+    assert client.get(f"/counterfactual/jobs/{job_id}", headers=_auth()).json()["state"] == "succeeded"
 
 
 # ── Tier B: the real audit (needs econml + dowhy) ───────────────────
