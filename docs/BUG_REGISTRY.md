@@ -1109,12 +1109,13 @@ This is the process, not a suggestion:
 - **Fix:** PR to follow.
 
 ## BUG-052: /etl/execute writes output to one shared, non-tenant-scoped local directory (bypassing the S45 StorageBackend used for reads), and /etl/download/{filename} has no ownership check
-- **Status:** open
+- **Status:** fixed
 - **Found by:** same ultracode audit as BUG-050.
 - **Severity:** blocks-feature (critical) — cross-tenant IDOR + silently drops the S3-backed persistence guarantee under `AURA_STORAGE_BACKEND=s3`.
 - **Root cause:** `etl.py:327-329` sets `output_dir` to a fixed local path unconditionally, never calling `get_storage_backend()` for the write side (only for reads, per the BUG-035 fix's scope). `destination_filename` defaults (`etl.py:377`) to `{table_name}_transformed` derived only from the uploaded source file's basename — no tenant/workspace id or random component. `etl_download` (`etl.py:452`) takes only `filename: str`, no `Request` param, only path-traversal checks — no ownership check exists to bypass, it's simply absent. Two tenants uploading similarly-named source files collide on the same output filename in the same shared directory; any authenticated caller can then read another tenant's ETL output.
 - **Caused by:** none — pre-existing; BUG-035 fixed the read side only, this is the write/download side never covered.
-- **Fix:** pending.
+- **Fix:** `etl_execute`'s `output_dir` now namespaced under `tenant_slug(tenant)` (same helper the source-read side and pipelines.py's BUG-051 fix use), computed after `tenant = _request_tenant(request)` is resolved (was computed before, unconditionally, so had to be reordered). `etl_download` now takes `request` and only resolves inside the requesting caller's own `tenant_slug(...)` subdirectory. **Not fixed here (separate, larger scope):** writes still go directly to local disk via DuckDB `COPY`, not routed through the `StorageBackend` abstraction the way reads are — under `AURA_STORAGE_BACKEND=s3` the destination still silently stays on local disk rather than S3. Closing the tenant-isolation IDOR (the security-critical part) didn't require that larger rework; noted here rather than silently left unaddressed. New tests (`test_etl_download_tenant_isolation.py`): two tenants colliding on the identical `destination_filename` land in separate outputs with the right content in each; an unrelated tenant guessing a filename it never produced gets 404. Confirmed non-vacuous: stashed the fix, both tests reproduced the exact IDOR (tenant A's download returned tenant B's `SECRET` row; the unrelated tenant got 200 instead of 404); restored, 9/9 pass across the three ETL test files. Ruff clean (`E,F,I,W`, CI's actual ignore list).
+- **Fix:** PR to follow.
 
 ## BUG-053: ETL's `custom_sql` transform step splices caller-supplied SQL into DuckDB verbatim, and the shared DuckDB connection factory applies no filesystem/network access restriction — bypasses the per-tenant sandboxing enforced for the initial source file
 - **Status:** open
