@@ -14,6 +14,7 @@ import asyncio
 import os
 import sys
 import time
+from unittest.mock import patch
 
 import pytest
 
@@ -60,46 +61,42 @@ def _make_generator(llm) -> PipelineGenerator:
 
 
 def test_pipeline_generator_does_not_block_event_loop():
-    """While generate() awaits its (slow, synchronous) LLM call, a
-    concurrently-scheduled coroutine must still make progress. If the LLM
-    call runs directly on the event loop (no to_thread offload), the ticker
-    below stalls for the full duration of the LLM call."""
+    """generate() must dispatch the (slow, synchronous) LLM call via
+    asyncio.to_thread rather than running it directly on the event loop --
+    see .claude/rules/backend.md "Async safety".
 
-    gen = _make_generator(_SlowSyncLLM(delay=0.3))
+    This used to be a wall-clock test: run a concurrent ticker coroutine
+    alongside gen.generate() and assert the whole thing finished under a
+    fixed time bound tight enough to rule out the LLM call having run
+    serially. That flaked in CI under load (observed 0.663s and 0.695s
+    against a 0.65s bound, back-to-back) because asyncio.gather() waits for
+    BOTH coroutines to finish regardless of ordering -- a blocked event loop
+    only delays when the ticker's iterations happen, it doesn't prevent them
+    from eventually completing, so elapsed time was the only signal actually
+    catching a regression, and normal scheduling jitter was enough to cross
+    a boundary that close to the serial-time floor (0.3 LLM + 0.4 ticker =
+    0.7s). Spying on asyncio.to_thread checks the real mechanism directly
+    instead of inferring it from timing.
+    """
+    llm = _SlowSyncLLM(delay=0.01)  # tiny: no longer load-bearing for the assertion
+    gen = _make_generator(llm)
     # A prompt the local rule-based parser can't handle, forcing Tier 2 (LLM).
     prompt = "asdkjhasd qwoiuye lasdkjqwoi unmatched gibberish 12938"
 
-    tick_count = 0
+    real_to_thread = asyncio.to_thread
+    offloaded = []
 
-    async def ticker():
-        nonlocal tick_count
-        for _ in range(20):
-            await asyncio.sleep(0.02)
-            tick_count += 1
+    async def spy_to_thread(func, *args, **kwargs):
+        offloaded.append(func)
+        return await real_to_thread(func, *args, **kwargs)
 
-    async def runner():
-        await asyncio.gather(gen.generate(prompt), ticker())
+    with patch("pipeline.generator.asyncio.to_thread", side_effect=spy_to_thread):
+        pipeline = asyncio.run(gen.generate(prompt))
 
-    # Prime the default ThreadPoolExecutor: its first-ever to_thread/
-    # run_in_executor call in a process pays a one-time worker-thread
-    # startup cost, which would otherwise land inside the timed window
-    # below and make the "concurrent, not serial" assertion flaky.
-    asyncio.run(asyncio.to_thread(lambda: None))
-
-    start = time.perf_counter()
-    asyncio.run(runner())
-    elapsed = time.perf_counter() - start
-
-    # If the blocking call ran on the event loop, the ticker would be
-    # starved and finish far fewer than 20 ticks in that window.
-    assert tick_count == 20, (
-        f"event loop was blocked: only {tick_count}/20 ticker iterations ran "
-        "while the LLM call was in flight"
+    assert llm.generate_json in offloaded, (
+        "the LLM call ran directly on the event loop instead of via asyncio.to_thread"
     )
-    # Sanity: both coroutines ran concurrently, not serially. Serial execution
-    # would take >= 0.3 (LLM) + 0.4 (ticker: 20 * 0.02) = 0.7s; concurrent
-    # execution is bounded by the slower one (~0.3-0.4s) plus scheduling slop.
-    assert elapsed < 0.65
+    assert pipeline is not None
 
 
 def test_pipeline_generator_generates_via_generate_json():
