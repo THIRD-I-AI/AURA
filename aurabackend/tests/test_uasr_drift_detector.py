@@ -718,3 +718,40 @@ class TestSemanticEmbeddingCrossProcessStability:
             "PYTHONHASHSEED values -- the embedding is not process-stable, "
             "defeating RedisStateStore's cross-replica baseline sharing"
         )
+
+
+# ── BUG-071: _dynamic_threshold's floor must match its documented value ──
+#
+# The docstring previously said the adaptive zeta is "floored at the
+# default", but the implementation floors it at HALF the default
+# (`self._default_zeta * 0.5`). Pinning the actual numeric behavior here so
+# doc and code can never silently drift apart again without a test noticing.
+
+class TestDynamicThresholdFloor:
+    def test_floor_is_half_the_default_zeta_for_a_low_noise_source(self):
+        det = DriftDetector(default_zeta=0.20)
+        # 5+ near-identical KL samples -> mean/std both ~0, so max(adaptive,
+        # floor) resolves to the floor itself.
+        history = [0.0001, 0.0001, 0.0001, 0.0001, 0.0001]
+        zeta = det._dynamic_threshold(history)
+        assert zeta == pytest.approx(det._default_zeta * 0.5)
+
+    def test_floor_is_not_the_full_default_zeta(self):
+        """Documents the exact discrepancy BUG-071 flagged: the floor is
+        HALF the default, not the full default."""
+        det = DriftDetector(default_zeta=0.20)
+        history = [0.0001] * 5
+        zeta = det._dynamic_threshold(history)
+        assert zeta != pytest.approx(det._default_zeta)
+        assert zeta == pytest.approx(det._default_zeta / 2)
+
+    def test_below_warmup_returns_the_full_default(self):
+        det = DriftDetector(default_zeta=0.20)
+        assert det._dynamic_threshold([0.01, 0.01]) == det._default_zeta
+
+    def test_adaptive_value_wins_when_it_exceeds_the_floor(self):
+        det = DriftDetector(default_zeta=0.20)
+        # High-variance history -> adaptive (mean + 2*std) exceeds the floor.
+        history = [0.1, 0.5, 0.9, 0.2, 0.8]
+        zeta = det._dynamic_threshold(history)
+        assert zeta > det._default_zeta * 0.5
