@@ -143,6 +143,15 @@ class SynthesisActuatorAgent(BaseAgent):
         return None
 
     def _schema_shim(self, drift_vector: Dict, diagnosis: DiagnosisResult) -> Optional[str]:
+        # BUG-073: every column name spliced into generated shim source below
+        # uses `{col!r}` (Python's own repr, which correctly escapes quotes/
+        # backslashes) rather than manual f'"{col}"' wrapping. Column names
+        # come from drift_vector, itself derived from an upstream (possibly
+        # external/influenced) source schema -- an unescaped quote character
+        # in a column name used to let arbitrary Python statements break out
+        # of the generated string literal before the shim ever reached
+        # sandbox validation. Same class of bug shared/sql_identifiers.py's
+        # quote_identifier exists to prevent for SQL splicing (security.md).
         change_type = drift_vector.get("type", "schema_change")
 
         if change_type == "type_change":
@@ -155,11 +164,11 @@ class SynthesisActuatorAgent(BaseAgent):
                 new_t = new_types.get(col, old_t)
                 if old_t != new_t:
                     cast_lines.append(
-                        f'        if "{col}" in row:\n'
+                        f'        if {col!r} in row:\n'
                         f'            try:\n'
-                        f'                row["{col}"] = {_python_cast(old_t)}(row["{col}"])\n'
+                        f'                row[{col!r}] = {_python_cast(old_t)}(row[{col!r}])\n'
                         f'            except (ValueError, TypeError):\n'
-                        f'                row["{col}"] = None  # Could not cast, set to None'
+                        f'                row[{col!r}] = None  # Could not cast, set to None'
                     )
 
             if not cast_lines:
@@ -185,7 +194,7 @@ class SynthesisActuatorAgent(BaseAgent):
 
         if removed and not added:
             default_lines = "\n".join(
-                f'        row.setdefault("{col}", None)'
+                f'        row.setdefault({col!r}, None)'
                 for col in removed
             )
             return (
@@ -203,7 +212,7 @@ class SynthesisActuatorAgent(BaseAgent):
             )
 
         if added and not removed:
-            keep_cols_str = ", ".join(f'"{c}"' for c in added)
+            keep_cols_str = ", ".join(f'{c!r}' for c in added)
             return (
                 '"""UASR Shim - Column Filter\n'
                 'Strips unexpected new columns to maintain schema compatibility.\n'
@@ -222,7 +231,7 @@ class SynthesisActuatorAgent(BaseAgent):
         if added and removed and len(added) == len(removed):
             # Likely a rename
             rename_map = dict(zip(added, removed))
-            map_str = ", ".join(f'"{k}": "{v}"' for k, v in rename_map.items())
+            map_str = ", ".join(f'{k!r}: {v!r}' for k, v in rename_map.items())
             return (
                 '"""UASR Shim - Column Rename Mapping\n'
                 'Maps renamed columns back to their original names.\n'
@@ -279,8 +288,8 @@ class SynthesisActuatorAgent(BaseAgent):
 
         if rescale_ops:
             div_lines = "\n".join(
-                f'        if "{col}" in row and isinstance(row["{col}"], (int, float)):\n'
-                f'            row["{col}"] = row["{col}"] / {factor!r}'
+                f'        if {col!r} in row and isinstance(row[{col!r}], (int, float)):\n'
+                f'            row[{col!r}] = row[{col!r}] / {factor!r}'
                 for col, factor in rescale_ops.items()
             )
             factors_repr = ", ".join(f"{c}:x{f:g}" for c, f in rescale_ops.items())
@@ -316,12 +325,12 @@ class SynthesisActuatorAgent(BaseAgent):
                     bounds[col] = (bmean - 3 * bstd, bmean + 3 * bstd)
 
             clip_lines = "\n".join(
-                f'        if "{col}" in row and isinstance(row["{col}"], (int, float)):\n'
-                f'            _lo, _hi = _CLIP_BOUNDS["{col}"]\n'
-                f'            row["{col}"] = max(min(row["{col}"], _hi), _lo)'
+                f'        if {col!r} in row and isinstance(row[{col!r}], (int, float)):\n'
+                f'            _lo, _hi = _CLIP_BOUNDS[{col!r}]\n'
+                f'            row[{col!r}] = max(min(row[{col!r}], _hi), _lo)'
                 for col in affected
             )
-            bounds_repr = ", ".join(f'"{c}": ({lo!r}, {hi!r})' for c, (lo, hi) in bounds.items())
+            bounds_repr = ", ".join(f'{c!r}: ({lo!r}, {hi!r})' for c, (lo, hi) in bounds.items())
             return (
                 '"""UASR Shim - Outlier Clipping\n'
                 'Clips extreme values to baseline mean +/- 3*std, per column.\n'
@@ -348,7 +357,7 @@ class SynthesisActuatorAgent(BaseAgent):
             return None
         else:
             # Mild - just log and pass through
-            cols_str = ", ".join(f'"{c}"' for c in affected)
+            cols_str = ", ".join(f'{c!r}' for c in affected)
             return (
                 '"""UASR Shim - Drift Monitor (pass-through)\n'
                 'Logs statistical drift metrics without modifying data.\n'
