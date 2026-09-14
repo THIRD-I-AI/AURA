@@ -658,3 +658,63 @@ class TestPerSourceLocking:
         final = det._store.peek(source_id)
         assert final.baseline is not None, "concurrent register_baseline write was lost"
         assert final.embeddings == [[1.0, 2.0, 3.0]], "concurrent register_reference_embedding write was lost"
+
+
+# ── BUG-069: semantic embedding must be stable across processes ──────
+#
+# _compute_batch_embedding used Python's builtin hash(), which is
+# randomized per-process (PEP 456 / PYTHONHASHSEED) unless explicitly
+# disabled. RedisStateStore is explicitly designed so a baseline embedding
+# registered by one worker replica is visible to (and comparable against)
+# batches embedded by any other replica, and survives a process restart --
+# but a randomized hash makes the same categorical token land in a
+# different embedding dimension in every process, so two embeddings for
+# IDENTICAL data share almost no dimensions when computed by different
+# processes. zlib.crc32 (used now) is deterministic across processes.
+
+class TestSemanticEmbeddingCrossProcessStability:
+    def _script(self, hashseed: str) -> str:
+        # Runs in a real subprocess with an explicit, different
+        # PYTHONHASHSEED than the parent -- the only way to genuinely
+        # reproduce the per-process hash-randomization this bug depended on.
+        return (
+            "import os, sys, json\n"
+            f"os.environ['PYTHONHASHSEED'] = {hashseed!r}\n"
+            "sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath('__file__'))))\n"
+            "from uasr.drift_detector import DriftDetector\n"
+            "from uasr.models import BatchPayload\n"
+            "det = DriftDetector()\n"
+            "rows = [{'cat': ['A', 'B', 'C'][i % 3]} for i in range(30)]\n"
+            "batch = BatchPayload(source_id='s', batch_id='b', rows=rows)\n"
+            "emb = det._compute_batch_embedding(batch)\n"
+            "print(json.dumps(emb))\n"
+        )
+
+    def test_embedding_is_identical_across_different_hash_seeds(self):
+        import json
+        import subprocess
+        import sys
+
+        aurabackend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+        def run_with_seed(seed: str):
+            script = self._script(seed)
+            env = dict(os.environ)
+            env.pop("PYTHONHASHSEED", None)  # let the script itself set it
+            proc = subprocess.run(
+                [sys.executable, "-c", script],
+                cwd=aurabackend_dir, env=env,
+                capture_output=True, text=True, timeout=30,
+            )
+            assert proc.returncode == 0, proc.stderr
+            return json.loads(proc.stdout.strip().splitlines()[-1])
+
+        emb_seed_1 = run_with_seed("1")
+        emb_seed_2 = run_with_seed("2")
+
+        assert emb_seed_1 is not None and emb_seed_2 is not None
+        assert emb_seed_1 == emb_seed_2, (
+            "the same batch produced a DIFFERENT embedding under two different "
+            "PYTHONHASHSEED values -- the embedding is not process-stable, "
+            "defeating RedisStateStore's cross-replica baseline sharing"
+        )

@@ -19,6 +19,7 @@ import logging
 import math
 import threading
 import time
+import zlib
 from collections import Counter
 from dataclasses import replace
 from typing import Any, Dict, List, Optional, Tuple
@@ -934,11 +935,26 @@ class DriftDetector:
                 val = row.get(col)
                 if val is None:
                     continue
-                # Hash column+value to get a dimension index
+                # Hash column+value to get a dimension index. BUG-069: must be
+                # a STABLE hash -- Python's builtin hash() is randomized per
+                # process (PEP 456 / PYTHONHASHSEED) unless explicitly
+                # disabled, so the same token maps to a different dimension
+                # in every process. A baseline embedding registered by one
+                # process (persisted via RedisStateStore, explicitly meant to
+                # be shared across worker replicas / survive a restart) then
+                # shares almost no dimensions with a batch embedded by a
+                # different process, making cosine distance ~1.0 regardless
+                # of whether the data actually drifted -- silently defeating
+                # the semantic-drift channel. zlib.crc32 is deterministic
+                # across processes/restarts. It's unsigned, so the sign bit
+                # (needed for the random-projection/SimHash trick) is derived
+                # from a low bit of the same hash rather than from crc32's
+                # sign (which doesn't exist), and the index uses the
+                # remaining bits so the two don't reuse the same bit.
                 token = f"{col}:{val}"
-                h = hash(token)
-                idx = abs(h) % dim
-                sign = 1.0 if h >= 0 else -1.0
+                h = zlib.crc32(token.encode("utf-8"))
+                idx = (h >> 1) % dim
+                sign = 1.0 if (h & 1) else -1.0
                 vector[idx] += sign
                 row_count += 1
 
