@@ -7,6 +7,7 @@ dashboard stats, and job control endpoints.
 
 import asyncio
 import hashlib
+import hmac
 import json
 import os
 import secrets
@@ -83,26 +84,42 @@ _SCHEDULER_INTERVAL_SEC = 30
 _pg_pool_registry_lock = threading.Lock()
 _pg_pool_registry: Dict[str, Any] = {}
 
+# BUG-050: the key used to fold the password into the pool-cache key below.
+# Random per-process, never persisted or logged -- this is a keyed MAC
+# (HMAC), not a bare hash of the password, so it doesn't trip the same
+# CodeQL weak-password-hashing flag the old (password-excluding) key
+# comment was written to avoid: HMAC-SHA256 with a secret key is the
+# standard accepted mitigation for that class of finding, not an instance
+# of it.
+_PG_POOL_KEY_SECRET = secrets.token_bytes(32)
+
 
 def _pg_pool_key(config: "ConnectorConfig") -> str:
-    """Deterministic registry key from connection coordinates.
+    """Deterministic registry key from connection coordinates AND password.
 
-    Pool identity is (host, port, database, username) — same user on
-    the same host:port/database always authenticates with the same
-    password, so the password adds no uniqueness to the cache key and
-    its inclusion in a fast hash (Sec-3 #49) trips a CodeQL false-flag
-    for weak password hashing. Keep the password OUT of the key.
+    BUG-050: this used to key on (host, port, database, username) alone,
+    on the assumption that "the same user on the same host:port/database
+    always authenticates with the same password" -- true for a single
+    operator, false for a multi-tenant gateway where any caller who
+    merely knows (not authenticates with) another tenant's connection
+    coordinates could be handed that tenant's already-authenticated pool
+    regardless of the password they presented. Folding the password into
+    a keyed HMAC closes that: a wrong/blank password can never match the
+    key of a pool created with the real one, so it can never be reused.
     """
-    return hashlib.sha256(
+    return hmac.new(
+        _PG_POOL_KEY_SECRET,
         json.dumps(
             {
                 "host": config.host,
                 "port": config.port,
                 "database": config.database,
                 "username": config.username,
+                "password": config.password,
             },
             sort_keys=True,
-        ).encode()
+        ).encode(),
+        hashlib.sha256,
     ).hexdigest()
 
 
