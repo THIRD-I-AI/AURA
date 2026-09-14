@@ -12,7 +12,9 @@ import uuid as _uuid
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
+import httpx
 from fastapi import APIRouter, HTTPException, Request, status
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from api_gateway import persistence
@@ -349,17 +351,32 @@ async def get_connection_schema(connection_id: str, request: Request):
 
 
 @router.get("/databases/test/{db_type}")
-async def test_database_connection(db_type: str):
-    """Proxy to database service for connection testing."""
+async def test_database_connection(db_type: str, request: Request):
+    """Proxy to database service for connection testing.
+
+    BUG-060: the caller's Authorization header was never forwarded (so a
+    downstream service requiring auth always 401'd), and the upstream's
+    status code was dropped in favor of always returning 200 — turning an
+    upstream failure into a browser-visible success. Same class of bug as
+    the UASR proxy in pipelines.py; fixed the same way (backend.md's proxy
+    rule: forward Authorization, preserve status_code).
+    """
     try:
-        import httpx
+        headers = {}
+        auth = request.headers.get("Authorization")
+        if auth:
+            headers["Authorization"] = auth
         db_svc = os.getenv("DATABASE_SERVICE_URL", "http://localhost:8002")
         async with httpx.AsyncClient(timeout=10.0) as client:
-            response = await client.get(f"{db_svc}/databases/test/{db_type}")
-            return response.json()
+            response = await client.get(f"{db_svc}/databases/test/{db_type}", headers=headers)
+        try:
+            payload = response.json()
+        except ValueError:
+            payload = {"error": "UPSTREAM_NOT_JSON", "message": response.text[:500]}
+        return JSONResponse(status_code=response.status_code, content=payload)
     except Exception as e:
         sanitize_error(e, logger=logger, context=f"database service proxy {db_type}")
-        return {"error": "Database service unavailable", "status": "error"}
+        return JSONResponse(status_code=503, content={"error": "Database service unavailable", "status": "error"})
 # ── Connection → Ingest bridge (end-to-end slice) ────────────────────
 # Reads rows from an attached connection and streams them through the
 # UASR self-healing ingest pipeline in batches, then records a dataset
