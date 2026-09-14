@@ -34,7 +34,7 @@ def mock_asyncpg(monkeypatch):
     return fake
 
 
-def _cfg(host: str = "localhost", db: str = "testdb"):
+def _cfg(host: str = "localhost", db: str = "testdb", password: str = "secret"):
     from connectors.base import ConnectorConfig, SourceType
 
     return ConnectorConfig(
@@ -44,7 +44,7 @@ def _cfg(host: str = "localhost", db: str = "testdb"):
         port=5432,
         database=db,
         username="user",
-        password="secret",
+        password=password,
     )
 
 
@@ -63,6 +63,18 @@ class TestPgPoolKey:
         from api_gateway.routers.queries import _pg_pool_key
 
         assert _pg_pool_key(_cfg(db="db1")) != _pg_pool_key(_cfg(db="db2"))
+
+    def test_key_excludes_password_by_design(self):
+        """BUG-050: _pg_pool_key intentionally stays coordinates-only (a
+        fast hash of password data would trip CodeQL's weak-password-
+        hashing flag) -- actual password verification before reuse lives
+        in _get_or_create_pg_pool's per-entry constant-time comparison,
+        not in this key. See TestGetOrCreatePgPool for the real guarantee."""
+        from api_gateway.routers.queries import _pg_pool_key
+
+        real = _pg_pool_key(_cfg(password="the-real-password"))
+        wrong = _pg_pool_key(_cfg(password="guessed-wrong"))
+        assert real == wrong
 
 
 class TestGetOrCreatePgPool:
@@ -94,6 +106,27 @@ class TestGetOrCreatePgPool:
 
         assert pa is not pb
         assert mock_asyncpg.create_pool.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_wrong_password_never_reuses_the_real_pool(self, mock_asyncpg):
+        """BUG-050 regression: an authenticated pool created with the real
+        password must never be handed to a later caller presenting a
+        different (wrong or blank) password for the same host/port/
+        database/username -- that was a full authentication bypass."""
+        import api_gateway.routers.queries as q
+
+        real_pool, attacker_pool = MagicMock(), MagicMock()
+        real_pool.close = attacker_pool.close = AsyncMock()
+        mock_asyncpg.create_pool = AsyncMock(side_effect=[real_pool, attacker_pool])
+
+        p1 = await q._get_or_create_pg_pool(_cfg(password="the-real-password"))
+        p2 = await q._get_or_create_pg_pool(_cfg(password="guessed-wrong"))
+
+        assert p1 is not p2, "a wrong password must not reuse the real credential's pool"
+        assert mock_asyncpg.create_pool.call_count == 2
+        # asyncpg.create_pool was actually invoked with the wrong password
+        # for the second call -- it would fail against a real server.
+        assert mock_asyncpg.create_pool.call_args_list[1].kwargs["password"] == "guessed-wrong"
 
 
 class TestCloseAllPgPools:
