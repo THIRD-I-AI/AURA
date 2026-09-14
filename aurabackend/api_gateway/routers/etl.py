@@ -23,7 +23,7 @@ from pydantic import BaseModel, Field
 from shared.error_handler import sanitize_error
 from shared.logging_config import get_logger
 from shared.storage import get_storage_backend
-from shared.storage.base import safe_object_name
+from shared.storage.base import safe_object_name, tenant_slug
 from shared.streaming_manager import TOPIC_ETL, streaming_manager
 
 from .workspaces import _request_tenant, current_workspace_id
@@ -325,13 +325,19 @@ async def etl_execute(pipeline: ETLPipelineRequest, request: Request):
 
     t0 = time.perf_counter()
     base = Path(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-    output_dir = base / "data" / "processed"
-    output_dir.mkdir(parents=True, exist_ok=True)
 
     # Sec-2 #36 / S45: user-supplied source_file must be sandboxed under the
     # tenant's storage namespace, and read through the active StorageBackend
     # so this works under both AURA_STORAGE_BACKEND=local and =s3 (BUG-035).
     tenant = _request_tenant(request)
+    # BUG-052: the destination side used one shared, non-tenant-scoped
+    # directory (only the source read above was tenant-sandboxed), so two
+    # tenants colliding on the same destination_filename let either one
+    # download the other's ETL output. Namespace by tenant, same
+    # tenant_slug() convention as the source side and pipelines.py's own
+    # BUG-051 fix.
+    output_dir = base / "data" / "processed" / tenant_slug(tenant)
+    output_dir.mkdir(parents=True, exist_ok=True)
     backend = get_storage_backend()
     try:
         safe_name = safe_object_name(pipeline.source_file)
@@ -449,10 +455,16 @@ async def etl_execute(pipeline: ETLPipelineRequest, request: Request):
 
 
 @router.get("/etl/download/{filename}")
-async def etl_download(filename: str):
-    """Download a processed ETL output file."""
+async def etl_download(filename: str, request: Request):
+    """Download a processed ETL output file.
+
+    BUG-052: outputs are written per-tenant (see etl_execute above,
+    tenant_slug()) -- only ever look inside the requesting caller's own
+    subdirectory, so this can never serve another tenant's output
+    regardless of filename collisions.
+    """
     base = Path(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-    output_dir = base / "data" / "processed"
+    output_dir = base / "data" / "processed" / tenant_slug(_request_tenant(request))
 
     # Sec-2 #37-#38: inline sanitizer at the FileResponse sink. The
     # `realpath + startswith` pattern is the canonical CodeQL
