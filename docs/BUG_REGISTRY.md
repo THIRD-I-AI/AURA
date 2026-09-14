@@ -1172,12 +1172,13 @@ This is the process, not a suggestion:
 - **Fix:** PR to follow.
 
 ## BUG-059: Password-mode login (POST /auth/token) leaks whether an email is registered via a timing side channel
-- **Status:** open
+- **Status:** fixed
 - **Found by:** same ultracode audit as BUG-050.
 - **Severity:** degrades-accuracy (user enumeration) — no direct credential compromise.
 - **Root cause:** `auth.py:113` (`_issue_token_password`): the "user not found"/no-password-hash path returns immediately after a bare SELECT; the "wrong password" path always falls through to `verify_password` → `bcrypt.checkpw` (tens-to-hundreds of ms). Both raise the identical `AuthenticationError("Invalid credentials")`, but response latency distinguishes them. No dummy-hash constant-time comparison exists for the not-found path.
 - **Caused by:** none — pre-existing.
-- **Fix:** pending.
+- **Fix:** a module-level `_DUMMY_PASSWORD_HASH` (a real bcrypt hash of a random, unknown value, computed once at import time) is now compared against on the not-found path, so it runs exactly one bcrypt comparison — the same cost as a real user's wrong-password rejection. New test `test_nonexistent_user_still_runs_a_bcrypt_comparison` proves this structurally (spies on `shared.password.verify_password`, asserts exactly one call on both the not-found and wrong-password paths) rather than via a flaky wall-clock timing assertion. Confirmed non-vacuous: stashed the fix, the new test failed with `AssertionError` (0 calls on the not-found path, as before); restored, 14/14 pass. Ruff clean (`E,F,I,W`, CI's actual ignore list).
+- **Fix:** PR to follow.
 
 ## BUG-060: GET /databases/test/{db_type} relays the downstream service's JSON body as an HTTP 200 regardless of its actual upstream status code, and never forwards the caller's Authorization header
 - **Status:** open

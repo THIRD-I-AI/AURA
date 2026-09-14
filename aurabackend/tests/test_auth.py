@@ -162,6 +162,42 @@ class TestPasswordModeAuth:
         })
         assert resp.status_code == 401
 
+    def test_nonexistent_user_still_runs_a_bcrypt_comparison(self, password_client, monkeypatch):
+        """BUG-059: a 'no such email' rejection used to skip bcrypt
+        entirely while a 'wrong password' rejection always ran it --
+        the resulting latency gap lets an attacker enumerate valid
+        emails by timing. Both paths must now run exactly one bcrypt
+        comparison, proven structurally (call count) rather than via a
+        flaky wall-clock timing assertion."""
+        import shared.password as password_module
+
+        real_verify = password_module.verify_password
+        calls = []
+
+        def spy_verify(plain, hashed):
+            calls.append(hashed)
+            return real_verify(plain, hashed)
+
+        monkeypatch.setattr(password_module, "verify_password", spy_verify)
+
+        password_client.post(f"{V1}/auth/register", json={
+            "email": "carol@example.com", "password": "correct-pass-789", "name": "Carol",
+        })
+        calls.clear()
+
+        resp_missing = password_client.post(f"{V1}/auth/token", json={
+            "email": "definitely-not-registered@example.com", "password": "whatever",
+        })
+        assert resp_missing.status_code == 401
+        assert len(calls) == 1, "the not-found path must run exactly one bcrypt comparison, same as a real user"
+
+        calls.clear()
+        resp_wrong = password_client.post(f"{V1}/auth/token", json={
+            "email": "carol@example.com", "password": "wrong-password",
+        })
+        assert resp_wrong.status_code == 401
+        assert len(calls) == 1
+
     def test_register_duplicate_email_rejected(self, password_client):
         password_client.post(f"{V1}/auth/register", json={
             "email": "dupe@example.com",
