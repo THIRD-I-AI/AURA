@@ -1183,8 +1183,7 @@ the whole subsystem every time.
 - **Severity:** blocks-feature (arbitrary write / credential-scoped SSRF).
 - **Root cause:** `GenerateRequest.output_uri` (`synthetic.py:84`) is a plain `str` with no validator/allow-list, passed unmodified to `SyntheticDatasetWriter.generate` (`synthetic.py:128-132`), which resolves it directly via `pafs.FileSystem.from_uri(output_uri)` (`synthetic/writer.py:80-91`) using the process's own filesystem/cloud credentials — no scheme allow-list, no tenant-derived path prefix.
 - **Caused by:** none — pre-existing.
-- **Fix:** new `_confine_output_uri` rejects unsupported schemes and, for a local path/`file://` URI, rewrites it to `<synthetic-output-root>/<tenant_slug>/<job_id>/<requested-basename>` before it ever reaches `SyntheticDatasetWriter` — the caller can request a name, never a location. `job_id` (already generated per request) keeps each call's output unique so repeated/concurrent calls with the same requested basename never collide or silently reuse a previous run's files (caught by an initial version of this fix breaking `test_generate_job_runs_to_completion` — n_files came back 0 because a second confined path collided with a first run's leftover state; adding `job_id` to the confined path fixed it). **Deliberately NOT restricted: `s3://`/`gs://`/`abfs://` URIs pass through unchanged** — this is an enterprise bring-your-own-cloud feature where the caller names their own cloud destination by design, not this server's storage; only the local-filesystem case (unambiguously this server's own disk/credentials) is confined. New file `test_synthetic_output_uri_confinement.py` (9 tests: absolute path/file:// URI/Windows drive path/traversal all confined; different tenants get different roots; cloud URIs pass through unchanged; unsupported schemes rejected) plus `test_generate_job_runs_to_completion` updated to read the real on-disk location back from the job record instead of asserting on the caller's original (now-bypassed) path. Confirmed non-vacuous: stashed the fix, the new test file failed to import (`_confine_output_uri` didn't exist); restored, 19/19 pass across the three synthetic test files. Ruff clean (`E,F,I,W`, CI's actual ignore list).
-- **Fix:** PR to follow.
+- **Fix:** new `_confine_output_uri` rejects unsupported schemes and, for a local path/`file://` URI, rewrites it to `<synthetic-output-root>/<tenant_slug>/<job_id>/<requested-basename>` before it ever reaches `SyntheticDatasetWriter` — the caller can request a name, never a location. `job_id` (already generated per request) keeps each call's output unique so repeated/concurrent calls with the same requested basename never collide or silently reuse a previous run's files (caught by an initial version of this fix breaking `test_generate_job_runs_to_completion` — n_files came back 0 because a second confined path collided with a first run's leftover state; adding `job_id` to the confined path fixed it). **Deliberately NOT restricted: `s3://`/`gs://`/`abfs://` URIs pass through unchanged** — this is an enterprise bring-your-own-cloud feature where the caller names their own cloud destination by design, not this server's storage; only the local-filesystem case (unambiguously this server's own disk/credentials) is confined. New file `test_synthetic_output_uri_confinement.py` (9 tests: absolute path/file:// URI/Windows drive path/traversal all confined; different tenants get different roots; cloud URIs pass through unchanged; unsupported schemes rejected) plus `test_generate_job_runs_to_completion` updated to read the real on-disk location back from the job record instead of asserting on the caller's original (now-bypassed) path. Confirmed non-vacuous: stashed the fix, the new test file failed to import (`_confine_output_uri` didn't exist); restored, 19/19 pass across the three synthetic test files. Ruff clean (`E,F,I,W`, CI's actual ignore list). PR #391.
 
 ## BUG-059: Password-mode login (POST /auth/token) leaks whether an email is registered via a timing side channel
 - **Status:** fixed
@@ -1192,8 +1191,7 @@ the whole subsystem every time.
 - **Severity:** degrades-accuracy (user enumeration) — no direct credential compromise.
 - **Root cause:** `auth.py:113` (`_issue_token_password`): the "user not found"/no-password-hash path returns immediately after a bare SELECT; the "wrong password" path always falls through to `verify_password` → `bcrypt.checkpw` (tens-to-hundreds of ms). Both raise the identical `AuthenticationError("Invalid credentials")`, but response latency distinguishes them. No dummy-hash constant-time comparison exists for the not-found path.
 - **Caused by:** none — pre-existing.
-- **Fix:** a module-level `_DUMMY_PASSWORD_HASH` (a real bcrypt hash of a random, unknown value, computed once at import time) is now compared against on the not-found path, so it runs exactly one bcrypt comparison — the same cost as a real user's wrong-password rejection. New test `test_nonexistent_user_still_runs_a_bcrypt_comparison` proves this structurally (spies on `shared.password.verify_password`, asserts exactly one call on both the not-found and wrong-password paths) rather than via a flaky wall-clock timing assertion. Confirmed non-vacuous: stashed the fix, the new test failed with `AssertionError` (0 calls on the not-found path, as before); restored, 14/14 pass. Ruff clean (`E,F,I,W`, CI's actual ignore list).
-- **Fix:** PR to follow.
+- **Fix:** a module-level `_DUMMY_PASSWORD_HASH` (a real bcrypt hash of a random, unknown value, computed once at import time) is now compared against on the not-found path, so it runs exactly one bcrypt comparison — the same cost as a real user's wrong-password rejection. New test `test_nonexistent_user_still_runs_a_bcrypt_comparison` proves this structurally (spies on `shared.password.verify_password`, asserts exactly one call on both the not-found and wrong-password paths) rather than via a flaky wall-clock timing assertion. Confirmed non-vacuous: stashed the fix, the new test failed with `AssertionError` (0 calls on the not-found path, as before); restored, 14/14 pass. Ruff clean (`E,F,I,W`, CI's actual ignore list). PR #392.
 
 ## BUG-060: GET /databases/test/{db_type} relays the downstream service's JSON body as an HTTP 200 regardless of its actual upstream status code, and never forwards the caller's Authorization header
 - **Status:** fixed
@@ -1218,3 +1216,105 @@ the whole subsystem every time.
 - **Root cause:** `webhooks.py:131-139` (`update_webhook`) passes `req.model_dump(exclude_none=True)` straight into `webhook_dispatcher.update()` with no equivalent check to POST's `req.url.startswith(("http://","https://"))` (`webhooks.py:87-88`). `WebhookUpdateRequest.url` is a plain `Optional[str]` with no validator.
 - **Caused by:** none — pre-existing.
 - **Fix:** closed as a side effect of BUG-054's fix, not a separate PR — `update_webhook` now runs the same `_is_ssrf_safe_url` check (which also rejects non-http(s) schemes) whenever `req.url` is set. Covered by BUG-054's `test_update_webhook_rejects_internal_url`.
+
+## BUG-063: Concurrent first-touch of a new UASR source_id loses one side's baseline/schema write (lost update)
+- **Status:** open
+- **Found by:** ultracode audit of `aurabackend/uasr/` (`core-service` + related groups), 2026-09-14.
+- **Severity:** blocks-feature — silently defeats drift detection for the affected source.
+- **Root cause:** `state_store.py:167` (`InMemoryStateStore.load`) returns a brand-new, un-inserted `SourceState()` for any `source_id` not yet present in `self._data` — insertion only happens in `save()`. `service.py`'s HTTP handlers (`ingest_batch` line 596, `heal_batch` line 717, `register_baseline` lines 819/834, `declare_schema_intent` line 877) all offload the load-mutate-save sequence via `asyncio.to_thread`, which runs on real OS threads from the default `ThreadPoolExecutor` — genuinely concurrent, not serialized by the event loop. Two near-simultaneous first-touches of the same new source (e.g. a pipeline's first ingest racing an operator's `POST /uasr/baseline`) each mutate their own private `SourceState` object; whichever `save()` runs last silently overwrites the other, permanently losing that call's baseline/schema write with no error surfaced.
+- **Caused by:** none — pre-existing; the `asyncio.to_thread` offload (added to satisfy the single-worker non-blocking rule) is what turns this from a hypothetical race into a real cross-thread one.
+- **Fix:** pending.
+
+## BUG-064: Unsynchronized load-mutate-save on an existing source's drift state allows a lost update under concurrent detect() calls
+- **Status:** open
+- **Found by:** ultracode audit of `aurabackend/uasr/` (`detection-drift` group), 2026-09-14.
+- **Severity:** degrades-accuracy — silently drops KL-history samples, skewing the adaptive threshold.
+- **Root cause:** `drift_detector.py:302` (`detect`) loads `SourceState`, mutates `kl_history`/schema in place, then saves — no lock across the read-modify-write. Neither `InMemoryStateStore.save` (plain dict assignment) nor `RedisStateStore.save` (unconditional SET, no CAS/version check) guards against a second concurrent `detect()` for the *same, already-existing* `source_id` (e.g. an HTTP request racing the `mapek_worker` Kafka consumption loop, or duplicate-delivery retries), both dispatched via `asyncio.to_thread`. The same unguarded-mutation pattern applies to `martingale.py:419`'s `self._martingale[source_id][column] += increment` and `conformal_martingale.py`'s `ConformalDriftMartingale.update`.
+- **Caused by:** none — pre-existing; related to BUG-063 (same missing per-source lock across load/mutate/save), but distinct in that this fires on sources that already exist, not just on first-touch.
+- **Fix:** pending.
+
+## BUG-065: Cross-source-heal re-baseline path calls the DriftDetector synchronously, blocking the event loop under RedisStateStore
+- **Status:** open
+- **Found by:** ultracode audit of `aurabackend/uasr/` (`mapek-loop` + `state-config-metrics` groups, found independently by both — same bug), 2026-09-14.
+- **Severity:** blocks-feature (availability) — stalls the whole single-worker UASR process for every tenant.
+- **Root cause:** `mapek_worker.py:554-556`, in the cross-source auto-heal branch of the Kafka consume loop, calls `self._detector._compute_distributions(batch)` and `self._detector.register_baseline(batch.source_id, dists)` directly — no `asyncio.to_thread`. `register_baseline` (`drift_detector.py:148-179`) performs a `StateStore.load()`/`save()` round trip, which under `RedisStateStore` (a real, selectable backend per `runtime_config.py`) is a synchronous, blocking `redis.Redis` client call. Every other call to `detect`/`register_baseline`/`baseline_distance`/`has_baseline` in this file and in `service.py`'s HTTP handlers is wrapped in `asyncio.to_thread` (one with an explicit comment citing exactly this Redis-blocking risk) — this call site is not.
+- **Caused by:** none — pre-existing.
+- **Fix:** pending.
+
+## BUG-066: _knowledge_update's post-heal re-baseline calls DriftDetector.register_baseline without asyncio.to_thread
+- **Status:** open
+- **Found by:** ultracode audit of `aurabackend/uasr/` (`mapek-loop` + `state-config-metrics` groups, found independently by both — same bug), 2026-09-14.
+- **Severity:** blocks-feature (availability) — the more commonly hit of the two register_baseline blocking-call sites (fires on every DEPLOYED+batch_healed recovery, not just cross-source heals).
+- **Root cause:** `mapek_worker.py:1073` (`_knowledge_update`, an `async def` awaited directly from `_run_forever`) calls `self._detector._compute_distributions(batch)` and `self._detector.register_baseline(batch.source_id, dists)` with no `asyncio.to_thread` wrapper. Same blocking-Redis hazard as BUG-065 — under `UASR_STATE_BACKEND=redis`, this stalls the sole event loop (and every other tenant's concurrent request) for the duration of the synchronous Redis `SET`.
+- **Caused by:** none — pre-existing; same bug class as BUG-065, different call site.
+- **Fix:** pending.
+
+## BUG-067: Kafka consumer (and DuckDB connection) leak if MAPEKWorker.start() fails after consumer.start() succeeds
+- **Status:** open
+- **Found by:** ultracode audit of `aurabackend/uasr/` (`mapek-loop` group), 2026-09-14.
+- **Severity:** degrades-accuracy (resource leak, availability risk under sustained retry) — leaks one Kafka consumer connection per retry on a persistent failure.
+- **Root cause:** `mapek_worker.py:300-336` (`start`) guards `consumer.start()` itself with a try/except that calls `consumer.stop()` on failure (lines 314-327), but the two statements immediately after — `self._open_duckdb()` (line 330) and `Path(parquet_dir).mkdir()` (line 331) — have no equivalent guard. If either raises (bad `duckdb_path`/permissions, read-only or full `parquet_dir`), `self._running` is never set `True`, so a later `stop()` call is a no-op (`if not self._running: return`, line 339) and the already-started `AIOKafkaConsumer` is never closed. `service._mapek_worker_bootstrap` retries this construction on an infinite backoff loop, so a persistent failure at this step leaks one Kafka consumer (background tasks/sockets) per retry indefinitely.
+- **Caused by:** none — pre-existing.
+- **Fix:** pending.
+
+## BUG-068: UASR DuckDB table name f-string-interpolated into DDL/DML instead of using shared/sql_identifiers.py's quote_identifier
+- **Status:** open
+- **Found by:** ultracode audit of `aurabackend/uasr/` (`mapek-loop` group), 2026-09-14.
+- **Severity:** cosmetic today, real risk once `table_name` becomes configurable — no live exploit (hardcoded default), but the escaping is genuinely wrong.
+- **Root cause:** `mapek_worker.py:851` (`_write_duckdb_atomic`) splices `self._cfg.table_name` directly into `CREATE TABLE IF NOT EXISTS "{tbl}" ...` and `INSERT INTO "{tbl}" BY NAME ...` via an f-string with hand-rolled double-quotes, instead of `shared/sql_identifiers.py`'s `quote_identifier` — the one shared quoter `backend.md`/`security.md` mandate for every identifier spliced into SQL. `table_name` only ever takes the hardcoded default `"uasr_events"` today, so there is no live exploit, but a value containing a double-quote would break out of the identifier the moment this becomes configurable (env var, per-tenant table).
+- **Caused by:** none — pre-existing.
+- **Fix:** pending.
+
+## BUG-069: Semantic-drift embedding uses Python's randomized built-in hash() — breaks across process restarts and RedisStateStore replicas
+- **Status:** open
+- **Found by:** ultracode audit of `aurabackend/uasr/` (`detection-drift` group), 2026-09-14.
+- **Severity:** blocks-feature — silently defeats the semantic-drift channel's cross-replica design, with no error/log signal.
+- **Root cause:** `drift_detector.py:902-904` (`_compute_batch_embedding`) feature-hashes categorical values with Python's built-in `hash(str)`, whose output is randomized per-process (PEP 456 / `PYTHONHASHSEED`) unless explicitly pinned — `idx = abs(h) % dim` places the feature in a different embedding-vector dimension in every process. `register_reference_embedding()` persists this vector via `StateStore`, including `RedisStateStore` (whose own docstring states it is "shared across worker replicas ... resolves the cross-replica cold-miss"), and `_check_semantic_drift()` later compares it via cosine distance. A baseline registered by one process and compared against a batch embedded by a different process (a second replica, or the same replica after a restart) shares almost no dimensions by construction — cosine distance is effectively random regardless of actual drift, either firing spurious CRITICAL alarms constantly or masking genuine semantic drift inside the noise.
+- **Caused by:** none — pre-existing.
+- **Fix:** pending — replace `hash(token)` with a stable hash (`hashlib.md5`/`sha256` truncated to an int, or `zlib.crc32`).
+
+## BUG-070: CausalRLEvaluator.select_winner runs CPU-bound shim evaluation and sandbox code execution synchronously on the event loop
+- **Status:** open
+- **Found by:** ultracode audit of `aurabackend/uasr/` (`detection-drift` group), 2026-09-14. Adversarial verify: 2/3 confirmed, 1/3 refuted.
+- **Severity:** blocks-feature (availability) — only when `use_causal_rl_evaluator` is enabled, but blocks the whole worker for every tenant when it triggers.
+- **Root cause:** `causal_rl_evaluator.py:173-183` (`select_winner`, an `async def`) calls `cand.transform(...)` (executes LLM-generated shim code via `recovery_loop.py`'s `_sandbox_execute`) and `drift_score_fn(...)` (wraps `DriftDetector.detect`) directly, with no `asyncio.to_thread` anywhere in the call chain — unlike `service.py`'s three HTTP handlers, which explicitly wrap the identical `DriftDetector.detect` call in `asyncio.to_thread` with a comment noting it "can hit a blocking Redis round-trip" and is CPU-heavy. Whenever the causal-RL evaluator path is enabled and a drift event collects multiple validated shim candidates, every candidate runs sandbox execution plus two full `detect()` passes synchronously on the single uvicorn worker's event loop.
+- **Caused by:** none — pre-existing.
+- **Fix:** pending.
+
+## BUG-071: Adaptive ζ floor is half the documented default, doubling detector sensitivity on low-variance sources versus the documented design
+- **Status:** open
+- **Found by:** ultracode audit of `aurabackend/uasr/` (`detection-drift` group), 2026-09-14.
+- **Severity:** cosmetic (documentation/behavior mismatch, produces extra false-positive drift alerts on stable sources) — not a correctness-critical path.
+- **Root cause:** `drift_detector.py`'s `_dynamic_threshold` docstring (line 749) states "ζ = mean(D_KL) + 2·std(D_KL), floored at the default", but the implementation (line 759) floors it at `self._default_zeta * 0.5` — half the stated value — once 5+ KL samples exist. For a source whose real KL noise floor is very low, the effective ζ can settle as low as `default_zeta/2` instead of never dropping below `default_zeta`, making the detector up to 2x more sensitive than documented once past cold-start.
+- **Caused by:** none — pre-existing.
+- **Fix:** pending.
+
+## BUG-072: Cross-source shim borrowing has no tenant/org scoping — one tenant's shim can be executed against another tenant's data
+- **Status:** open
+- **Found by:** ultracode audit of `aurabackend/uasr/` (`actuation-routing` group), 2026-09-14.
+- **Severity:** blocks-feature (cross-tenant data/logic leakage) — an unattended background MAPE-K action, no caller/auth context involved at all.
+- **Root cause:** `cross_source_heal.py:62` (`attempt_cross_source_heal`) borrows a "sibling" source's DEPLOYED shim purely by `drift_type` + recency, via `HealingMetricTracker.find_recent_deployed_shim()` (`metrics.py:280-309`), which filters only on `drift_type`, `exclude_source_id`, and a time window — there is no `tenant_id`/`org_id` anywhere in `RecoveryEvent`, `BatchPayload`, or `DriftDetectionResult` (`models.py`). Nothing stops a shim generated from Tenant A's source/schema being selected as a candidate and executed (via `run_with_candidate_shim`) against Tenant B's batch the moment both tenants' sources drift with the same `drift_type` within `correlation_window_seconds` of each other. This is distinct from the already-documented "KNOWN GAP" comment in `service.py` (which is about an authenticated caller's HTTP request not being checked against the source they own) — this is a background action with no caller/auth context at all.
+- **Caused by:** none — pre-existing.
+- **Fix:** pending.
+
+## BUG-073: Unescaped column names spliced into generated Python shim source — code injection via drift_vector
+- **Status:** open
+- **Found by:** ultracode audit of `aurabackend/uasr/` (`actuation-routing` group), 2026-09-14.
+- **Severity:** blocks-feature (code injection) — an upstream/attacker-influenced schema field can inject arbitrary Python into a shim before it ever reaches sandbox validation.
+- **Root cause:** every template-shim generator in `actuator_agent.py:152` (`_schema_shim` type_change/removed/added/rename, `_statistical_shim` rescale/clip) splices `col` — a column name taken directly from `drift_vector`, itself derived from an upstream (potentially external/influenced) data source's schema — into the generated Python source via bare f-string interpolation like `f'if "{col}" in row:'`, with no quoting/escaping. Unlike `shared/sql_identifiers.py`'s `quote_identifier` used for the equivalent SQL-splicing risk elsewhere in the codebase, there is no equivalent guard here. A column name containing a `"` or backslash breaks out of the Python string literal in the generated `def transform(rows):` source, letting arbitrary Python statements be injected before the "sandbox" ever validates them — i.e. the sandbox validates attacker-chosen code, not just a data transform.
+- **Caused by:** none — pre-existing.
+- **Fix:** pending.
+
+## BUG-074: distributed_repair's _prune_expired() races when called outside the admission lock, corrupting the per-source active-lease counter
+- **Status:** open
+- **Found by:** ultracode audit of `aurabackend/uasr/` (`actuation-routing` group), 2026-09-14.
+- **Severity:** degrades-accuracy — silently defeats `max_per_source` fleet-wide fairness; the corruption persists and never self-corrects.
+- **Root cause:** `distributed_repair.py:184-196` (`_prune_expired`) reads the expired-token set, decrements the per-source `hincrby` counter for each, then removes them from the sorted set — three separate non-atomic Redis round-trips. It is called both under the admission lock inside `_try_admit()` (line 239) and, critically, unlocked directly from `active_count()` (line 172), which any caller (a health/status endpoint, a monitoring loop) can invoke concurrently with an in-flight `_try_admit()` or another `active_count()` call. Two concurrent callers can both read the same expired token before either removes it, and both `hincrby` the same source's counter down — double-decrementing (or driving negative) a value `_try_admit()`'s per-source cap check depends on, silently defeating `max_per_source` for that source with no self-correction.
+- **Caused by:** none — pre-existing.
+- **Fix:** pending.
+
+## Refuted (adversarial-verify, 3/3 skeptics refuted — filed for the record, no fix needed)
+
+**recovery_persistence.py:100 generator-abandonment claim** — a reviewer flagged the default (`return_row=False`) branch of `persist_recovery_row` as using the same abandoned-`get_session()`-generator pattern the module's own docstring documents as causing "database is locked". All 3 verifiers refuted: the default branch's `async for db in get_session(): ...; break` pattern was confirmed NOT to reproduce the documented failure the way the `return_row=True` branch's now-fixed pattern did — see per-agent reasoning in the workflow journal for the specific mechanism. No entry filed as open; recorded here only so a future re-audit doesn't re-flag it without checking this note first.
+
+**numeric_heal_controller.py:966 missing-approval-gate claim** — a reviewer flagged `NumericHealController`'s verified-auto-heal commit path (opt-in via `UASR_NUMERIC_AUTO_HEAL`, default off) as bypassing the S41/DSR-015 human-approval gate that every other UASR repair path goes through. All 3 verifiers refuted: the sequential-verification gate (`k_confirm` consecutive canary confirmations) was judged to be the intended, documented safety mechanism for this specific opt-in numeric-correction feature, not a bypass of the schema/template-shim approval gate (which governs a different class of repair). No entry filed as open; recorded here only so a future re-audit doesn't re-flag it without checking this note first.
