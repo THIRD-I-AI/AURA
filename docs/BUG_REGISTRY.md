@@ -1313,6 +1313,14 @@ the whole subsystem every time.
 - **Caused by:** none — pre-existing.
 - **Fix:** pending.
 
+## BUG-075: js-yaml CVE-2026-84375 (CPU-DoS via YAML merge keys) — transitive dev dependency below the already-patched override floor
+- **Status:** fixed
+- **Found by:** GitHub Dependabot alert #74, 2026-09-14 (flagged on every backend PR push throughout this session's `remote:` output).
+- **Severity:** cosmetic (dev-only dependency, not shipped to production; requires attacker-controlled YAML fed into build-time tooling — eslint config parsing or `openapi-typescript`'s spec parsing — to trigger the CPU exhaustion, not a runtime attack surface of the deployed app).
+- **Root cause:** `frontend/package.json`'s `overrides` block already pinned `js-yaml` (to close earlier transitive-dep alerts) but at `^4.2.0`, a range that still permits the vulnerable `4.3.1` actually resolved in `package-lock.json` (pulled in transitively via `eslint`'s `@eslint/eslintrc` and `openapi-typescript`'s `@redocly/openapi-core`). GHSA-2883-xcg3-v3hh / CVE-2026-84375: `maxTotalMergeKeys` doesn't count empty mapping merge sources, so a crafted YAML doc with many empty-mapping merges consumes CPU without hitting the configured limit (patched in `4.3.2`/`3.15.2`).
+- **Caused by:** none — pre-existing gap in an already-present override (the override existed for a different, earlier alert and was never bumped when this CVE was published against versions already permitted by its range).
+- **Fix:** bumped the `js-yaml` override from `^4.2.0` to `^4.3.2` in `frontend/package.json`, ran `npm install` to re-resolve (`package-lock.json` diff is exactly the one dependency: `4.3.1` → `4.3.2`), and `npm audit` now reports 0 vulnerabilities (was 1 high). Verified no regression: `npm run build` (real typecheck CI runs) succeeds, `npx eslint src --max-warnings 0` clean, `npx vitest run` 311/311 pass across 67 files.
+
 ## Refuted (adversarial-verify, 3/3 skeptics refuted — filed for the record, no fix needed)
 
 **recovery_persistence.py:100 generator-abandonment claim** — a reviewer flagged the default (`return_row=False`) branch of `persist_recovery_row` as using the same abandoned-`get_session()`-generator pattern the module's own docstring documents as causing "database is locked". All 3 verifiers refuted: the default branch's `async for db in get_session(): ...; break` pattern was confirmed NOT to reproduce the documented failure the way the `return_row=True` branch's now-fixed pattern did — see per-agent reasoning in the workflow journal for the specific mechanism. No entry filed as open; recorded here only so a future re-audit doesn't re-flag it without checking this note first.
