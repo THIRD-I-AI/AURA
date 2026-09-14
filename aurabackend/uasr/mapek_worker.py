@@ -311,25 +311,39 @@ class MAPEKWorker:
             enable_auto_commit=False,
             value_deserializer=lambda v: json.loads(v.decode("utf-8")),
         )
+        duckdb_con = None
         try:
             await consumer.start()
+            duckdb_con = self._open_duckdb()
+            Path(self._cfg.parquet_dir).mkdir(parents=True, exist_ok=True)
         except Exception:
-            # start() can allocate sockets/background tasks before the
-            # bootstrap handshake itself fails (e.g. this box's Kafka-
-            # unreachable case, retried every 60s forever by
+            # BUG-067: consumer.start() can allocate sockets/background tasks
+            # before the bootstrap handshake itself fails (e.g. this box's
+            # Kafka-unreachable case, retried every 60s forever by
             # service._mapek_worker_bootstrap) -- stop() releases those
-            # before we drop the reference, or aiokafka's own finalizer
-            # logs "Unclosed AIOKafkaConsumer" on every single retry.
+            # before we drop the reference, or aiokafka's own finalizer logs
+            # "Unclosed AIOKafkaConsumer" on every single retry. The same
+            # cleanup now also covers a failure in _open_duckdb()/mkdir()
+            # AFTER the consumer started: self._running/self._consumer are
+            # only assigned once every step below has succeeded, so an
+            # exception here previously left the consumer already-started
+            # but unreachable (self._running still False makes stop() a
+            # no-op) -- and _mapek_worker_bootstrap's retry loop constructs
+            # a brand-new MAPEKWorker each attempt, abandoning this
+            # instance (and its live consumer) permanently.
+            if duckdb_con is not None:
+                try:
+                    duckdb_con.close()
+                except Exception:
+                    pass
             try:
                 await consumer.stop()
             except Exception:
                 pass
             raise
+
         self._consumer = consumer
-
-        self._duckdb_con = self._open_duckdb()
-        Path(self._cfg.parquet_dir).mkdir(parents=True, exist_ok=True)
-
+        self._duckdb_con = duckdb_con
         self._running = True
         self._stop_signal.clear()
         self._task = asyncio.create_task(self._run_forever(), name=f"uasr-mapek-{self._cfg.source_id}")

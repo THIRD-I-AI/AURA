@@ -117,3 +117,113 @@ async def test_worker_can_still_start_after_a_failed_attempt(monkeypatch, tmp_pa
         assert worker._running is True
     finally:
         await worker.stop()
+
+
+# ── BUG-067: leak when failure happens AFTER consumer.start() succeeds ────
+#
+# The cleanup above (BUG-046) only guarded consumer.start() itself. If
+# _open_duckdb() or Path(parquet_dir).mkdir() raised immediately afterward
+# (bad duckdb_path/permissions, unwritable or full parquet_dir),
+# self._running was never set True, so a later stop() was a no-op
+# (`if not self._running: return`) and the already-started consumer leaked.
+# service._mapek_worker_bootstrap constructs a brand-new MAPEKWorker on
+# every retry, so that leaked consumer is never reachable again.
+
+class _OKConsumerThatStops:
+    def __init__(self, *args, **kwargs):
+        self.stop_called = False
+
+    async def start(self) -> None:
+        pass
+
+    async def stop(self) -> None:
+        self.stop_called = True
+
+
+@pytest.mark.asyncio
+async def test_consumer_is_stopped_if_duckdb_open_fails_after_consumer_starts(
+    monkeypatch, tmp_path,
+):
+    created: list[_OKConsumerThatStops] = []
+
+    def _factory(*args, **kwargs):
+        c = _OKConsumerThatStops(*args, **kwargs)
+        created.append(c)
+        return c
+
+    monkeypatch.setattr(mapek_worker, "AIOKafkaConsumer", _factory)
+    monkeypatch.setattr(mapek_worker, "_AIOKAFKA_AVAILABLE", True)
+
+    def _boom(self):
+        raise RuntimeError("simulated bad duckdb_path")
+
+    monkeypatch.setattr(MAPEKWorker, "_open_duckdb", _boom)
+
+    cfg = MAPEKConfig(
+        source_id="src",
+        duckdb_path=str(tmp_path / "lake.duckdb"),
+        parquet_dir=str(tmp_path / "parquet"),
+    )
+    worker = MAPEKWorker(cfg)
+
+    with pytest.raises(RuntimeError, match="simulated bad duckdb_path"):
+        await worker.start()
+
+    assert len(created) == 1
+    assert created[0].stop_called, (
+        "consumer.start() succeeded but the already-started consumer was "
+        "never stop()'d when _open_duckdb() failed afterward -- the exact "
+        "BUG-067 leak: stop() is a no-op because self._running was never "
+        "set True, and the retry loop abandons this instance for a new one"
+    )
+    assert worker._consumer is None
+    assert worker._running is False
+
+
+@pytest.mark.asyncio
+async def test_duckdb_connection_is_closed_if_mkdir_fails_after_duckdb_opens(
+    monkeypatch, tmp_path,
+):
+    """The duckdb connection itself must also be released if the LATER
+    mkdir step fails -- not just the Kafka consumer."""
+    created: list[_OKConsumerThatStops] = []
+
+    def _factory(*args, **kwargs):
+        c = _OKConsumerThatStops(*args, **kwargs)
+        created.append(c)
+        return c
+
+    monkeypatch.setattr(mapek_worker, "AIOKafkaConsumer", _factory)
+    monkeypatch.setattr(mapek_worker, "_AIOKAFKA_AVAILABLE", True)
+
+    closed = {"value": False}
+
+    class _FakeDuckDBCon:
+        def close(self):
+            closed["value"] = True
+
+    monkeypatch.setattr(MAPEKWorker, "_open_duckdb", lambda self: _FakeDuckDBCon())
+
+    class _FakePath:
+        def __init__(self, *a, **k):
+            pass
+
+        def mkdir(self, *a, **k):
+            raise OSError("simulated read-only parquet_dir")
+
+    monkeypatch.setattr(mapek_worker, "Path", _FakePath)
+
+    cfg = MAPEKConfig(
+        source_id="src",
+        duckdb_path=str(tmp_path / "lake.duckdb"),
+        parquet_dir=str(tmp_path / "parquet"),
+    )
+    worker = MAPEKWorker(cfg)
+
+    with pytest.raises(OSError, match="simulated read-only parquet_dir"):
+        await worker.start()
+
+    assert created[0].stop_called
+    assert closed["value"], "the duckdb connection opened just before the failing mkdir() was never closed"
+    assert worker._duckdb_con is None
+    assert worker._running is False
