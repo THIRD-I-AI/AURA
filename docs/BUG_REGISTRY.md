@@ -1124,12 +1124,13 @@ This is the process, not a suggestion:
 - **Fix:** pending.
 
 ## BUG-054: POST /webhooks accepts any http(s) URL with no SSRF filtering; the dispatcher fires real outbound requests including an on-demand test endpoint that returns the response as an oracle
-- **Status:** open
+- **Status:** fixed
 - **Found by:** same ultracode audit as BUG-050.
 - **Severity:** blocks-feature (critical) — SSRF against internal infrastructure / cloud metadata endpoints (e.g. `169.254.169.254`), with a same-request scan oracle via `/webhooks/{id}/test`.
 - **Root cause:** `webhooks.py:87` validates only `req.url.startswith(("http://","https://"))` — no denylist/allowlist of loopback, link-local, or private-CIDR hosts, no DNS-rebind protection. `WebhookDispatcher._deliver` (`shared/webhook_dispatcher.py:316-343`) does a bare `httpx.AsyncClient.post(sub.url, ...)` from the trusted backend's network position. `fire_test` (`webhook_dispatcher.py:386-401`) performs the request synchronously and returns `http_status`/`error` in the JSON response (`webhooks.py:149-154`), giving a caller a same-request oracle to scan/fingerprint internal hosts. Tenant scoping of the webhook row itself is correct and irrelevant to this — the outbound request always originates from the backend regardless of which tenant registered it.
 - **Caused by:** none — pre-existing.
-- **Fix:** pending.
+- **Fix:** new `_is_ssrf_safe_url` (`webhooks.py`) parses the URL, resolves the hostname (or parses it as a literal IP directly, skipping DNS), and rejects it if any candidate address is private/loopback/link-local/reserved/multicast/unspecified (Python's `ipaddress` module). Applied to both `POST /webhooks` (replacing the old scheme-only check) and `PATCH /webhooks/{id}` (which previously had no URL validation at all — see BUG-062, closed as a side effect of this fix rather than a separate PR, since properly closing BUG-054 requires validating both paths). The DNS lookup runs via `asyncio.to_thread` (blocking `socket.getaddrinfo`, backend.md). New tests: 5 parametrized loopback/link-local/private/IPv6-loopback/metadata URLs rejected on create, one accepted (public IP), one on update. **Residual gap, documented not silently accepted:** this is registration-time validation only — no DNS-rebind protection (a hostname resolving safely at registration time could re-resolve to a private address before actual delivery). Closing that fully would require re-validating at dispatch time inside `shared/webhook_dispatcher.py`, out of scope for this fix. Confirmed non-vacuous: stashed the fix, all 6 new rejection tests failed exactly as expected (dispatcher was called); restored, 57/57 pass in the two webhook test files. Ruff clean (`E,F,I,W`, CI's actual ignore list).
+- **Fix:** PR to follow.
 
 ## BUG-055: POST /upload writes the uploaded file to storage synchronously inside the async handler, with no asyncio.to_thread offload
 - **Status:** open
@@ -1188,9 +1189,9 @@ This is the process, not a suggestion:
 - **Fix:** pending.
 
 ## BUG-062: PATCH /webhooks/{id} can overwrite `url` with any string, skipping the http(s)-scheme validation POST /webhooks enforces
-- **Status:** open
+- **Status:** fixed
 - **Found by:** same ultracode audit as BUG-050.
 - **Severity:** cosmetic (validation inconsistency) — practical impact limited by httpx rejecting unsupported schemes at delivery time.
 - **Root cause:** `webhooks.py:131-139` (`update_webhook`) passes `req.model_dump(exclude_none=True)` straight into `webhook_dispatcher.update()` with no equivalent check to POST's `req.url.startswith(("http://","https://"))` (`webhooks.py:87-88`). `WebhookUpdateRequest.url` is a plain `Optional[str]` with no validator.
 - **Caused by:** none — pre-existing.
-- **Fix:** pending.
+- **Fix:** closed as a side effect of BUG-054's fix, not a separate PR — `update_webhook` now runs the same `_is_ssrf_safe_url` check (which also rejects non-http(s) schemes) whenever `req.url` is set. Covered by BUG-054's `test_update_webhook_rejects_internal_url`.

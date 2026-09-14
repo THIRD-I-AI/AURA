@@ -21,7 +21,10 @@ Routes
 from __future__ import annotations
 
 import asyncio
+import ipaddress
+import socket
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlparse
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
@@ -70,6 +73,40 @@ _KNOWN_EVENTS = [
 ]
 
 
+def _is_ssrf_safe_url(url: str) -> bool:
+    """BUG-054: reject a webhook URL whose host is (or resolves to) a
+    loopback/link-local/private/reserved address.
+
+    Without this, any authenticated tenant could register a URL like
+    169.254.169.254 (cloud instance metadata) or 127.0.0.1:<internal-port>
+    and use the backend as an SSRF proxy -- both the recurring dispatcher
+    (shared/webhook_dispatcher.py) and POST /webhooks/{id}/test fire real
+    outbound requests from the trusted backend's network position.
+    """
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        return False
+    host = parsed.hostname
+    if not host:
+        return False
+
+    try:
+        ip = ipaddress.ip_address(host)
+        candidates = [ip]
+    except ValueError:
+        try:
+            infos = socket.getaddrinfo(host, None)
+        except socket.gaierror:
+            return False
+        candidates = [ipaddress.ip_address(info[4][0]) for info in infos]
+
+    return not any(
+        ip.is_private or ip.is_loopback or ip.is_link_local
+        or ip.is_reserved or ip.is_multicast or ip.is_unspecified
+        for ip in candidates
+    )
+
+
 def _serialize(sub: WebhookSubscription) -> Dict[str, Any]:
     d = sub.__dict__.copy()
     if d.get("secret"):
@@ -84,8 +121,8 @@ def _serialize(sub: WebhookSubscription) -> Dict[str, Any]:
 
 @router.post("/webhooks")
 async def create_webhook(req: WebhookCreateRequest, request: Request) -> Dict[str, Any]:
-    if not req.url.startswith(("http://", "https://")):
-        raise HTTPException(status_code=400, detail="url must be http(s)")
+    if not await asyncio.to_thread(_is_ssrf_safe_url, req.url):
+        raise HTTPException(status_code=400, detail="url must be a public http(s) address")
     sub = await asyncio.to_thread(
         webhook_dispatcher.register,
         workspace_id=current_workspace_id(request),
@@ -130,6 +167,8 @@ async def get_webhook(sub_id: str, request: Request) -> Dict[str, Any]:
 
 @router.patch("/webhooks/{sub_id}")
 async def update_webhook(sub_id: str, req: WebhookUpdateRequest, request: Request) -> Dict[str, Any]:
+    if req.url is not None and not await asyncio.to_thread(_is_ssrf_safe_url, req.url):
+        raise HTTPException(status_code=400, detail="url must be a public http(s) address")
     sub = await asyncio.to_thread(
         webhook_dispatcher.update,
         sub_id, current_workspace_id(request), **req.model_dump(exclude_none=True),
