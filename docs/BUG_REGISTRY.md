@@ -45,6 +45,21 @@ This is the process, not a suggestion:
 
 ---
 
+## Audit coverage
+
+Tracks the last commit SHA each subsystem received a dedicated ultracode
+(multi-agent review + adversarial-verify) audit at, per the ironclad-
+hardening loop's rotation (`api_gateway routers` → `uasr` → `pipeline` →
+`counterfactual_service` → `frontend` → `shared/security-sensitive` →
+repeat). A re-run diffs forward from the listed SHA instead of re-reviewing
+the whole subsystem every time.
+
+| Subsystem | Last audited SHA | Date | Findings |
+|---|---|---|---|
+| `api_gateway/routers/` | `c00cbd6` | 2026-09-14 | 13 confirmed (BUG-050..062), 0 refuted — all fixed except BUG-062 (fixed separately) |
+
+---
+
 ## Pre-existing entries (found before this registry existed, backfilled for continuity)
 
 ## BUG-001: RecoveryLoop._validate_shim false-rejects a correct schema-fix shim
