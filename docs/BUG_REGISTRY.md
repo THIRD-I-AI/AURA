@@ -1089,3 +1089,107 @@ This is the process, not a suggestion:
 - **Root cause:** `uasr/service.py:117` — `_RISK_TIERED = os.getenv("UASR_RISK_TIERED", "true")` — default flipped from `false`→`true` earlier this session (DSR-015, `docs/DATA_SUITE_ROADMAP.md`), so a fresh schema-drift batch now returns `status="pending_approval"` instead of `status="deployed"`. `check_uasr_self_heal` (`scripts/verify_live_deployment.py:356`) still hard-asserts `status == "deployed"`, which was correct only under the pre-DSR-015 default. Confirmed directly: `POST /uasr/ingest` on the live box returned exactly `pending_approval` with a real gate reason (`similarity -0.0010 < threshold 0.7500`), not an error — the feature works, the test's expectation is stale.
 - **Caused by:** none against product code (DSR-015 was an intentional, already-shipped decision, not a regression) — but the *test's* assumption needed updating as a direct, foreseeable consequence of that decision. Tracked here rather than silently patched because the discrepancy was only caught by running the live suite.
 - **Fix:** `scripts/verify_live_deployment.py`'s `check_uasr_self_heal` extended to drive the full path instead of accepting the old shortcut: on `pending_approval`, calls `POST /uasr/recovery/{id}/approve` and asserts the returned recovery's status is `deployed`. Re-run live after the fix: 14/14 passed (`live_verify_20260914_013324.md`), `uasr_self_heal` now exercises detection + the S41 approval gate + deployment end-to-end, a stronger check than the original. Tooling-only change, PR to follow.
+
+## BUG-050: Postgres connection-pool cache key excludes the password — any caller who knows a tenant's host/port/database/username (but not the password) is handed the same already-authenticated pool
+- **Status:** open
+- **Found by:** ironclad-hardening loop, iteration 1 — ultracode audit of `aurabackend/api_gateway/routers/` (review + adversarial verify, `wf_4c39bf2d-fe8`), 2026-09-14.
+- **Severity:** blocks-feature (critical) — full authentication bypass and cross-tenant SQL execution.
+- **Root cause:** `queries.py:87-106` (`_pg_pool_key`) hashes only `host`/`port`/`database`/`username`, explicitly excluding `password`. `queries.py:109-137` (`_get_or_create_pg_pool`): once a pool exists under that key, it's returned immediately with no re-check of the caller's supplied password against the pool's actual credentials — password is only used at initial pool creation (`asyncpg.create_pool`). `execute_query_with_insights` (`queries.py:362-411`) unconditionally does `connector.pool = await _get_or_create_pg_pool(connector_config)` then executes the query — no auth of the presented password before reuse. Once one caller creates a pool with real credentials, any later request with the same host/port/database/username and ANY password (including wrong/blank) reuses the identical live pool, persisting until process restart.
+- **Caused by:** none — pre-existing.
+- **Fix:** pending.
+
+## BUG-051: GET /pipeline/download/{filename} has no tenant/ownership check; pipeline output files land in one shared directory under a caller-controlled filename
+- **Status:** open
+- **Found by:** same ultracode audit as BUG-050.
+- **Severity:** blocks-feature (critical) — cross-tenant IDOR, same class as BUG-016/018/019.
+- **Root cause:** `pipelines.py:340-357` (`pipeline_download`) takes only `filename: str`, no `Request`/tenant param, no ownership check — only path-traversal sanitization. `pipeline/engine.py:707-713`'s `_write_file_sink` uses `sink.file_name` (caller-supplied via the pipeline definition) verbatim as the output filename under one shared `data/processed` directory with no per-tenant namespacing. A caller who creates a pipeline with a predictable `file_name` (e.g. `export.csv`) and then hits `GET /pipeline/download/export.csv` receives whichever tenant's pipeline last wrote that name. Untested (`aurabackend/tests` has zero references to `pipeline_download`/`pipeline/download`).
+- **Caused by:** none — pre-existing.
+- **Fix:** pending.
+
+## BUG-052: /etl/execute writes output to one shared, non-tenant-scoped local directory (bypassing the S45 StorageBackend used for reads), and /etl/download/{filename} has no ownership check
+- **Status:** open
+- **Found by:** same ultracode audit as BUG-050.
+- **Severity:** blocks-feature (critical) — cross-tenant IDOR + silently drops the S3-backed persistence guarantee under `AURA_STORAGE_BACKEND=s3`.
+- **Root cause:** `etl.py:327-329` sets `output_dir` to a fixed local path unconditionally, never calling `get_storage_backend()` for the write side (only for reads, per the BUG-035 fix's scope). `destination_filename` defaults (`etl.py:377`) to `{table_name}_transformed` derived only from the uploaded source file's basename — no tenant/workspace id or random component. `etl_download` (`etl.py:452`) takes only `filename: str`, no `Request` param, only path-traversal checks — no ownership check exists to bypass, it's simply absent. Two tenants uploading similarly-named source files collide on the same output filename in the same shared directory; any authenticated caller can then read another tenant's ETL output.
+- **Caused by:** none — pre-existing; BUG-035 fixed the read side only, this is the write/download side never covered.
+- **Fix:** pending.
+
+## BUG-053: ETL's `custom_sql` transform step splices caller-supplied SQL into DuckDB verbatim, and the shared DuckDB connection factory applies no filesystem/network access restriction — bypasses the per-tenant sandboxing enforced for the initial source file
+- **Status:** open
+- **Found by:** same ultracode audit as BUG-050.
+- **Severity:** blocks-feature (critical) — arbitrary local file read (other tenants' uploads, host files) or, with httpfs/S3 configured, network exfiltration.
+- **Root cause:** `etl.py:232-238` splices the `custom_sql` config string verbatim into a CTE with only an optional `{{input}}` substitution — no sanitization or path check. The connection comes from `shared/duckdb_factory.py:16-19`, which calls `get_storage_backend().configure_duckdb(con)`; both the base (`storage/base.py:63-68`, no-op) and S3 (`storage/s3.py:110-121`, installs httpfs only) implementations leave DuckDB's default filesystem/network access fully enabled. The `safe_object_name()`/`StorageBackend` sandboxing applied to `pipeline.source_file` at load time (`etl.py:267-274/331-333`) is never applied to the `custom_sql` step's SQL text. A transform like `{"type":"custom_sql","config":{"sql":"SELECT * FROM read_csv_auto('<path outside tenant>')"}}` executes with full DuckDB privileges.
+- **Caused by:** none — pre-existing.
+- **Fix:** pending.
+
+## BUG-054: POST /webhooks accepts any http(s) URL with no SSRF filtering; the dispatcher fires real outbound requests including an on-demand test endpoint that returns the response as an oracle
+- **Status:** open
+- **Found by:** same ultracode audit as BUG-050.
+- **Severity:** blocks-feature (critical) — SSRF against internal infrastructure / cloud metadata endpoints (e.g. `169.254.169.254`), with a same-request scan oracle via `/webhooks/{id}/test`.
+- **Root cause:** `webhooks.py:87` validates only `req.url.startswith(("http://","https://"))` — no denylist/allowlist of loopback, link-local, or private-CIDR hosts, no DNS-rebind protection. `WebhookDispatcher._deliver` (`shared/webhook_dispatcher.py:316-343`) does a bare `httpx.AsyncClient.post(sub.url, ...)` from the trusted backend's network position. `fire_test` (`webhook_dispatcher.py:386-401`) performs the request synchronously and returns `http_status`/`error` in the JSON response (`webhooks.py:149-154`), giving a caller a same-request oracle to scan/fingerprint internal hosts. Tenant scoping of the webhook row itself is correct and irrelevant to this — the outbound request always originates from the backend regardless of which tenant registered it.
+- **Caused by:** none — pre-existing.
+- **Fix:** pending.
+
+## BUG-055: POST /upload writes the uploaded file to storage synchronously inside the async handler, with no asyncio.to_thread offload
+- **Status:** open
+- **Found by:** same ultracode audit as BUG-050.
+- **Severity:** blocks-feature (availability) — single-uvicorn-worker deployment; blocks every tenant's concurrent request for the write's duration.
+- **Root cause:** `files.py:163` calls `get_storage_backend().write(tenant, safe_name, data)` directly (no `asyncio.to_thread`) inside `async def upload_file`. `LocalBackend.write` (`shared/storage/local.py:34-37`) is a synchronous `p.write_bytes(data)`. The same file already offloads a comparable call correctly (`files.py:252`, `get_file_schema` via `asyncio.to_thread`, with an explanatory comment) — the storage write, the endpoint's primary I/O, was missed.
+- **Caused by:** none — pre-existing.
+- **Fix:** pending.
+
+## BUG-056: POST /upload buffers the entire request body into an unbounded in-memory BytesIO with no server-side size cap
+- **Status:** open
+- **Found by:** same ultracode audit as BUG-050.
+- **Severity:** degrades-accuracy → availability (OOM risk) — the advertised `max_file_size: 25MB` (`files.py:56`) is documentation only; `shared/file_service.py`'s `self.max_file_size` attribute is set but never read/compared anywhere.
+- **Root cause:** `upload_universal`'s read loop (`files.py:143-160`) accumulates chunks into `io.BytesIO()` with no comparison against any maximum. No middleware (CORS/RateLimit/JWTAuth/APIKeyAuth/RequestID/RequestLogging/AuditLog/SecurityHeaders, per `shared/service_factory.py`) inspects `Content-Length` or caps body size.
+- **Caused by:** none — pre-existing.
+- **Fix:** pending.
+
+## BUG-057: /workspaces CRUD (list/create/update/delete) has no tenant scoping at all — one global workspace registry shared by every tenant
+- **Status:** open
+- **Found by:** same ultracode audit as BUG-050.
+- **Severity:** blocks-feature (IDOR) — cross-tenant read of all workspace names/descriptions; brute-forceable `ws_<timestamp_ms>` ids let a caller rename or delete another tenant's workspace record.
+- **Root cause:** `workspaces.py`'s `list_workspaces`/`create_workspace`/`update_workspace`/`delete_workspace` (lines 198/206/224/241) all operate on the module-level `_workspaces_store` keyed only by `id`, never calling `_request_tenant()`/`current_workspace_id()` — the two tenant-scoping helpers defined in the same file for other routers to use. `delete_workspace`'s only guard is against the literal id `"default"`, not ownership.
+- **Caused by:** none — pre-existing.
+- **Fix:** pending.
+
+## BUG-058: POST /synthetic/generate's output_uri is a fully caller-controlled write destination (file://, s3://, gs://, abfs://) with no tenant-path confinement
+- **Status:** open
+- **Found by:** same ultracode audit as BUG-050.
+- **Severity:** blocks-feature (arbitrary write / credential-scoped SSRF).
+- **Root cause:** `GenerateRequest.output_uri` (`synthetic.py:84`) is a plain `str` with no validator/allow-list, passed unmodified to `SyntheticDatasetWriter.generate` (`synthetic.py:128-132`), which resolves it directly via `pafs.FileSystem.from_uri(output_uri)` (`synthetic/writer.py:80-91`) using the process's own filesystem/cloud credentials — no scheme allow-list, no tenant-derived path prefix.
+- **Caused by:** none — pre-existing.
+- **Fix:** pending.
+
+## BUG-059: Password-mode login (POST /auth/token) leaks whether an email is registered via a timing side channel
+- **Status:** open
+- **Found by:** same ultracode audit as BUG-050.
+- **Severity:** degrades-accuracy (user enumeration) — no direct credential compromise.
+- **Root cause:** `auth.py:113` (`_issue_token_password`): the "user not found"/no-password-hash path returns immediately after a bare SELECT; the "wrong password" path always falls through to `verify_password` → `bcrypt.checkpw` (tens-to-hundreds of ms). Both raise the identical `AuthenticationError("Invalid credentials")`, but response latency distinguishes them. No dummy-hash constant-time comparison exists for the not-found path.
+- **Caused by:** none — pre-existing.
+- **Fix:** pending.
+
+## BUG-060: GET /databases/test/{db_type} relays the downstream service's JSON body as an HTTP 200 regardless of its actual upstream status code, and never forwards the caller's Authorization header
+- **Status:** open
+- **Found by:** same ultracode audit as BUG-050.
+- **Severity:** degrades-accuracy — violates backend.md's explicit proxy rule (preserve upstream status code, forward Authorization); silently downgrades a real upstream error into an apparent success for automated callers.
+- **Root cause:** `connections.py:351-362` (`test_database_connection`) does `response = await client.get(...)` and returns `response.json()` directly with no `raise_for_status()`/status inspection, and doesn't accept a `Request` param so it can't forward headers.
+- **Caused by:** none — pre-existing.
+- **Fix:** pending.
+
+## BUG-061: /chat/stream's commander loop runs on the process's shared default ThreadPoolExecutor via run_in_executor(None, ...), and cannot be cancelled once started — risks starving every other blocking call in the single-worker gateway
+- **Status:** open
+- **Found by:** same ultracode audit as BUG-050.
+- **Severity:** blocks-feature (availability) — requires several concurrent/abandoned streams to trigger, but the mechanism is real and unguarded.
+- **Root cause:** `chat.py:690` calls `loop.run_in_executor(None, _worker)`, selecting the loop's shared default `ThreadPoolExecutor` (`min(32, cpu_count()+4)` workers) — the same pool every `asyncio.to_thread` call in the gateway depends on (no custom executor is configured anywhere). `_worker` runs `run_commander` (`agents/commander.py:121`), up to 8 iterations of a synchronous LLM call plus a DuckDB tool execution — genuinely long-running. `_sse()`'s `finally: worker.cancel()` (`chat.py:700`) is a no-op once the underlying thread has started (per `concurrent.futures.Future.cancel()`'s documented behavior), so an abandoned/disconnected stream's thread runs to completion regardless, still holding its pool slot. No semaphore/concurrency limiter exists on this route.
+- **Caused by:** none — pre-existing.
+- **Fix:** pending.
+
+## BUG-062: PATCH /webhooks/{id} can overwrite `url` with any string, skipping the http(s)-scheme validation POST /webhooks enforces
+- **Status:** open
+- **Found by:** same ultracode audit as BUG-050.
+- **Severity:** cosmetic (validation inconsistency) — practical impact limited by httpx rejecting unsupported schemes at delivery time.
+- **Root cause:** `webhooks.py:131-139` (`update_webhook`) passes `req.model_dump(exclude_none=True)` straight into `webhook_dispatcher.update()` with no equivalent check to POST's `req.url.startswith(("http://","https://"))` (`webhooks.py:87-88`). `WebhookUpdateRequest.url` is a plain `Optional[str]` with no validator.
+- **Caused by:** none — pre-existing.
+- **Fix:** pending.
