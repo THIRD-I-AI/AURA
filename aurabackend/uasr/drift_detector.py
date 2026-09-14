@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import logging
 import math
+import threading
 import time
 from collections import Counter
 from dataclasses import replace
@@ -95,6 +96,32 @@ class DriftDetector:
             state_store if state_store is not None else InMemoryStateStore()
         )
 
+        # BUG-063/BUG-064: every load-mutate-save sequence below (register_
+        # baseline, register_reference_embedding, declare_schema_intent,
+        # detect) used to run with no lock across the round-trip, while
+        # service.py's HTTP handlers dispatch these calls via
+        # asyncio.to_thread -- real OS threads, not serialized by the event
+        # loop. Two concurrent calls for the SAME source_id (a first-touch
+        # race on a brand-new source, or two detect() calls on an existing
+        # one) could each load a pre-update SourceState, mutate their own
+        # copy, and save -- the second save silently clobbers the first,
+        # losing a baseline/schema write or a KL-history sample. A per-
+        # source threading.Lock (not asyncio.Lock: these calls run on
+        # worker threads, not coroutines) serializes the round-trip per
+        # source_id without serializing unrelated sources against each
+        # other. The lock dict itself is guarded so two threads creating a
+        # lock for the same brand-new source_id at once can't each get a
+        # different Lock object.
+        self._source_locks: Dict[str, threading.Lock] = {}
+        self._source_locks_guard = threading.Lock()
+
+    def _lock_for(self, source_id: str) -> threading.Lock:
+        lock = self._source_locks.get(source_id)
+        if lock is None:
+            with self._source_locks_guard:
+                lock = self._source_locks.setdefault(source_id, threading.Lock())
+        return lock
+
     # ────────────────────────────────────────────────────────────────
     # Back-compat read-only views
     # ------------------------------------------------------------------
@@ -171,11 +198,12 @@ class DriftDetector:
         else:
             distributions = distributions_or_batch
 
-        st = self._store.load(source_id)
-        st.baseline = distributions
-        if schema:
-            st.schema = schema
-        self._store.save(source_id, st)
+        with self._lock_for(source_id):
+            st = self._store.load(source_id)
+            st.baseline = distributions
+            if schema:
+                st.schema = schema
+            self._store.save(source_id, st)
         logger.info("Registered baseline for source=%s (%d columns)", source_id, len(distributions))
 
     def baseline_distance(self, source_id: str, batch: "BatchPayload") -> float:
@@ -223,9 +251,10 @@ class DriftDetector:
 
     def register_reference_embedding(self, source_id: str, embedding: List[float]) -> None:
         """Add a reference embedding vector to the source's context matrix."""
-        st = self._store.load(source_id)
-        st.embeddings.append(embedding)
-        self._store.save(source_id, st)
+        with self._lock_for(source_id):
+            st = self._store.load(source_id)
+            st.embeddings.append(embedding)
+            self._store.save(source_id, st)
 
     def declare_schema_intent(
         self,
@@ -252,16 +281,17 @@ class DriftDetector:
         """
         if not self._schema_intent_enabled:
             return
-        st = self._store.load(source_id)
-        st.schema_intent = {
-            "added": dict(added or {}),
-            "removed": list(removed or []),
-            "type_changes": dict(type_changes or {}),
-            "expires_at": time.time() + float(ttl_seconds),
-            "note": note,
-            "actor": actor,
-        }
-        self._store.save(source_id, st)
+        with self._lock_for(source_id):
+            st = self._store.load(source_id)
+            st.schema_intent = {
+                "added": dict(added or {}),
+                "removed": list(removed or []),
+                "type_changes": dict(type_changes or {}),
+                "expires_at": time.time() + float(ttl_seconds),
+                "note": note,
+                "actor": actor,
+            }
+            self._store.save(source_id, st)
         logger.info(
             "Declared schema intent for source=%s added=%s removed=%s type_changes=%s "
             "ttl_seconds=%.0f actor=%s note=%s",
@@ -294,63 +324,69 @@ class DriftDetector:
             batch_id=batch.batch_id,
         )
 
-        # Load this source's state ONCE per batch (single store round-trip,
-        # single LRU touch), thread it through the checks, and persist ONCE
-        # at the end.  ``dirty`` tracks whether any check mutated the state
+        # Load-mutate-save the source's state under its per-source lock
+        # (BUG-064) so a concurrently-arriving batch for the SAME source_id
+        # (another HTTP request, or the mapek_worker Kafka loop, both
+        # dispatched via asyncio.to_thread onto real OS threads) can't
+        # interleave with this round-trip and silently lose a KL-history
+        # sample or schema-baseline update. Single store round-trip, single
+        # LRU touch, threaded through the checks, persisted once at the
+        # end.  ``dirty`` tracks whether any check mutated the state
         # (first-seen schema baseline, appended KL sample) so we avoid a
         # redundant write on read-only batches.
-        st = self._store.load(batch.source_id)
-        if not record_state:
-            # kl_history is mutated in place (append/trim) by
-            # _check_statistical_drift, so a shallow dataclass copy would
-            # still share (and corrupt) the same list — copy it explicitly.
-            st = replace(st, kl_history=list(st.kl_history))
-        dirty = False
+        with self._lock_for(batch.source_id):
+            st = self._store.load(batch.source_id)
+            if not record_state:
+                # kl_history is mutated in place (append/trim) by
+                # _check_statistical_drift, so a shallow dataclass copy would
+                # still share (and corrupt) the same list — copy it explicitly.
+                st = replace(st, kl_history=list(st.kl_history))
+            dirty = False
 
-        # 1. Schema drift
-        schema_drift, d1 = self._check_schema_drift(batch, st)
-        dirty = dirty or d1
-        if schema_drift:
-            result.drift_detected = True
-            result.drift_type = DriftType.SCHEMA
-            result.severity = schema_drift["severity"]
-            result.affected_columns = schema_drift["affected_columns"]
-            result.drift_vector = schema_drift
-            result.details = schema_drift.get("details", "")
+            # 1. Schema drift
+            schema_drift, d1 = self._check_schema_drift(batch, st)
+            dirty = dirty or d1
+            if schema_drift:
+                result.drift_detected = True
+                result.drift_type = DriftType.SCHEMA
+                result.severity = schema_drift["severity"]
+                result.affected_columns = schema_drift["affected_columns"]
+                result.drift_vector = schema_drift
+                result.details = schema_drift.get("details", "")
+                if dirty and record_state:
+                    self._store.save(batch.source_id, st)
+                return result
+
+            # 2. Statistical drift (KL-Divergence)
+            stat_drift, d2 = self._check_statistical_drift(batch, st)
+            dirty = dirty or d2
+            if stat_drift:
+                result.drift_detected = True
+                result.drift_type = DriftType.STATISTICAL
+                result.severity = stat_drift["severity"]
+                result.kl_divergence = stat_drift["max_kl"]
+                result.affected_columns = stat_drift["affected_columns"]
+                result.drift_vector = stat_drift
+                result.details = stat_drift.get("details", "")
+                if dirty and record_state:
+                    self._store.save(batch.source_id, st)
+                return result
+
+            # 3. Semantic drift (embedding distance) — only if embeddings registered
+            sem_drift = self._check_semantic_drift(batch, st)
+            if sem_drift:
+                result.drift_detected = True
+                result.drift_type = DriftType.SEMANTIC
+                result.severity = sem_drift["severity"]
+                result.cosine_distance = sem_drift["cosine_distance"]
+                result.drift_vector = sem_drift
+                result.details = sem_drift.get("details", "")
+                if dirty and record_state:
+                    self._store.save(batch.source_id, st)
+                return result
+
             if dirty and record_state:
                 self._store.save(batch.source_id, st)
-            return result
-
-        # 2. Statistical drift (KL-Divergence)
-        stat_drift, d2 = self._check_statistical_drift(batch, st)
-        dirty = dirty or d2
-        if stat_drift:
-            result.drift_detected = True
-            result.drift_type = DriftType.STATISTICAL
-            result.severity = stat_drift["severity"]
-            result.kl_divergence = stat_drift["max_kl"]
-            result.affected_columns = stat_drift["affected_columns"]
-            result.drift_vector = stat_drift
-            result.details = stat_drift.get("details", "")
-            if dirty and record_state:
-                self._store.save(batch.source_id, st)
-            return result
-
-        # 3. Semantic drift (embedding distance) — only if embeddings registered
-        sem_drift = self._check_semantic_drift(batch, st)
-        if sem_drift:
-            result.drift_detected = True
-            result.drift_type = DriftType.SEMANTIC
-            result.severity = sem_drift["severity"]
-            result.cosine_distance = sem_drift["cosine_distance"]
-            result.drift_vector = sem_drift
-            result.details = sem_drift.get("details", "")
-            if dirty and record_state:
-                self._store.save(batch.source_id, st)
-            return result
-
-        if dirty and record_state:
-            self._store.save(batch.source_id, st)
         result.details = "No drift detected"
         return result
 
