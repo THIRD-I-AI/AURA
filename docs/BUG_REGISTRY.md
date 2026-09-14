@@ -1181,12 +1181,12 @@ This is the process, not a suggestion:
 - **Fix:** PR to follow.
 
 ## BUG-060: GET /databases/test/{db_type} relays the downstream service's JSON body as an HTTP 200 regardless of its actual upstream status code, and never forwards the caller's Authorization header
-- **Status:** open
+- **Status:** fixed
 - **Found by:** same ultracode audit as BUG-050.
 - **Severity:** degrades-accuracy — violates backend.md's explicit proxy rule (preserve upstream status code, forward Authorization); silently downgrades a real upstream error into an apparent success for automated callers.
 - **Root cause:** `connections.py:351-362` (`test_database_connection`) does `response = await client.get(...)` and returns `response.json()` directly with no `raise_for_status()`/status inspection, and doesn't accept a `Request` param so it can't forward headers.
 - **Caused by:** none — pre-existing.
-- **Fix:** pending.
+- **Fix:** `test_database_connection` now takes a `Request` param, forwards the caller's `Authorization` header to the downstream database service, and returns a `JSONResponse` carrying the upstream's real `status_code` instead of always 200 (same pattern as the UASR/causal_service proxies in `pipelines.py`). An unreachable/malformed-JSON upstream now reports 503 instead of masquerading as a 200. `httpx` moved to a module-level import so it's patchable in tests, matching `pipelines.py`. Regression tests in `tests/test_connections_database_test_proxy.py` (Authorization forwarding, upstream-401-preserved, unreachable-service-503) confirmed failing against the pre-fix code via `git stash` before the fix landed. PR #393.
 
 ## BUG-061: /chat/stream's commander loop runs on the process's shared default ThreadPoolExecutor via run_in_executor(None, ...), and cannot be cancelled once started — risks starving every other blocking call in the single-worker gateway
 - **Status:** open
