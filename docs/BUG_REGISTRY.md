@@ -1145,12 +1145,13 @@ This is the process, not a suggestion:
 - **Fix:** PR to follow.
 
 ## BUG-056: POST /upload buffers the entire request body into an unbounded in-memory BytesIO with no server-side size cap
-- **Status:** open
+- **Status:** fixed
 - **Found by:** same ultracode audit as BUG-050.
 - **Severity:** degrades-accuracy → availability (OOM risk) — the advertised `max_file_size: 25MB` (`files.py:56`) is documentation only; `shared/file_service.py`'s `self.max_file_size` attribute is set but never read/compared anywhere.
 - **Root cause:** `upload_universal`'s read loop (`files.py:143-160`) accumulates chunks into `io.BytesIO()` with no comparison against any maximum. No middleware (CORS/RateLimit/JWTAuth/APIKeyAuth/RequestID/RequestLogging/AuditLog/SecurityHeaders, per `shared/service_factory.py`) inspects `Content-Length` or caps body size.
 - **Caused by:** none — pre-existing.
-- **Fix:** pending.
+- **Fix:** the read loop now checks `bytes_written` against `file_service.max_file_size` (25MB) after every chunk and raises `HTTPException(413)` the moment it's exceeded — aborts mid-stream rather than after buffering the whole body. Added `except HTTPException: raise` before the router's existing broad `except Exception` (which would otherwise flatten a deliberate 413 into a 500), matching the pattern already used elsewhere in this same file (`get_file_profile`/`delete_file`). New tests: an upload exceeding a (monkeypatched, small) limit gets 413 and is never written to storage; one under the limit still succeeds. Confirmed non-vacuous: stashed the fix, the oversized-upload test got 200 instead of 413, exactly as expected; restored, 10/10 pass, no regressions in the other four upload-related test files (8/8). Ruff clean (`E,F,I,W`, CI's actual ignore list).
+- **Fix:** PR to follow.
 
 ## BUG-057: /workspaces CRUD (list/create/update/delete) has no tenant scoping at all — one global workspace registry shared by every tenant
 - **Status:** open
