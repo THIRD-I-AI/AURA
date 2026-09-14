@@ -57,6 +57,36 @@ def test_upload_then_list_via_backend(tmp_path, monkeypatch):
     assert "sales.csv" in names
 
 
+def test_upload_write_offloaded_to_thread(tmp_path, monkeypatch):
+    """BUG-055: get_storage_backend().write() is a synchronous, blocking
+    filesystem write (shared/storage/local.py). Under this repo's
+    single-uvicorn-worker deployment, calling it inline would freeze
+    every concurrent tenant's request for its duration. It must be
+    dispatched via asyncio.to_thread, matching this endpoint's own
+    get_file_schema offload."""
+    client = _client(tmp_path, monkeypatch)
+
+    import api_gateway.routers.files as files_module
+    real_to_thread = files_module.asyncio.to_thread
+    offloaded_funcs: list = []
+
+    async def spy_to_thread(func, *args, **kwargs):
+        offloaded_funcs.append(getattr(func, "__name__", func))
+        return await real_to_thread(func, *args, **kwargs)
+
+    monkeypatch.setattr(files_module.asyncio, "to_thread", spy_to_thread)
+
+    r = client.post(
+        "/api/v1/upload",
+        files={"file": ("sales2.csv", io.BytesIO(b"a,b\n1,2\n"), "text/csv")},
+    )
+    assert r.status_code == 200, r.text
+    assert "write" in offloaded_funcs, (
+        f"storage backend write() must run via asyncio.to_thread, not inline on the "
+        f"event loop (see backend.md Async safety). Offloaded calls seen: {offloaded_funcs}"
+    )
+
+
 # ── traversal → basename-stripped, NOT rejected ───────────────────────────────
 
 def test_upload_traversal_basename_stripped(tmp_path, monkeypatch):

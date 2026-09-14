@@ -160,7 +160,11 @@ async def upload_universal(
                 )
 
         data = buf.getvalue()
-        obj_info = get_storage_backend().write(tenant, safe_name, data)
+        # BUG-055: LocalBackend.write() is a synchronous, blocking
+        # filesystem write (shared/storage/local.py) -- offload it like
+        # get_file_schema below (single-uvicorn-worker deployment,
+        # backend.md Async safety).
+        obj_info = await asyncio.to_thread(get_storage_backend().write, tenant, safe_name, data)
 
         await streaming_manager.publish_progress(
             TOPIC_UPLOAD, upload_id,

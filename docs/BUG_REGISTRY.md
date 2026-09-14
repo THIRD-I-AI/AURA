@@ -1136,12 +1136,13 @@ This is the process, not a suggestion:
 - **Fix:** PR to follow.
 
 ## BUG-055: POST /upload writes the uploaded file to storage synchronously inside the async handler, with no asyncio.to_thread offload
-- **Status:** open
+- **Status:** fixed
 - **Found by:** same ultracode audit as BUG-050.
 - **Severity:** blocks-feature (availability) — single-uvicorn-worker deployment; blocks every tenant's concurrent request for the write's duration.
 - **Root cause:** `files.py:163` calls `get_storage_backend().write(tenant, safe_name, data)` directly (no `asyncio.to_thread`) inside `async def upload_file`. `LocalBackend.write` (`shared/storage/local.py:34-37`) is a synchronous `p.write_bytes(data)`. The same file already offloads a comparable call correctly (`files.py:252`, `get_file_schema` via `asyncio.to_thread`, with an explanatory comment) — the storage write, the endpoint's primary I/O, was missed.
 - **Caused by:** none — pre-existing.
-- **Fix:** pending.
+- **Fix:** `obj_info = await asyncio.to_thread(get_storage_backend().write, tenant, safe_name, data)`, matching the file's own `get_file_schema` offload pattern. New test `test_upload_write_offloaded_to_thread` (spies on `asyncio.to_thread` the same way `test_pipeline_execution.py`'s offload tests do) asserts `write` appears in the offloaded-call list. Confirmed non-vacuous: stashed the fix, the new test failed exactly as expected; restored, 8/8 pass. Ruff clean (`E,F,I,W`, CI's actual ignore list).
+- **Fix:** PR to follow.
 
 ## BUG-056: POST /upload buffers the entire request body into an unbounded in-memory BytesIO with no server-side size cap
 - **Status:** open
