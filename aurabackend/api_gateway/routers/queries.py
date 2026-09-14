@@ -82,60 +82,60 @@ _SCHEDULER_INTERVAL_SEC = 30
 # Pools are closed in the lifespan teardown via close_all_pg_pools().
 
 _pg_pool_registry_lock = threading.Lock()
-_pg_pool_registry: Dict[str, Any] = {}
-
-# BUG-050: the key used to fold the password into the pool-cache key below.
-# Random per-process, never persisted or logged -- this is a keyed MAC
-# (HMAC), not a bare hash of the password, so it doesn't trip the same
-# CodeQL weak-password-hashing flag the old (password-excluding) key
-# comment was written to avoid: HMAC-SHA256 with a secret key is the
-# standard accepted mitigation for that class of finding, not an instance
-# of it.
-_PG_POOL_KEY_SECRET = secrets.token_bytes(32)
+# coords_key -> list of (password, pool) -- see _pg_pool_key/_get_or_create_pg_pool.
+_pg_pool_registry: Dict[str, List[Any]] = {}
 
 
 def _pg_pool_key(config: "ConnectorConfig") -> str:
-    """Deterministic registry key from connection coordinates AND password.
-
-    BUG-050: this used to key on (host, port, database, username) alone,
-    on the assumption that "the same user on the same host:port/database
-    always authenticates with the same password" -- true for a single
-    operator, false for a multi-tenant gateway where any caller who
-    merely knows (not authenticates with) another tenant's connection
-    coordinates could be handed that tenant's already-authenticated pool
-    regardless of the password they presented. Folding the password into
-    a keyed HMAC closes that: a wrong/blank password can never match the
-    key of a pool created with the real one, so it can never be reused.
+    """Deterministic registry key from connection coordinates ONLY --
+    deliberately excludes the password (a fast hash of password data trips
+    CodeQL's weak-password-hashing flag, and this key is never used to
+    authenticate anyone). Actual password verification before reuse
+    happens in `_get_or_create_pg_pool` via a constant-time comparison,
+    not via this key -- see BUG-050.
     """
-    return hmac.new(
-        _PG_POOL_KEY_SECRET,
+    return hashlib.sha256(
         json.dumps(
             {
                 "host": config.host,
                 "port": config.port,
                 "database": config.database,
                 "username": config.username,
-                "password": config.password,
             },
             sort_keys=True,
-        ).encode(),
-        hashlib.sha256,
+        ).encode()
     ).hexdigest()
 
 
 async def _get_or_create_pg_pool(config: "ConnectorConfig") -> Any:
-    """Return the cached asyncpg pool for *config* or create one."""
+    """Return the cached asyncpg pool for *config* or create one.
+
+    BUG-050: pools used to be cached purely by connection coordinates
+    (host/port/database/username), on the assumption that the same
+    coordinates always mean the same password. In a multi-tenant gateway
+    that's false -- any caller who merely knew another tenant's
+    coordinates was handed that tenant's already-authenticated pool
+    regardless of the password they presented, a full auth bypass.
+
+    Fixed by keeping multiple (password, pool) entries per coordinate
+    key and requiring the presented password to constant-time-match a
+    stored one before a pool is reused. A wrong/blank password never
+    matches, so `asyncpg.create_pool` runs for real and fails naturally
+    against the actual server instead of silently reusing another
+    caller's connection.
+    """
     import asyncpg
 
     key = _pg_pool_key(config)
+    presented = config.password or ""
     with _pg_pool_registry_lock:
-        existing = _pg_pool_registry.get(key)
-    if existing is not None:
-        return existing
+        for stored_password, pool in _pg_pool_registry.get(key, []):
+            if hmac.compare_digest(stored_password, presented):
+                return pool
 
     pool = await asyncpg.create_pool(
         user=config.username or "postgres",
-        password=config.password or "",
+        password=presented,
         database=config.database or "postgres",
         host=config.host or "localhost",
         port=config.port or 5432,
@@ -143,11 +143,14 @@ async def _get_or_create_pg_pool(config: "ConnectorConfig") -> Any:
         max_size=int(os.getenv("DB_POOL_SIZE", "10")),
     )
     with _pg_pool_registry_lock:
-        if key in _pg_pool_registry:
-            # Lost the creation race — discard the duplicate.
-            dup, pool = pool, _pg_pool_registry[key]
+        entries = _pg_pool_registry.setdefault(key, [])
+        for stored_password, existing_pool in entries:
+            if hmac.compare_digest(stored_password, presented):
+                # Lost the creation race — discard the duplicate.
+                dup, pool = pool, existing_pool
+                break
         else:
-            _pg_pool_registry[key] = pool
+            entries.append((presented, pool))
             dup = None
     if dup is not None:
         await dup.close()
@@ -157,7 +160,7 @@ async def _get_or_create_pg_pool(config: "ConnectorConfig") -> Any:
 async def close_all_pg_pools() -> None:
     """Close all pooled connections — called from lifespan teardown."""
     with _pg_pool_registry_lock:
-        pools = list(_pg_pool_registry.values())
+        pools = [pool for entries in _pg_pool_registry.values() for _password, pool in entries]
         _pg_pool_registry.clear()
     for pool in pools:
         try:
