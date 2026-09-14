@@ -119,3 +119,33 @@ def test_single_writer_unchanged(tmp_path):
     con.close()
     assert total == 150
     assert set(cols) == {"source_id", "batch_id", "v", "x"}
+
+
+# ── BUG-068: table_name must go through the shared quoter ────────────
+#
+# _write_duckdb_atomic used to splice table_name into DDL/DML via a bare
+# f'"{tbl}"' instead of shared/sql_identifiers.py's quote_identifier -- the
+# one shared quoter security.md mandates for every identifier spliced into
+# SQL. A table name containing a double-quote broke out of the identifier.
+
+def test_table_name_with_embedded_quote_is_safely_escaped(tmp_path):
+    """A table_name containing a double-quote must not break out of the
+    generated DDL/DML -- quote_identifier doubles it, matching standard SQL
+    identifier-escaping, instead of producing invalid/injectable SQL."""
+    evil_name = 'events" ; DROP TABLE secrets; --'
+    cfg = MAPEKConfig(
+        source_id="s0",
+        duckdb_path=str(tmp_path / "lake.duckdb"),
+        parquet_dir=str(tmp_path / "pq"),
+        table_name=evil_name,
+    )
+    w = MAPEKWorker(config=cfg)
+    w._duckdb_con = w._open_duckdb()
+
+    w._write_duckdb_atomic(w._write_parquet(_batch("s0", 0)))
+
+    con = w._duckdb_con
+    from shared.sql_identifiers import quote_identifier
+    total = con.execute(f"SELECT COUNT(*) FROM {quote_identifier(evil_name)}").fetchone()[0]
+    con.close()
+    assert total == 50

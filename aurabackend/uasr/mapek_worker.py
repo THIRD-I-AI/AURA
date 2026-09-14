@@ -48,6 +48,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
+from shared.sql_identifiers import quote_identifier
+
 from .cross_source_heal import attempt_cross_source_heal
 from .drift_detector import DriftDetector
 from .metrics import HealingMetricTracker
@@ -853,7 +855,13 @@ class MAPEKWorker:
 
     def _write_duckdb_atomic(self, parquet_path: str) -> None:
         con = self._duckdb_con
-        tbl = self._cfg.table_name
+        # BUG-068: use the one shared quoter (security.md) instead of hand-
+        # rolled f'"{tbl}"' interpolation -- quote_identifier doubles any
+        # embedded quote and rejects a NUL byte, neither of which the local
+        # f-string did. table_name only ever takes the hardcoded default
+        # today so there was no live exploit, but the escaping was wrong the
+        # moment it becomes configurable.
+        tbl = quote_identifier(self._cfg.table_name)
         # Multi-pipeline correctness: DuckDB uses optimistic concurrency
         # control, so running ``CREATE TABLE IF NOT EXISTS`` on *every* batch
         # reopens a catalog write-write conflict window each time multiple
@@ -878,12 +886,12 @@ class MAPEKWorker:
                 # to *this* connection before the INSERT, even on the first
                 # attempt of a worker that lost the CREATE race.
                 con.execute(
-                    f'CREATE TABLE IF NOT EXISTS "{tbl}" AS '
+                    f"CREATE TABLE IF NOT EXISTS {tbl} AS "
                     f"SELECT * FROM read_parquet(?) WHERE 1=0",
                     [parquet_path],
                 )
                 con.execute(
-                    f'INSERT INTO "{tbl}" BY NAME SELECT * FROM read_parquet(?)',
+                    f"INSERT INTO {tbl} BY NAME SELECT * FROM read_parquet(?)",
                     [parquet_path],
                 )
                 con.execute("COMMIT")
