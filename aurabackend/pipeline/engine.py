@@ -52,6 +52,7 @@ def _sanitize_id(name: str) -> str:
 # implementations in this repo silently missed that guard while the third had
 # it. Aliasing covers every existing call site without touching them.
 from shared.sql_identifiers import quote_identifier as _q  # noqa: E402
+from shared.storage.base import tenant_slug  # noqa: E402
 
 
 class PipelineEngine:
@@ -148,7 +149,7 @@ class PipelineEngine:
 
             # ── 3. WRITE SINK (unless preview_only) ───────────────────
             if not preview_only:
-                await self._write_sink(conn, final_table, pipeline.sink, run)
+                await self._write_sink(conn, final_table, pipeline.sink, run, tenant)
             else:
                 logger.info(f"[Pipeline:{pipeline.id}] Preview-only, skipping sink write")
 
@@ -683,14 +684,15 @@ class PipelineEngine:
     # ── Sink Writing ──────────────────────────────────────────────────
 
     async def _write_sink(
-        self, conn: Any, final_table: str, sink: PipelineSink, run: PipelineRun
+        self, conn: Any, final_table: str, sink: PipelineSink, run: PipelineRun,
+        tenant: Optional[str] = None,
     ) -> None:
         """Write the final table to the configured sink."""
         if sink.type == SinkType.FILE:
             # DuckDB COPY over the full final_table is blocking; the
             # deployment runs one uvicorn worker, so offload it (matches
             # the transform SQL execution above).
-            await asyncio.to_thread(self._write_file_sink, conn, final_table, sink, run)
+            await asyncio.to_thread(self._write_file_sink, conn, final_table, sink, run, tenant)
         elif sink.type == SinkType.POSTGRESQL:
             await self._write_pg_sink(conn, final_table, sink, run)
         elif sink.type == SinkType.DUCKDB:
@@ -701,7 +703,8 @@ class PipelineEngine:
             raise ValueError(f"Unsupported sink type: {sink.type}")
 
     def _write_file_sink(
-        self, conn: Any, final_table: str, sink: PipelineSink, run: PipelineRun
+        self, conn: Any, final_table: str, sink: PipelineSink, run: PipelineRun,
+        tenant: Optional[str] = None,
     ) -> None:
         fmt = (sink.format or "csv").lower()
         base_name = sink.file_name or f"pipeline_output_{run.run_id}"
@@ -710,7 +713,14 @@ class PipelineEngine:
         ext_map = {"csv": ".csv", "parquet": ".parquet", "json": ".json"}
         ext = ext_map.get(fmt, ".csv")
         out_name = f"{stem}{ext}"
-        out_path = os.path.join(OUTPUT_DIR, out_name)
+        # BUG-051: one shared OUTPUT_DIR let any caller download any other
+        # tenant's output by guessing/colliding on file_name. Namespace by
+        # tenant (same tenant_slug() used for uploaded-source isolation) so
+        # GET /pipeline/download/{filename} can only ever resolve inside
+        # the requesting caller's own subdirectory.
+        tenant_dir = os.path.join(OUTPUT_DIR, tenant_slug(tenant))
+        os.makedirs(tenant_dir, exist_ok=True)
+        out_path = os.path.join(tenant_dir, out_name)
 
         if fmt == "csv":
             conn.execute(f"COPY {_q(final_table)} TO '{out_path}' (HEADER, DELIMITER ',')")

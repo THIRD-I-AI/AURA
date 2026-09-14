@@ -359,6 +359,48 @@ async def test_file_sink_write_offloaded_to_thread(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_file_sink_output_is_namespaced_per_tenant(tmp_path, monkeypatch):
+    """BUG-051: two tenants running pipelines with the SAME sink file_name
+    must land in separate, tenant-scoped subdirectories -- not collide in
+    one shared OUTPUT_DIR, which is what let any caller read another
+    tenant's pipeline output via GET /pipeline/download/{filename}."""
+    import os
+
+    import pipeline.engine as engine_module
+
+    _isolate_storage(tmp_path, monkeypatch)
+    from shared.storage import get_storage_backend
+    get_storage_backend().write("tenant_a", "customers.csv", b"id,name\n1,Alice\n")
+    get_storage_backend().write("tenant_b", "customers.csv", b"id,name\n2,Bob\n")
+    monkeypatch.setattr(engine_module, "OUTPUT_DIR", str(tmp_path))
+
+    def _pipeline():
+        return Pipeline(
+            name="tenant-isolation-test",
+            source=PipelineSource(type=SourceType.FILE, file_name="customers.csv"),
+            sink=PipelineSink(type=SinkType.FILE, format="csv", file_name="export.csv"),
+        )
+
+    engine = PipelineEngine()
+    run_a = await engine.execute(_pipeline(), preview_only=False, tenant="tenant_a")
+    run_b = await engine.execute(_pipeline(), preview_only=False, tenant="tenant_b")
+
+    assert run_a.status == PipelineStatus.SUCCESS, run_a.error
+    assert run_b.status == PipelineStatus.SUCCESS, run_b.error
+
+    path_a = os.path.join(str(tmp_path), "tenant_a", "export.csv")
+    path_b = os.path.join(str(tmp_path), "tenant_b", "export.csv")
+    assert os.path.exists(path_a), "tenant_a's output must live under its own subdirectory"
+    assert os.path.exists(path_b), "tenant_b's output must live under its own subdirectory"
+    with open(path_a) as f:
+        assert "Alice" in f.read()
+    with open(path_b) as f:
+        assert "Bob" in f.read()
+    # Neither tenant's data leaked into a flat, shared top-level file.
+    assert not os.path.exists(os.path.join(str(tmp_path), "export.csv"))
+
+
+@pytest.mark.asyncio
 async def test_duckdb_sink_write_offloaded_to_thread(tmp_path, monkeypatch):
     """_write_sink's DUCKDB branch calls the synchronous _write_duckdb_sink,
     which runs a blocking `CREATE TABLE ... AS SELECT * FROM ...` over the

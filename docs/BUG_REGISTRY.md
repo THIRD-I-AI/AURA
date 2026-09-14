@@ -1100,12 +1100,13 @@ This is the process, not a suggestion:
 - **Fix:** PR #383 (amended).
 
 ## BUG-051: GET /pipeline/download/{filename} has no tenant/ownership check; pipeline output files land in one shared directory under a caller-controlled filename
-- **Status:** open
+- **Status:** fixed
 - **Found by:** same ultracode audit as BUG-050.
 - **Severity:** blocks-feature (critical) — cross-tenant IDOR, same class as BUG-016/018/019.
 - **Root cause:** `pipelines.py:340-357` (`pipeline_download`) takes only `filename: str`, no `Request`/tenant param, no ownership check — only path-traversal sanitization. `pipeline/engine.py:707-713`'s `_write_file_sink` uses `sink.file_name` (caller-supplied via the pipeline definition) verbatim as the output filename under one shared `data/processed` directory with no per-tenant namespacing. A caller who creates a pipeline with a predictable `file_name` (e.g. `export.csv`) and then hits `GET /pipeline/download/export.csv` receives whichever tenant's pipeline last wrote that name. Untested (`aurabackend/tests` has zero references to `pipeline_download`/`pipeline/download`).
 - **Caused by:** none — pre-existing.
-- **Fix:** pending.
+- **Fix:** `pipeline/engine.py`'s `_write_file_sink` now writes under `OUTPUT_DIR/<tenant_slug>/` (`shared.storage.base.tenant_slug`, the same helper already used for uploaded-source isolation), with `tenant` threaded through `execute()` → `_write_sink()` → `_write_file_sink()`. `pipeline_download` now takes `request: Request` and only ever resolves inside the REQUESTING caller's own `tenant_slug(_request_tenant(request))` subdirectory — it can never reach another tenant's file regardless of filename collisions, no client-facing API change needed since the tenant is derived from the caller's own verified identity, not a URL parameter. New tests: `test_file_sink_output_is_namespaced_per_tenant` (two tenants writing the same `file_name` land in separate subdirectories with the right content in each), and a new `test_pipeline_download_tenant_isolation.py` (tenant can download its own output; a different tenant requesting the identical filename gets 404, not the first tenant's data). **Known side effect:** pipeline outputs written before this fix live in the old flat directory and become unreachable through the fixed endpoint — acceptable for a security fix, no migration script written (out of scope). Confirmed non-vacuous: stashed the fix, all 3 new/changed tests failed exactly as expected (missing `request` param, no per-tenant subdirectory); restored, 16/16 pass (49/49 across the broader pipeline test files). Ruff clean (`E,F,I,W`, CI's actual ignore list).
+- **Fix:** PR to follow.
 
 ## BUG-052: /etl/execute writes output to one shared, non-tenant-scoped local directory (bypassing the S45 StorageBackend used for reads), and /etl/download/{filename} has no ownership check
 - **Status:** open
