@@ -5,6 +5,7 @@ Supports DuckDB (in-proc) and PostgreSQL via asyncpg.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from datetime import datetime, timezone
@@ -46,19 +47,29 @@ class DatabaseSink(BaseSink):
     async def start(self) -> None:
         if self._connector_type == "duckdb":
             import duckdb
+
             db_path = self.config.get("path", ":memory:")
-            self._conn = duckdb.connect(db_path)
-            self._conn.execute(f"""
-                CREATE TABLE IF NOT EXISTS {self._quoted_table} (
-                    pipeline_id    VARCHAR,
-                    window_key     VARCHAR,
-                    window_start   TIMESTAMP,
-                    window_end     TIMESTAMP,
-                    event_count    INTEGER,
-                    aggregations   VARCHAR,
-                    inserted_at    TIMESTAMP DEFAULT current_timestamp
-                )
-            """)
+
+            def _connect_and_create() -> Any:
+                conn = duckdb.connect(db_path)
+                conn.execute(f"""
+                    CREATE TABLE IF NOT EXISTS {self._quoted_table} (
+                        pipeline_id    VARCHAR,
+                        window_key     VARCHAR,
+                        window_start   TIMESTAMP,
+                        window_end     TIMESTAMP,
+                        event_count    INTEGER,
+                        aggregations   VARCHAR,
+                        inserted_at    TIMESTAMP DEFAULT current_timestamp
+                    )
+                """)
+                return conn
+
+            # BUG-085: duckdb.connect() and conn.execute() are synchronous,
+            # blocking calls -- the deployment runs one uvicorn worker, so
+            # running them inline would freeze every concurrent tenant's
+            # request for the duration (see .claude/rules/backend.md).
+            self._conn = await asyncio.to_thread(_connect_and_create)
         elif self._connector_type == "postgresql":
             try:
                 import asyncpg
@@ -102,7 +113,9 @@ class DatabaseSink(BaseSink):
         agg_json = json.dumps(window.aggregations, default=str)
 
         if self._connector_type == "duckdb":
-            self._conn.execute(
+            # BUG-085: same reasoning as start() -- conn.execute() blocks.
+            await asyncio.to_thread(
+                self._conn.execute,
                 f'INSERT INTO {self._quoted_table} (pipeline_id, window_key, window_start, window_end, event_count, aggregations) VALUES (?, ?, ?, ?, ?, ?)',
                 [
                     pipeline_id,

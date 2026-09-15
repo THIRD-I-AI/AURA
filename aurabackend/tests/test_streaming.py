@@ -602,6 +602,44 @@ class TestDatabaseSink:
         assert '"{table}"' not in _PG_CREATE_TABLE
         assert '"{table}"' not in _PG_INSERT
 
+    def test_duckdb_connect_and_execute_are_offloaded_to_a_thread(self, tmp_path):
+        # BUG-085: duckdb.connect() and conn.execute() are synchronous,
+        # blocking calls -- running them directly on the event loop freezes
+        # every other tenant's concurrent request under the single-worker
+        # deployment. Spy on asyncio.to_thread (mirrors the pattern already
+        # used for BUG-065/070) to confirm both start() and emit_window()
+        # actually dispatch through it, rather than inferring it from timing.
+        from unittest.mock import patch
+
+        from pipeline.streaming.sinks.database_sink import DatabaseSink
+
+        db_path = str(tmp_path / "streaming.duckdb")
+        sink = DatabaseSink(config={"path": db_path, "table": "t"})
+
+        real_to_thread = asyncio.to_thread
+        offloaded_funcs = []
+
+        async def spy_to_thread(func, *args, **kwargs):
+            offloaded_funcs.append(func)
+            return await real_to_thread(func, *args, **kwargs)
+
+        async def run():
+            with patch("pipeline.streaming.sinks.database_sink.asyncio.to_thread", side_effect=spy_to_thread):
+                await sink.start()
+                ws = WindowState(
+                    window_key="k1|0-60", window_start=0, window_end=60,
+                    event_count=1, aggregations={"count": 1},
+                )
+                await sink.emit_window(ws, "p1")
+            await sink.stop()
+
+        asyncio.run(run())
+
+        assert len(offloaded_funcs) == 2, (
+            "expected exactly two offloaded calls (connect+create in start(), "
+            f"insert in emit_window()), got {len(offloaded_funcs)}"
+        )
+
 
 # ════════════════════════════════════════════════════════════════
 # 5. SOURCE ADAPTER TESTS
