@@ -735,6 +735,117 @@ class TestStreamingAPI:
             _engines.pop(p.id, None)
 
 
+class TestStreamingAPITenantIsolation:
+    """BUG-080: streaming pipeline endpoints had zero tenant scoping --
+    _pipelines/_engines were process-global dicts keyed only by pipeline_id,
+    so any authenticated caller could read/control any other tenant's
+    pipeline (including source/sink config that can hold DB connection
+    strings or a webhook sink's HMAC secret)."""
+
+    @pytest.fixture(autouse=True)
+    def _clear_stores(self):
+        from pipeline.streaming.streaming_api import _engines, _pipelines
+        _pipelines.clear()
+        _engines.clear()
+        yield
+        _pipelines.clear()
+        _engines.clear()
+
+    @staticmethod
+    def _user(org_id: str) -> dict:
+        return {"sub": f"user-{org_id}", "org_id": org_id}
+
+    @pytest.mark.asyncio
+    async def test_get_pipeline_404s_for_a_different_tenant(self):
+        from fastapi import HTTPException
+
+        from pipeline.streaming.streaming_api import _pipelines, get_pipeline
+
+        p = _make_pipeline(tenant_id="tenant-a")
+        _pipelines[p.id] = p
+
+        result = await get_pipeline(p.id, user=self._user("tenant-a"))
+        assert result["id"] == p.id
+
+        with pytest.raises(HTTPException) as exc:
+            await get_pipeline(p.id, user=self._user("tenant-b"))
+        assert exc.value.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_list_pipelines_only_returns_the_caller_s_own_tenant(self):
+        from pipeline.streaming.streaming_api import _pipelines, list_pipelines
+
+        pa = _make_pipeline(tenant_id="tenant-a")
+        pb = _make_pipeline(tenant_id="tenant-b")
+        _pipelines[pa.id] = pa
+        _pipelines[pb.id] = pb
+
+        result = await list_pipelines(user=self._user("tenant-a"))
+        ids = {p["id"] for p in result["pipelines"]}
+        assert ids == {pa.id}
+
+    @pytest.mark.asyncio
+    async def test_create_pipeline_stamps_the_caller_s_tenant(self):
+        from pipeline.streaming.streaming_api import CreateStreamPipelineRequest, create_pipeline
+
+        req = CreateStreamPipelineRequest(
+            name="p", source=StreamSource(type=StreamSourceType.SIMULATED, config={}),
+        )
+        created = await create_pipeline(req, user=self._user("tenant-a"))
+        assert created["tenant_id"] == "tenant-a"
+
+    @pytest.mark.asyncio
+    async def test_delete_start_stop_pause_resume_metrics_stream_all_reject_a_different_tenant(self):
+        from fastapi import HTTPException
+
+        from pipeline.streaming.streaming_api import (
+            _pipelines,
+            delete_pipeline,
+            get_metrics,
+            pause_pipeline,
+            resume_pipeline,
+            start_pipeline,
+            stop_pipeline,
+            stream_events,
+        )
+
+        other = self._user("tenant-b")
+        endpoints = [
+            lambda pid: delete_pipeline(pid, user=other),
+            lambda pid: start_pipeline(pid, user=other),
+            lambda pid: stop_pipeline(pid, user=other),
+            lambda pid: pause_pipeline(pid, user=other),
+            lambda pid: resume_pipeline(pid, user=other),
+            lambda pid: get_metrics(pid, user=other),
+            lambda pid: stream_events(pid, user=other),
+        ]
+        for endpoint in endpoints:
+            p = _make_pipeline(tenant_id="tenant-a")
+            _pipelines[p.id] = p
+            with pytest.raises(HTTPException) as exc:
+                await endpoint(p.id)
+            assert exc.value.status_code == 404, endpoint
+            _pipelines.pop(p.id, None)
+
+    @pytest.mark.asyncio
+    async def test_unauthenticated_pipelines_stay_isolated_from_authenticated_tenants(self):
+        """A pipeline created with no auth (tenant_id=None) must not be
+        readable by an authenticated caller, and vice versa."""
+        from fastapi import HTTPException
+
+        from pipeline.streaming.streaming_api import _pipelines, get_pipeline
+
+        p = _make_pipeline()  # tenant_id defaults to None
+        _pipelines[p.id] = p
+
+        result = await get_pipeline(p.id, user=None)
+        assert result["id"] == p.id
+
+        with pytest.raises(HTTPException) as exc:
+            await get_pipeline(p.id, user=self._user("tenant-a"))
+        assert exc.value.status_code == 404
+
+
 # ════════════════════════════════════════════════════════════════
 # 7. BACKPRESSURE TESTS
 # ════════════════════════════════════════════════════════════════

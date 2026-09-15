@@ -237,6 +237,12 @@ class StreamPipeline(BaseModel):
     updated_at: Optional[str] = None
     tags: List[str] = Field(default_factory=list)
 
+    # Tenant isolation (BUG-080): the caller's tenant at creation time, from
+    # the verified JWT (see streaming_api.py's `_request_tenant`). `None`
+    # means the pipeline was created unauthenticated (dev/open mode) and is
+    # only visible to other unauthenticated callers.
+    tenant_id: Optional[str] = None
+
 
 # ────────────────────────────────────────────────────────────────────
 # Runtime State Models
