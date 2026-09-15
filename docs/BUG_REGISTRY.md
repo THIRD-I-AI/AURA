@@ -1338,6 +1338,126 @@ the whole subsystem every time.
 - **Caused by:** none — pre-existing; not introduced by BUG-071/BUG-074's changes (both are docs/uasr-only and don't touch the persistence layer).
 - **Fix:** pending — needs the bisection above before a real fix (properly closing/disposing the leaking connection) can be scoped.
 
+## BUG-079: DatabaseSink splices its `table` config verbatim into CREATE TABLE/INSERT SQL — SQL injection
+- **Status:** open
+- **Found by:** ultracode audit of `aurabackend/pipeline/` (`streaming-sources-sinks` group), 2026-09-15.
+- **Severity:** critical — arbitrary SQL execution with the sink's DB credentials on every window emit.
+- **Root cause:** `pipeline/streaming/sinks/database_sink.py`'s `table` field (free text, exposed directly in the streaming pipeline config UI per `streaming_api.py:346`) is spliced unescaped into `CREATE TABLE`/`INSERT` SQL via f-strings (DuckDB branch, lines 49-59, 102-113) and `.format()` (Postgres branch's `_PG_CREATE_TABLE`/`_PG_INSERT` templates, lines 18-33, 79-81, 125-133) instead of going through `shared/sql_identifiers.py`'s `quote_identifier`. A table name like `x" ; DROP TABLE users; --` breaks out of the `"{table}"` quoting and executes arbitrary SQL.
+- **Caused by:** none — pre-existing.
+- **Fix:** pending.
+
+## BUG-080: Streaming pipeline endpoints have zero tenant scoping — cross-tenant data/credential leak and sabotage
+- **Status:** open
+- **Found by:** ultracode audit of `aurabackend/pipeline/` (`streaming-core` group), 2026-09-15.
+- **Severity:** critical — any authenticated user can read another tenant's full pipeline config (including DB connection strings, Kafka bootstrap servers, and a webhook sink's HMAC secret) and stop/delete their running pipelines.
+- **Root cause:** `pipeline/streaming/streaming_api.py`'s `_pipelines`/`_engines` are process-global dicts keyed only by `pipeline_id` (lines 48-49); `StreamPipeline` has no tenant/workspace field at all. `GET /streaming/pipelines` (lines 88-160) returns every tenant's pipelines verbatim, and `GET/PUT/DELETE /streaming/pipelines/{id}` plus the start/stop/pause/resume endpoints (lines 167-182) never verify the caller owns that `pipeline_id`.
+- **Caused by:** none — pre-existing.
+- **Fix:** pending.
+
+## BUG-081: `_assign_sliding` infinite-loops on a negative `slide_seconds`, permanently hanging the event loop
+- **Status:** open
+- **Found by:** ultracode audit of `aurabackend/pipeline/` (`streaming-core` group), 2026-09-15.
+- **Severity:** critical — a single client-supplied pipeline config permanently hangs the single-worker process for every tenant until it's killed.
+- **Root cause:** `pipeline/streaming/window_processor.py:249-273`'s `_assign_sliding` runs `while start <= latest_start: ... start += slide`. `WindowConfig.slide_seconds` (`models.py`, `Optional[int] = None`) has no validation rejecting a negative value. If `slide` is negative, `start` decreases without bound while `latest_start` stays fixed, so the loop never terminates — and since `_assign_sliding` is called synchronously from `process_event` inside the async `_run_loop`, this is a non-yielding CPU spin on the shared event loop.
+- **Caused by:** none — pre-existing.
+- **Fix:** pending.
+
+## BUG-082: ADD_COLUMN/CUSTOM_SQL `expression` config spliced unsanitized into generated SQL — code/SQL injection via the pipeline API
+- **Status:** open
+- **Found by:** ultracode audit of `aurabackend/pipeline/` (`core-generation` group), 2026-09-15.
+- **Severity:** high — lets an authenticated tenant read arbitrary local files or other tenants' data via DuckDB's `read_csv_auto`/`ATTACH`/`httpfs`, the same vulnerability class BUG-053 already closed for `api_gateway/routers/etl.py`'s `custom_sql` handler.
+- **Root cause:** `pipeline/engine.py`'s ADD_COLUMN (498-503) and CUSTOM_SQL (670-682) branches splice `cfg["expression"]` verbatim into the generated SQL (`f'SELECT *, ({expression}) AS "{_sanitize_id(name)}" FROM {_q(prev)}'` and similar) — only the output column name is sanitized via `_sanitize_id`, never the expression itself. The DuckDB connection from `shared/duckdb_factory.py` has full filesystem/network table-function access enabled, so this isn't just SQL syntax injection but a path to reading arbitrary files/URLs.
+- **Caused by:** none — pre-existing; BUG-053's fix was scoped to `etl.py` only and never applied here.
+- **Fix:** pending.
+
+## BUG-083: Local rule-based parser's ADD_COLUMN regex feeds the same unsanitized-expression injection with no LLM involved
+- **Status:** open
+- **Found by:** ultracode audit of `aurabackend/pipeline/` (`core-generation` group), 2026-09-15.
+- **Severity:** high — a direct, deterministic route to BUG-082's injection that requires no LLM cooperation at all, since the local parser's confidence score clears `MIN_CONFIDENCE` on its own.
+- **Root cause:** `pipeline/local_parser.py:399-409`'s `_match_add_column` captures the ADD_COLUMN `expression` from free-text user input via a permissive regex group (`.+?`) with no validation that it's a safe SQL expression (unlike its sibling `_match_cast_type`, which validates against an allowlist). That raw text flows straight into `engine.py:498-503`'s unsanitized splice (BUG-082).
+- **Caused by:** none — pre-existing.
+- **Fix:** pending (should be fixed together with or immediately after BUG-082, since they share one root cause: no expression sanitizer exists at all).
+
+## BUG-084: JOIN steps reference a second source that is never loaded — every join pipeline fails
+- **Status:** open
+- **Found by:** ultracode audit of `aurabackend/pipeline/` (`core-generation` group), 2026-09-15.
+- **Severity:** high — every JOIN pipeline fails 100% of the time (or, worse, silently joins against the wrong intermediate result if `right_table` happens to collide with an internal CTE alias).
+- **Root cause:** `pipeline/engine.py:613-627`'s JOIN branch reads `step.config["right_table"]` as a bare table name and splices it into `{join_type} JOIN {_q(right_table)} ON ...`, but no code path ever loads that second source into the DuckDB connection. `ProcessingStep.join_source` (`models.py:113`) is a fully-fledged `JoinSource` model (type/file_name/connection/table/query) that exists specifically to describe the second source — it is never read anywhere in `engine.py`.
+- **Caused by:** none — pre-existing; JOIN appears to have never actually worked.
+- **Fix:** pending.
+
+## BUG-085: DatabaseSink's synchronous DuckDB calls block the event loop
+- **Status:** open
+- **Found by:** ultracode audit of `aurabackend/pipeline/` (`streaming-sources-sinks` group), 2026-09-15.
+- **Severity:** high — freezes every tenant's concurrent request under the single-uvicorn-worker deployment for the duration of any slow DuckDB call.
+- **Root cause:** `pipeline/streaming/sinks/database_sink.py`'s `duckdb.connect()` (line 48) and `self._conn.execute()` (lines 49-59 in `start()`, 102-113 in `emit_window()`) are called directly inside `async def` methods with no `asyncio.to_thread`, unlike the file's own Postgres branch which correctly awaits `asyncpg` calls (see `.claude/rules/backend.md` "Async safety").
+- **Caused by:** none — pre-existing.
+- **Fix:** pending.
+
+## BUG-086: FileSink's `_flush()` does blocking file I/O directly on the event loop
+- **Status:** open
+- **Found by:** ultracode audit of `aurabackend/pipeline/` (`streaming-sources-sinks` group), 2026-09-15.
+- **Severity:** high — stalls every tenant's concurrent request under the single-worker deployment, worse on a slow or network-mounted `output_dir`.
+- **Root cause:** `pipeline/streaming/sinks/file_sink.py:53-72`'s `_flush()` is `async def` but performs synchronous `open()`/`write`, `csv.DictWriter`, and `json.dump` directly with no `asyncio.to_thread`, invoked both from the hot path (`emit_window`, gated by `flush_every`) and from `stop()`.
+- **Caused by:** none — pre-existing.
+- **Fix:** pending.
+
+## BUG-087: FileWatcher source's blocking parse calls run directly on the event loop
+- **Status:** open
+- **Found by:** ultracode audit of `aurabackend/pipeline/` (`streaming-sources-sinks` group), 2026-09-15.
+- **Severity:** high — freezes every tenant's concurrent request for the duration of a large CSV/Parquet parse under the single-worker deployment.
+- **Root cause:** `pipeline/streaming/sources/file_watcher.py:105-156`'s `_parse_csv`, `_parse_json`, and `_parse_parquet` do blocking file I/O (and, for Parquet, CPU-bound parsing) but are called synchronously from `read_batch` (an `async def`) with no `asyncio.to_thread`.
+- **Caused by:** none — pre-existing.
+- **Fix:** pending.
+
+## BUG-088: StreamingEngine's checkpoint I/O blocks the event loop on every checkpoint interval
+- **Status:** open
+- **Found by:** ultracode audit of `aurabackend/pipeline/` (`streaming-core` group), 2026-09-15.
+- **Severity:** high — with multiple streaming pipelines running, every ~30s (default `checkpoint_interval_seconds`) each pipeline blocks the single shared event loop for the duration of a synchronous disk write plus checkpoint-file rotation.
+- **Root cause:** `pipeline/streaming/streaming_engine.py:285-286, 553-566`'s `StateManager.create_checkpoint`/`load_latest_checkpoint` perform synchronous blocking file I/O (`open`/`json.dump`/`os.replace`, `os.listdir`+`getmtime` sort, `os.remove`) and are called directly from `async def start()` and `async def _checkpoint()` with no `asyncio.to_thread`.
+- **Caused by:** none — pre-existing.
+- **Fix:** pending.
+
+## BUG-089: `start_pipeline` has a check-then-act race — two concurrent start requests leak a permanently-running duplicate engine
+- **Status:** open
+- **Found by:** ultracode audit of `aurabackend/pipeline/` (`streaming-core` group), 2026-09-15.
+- **Severity:** high — a leaked, unstoppable background task pair that double-processes and double-emits every event to sinks (e.g. duplicate webhook/alert deliveries) for the life of the process.
+- **Root cause:** `pipeline/streaming/streaming_api.py:167-182`'s `start_pipeline` checks `pipe.status == RUNNING` synchronously, constructs a new `StreamingEngine`, stores it in `_engines[pipeline_id]` (overwriting any existing entry), and only afterward `await`s `engine.start()`. Two near-simultaneous start requests both pass the status check before either flips `RUNNING`, so both create engines; the second overwrites `_engines[id]`, leaving the first engine's background tasks (source reads, sink emits, checkpoint writes) running forever with no reference left to `stop()` them.
+- **Caused by:** none — pre-existing.
+- **Fix:** pending.
+
+## BUG-090: WebhookSink.emit_late_event reads a field that doesn't exist on StreamEvent — `include_late` silently never fires
+- **Status:** open
+- **Found by:** ultracode audit of `aurabackend/pipeline/` (`streaming-sources-sinks` group), 2026-09-15.
+- **Severity:** medium — the advertised `include_late` webhook feature is completely non-functional, failing silently (caught by `streaming_engine.py`'s broad `except Exception`, merely logged).
+- **Root cause:** `pipeline/streaming/sinks/webhook_sink.py:76-81`'s `emit_late_event` reads `event.event_time`, but `StreamEvent` (`pipeline/streaming/models.py`) only defines a `timestamp` field — accessing `event_time` raises `AttributeError` on every call.
+- **Caused by:** none — pre-existing.
+- **Fix:** pending.
+
+## BUG-091: AlertSink's `_fired` list grows unboundedly for long-running pipelines
+- **Status:** open
+- **Found by:** ultracode audit of `aurabackend/pipeline/` (`streaming-sources-sinks` group), 2026-09-15.
+- **Severity:** medium — unbounded memory growth in the single long-lived process for a pipeline that runs for days with a frequently-firing alert rule.
+- **Root cause:** `pipeline/streaming/sinks/alert_sink.py:32, 85`'s `self._fired` accumulates one entry per triggered alert for the sink's lifetime with no cap or eviction.
+- **Caused by:** none — pre-existing.
+- **Fix:** pending.
+
+## BUG-092: Late events accepted after a window fires create a fresh, incomplete window instead of a corrected refinement
+- **Status:** open
+- **Found by:** ultracode audit of `aurabackend/pipeline/` (`streaming-core` group), 2026-09-15.
+- **Severity:** medium — silently corrupts downstream aggregates/alerts by emitting a second, incomplete "window closed" event for a window that already fired correctly.
+- **Root cause:** `pipeline/streaming/window_processor.py:146-159, 219-247, 411-416` — when a `late_data_policy_callable` (e.g. `remerge_within_allowed_lateness_policy`) accepts a late event for a window already evicted from `self._windows` (popped at line 413), `_assign_windows`/`_assign_tumbling` silently creates a brand-new, empty `WindowState` for that window key instead of merging into the original result, and the new window immediately re-fires (its `window_end` is already behind the watermark) — emitting an incomplete aggregate instead of the documented "refinement".
+- **Caused by:** none — pre-existing.
+- **Fix:** pending.
+
+## BUG-093: DuckDB source with only `table` set (no connection path/query) never materializes a table, producing a misleading generic error
+- **Status:** open
+- **Found by:** ultracode audit of `aurabackend/pipeline/` (`core-generation` group), 2026-09-15.
+- **Severity:** low — misleads the caller about the actual cause (missing connection info) with a generic DuckDB Catalog Error instead of the clear validation error the sibling `db_path` branch gives; this "just a table name" case can never actually succeed.
+- **Root cause:** `pipeline/engine.py:400-405`'s `_load_duckdb_source`, when `source.connection` has no `database`/`path` and only `source.table` is set, returns `source.table` directly as the "source table" without ever executing anything against the fresh in-memory `conn` — no `ATTACH`, no `CREATE TABLE`. `execute()` then runs `SELECT COUNT(*) FROM "some_table"` against a connection that never had that table created.
+- **Caused by:** none — pre-existing.
+- **Fix:** pending.
+
 ## Refuted (adversarial-verify, 3/3 skeptics refuted — filed for the record, no fix needed)
 
 **recovery_persistence.py:100 generator-abandonment claim** — a reviewer flagged the default (`return_row=False`) branch of `persist_recovery_row` as using the same abandoned-`get_session()`-generator pattern the module's own docstring documents as causing "database is locked". All 3 verifiers refuted: the default branch's `async for db in get_session(): ...; break` pattern was confirmed NOT to reproduce the documented failure the way the `return_row=True` branch's now-fixed pattern did — see per-agent reasoning in the workflow journal for the specific mechanism. No entry filed as open; recorded here only so a future re-audit doesn't re-flag it without checking this note first.
