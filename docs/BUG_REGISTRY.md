@@ -1390,11 +1390,12 @@ the whole subsystem every time.
 - **Fix:** pending.
 
 ## BUG-085: DatabaseSink's synchronous DuckDB calls block the event loop
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode audit of `aurabackend/pipeline/` (`streaming-sources-sinks` group), 2026-09-15.
 - **Severity:** high — freezes every tenant's concurrent request under the single-uvicorn-worker deployment for the duration of any slow DuckDB call.
 - **Root cause:** `pipeline/streaming/sinks/database_sink.py`'s `duckdb.connect()` (line 48) and `self._conn.execute()` (lines 49-59 in `start()`, 102-113 in `emit_window()`) are called directly inside `async def` methods with no `asyncio.to_thread`, unlike the file's own Postgres branch which correctly awaits `asyncpg` calls (see `.claude/rules/backend.md` "Async safety").
 - **Caused by:** none — pre-existing.
+- **Fix:** wrapped `start()`'s DuckDB `connect()`+`CREATE TABLE` in a local closure dispatched via `await asyncio.to_thread(...)`, and `emit_window()`'s `INSERT` via the same. `aurabackend/pipeline/streaming/sinks/database_sink.py`. Regression test `test_duckdb_connect_and_execute_are_offloaded_to_a_thread` (`tests/test_streaming.py`) spies on `asyncio.to_thread` (mirrors the mechanism-level pattern from BUG-065/070) and asserts exactly two calls are dispatched through it. Confirmed non-vacuous via `git stash`: old code fails immediately with `AttributeError: module ... has no attribute 'asyncio'` — the module didn't even import `asyncio`, confirming the offload genuinely didn't exist. Full suite: 62/62 pass. PR: pending.
 - **Fix:** pending.
 
 ## BUG-086: FileSink's `_flush()` does blocking file I/O directly on the event loop
