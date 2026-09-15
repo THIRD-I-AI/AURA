@@ -12,6 +12,7 @@ interface AuthContextValue {
   login: (email: string, password: string) => Promise<void>;
   register: (name: string, email: string, password: string) => Promise<void>;
   logout: () => void;
+  updateProfile: (name: string) => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null);
@@ -32,6 +33,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       authService.logout();
       setUser(null);
     },
+    updateProfile: async (name) => {
+      setUser(await authService.updateProfile(name));
+    },
   };
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
@@ -48,6 +52,7 @@ const NO_PROVIDER: AuthContextValue = {
   login: async () => { throw new Error('Cannot log in: <AuthProvider> is not mounted'); },
   register: async () => { throw new Error('Cannot register: <AuthProvider> is not mounted'); },
   logout: () => {},
+  updateProfile: async () => { throw new Error('Cannot update profile: <AuthProvider> is not mounted'); },
 };
 
 // eslint-disable-next-line react-refresh/only-export-components
