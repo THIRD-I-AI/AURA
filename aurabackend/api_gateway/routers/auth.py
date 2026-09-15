@@ -22,7 +22,13 @@ from sqlalchemy import select
 
 from shared.auth import create_access_token, require_user
 from shared.config import settings
-from shared.exceptions import AuthenticationError, ConflictError, ForbiddenError, ValidationError
+from shared.exceptions import (
+    AuthenticationError,
+    ConflictError,
+    ForbiddenError,
+    NotFoundError,
+    ValidationError,
+)
 from shared.logging_config import get_logger
 from shared.password import hash_password
 
@@ -72,6 +78,28 @@ class UserInfo(BaseModel):
     email: str | None = None
     name: str | None = None
     role: str | None = None
+
+
+class UpdateProfileRequest(BaseModel):
+    name: str = Field(..., min_length=1, max_length=255)
+
+
+class UpdateProfileResponse(BaseModel):
+    """The claims changed (name), so the caller gets a freshly-signed token
+    carrying them — otherwise the browser's existing JWT would keep showing
+    the stale name until it expired."""
+    user: UserInfo
+    access_token: str
+    token_type: str = "bearer"
+
+
+class ChangePasswordRequest(BaseModel):
+    current_password: str
+    new_password: str = Field(..., min_length=8)
+
+
+class DeleteAccountRequest(BaseModel):
+    password: str
 
 
 # ── Endpoints ───────────────────────────────────────────────────────────
@@ -295,3 +323,92 @@ async def current_user(user: dict = Depends(require_user)):
         name=user.get("name"),
         role=user.get("role"),
     )
+
+
+async def _load_own_user_row(session, user: dict):
+    """Fetch the DB row backing the caller's JWT ``sub``. Only exists in
+    password mode — an open-mode token is a bare claims bundle with no
+    persisted account, so profile edits and password changes have nothing
+    to write to."""
+    if settings.auth_mode != "password":
+        raise ValidationError(
+            "Profile editing requires password auth mode — this session has no persisted account"
+        )
+
+    from metadata_store.models import User
+
+    result = await session.execute(select(User).where(User.id == user["sub"]))
+    db_user = result.scalar_one_or_none()
+    if db_user is None:
+        raise NotFoundError("User", user["sub"])
+    return db_user
+
+
+@router.patch("/me", response_model=UpdateProfileResponse)
+async def update_profile(body: UpdateProfileRequest, user: dict = Depends(require_user)):
+    """Update the caller's display name and reissue a token carrying it."""
+    from metadata_store.db import get_session_factory
+
+    session_factory = get_session_factory()
+    async with session_factory() as session:
+        db_user = await _load_own_user_row(session, user)
+        db_user.name = body.name
+        await session.commit()
+        await session.refresh(db_user)
+
+    claims = {
+        "sub": db_user.id,
+        "email": db_user.email,
+        "name": db_user.name,
+        "role": db_user.role or "user",
+        "org_id": db_user.org_id or db_user.id,
+    }
+    logger.info("Profile updated for user_id=%s", db_user.id)
+    return UpdateProfileResponse(
+        user=UserInfo(sub=db_user.id, email=db_user.email, name=db_user.name, role=db_user.role),
+        access_token=create_access_token(claims),
+    )
+
+
+@router.post("/change-password", status_code=204)
+async def change_password(body: ChangePasswordRequest, user: dict = Depends(require_user)):
+    """Change the caller's password. Requires the current password — this is
+    a self-service change, not an admin reset, so it re-proves identity the
+    same way login does."""
+    from metadata_store.db import get_session_factory
+    from shared.password import verify_password
+
+    session_factory = get_session_factory()
+    async with session_factory() as session:
+        db_user = await _load_own_user_row(session, user)
+        if not db_user.password_hash or not await asyncio.to_thread(
+            verify_password, body.current_password, db_user.password_hash
+        ):
+            raise AuthenticationError("Current password is incorrect")
+
+        db_user.password_hash = await asyncio.to_thread(hash_password, body.new_password)
+        await session.commit()
+
+    logger.info("Password changed for user_id=%s", db_user.id)
+
+
+@router.post("/delete-account", status_code=204)
+async def delete_account(body: DeleteAccountRequest, user: dict = Depends(require_user)):
+    """Permanently delete the caller's own account. Requires the current
+    password (a destructive-action guard, same reasoning as change-password) —
+    this is a self-service deletion, not an admin action."""
+    from metadata_store.db import get_session_factory
+    from shared.password import verify_password
+
+    session_factory = get_session_factory()
+    async with session_factory() as session:
+        db_user = await _load_own_user_row(session, user)
+        if not db_user.password_hash or not await asyncio.to_thread(
+            verify_password, body.password, db_user.password_hash
+        ):
+            raise AuthenticationError("Password is incorrect")
+
+        await session.delete(db_user)
+        await session.commit()
+
+    logger.info("Account deleted for user_id=%s", user["sub"])

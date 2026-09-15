@@ -132,6 +132,34 @@ export const authService = {
     const token = getAuthToken();
     return token ? decodeAuthToken(token) : null;
   },
+
+  /** Update the display name. The backend reissues a token carrying the new
+   *  claim, so the caller's session updates without a re-login. */
+  async updateProfile(name: string): Promise<AuthUser> {
+    const resp = await client.patch<{ access_token: string }>('/auth/me', { name });
+    setAuthToken(resp.access_token);
+    const user = decodeAuthToken(resp.access_token);
+    if (!user) {
+      throw new Error('Profile update failed: the server returned an invalid token.');
+    }
+    return user;
+  },
+
+  /** Self-service password change — requires the current password, same as
+   *  login. Claims are unaffected, so no token reissue is needed. */
+  async changePassword(currentPassword: string, newPassword: string): Promise<void> {
+    await client.post('/auth/change-password', {
+      current_password: currentPassword,
+      new_password: newPassword,
+    });
+  },
+
+  /** Permanently delete the caller's own account. Requires the current
+   *  password as a destructive-action guard, same as login. */
+  async deleteAccount(password: string): Promise<void> {
+    await client.post('/auth/delete-account', { password });
+    setAuthToken(null);
+  },
 };
 
 export function getCurrentWorkspaceId(): string {

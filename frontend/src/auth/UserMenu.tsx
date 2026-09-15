@@ -1,14 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from './AuthContext';
-
-function initials(name?: string, email?: string): string {
-  const source = (name || email || '').trim();
-  if (!source) return 'AU';
-  const parts = source.split(/[\s@.]+/).filter(Boolean);
-  const letters = (parts[0]?.[0] ?? '') + (parts[1]?.[0] ?? '');
-  return (letters || source[0]).toUpperCase();
-}
+import { Avatar } from '@/components/ui-kit/avatar';
 
 const itemStyle: React.CSSProperties = {
   display: 'block',
@@ -50,14 +43,13 @@ export function UserMenu({ onSettingsClick }: { onSettingsClick?: () => void }) 
     <div ref={ref} style={{ position: 'relative' }}>
       <button
         data-testid="user-menu-trigger"
-        className="app-header__avatar"
+        className="cursor-pointer rounded-full outline-none transition-transform hover:scale-105 focus-visible:ring-[3px] focus-visible:ring-ring/50"
         title={user ? (user.name || user.email || 'Account') : 'Sign in'}
         aria-haspopup="menu"
         aria-expanded={open}
         onClick={() => setOpen((v) => !v)}
-        style={{ cursor: 'pointer', border: 'none' }}
       >
-        {initials(user?.name, user?.email)}
+        <Avatar name={user?.name} email={user?.email} seed={user?.sub} size="sm" />
       </button>
 
       {open && (
@@ -70,13 +62,16 @@ export function UserMenu({ onSettingsClick }: { onSettingsClick?: () => void }) 
             borderRadius: 0, overflow: 'hidden',
           }}
         >
-          <div style={{ padding: 'var(--space-3)', borderBottom: '1px solid var(--border-default)' }}>
-            <div data-testid="user-menu-name" style={{ fontWeight: 600, fontSize: 'var(--font-sm)' }}>
-              {user?.name || 'Signed in'}
+          <div style={{ padding: 'var(--space-3)', borderBottom: '1px solid var(--border-default)', display: 'flex', alignItems: 'center', gap: 'var(--space-3)' }}>
+            <Avatar name={user?.name} email={user?.email} seed={user?.sub} size="md" />
+            <div style={{ minWidth: 0 }}>
+              <div data-testid="user-menu-name" style={{ fontWeight: 600, fontSize: 'var(--font-sm)' }}>
+                {user?.name || 'Signed in'}
+              </div>
+              {user?.email && (
+                <div style={{ fontSize: 'var(--font-xs)', color: 'var(--text-tertiary)' }}>{user.email}</div>
+              )}
             </div>
-            {user?.email && (
-              <div style={{ fontSize: 'var(--font-xs)', color: 'var(--text-tertiary)' }}>{user.email}</div>
-            )}
           </div>
 
           {onSettingsClick && (
