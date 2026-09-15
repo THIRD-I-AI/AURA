@@ -16,7 +16,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -36,6 +36,7 @@ from pipeline.streaming.models import (
     WindowType,
 )
 from pipeline.streaming.streaming_engine import StreamingEngine
+from shared.auth import get_current_user
 
 logger = logging.getLogger("aura.streaming.api")
 
@@ -47,6 +48,28 @@ router = APIRouter(prefix="/streaming", tags=["Streaming Pipelines"])
 
 _pipelines: Dict[str, StreamPipeline] = {}
 _engines: Dict[str, StreamingEngine] = {}
+
+
+def _tenant_of(user: Optional[Dict[str, Any]]) -> Optional[str]:
+    """The caller's tenant (org) id from the verified principal `shared.auth
+    .get_current_user` resolves from `request.state.user` -- or `None` when
+    the request is unauthenticated (dev/open mode). Mirrors
+    `api_gateway/routers/workspaces.py`'s `_request_tenant`."""
+    if not isinstance(user, dict):
+        return None
+    tenant = user.get("org_id") or user.get("sub")
+    return str(tenant) if tenant else None
+
+
+def _owned_pipeline(pipeline_id: str, tenant: Optional[str]) -> StreamPipeline:
+    """Look up a pipeline and enforce tenant ownership (BUG-080). Raises 404
+    for both "doesn't exist" and "belongs to another tenant" -- the two
+    cases must be indistinguishable to the caller, or the 404/403 split
+    itself leaks which pipeline_ids exist."""
+    pipe = _pipelines.get(pipeline_id)
+    if not pipe or pipe.tenant_id != tenant:
+        raise HTTPException(status_code=404, detail="Pipeline not found")
+    return pipe
 
 
 # ────────────────────────────────────────────────────────────────────
@@ -86,9 +109,12 @@ class UpdateStreamPipelineRequest(BaseModel):
 # ────────────────────────────────────────────────────────────────────
 
 @router.get("/pipelines", summary="List all streaming pipelines")
-async def list_pipelines():
+async def list_pipelines(user: Optional[Dict[str, Any]] = Depends(get_current_user)):
+    tenant = _tenant_of(user)
     pipelines = []
     for pid, pipe in _pipelines.items():
+        if pipe.tenant_id != tenant:
+            continue
         entry = pipe.model_dump()
         if pid in _engines:
             entry["metrics"] = _engines[pid].metrics.model_dump()
@@ -97,10 +123,8 @@ async def list_pipelines():
 
 
 @router.get("/pipelines/{pipeline_id}", summary="Get pipeline details + metrics")
-async def get_pipeline(pipeline_id: str):
-    pipe = _pipelines.get(pipeline_id)
-    if not pipe:
-        raise HTTPException(status_code=404, detail="Pipeline not found")
+async def get_pipeline(pipeline_id: str, user: Optional[Dict[str, Any]] = Depends(get_current_user)):
+    pipe = _owned_pipeline(pipeline_id, _tenant_of(user))
     result = pipe.model_dump()
     engine = _engines.get(pipeline_id)
     if engine:
@@ -109,7 +133,7 @@ async def get_pipeline(pipeline_id: str):
 
 
 @router.post("/pipelines", summary="Create a new streaming pipeline", status_code=201)
-async def create_pipeline(req: CreateStreamPipelineRequest):
+async def create_pipeline(req: CreateStreamPipelineRequest, user: Optional[Dict[str, Any]] = Depends(get_current_user)):
     # Ensure at least one SSE sink for frontend connectivity
     has_sse = any(s.type == StreamSinkType.SSE for s in req.sinks)
     sinks = list(req.sinks)
@@ -128,6 +152,7 @@ async def create_pipeline(req: CreateStreamPipelineRequest):
         sinks=sinks,
         checkpoint_interval_seconds=req.checkpoint_interval_seconds,
         tags=req.tags,
+        tenant_id=_tenant_of(user),
     )
     _pipelines[pipe.id] = pipe
     logger.info("Created streaming pipeline: %s (%s)", pipe.name, pipe.id)
@@ -135,10 +160,8 @@ async def create_pipeline(req: CreateStreamPipelineRequest):
 
 
 @router.put("/pipelines/{pipeline_id}", summary="Update a pipeline (must be stopped/draft)")
-async def update_pipeline(pipeline_id: str, req: UpdateStreamPipelineRequest):
-    pipe = _pipelines.get(pipeline_id)
-    if not pipe:
-        raise HTTPException(status_code=404, detail="Pipeline not found")
+async def update_pipeline(pipeline_id: str, req: UpdateStreamPipelineRequest, user: Optional[Dict[str, Any]] = Depends(get_current_user)):
+    pipe = _owned_pipeline(pipeline_id, _tenant_of(user))
     if pipe.status not in (StreamPipelineStatus.DRAFT, StreamPipelineStatus.STOPPED, StreamPipelineStatus.FAILED):
         raise HTTPException(status_code=409, detail="Pipeline must be stopped to edit")
 
@@ -149,10 +172,8 @@ async def update_pipeline(pipeline_id: str, req: UpdateStreamPipelineRequest):
 
 
 @router.delete("/pipelines/{pipeline_id}", summary="Delete a pipeline (must be stopped)")
-async def delete_pipeline(pipeline_id: str):
-    pipe = _pipelines.get(pipeline_id)
-    if not pipe:
-        raise HTTPException(status_code=404, detail="Pipeline not found")
+async def delete_pipeline(pipeline_id: str, user: Optional[Dict[str, Any]] = Depends(get_current_user)):
+    pipe = _owned_pipeline(pipeline_id, _tenant_of(user))
     if pipe.status == StreamPipelineStatus.RUNNING:
         raise HTTPException(status_code=409, detail="Stop the pipeline before deleting")
     _pipelines.pop(pipeline_id, None)
@@ -165,10 +186,8 @@ async def delete_pipeline(pipeline_id: str):
 # ────────────────────────────────────────────────────────────────────
 
 @router.post("/pipelines/{pipeline_id}/start", summary="Start the pipeline")
-async def start_pipeline(pipeline_id: str):
-    pipe = _pipelines.get(pipeline_id)
-    if not pipe:
-        raise HTTPException(status_code=404, detail="Pipeline not found")
+async def start_pipeline(pipeline_id: str, user: Optional[Dict[str, Any]] = Depends(get_current_user)):
+    pipe = _owned_pipeline(pipeline_id, _tenant_of(user))
     if pipe.status == StreamPipelineStatus.RUNNING:
         raise HTTPException(status_code=409, detail="Already running")
 
@@ -183,7 +202,8 @@ async def start_pipeline(pipeline_id: str):
 
 
 @router.post("/pipelines/{pipeline_id}/stop", summary="Stop the pipeline")
-async def stop_pipeline(pipeline_id: str):
+async def stop_pipeline(pipeline_id: str, user: Optional[Dict[str, Any]] = Depends(get_current_user)):
+    _owned_pipeline(pipeline_id, _tenant_of(user))
     engine = _engines.get(pipeline_id)
     if not engine:
         raise HTTPException(status_code=404, detail="No running engine for this pipeline")
@@ -192,7 +212,8 @@ async def stop_pipeline(pipeline_id: str):
 
 
 @router.post("/pipelines/{pipeline_id}/pause", summary="Pause the pipeline")
-async def pause_pipeline(pipeline_id: str):
+async def pause_pipeline(pipeline_id: str, user: Optional[Dict[str, Any]] = Depends(get_current_user)):
+    _owned_pipeline(pipeline_id, _tenant_of(user))
     engine = _engines.get(pipeline_id)
     if not engine:
         raise HTTPException(status_code=404, detail="No running engine for this pipeline")
@@ -201,7 +222,8 @@ async def pause_pipeline(pipeline_id: str):
 
 
 @router.post("/pipelines/{pipeline_id}/resume", summary="Resume a paused pipeline")
-async def resume_pipeline(pipeline_id: str):
+async def resume_pipeline(pipeline_id: str, user: Optional[Dict[str, Any]] = Depends(get_current_user)):
+    _owned_pipeline(pipeline_id, _tenant_of(user))
     engine = _engines.get(pipeline_id)
     if not engine:
         raise HTTPException(status_code=404, detail="No running engine for this pipeline")
@@ -214,18 +236,17 @@ async def resume_pipeline(pipeline_id: str):
 # ────────────────────────────────────────────────────────────────────
 
 @router.get("/pipelines/{pipeline_id}/metrics", summary="Get current metrics")
-async def get_metrics(pipeline_id: str):
+async def get_metrics(pipeline_id: str, user: Optional[Dict[str, Any]] = Depends(get_current_user)):
+    _owned_pipeline(pipeline_id, _tenant_of(user))
     engine = _engines.get(pipeline_id)
     if not engine:
-        pipe = _pipelines.get(pipeline_id)
-        if not pipe:
-            raise HTTPException(status_code=404, detail="Pipeline not found")
         return StreamMetrics(pipeline_id=pipeline_id).model_dump()
     return engine.metrics.model_dump()
 
 
 @router.get("/pipelines/{pipeline_id}/stream", summary="SSE stream of metrics + window events")
-async def stream_events(pipeline_id: str):
+async def stream_events(pipeline_id: str, user: Optional[Dict[str, Any]] = Depends(get_current_user)):
+    _owned_pipeline(pipeline_id, _tenant_of(user))
     engine = _engines.get(pipeline_id)
     if not engine:
         raise HTTPException(status_code=404, detail="No running engine for this pipeline")
