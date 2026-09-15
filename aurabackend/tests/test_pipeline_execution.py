@@ -34,6 +34,7 @@ import pytest
 from pipeline.engine import PipelineEngine
 from pipeline.generator import PipelineGenerator
 from pipeline.models import (
+    JoinSource,
     Pipeline,
     PipelineSink,
     PipelineSource,
@@ -270,6 +271,42 @@ async def test_custom_sql_step_rejects_attach_expression(tmp_path, monkeypatch):
 
     assert run.status == PipelineStatus.FAILED
     assert "may not reference file/network access functions" in run.error
+
+
+@pytest.mark.asyncio
+async def test_join_step_actually_loads_and_joins_the_second_source(tmp_path, monkeypatch):
+    """BUG-084: JOIN steps referenced step.config['right_table'] as a bare
+    table name, but no code path ever loaded step.join_source (the real
+    second-source descriptor) into the connection -- every JOIN pipeline
+    failed with a Catalog Error (or, worse, silently matched an internal
+    CTE alias like "step_1" if right_table happened to collide with one).
+    Prove a real two-file join actually executes and produces the correct
+    joined row."""
+    _isolate_storage(tmp_path, monkeypatch)
+    from shared.storage import get_storage_backend
+    tenant = "tenant_abc123"
+    get_storage_backend().write(tenant, "orders.csv", b"order_id,customer_id,amount\n1,100,50\n2,200,75\n")
+    get_storage_backend().write(tenant, "customers.csv", b"customer_id,name\n100,Alice\n200,Bob\n")
+
+    pipeline = Pipeline(
+        name="join-test",
+        source=PipelineSource(type=SourceType.FILE, file_name="orders.csv"),
+        steps=[ProcessingStep(
+            type=StepType.JOIN,
+            config={"join_type": "INNER", "left_key": "customer_id", "right_key": "customer_id"},
+            join_source=JoinSource(type=SourceType.FILE, file_name="customers.csv"),
+        )],
+        sink=PipelineSink(type=SinkType.PREVIEW),
+    )
+
+    engine = PipelineEngine()
+    run = await engine.execute(pipeline, preview_only=True, tenant=tenant)
+
+    assert run.status == PipelineStatus.SUCCESS, run.error
+    assert run.rows_written == 2
+    assert "name" in run.columns_out
+    names = {row["name"] for row in run.preview_data}
+    assert names == {"Alice", "Bob"}
 
 
 def _generator() -> PipelineGenerator:

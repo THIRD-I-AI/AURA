@@ -114,9 +114,23 @@ class PipelineEngine:
             )).description]
             run.columns_in = src_cols
 
-            # ── 2. BUILD PROCESSING SQL ───────────────────────────────
+            # ── 2. LOAD JOIN SOURCES (BUG-084) ────────────────────────
+            # A JOIN step's second source must be loaded into the same
+            # connection under its own table name before the CTE chain
+            # references it -- loading is async/blocking I/O, so it can't
+            # happen inside the (sync) SQL-building pass below.
+            join_tables: Dict[str, str] = {}
+            for step in pipeline.steps:
+                if step.type == StepType.JOIN and step.join_source is not None:
+                    join_source = PipelineSource(**step.join_source.model_dump())
+                    join_table_name = f"join_src_{_sanitize_id(step.id)}"
+                    join_tables[step.id] = await self._load_source(
+                        conn, join_source, tenant=tenant, table_name=join_table_name,
+                    )
+
+            # ── 3. BUILD PROCESSING SQL ───────────────────────────────
             final_table, sql, steps_run, steps_skip = self._build_processing_sql(
-                conn, source_table, pipeline.steps
+                conn, source_table, pipeline.steps, join_tables
             )
             run.sql_generated = sql
             run.steps_executed = steps_run
@@ -176,25 +190,34 @@ class PipelineEngine:
         source: PipelineSource,
         progress_cb: Optional[Callable[[int, Optional[int]], Awaitable[None]]] = None,
         tenant: Optional[str] = None,
+        table_name: str = "source_data",
     ) -> str:
-        """Load source data into DuckDB and return the table name."""
+        """Load source data into DuckDB and return the table name.
+
+        ``table_name``: defaults to "source_data" (the primary source's
+        historical fixed name). A JOIN step's second source (BUG-084) must
+        load under a distinct name, since both sources share one connection
+        and every loader below otherwise hardcodes this same name.
+        """
         # _load_file_source (a network LLM call via smart_load_file) and
         # _load_duckdb_source (ATTACH + CREATE TABLE AS on a large external
         # file) both block; the deployment runs one uvicorn worker, so
         # running either inline would freeze every concurrent request for
         # its duration (same reasoning as the conn.execute calls below).
         if source.type == SourceType.FILE:
-            return await asyncio.to_thread(self._load_file_source, conn, source, tenant)
+            return await asyncio.to_thread(self._load_file_source, conn, source, tenant, table_name)
         elif source.type in (SourceType.POSTGRESQL, SourceType.MYSQL):
-            return await self._load_db_source(conn, source)
+            return await self._load_db_source(conn, source, table_name)
         elif source.type == SourceType.DUCKDB:
-            return await asyncio.to_thread(self._load_duckdb_source, conn, source, tenant)
+            return await asyncio.to_thread(self._load_duckdb_source, conn, source, tenant, table_name)
         elif source.type == SourceType.KAFKA:
-            return await self._load_kafka_source(conn, source, progress_cb)
+            return await self._load_kafka_source(conn, source, progress_cb, table_name)
         else:
             raise ValueError(f"Unsupported source type: {source.type}")
 
-    def _load_file_source(self, conn: Any, source: PipelineSource, tenant: Optional[str] = None) -> str:
+    def _load_file_source(
+        self, conn: Any, source: PipelineSource, tenant: Optional[str] = None, table_name: str = "source_data",
+    ) -> str:
         """Load a CSV/Parquet/JSON file into DuckDB with smart header detection.
 
         BUG-035: reads through the active StorageBackend (mirrors
@@ -221,11 +244,10 @@ class PipelineEngine:
             raise FileNotFoundError(f"Source file not found: {fname}")
         duckdb_uri = backend.duckdb_uri(tenant, safe_name)
 
-        table_name = "source_data"
         smart_load_file(conn, duckdb_uri, table_name, use_llm=True)
         return table_name
 
-    async def _load_db_source(self, conn: Any, source: PipelineSource) -> str:
+    async def _load_db_source(self, conn: Any, source: PipelineSource, table_name: str = "source_data") -> str:
         """Load data from PostgreSQL/MySQL into DuckDB via connector."""
         from connectors import ConnectorConfig, MySQLConnector, PostgreSQLConnector
         from connectors import SourceType as CSourceType
@@ -259,7 +281,6 @@ class PipelineEngine:
 
         # Load into DuckDB
         import duckdb
-        table_name = "source_data"
         columns = list(rows[0].keys())
         col_defs = ", ".join(f'"{_sanitize_id(c)}" VARCHAR' for c in columns)
 
@@ -284,6 +305,7 @@ class PipelineEngine:
         conn: Any,
         source: PipelineSource,
         progress_cb: Optional[Callable[[int, Optional[int]], Awaitable[None]]] = None,
+        table_name: str = "source_data",
     ) -> str:
         """Consume a bounded batch from a Kafka topic into DuckDB."""
         from shared.kafka_client import consume_batch
@@ -305,7 +327,6 @@ class PipelineEngine:
                     seen.add(k)
                     columns.append(k)
 
-        table_name = "source_data"
         col_defs = ", ".join(f'"{_sanitize_id(c)}" VARCHAR' for c in columns)
 
         def _create_and_insert() -> None:
@@ -336,7 +357,9 @@ class PipelineEngine:
         logger.info("[Pipeline] Kafka source loaded %d rows from %s", len(rows), cfg.get("topic"))
         return table_name
 
-    def _load_duckdb_source(self, conn: Any, source: PipelineSource, tenant: Optional[str] = None) -> str:
+    def _load_duckdb_source(
+        self, conn: Any, source: PipelineSource, tenant: Optional[str] = None, table_name: str = "source_data",
+    ) -> str:
         """Load from an existing table/query on the engine's own
         in-memory connection, or ATTACH an external .duckdb file named
         in source.connection["database"] and load from that.
@@ -389,18 +412,19 @@ class PipelineEngine:
             if not backend.exists(tenant, safe_name):
                 raise FileNotFoundError(f"DuckDB source file not found: {os.path.basename(str(db_path))}")
 
-            conn.execute(f"ATTACH {quote_literal(uri)} AS ext_src (READ_ONLY)")
+            attach_alias = f"ext_{_sanitize_id(table_name)}"
+            conn.execute(f"ATTACH {quote_literal(uri)} AS {attach_alias} (READ_ONLY)")
             if source.query:
-                conn.execute(f"CREATE TABLE source_data AS {source.query}")
+                conn.execute(f"CREATE TABLE {_q(table_name)} AS {source.query}")
             elif source.table:
-                conn.execute(f"CREATE TABLE source_data AS SELECT * FROM ext_src.{_q(source.table)}")
+                conn.execute(f"CREATE TABLE {_q(table_name)} AS SELECT * FROM {attach_alias}.{_q(source.table)}")
             else:
                 raise ValueError("DuckDB source needs table or query")
-            return "source_data"
+            return table_name
 
         if source.query:
-            conn.execute(f"CREATE TABLE source_data AS {source.query}")
-            return "source_data"
+            conn.execute(f"CREATE TABLE {_q(table_name)} AS {source.query}")
+            return table_name
         if source.table:
             return source.table
         raise ValueError("DuckDB source needs table or query")
@@ -412,11 +436,17 @@ class PipelineEngine:
         conn: Any,
         source_table: str,
         steps: List[ProcessingStep],
+        join_tables: Optional[Dict[str, str]] = None,
     ) -> Tuple[str, str, int, int]:
         """
         Build a CTE chain from processing steps.
         Returns (final_table_name, full_sql, steps_executed, steps_skipped).
+
+        ``join_tables``: step.id -> already-loaded DuckDB table name for that
+        JOIN step's ``join_source`` (loaded by ``execute()`` before this is
+        called, since loading is async/blocking I/O and this method is not).
         """
+        join_tables = join_tables or {}
         if not steps:
             # No transforms — create output as passthrough
             sql = f"CREATE TABLE pipeline_output AS SELECT * FROM {_q(source_table)}"
@@ -428,7 +458,7 @@ class PipelineEngine:
         skipped = 0
 
         for step in steps:
-            clause = self._step_to_sql(conn, step, prev)
+            clause = self._step_to_sql(conn, step, prev, join_tables)
             if clause is None:
                 skipped += 1
                 continue
@@ -447,7 +477,9 @@ class PipelineEngine:
         sql = f"CREATE TABLE pipeline_output AS {cte_sql} SELECT * FROM {_q(prev)}"
         return "pipeline_output", sql, step_num, skipped
 
-    def _step_to_sql(self, conn: Any, step: ProcessingStep, prev: str) -> Optional[str]:
+    def _step_to_sql(
+        self, conn: Any, step: ProcessingStep, prev: str, join_tables: Optional[Dict[str, str]] = None,
+    ) -> Optional[str]:
         """Convert a processing step to a SQL SELECT clause. Returns None to skip."""
         cfg = step.config
         t = step.type
@@ -621,7 +653,14 @@ class PipelineEngine:
             join_type = cfg.get("join_type", "INNER").upper()
             left_key = cfg.get("left_key", "")
             right_key = cfg.get("right_key", "")
-            right_table = cfg.get("right_table", "")
+            # BUG-084: `right_table` used to be a bare name from cfg, with
+            # no code path anywhere loading that second source into the
+            # connection -- every JOIN failed (Catalog Error) or, worse,
+            # accidentally matched an internal CTE alias like "step_1".
+            # `step.join_source` (models.py) is the real second-source
+            # descriptor; execute() loads it before this runs and passes
+            # the resulting table name here keyed by step.id.
+            right_table = (join_tables or {}).get(step.id)
             if not left_key or not right_key or not right_table:
                 return None
             allowed_joins = {"INNER", "LEFT", "RIGHT", "FULL", "CROSS"}
