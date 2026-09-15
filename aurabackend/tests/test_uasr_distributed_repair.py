@@ -325,3 +325,39 @@ def test_active_count_for_source_tracks_and_clears_across_nodes():
     during, after = asyncio.run(run())
     assert during == 2
     assert after == 0
+
+
+def test_concurrent_prune_does_not_double_decrement_per_source_counter():
+    # BUG-074: active_count()/queue_depth() call _prune_expired() without the
+    # admit lock, while _try_admit() calls it under the lock. zrangebyscore
+    # (read expired tokens) and zremrangebyscore (remove them) are two round
+    # trips, so two concurrent unlocked prunes could both read the same
+    # expired token and both hincrby(-1) the per-source counter before either
+    # removed it from the active set -- double-decrementing a live counter.
+    async def run():
+        r = _redis()
+        coord = _coord(r, "N", cap=4)
+
+        # Seed one already-expired lease for source "s1".
+        token = "N:1:s1"
+        await asyncio.to_thread(r.zadd, coord._active, {token: coord._now_ms() - 1000})
+        await asyncio.to_thread(r.hincrby, coord._active_by_source_key, "s1", 1)
+
+        # Widen the gap between the read and the removal so two concurrent
+        # prunes reliably overlap instead of depending on scheduler luck.
+        orig_zrangebyscore = r.zrangebyscore
+
+        def slow_zrangebyscore(*a, **kw):
+            result = orig_zrangebyscore(*a, **kw)
+            time.sleep(0.05)
+            return result
+
+        r.zrangebyscore = slow_zrangebyscore
+
+        await asyncio.gather(coord._prune_expired(), coord._prune_expired())
+
+        remaining = await asyncio.to_thread(r.hget, coord._active_by_source_key, "s1")
+        return int(remaining) if remaining is not None else 0
+
+    remaining = asyncio.run(run())
+    assert remaining == 0, f"per-source counter double-decremented: {remaining}"
