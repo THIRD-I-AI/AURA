@@ -80,36 +80,24 @@ def _serialize_value(val: Any) -> Any:
     return val
 
 
-# Aliased to the hardened implementation rather than kept local — this copy
-# also predated the NUL-byte guard. See pipeline/engine.py for the same fix.
+# quote_identifier: aliased to the hardened implementation rather than kept
+# local -- this copy also predated the NUL-byte guard. See pipeline/engine.py
+# for the same fix.
+#
+# validate_sql_expression (BUG-053): the shared DuckDB connection factory
+# (shared/duckdb_factory.py) applies no enable_external_access restriction,
+# and this connection is also used to load the tenant-sandboxed source file
+# and write the sink -- so it can't simply be locked down wholesale without
+# breaking those legitimate uses. A custom_sql transform only ever needs to
+# compute over the already-loaded table (it receives it via {{input}}), so
+# block the concrete DuckDB table-functions/statements that read files,
+# attach other databases, or reach the network -- closing the
+# arbitrary-file-read/SSRF vector the audit demonstrated without needing a
+# separate restricted connection. Extracted to shared/sql_expression_guard.py
+# (BUG-082/083) so pipeline/engine.py's ADD_COLUMN/CUSTOM_SQL steps, which
+# had never had this guard applied, can reuse it.
+from shared.sql_expression_guard import validate_sql_expression as _validate_custom_sql  # noqa: E402
 from shared.sql_identifiers import quote_identifier as _q  # noqa: E402
-
-# BUG-053: the shared DuckDB connection factory (shared/duckdb_factory.py)
-# applies no enable_external_access restriction, and this connection is
-# also used to load the tenant-sandboxed source file and write the sink --
-# so it can't simply be locked down wholesale without breaking those
-# legitimate uses. A custom_sql transform only ever needs to compute over
-# the already-loaded table (it receives it via {{input}}), so block the
-# concrete DuckDB table-functions/statements that read files, attach other
-# databases, or reach the network -- closing the arbitrary-file-read/SSRF
-# vector the audit demonstrated without needing a separate restricted
-# connection.
-_CUSTOM_SQL_BLOCKED_PATTERN = re.compile(
-    r"\b(read_csv(_auto)?|read_parquet|read_json(_auto)?|read_ndjson|"
-    r"read_text|read_blob|glob|attach|detach|copy|pragma|install|load|"
-    r"httpfs)\b",
-    re.IGNORECASE,
-)
-
-
-def _validate_custom_sql(sql_expr: str) -> None:
-    if _CUSTOM_SQL_BLOCKED_PATTERN.search(sql_expr):
-        raise ValueError(
-            "custom_sql may not reference file/network access functions "
-            "(read_csv, read_parquet, ATTACH, COPY, PRAGMA, INSTALL, LOAD, etc.)"
-        )
-    if "://" in sql_expr:
-        raise ValueError("custom_sql may not reference URIs")
 
 
 def _build_transform_sql(table: str, steps: List[ETLTransformStep], con=None) -> str:

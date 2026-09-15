@@ -51,6 +51,7 @@ def _sanitize_id(name: str) -> str:
 # the SQL-injection hardening — so two of the three "quote an identifier"
 # implementations in this repo silently missed that guard while the third had
 # it. Aliasing covers every existing call site without touching them.
+from shared.sql_expression_guard import validate_sql_expression as _validate_expression  # noqa: E402
 from shared.sql_identifiers import quote_identifier as _q  # noqa: E402
 from shared.storage.base import tenant_slug  # noqa: E402
 
@@ -500,6 +501,12 @@ class PipelineEngine:
             expression = cfg.get("expression", "")
             if not name or not expression:
                 return None
+            # BUG-082/083: only the output column name was sanitized; the
+            # expression itself (free text, reachable via the LLM generator
+            # AND the local rule-based parser's own regex) was spliced
+            # verbatim, letting it use read_csv_auto/ATTACH/httpfs against
+            # the shared, unrestricted DuckDB connection.
+            _validate_expression(expression)
             return f'SELECT *, ({expression}) AS "{_sanitize_id(name)}" FROM {_q(prev)}'
 
         elif t == StepType.CAST_TYPE:
@@ -671,6 +678,9 @@ class PipelineEngine:
             expression = cfg.get("expression", "").strip()
             if not expression:
                 return None
+            # BUG-082: mirrors etl.py's custom_sql guard (BUG-053) -- this
+            # step's expression was never validated at all.
+            _validate_expression(expression)
             # Custom SQL must reference {{prev}} as the upstream table
             return expression.replace("{{prev}}", _q(prev))
 
