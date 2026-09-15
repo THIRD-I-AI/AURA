@@ -261,6 +261,27 @@ class TestWindowProcessor:
         # t=7 should fall in windows [0,10) and [5,15)
         assert wp.active_window_count == 2
 
+    def test_sliding_rejects_negative_slide_seconds(self):
+        # BUG-081: _assign_sliding's `while start <= latest_start: start +=
+        # slide` never terminates for a negative slide -- start decreases
+        # without bound while latest_start stays fixed, spinning the single
+        # shared event loop forever on the first sliding-window event.
+        # Reject it at construction (the API boundary), not in the hot loop.
+        with pytest.raises(ValueError):
+            WindowConfig(type=WindowType.SLIDING, size_seconds=10, slide_seconds=-1)
+
+    def test_sliding_zero_slide_seconds_still_allowed_as_fallback_sentinel(self):
+        # 0 is a legitimate "unset" sentinel: `slide = slide_seconds or
+        # size_seconds` treats 0 as falsy and falls back to size_seconds
+        # (tumbling-equivalent slide) -- must not be rejected by the
+        # negative-slide validator above.
+        wp = WindowProcessor(
+            WindowConfig(type=WindowType.SLIDING, size_seconds=10, slide_seconds=0),
+            watermark_delay=0,
+        )
+        wp.process_event(_event(7))
+        assert wp.active_window_count == 1
+
     # ── Session ──
     def test_session_one_session(self):
         wp = WindowProcessor(

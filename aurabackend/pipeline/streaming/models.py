@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Dict, List, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 # ────────────────────────────────────────────────────────────────────
 # Enums
@@ -103,6 +103,20 @@ class WindowConfig(BaseModel):
     gap_seconds: Optional[int] = None    # for SESSION: inactivity gap
     late_data_policy: LateDataPolicy = LateDataPolicy.DROP
     allowed_lateness_seconds: int = 10   # grace period for late arrivals
+
+    @field_validator("slide_seconds")
+    @classmethod
+    def _slide_seconds_must_not_be_negative(cls, v: Optional[int]) -> Optional[int]:
+        # BUG-081: window_processor.py's _assign_sliding walks
+        # `start -= slide` in an unbounded loop when slide is negative --
+        # start decreases forever while latest_start stays fixed, spinning
+        # the single shared event loop forever on the first sliding-window
+        # event. Reject it here, at the API boundary, rather than in the
+        # hot processing path. 0 stays legal: _assign_sliding treats it as
+        # falsy and falls back to size_seconds (tumbling-equivalent slide).
+        if v is not None and v < 0:
+            raise ValueError("slide_seconds must not be negative")
+        return v
 
 
 # ────────────────────────────────────────────────────────────────────
