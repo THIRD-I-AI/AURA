@@ -1399,11 +1399,12 @@ the whole subsystem every time.
 - **Fix:** pending.
 
 ## BUG-086: FileSink's `_flush()` does blocking file I/O directly on the event loop
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode audit of `aurabackend/pipeline/` (`streaming-sources-sinks` group), 2026-09-15.
 - **Severity:** high — stalls every tenant's concurrent request under the single-worker deployment, worse on a slow or network-mounted `output_dir`.
 - **Root cause:** `pipeline/streaming/sinks/file_sink.py:53-72`'s `_flush()` is `async def` but performs synchronous `open()`/`write`, `csv.DictWriter`, and `json.dump` directly with no `asyncio.to_thread`, invoked both from the hot path (`emit_window`, gated by `flush_every`) and from `stop()`.
 - **Caused by:** none — pre-existing.
+- **Fix:** wrapped the write body in a local closure dispatched via `await asyncio.to_thread(...)`. This surfaced a real correctness hazard the fix itself introduces if not handled: once the write is offloaded, the event loop can run other coroutines while the worker thread reads `self._buffer`, so a concurrent `emit_window()` appending to that same list would race with the thread's iteration (CPython list iteration is index-based — a concurrent append is read mid-iteration, not just ignored). Fixed by swapping `self._buffer` for a fresh list synchronously (no `await` in between) before dispatching the old list's contents to the thread. `aurabackend/pipeline/streaming/sinks/file_sink.py`. Two regression tests in `tests/test_streaming.py::TestFileSink`: one spies on `asyncio.to_thread` and asserts exactly one write call is dispatched through it; another emits 5 windows with `flush_every=1` and asserts every row lands in exactly one batch file (none lost or duplicated), guarding the buffer-swap itself. Confirmed non-vacuous via `git stash`: old code fails with `AttributeError` (module never imported `asyncio`). Full suite: 64/64 pass. PR: pending.
 - **Fix:** pending.
 
 ## BUG-087: FileWatcher source's blocking parse calls run directly on the event loop
