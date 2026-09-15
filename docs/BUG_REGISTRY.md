@@ -1461,6 +1461,14 @@ the whole subsystem every time.
 - **Caused by:** none — pre-existing.
 - **Fix:** pending.
 
+## BUG-094: test_pipeline_agent_does_not_block_event_loop flaked under CI load — same structural gap as BUG-077
+- **Status:** fixed
+- **Found by:** pre-push hook failure while pushing `fix/bug-085-database-sink-blocking`, 2026-09-15 (`0.6686594999628142 < 0.65`), on an unrelated branch (`pipeline/streaming/sinks/database_sink.py` only), ruling out a real regression from that change.
+- **Severity:** low (test-only; blocks pushes intermittently) but worth root-causing per this repo's standing rule against just re-logging flakes.
+- **Root cause:** identical structural gap to BUG-077, just in a different file: `tests/test_pipeline_agent.py`'s test ran a concurrent "ticker" coroutine alongside `agent.execute()` and asserted the whole run finished under a fixed `0.65s` wall-clock bound. `asyncio.gather()` waits for both coroutines regardless of ordering, so the `tick_count == 20` assertion never actually caught a blocked-loop regression, leaving the tight wall-clock bound as the only real signal — close enough to the serial floor (`0.3s` LLM + `0.4s` ticker) that CI scheduling jitter crossed it.
+- **Caused by:** none — pre-existing test design gap (same class as BUG-077), not introduced by any change in this session.
+- **Fix:** replaced the wall-clock inference with a direct mechanism-level check, matching BUG-077's fix and BUG-065/070's established pattern: patch `agents.specialists.pipeline_agent.asyncio.to_thread` with a spy that still executes the real call, and assert `agent._llm.generate_json` was actually dispatched through it. `aurabackend/tests/test_pipeline_agent.py`. Confirmed non-vacuous by temporarily reverting `pipeline_agent.py`'s `await asyncio.to_thread(self._llm.generate_json, prompt)` to a direct call — the new test fails immediately (`assert generate_json in []`) — then restoring it and confirming 5/5 clean passes. PR: pending.
+
 ## Refuted (adversarial-verify, 3/3 skeptics refuted — filed for the record, no fix needed)
 
 **recovery_persistence.py:100 generator-abandonment claim** — a reviewer flagged the default (`return_row=False`) branch of `persist_recovery_row` as using the same abandoned-`get_session()`-generator pattern the module's own docstring documents as causing "database is locked". All 3 verifiers refuted: the default branch's `async for db in get_session(): ...; break` pattern was confirmed NOT to reproduce the documented failure the way the `return_row=True` branch's now-fixed pattern did — see per-agent reasoning in the workflow journal for the specific mechanism. No entry filed as open; recorded here only so a future re-audit doesn't re-flag it without checking this note first.
