@@ -41,6 +41,7 @@ from pipeline.streaming.models import (
     WindowType,
 )
 from pipeline.streaming.window_processor import WindowProcessor
+from shared.sql_identifiers import quote_identifier
 
 # ────────────────────────────────────────────────────────────────
 # Helpers
@@ -525,6 +526,60 @@ class TestDatabaseSink:
             assert rows[0] == 1
         finally:
             conn.close()
+
+    def test_malicious_table_name_is_safely_quoted_not_executed(self, tmp_path):
+        # BUG-079: the sink's `table` config (free text, exposed directly in
+        # the streaming pipeline config UI) was spliced unescaped into
+        # CREATE TABLE/INSERT SQL. A table name containing a double-quote
+        # could break out of the identifier and inject arbitrary SQL.
+        from pipeline.streaming.sinks.database_sink import DatabaseSink
+
+        db_path = str(tmp_path / "streaming.duckdb")
+        evil_table = 'x" ; CREATE TABLE pwned(id INT); --'
+        sink = DatabaseSink(config={"path": db_path, "table": evil_table})
+        loop = asyncio.new_event_loop()
+        loop.run_until_complete(sink.start())
+
+        ws = WindowState(
+            window_key="k1|0-60", window_start=0, window_end=60,
+            event_count=1, aggregations={"count": 1},
+        )
+        loop.run_until_complete(sink.emit_window(ws, "p1"))
+        loop.run_until_complete(sink.stop())
+        loop.close()
+
+        import duckdb
+        conn = duckdb.connect(db_path)
+        try:
+            tables = {r[0] for r in conn.execute("SHOW TABLES").fetchall()}
+            assert "pwned" not in tables, (
+                "malicious table name broke out of identifier quoting and "
+                "executed injected SQL"
+            )
+            assert evil_table in tables, (
+                "the literal (safely-quoted) table name should still exist"
+            )
+            rows = conn.execute(f'SELECT COUNT(*) FROM {quote_identifier(evil_table)}').fetchone()
+            assert rows[0] == 1
+        finally:
+            conn.close()
+
+    def test_postgres_sql_templates_use_quoted_identifiers(self):
+        # Same bug, Postgres branch: _PG_CREATE_TABLE/_PG_INSERT must not
+        # rely on the caller's raw table name being embedded in bare
+        # "{table}" quoting -- the sink must pre-quote it via
+        # shared.sql_identifiers.quote_identifier before .format().
+        from pipeline.streaming.sinks.database_sink import _PG_CREATE_TABLE, _PG_INSERT
+
+        evil_table = quote_identifier('x" ; DROP TABLE users; --')
+        create_sql = _PG_CREATE_TABLE.format(table=evil_table)
+        insert_sql = _PG_INSERT.format(table=evil_table)
+        assert create_sql.count(evil_table) == 1
+        assert insert_sql.count(evil_table) == 1
+        # The templates themselves must not add their own quotes around
+        # {table} (that would double-quote an already-quoted identifier).
+        assert '"{table}"' not in _PG_CREATE_TABLE
+        assert '"{table}"' not in _PG_INSERT
 
 
 # ════════════════════════════════════════════════════════════════

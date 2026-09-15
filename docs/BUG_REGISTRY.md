@@ -1339,12 +1339,12 @@ the whole subsystem every time.
 - **Fix:** pending — needs the bisection above before a real fix (properly closing/disposing the leaking connection) can be scoped.
 
 ## BUG-079: DatabaseSink splices its `table` config verbatim into CREATE TABLE/INSERT SQL — SQL injection
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode audit of `aurabackend/pipeline/` (`streaming-sources-sinks` group), 2026-09-15.
 - **Severity:** critical — arbitrary SQL execution with the sink's DB credentials on every window emit.
 - **Root cause:** `pipeline/streaming/sinks/database_sink.py`'s `table` field (free text, exposed directly in the streaming pipeline config UI per `streaming_api.py:346`) is spliced unescaped into `CREATE TABLE`/`INSERT` SQL via f-strings (DuckDB branch, lines 49-59, 102-113) and `.format()` (Postgres branch's `_PG_CREATE_TABLE`/`_PG_INSERT` templates, lines 18-33, 79-81, 125-133) instead of going through `shared/sql_identifiers.py`'s `quote_identifier`. A table name like `x" ; DROP TABLE users; --` breaks out of the `"{table}"` quoting and executes arbitrary SQL.
 - **Caused by:** none — pre-existing.
-- **Fix:** pending.
+- **Fix:** compute `self._quoted_table = quote_identifier(self._table)` once in `__init__` and use it everywhere the table name is spliced into SQL — the DuckDB `CREATE TABLE`/`INSERT` f-strings and the Postgres `_PG_CREATE_TABLE`/`_PG_INSERT` templates (which no longer wrap `{table}` in their own literal quotes, since `quote_identifier` already returns the fully-quoted string). `aurabackend/pipeline/streaming/sinks/database_sink.py`. Regression tests in `tests/test_streaming.py::TestDatabaseSink`: one drives a real DuckDB connection with a malicious table name containing an embedded quote and confirms no injected `CREATE TABLE pwned` executes; another asserts the Postgres SQL templates don't double-quote an already-quoted identifier. Confirmed non-vacuous via `git stash` (old code either throws a DuckDB parser error on the injection attempt or fails the template-quoting assertion; both pass on the fix). PR: pending.
 
 ## BUG-080: Streaming pipeline endpoints have zero tenant scoping — cross-tenant data/credential leak and sabotage
 - **Status:** open

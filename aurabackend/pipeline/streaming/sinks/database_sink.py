@@ -12,11 +12,12 @@ from typing import Any, Dict
 
 from pipeline.streaming.models import WindowState
 from pipeline.streaming.sinks.base import BaseSink
+from shared.sql_identifiers import quote_identifier
 
 logger = logging.getLogger("aura.streaming.sink.database")
 
 _PG_CREATE_TABLE = """
-CREATE TABLE IF NOT EXISTS "{table}" (
+CREATE TABLE IF NOT EXISTS {table} (
     pipeline_id    VARCHAR(255),
     window_key     VARCHAR(512),
     window_start   TIMESTAMP,
@@ -28,7 +29,7 @@ CREATE TABLE IF NOT EXISTS "{table}" (
 """
 
 _PG_INSERT = """
-INSERT INTO "{table}" (pipeline_id, window_key, window_start, window_end, event_count, aggregations)
+INSERT INTO {table} (pipeline_id, window_key, window_start, window_end, event_count, aggregations)
 VALUES ($1, $2, $3, $4, $5, $6::jsonb)
 """
 
@@ -38,6 +39,7 @@ class DatabaseSink(BaseSink):
     def __init__(self, config: Dict[str, Any]):
         super().__init__(config)
         self._table = config.get("table", "streaming_results")
+        self._quoted_table = quote_identifier(self._table)
         self._connector_type = config.get("connector", "duckdb")
         self._conn: Any = None
 
@@ -47,7 +49,7 @@ class DatabaseSink(BaseSink):
             db_path = self.config.get("path", ":memory:")
             self._conn = duckdb.connect(db_path)
             self._conn.execute(f"""
-                CREATE TABLE IF NOT EXISTS "{self._table}" (
+                CREATE TABLE IF NOT EXISTS {self._quoted_table} (
                     pipeline_id    VARCHAR,
                     window_key     VARCHAR,
                     window_start   TIMESTAMP,
@@ -77,7 +79,7 @@ class DatabaseSink(BaseSink):
                     password=self.config.get("password", ""),
                 )
             await self._conn.execute(
-                _PG_CREATE_TABLE.format(table=self._table)
+                _PG_CREATE_TABLE.format(table=self._quoted_table)
             )
         self._running = True
         logger.info("Database sink started (connector=%s, table=%s)", self._connector_type, self._table)
@@ -101,7 +103,7 @@ class DatabaseSink(BaseSink):
 
         if self._connector_type == "duckdb":
             self._conn.execute(
-                f'INSERT INTO "{self._table}" (pipeline_id, window_key, window_start, window_end, event_count, aggregations) VALUES (?, ?, ?, ?, ?, ?)',
+                f'INSERT INTO {self._quoted_table} (pipeline_id, window_key, window_start, window_end, event_count, aggregations) VALUES (?, ?, ?, ?, ?, ?)',
                 [
                     pipeline_id,
                     window.window_key,
@@ -123,7 +125,7 @@ class DatabaseSink(BaseSink):
                 else None
             )
             await self._conn.execute(
-                _PG_INSERT.format(table=self._table),
+                _PG_INSERT.format(table=self._quoted_table),
                 pipeline_id,
                 window.window_key,
                 ws_start,
