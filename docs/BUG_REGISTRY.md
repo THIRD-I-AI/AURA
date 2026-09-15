@@ -1364,19 +1364,20 @@ the whole subsystem every time.
 - **Fix:** pending.
 
 ## BUG-082: ADD_COLUMN/CUSTOM_SQL `expression` config spliced unsanitized into generated SQL — code/SQL injection via the pipeline API
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode audit of `aurabackend/pipeline/` (`core-generation` group), 2026-09-15.
 - **Severity:** high — lets an authenticated tenant read arbitrary local files or other tenants' data via DuckDB's `read_csv_auto`/`ATTACH`/`httpfs`, the same vulnerability class BUG-053 already closed for `api_gateway/routers/etl.py`'s `custom_sql` handler.
 - **Root cause:** `pipeline/engine.py`'s ADD_COLUMN (498-503) and CUSTOM_SQL (670-682) branches splice `cfg["expression"]` verbatim into the generated SQL (`f'SELECT *, ({expression}) AS "{_sanitize_id(name)}" FROM {_q(prev)}'` and similar) — only the output column name is sanitized via `_sanitize_id`, never the expression itself. The DuckDB connection from `shared/duckdb_factory.py` has full filesystem/network table-function access enabled, so this isn't just SQL syntax injection but a path to reading arbitrary files/URLs.
 - **Caused by:** none — pre-existing; BUG-053's fix was scoped to `etl.py` only and never applied here.
-- **Fix:** pending.
+- **Fix:** extracted `etl.py`'s BUG-053 keyword-blocklist guard (`read_csv`/`read_parquet`/`read_json`/`attach`/`copy`/`pragma`/`install`/`load`/`httpfs`/etc., plus bare `://` URIs) into a new shared module, `shared/sql_expression_guard.py::validate_sql_expression`, and aliased `etl.py`'s `_validate_custom_sql` to it (pure extraction, no behavior change — verified against its existing 12 sandbox tests). Called `validate_sql_expression(expression)` from `pipeline/engine.py`'s ADD_COLUMN and CUSTOM_SQL branches before splicing, so both raise `ValueError` (caught by the same path that already fails a run for an unimplemented step type) instead of executing. New tests in `tests/test_pipeline_execution.py`: `test_add_column_step_rejects_file_read_expression` and `test_custom_sql_step_rejects_attach_expression`, both asserting the pipeline run FAILs with the guard's specific message (not a loose substring match — DuckDB's own "file not found" IO error also happens to contain `read_csv` since it echoes the failing query text, which would make a looser assertion pass vacuously regardless of whether the guard fired). Confirmed non-vacuous via `git stash`: both fail on old code with DuckDB's own runtime error instead of the guard's message. Full suite (both affected test files): 28/28 pass. PR: pending.
 
 ## BUG-083: Local rule-based parser's ADD_COLUMN regex feeds the same unsanitized-expression injection with no LLM involved
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode audit of `aurabackend/pipeline/` (`core-generation` group), 2026-09-15.
 - **Severity:** high — a direct, deterministic route to BUG-082's injection that requires no LLM cooperation at all, since the local parser's confidence score clears `MIN_CONFIDENCE` on its own.
 - **Root cause:** `pipeline/local_parser.py:399-409`'s `_match_add_column` captures the ADD_COLUMN `expression` from free-text user input via a permissive regex group (`.+?`) with no validation that it's a safe SQL expression (unlike its sibling `_match_cast_type`, which validates against an allowlist). That raw text flows straight into `engine.py:498-503`'s unsanitized splice (BUG-082).
 - **Caused by:** none — pre-existing.
+- **Fix:** fixed together with BUG-082, per this entry's own note that they share one root cause (no expression sanitizer existed at all). `engine.py`'s ADD_COLUMN guard (BUG-082's fix) is the single choke point both the LLM-generated path and `local_parser.py`'s output flow through before execution, so no separate change to `local_parser.py` was needed — validating at the point of execution covers every producer of an ADD_COLUMN expression, present and future.
 - **Fix:** pending (should be fixed together with or immediately after BUG-082, since they share one root cause: no expression sanitizer exists at all).
 
 ## BUG-084: JOIN steps reference a second source that is never loaded — every join pipeline fails

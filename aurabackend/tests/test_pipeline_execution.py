@@ -208,6 +208,70 @@ async def test_union_step_fails_run_instead_of_silently_skipping(tmp_path, monke
     assert "union" in run.error.lower()
 
 
+@pytest.mark.asyncio
+async def test_add_column_step_rejects_file_read_expression(tmp_path, monkeypatch):
+    """BUG-082/083: ADD_COLUMN's expression was spliced verbatim into the
+    generated SQL with only the output column name sanitized -- the
+    expression itself could use read_csv_auto/ATTACH/httpfs against the
+    shared, unrestricted DuckDB connection to read arbitrary files or other
+    tenants' data. Must now fail the run instead of executing it."""
+    _isolate_storage(tmp_path, monkeypatch)
+    from shared.storage import get_storage_backend
+    tenant = "tenant_abc123"
+    get_storage_backend().write(tenant, "customers.csv", b"id,name\n1,Alice\n2,Bob\n")
+
+    pipeline = Pipeline(
+        name="add-column-injection-test",
+        source=PipelineSource(type=SourceType.FILE, file_name="customers.csv"),
+        steps=[ProcessingStep(type=StepType.ADD_COLUMN, config={
+            "name": "leaked",
+            "expression": "(SELECT data FROM read_csv_auto('/etc/passwd'))",
+        })],
+        sink=PipelineSink(type=SinkType.PREVIEW),
+    )
+
+    engine = PipelineEngine()
+    run = await engine.execute(pipeline, preview_only=True, tenant=tenant)
+
+    assert run.status == PipelineStatus.FAILED
+    # Must be OUR validator's message, not DuckDB's own runtime error --
+    # on a machine where /etc/passwd doesn't exist, DuckDB fails with its
+    # own "No files found" IO error, which echoes the failing query text
+    # (including "read_csv") -- a looser substring check would pass
+    # vacuously whether or not the guard ever fired.
+    assert "may not reference file/network access functions" in run.error
+
+
+@pytest.mark.asyncio
+async def test_custom_sql_step_rejects_attach_expression(tmp_path, monkeypatch):
+    """BUG-082: CUSTOM_SQL's expression had no validation at all (unlike
+    api_gateway/routers/etl.py's custom_sql handler, fixed for the same
+    vulnerability class in BUG-053)."""
+    _isolate_storage(tmp_path, monkeypatch)
+    from shared.storage import get_storage_backend
+    tenant = "tenant_abc123"
+    get_storage_backend().write(tenant, "customers.csv", b"id,name\n1,Alice\n2,Bob\n")
+
+    pipeline = Pipeline(
+        name="custom-sql-injection-test",
+        source=PipelineSource(type=SourceType.FILE, file_name="customers.csv"),
+        steps=[ProcessingStep(type=StepType.CUSTOM_SQL, config={
+            # CUSTOM_SQL's expression becomes the CTE's entire body (not an
+            # embedded sub-expression), so a syntactically valid, standalone
+            # query -- not semicolon-stacking, which DuckDB's parser rejects
+            # regardless -- is the realistic exploit shape here.
+            "expression": "SELECT * FROM read_csv_auto('/etc/passwd')",
+        })],
+        sink=PipelineSink(type=SinkType.PREVIEW),
+    )
+
+    engine = PipelineEngine()
+    run = await engine.execute(pipeline, preview_only=True, tenant=tenant)
+
+    assert run.status == PipelineStatus.FAILED
+    assert "may not reference file/network access functions" in run.error
+
+
 def _generator() -> PipelineGenerator:
     # get_file_schema() touches no LLM/parser state — skip __init__ so
     # this stays hermetic (no LLM provider setup required for the test).
