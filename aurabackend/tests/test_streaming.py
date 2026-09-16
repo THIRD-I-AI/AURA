@@ -250,6 +250,43 @@ class TestWindowProcessor:
         # Late event with UPDATE policy still gets processed
         fired, late = wp.process_event(_event(6))
         assert len(late) == 0  # UPDATE doesn't emit as late
+        # BUG-092: the late event belongs to the window [0,10) that already
+        # fired at t=5 with event_count=1 -- it must merge into that result
+        # (event_count=2), not spawn a second, incomplete window (count=1).
+        assert len(fired) == 1
+        assert fired[0].event_count == 2
+
+    def test_late_event_within_remerge_policy_merges_into_the_original_window(self):
+        # BUG-092: a late event accepted via accept_to_window=True for a
+        # window that already fired created a fresh, empty WindowState
+        # instead of merging into the original result -- corrupting
+        # downstream aggregates with a second, incomplete "window closed"
+        # emission for the same window.
+        from pipeline.streaming.late_data import remerge_within_allowed_lateness_policy
+
+        wp = WindowProcessor(
+            WindowConfig(type=WindowType.TUMBLING, size_seconds=10),
+            watermark_delay=0,
+            aggregate_fields=[{"function": "SUM", "column": "amount", "alias": "total"}],
+            late_data_policy_callable=remerge_within_allowed_lateness_policy(
+                allowed_lateness_seconds=20,
+            ),
+        )
+        wp.process_event(_event(1, data={"amount": 100}))
+        fired, late = wp.process_event(_event(15, data={"amount": 999}))
+        assert len(fired) == 1 and fired[0].window_start == 0
+        assert fired[0].aggregations["total"] == 100
+        assert fired[0].event_count == 1
+
+        # Late event for the already-fired window [0,10), within the
+        # allowed-lateness budget (watermark=15, event_ts=5, lateness=10<=20).
+        late_fired, late_list = wp.process_event(_event(5, data={"amount": 50}))
+        assert late_list == []
+        assert len(late_fired) == 1
+        refined = late_fired[0]
+        assert refined.window_key == fired[0].window_key
+        assert refined.event_count == 2, "must merge into the original window, not restart at 1"
+        assert refined.aggregations["total"] == 150, "must accumulate onto the prior total, not overwrite it"
 
     # ── Sliding ──
     def test_sliding_multiple_windows(self):

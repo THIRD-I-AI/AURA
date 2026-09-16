@@ -75,6 +75,11 @@ class WindowProcessor:
         self._windows: Dict[str, WindowState] = {}
         self._watermark: float = 0.0
         self._closed_windows: List[WindowState] = []
+        # BUG-092: window_key -> the WindowState it fired with, so a late
+        # event accepted via accept_to_window=True can merge into the
+        # original result instead of spawning a fresh, incomplete window.
+        # Mirrors _closed_windows' cap (pruned together in _fire_ready_windows).
+        self._closed_by_key: Dict[str, WindowState] = {}
 
         # Memory limits
         self._max_active_windows = max_active_windows
@@ -239,11 +244,21 @@ class WindowProcessor:
         win_key = _window_key(key, window_start, window_end)
 
         if win_key not in self._windows:
-            self._windows[win_key] = WindowState(
-                window_key=win_key,
-                window_start=window_start,
-                window_end=window_end,
-            )
+            # BUG-092: if this window already fired, a late event accepted
+            # via accept_to_window=True must merge into that original
+            # result -- reopen it rather than creating a fresh, empty one.
+            reopened = self._closed_by_key.pop(win_key, None)
+            if reopened is not None:
+                reopened.is_closed = False
+                self._windows[win_key] = reopened
+                if reopened in self._closed_windows:
+                    self._closed_windows.remove(reopened)
+            else:
+                self._windows[win_key] = WindowState(
+                    window_key=win_key,
+                    window_start=window_start,
+                    window_end=window_end,
+                )
         return [win_key]
 
     def _assign_sliding(self, key: Optional[str], et: float) -> List[str]:
@@ -407,6 +422,7 @@ class WindowProcessor:
                     ws.is_closed = True
                     fired.append(ws)
                     self._closed_windows.append(ws)
+                    self._closed_by_key[ws.window_key] = ws
 
         # Clean up closed windows from active map (keep last 1000 for metrics)
         for ws in fired:
@@ -417,6 +433,12 @@ class WindowProcessor:
 
         if len(self._closed_windows) > self._max_closed_history:
             self._closed_windows = self._closed_windows[-self._max_closed_history:]
+            # BUG-092: keep _closed_by_key in sync with the trimmed history
+            # so it can't grow unboundedly across a long-running pipeline.
+            kept_keys = {ws.window_key for ws in self._closed_windows}
+            self._closed_by_key = {
+                k: v for k, v in self._closed_by_key.items() if k in kept_keys
+            }
 
         # Evict stale active windows if we exceed memory limit
         self._evict_stale_windows()
