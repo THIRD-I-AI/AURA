@@ -76,7 +76,7 @@ class WebhookSink(BaseSink):
         await self._post({
             "event": "late_event",
             "pipeline_id": pipeline_id,
-            "event_time": event.event_time,
+            "event_time": event.timestamp,
             "data": event.data,
         })
 
