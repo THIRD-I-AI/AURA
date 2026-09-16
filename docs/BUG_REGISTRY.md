@@ -1458,12 +1458,12 @@ the whole subsystem every time.
 - **Fix:** added `self._closed_by_key: Dict[str, WindowState]` (populated in `_fire_ready_windows` alongside `_closed_windows`, pruned together when the history is trimmed). `_assign_tumbling` now checks it before creating a fresh `WindowState`: if the window already fired, it's popped back out, `is_closed` reset to `False`, and reinserted into `self._windows` so the late event's `_accumulate` call merges into the original aggregations/event_count rather than starting over — the reopened window then immediately re-fires (its `window_end` is still behind the watermark) carrying the merged result. Tests: `tests/test_streaming.py::TestWindowProcessor::test_late_event_within_remerge_policy_merges_into_the_original_window` (new) and a strengthened `test_late_data_update` assertion. Confirmed non-vacuous by stashing the fix — both fail (`event_count == 1` instead of `2`, matching the described bug exactly) — then restoring it and confirming the full `test_streaming.py` suite (71 tests) passes. PR: pending.
 
 ## BUG-093: DuckDB source with only `table` set (no connection path/query) never materializes a table, producing a misleading generic error
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode audit of `aurabackend/pipeline/` (`core-generation` group), 2026-09-15.
 - **Severity:** low — misleads the caller about the actual cause (missing connection info) with a generic DuckDB Catalog Error instead of the clear validation error the sibling `db_path` branch gives; this "just a table name" case can never actually succeed.
 - **Root cause:** `pipeline/engine.py:400-405`'s `_load_duckdb_source`, when `source.connection` has no `database`/`path` and only `source.table` is set, returns `source.table` directly as the "source table" without ever executing anything against the fresh in-memory `conn` — no `ATTACH`, no `CREATE TABLE`. `execute()` then runs `SELECT COUNT(*) FROM "some_table"` against a connection that never had that table created.
 - **Caused by:** none — pre-existing.
-- **Fix:** pending.
+- **Fix:** the `source.table`-only branch now raises a clear `ValueError` ("...has no database to load it from...") instead of returning the bare name unchecked, matching the sibling missing-table-or-query branch's clarity. Test: `tests/test_pipeline_execution.py::test_duckdb_source_with_only_table_set_fails_clearly` runs the full `execute()` path and asserts the failure message names the real cause and does NOT contain "catalog error". Confirmed non-vacuous by stashing the fix — the test fails because the run's error is the raw DuckDB `Catalog Error: Table with name regions does not exist!` — then restoring it and confirming the full `test_pipeline_execution.py` suite (18 tests) passes. PR: pending.
 
 ## BUG-094: test_pipeline_agent_does_not_block_event_loop flaked under CI load — same structural gap as BUG-077
 - **Status:** fixed

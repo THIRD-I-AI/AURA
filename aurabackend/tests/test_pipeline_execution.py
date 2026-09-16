@@ -147,6 +147,30 @@ async def test_duckdb_source_missing_file_reports_failed_run(tmp_path, monkeypat
     assert "not found" in run.error.lower()
 
 
+@pytest.mark.asyncio
+async def test_duckdb_source_with_only_table_set_fails_clearly(tmp_path, monkeypatch):
+    # BUG-093: a DUCKDB source with only `table` set (no connection.database
+    # or connection.path) has nothing to ATTACH -- source.table names a
+    # table on some external database that was never materialized on the
+    # fresh :memory: connection. Previously this returned the bare table
+    # name unchecked, and execute()'s later SELECT failed with a generic,
+    # misleading DuckDB Catalog Error instead of a clear validation message.
+    _isolate_storage(tmp_path, monkeypatch)
+
+    pipeline = Pipeline(
+        name="duckdb-source-table-only-test",
+        source=PipelineSource(type=SourceType.DUCKDB, table="regions"),
+        sink=PipelineSink(type=SinkType.PREVIEW),
+    )
+
+    engine = PipelineEngine()
+    run = await engine.execute(pipeline, preview_only=True, tenant="tenant_abc123")
+
+    assert run.status == PipelineStatus.FAILED
+    assert "catalog error" not in run.error.lower()
+    assert "no database to load it from" in run.error.lower()
+
+
 def test_duckdb_source_s3_deferral_raises_before_any_network_call(monkeypatch):
     """BUG-035 fix #2: the DUCKDB source's db_path branch must check the
     resolved URI for '://' (pure string formatting, no I/O for any backend)
