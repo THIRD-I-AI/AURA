@@ -1417,11 +1417,12 @@ the whole subsystem every time.
 - **Fix:** pending.
 
 ## BUG-088: StreamingEngine's checkpoint I/O blocks the event loop on every checkpoint interval
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode audit of `aurabackend/pipeline/` (`streaming-core` group), 2026-09-15.
 - **Severity:** high — with multiple streaming pipelines running, every ~30s (default `checkpoint_interval_seconds`) each pipeline blocks the single shared event loop for the duration of a synchronous disk write plus checkpoint-file rotation.
 - **Root cause:** `pipeline/streaming/streaming_engine.py:285-286, 553-566`'s `StateManager.create_checkpoint`/`load_latest_checkpoint` perform synchronous blocking file I/O (`open`/`json.dump`/`os.replace`, `os.listdir`+`getmtime` sort, `os.remove`) and are called directly from `async def start()` and `async def _checkpoint()` with no `asyncio.to_thread`.
 - **Caused by:** none — pre-existing.
+- **Fix:** both call sites now dispatch through `asyncio.to_thread`: `start()`'s recovery load (`await asyncio.to_thread(self._state_mgr.load_latest_checkpoint)`) and `_checkpoint()`'s save (`await asyncio.to_thread(self._state_mgr.create_checkpoint, watermark=..., window_states=..., source_offsets=..., metrics=...)`, kwargs forwarded as-is — `to_thread` accepts them). `StateManager` itself (`state_manager.py`) needed no change; it was never `async` to begin with — only its callers were missing the offload. `aurabackend/pipeline/streaming/streaming_engine.py`. Regression test `test_checkpoint_io_is_offloaded_to_a_thread` (`tests/test_streaming.py::TestStreamingEngine`) spies on `asyncio.to_thread` through a real `start()`/`_checkpoint()`/`stop()` cycle and asserts both `load_latest_checkpoint` and `create_checkpoint` were dispatched through it. Confirmed non-vacuous via `git stash`: old code shows `load_latest_checkpoint` never offloaded. Full suite: 66/66 pass. PR: pending.
 - **Fix:** pending.
 
 ## BUG-089: `start_pipeline` has a check-then-act race — two concurrent start requests leak a permanently-running duplicate engine
