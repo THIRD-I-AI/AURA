@@ -69,9 +69,13 @@ class FileWatcherSource(BaseSource):
                 new_files.append(f)
                 self._seen_files.add(fstr)
 
-        # Parse new files into events
+        # Parse new files into events. BUG-087: _parse_csv/_parse_json/
+        # _parse_parquet do blocking file I/O (and, for Parquet, CPU-bound
+        # parsing) -- running them directly on the event loop freezes every
+        # other tenant's concurrent request under the single-worker
+        # deployment for the duration of the parse.
         for file_path in new_files:
-            events = self._parse_file(file_path)
+            events = await asyncio.to_thread(self._parse_file, file_path)
             self._pending_events.extend(events)
 
         if not self._pending_events:
