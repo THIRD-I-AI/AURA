@@ -49,6 +49,28 @@ router = APIRouter(prefix="/streaming", tags=["Streaming Pipelines"])
 _pipelines: Dict[str, StreamPipeline] = {}
 _engines: Dict[str, StreamingEngine] = {}
 
+# BUG-089: start_pipeline's status check, engine construction, and
+# _engines[pipeline_id] assignment span an `await` (engine.start()) with no
+# lock, so two near-simultaneous start requests for the same pipeline_id
+# could both pass the "not already running" check before either flips the
+# status, each construct its own StreamingEngine, and the second overwrite
+# _engines[pipeline_id] -- leaking the first engine's background tasks with
+# no reference left to stop them. One lock per pipeline_id serializes the
+# whole check-construct-start sequence; a plain dict get-or-create is safe
+# here (no `await` between the lookup and the assignment below), unlike
+# uasr/drift_detector.py's threading.Lock registry, which guards calls made
+# from worker threads via asyncio.to_thread rather than from coroutines
+# directly on this event loop.
+_start_locks: Dict[str, asyncio.Lock] = {}
+
+
+def _start_lock_for(pipeline_id: str) -> asyncio.Lock:
+    lock = _start_locks.get(pipeline_id)
+    if lock is None:
+        lock = asyncio.Lock()
+        _start_locks[pipeline_id] = lock
+    return lock
+
 
 def _tenant_of(user: Optional[Dict[str, Any]]) -> Optional[str]:
     """The caller's tenant (org) id from the verified principal `shared.auth
@@ -188,16 +210,22 @@ async def delete_pipeline(pipeline_id: str, user: Optional[Dict[str, Any]] = Dep
 @router.post("/pipelines/{pipeline_id}/start", summary="Start the pipeline")
 async def start_pipeline(pipeline_id: str, user: Optional[Dict[str, Any]] = Depends(get_current_user)):
     pipe = _owned_pipeline(pipeline_id, _tenant_of(user))
-    if pipe.status == StreamPipelineStatus.RUNNING:
-        raise HTTPException(status_code=409, detail="Already running")
 
-    # DSR-002: pipe.runtime's field names mirror StreamingEngine's kwargs
-    # exactly, so the opt-in trigger/watermark/barrier-alignment/backpressure
-    # primitives set via the API actually reach the engine -- previously
-    # this was a bare StreamingEngine(pipe), so runtime was never reachable.
-    engine = StreamingEngine(pipe, **pipe.runtime.model_dump())
-    _engines[pipeline_id] = engine
-    await engine.start()
+    # BUG-089: serialize the whole check-construct-start sequence so two
+    # concurrent start requests can't both pass the status check before
+    # either flips it, each spawning an engine and the second leaking the
+    # first's unstoppable background tasks via a clobbered _engines entry.
+    async with _start_lock_for(pipeline_id):
+        if pipe.status == StreamPipelineStatus.RUNNING:
+            raise HTTPException(status_code=409, detail="Already running")
+
+        # DSR-002: pipe.runtime's field names mirror StreamingEngine's kwargs
+        # exactly, so the opt-in trigger/watermark/barrier-alignment/backpressure
+        # primitives set via the API actually reach the engine -- previously
+        # this was a bare StreamingEngine(pipe), so runtime was never reachable.
+        engine = StreamingEngine(pipe, **pipe.runtime.model_dump())
+        _engines[pipeline_id] = engine
+        await engine.start()
     return {"status": pipe.status.value, "pipeline_id": pipeline_id}
 
 

@@ -1426,12 +1426,12 @@ the whole subsystem every time.
 - **Fix:** pending.
 
 ## BUG-089: `start_pipeline` has a check-then-act race — two concurrent start requests leak a permanently-running duplicate engine
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode audit of `aurabackend/pipeline/` (`streaming-core` group), 2026-09-15.
 - **Severity:** high — a leaked, unstoppable background task pair that double-processes and double-emits every event to sinks (e.g. duplicate webhook/alert deliveries) for the life of the process.
 - **Root cause:** `pipeline/streaming/streaming_api.py:167-182`'s `start_pipeline` checks `pipe.status == RUNNING` synchronously, constructs a new `StreamingEngine`, stores it in `_engines[pipeline_id]` (overwriting any existing entry), and only afterward `await`s `engine.start()`. Two near-simultaneous start requests both pass the status check before either flips `RUNNING`, so both create engines; the second overwrites `_engines[id]`, leaving the first engine's background tasks (source reads, sink emits, checkpoint writes) running forever with no reference left to `stop()` them.
 - **Caused by:** none — pre-existing.
-- **Fix:** pending.
+- **Fix:** added a per-pipeline-id `asyncio.Lock` registry (`_start_locks`/`_start_lock_for`) in `pipeline/streaming/streaming_api.py` and wrapped `start_pipeline`'s entire check-construct-start sequence in `async with _start_lock_for(pipeline_id):` — a plain get-or-create dict lookup is safe here since there is no `await` between it and the assignment, unlike the worker-thread lock pattern in `uasr/drift_detector.py`. Test: `tests/test_streaming.py::TestStreamingAPIStartRace::test_concurrent_start_calls_only_create_one_engine` fires two `start_pipeline` calls via `asyncio.gather` and asserts exactly one succeeds and one raises 409. Confirmed non-vacuous by temporarily replacing the lock with `if True:` — both calls then return `status: running` (2 successes, the leak reproduced exactly as described) — then restoring the lock and confirming the full `test_streaming.py` suite (67 tests) passes. PR: pending.
 
 ## BUG-090: WebhookSink.emit_late_event reads a field that doesn't exist on StreamEvent — `include_late` silently never fires
 - **Status:** open
