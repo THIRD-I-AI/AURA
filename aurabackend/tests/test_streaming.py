@@ -481,6 +481,35 @@ class TestAlertSink:
         loop.run_until_complete(sink.stop())
         loop.close()
 
+    def test_fired_alerts_is_bounded_for_long_running_pipelines(self):
+        # BUG-091: a frequently-firing rule on a long-running pipeline
+        # accumulated one entry per alert forever, with no cap or eviction --
+        # unbounded memory growth over days of uptime.
+        from pipeline.streaming.sinks.alert_sink import AlertSink
+
+        sink = AlertSink(config={
+            "rules": [{"field": "total", "operator": ">", "threshold": 0, "label": "x"}],
+            "max_fired": 5,
+        })
+        loop = asyncio.new_event_loop()
+        loop.run_until_complete(sink.start())
+
+        for i in range(50):
+            ws = WindowState(
+                window_key=f"k{i}|0-60", window_start=0, window_end=60,
+                event_count=1, aggregations={"total": 1},
+            )
+            loop.run_until_complete(sink.emit_window(ws, "p1"))
+
+        assert len(sink.fired_alerts) == 5, (
+            "fired_alerts must be capped at max_fired, not grow unboundedly"
+        )
+        # the most recent alerts are kept, not the oldest
+        assert sink.fired_alerts[-1]["window_key"] == "k49|0-60"
+
+        loop.run_until_complete(sink.stop())
+        loop.close()
+
 
 class TestFileSink:
     def test_emit_to_file(self, tmp_path):

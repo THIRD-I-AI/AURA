@@ -7,12 +7,18 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any, Dict, List
+from collections import deque
+from typing import Any, Deque, Dict, List
 
 from pipeline.streaming.models import WindowState
 from pipeline.streaming.sinks.base import BaseSink
 
 logger = logging.getLogger("aura.streaming.sink.alert")
+
+# BUG-091: a long-running pipeline with a frequently-firing rule accumulated
+# one entry per alert for the sink's entire lifetime with no cap -- days of
+# uptime meant unbounded memory growth. Keep only the most recent alerts.
+_DEFAULT_MAX_FIRED = 1000
 
 
 class AlertSink(BaseSink):
@@ -22,14 +28,16 @@ class AlertSink(BaseSink):
         "rules": [
             {"field": "sum_amount", "operator": ">", "threshold": 10000, "label": "High spend window"},
             {"field": "event_count", "operator": ">=", "threshold": 500, "label": "Volume spike"}
-        ]
+        ],
+        "max_fired": 1000
     }
     """
 
     def __init__(self, config: Dict[str, Any]):
         super().__init__(config)
         self._rules: List[Dict[str, Any]] = config.get("rules", [])
-        self._fired: List[Dict[str, Any]] = []
+        max_fired = int(config.get("max_fired", _DEFAULT_MAX_FIRED))
+        self._fired: Deque[Dict[str, Any]] = deque(maxlen=max_fired)
 
     @property
     def fired_alerts(self) -> List[Dict[str, Any]]:
