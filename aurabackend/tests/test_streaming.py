@@ -503,6 +503,79 @@ class TestFileSink:
         files = list(os.listdir(output_dir))
         assert len(files) >= 1
 
+    def test_flush_write_is_offloaded_to_a_thread(self, tmp_path):
+        # BUG-086: _flush() did open()/write, csv.DictWriter, and json.dump
+        # directly inside an async def, never wrapped in asyncio.to_thread
+        # -- blocking the event loop for every other tenant's concurrent
+        # request under the single-worker deployment. Spy on asyncio.to_thread
+        # (mirrors the pattern already used for BUG-065/070/085) to confirm
+        # the write is actually dispatched through it.
+        from unittest.mock import patch
+
+        from pipeline.streaming.sinks.file_sink import FileSink
+
+        output_dir = str(tmp_path / "sink_output")
+        sink = FileSink(config={"output_dir": output_dir, "format": "json", "flush_every": 1})
+
+        real_to_thread = asyncio.to_thread
+        offloaded_funcs = []
+
+        async def spy_to_thread(func, *args, **kwargs):
+            offloaded_funcs.append(func)
+            return await real_to_thread(func, *args, **kwargs)
+
+        async def run():
+            with patch("pipeline.streaming.sinks.file_sink.asyncio.to_thread", side_effect=spy_to_thread):
+                await sink.start()
+                ws = WindowState(
+                    window_key="k1|0-60", window_start=0, window_end=60,
+                    event_count=3, aggregations={"count": 3},
+                )
+                await sink.emit_window(ws, "p1")
+                await sink.stop()
+
+        asyncio.run(run())
+
+        assert len(offloaded_funcs) == 1, (
+            f"expected exactly one offloaded write call, got {len(offloaded_funcs)}"
+        )
+        files = list(os.listdir(output_dir))
+        assert len(files) == 1
+
+    def test_flush_swaps_buffer_before_offloading_no_row_loss_or_duplication(self, tmp_path):
+        # _flush() now swaps self._buffer for a fresh list before awaiting
+        # the offloaded write, since the write runs on a worker thread while
+        # the event loop is free to run other coroutines -- a later
+        # emit_window() appending to the SAME list the thread is iterating
+        # would be a real race. Guard the swap itself: every row must land
+        # in exactly one batch file, none lost or duplicated across batches.
+        from pipeline.streaming.sinks.file_sink import FileSink
+
+        output_dir = str(tmp_path / "sink_output")
+        sink = FileSink(config={"output_dir": output_dir, "format": "json", "flush_every": 1})
+
+        async def run():
+            await sink.start()
+            for i in range(5):
+                ws = WindowState(
+                    window_key=f"k{i}|0-60", window_start=0, window_end=60,
+                    event_count=1, aggregations={"n": i},
+                )
+                await sink.emit_window(ws, "p1")
+            await sink.stop()
+
+        asyncio.run(run())
+
+        files = sorted(os.listdir(output_dir))
+        assert len(files) == 5, f"expected 5 batch files (one per emit), got {len(files)}: {files}"
+        seen = set()
+        for fname in files:
+            with open(os.path.join(output_dir, fname), encoding="utf-8") as f:
+                batch = json.load(f)
+            assert len(batch) == 1, f"{fname} should contain exactly one row, got {len(batch)}"
+            seen.add(batch[0]["aggregations"]["n"])
+        assert seen == {0, 1, 2, 3, 4}, f"rows lost or duplicated: {seen}"
+
 
 class TestDatabaseSink:
     def test_config_key_matches_schema_and_actually_persists(self, tmp_path):
