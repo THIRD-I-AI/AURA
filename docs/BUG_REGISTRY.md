@@ -1442,12 +1442,12 @@ the whole subsystem every time.
 - **Fix:** `pipeline/streaming/sinks/webhook_sink.py:79` now reads `event.timestamp`. Tests: `tests/test_streaming.py::TestWebhookSink` — `test_emit_late_event_does_not_raise_and_sends_the_event_timestamp` (uses `httpx.MockTransport` to capture the outgoing POST body and assert `event_time` matches the event's `timestamp`, no `AttributeError`) and `test_emit_late_event_is_a_noop_when_include_late_is_disabled` (confirms the existing `include_late=False` gate still short-circuits). Confirmed non-vacuous by stashing the fix — the first test fails with the exact `AttributeError: 'StreamEvent' object has no attribute 'event_time'` described above — then restoring it and confirming the full `test_streaming.py` suite (69 tests) passes. PR: pending.
 
 ## BUG-091: AlertSink's `_fired` list grows unboundedly for long-running pipelines
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode audit of `aurabackend/pipeline/` (`streaming-sources-sinks` group), 2026-09-15.
 - **Severity:** medium — unbounded memory growth in the single long-lived process for a pipeline that runs for days with a frequently-firing alert rule.
 - **Root cause:** `pipeline/streaming/sinks/alert_sink.py:32, 85`'s `self._fired` accumulates one entry per triggered alert for the sink's lifetime with no cap or eviction.
 - **Caused by:** none — pre-existing.
-- **Fix:** pending.
+- **Fix:** `self._fired` is now a `collections.deque(maxlen=config.get("max_fired", 1000))` — the oldest alert is evicted automatically once the cap is reached, `fired_alerts` still returns a plain list via `list(self._fired)`. Test: `tests/test_streaming.py::TestAlertSink::test_fired_alerts_is_bounded_for_long_running_pipelines` fires 50 alerts with `max_fired=5` and asserts the list stays capped at 5 and keeps the most recent entries. Confirmed non-vacuous by stashing the fix — the test fails with `50 == 5` (unbounded growth) — then restoring it and confirming the full `test_streaming.py` suite (70 tests) passes. PR: pending.
 
 ## BUG-092: Late events accepted after a window fires create a fresh, incomplete window instead of a corrected refinement
 - **Status:** open
