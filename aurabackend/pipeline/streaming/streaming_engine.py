@@ -283,7 +283,10 @@ class StreamingEngine:
 
             # State manager + recovery
             self._state_mgr = StateManager(self.pipeline.id)
-            checkpoint = self._state_mgr.load_latest_checkpoint()
+            # BUG-088: load_latest_checkpoint() does synchronous file I/O
+            # (list + read a JSON checkpoint file) -- blocks the single
+            # shared event loop for every other tenant's concurrent request.
+            checkpoint = await asyncio.to_thread(self._state_mgr.load_latest_checkpoint)
             if checkpoint:
                 logger.info("Recovering from checkpoint: watermark=%.1f, windows=%d",
                             checkpoint.watermark, len(checkpoint.window_states))
@@ -556,7 +559,14 @@ class StreamingEngine:
         try:
             window_states = self._window_proc.get_state()
             offsets = self._source.get_offsets() if self._source else {}
-            self._state_mgr.create_checkpoint(
+            # BUG-088: create_checkpoint() writes a JSON file (write + os.
+            # replace) then lists/sorts/deletes old checkpoint files on
+            # disk -- every periodic checkpoint (default every 30s, per
+            # pipeline) blocked the single shared event loop for the full
+            # write/rotation duration, worse on a slow or network-mounted
+            # checkpoint dir.
+            await asyncio.to_thread(
+                self._state_mgr.create_checkpoint,
                 watermark=self._window_proc.watermark,
                 window_states=window_states,
                 source_offsets=offsets,

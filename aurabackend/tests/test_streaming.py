@@ -1195,6 +1195,43 @@ class TestStreamingEngine:
 
         loop.close()
 
+    def test_checkpoint_io_is_offloaded_to_a_thread(self):
+        # BUG-088: create_checkpoint()/load_latest_checkpoint() do
+        # synchronous file I/O (write+os.replace, then list/sort/delete old
+        # checkpoints) -- called directly from async start()/_checkpoint()
+        # with no asyncio.to_thread, blocking the single shared event loop
+        # for the full write/rotation duration on every periodic checkpoint.
+        # Spy on asyncio.to_thread (mirrors BUG-065/070/085/086/087) to
+        # confirm both calls are actually dispatched through it.
+        from unittest.mock import patch
+
+        from pipeline.streaming.streaming_engine import StreamingEngine
+
+        pipeline = self._make_engine_pipeline()
+        engine = StreamingEngine(pipeline, batch_size=20, tick_interval=0.2)
+
+        real_to_thread = asyncio.to_thread
+        offloaded_funcs = []
+
+        async def spy_to_thread(func, *args, **kwargs):
+            offloaded_funcs.append(func)
+            return await real_to_thread(func, *args, **kwargs)
+
+        async def run():
+            with patch("pipeline.streaming.streaming_engine.asyncio.to_thread", side_effect=spy_to_thread):
+                await engine.start()
+                await engine._checkpoint()
+            await engine.stop()
+
+        try:
+            asyncio.run(run())
+            assert engine._state_mgr.load_latest_checkpoint in offloaded_funcs
+            assert engine._state_mgr.create_checkpoint in offloaded_funcs
+        finally:
+            checkpoint_dir = engine._state_mgr.checkpoint_dir
+            if os.path.exists(checkpoint_dir):
+                shutil.rmtree(checkpoint_dir)
+
     def test_engine_with_filter_transform(self):
         from pipeline.streaming.streaming_engine import StreamingEngine
 
