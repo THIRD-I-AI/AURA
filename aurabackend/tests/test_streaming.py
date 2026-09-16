@@ -714,6 +714,61 @@ class TestDatabaseSink:
         )
 
 
+class TestWebhookSink:
+    def test_emit_late_event_does_not_raise_and_sends_the_event_timestamp(self):
+        # BUG-090: emit_late_event read event.event_time, but StreamEvent
+        # only defines `timestamp` -- every late-event delivery raised
+        # AttributeError, silently swallowed by streaming_engine.py's broad
+        # `except Exception`, so the advertised include_late feature never
+        # actually POSTed anything.
+        import httpx
+
+        from pipeline.streaming.sinks.webhook_sink import WebhookSink
+
+        captured = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            captured.append(json.loads(request.content))
+            return httpx.Response(200)
+
+        sink = WebhookSink(config={"url": "https://example.test/hook", "include_late": True})
+
+        async def run():
+            await sink.start()
+            sink._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+            event = _event(1234.5, key="k1", data={"x": 1})
+            await sink.emit_late_event(event, "p1")
+            await sink.stop()
+
+        asyncio.run(run())
+
+        assert len(captured) == 1, "emit_late_event must not silently fail"
+        assert captured[0]["event_time"] == 1234.5
+        assert captured[0]["event"] == "late_event"
+
+    def test_emit_late_event_is_a_noop_when_include_late_is_disabled(self):
+        import httpx
+
+        from pipeline.streaming.sinks.webhook_sink import WebhookSink
+
+        captured = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            captured.append(request)
+            return httpx.Response(200)
+
+        sink = WebhookSink(config={"url": "https://example.test/hook"})
+
+        async def run():
+            await sink.start()
+            sink._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+            await sink.emit_late_event(_event(1.0), "p1")
+            await sink.stop()
+
+        asyncio.run(run())
+        assert captured == []
+
+
 # ════════════════════════════════════════════════════════════════
 # 5. SOURCE ADAPTER TESTS
 # ════════════════════════════════════════════════════════════════

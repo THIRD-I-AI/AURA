@@ -1434,12 +1434,12 @@ the whole subsystem every time.
 - **Fix:** added a per-pipeline-id `asyncio.Lock` registry (`_start_locks`/`_start_lock_for`) in `pipeline/streaming/streaming_api.py` and wrapped `start_pipeline`'s entire check-construct-start sequence in `async with _start_lock_for(pipeline_id):` — a plain get-or-create dict lookup is safe here since there is no `await` between it and the assignment, unlike the worker-thread lock pattern in `uasr/drift_detector.py`. Test: `tests/test_streaming.py::TestStreamingAPIStartRace::test_concurrent_start_calls_only_create_one_engine` fires two `start_pipeline` calls via `asyncio.gather` and asserts exactly one succeeds and one raises 409. Confirmed non-vacuous by temporarily replacing the lock with `if True:` — both calls then return `status: running` (2 successes, the leak reproduced exactly as described) — then restoring the lock and confirming the full `test_streaming.py` suite (67 tests) passes. PR: pending.
 
 ## BUG-090: WebhookSink.emit_late_event reads a field that doesn't exist on StreamEvent — `include_late` silently never fires
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode audit of `aurabackend/pipeline/` (`streaming-sources-sinks` group), 2026-09-15.
 - **Severity:** medium — the advertised `include_late` webhook feature is completely non-functional, failing silently (caught by `streaming_engine.py`'s broad `except Exception`, merely logged).
 - **Root cause:** `pipeline/streaming/sinks/webhook_sink.py:76-81`'s `emit_late_event` reads `event.event_time`, but `StreamEvent` (`pipeline/streaming/models.py`) only defines a `timestamp` field — accessing `event_time` raises `AttributeError` on every call.
 - **Caused by:** none — pre-existing.
-- **Fix:** pending.
+- **Fix:** `pipeline/streaming/sinks/webhook_sink.py:79` now reads `event.timestamp`. Tests: `tests/test_streaming.py::TestWebhookSink` — `test_emit_late_event_does_not_raise_and_sends_the_event_timestamp` (uses `httpx.MockTransport` to capture the outgoing POST body and assert `event_time` matches the event's `timestamp`, no `AttributeError`) and `test_emit_late_event_is_a_noop_when_include_late_is_disabled` (confirms the existing `include_late=False` gate still short-circuits). Confirmed non-vacuous by stashing the fix — the first test fails with the exact `AttributeError: 'StreamEvent' object has no attribute 'event_time'` described above — then restoring it and confirming the full `test_streaming.py` suite (69 tests) passes. PR: pending.
 
 ## BUG-091: AlertSink's `_fired` list grows unboundedly for long-running pipelines
 - **Status:** open
