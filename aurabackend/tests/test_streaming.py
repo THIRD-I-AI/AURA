@@ -751,6 +751,45 @@ class TestFileWatcherSource:
         assert {e.data["id"] for e in events} == {1, 2, 3}
         assert events[0].data["amount"] in (10.5, 20.0, 30.25)
 
+    def test_parse_file_is_offloaded_to_a_thread(self, tmp_path):
+        # BUG-087: _parse_csv/_parse_json/_parse_parquet do blocking file
+        # I/O (and, for Parquet, CPU-bound parsing), but read_batch called
+        # _parse_file synchronously with no asyncio.to_thread -- blocking
+        # the event loop for every other tenant's concurrent request under
+        # the single-worker deployment. Spy on asyncio.to_thread (mirrors
+        # BUG-065/070/085/086) to confirm the parse is actually dispatched
+        # through it.
+        from unittest.mock import patch
+
+        from pipeline.streaming.sources.file_watcher import FileWatcherSource
+
+        watch_dir = tmp_path / "watched"
+        watch_dir.mkdir()
+        (watch_dir / "data.csv").write_text("id,name\n1,Alice\n2,Bob\n", encoding="utf-8")
+
+        src = FileWatcherSource(config={"watch_dir": str(watch_dir), "pattern": "*.csv"})
+
+        real_to_thread = asyncio.to_thread
+        offloaded_funcs = []
+
+        async def spy_to_thread(func, *args, **kwargs):
+            offloaded_funcs.append(func)
+            return await real_to_thread(func, *args, **kwargs)
+
+        async def run():
+            await src.start()
+            src._seen_files.clear()
+            with patch("pipeline.streaming.sources.file_watcher.asyncio.to_thread", side_effect=spy_to_thread):
+                return await src.read_batch(max_events=10)
+
+        events = asyncio.run(run())
+
+        assert len(offloaded_funcs) == 1, (
+            f"expected exactly one offloaded parse call, got {len(offloaded_funcs)}"
+        )
+        assert offloaded_funcs[0] == src._parse_file
+        assert len(events) == 2
+
 
 class TestSimulatedSource:
     def test_read_batch(self):

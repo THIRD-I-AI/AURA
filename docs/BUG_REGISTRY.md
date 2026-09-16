@@ -1408,11 +1408,12 @@ the whole subsystem every time.
 - **Fix:** pending.
 
 ## BUG-087: FileWatcher source's blocking parse calls run directly on the event loop
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode audit of `aurabackend/pipeline/` (`streaming-sources-sinks` group), 2026-09-15.
 - **Severity:** high — freezes every tenant's concurrent request for the duration of a large CSV/Parquet parse under the single-worker deployment.
 - **Root cause:** `pipeline/streaming/sources/file_watcher.py:105-156`'s `_parse_csv`, `_parse_json`, and `_parse_parquet` do blocking file I/O (and, for Parquet, CPU-bound parsing) but are called synchronously from `read_batch` (an `async def`) with no `asyncio.to_thread`.
 - **Caused by:** none — pre-existing.
+- **Fix:** `read_batch`'s per-file loop now calls `await asyncio.to_thread(self._parse_file, file_path)` instead of calling `_parse_file` directly — `_parse_file` itself is the existing dispatch to `_parse_csv`/`_parse_json`/`_parse_parquet`, so no change needed there. `aurabackend/pipeline/streaming/sources/file_watcher.py`. Regression test `test_parse_file_is_offloaded_to_a_thread` (`tests/test_streaming.py`) spies on `asyncio.to_thread` and asserts exactly one call, with `_parse_file` as the dispatched function. Confirmed non-vacuous via `git stash`: old code shows 0 offloaded calls. Full suite: 65/65 pass. PR: pending.
 - **Fix:** pending.
 
 ## BUG-088: StreamingEngine's checkpoint I/O blocks the event loop on every checkpoint interval
