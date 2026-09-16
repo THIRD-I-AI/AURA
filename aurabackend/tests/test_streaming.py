@@ -1017,6 +1017,53 @@ class TestStreamingAPITenantIsolation:
         assert exc.value.status_code == 404
 
 
+class TestStreamingAPIStartRace:
+    """BUG-089: start_pipeline's status check and engine construction spanned
+    an `await` with no lock, so two near-simultaneous start requests for the
+    same pipeline could both pass the "not already running" check before
+    either flipped the status -- each building its own StreamingEngine, with
+    the second silently overwriting _engines[pipeline_id] and leaking the
+    first engine's unstoppable background tasks."""
+
+    @pytest.fixture(autouse=True)
+    def _clear_stores(self):
+        from pipeline.streaming.streaming_api import _engines, _pipelines, _start_locks
+        _pipelines.clear()
+        _engines.clear()
+        _start_locks.clear()
+        yield
+        _pipelines.clear()
+        _engines.clear()
+        _start_locks.clear()
+
+    @pytest.mark.asyncio
+    async def test_concurrent_start_calls_only_create_one_engine(self):
+        from fastapi import HTTPException
+
+        from pipeline.streaming.streaming_api import _engines, _pipelines, start_pipeline
+
+        p = _make_pipeline()
+        _pipelines[p.id] = p
+        try:
+            results = await asyncio.gather(
+                start_pipeline(p.id), start_pipeline(p.id), return_exceptions=True
+            )
+            successes = [r for r in results if not isinstance(r, Exception)]
+            conflicts = [
+                r for r in results
+                if isinstance(r, HTTPException) and r.status_code == 409
+            ]
+            assert len(successes) == 1, results
+            assert len(conflicts) == 1, results
+            assert p.id in _engines
+        finally:
+            engine = _engines.get(p.id)
+            if engine:
+                await engine.stop()
+            _pipelines.pop(p.id, None)
+            _engines.pop(p.id, None)
+
+
 # ════════════════════════════════════════════════════════════════
 # 7. BACKPRESSURE TESTS
 # ════════════════════════════════════════════════════════════════
