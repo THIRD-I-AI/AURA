@@ -1548,7 +1548,99 @@ the whole subsystem every time.
 - **Caused by:** none — pre-existing.
 - **Fix:** added `_esc()` (wraps `xml.sax.saxutils.escape`) and applied it to `query.get("question")`, `challenge['severity']`, `challenge['text']`, and `challenge['suggested_check']` before they're interpolated into `Paragraph` strings — the surrounding `<b>`/`<font>` markup we construct ourselves is left unescaped since only the untrusted substrings need it. Test: `tests/test_counterfactual_sprint9.py::test_pdf_renderer_escapes_unescaped_markup_in_free_text` renders an artifact whose question and challenge text/suggested_check contain unbalanced `<` (e.g. `"x<y"`). Confirmed non-vacuous by stashing the fix — the test fails with the exact `ValueError` above — then restoring it and confirming all 4 PDF-related tests in the file pass. PR: #435.
 
-## Refuted (adversarial-verify, 3/3 skeptics refuted — filed for the record, no fix needed)
+## BUG-104: No global 401 handler — expired/invalid token is never cleared or reported
+- **Status:** open
+- **Found by:** ultracode audit of `frontend/src/` (`auth-services-lib` group), 2026-09-17.
+- **Severity:** high — a user whose token expires mid-session keeps seeing the authenticated UI and keeps hitting silent failures instead of being routed back to login.
+- **Root cause:** `frontend/src/services/api.ts:279`'s `ApiClient.request()` throws a typed `ApiError` carrying the real HTTP status on `!response.ok`, but nothing in the file inspects that status to react to 401/403: no `setAuthToken(null)`, no `AuthContext` notification, no redirect to `/login`. The stale token stays in `localStorage` (`aura.authToken`) and keeps being sent on every subsequent request until the user manually logs out or reloads. Compounds with BUG-105.
+- **Caused by:** none — pre-existing.
+- **Fix:** pending.
+
+## BUG-105: isAuthenticated never re-evaluated after mount — expired session is not detected by the route guard
+- **Status:** open
+- **Found by:** ultracode audit of `frontend/src/` (`auth-services-lib` group), 2026-09-17.
+- **Severity:** high — a route guarded by `ProtectedRoute` is reachable with a dead/expired session for the lifetime of the SPA session (until a hard reload).
+- **Root cause:** `frontend/src/auth/AuthContext.tsx:20`'s `user`/`isAuthenticated` is computed exactly once, in the `useState` initializer, from `authService.currentUser()` at mount — only updated again by explicit `login()`/`register()`/`logout()` calls. If the JWT expires while the SPA stays open, `isAuthenticated` stays `true` indefinitely; `ProtectedRoute` keeps rendering protected routes. Only a hard reload re-runs the initializer (which does check `exp` via `decodeAuthToken()`).
+- **Caused by:** none — pre-existing.
+- **Fix:** pending.
+
+## BUG-106: Approve/Reject controls for autonomous self-healing deploys are non-interactive divs, not real buttons
+- **Status:** open
+- **Found by:** ultracode audit of `frontend/src/` (`pages-components-terminal-workbench-ui` group), 2026-09-17.
+- **Severity:** high — a real functional gap in a safety-critical HITL approval gate, not a cosmetic a11y nit: a keyboard-only or screen-reader user cannot exercise the human-override control at all, while a sighted mouse user can trigger an irreversible production deploy with a single accidental click and no confirmation dialog.
+- **Root cause:** `frontend/src/workbench/cockpit/HealingQueueApprovals.tsx:37`'s "Approve & deploy" and "Reject" actions for the S41 human-in-the-loop healing queue are rendered as plain `<div onClick=...>` elements with no `role="button"`, no `tabIndex`, and no `onKeyDown` handler — not in the tab order, do not respond to Enter/Space. Clicking "Approve & deploy" calls `decideHeal(id, true)` in `Workbench.tsx`, which immediately calls `healingService.approve(id, 'workbench-ui')` and deploys a signed override to production with no confirmation step and no undo.
+- **Caused by:** none — pre-existing.
+- **Fix:** pending.
+
+## BUG-107: 401/403 on chat history silently swallowed into an empty success
+- **Status:** open
+- **Found by:** ultracode audit of `frontend/src/` (`auth-services-lib` group), 2026-09-17.
+- **Severity:** medium — a session that silently expired mid-use renders as a clean empty chat instead of prompting re-login, and a cross-tenant 403 is masked the same way.
+- **Root cause:** `frontend/src/services/api.ts:585`'s `getChatHistory()` catches every error from `GET /chat/history/:sessionId` — including an expired-token 401 or a wrong-tenant 403 — and returns an empty array, with no status-code discrimination. The caller cannot distinguish "no history yet" from "you are no longer authenticated" or "you are not allowed to see this tenant's history."
+- **Caused by:** none — pre-existing.
+- **Fix:** pending.
+
+## BUG-108: Session data cached in localStorage is never cleared on logout, leaking across accounts on a shared device
+- **Status:** open
+- **Found by:** ultracode audit of `frontend/src/` (`store-contexts-hooks-utils` group), 2026-09-17.
+- **Severity:** medium — on a shared/kiosk machine, after user A logs out and user B logs in, `AuraProvider` still hydrates and renders user A's uploaded file names/sizes and past query text/results the moment the backend call fails or returns nothing for the new session.
+- **Root cause:** `frontend/src/store/index.tsx:138`'s `parseUploadsFromStorage()` reads `localStorage.getItem('recentUploads')`, and `fetchQueryHistory` falls back to `localStorage.getItem('queryHistory')` (lines 269, 273), both independent of any auth check. `authService.logout()` in `services/api.ts:126-128` only calls `setAuthToken(null)` — it never touches `recentUploads` or `queryHistory`.
+- **Caused by:** none — pre-existing.
+- **Fix:** pending.
+
+## BUG-109: disconnect() followed by reconnect() silently no-ops when the hook is the pool's only subscriber
+- **Status:** open
+- **Found by:** ultracode audit of `frontend/src/` (`store-contexts-hooks-utils` group), 2026-09-17.
+- **Severity:** medium — any consumer that calls `disconnect()` and later `reconnect()` on the same hook instance gets a permanently dead connection with no error thrown and no state change.
+- **Root cause:** `frontend/src/hooks/useSSE.ts:298`'s `disconnect()` calls the stored unsubscribe function from `subscribe()`; when the calling hook instance is the pool's last subscriber for that topic, that unsubscribe path closes the `EventSource`, clears the retry timer, and does `pool.delete(topic)` — removing the whole `PoolEntry`. `reconnect()` (line 304) calls `reconnectTopic(topic)`, whose first line is `const entry = pool.get(topic); if (!entry) return;` — since the entry was just deleted, it returns immediately and never reopens the connection.
+- **Caused by:** none — pre-existing.
+- **Fix:** pending.
+
+## BUG-110: Error boundary renders the raw caught exception's message to the end user with no sanitization
+- **Status:** open
+- **Found by:** ultracode audit of `frontend/src/` (`pages-components-terminal-workbench-ui` group), 2026-09-17.
+- **Severity:** medium — any error thrown during render whose `.message` embeds a backend/library internal detail (a failed JSON parse with raw response text, a fetch error with a URL/host, a third-party library's internal error) is shown as-is to the end user instead of a generic, sanitized message.
+- **Root cause:** `frontend/src/components/ui/ErrorBoundary.tsx:92` directly renders `this.state.error?.message` in its fallback UI with no sanitization. The equivalent `PanelErrorBoundary` in `frontend/src/terminal/PanelErrorBoundary.tsx:25` has the identical issue — together these are the app's two generic error-boundary fallbacks, so the pattern applies broadly across every component tree they wrap. Same class of issue `security.md` already calls out for backend responses (`sanitize_error`), just never applied on the frontend's own error-boundary fallback.
+- **Caused by:** none — pre-existing.
+- **Fix:** pending.
+
+## BUG-111: saveChatMessage swallows all failures including auth errors
+- **Status:** open
+- **Found by:** ultracode audit of `frontend/src/` (`auth-services-lib` group), 2026-09-17.
+- **Severity:** low — a 401/403 on this write path never surfaces to the user; the message appears saved when it was actually rejected server-side.
+- **Root cause:** `frontend/src/services/api.ts:593`'s `saveChatMessage` POSTs a chat message and discards any error via a bare `catch { /* best-effort */ }`, by design — but combined with BUG-104/107, there is no code path in this file that ever reacts to a 401/403 by logging the user out or warning them their session is dead.
+- **Caused by:** none — pre-existing.
+- **Fix:** pending.
+
+## BUG-112: ensureAuditorToken silently reuses any existing bearer token instead of minting the intended auditor-role token
+- **Status:** open
+- **Found by:** ultracode audit of `frontend/src/` (`auth-services-lib` group), 2026-09-17.
+- **Severity:** low — subsequent `financialAuditService` calls run under whatever role the ambient token actually has, silently diverging from the documented behavior.
+- **Root cause:** `frontend/src/services/api.ts:1650`'s `ensureAuditorToken()` guard is `if (getAuthToken()) return;` — it treats the mere presence of *any* token (e.g. a real, already-logged-in non-auditor user's session token) as sufficient, and skips minting the auditor-role demo token entirely.
+- **Caused by:** none — pre-existing.
+- **Fix:** pending.
+
+## BUG-113: Unvalidated localStorage value is cast and applied directly as a DOM attribute
+- **Status:** open
+- **Found by:** ultracode audit of `frontend/src/` (`store-contexts-hooks-utils` group), 2026-09-17.
+- **Severity:** low — an invalid theme value (corrupted storage, a stale key from an older app version, manual tampering via devtools on a shared machine) persists and keeps being reapplied on every load instead of falling back to the documented default.
+- **Root cause:** `frontend/src/contexts/ThemeContext.tsx:21`'s `localStorage.getItem('aura-theme') as Theme` is an unchecked TypeScript type assertion — at runtime the value could be any string, since `Theme` is only `'light' | 'dark'`. That unvalidated value flows straight into `document.documentElement.setAttribute('data-theme', theme)` and is written back to `localStorage` with no allow-list check.
+- **Caused by:** none — pre-existing.
+- **Fix:** pending.
+
+## Refuted (adversarial-verify, ≥2/3 skeptics refuted — filed for the record, no fix needed)
+
+**api.ts:141 logout-doesn't-reset-workspace claim** — a reviewer flagged `authService.logout()` as never resetting `_currentWorkspaceId`/the `aura.workspaceId` localStorage key, letting the next login on a shared browser inherit the previous user's workspace header. 2/3 verifiers refuted: the code-level fact is accurate, but the actual security claim depends on the backend NOT independently re-validating that the bearer token's `org_id` is authorized for the `X-Workspace-Id` header on every route — which the reviewers judged the backend does do (per BUG-057's tenant-scoping fixes), making this frontend-side gap non-exploitable on its own. Recorded here so a future re-audit doesn't re-flag it without checking this note first.
+
+**api.ts:279 no-cancellation-guard claim** — a reviewer flagged `request()`'s private, unexposed `AbortController` and lack of in-flight-request cancellation on a workspace switch as letting a stale tenant's response render under a newly selected workspace. 2/3 verifiers refuted: `setCurrentWorkspaceId`/`subscribeWorkspace` are exported but never actually invoked anywhere in the current frontend codebase (confirmed by search) — the workspace-switch code path this finding depends on doesn't exist yet, so there's no live call site where the race is currently reachable.
+
+**store/index.tsx:220 concurrent-fetch-race claim** — a reviewer flagged `fetchStats`/`fetchConnections`/`fetchQueryHistory`'s `if (state.xLoading) return;` guard as stale-closure-vulnerable, letting two same-tick calls both pass the guard and race. All 3 verifiers refuted: no real call site in the current codebase invokes the same fetch action twice in one tick (each is called once per relevant mount/effect), and React's batching/re-render behavior for the actual existing call patterns doesn't produce the double-invocation the finding requires.
+
+**store/index.tsx:211 AuraProvider-doesn't-react-to-workspace-switches claim** — a reviewer flagged `AuraProvider` as never calling `subscribeWorkspace()` and having no state-reset action, so stale previous-workspace data would stay rendered after a switch. All 3 verifiers refuted for the same reason as the api.ts:279 finding above: `setCurrentWorkspaceId` has no live caller anywhere in the frontend yet, so the workspace-switch event this finding depends on never actually fires in the current app.
+
+**Counterfactual.tsx:79 raw-HTTP-error-body-rendered claim** — a reviewer flagged `throw new Error(\`HTTP ${status}: ${await submitResp.text()}\`)` as displaying a raw, unsanitized backend error body to the end user, citing `security.md`'s sanitize-error rule. 2/3 verifiers refuted: `security.md`'s rule targets a backend response proxying another service's raw error to an external client; this is a frontend dev-facing error surface on a single internal admin/demo page (`Counterfactual.tsx`), not a customer-facing data-leak path, and React's text interpolation already prevents any HTML/script injection from the body text.
+
+
 
 **recovery_persistence.py:100 generator-abandonment claim** — a reviewer flagged the default (`return_row=False`) branch of `persist_recovery_row` as using the same abandoned-`get_session()`-generator pattern the module's own docstring documents as causing "database is locked". All 3 verifiers refuted: the default branch's `async for db in get_session(): ...; break` pattern was confirmed NOT to reproduce the documented failure the way the `return_row=True` branch's now-fixed pattern did — see per-agent reasoning in the workflow journal for the specific mechanism. No entry filed as open; recorded here only so a future re-audit doesn't re-flag it without checking this note first.
 
