@@ -1686,16 +1686,24 @@ def strip_for_hashing(artifact: Any) -> Dict[str, Any]:
     )
 
 
-def _request_hash(query: CounterfactualQuery, dataset_fingerprint: str) -> str:
+def _request_hash(query: CounterfactualQuery, dataset_fingerprint: str,
+                  tenant: Optional[str] = None) -> str:
     """Stable hash of the user-controllable inputs.
 
     Used as the cache key for the critic and as the seed-derivation
     base. Must NOT depend on record_id, audit_record_hash, or anything
     populated downstream by the engine.
+
+    BUG-096: ``tenant`` is folded in so two different tenants running the
+    same query over structurally-identical data (e.g. a shared demo/
+    onboarding dataset -- dataset_fingerprint only hashes columns/dtypes/
+    head/tail/len, not the full data) don't collide on the same critic-
+    cache key and get served each other's cached LLM critique text.
     """
     return sha256_canonical({
         "query": query.model_dump(mode="json"),
         "dataset_fingerprint": dataset_fingerprint,
+        "tenant": tenant,
     })
 
 
@@ -1704,6 +1712,7 @@ async def run_job(
     df: pd.DataFrame,
     methods: Optional[List[EstimatorMethod]] = None,
     critic_timeout: Optional[float] = None,
+    tenant: Optional[str] = None,
 ) -> CounterfactualArtifact:
     """Full engine: estimate → refute → critique (cached) → score → sign → persist → seal.
 
@@ -1717,7 +1726,7 @@ async def run_job(
     # same logical input.
     df = df.copy()
     fingerprint = _dataset_fingerprint(df)
-    req_hash = _request_hash(query, fingerprint)
+    req_hash = _request_hash(query, fingerprint, tenant)
 
     estimates = await run_estimators(
         df, query.treatment, query.outcome, query.dag.model_dump(),

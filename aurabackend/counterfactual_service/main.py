@@ -212,7 +212,7 @@ async def _run_async(job_id: str, query: CounterfactualQuery) -> None:
     _jobs[job_id]["state"] = "running"
     try:
         df = await _resolve_dataset(query.dataset.source_id)
-        artifact = await run_job(query, df=df)
+        artifact = await run_job(query, df=df, tenant=_jobs[job_id].get("tenant"))
         artifact.rendered = render(artifact, query.audience)
         _jobs[job_id].update(
             state="succeeded",
@@ -237,7 +237,7 @@ async def _run_demo_async(job_id: str, scenario_id: str, query: CounterfactualQu
     _jobs[job_id]["state"] = "running"
     try:
         df = await _resolve_dataset(query.dataset.source_id)
-        artifact = await run_job(query, df=df, methods=_DEMO_METHODS)
+        artifact = await run_job(query, df=df, methods=_DEMO_METHODS, tenant=_jobs[job_id].get("tenant"))
         artifact.rendered = render(artifact, query.audience)
         art_dict = artifact.model_dump(mode="json")
         _demo_last_good[scenario_id] = art_dict

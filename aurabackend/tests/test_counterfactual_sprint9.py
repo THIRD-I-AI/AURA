@@ -209,6 +209,28 @@ def test_critic_cache_key_changes_on_model_version_bump():
     assert a != b
 
 
+def test_request_hash_differs_by_tenant():
+    # BUG-096: two tenants running the identical query over structurally-
+    # identical data (dataset_fingerprint only hashes columns/dtypes/
+    # head/tail/len, not the full dataset) must not collide on the
+    # request_hash the critic cache keys off of.
+    from counterfactual_service.engine import _request_hash
+
+    q = CounterfactualQuery(
+        question="same query",
+        treatment=InterventionSpec(column="treatment", actual=1.0, counterfactual=0.0),
+        outcome=OutcomeSpec(column="outcome", agg="sum", window=("2025-01-01", "2025-12-31")),
+        dag=DAGSpec(edges=[]),
+        dataset=DatasetRef(source_id="shared-demo-dataset"),
+    )
+    a = _request_hash(q, "same-fingerprint", tenant="tenant-a")
+    b = _request_hash(q, "same-fingerprint", tenant="tenant-b")
+    assert a != b
+    # No tenant (e.g. the startup pre-warm path) stays stable and distinct too.
+    none_tenant = _request_hash(q, "same-fingerprint", tenant=None)
+    assert none_tenant not in (a, b)
+
+
 # ── End-to-end: replay contract (eval-gate Layer 10) ──────────────────
 
 @ENGINE_TESTS
@@ -333,6 +355,43 @@ async def test_critic_cache_hit_sets_regenerated_critic_to_false(monkeypatch, tm
     # DoWhy estimators have unpinned random sources. Replay
     # (eval-gate Layer 10) reads the *persisted* bytes — that path is
     # already byte-stable, see test_layer10_replay_returns_byte_identical_artifact.
+
+
+@ENGINE_TESTS
+@pytest.mark.asyncio
+async def test_critic_cache_does_not_leak_across_tenants(monkeypatch, tmp_path):
+    """BUG-096: tenant A's cached critic output must not be served to
+    tenant B for the identical query over structurally-identical data --
+    each tenant's first run must independently be a cache miss
+    (regenerated_critic=True), not a cross-tenant cache hit."""
+    install_mock(
+        monkeypatch,
+        UnifiedMockLLM(default_response='{"challenges": [{"text": "n_samples small", "severity": "low"}]}'),
+    )
+    monkeypatch.setenv("AURA_AUDIT_DIR", str(tmp_path / "audit"))
+    monkeypatch.setenv("AURA_ARTIFACT_DIR", str(tmp_path / "art"))
+    monkeypatch.setenv("AURA_CRITIC_CACHE_DIR", str(tmp_path / "cc"))
+
+    df = synthetic_dataset(n=300)
+    query = CounterfactualQuery(
+        question="cache-tenant-isolation",
+        treatment=InterventionSpec(column="treatment", actual=1.0, counterfactual=0.0),
+        outcome=OutcomeSpec(column="outcome", agg="sum", window=("2025-01-01", "2025-12-31")),
+        dag=DAGSpec(edges=synthetic_dag_full()["edges"]),
+        dataset=DatasetRef(source_id="cache-tenant-isolation"),
+    )
+
+    a = await run_job(query, df=df, tenant="tenant-a")
+    assert a.regenerated_critic is True   # tenant A: cache miss, regenerated
+
+    b = await run_job(query, df=df, tenant="tenant-b")
+    assert b.regenerated_critic is True, (
+        "tenant B must NOT hit tenant A's cache entry for the identical query"
+    )
+
+    # Same tenant, same query -> still hits its own cache normally.
+    a2 = await run_job(query, df=df, tenant="tenant-a")
+    assert a2.regenerated_critic is False
 
 
 @ENGINE_TESTS
