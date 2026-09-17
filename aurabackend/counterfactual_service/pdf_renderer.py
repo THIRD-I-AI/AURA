@@ -17,6 +17,7 @@ from __future__ import annotations
 import io
 import logging
 from typing import Any, Dict, Optional
+from xml.sax.saxutils import escape as _xml_escape
 
 from .verdict import significance_verdict
 
@@ -83,6 +84,13 @@ def _to_float(val: Any) -> Optional[float]:
 def _fmt_num(val: Any, places: int = 4) -> str:
     f = _to_float(val)
     return f"{f:.{places}f}" if f is not None else "—"
+
+
+def _esc(text: Any) -> str:
+    """Escape free-form text (user question, LLM critic output) before it
+    goes into a reportlab Paragraph, which parses & < > as XML-like markup —
+    unescaped input can raise inside reportlab's parser (BUG-103)."""
+    return _xml_escape(str(text)) if text is not None else "—"
 
 
 # ── Public API ────────────────────────────────────────────────────────
@@ -160,7 +168,7 @@ def render_pdf(artifact_dict: Dict[str, Any]) -> Optional[bytes]:
     # ── Question + treatment + outcome ────────────────────────────
     query = artifact_dict.get("query", {})
     story.append(Paragraph("Question", s["subtitle"]))
-    story.append(Paragraph(query.get("question", "—"), s["body"]))
+    story.append(Paragraph(_esc(query.get("question", "—")), s["body"]))
 
     treatment = query.get("treatment", {})
     outcome = query.get("outcome", {})
@@ -241,13 +249,13 @@ def render_pdf(artifact_dict: Dict[str, Any]) -> Optional[bytes]:
         for c in challenges:
             sev_color = _confidence_color(c.get("severity", "low")).hexval()
             text = (
-                f"<font color='{sev_color}'><b>[{c.get('severity', '—')}]</b></font> "
-                f"{c.get('text', '—')}"
+                f"<font color='{sev_color}'><b>[{_esc(c.get('severity', '—'))}]</b></font> "
+                f"{_esc(c.get('text', '—'))}"
             )
             story.append(Paragraph(text, s["body"]))
             sc = c.get("suggested_check")
             if sc:
-                story.append(Paragraph(f"&nbsp;&nbsp;→ <i>{sc}</i>", s["small"]))
+                story.append(Paragraph(f"&nbsp;&nbsp;→ <i>{_esc(sc)}</i>", s["small"]))
 
     # ── Provenance footer ─────────────────────────────────────────
     story.append(Spacer(1, 14))
