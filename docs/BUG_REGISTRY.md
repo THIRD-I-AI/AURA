@@ -1532,12 +1532,12 @@ the whole subsystem every time.
 - **Fix:** none needed.
 
 ## BUG-102: get_artifact_pdf reads the artifact synchronously, blocking the single event loop
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode audit of `aurabackend/counterfactual_service/` (`api-rendering-reporting` group), 2026-09-17.
 - **Severity:** high — a slow/contended disk read for one tenant's PDF request stalls every other tenant's concurrent request on the single-uvicorn-worker deployment.
 - **Root cause:** `counterfactual_service/main.py:564`'s `get_artifact_pdf` (async handler) calls `persistence.read_artifact(record_hash)` directly, not via `asyncio.to_thread`, while the sibling `get_artifact` handler (line 547) and `_load_verify_inputs` correctly offload the identical call.
 - **Caused by:** none — pre-existing.
-- **Fix:** pending.
+- **Fix:** changed to `art = await asyncio.to_thread(persistence.read_artifact, record_hash)`, matching `get_artifact`. Test: `tests/test_counterfactual_sprint9.py::test_get_artifact_pdf_offloads_the_read_to_a_thread` spies on `persistence.read_artifact` and asserts it runs on a different OS thread than the event loop's own. Confirmed non-vacuous by stashing the fix — the test fails with the read observed running on the event loop's own thread — then restoring it and confirming the 5 PDF/artifact-related tests in `test_counterfactual_sprint9.py` pass. PR: pending.
 
 ## BUG-103: Unescaped user/LLM text passed into reportlab Paragraph markup crashes PDF generation
 - **Status:** open
