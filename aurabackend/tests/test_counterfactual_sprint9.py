@@ -179,6 +179,48 @@ def test_public_key_pem_usable_for_external_verify(monkeypatch, fresh_signing):
         pub.verify(sig, b"hellb")
 
 
+def test_resolve_key_pair_concurrent_first_use_all_get_the_same_key(monkeypatch, fresh_signing, tmp_path):
+    """BUG-100: two concurrent first-use callers on a cold instance could
+    each see "no persisted key yet" and each generate + persist their own
+    key -- last writer wins on disk, last assignment wins in the process,
+    so an artifact signed with the losing key can never verify again.
+    Reproduced with real OS threads and a sleep injected into key
+    generation to widen the check-then-generate-then-persist window."""
+    import threading
+    import time
+
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import ed25519
+
+    monkeypatch.delenv("AURA_SIGNING_PRIVATE_KEY_HEX", raising=False)
+    monkeypatch.delenv("AURA_SIGNING_PRIVATE_KEY_PATH", raising=False)
+    monkeypatch.setenv("AURA_SIGNING_KEY_DIR", str(tmp_path))
+
+    real_generate = ed25519.Ed25519PrivateKey.generate
+
+    def slow_generate():
+        time.sleep(0.1)
+        return real_generate()
+
+    monkeypatch.setattr(ed25519.Ed25519PrivateKey, "generate", staticmethod(slow_generate))
+
+    results = []
+
+    def resolve():
+        pair = signing._resolve_key_pair()
+        results.append(pair[1].public_bytes(
+            encoding=serialization.Encoding.Raw, format=serialization.PublicFormat.Raw))
+
+    threads = [threading.Thread(target=resolve) for _ in range(5)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=5)
+
+    assert len(results) == 5
+    assert len(set(results)) == 1, "concurrent first-use callers resolved to different signing keys"
+
+
 # ── Critic cache ──────────────────────────────────────────────────────
 
 def test_critic_cache_round_trip(tmp_path, monkeypatch):

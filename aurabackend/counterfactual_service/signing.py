@@ -31,6 +31,7 @@ from __future__ import annotations
 import base64
 import logging
 import os
+import threading
 from pathlib import Path
 from typing import Optional, Tuple
 
@@ -62,6 +63,17 @@ def signing_available() -> bool:
 _KEY_PAIR: Optional[Tuple[object, object]] = None
 _KEY_SOURCE: str = "uninitialized"
 
+# BUG-100: the check-then-generate-then-persist sequence below spans
+# blocking file I/O (key_file.exists(), key generation, PEM write) with no
+# lock. Two concurrent first-use callers on a cold instance (each already
+# offloaded via asyncio.to_thread by callers per backend.md's async-safety
+# pattern) could both see "no persisted key yet", each generate their own
+# key, and each write signing_ed25519.pem -- last writer wins on disk,
+# last assignment wins in the process, so an artifact signed with the
+# losing key can never verify again. Double-checked locking: the fast
+# path (key already resolved) never touches the lock.
+_KEY_RESOLUTION_LOCK = threading.Lock()
+
 
 def _resolve_key_pair() -> Optional[Tuple[object, object]]:
     """Return ``(private_key, public_key)``. ``None`` if signing
@@ -72,6 +84,17 @@ def _resolve_key_pair() -> Optional[Tuple[object, object]]:
     if _KEY_PAIR is not None:
         return _KEY_PAIR
 
+    with _KEY_RESOLUTION_LOCK:
+        if _KEY_PAIR is not None:
+            return _KEY_PAIR
+        return _resolve_key_pair_locked()
+
+
+def _resolve_key_pair_locked() -> Optional[Tuple[object, object]]:
+    """Body of _resolve_key_pair(), called only while holding
+    _KEY_RESOLUTION_LOCK. Split out purely so the lock/double-check
+    wrapper above stays readable."""
+    global _KEY_PAIR, _KEY_SOURCE
     hex_env = os.getenv("AURA_SIGNING_PRIVATE_KEY_HEX", "").strip()
     if hex_env:
         try:
