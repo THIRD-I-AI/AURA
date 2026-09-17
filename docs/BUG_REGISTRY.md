@@ -59,6 +59,7 @@ the whole subsystem every time.
 | `api_gateway/routers/` | `c00cbd6` | 2026-09-14 | 13 confirmed (BUG-050..062), 0 refuted — all fixed except BUG-062 (fixed separately) |
 | `uasr/` | `e84721f` | 2026-09-14 | 12 confirmed (BUG-063..074), 2 refuted — all fixed except BUG-072 (deliberately deferred, see entry) |
 | `pipeline/` (core + streaming) | `95e236d` | 2026-09-15 | 15 confirmed (BUG-079..093), 0 refuted — all fixed |
+| `counterfactual_service/` | `27e60e0` | 2026-09-17 | 9 confirmed (BUG-095..103), 0 refuted — all fixed except BUG-101 (corrected to false-positive post-filing, see entry) |
 
 ---
 
