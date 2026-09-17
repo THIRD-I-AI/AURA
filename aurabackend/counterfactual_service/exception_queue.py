@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 from datetime import datetime, timezone
 from typing import Any, Dict
 
@@ -27,6 +28,29 @@ from .financial_report import _sign_document
 class AlreadyDecidedError(RuntimeError):
     """A human decision for this finding already exists (decisions are
     final — the WORM stance; a wrong decision is corrected by a new run)."""
+
+
+# BUG-099: record_decision's read-decided-index -> sign -> write-decided-
+# index sequence had no lock, while main.py's HTTP handler dispatches it
+# via asyncio.to_thread -- real OS threads, not serialized by the event
+# loop. Two concurrent decisions for the SAME report but DIFFERENT
+# findings could each read the index before either wrote, and the second
+# write would silently clobber the first, dropping its entry -- which
+# then lets that finding be decided a second time (the AlreadyDecidedError
+# guard reads from the now-incomplete index). A per-report_hash
+# threading.Lock (mirrors uasr/drift_detector.py's _lock_for pattern)
+# serializes the round-trip per report without serializing unrelated
+# reports against each other.
+_decision_locks: Dict[str, threading.Lock] = {}
+_decision_locks_guard = threading.Lock()
+
+
+def _lock_for(report_hash: str) -> threading.Lock:
+    lock = _decision_locks.get(report_hash)
+    if lock is None:
+        with _decision_locks_guard:
+            lock = _decision_locks.setdefault(report_hash, threading.Lock())
+    return lock
 
 
 def _index_path(report_hash: str):
@@ -115,22 +139,24 @@ def record_decision(report_hash: str, finding_id: str, human_auditor_id: str,
     }
     if finding_id not in reviewable:
         raise LookupError(f"finding {finding_id} not reviewable in report {report_hash}")
-    decided = _read_index(report_hash)
-    if finding_id in decided:
-        raise AlreadyDecidedError(
-            f"finding {finding_id} already decided: {decided[finding_id]}")
 
-    stored = _sign_document({
-        "document_type": "HumanOverrideRecord",
-        "pcaob_standard": "AS 1215",
-        "report_record_hash": report_hash,
-        "finding_id": finding_id,
-        "human_auditor_id": human_auditor_id,
-        "rationale": rationale,
-        "approved": bool(approved),
-        "decided_at": datetime.now(timezone.utc).isoformat(),
-    })
-    audit_human_override(finding_id, human_auditor_id, rationale, bool(approved))
-    decided[finding_id] = stored["record_hash"]
-    _write_index(report_hash, decided)
+    with _lock_for(report_hash):
+        decided = _read_index(report_hash)
+        if finding_id in decided:
+            raise AlreadyDecidedError(
+                f"finding {finding_id} already decided: {decided[finding_id]}")
+
+        stored = _sign_document({
+            "document_type": "HumanOverrideRecord",
+            "pcaob_standard": "AS 1215",
+            "report_record_hash": report_hash,
+            "finding_id": finding_id,
+            "human_auditor_id": human_auditor_id,
+            "rationale": rationale,
+            "approved": bool(approved),
+            "decided_at": datetime.now(timezone.utc).isoformat(),
+        })
+        audit_human_override(finding_id, human_auditor_id, rationale, bool(approved))
+        decided[finding_id] = stored["record_hash"]
+        _write_index(report_hash, decided)
     return stored
