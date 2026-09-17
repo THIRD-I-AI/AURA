@@ -67,7 +67,7 @@ describe('ProtectedRoute', () => {
   // stuck true (only mount/login/logout ever set it) until a hard reload.
   it('redirects to /login once the session expires mid-visit, without a reload', async () => {
     setAuthToken(fakeToken({ sub: 'u1' }));
-    global.fetch = vi.fn().mockResolvedValue({
+    globalThis.fetch = vi.fn().mockResolvedValue({
       ok: false,
       status: 401,
       statusText: '401',

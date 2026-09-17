@@ -8,7 +8,7 @@ function fakeToken(claims: Record<string, unknown>): string {
 }
 
 function mockFetchOnce(status: number, body: unknown = {}) {
-  global.fetch = vi.fn().mockResolvedValue({
+  globalThis.fetch = vi.fn().mockResolvedValue({
     ok: status >= 200 && status < 300,
     status,
     statusText: String(status),
