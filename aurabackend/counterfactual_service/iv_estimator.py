@@ -53,8 +53,16 @@ def run_iv_2sls(
     beta2 = _ols(S2, Y)
     point = float(beta2[1])  # coefficient on fitted treatment
 
-    # Analytic SE from stage-2 residuals.
-    resid = Y - S2 @ beta2
+    # Analytic SE. BUG-095: sigma2 must come from the STRUCTURAL residual
+    # (using the actual treatment T, not the fitted t_hat) -- t_hat strips
+    # out exactly the variation the instrument explains, so residuals
+    # against S2 (which contains t_hat) are systematically too small
+    # whenever the instrument has real explanatory power, anti-conservatively
+    # narrowing the CI. The (X_hat'X_hat)^-1 term still uses the projected
+    # design S2 -- that part of the standard 2SLS variance formula is
+    # correct as written (Wooldridge, Ch. 15).
+    S2_actual = np.hstack([intercept, T, Xc])
+    resid = Y - S2_actual @ beta2
     dof = max(n - S2.shape[1], 1)
     sigma2 = float(resid @ resid) / dof
     XtX_inv = np.linalg.pinv(S2.T @ S2)
