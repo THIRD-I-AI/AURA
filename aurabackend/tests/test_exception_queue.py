@@ -108,6 +108,53 @@ def test_double_decision_conflict(monkeypatch, tmp_path):
         eq.record_decision(report["record_hash"], fid, "a2", "again", approved=False)
 
 
+def test_record_decision_concurrent_different_findings_both_persist(monkeypatch, tmp_path):
+    """BUG-099: record_decision's read-decided-index -> sign -> write-
+    decided-index sequence had no lock. Two concurrent decisions on the
+    SAME report but DIFFERENT findings could each read the index before
+    either wrote; the second write then clobbers the first, silently
+    dropping the first finding's entry -- which lets it be decided twice.
+
+    Reproduced with real OS threads (matching how main.py's HTTP handler
+    actually dispatches record_decision via asyncio.to_thread) and a
+    sleep injected between the read and the write to widen the race
+    window deterministically."""
+    import threading
+    import time
+
+    _, _, report = _signed_report(monkeypatch, tmp_path)
+    fid1 = report["findings"][0]["finding_id"]
+    fid2 = report["findings"][1]["finding_id"]
+
+    real_sign_document = eq._sign_document
+
+    def slow_sign_document(*args, **kwargs):
+        time.sleep(0.1)
+        return real_sign_document(*args, **kwargs)
+
+    monkeypatch.setattr(eq, "_sign_document", slow_sign_document)
+
+    errors = []
+
+    def decide(fid, auditor):
+        try:
+            eq.record_decision(report["record_hash"], fid, auditor, "concurrent test", approved=True)
+        except Exception as exc:  # pragma: no cover - surfaced via errors list
+            errors.append((fid, exc))
+
+    t1 = threading.Thread(target=decide, args=(fid1, "auditor-1"))
+    t2 = threading.Thread(target=decide, args=(fid2, "auditor-2"))
+    t1.start()
+    t2.start()
+    t1.join(timeout=5)
+    t2.join(timeout=5)
+
+    assert not errors, f"unexpected errors from concurrent decisions: {errors}"
+    final_index = eq._read_index(report["record_hash"])
+    assert fid1 in final_index, "lost finding 1's decision to the race"
+    assert fid2 in final_index, "lost finding 2's decision to the race"
+
+
 def test_unknown_report_and_finding(monkeypatch, tmp_path):
     _, _, report = _signed_report(monkeypatch, tmp_path)
     with pytest.raises(LookupError):
