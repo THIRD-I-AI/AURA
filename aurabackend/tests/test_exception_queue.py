@@ -142,8 +142,9 @@ def test_exception_endpoints_e2e(monkeypatch, tmp_path):
         journal_entries=[],
     ), user={"org_id": "t1", "sub": "t1"}))
     rh = report["record_hash"]
+    owner = {"org_id": "t1", "sub": "t1"}
 
-    q = asyncio.run(m.financial_audit_exceptions(rh))
+    q = asyncio.run(m.financial_audit_exceptions(rh, user=owner))
     assert q["n_pending"] == 2 and q["n_decided"] == 0
     assert "Ada" not in str(q["pending"])     # egress redaction
 
@@ -156,14 +157,14 @@ def test_exception_endpoints_e2e(monkeypatch, tmp_path):
     # The decision verifies through the same generic verify endpoint.
     assert asyncio.run(m.financial_audit_verify(decision["record_hash"]))["verified"] is True
 
-    q2 = asyncio.run(m.financial_audit_exceptions(rh))
+    q2 = asyncio.run(m.financial_audit_exceptions(rh, user=owner))
     assert q2["n_pending"] == 1 and q2["n_decided"] == 1
 
     with pytest.raises(HTTPException) as exc409:
         asyncio.run(m.financial_audit_decide(rh, fid, body, user=auditor))
     assert exc409.value.status_code == 409
     with pytest.raises(HTTPException) as exc404:
-        asyncio.run(m.financial_audit_exceptions("0" * 64))
+        asyncio.run(m.financial_audit_exceptions("0" * 64, user=owner))
     assert exc404.value.status_code == 404
     with pytest.raises(HTTPException) as exc404b:
         asyncio.run(m.financial_audit_decide(rh, "0" * 64, body, user=auditor))
@@ -204,7 +205,7 @@ def test_decision_identity_comes_from_token_not_body(monkeypatch, tmp_path):
         journal_entries=[],
     ), user={"org_id": "t1", "sub": "t1"}))
     rh = report["record_hash"]
-    fid = asyncio.run(m.financial_audit_exceptions(rh))["pending"][0]["finding_id"]
+    fid = asyncio.run(m.financial_audit_exceptions(rh, user={"org_id": "t1", "sub": "t1"}))["pending"][0]["finding_id"]
 
     # The request body no longer accepts an identity field at all.
     assert "human_auditor_id" not in m.ExceptionDecisionRequest.model_fields
@@ -214,6 +215,45 @@ def test_decision_identity_comes_from_token_not_body(monkeypatch, tmp_path):
         user={"sub": "auditor-jwt-9", "role": "auditor", "org_id": "t1"}))
     assert decision["human_auditor_id"] == "auditor-jwt-9"
     assert asyncio.run(m.financial_audit_verify(decision["record_hash"]))["verified"] is True
+
+
+# ── BUG-098: cross-tenant HITL exception READ (pending_exceptions) ────
+
+
+def test_pending_exceptions_rejects_cross_tenant_read(monkeypatch, tmp_path):
+    _, _, report = _signed_report(monkeypatch, tmp_path)
+    with pytest.raises(LookupError):
+        eq.pending_exceptions(report["record_hash"], tenant_id="a-different-tenant")
+    # Same-tenant read still succeeds — the fix does not break legitimate use.
+    q = eq.pending_exceptions(report["record_hash"], tenant_id="t1")
+    assert q["n_pending"] == 2
+
+
+def test_financial_audit_exceptions_endpoint_rejects_cross_tenant_read(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_ARTIFACT_DIR", str(tmp_path))
+    _store(monkeypatch)
+    from fastapi import HTTPException
+
+    import counterfactual_service.main as m
+
+    report = asyncio.run(m.financial_audit(m.FinancialAuditRequest(
+        tenant_id="t1",
+        ledger=[{"internal_id": "L1", "account_code": "4000", "amount": 250000.0}],
+        purchase_orders=[{"po_number": "PO-1"}],
+        invoices=[{"invoice_number": "INV-9", "po_number": "PO-MISSING", "employee_name": "Ada"}],
+        journal_entries=[],
+    ), user={"org_id": "t1", "sub": "t1"}))
+    rh = report["record_hash"]
+
+    # BUG-098: previously this endpoint took no user/tenant at all, so any
+    # caller could read another tenant's pending financial findings.
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(m.financial_audit_exceptions(rh, user={"org_id": "t2", "sub": "mallory"}))
+    assert exc_info.value.status_code == 404
+
+    # The owning tenant can still read its own pending exceptions.
+    q = asyncio.run(m.financial_audit_exceptions(rh, user={"org_id": "t1", "sub": "t1"}))
+    assert q["n_pending"] == 2
 
 
 # ── BUG-040: cross-tenant HITL exception decision ─────────────────────
@@ -246,7 +286,7 @@ def test_exception_decide_rejects_cross_tenant_auditor_e2e(monkeypatch, tmp_path
         journal_entries=[],
     ), user={"org_id": "t1", "sub": "t1"}))
     rh = report["record_hash"]
-    q = asyncio.run(m.financial_audit_exceptions(rh))
+    q = asyncio.run(m.financial_audit_exceptions(rh, user={"org_id": "t1", "sub": "t1"}))
     fid = q["pending"][0]["finding_id"]
 
     cross_tenant_auditor = {"sub": "auditor-from-t2", "role": "auditor", "org_id": "t2"}
@@ -281,7 +321,7 @@ def test_decide_endpoint_offloads_blocking_record_decision(monkeypatch, tmp_path
         journal_entries=[],
     ), user={"org_id": "t1", "sub": "t1"}))
     rh = report["record_hash"]
-    fid = asyncio.run(m.financial_audit_exceptions(rh))["pending"][0]["finding_id"]
+    fid = asyncio.run(m.financial_audit_exceptions(rh, user={"org_id": "t1", "sub": "t1"}))["pending"][0]["finding_id"]
 
     real_record_decision = eq.record_decision
 
@@ -357,7 +397,7 @@ def test_exceptions_endpoint_offloads_blocking_pending_exceptions(monkeypatch, t
                 ticks += 1
 
         ticker_task = asyncio.create_task(ticker())
-        q = await m.financial_audit_exceptions(rh)
+        q = await m.financial_audit_exceptions(rh, user={"org_id": "t1", "sub": "t1"})
         ticker_task.cancel()
         return q, ticks
 

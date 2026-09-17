@@ -61,10 +61,20 @@ def _load_report(report_hash: str) -> Dict[str, Any]:
     return art
 
 
-def pending_exceptions(report_hash: str) -> Dict[str, Any]:
+def pending_exceptions(report_hash: str, tenant_id: str | None = None) -> Dict[str, Any]:
     """Findings still awaiting a human decision, PII-redacted at egress
-    (the signed artifact keeps raw evidence; redaction is display-only)."""
+    (the signed artifact keeps raw evidence; redaction is display-only).
+
+    BUG-098: this read path had no tenant check at all, unlike the sibling
+    write path record_decision() below — any caller who obtained another
+    tenant's report_hash could read that tenant's pending financial
+    findings. Same ownership check as record_decision: a mismatch reports
+    identically to "not found" (BUG-016/036 pattern), never a 403."""
     report = _load_report(report_hash)
+    if tenant_id is not None:
+        report_tenant = report.get("tenant_id")
+        if report_tenant and report_tenant != tenant_id:
+            raise LookupError(f"no completion document for {report_hash}")
     decided = _read_index(report_hash)
     pending = [
         f for f in report.get("findings", [])
