@@ -1523,12 +1523,13 @@ the whole subsystem every time.
 - **Fix:** pending.
 
 ## BUG-101: Ledger verify/proof/subject-history endpoints have no auth and trust a client-supplied tenant_id
-- **Status:** open
+- **Status:** false-positive
 - **Found by:** ultracode audit of `aurabackend/counterfactual_service/` (`api-rendering-reporting` group), 2026-09-17.
-- **Severity:** critical — an unauthenticated caller who knows or guesses another org's `tenant_id` can read that org's full hash-chain status, Merkle inclusion proof, or complete audit history (preparer/reviewer ids, cert hashes, fingerprints) with zero authentication.
-- **Root cause:** `counterfactual_service/main.py:792-839`'s `audit_ledger_verify`, `audit_ledger_proof`, and `audit_ledger_subject_history` each take `tenant_id` as a plain query/path parameter with no `Depends(require_user)`/`Depends(get_current_user)`, unlike every other endpoint in this file (lines 280, 291, 340, 510, 705, 839's siblings), which all derive tenant from the verified token.
-- **Caused by:** none — pre-existing.
-- **Fix:** pending.
+- **Severity (as originally filed):** critical — an unauthenticated caller who knows or guesses another org's `tenant_id` can read that org's full hash-chain status, Merkle inclusion proof, or complete audit history (preparer/reviewer ids, cert hashes, fingerprints) with zero authentication.
+- **Root cause (as originally filed):** `counterfactual_service/main.py:792-839`'s `audit_ledger_verify`, `audit_ledger_proof`, and `audit_ledger_subject_history` each take `tenant_id` as a plain query/path parameter with no `Depends(require_user)`/`Depends(get_current_user)`, unlike every other endpoint in this file (lines 280, 291, 340, 510, 705, 839's siblings), which all derive tenant from the verified token.
+- **Why it's a false positive:** the audit (and its three adversarial verifiers) was scoped only to `counterfactual_service/` and never cross-referenced the mounting layer. The actual externally-reachable surface, `api_gateway/routers/counterfactual.py`, already wraps these exact three routes with `Depends(require_tenant)` and explicitly documents the design ("the service function takes tenant_id as a plain arg because it's an internal helper... the GATEWAY is the trust boundary"). `counterfactual_service` is never deployed standalone — confirmed against `docker-compose.yml`, `docker-compose.prod.yml`, `deploy/aws-free-tier/docker-compose.yml`, and `deploy/helm/aura/values.yaml`, none of which run it as its own service. A first fix attempt (changing the service function's signature to accept a `user: Depends(...)` param) was caught before merge: the facade calls these functions directly as plain Python functions with a pre-derived tenant *string* positional arg, so that change would have broken every real call through the gateway with an `AttributeError`. Reverted; no code change needed. Lesson applied to the remaining findings in this batch: verified each one's actual reachability through the facade before fixing (see BUG-098, which the facade does NOT protect — that one is real).
+- **Caused by:** none — pre-existing, and not exploitable through any deployed surface.
+- **Fix:** none needed.
 
 ## BUG-102: get_artifact_pdf reads the artifact synchronously, blocking the single event loop
 - **Status:** open
