@@ -30,7 +30,7 @@ networkx>=3.6.1,<4.0
 # for the causal_service guardrail that refuses attribution when training
 # data spans a regime change.
 pingouin>=0.6.1,<1.0
-statsmodels>=0.14.6,<1.0
+statsmodels>=0.15.0,<1.0
 
 # Sprint 9 — Counterfactual Audit Engine (Auditor tier)
 # reportlab generates the printable PDF auditor report. Pure-Python with
