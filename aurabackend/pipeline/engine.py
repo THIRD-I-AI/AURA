@@ -426,7 +426,18 @@ class PipelineEngine:
             conn.execute(f"CREATE TABLE {_q(table_name)} AS {source.query}")
             return table_name
         if source.table:
-            return source.table
+            # BUG-093: with no connection.database/path, there is nothing to
+            # ATTACH -- `source.table` names a table on some external
+            # database that was never materialized on this fresh :memory:
+            # connection. Returning it here just defers to a confusing
+            # generic "Catalog Error" from execute()'s later SELECT. Fail
+            # clearly now, same as the missing-table-or-query case below.
+            raise ValueError(
+                "DuckDB source with only 'table' set has no database to load "
+                "it from -- set connection.database (or connection.path) to "
+                "the .duckdb file containing that table, or use 'query' "
+                "against data already available on this connection."
+            )
         raise ValueError("DuckDB source needs table or query")
 
     # ── Processing SQL Builder ────────────────────────────────────────
