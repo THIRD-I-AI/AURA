@@ -232,8 +232,13 @@ async def financial_audit_verify(record_hash: str) -> Dict[str, Any]:
 
 
 @router.get("/audit/financial/{record_hash}/exceptions")
-async def financial_audit_exceptions(record_hash: str) -> Dict[str, Any]:
-    return await _svc_financial_audit_exceptions(record_hash)
+async def financial_audit_exceptions(record_hash: str,
+                                     user: Optional[Dict[str, Any]] = Depends(get_current_user),
+                                     ) -> Dict[str, Any]:
+    # BUG-098: the service function's own Depends(get_current_user) default
+    # never resolves through this bare in-process call (same gotcha as
+    # financial_audit above) -- forward the gateway-resolved user explicitly.
+    return await _svc_financial_audit_exceptions(record_hash, user=user)
 
 
 @router.post("/audit/financial/{record_hash}/exceptions/{finding_id}/decision")
