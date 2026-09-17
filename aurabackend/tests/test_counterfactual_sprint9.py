@@ -551,6 +551,41 @@ def test_pdf_renderer_produces_pdf_bytes():
     assert len(pdf) > 1000  # smoke: a one-pager is at least a couple KB
 
 
+@pytest.mark.skipif(not pdf_renderer.pdf_available(),
+                    reason="reportlab not installed")
+def test_pdf_renderer_escapes_unescaped_markup_in_free_text():
+    """BUG-103: the user's question and the LLM critic's challenge text are
+    free-form strings interpolated unescaped into reportlab Paragraph markup
+    (a constrained XML-like language) -- an unbalanced '<' (e.g. from a
+    treatment/outcome comparison written in plain English, "x<y") used to
+    raise inside reportlab's parser as an unclosed tag instead of rendering
+    as literal text."""
+    artifact = {
+        "record_id": "ca_test",
+        "query": {
+            "question": "Does revenue increase when x<y holds?",
+            "treatment": {"column": "t", "actual": 1, "counterfactual": 0},
+            "outcome":   {"column": "y", "agg": "sum", "window": ["2025-01-01", "2025-12-31"]},
+        },
+        "estimates": [],
+        "refutations": [],
+        "challenges": [
+            {"text": "n_samples < 30 for the a<b comparison", "severity": "high",
+             "suggested_check": "collect more data where a<b holds"},
+        ],
+        "confidence": "medium",
+        "schema_version": "v1",
+        "dataset_fingerprint": "f" * 64,
+        "audit_record_hash": "a" * 64,
+        "signature_status": "signed",
+        "signing_key_source": "env_hex",
+        "regenerated_critic": False,
+    }
+    pdf = pdf_renderer.render_pdf(artifact)
+    assert pdf is not None
+    assert pdf.startswith(b"%PDF-")
+
+
 def test_pdf_endpoint_501_when_renderer_unavailable(monkeypatch, tmp_path):
     """If reportlab isn't installed in a deployment, the PDF endpoint
     returns 501 (Not Implemented) rather than 503. 501 signals the
