@@ -560,8 +560,12 @@ async def get_artifact_pdf(record_hash: str) -> Response:
     retry, it's a feature this engine doesn't implement. SDK clients
     treat 501 as a definitive ``ServiceUnavailableError`` and skip
     retry, while 503 retains its conventional "service temporarily
-    unavailable, please back off and retry" semantics elsewhere."""
-    art = persistence.read_artifact(record_hash)
+    unavailable, please back off and retry" semantics elsewhere.
+
+    BUG-102: this read used to run synchronously on the event loop,
+    unlike get_artifact above which correctly offloads via
+    asyncio.to_thread."""
+    art = await asyncio.to_thread(persistence.read_artifact, record_hash)
     if art is None:
         raise HTTPException(404, f"artifact {record_hash} not found")
     pdf_bytes = await asyncio.to_thread(pdf_renderer.render_pdf, art)

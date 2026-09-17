@@ -572,3 +572,37 @@ def test_pdf_endpoint_501_when_renderer_unavailable(monkeypatch, tmp_path):
         r = client.get("/counterfactual/artifacts/" + "a" * 64 + "/report.pdf")
         assert r.status_code == 501
         assert "reportlab" in r.text
+
+
+@pytest.mark.asyncio
+async def test_get_artifact_pdf_offloads_the_read_to_a_thread(monkeypatch, tmp_path):
+    """BUG-102: get_artifact_pdf called persistence.read_artifact directly
+    on the event loop, unlike the sibling get_artifact handler (and
+    _load_verify_inputs), which correctly offload via asyncio.to_thread.
+    Proven at the mechanism level: the read must run on a different OS
+    thread than the event loop's own."""
+    import threading
+
+    import counterfactual_service.main as m
+
+    monkeypatch.setenv("AURA_ARTIFACT_DIR", str(tmp_path))
+    payload = {"record_id": "ca_x", "audit_record_hash": "b" * 64}
+    persistence.write_artifact("b" * 64, payload)
+
+    main_thread_id = threading.get_ident()
+    read_thread_ids = []
+    real_read_artifact = persistence.read_artifact
+
+    def spy_read_artifact(*args, **kwargs):
+        read_thread_ids.append(threading.get_ident())
+        return real_read_artifact(*args, **kwargs)
+
+    monkeypatch.setattr(m.persistence, "read_artifact", spy_read_artifact)
+
+    await m.get_artifact_pdf("b" * 64)
+
+    assert read_thread_ids, "persistence.read_artifact must have been called"
+    assert all(t != main_thread_id for t in read_thread_ids), (
+        "the artifact read ran on the event loop's own thread instead of "
+        "being offloaded via asyncio.to_thread"
+    )
