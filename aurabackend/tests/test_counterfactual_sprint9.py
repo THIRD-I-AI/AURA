@@ -583,6 +583,8 @@ async def test_get_artifact_pdf_offloads_the_read_to_a_thread(monkeypatch, tmp_p
     thread than the event loop's own."""
     import threading
 
+    from fastapi import HTTPException
+
     import counterfactual_service.main as m
 
     monkeypatch.setenv("AURA_ARTIFACT_DIR", str(tmp_path))
@@ -599,7 +601,15 @@ async def test_get_artifact_pdf_offloads_the_read_to_a_thread(monkeypatch, tmp_p
 
     monkeypatch.setattr(m.persistence, "read_artifact", spy_read_artifact)
 
-    await m.get_artifact_pdf("b" * 64)
+    # This test's concern is the read step only (BUG-102), not whether
+    # rendering itself succeeds — reportlab isn't installed on the base
+    # backend CI lane, so a 501 here (raised only after the read already
+    # happened) is an expected, unrelated outcome, not a test failure.
+    try:
+        await m.get_artifact_pdf("b" * 64)
+    except HTTPException as exc:
+        if exc.status_code != 501:
+            raise
 
     assert read_thread_ids, "persistence.read_artifact must have been called"
     assert all(t != main_thread_id for t in read_thread_ids), (
