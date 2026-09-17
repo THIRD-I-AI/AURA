@@ -1474,6 +1474,78 @@ the whole subsystem every time.
 - **Caused by:** none — pre-existing test design gap (same class as BUG-077), not introduced by any change in this session.
 - **Fix:** replaced the wall-clock inference with a direct mechanism-level check, matching BUG-077's fix and BUG-065/070's established pattern: patch `agents.specialists.pipeline_agent.asyncio.to_thread` with a spy that still executes the real call, and assert `agent._llm.generate_json` was actually dispatched through it. `aurabackend/tests/test_pipeline_agent.py`. Confirmed non-vacuous by temporarily reverting `pipeline_agent.py`'s `await asyncio.to_thread(self._llm.generate_json, prompt)` to a direct call — the new test fails immediately (`assert generate_json in []`) — then restoring it and confirming 5/5 clean passes. PR: pending.
 
+## BUG-095: 2SLS standard error computed from fitted-treatment residuals — CI is anti-conservative
+- **Status:** open
+- **Found by:** ultracode audit of `aurabackend/counterfactual_service/` (`core-estimation` group), 2026-09-17.
+- **Severity:** high — an audit consumer sees a falsely tight, falsely significant causal effect from the fair-lending/IV estimator path; bias grows with instrument strength, so it's worst exactly when the estimate is most likely to be trusted.
+- **Root cause:** `counterfactual_service/iv_estimator.py:47-61`'s `run_iv_2sls` computes the stage-2 residuals as `Y - S2 @ beta2` where `S2` contains the *fitted* treatment `t_hat` (from stage 1), not the actual observed treatment `T`. The point estimate (`beta2[1]`) is correct — it's the standard 2SLS coefficient from projecting the endogenous regressor onto instruments+exogenous covariates — but the variance formula requires `sigma2 = SSR/dof` using residuals against the *original* regressors (`Y - [intercept, T_actual, confounders] @ beta2`), not the projected ones. Using `t_hat` strips out exactly the variation instrumented away, so `resid @ resid` is systematically smaller than the true structural residual variance whenever the instrument has real explanatory power over `T` — `se` is underestimated and the returned `(ci_lower, ci_upper)` is narrower than the true 95% CI.
+- **Caused by:** none — pre-existing.
+- **Fix:** pending.
+
+## BUG-096: Adversarial-critic disk cache has no tenant key — cross-tenant cache leak
+- **Status:** open
+- **Found by:** ultracode audit of `aurabackend/counterfactual_service/` (`core-estimation` group), 2026-09-17.
+- **Severity:** high — tenant B can be served tenant A's cached LLM critique text verbatim, with no ownership check.
+- **Root cause:** `counterfactual_service/critic_cache.py:60-68`'s `cache_key()` hashes only `(request_hash, model_id, model_version)` — no tenant/org identifier anywhere in the module. `cache_dir()` (lines 40-57) resolves to one process-wide filesystem directory (`AURA_CRITIC_CACHE_DIR` / `/var/log/aura/critic-cache`) shared by every tenant under the single in-process gateway. `engine.py`'s `_request_hash` (lines 1689-1699) and `_dataset_fingerprint` (lines 1554-1569) only hash query fields, column names/dtypes, `len(df)`, and `df.head(3)`/`tail(3)` — not the full dataset or a tenant id — so two different tenants using a shared demo/onboarding dataset with the same audit question collide on `cache_key` and tenant B's `run_job` (`engine.py:1702`) is served tenant A's cached critique.
+- **Caused by:** none — pre-existing.
+- **Fix:** pending.
+
+## BUG-097: Blocking DoWhy calls executed directly on the event loop inside async run_refuters
+- **Status:** open
+- **Found by:** ultracode audit of `aurabackend/counterfactual_service/` (`core-estimation` group), 2026-09-17.
+- **Severity:** high — freezes every tenant's concurrent request on the single-uvicorn-worker deployment for however long DoWhy's graph analysis and estimation take.
+- **Root cause:** `counterfactual_service/engine.py:1279-1319`'s `run_refuters` (`async def`) builds the baseline DoWhy `CausalModel` and calls `model.identify_effect(...)`/`model.estimate_effect(...)` synchronously in the coroutine body (lines 1314-1319), with no `asyncio.to_thread`/`run_in_executor` dispatch — unlike every other DoWhy/sklearn call in this file (the per-refuter fan-out at lines 1341-1343, `run_estimators` at 1105-1108), which correctly offloads.
+- **Caused by:** none — pre-existing.
+- **Fix:** pending.
+
+## BUG-098: pending_exceptions() has no tenant scoping, unlike record_decision()
+- **Status:** open
+- **Found by:** ultracode audit of `aurabackend/counterfactual_service/` (`security-audit-trail` group), 2026-09-17.
+- **Severity:** high — an unauthenticated caller who obtains another tenant's `record_hash` (leaked in a support ticket, or enumerated via BUG-100's also-unauthenticated ledger endpoints) can read that tenant's pending human-review financial findings.
+- **Root cause:** `counterfactual_service/exception_queue.py:64-81`'s `pending_exceptions(report_hash)` loads a completion document's findings by `record_hash` alone — it takes no `tenant_id` and never checks `report.get('tenant_id')` for ownership (only uses it as a PII-masking context string at line 78). The sibling write path `record_decision()` (lines 84-126) explicitly re-derives tenant from the verified token and 404s on a mismatch (citing the BUG-016/036 cross-tenant pattern), but the read path was never given the same protection. Called with zero auth dependency from `GET /audit/financial/{record_hash}/exceptions` (`main.py:849-857`).
+- **Caused by:** none — pre-existing.
+- **Fix:** pending.
+
+## BUG-099: record_decision()'s decided-index read-modify-write is unlocked, allowing a lost update that lets a finding be decided twice
+- **Status:** open
+- **Found by:** ultracode audit of `aurabackend/counterfactual_service/` (`security-audit-trail` group), 2026-09-17.
+- **Severity:** high — violates the module's own documented invariant that "decisions are final"; corrupts `pending_exceptions()`'s decided/pending counts.
+- **Root cause:** `counterfactual_service/exception_queue.py:108-125`'s `record_decision()` reads the `<report_hash>.decisions.json` index via `_read_index` (no lock), checks `finding_id not in decided`, signs and persists a new `HumanOverrideRecord`, then writes the index back with the new entry added via `_write_index` (a full-file overwrite) — a classic unlocked read-modify-write. Two decisions on the same report but different findings, dispatched concurrently via `asyncio.to_thread` (`main.py:872-875`), can each read the index before either writes; the second write clobbers the first, silently dropping the first finding's entry. A later request for that dropped finding_id no longer finds it in the index, bypassing the `AlreadyDecidedError` guard and allowing a second, contradicting override record to be signed for the same finding.
+- **Caused by:** none — pre-existing.
+- **Fix:** pending.
+
+## BUG-100: Unsynchronized lazy key generation/persistence lets concurrent first-use callers mint and persist two different signing keys
+- **Status:** open
+- **Found by:** ultracode audit of `aurabackend/counterfactual_service/` (`security-audit-trail` group), 2026-09-17.
+- **Severity:** medium — a legitimately-produced, unmodified audit artifact can permanently report `verified=false` if it lands on a freshly deployed instance during the race window.
+- **Root cause:** `counterfactual_service/signing.py:66-131`'s `_resolve_key_pair()` lazily generates and persists the Ed25519 signing key on first use into a module-global `_KEY_PAIR` cache with no lock (`threading.Lock` does not appear anywhere in the file). The check-then-generate-then-write sequence (`key_file.exists()` check, key generation, PEM write, cache assignment) spans blocking I/O and CPU work; two concurrent first-signing requests on a cold instance (each already offloaded via `asyncio.to_thread` per the mandated async-safety pattern) can both take the "no persisted key yet" branch, each generate and write their own key (last writer wins on disk, last assignment wins in the process), and an artifact signed with the losing key can never verify again.
+- **Caused by:** none — pre-existing.
+- **Fix:** pending.
+
+## BUG-101: Ledger verify/proof/subject-history endpoints have no auth and trust a client-supplied tenant_id
+- **Status:** open
+- **Found by:** ultracode audit of `aurabackend/counterfactual_service/` (`api-rendering-reporting` group), 2026-09-17.
+- **Severity:** critical — an unauthenticated caller who knows or guesses another org's `tenant_id` can read that org's full hash-chain status, Merkle inclusion proof, or complete audit history (preparer/reviewer ids, cert hashes, fingerprints) with zero authentication.
+- **Root cause:** `counterfactual_service/main.py:792-839`'s `audit_ledger_verify`, `audit_ledger_proof`, and `audit_ledger_subject_history` each take `tenant_id` as a plain query/path parameter with no `Depends(require_user)`/`Depends(get_current_user)`, unlike every other endpoint in this file (lines 280, 291, 340, 510, 705, 839's siblings), which all derive tenant from the verified token.
+- **Caused by:** none — pre-existing.
+- **Fix:** pending.
+
+## BUG-102: get_artifact_pdf reads the artifact synchronously, blocking the single event loop
+- **Status:** open
+- **Found by:** ultracode audit of `aurabackend/counterfactual_service/` (`api-rendering-reporting` group), 2026-09-17.
+- **Severity:** high — a slow/contended disk read for one tenant's PDF request stalls every other tenant's concurrent request on the single-uvicorn-worker deployment.
+- **Root cause:** `counterfactual_service/main.py:564`'s `get_artifact_pdf` (async handler) calls `persistence.read_artifact(record_hash)` directly, not via `asyncio.to_thread`, while the sibling `get_artifact` handler (line 547) and `_load_verify_inputs` correctly offload the identical call.
+- **Caused by:** none — pre-existing.
+- **Fix:** pending.
+
+## BUG-103: Unescaped user/LLM text passed into reportlab Paragraph markup crashes PDF generation
+- **Status:** open
+- **Found by:** ultracode audit of `aurabackend/counterfactual_service/` (`api-rendering-reporting` group), 2026-09-17.
+- **Severity:** medium — `GET /counterfactual/artifacts/{record_hash}/report.pdf` returns an unhandled 500 instead of a rendered PDF for a common class of input.
+- **Root cause:** `counterfactual_service/pdf_renderer.py:163,246` interpolates `query.get("question")` (user-supplied free text from `CounterfactualQuery.question`, a plain `str` with no markup validation — `schemas.py:51`) and `challenge['text']` (LLM critic output) unescaped into reportlab `Paragraph` strings, which parse a constrained XML-like markup language. A question or critique containing an unescaped `&` or unbalanced `<`/`>` raises inside reportlab's parser; the exception is uncaught anywhere in the call chain (`render_pdf` is dispatched via `asyncio.to_thread` with no try/except in `main.py`'s `get_artifact_pdf`).
+- **Caused by:** none — pre-existing.
+- **Fix:** pending.
+
 ## Refuted (adversarial-verify, 3/3 skeptics refuted — filed for the record, no fix needed)
 
 **recovery_persistence.py:100 generator-abandonment claim** — a reviewer flagged the default (`return_row=False`) branch of `persist_recovery_row` as using the same abandoned-`get_session()`-generator pattern the module's own docstring documents as causing "database is locked". All 3 verifiers refuted: the default branch's `async for db in get_session(): ...; break` pattern was confirmed NOT to reproduce the documented failure the way the `return_row=True` branch's now-fixed pattern did — see per-agent reasoning in the workflow journal for the specific mechanism. No entry filed as open; recorded here only so a future re-audit doesn't re-flag it without checking this note first.
