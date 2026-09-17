@@ -110,6 +110,45 @@ async def test_run_refuters_run_on_synthetic():
     assert len(refuters) == 4
 
 
+@pytest.mark.asyncio
+async def test_run_refuters_offloads_the_baseline_estimate_to_a_thread():
+    """BUG-097: run_refuters built the baseline DoWhy CausalModel and
+    called identify_effect/estimate_effect directly on the event loop,
+    unlike the per-refuter fan-out (and run_estimators) which correctly
+    offload via loop.run_in_executor. On the single-uvicorn-worker
+    deployment that blocks every other tenant's concurrent request for
+    however long DoWhy's graph analysis + linear-regression fit take.
+    Proven at the mechanism level: the baseline builder must run on a
+    different OS thread than the event loop's own."""
+    import threading
+
+    from counterfactual_service import engine as engine_module
+
+    df = synthetic_dataset(n=400)
+    treatment = InterventionSpec(column="treatment", actual=1.0, counterfactual=0.0)
+    outcome = OutcomeSpec(column="outcome", agg="sum", window=("1900-01-01", "2099-01-01"))
+
+    main_thread_id = threading.get_ident()
+    build_thread_ids = []
+    real_build_causal_model = engine_module._build_causal_model
+
+    def spy_build_causal_model(*args, **kwargs):
+        build_thread_ids.append(threading.get_ident())
+        return real_build_causal_model(*args, **kwargs)
+
+    engine_module._build_causal_model = spy_build_causal_model
+    try:
+        await run_refuters(df, treatment, outcome, synthetic_dag_full())
+    finally:
+        engine_module._build_causal_model = real_build_causal_model
+
+    assert build_thread_ids, "the baseline builder must have been called"
+    assert all(t != main_thread_id for t in build_thread_ids), (
+        "baseline construction ran on the event loop's own thread instead "
+        "of being offloaded via run_in_executor"
+    )
+
+
 # ── Adversarial critic ────────────────────────────────────────────────
 
 @pytest.mark.asyncio

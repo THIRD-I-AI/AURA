@@ -1491,12 +1491,12 @@ the whole subsystem every time.
 - **Fix:** `_request_hash` now takes an optional `tenant` and folds it into the hash (used both as the critic-cache key basis and as the deterministic-seed base — folding tenant in is harmless for seeding, since there's no cross-tenant determinism requirement). `run_job` gained an optional `tenant` parameter threaded through from `main.py`'s job workers (`_run_async`/`_run_demo_async`, both read it from `_jobs[job_id]["tenant"]`, already stamped by `_new_job`); the startup pre-warm path (`prewarm_demo_scenarios`) passes no tenant, matching its existing shared/public-cache design. Tests: `tests/test_counterfactual_sprint9.py::test_request_hash_differs_by_tenant` (unit) and `test_critic_cache_does_not_leak_across_tenants` (e2e via `run_job`, asserting tenant B's first run is `regenerated_critic=True` for a query tenant A already cached). Confirmed non-vacuous by stashing the fix — both fail with `TypeError: unexpected keyword argument 'tenant'` — then restoring it and confirming the full `test_counterfactual_sprint9.py` suite (21 tests) passes. PR: pending.
 
 ## BUG-097: Blocking DoWhy calls executed directly on the event loop inside async run_refuters
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode audit of `aurabackend/counterfactual_service/` (`core-estimation` group), 2026-09-17.
 - **Severity:** high — freezes every tenant's concurrent request on the single-uvicorn-worker deployment for however long DoWhy's graph analysis and estimation take.
 - **Root cause:** `counterfactual_service/engine.py:1279-1319`'s `run_refuters` (`async def`) builds the baseline DoWhy `CausalModel` and calls `model.identify_effect(...)`/`model.estimate_effect(...)` synchronously in the coroutine body (lines 1314-1319), with no `asyncio.to_thread`/`run_in_executor` dispatch — unlike every other DoWhy/sklearn call in this file (the per-refuter fan-out at lines 1341-1343, `run_estimators` at 1105-1108), which correctly offloads.
 - **Caused by:** none — pre-existing.
-- **Fix:** pending.
+- **Fix:** the baseline construction (seed + `_build_causal_model` + `identify_effect` + `estimate_effect`) is now wrapped in a local `_build_baseline()` closure dispatched via `await loop.run_in_executor(None, _build_baseline)`, matching the pattern already used for the per-refuter fan-out and `run_estimators`. Test: `tests/test_counterfactual_engine.py::test_run_refuters_offloads_the_baseline_estimate_to_a_thread` spies on `_build_causal_model` and asserts it runs on a different OS thread than the event loop's own. Confirmed non-vacuous by stashing the fix — the test fails with the baseline builder observed running on the event loop's own thread — then restoring it and confirming the full `test_counterfactual_engine.py` suite (11 tests) passes. PR: pending.
 
 ## BUG-098: pending_exceptions() has no tenant scoping, unlike record_decision()
 - **Status:** fixed

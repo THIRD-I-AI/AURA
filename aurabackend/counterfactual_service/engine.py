@@ -1307,7 +1307,9 @@ async def run_refuters(
             key=lambda r: r.refuter,
         )
 
-    try:
+    loop = asyncio.get_event_loop()
+
+    def _build_baseline():
         # Baseline estimate — also pinned. Bootstrap CI here would
         # otherwise leak entropy that downstream refuters consume.
         _seed_numpy(_seed_for(request_hash, "_baseline"))
@@ -1317,6 +1319,17 @@ async def run_refuters(
             identified,
             method_name=_DOWHY_ESTIMATOR_METHODS["linear_regression"],
         )
+        return model, identified, baseline
+
+    try:
+        # BUG-097: DoWhy's identify_effect (networkx graph analysis) and
+        # estimate_effect (fits a linear-regression estimator over the
+        # full dataframe) are blocking, CPU-bound calls -- offloaded like
+        # every other DoWhy/sklearn call in this file (the per-refuter
+        # fan-out just below, run_estimators above) so they can't freeze
+        # the single-uvicorn-worker event loop for every other tenant's
+        # concurrent request (.claude/rules/backend.md).
+        model, identified, baseline = await loop.run_in_executor(None, _build_baseline)
     except Exception as exc:
         logger.warning("Baseline for refuters failed: %s", exc)
         # Same alphabetical ordering as the happy path — when CI catches
@@ -1331,8 +1344,6 @@ async def run_refuters(
             ],
             key=lambda r: r.refuter,
         )
-
-    loop = asyncio.get_event_loop()
 
     async def _one(r: RefuterName) -> RefutationResult:
         seed = _seed_for(request_hash, r)
