@@ -3,13 +3,44 @@ import hmac
 import json
 import logging
 import os
+import re
 from typing import Any
 
 from starlette.types import Message
 
 logger = logging.getLogger("aura.pii_masking")
 
-PII_KEYS = {"ssn", "social_security_number", "employee_name", "first_name", "last_name", "phone", "email"}
+# BUG-115: the original PII_KEYS was an exact-match set -- "customer_ssn",
+# "billing_email", "dob", "credit_card_number", "address" etc. all sailed
+# through untouched. Matched as a substring instead (below), which trades a
+# few over-redacted benign fields (e.g. "phone_type") for never missing a
+# real PII field spelled slightly differently -- the safe direction for a
+# perimeter-defense control.
+PII_KEYWORDS = frozenset({
+    "ssn", "social_security", "employee_name", "first_name", "last_name",
+    "phone", "email", "dob", "date_of_birth", "credit_card", "card_number",
+    "national_id", "passport", "ip_address",
+})
+
+# BUG-115: key-based redaction alone misses PII embedded inside an
+# unrelated field's free-text VALUE (e.g. a "notes" field containing an
+# SSN or email). These patterns catch the common, high-confidence cases.
+_EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
+_SSN_RE = re.compile(r"\b\d{3}-\d{2}-\d{4}\b")
+_CC_RE = re.compile(r"\b(?:\d[ -]?){13,19}\b")
+
+
+def _key_is_pii(key: Any) -> bool:
+    lowered = str(key).lower()
+    return any(kw in lowered for kw in PII_KEYWORDS)
+
+
+def _scrub_value_text(value: str) -> str:
+    scrubbed = _EMAIL_RE.sub("[REDACTED_EMAIL]", value)
+    scrubbed = _SSN_RE.sub("[REDACTED_SSN]", scrubbed)
+    scrubbed = _CC_RE.sub("[REDACTED_CC]", scrubbed)
+    return scrubbed
+
 
 def redact_pii(data: Any) -> Any:
     """
@@ -18,13 +49,15 @@ def redact_pii(data: Any) -> Any:
     if isinstance(data, dict):
         new_data = {}
         for k, v in data.items():
-            if str(k).lower() in PII_KEYS:
+            if _key_is_pii(k):
                 new_data[k] = "[REDACTED]"
             else:
                 new_data[k] = redact_pii(v)
         return new_data
     elif isinstance(data, list):
         return [redact_pii(item) for item in data]
+    elif isinstance(data, str):
+        return _scrub_value_text(data)
     else:
         return data
 
@@ -52,11 +85,18 @@ def tokenize_pii(data: Any, *, context: str = "") -> Any:
     if isinstance(data, dict):
         return {
             k: _pii_token(str(k).lower(), v, context)
-            if str(k).lower() in PII_KEYS else tokenize_pii(v, context=context)
+            if _key_is_pii(k) else tokenize_pii(v, context=context)
             for k, v in data.items()
         }
     elif isinstance(data, list):
         return [tokenize_pii(item, context=context) for item in data]
+    elif isinstance(data, str):
+        # BUG-115: PII embedded in a free-text value has no (context, field)
+        # boundary to key an HMAC token to -- redact with a fixed placeholder
+        # instead. This still upholds the invariant that matters here (raw
+        # PII never enters the stream); it just isn't correlatable like a
+        # real field-keyed token would be.
+        return _scrub_value_text(data)
     return data
 
 
