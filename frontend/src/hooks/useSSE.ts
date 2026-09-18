@@ -270,12 +270,12 @@ export function useSSE({
 
   const unsubscribeRef = useRef<(() => void) | null>(null);
 
-  useEffect(() => {
-    if (!enabled) {
-      setConnected(false);
-      return;
-    }
-
+  // Extracted so reconnect() can re-run it after disconnect() -- disconnect()
+  // unsubscribes this hook instance from the pool, and if it was the pool's
+  // last subscriber, subscribe()'s own cleanup deletes the whole PoolEntry
+  // (see subscribe() above). reconnectTopic() alone can't recover from that:
+  // it does pool.get(topic) and no-ops if the entry is gone.
+  const subscribeToPool = useCallback(() => {
     const sub: PoolSubscriber = {
       onEvent: (e) => cbRef.current.onEvent?.(e),
       onConnect: () => cbRef.current.onConnect?.(),
@@ -285,15 +285,22 @@ export function useSSE({
       setRetryCount,
       setLastEvent,
     };
+    unsubscribeRef.current = subscribe(topic, sub, { initialBackoff, maxBackoff, maxRetries });
+  }, [topic, initialBackoff, maxBackoff, maxRetries]);
 
-    const unsub = subscribe(topic, sub, { initialBackoff, maxBackoff, maxRetries });
-    unsubscribeRef.current = unsub;
+  useEffect(() => {
+    if (!enabled) {
+      setConnected(false);
+      return;
+    }
+
+    subscribeToPool();
 
     return () => {
-      unsub();
+      unsubscribeRef.current?.();
       unsubscribeRef.current = null;
     };
-  }, [topic, enabled, initialBackoff, maxBackoff, maxRetries]);
+  }, [enabled, subscribeToPool]);
 
   const disconnect = useCallback(() => {
     unsubscribeRef.current?.();
@@ -302,8 +309,16 @@ export function useSSE({
   }, []);
 
   const reconnect = useCallback(() => {
-    reconnectTopic(topic);
-  }, [topic]);
+    if (unsubscribeRef.current) {
+      // Still subscribed (e.g. reconnecting after an error) -- just force
+      // the existing pool entry to retry its connection.
+      reconnectTopic(topic);
+    } else {
+      // disconnect() removed this subscription (and possibly the whole pool
+      // entry) -- re-subscribe from scratch.
+      subscribeToPool();
+    }
+  }, [topic, subscribeToPool]);
 
   return { lastEvent, connected, error, retryCount, disconnect, reconnect };
 }
