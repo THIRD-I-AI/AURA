@@ -78,6 +78,19 @@ export function getAuthToken(): string | null {
   return _authToken;
 }
 
+// BUG-104/105: a 401 on an authenticated request means the session is dead
+// (expired/revoked token) -- clear it and tell every subscriber (AuthContext)
+// so isAuthenticated flips to false and ProtectedRoute redirects, instead of
+// the stale token being resent on every subsequent request indefinitely.
+// Not fired for a 401 with no ambient token (e.g. a login attempt with wrong
+// credentials) -- that's a failed login, not an expired session.
+const _sessionExpiredListeners = new Set<() => void>();
+
+export function subscribeSessionExpired(cb: () => void): () => void {
+  _sessionExpiredListeners.add(cb);
+  return () => { _sessionExpiredListeners.delete(cb); };
+}
+
 // ── Authentication (SaaS Phase 2) ─────────────────────────────────────────
 // Real signup/login on top of the gateway's password-mode auth. The tenant
 // (org_id) and identity travel inside the signed JWT — we only read claims to
@@ -283,6 +296,7 @@ class ApiClient {
     const url = `${this.baseURL}${endpoint}`;
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), this.timeout);
+    const hadToken = !!_authToken;
 
     try {
       // Inject X-Workspace-Id on every call except the public share endpoint
@@ -310,6 +324,10 @@ class ApiClient {
       // Handle HTTP errors
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}));
+        if (response.status === 401 && hadToken) {
+          setAuthToken(null);
+          _sessionExpiredListeners.forEach((cb) => cb());
+        }
         throw this.createError(
           errorData.message || response.statusText,
           response.status,

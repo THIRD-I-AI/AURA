@@ -1,5 +1,5 @@
-import { createContext, useContext, useState, type ReactNode } from 'react';
-import { authService, type AuthUser } from '../services/api';
+import { createContext, useContext, useEffect, useState, type ReactNode } from 'react';
+import { authService, subscribeSessionExpired, type AuthUser } from '../services/api';
 
 /**
  * App-wide authentication state. Seeds from any token already in storage so a
@@ -18,6 +18,14 @@ const AuthContext = createContext<AuthContextValue | null>(null);
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<AuthUser | null>(() => authService.currentUser());
+
+  // BUG-105: isAuthenticated was only ever set at mount and by explicit
+  // login/register/logout -- a token that expires mid-session never flips it
+  // false. Subscribing to the api client's session-expired signal (fired on
+  // a real 401 from an authenticated request, see BUG-104) re-evaluates it
+  // reactively, so ProtectedRoute redirects to /login as soon as the app
+  // actually discovers the session is dead.
+  useEffect(() => subscribeSessionExpired(() => setUser(null)), []);
 
   const value: AuthContextValue = {
     user,

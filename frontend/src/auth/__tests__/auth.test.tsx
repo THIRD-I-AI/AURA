@@ -1,12 +1,12 @@
-import { fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AuthProvider } from '../AuthContext';
 import { AuthForm } from '../AuthForm';
 import { AuthNav } from '../AuthNav';
 import { ProtectedRoute } from '../ProtectedRoute';
 import { UserMenu } from '../UserMenu';
-import { setAuthToken } from '../../services/api';
+import { chatService, setAuthToken } from '../../services/api';
 
 /** A decodable (unsigned) JWT-shaped token for tests — decodeAuthToken only
  *  reads the claims segment, so this is enough to simulate a signed-in user. */
@@ -46,6 +46,7 @@ describe('AuthForm', () => {
 
 describe('ProtectedRoute', () => {
   beforeEach(() => setAuthToken(null));
+  afterEach(() => vi.restoreAllMocks());
 
   it('redirects an anonymous visitor to /login', () => {
     render(
@@ -58,6 +59,37 @@ describe('ProtectedRoute', () => {
         </AuthProvider>
       </MemoryRouter>,
     );
+    expect(screen.getByText('login page')).toBeTruthy();
+    expect(screen.queryByText('secret dashboard')).toBeNull();
+  });
+
+  // BUG-104/105: a session that expires mid-visit used to leave isAuthenticated
+  // stuck true (only mount/login/logout ever set it) until a hard reload.
+  it('redirects to /login once the session expires mid-visit, without a reload', async () => {
+    setAuthToken(fakeToken({ sub: 'u1' }));
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 401,
+      statusText: '401',
+      json: async () => ({ message: 'token expired' }),
+    }) as unknown as typeof fetch;
+
+    render(
+      <MemoryRouter initialEntries={['/app']}>
+        <AuthProvider>
+          <Routes>
+            <Route path="/app" element={<ProtectedRoute><div>secret dashboard</div></ProtectedRoute>} />
+            <Route path="/login" element={<div>login page</div>} />
+          </Routes>
+        </AuthProvider>
+      </MemoryRouter>,
+    );
+    expect(screen.getByText('secret dashboard')).toBeTruthy();
+
+    await act(async () => {
+      await chatService.getChatHistory('session-1'); // any authenticated call that now 401s
+    });
+
     expect(screen.getByText('login page')).toBeTruthy();
     expect(screen.queryByText('secret dashboard')).toBeNull();
   });
