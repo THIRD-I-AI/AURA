@@ -1676,8 +1676,14 @@ export const financialAuditService = {
   /** Mint an open-mode dev/demo token with the auditor role and install it
    *  as the bearer for subsequent calls. In password mode use the real
    *  login flow instead - this is the local/demo path only. */
+  // BUG-112: the guard used to be `if (getAuthToken()) return;` -- presence
+  // of ANY token (e.g. a real, already-logged-in non-auditor user's session
+  // token) skipped minting entirely, so calls proceeded under whatever role
+  // the ambient token actually had instead of 'auditor'. Check the role the
+  // docstring above actually requires.
   async ensureAuditorToken(userId = 'auditor-demo'): Promise<void> {
-    if (getAuthToken()) return;
+    const role = authService.currentUser()?.role;
+    if (role === 'auditor' || role === 'admin') return;
     const resp = await client.post<{ access_token: string }>('/auth/token', {
       user_id: userId,
       role: 'auditor',
