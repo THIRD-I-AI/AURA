@@ -600,12 +600,12 @@ export const chatService = {
     }
   },
 
+  // BUG-107: this used to swallow every error (including a 401/403) into an
+  // empty array, so a caller couldn't tell "no history yet" from "you're no
+  // longer authenticated" or "wrong tenant" -- propagate like every other
+  // list-style method in this file (savedQueryService.list(), etc.) instead.
   async getChatHistory(sessionId: string): Promise<ChatMessage[]> {
-    try {
-      return await client.get<ChatMessage[]>(`/chat/history/${sessionId}`);
-    } catch {
-      return [];
-    }
+    return await client.get<ChatMessage[]>(`/chat/history/${sessionId}`);
   },
 
   async saveChatMessage(sessionId: string, message: { type: string; content: string; metadata?: any }): Promise<void> {

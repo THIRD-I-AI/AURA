@@ -87,7 +87,10 @@ describe('ProtectedRoute', () => {
     expect(screen.getByText('secret dashboard')).toBeTruthy();
 
     await act(async () => {
-      await chatService.getChatHistory('session-1'); // any authenticated call that now 401s
+      // any authenticated call that now 401s -- getChatHistory propagates its
+      // error (BUG-107), so swallow it here; this test only cares about the
+      // session-expiry side effect, not this particular call's own outcome.
+      await chatService.getChatHistory('session-1').catch(() => {});
     });
 
     expect(screen.getByText('login page')).toBeTruthy();
