@@ -617,10 +617,12 @@ export const chatService = {
     return await client.get<ChatMessage[]>(`/chat/history/${sessionId}`);
   },
 
+  // BUG-111: this used to swallow every error unconditionally, so a caller
+  // (and the user) couldn't tell a message was actually rejected server-side
+  // from one that saved fine -- propagate like getChatHistory (BUG-107) and
+  // every other write method in this file instead of silently discarding it.
   async saveChatMessage(sessionId: string, message: { type: string; content: string; metadata?: any }): Promise<void> {
-    try {
-      await client.post(`/chat/history/${sessionId}`, message);
-    } catch { /* best-effort */ }
+    await client.post(`/chat/history/${sessionId}`, message);
   },
 };
 
