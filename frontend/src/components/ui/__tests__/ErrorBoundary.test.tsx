@@ -32,7 +32,33 @@ describe('ErrorBoundary', () => {
     );
     expect(screen.getByRole('alert')).toBeInTheDocument();
     expect(screen.getByText('Something went wrong')).toBeInTheDocument();
-    expect(screen.getByText('Boom!')).toBeInTheDocument();
+  });
+
+  // BUG-110: a plain thrown Error's .message could embed a backend/library
+  // internal detail (a raw fetch error's URL/host, a JSON.parse error's
+  // response text) -- it's untrusted and must not reach the fallback UI
+  // verbatim, matching security.md's sanitize_error rule for API responses.
+  it('does not render a raw, unsanitized Error message', () => {
+    render(
+      <ErrorBoundary>
+        <Bomb shouldThrow={true} />
+      </ErrorBoundary>
+    );
+    expect(screen.queryByText('Boom!')).not.toBeInTheDocument();
+    expect(screen.getByText('An unexpected error occurred.')).toBeInTheDocument();
+  });
+
+  it('shows an ApiError\'s message as-is (the backend already sanitized it)', () => {
+    function ApiBomb(): never {
+      const err = Object.assign(new Error('Session expired'), { status: 401 });
+      throw err;
+    }
+    render(
+      <ErrorBoundary>
+        <ApiBomb />
+      </ErrorBoundary>
+    );
+    expect(screen.getByText('Session expired')).toBeInTheDocument();
   });
 
   it('calls onError callback', () => {
