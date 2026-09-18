@@ -138,6 +138,15 @@ export const authService = {
 
   logout(): void {
     setAuthToken(null);
+    // BUG-108: recentUploads/queryHistory are read as a localStorage fallback
+    // in store/index.tsx (backend-unreachable / empty-history cases) but
+    // nothing currently writes them -- still clear them on logout so any
+    // residual/legacy data from an older build can't hydrate under the next
+    // user's session on a shared device.
+    try {
+      localStorage.removeItem('recentUploads');
+      localStorage.removeItem('queryHistory');
+    } catch { /* storage blocked */ }
   },
 
   /** The current user from the stored token, or null if absent/expired. */
