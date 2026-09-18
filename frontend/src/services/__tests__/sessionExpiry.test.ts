@@ -27,7 +27,9 @@ describe('BUG-104/105: session-expiry notification', () => {
     const onExpired = vi.fn();
     const unsubscribe = subscribeSessionExpired(onExpired);
 
-    await chatService.getChatHistory('session-1'); // swallows the error itself (BUG-107); the side effect happens before that catch
+    // getChatHistory propagates its error (BUG-107 fix) -- the session-expiry
+    // side effect happens inside request() before that rejection reaches here.
+    await expect(chatService.getChatHistory('session-1')).rejects.toBeTruthy();
 
     expect(getAuthToken()).toBeNull();
     expect(onExpired).toHaveBeenCalledTimes(1);
@@ -41,7 +43,7 @@ describe('BUG-104/105: session-expiry notification', () => {
     const onExpired = vi.fn();
     const unsubscribe = subscribeSessionExpired(onExpired);
 
-    await chatService.getChatHistory('session-1');
+    await expect(chatService.getChatHistory('session-1')).rejects.toBeTruthy();
 
     expect(onExpired).not.toHaveBeenCalled();
     unsubscribe();
