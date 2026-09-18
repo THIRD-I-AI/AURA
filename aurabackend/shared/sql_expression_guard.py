@@ -34,6 +34,17 @@ _BLOCKED_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
+# BUG-114: DuckDB also opens a file directly as a table when a bare string
+# literal appears where a table reference is expected -- a "replacement
+# scan" -- e.g. `SELECT * FROM '/etc/passwd'` or a nested
+# `(SELECT col FROM 'other-tenant.csv')`. That never matches a blocked
+# keyword above and contains no "://", so it sailed through untouched while
+# DuckDB actually opened and read the file. A single-quoted string is
+# DuckDB's string-literal syntax; a double-quoted "identifier" after
+# FROM/JOIN is a normal (legitimate) quoted table/column reference and is
+# deliberately NOT blocked here.
+_REPLACEMENT_SCAN_PATTERN = re.compile(r"\b(from|join)\s*\(*\s*'", re.IGNORECASE)
+
 
 def validate_sql_expression(expr: str) -> None:
     """Raise ``ValueError`` if ``expr`` references a blocked file/network
@@ -45,3 +56,8 @@ def validate_sql_expression(expr: str) -> None:
         )
     if "://" in expr:
         raise ValueError("expression may not reference URIs")
+    if _REPLACEMENT_SCAN_PATTERN.search(expr):
+        raise ValueError(
+            "expression may not reference a file path as a table "
+            "(e.g. FROM '/path/to/file') -- DuckDB's replacement-scan syntax"
+        )

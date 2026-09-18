@@ -43,11 +43,24 @@ from api_gateway.routers.etl import (  # noqa: E402
         "PRAGMA database_list",
         "INSTALL httpfs; LOAD httpfs; SELECT * FROM read_csv('s3://x')",
         "SELECT * FROM 'https://evil.example.com/data.csv'",
+        # BUG-114: DuckDB's replacement-scan syntax -- a bare string literal
+        # used directly as a table reference, with no read_csv/ATTACH/etc.
+        # keyword and no "://" to trip the other two checks.
+        "SELECT * FROM '/etc/passwd'",
+        "(SELECT column0 FROM '/etc/hostname' LIMIT 1)",
+        "SELECT (SELECT secret_col FROM 'C:/other_tenant/upload.csv') AS leaked",
+        "SELECT * FROM {{input}} JOIN 'other_tenant.csv' ON 1=1",
     ],
 )
 def test_validate_custom_sql_rejects_file_and_network_access(sql):
     with pytest.raises(ValueError):
         _validate_custom_sql(sql)
+
+
+def test_validate_custom_sql_allows_double_quoted_identifiers():
+    """A double-quoted table/column reference is a legitimate identifier,
+    not a file-scan string literal -- must not be rejected (BUG-114)."""
+    _validate_custom_sql("SELECT * FROM \"MyTable\" WHERE score > 50")
 
 
 def test_validate_custom_sql_allows_plain_computation():
