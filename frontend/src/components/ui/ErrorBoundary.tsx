@@ -14,6 +14,7 @@
  *   </ErrorBoundary>
  */
 import { Component, type ErrorInfo, type ReactNode } from 'react';
+import { sanitizeErrorMessage } from '../../utils/sanitizeErrorMessage';
 
 interface Props {
   children: ReactNode;
@@ -89,7 +90,7 @@ export class ErrorBoundary extends Component<Props, State> {
             color: 'var(--text-secondary)',
           }}
         >
-          {this.state.error?.message ?? 'An unexpected error occurred.'}
+          {sanitizeErrorMessage(this.state.error)}
         </p>
         <button
           onClick={this.handleReset}

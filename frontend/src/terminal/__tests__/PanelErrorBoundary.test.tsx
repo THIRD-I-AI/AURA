@@ -29,4 +29,18 @@ describe('PanelErrorBoundary', () => {
     );
     expect(screen.getByTestId('ok')).toBeInTheDocument();
   });
+
+  // BUG-110: a raw thrown Error's .message is untrusted (could embed a
+  // backend/library internal detail) and must not reach the fallback verbatim.
+  it('does not render a raw, unsanitized Error message', () => {
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    render(
+      <PanelErrorBoundary panelTitle="Query">
+        <Boom explode={true} />
+      </PanelErrorBoundary>,
+    );
+    expect(screen.queryByText('panel boom')).not.toBeInTheDocument();
+    expect(screen.getByText('An unexpected error occurred.')).toBeInTheDocument();
+    spy.mockRestore();
+  });
 });

@@ -1,4 +1,5 @@
 import React from 'react';
+import { sanitizeErrorMessage } from '../utils/sanitizeErrorMessage';
 
 interface Props { panelTitle: string; children: React.ReactNode }
 interface State { error: Error | null }
@@ -22,7 +23,7 @@ export class PanelErrorBoundary extends React.Component<Props, State> {
       return (
         <div data-testid="panel-error" className="panel-error">
           <strong>{this.props.panelTitle} failed</strong>
-          <p>{this.state.error.message}</p>
+          <p>{sanitizeErrorMessage(this.state.error)}</p>
           <button onClick={this.reset}>Reload panel</button>
         </div>
       );
