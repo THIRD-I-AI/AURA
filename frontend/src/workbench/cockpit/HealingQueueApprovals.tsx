@@ -34,8 +34,20 @@ export function HealingQueueApprovals({ healing, pendingCount, decideHeal }: Pro
             <div className="mt-[5px] text-[11px] text-[var(--text3)]">{h.sub}</div>
             {h.state === 'pending' && (
               <div className="mt-2 flex gap-[7px]">
-                <div onClick={() => decideHeal(h.id, true)} className="cursor-pointer text-[11px] font-semibold text-[var(--accent)] bg-[var(--accent-dim)] border border-[var(--accent-bd)] rounded-none py-1 px-3">Approve & deploy</div>
-                <div onClick={() => decideHeal(h.id, false)} className="cursor-pointer text-[11px] font-semibold text-[var(--danger)] bg-[var(--danger-dim)] border border-[var(--danger)] rounded-none py-1 px-3">Reject</div>
+                <button
+                  type="button"
+                  onClick={() => decideHeal(h.id, true)}
+                  className="cursor-pointer text-[11px] font-semibold text-[var(--accent)] bg-[var(--accent-dim)] border border-[var(--accent-bd)] rounded-none py-1 px-3 outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50"
+                >
+                  Approve &amp; deploy
+                </button>
+                <button
+                  type="button"
+                  onClick={() => decideHeal(h.id, false)}
+                  className="cursor-pointer text-[11px] font-semibold text-[var(--danger)] bg-[var(--danger-dim)] border border-[var(--danger)] rounded-none py-1 px-3 outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50"
+                >
+                  Reject
+                </button>
               </div>
             )}
             {h.resolution && <div className={cn('aw-mono mt-2 text-[10.5px] font-medium', h.state === 'deployed' ? 'text-[var(--accent)]' : 'text-[var(--danger)]')}>{h.resolution}</div>}
