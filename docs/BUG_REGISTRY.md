@@ -1629,7 +1629,61 @@ the whole subsystem every time.
 - **Caused by:** none — pre-existing.
 - **Fix:** replaced the `as Theme` cast with an explicit allow-list check (`savedTheme === 'light' || savedTheme === 'dark' ? savedTheme : 'dark'`) — any other value falls back to the documented dark default instead of persisting. Test: `contexts/__tests__/ThemeContext.test.tsx` — an invalid saved value falls back to `dark` (asserted via the real `document.documentElement` attribute the effect sets, not just the context value), a valid `'light'` is still honored, and no saved value defaults to `dark`. Confirmed non-vacuous by stashing the fix — the invalid-value case fails, finding the garbage string applied directly to the DOM — then restoring it and confirming the full frontend suite (337 tests), `npm run build`, and `eslint --max-warnings 0` all pass. This closes the last open finding from the `frontend/src/` ultracode audit batch (BUG-104..113). PR: pending.
 
+## BUG-114: sql_expression_guard's keyword blocklist doesn't cover DuckDB's implicit file-scan syntax — arbitrary local file read bypasses the guard
+- **Status:** open
+- **Found by:** ultracode audit of `aurabackend/shared/` (`sql-injection-path-safety` group), 2026-09-18.
+- **Severity:** critical — end-to-end verified against a live DuckDB connection: an arbitrary local file's contents can be read through the `custom_sql`/`add_column` expression steps this guard is supposed to protect (`api_gateway/routers/etl.py`, `pipeline/engine.py`), including across tenant boundaries (reading another tenant's uploaded file).
+- **Root cause:** `aurabackend/shared/sql_expression_guard.py:30`'s `_BLOCKED_PATTERN` only blocks named functions/statements (`read_csv`, `read_parquet`, `ATTACH`, `COPY`, `PRAGMA`, `INSTALL`, `LOAD`, `httpfs`) and a bare `://` substring. DuckDB also supports referencing a file directly as a table via a plain string literal in a `FROM` clause (a "replacement scan") — e.g. `SELECT * FROM '/etc/passwd'` or `(SELECT col FROM 'C:/other-tenant/upload.csv')`. This matches no blocked keyword and contains no `://`, so `validate_sql_expression` passes it through untouched, and DuckDB then actually opens and reads the file. Verified: `validate_sql_expression("(SELECT column0 FROM '/etc/hostname' LIMIT 1)")` raises nothing, and executing that expression against a live DuckDB connection returned the file's real contents.
+- **Caused by:** none — pre-existing.
+- **Fix:** pending.
+
+## BUG-115: PII redaction is exact-key-name matching only — trivially bypassed by unlisted keys or PII embedded in free-text values
+- **Status:** open
+- **Found by:** ultracode audit of `aurabackend/shared/` (`error-handling-pii-ratelimit` group), 2026-09-18.
+- **Severity:** high — `PIIMaskingMiddleware` calls this on every inbound JSON body as the documented "Perimeter Defense" before data reaches internal Kafka streams, but the guarantee doesn't actually hold for any key spelled differently than the fixed list, or for PII embedded inside an unrelated field's text value.
+- **Root cause:** `aurabackend/shared/pii_masking.py:12`'s `PII_KEYS = {"ssn", "social_security_number", "employee_name", "first_name", "last_name", "phone", "email"}` is a small fixed set. `redact_pii`/`tokenize_pii` only redact a field when its lowercased key is an *exact* match — no substring/regex matching on key names (`"customer_ssn"`, `"billing_email"`, `"dob"`, `"credit_card_number"`, `"address"` all pass through untouched) and no scanning of string values at all (an SSN or email embedded in a free-text `"notes"` field is never touched, since the terminal `else: return data` branch never inspects string content).
+- **Caused by:** none — pre-existing.
+- **Fix:** pending.
+
+## BUG-116: RateLimitMiddleware trusts the left-most X-Forwarded-For entry, letting any client bypass IP-based throttling (including the auth brute-force bucket)
+- **Status:** open
+- **Found by:** ultracode audit of `aurabackend/shared/` (`error-handling-pii-ratelimit` group), 2026-09-18.
+- **Severity:** high — defeats both the general per-IP rate-limit window and the stricter `auth:<ip>` bucket that exists specifically to throttle password-guessing against `/api/v1/auth/token`; confirmed reachable — `RateLimitMiddleware` is wired into every service via `service_factory.py`, gated only by `settings.rate_limit_enabled` (default true).
+- **Root cause:** `aurabackend/shared/middleware.py:348`'s `_client_ip` does `forwarded.split(",")[0].strip()` when `AURA_TRUST_FORWARDED_FOR` is enabled (the documented production configuration behind a reverse proxy) — it trusts the *first* entry of `X-Forwarded-For` as the real client IP. Standard reverse-proxy behavior (e.g. nginx's common `proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for`) *appends* the proxy's address rather than overwriting the header, so the left-most entry remains exactly what the client sent. A client can set an arbitrary/rotating value as the first entry on every request and get a fresh rate-limit bucket key each time.
+- **Caused by:** none — pre-existing.
+- **Fix:** pending.
+
+## BUG-117: require_role() is an async factory returning an unusable FastAPI dependency
+- **Status:** open
+- **Found by:** ultracode audit of `aurabackend/shared/` (`auth-identity-secrets` group), 2026-09-18.
+- **Severity:** medium — currently no router calls `require_role()`, so the gap is latent, but it means the only role-based-access-control primitive `auth.py` advertises is non-functional the moment anyone wires it in exactly as documented.
+- **Root cause:** `aurabackend/shared/auth.py:126`'s `require_role` is declared `async def require_role(*roles): ... return _check`, making it a coroutine function. Calling `require_role("admin")` (as the module's own usage pattern and `api_gateway/routers/auth.py:152`'s docstring both prescribe, e.g. `Depends(require_role("admin"))`) does not run the factory body synchronously — it returns an un-awaited coroutine object, not the `_check` callable FastAPI's dependency resolver expects. Dependency resolution breaks rather than ever running `_check`, so the role check never executes.
+- **Caused by:** none — pre-existing.
+- **Fix:** pending.
+
+## BUG-118: A failed audit-log write is silently dropped — the hash chain continues cleanly, making a lost compliance record undetectable
+- **Status:** open
+- **Found by:** ultracode audit of `aurabackend/shared/` (`error-handling-pii-ratelimit` group), 2026-09-18.
+- **Severity:** medium — defeats the tamper-evidence goal specifically for transient write failures (disk pressure, momentary I/O error); `verify_chain` reports `ok: True` with zero failures even when a real request's compliance record never reached disk.
+- **Root cause:** `aurabackend/shared/audit_log.py:132`'s `_AuditWriter.append` catches `OSError` around the file write and only logs it ("audit-write failure must NOT crash the request path"); `self._prev_hash` is left unchanged and the request proceeds normally. Because the JSONL format carries no independent monotonic sequence counter (unlike `audit_ledger.py`'s tenant/seq UNIQUE constraint with bounded retry that ultimately raises on persistent failure), a dropped record leaves the on-disk chain internally consistent — the next record's `prev_hash` correctly points to the last record that *was* written — so there is no way, after the fact, to know a gap exists at all.
+- **Caused by:** none — pre-existing.
+- **Fix:** pending.
+
+## BUG-119: vault_client.py splices the LIMIT value into SQL via f-string instead of a bound parameter
+- **Status:** open
+- **Found by:** ultracode audit of `aurabackend/shared/` (`auth-identity-secrets` group), 2026-09-18.
+- **Severity:** low — no current caller passes a request-derived `limit` (only fixed literals/tests today), so not yet reachable from an HTTP request, but the method itself has no runtime guard and would become exploitable the moment a route exposes `limit` without its own strict Pydantic/int coercion.
+- **Root cause:** `aurabackend/shared/vault_client.py:61`'s `get_top_customers()` and `get_user_vr_path()` build SQL with `f"LIMIT {limit}"`, splicing the `limit` parameter directly into the query string instead of binding it, contrary to `security.md`'s strict-parameter-binding rule. `limit: int` is only a type *hint* — Python does not enforce it at runtime, so a non-integer value forwarded unchecked would concatenate straight into the SQL text.
+- **Caused by:** none — pre-existing.
+- **Fix:** pending.
+
 ## Refuted (adversarial-verify, ≥2/3 skeptics refuted — filed for the record, no fix needed)
+
+**database_adapter.py:466 get_table_schema-unquoted-table claim** — a reviewer flagged `DuckDBAdapter.get_table_schema` splicing `table` unquoted into `f"DESCRIBE {table}"` as direct SQL injection, with a working local PoC. All 3 verifiers confirmed the code-level fact and PoC are accurate, but refuted the finding: `DuckDBAdapter` backs `shared/vault_client.py`'s internal "vault" (users/transactions, embeddings, VR telemetry) reached only via `connectors/main.py`'s `/vault/*` routes, a distinct subsystem from the uploaded-dataset query path (ETL/pipeline) where a caller-controlled table name could actually originate — no real caller passes attacker-influenced input to this `table` parameter today. Recorded here so a future re-audit doesn't re-flag it without checking this reachability note first; still worth fixing defensively (call `quote_identifier` to match the file's own sibling methods) if anyone touches this function.
+
+**database_adapter.py:407 connect()-bypasses-duckdb_factory claim** — a reviewer flagged `DuckDBAdapter.connect()` calling bare `duckdb.connect(path)` instead of `shared.duckdb_factory.new_connection()`, diverging from every other DuckDB call site's storage-backend configuration (S3 httpfs secret setup). 2/3 verifiers refuted: `DuckDBAdapter` is the vault subsystem's own backend (see above), configured via `AURA_VAULT_DUCKDB_PATH` (default `:memory:`) and never queries uploaded-dataset S3 paths — the architectural inconsistency is real but has no live security impact since this adapter never needs the S3 httpfs secret `duckdb_factory` would have configured.
+
+**pii_masking.py:104 fails-open-on-parse-error claim** — a reviewer flagged `PIIMaskingMiddleware` forwarding the original unmasked body when JSON parsing or masking raises, reasoning that a later, more lenient layer might still parse what this middleware couldn't. All 3 verifiers refuted: no such lenient downstream layer exists in the current stack (Pydantic's parser is at least as strict as `json.loads`), so the "fails open" path is unreachable in practice today — recorded here so a future re-audit doesn't re-flag it without checking this note first, though hardening the fallback to fail closed would still be reasonable if the stack ever changes.
 
 **api.ts:141 logout-doesn't-reset-workspace claim** — a reviewer flagged `authService.logout()` as never resetting `_currentWorkspaceId`/the `aura.workspaceId` localStorage key, letting the next login on a shared browser inherit the previous user's workspace header. 2/3 verifiers refuted: the code-level fact is accurate, but the actual security claim depends on the backend NOT independently re-validating that the bearer token's `org_id` is authorized for the `X-Workspace-Id` header on every route — which the reviewers judged the backend does do (per BUG-057's tenant-scoping fixes), making this frontend-side gap non-exploitable on its own. Recorded here so a future re-audit doesn't re-flag it without checking this note first.
 
