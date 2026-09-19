@@ -277,11 +277,22 @@ class WindowProcessor:
             if start <= et < end:
                 win_key = _window_key(key, start, end)
                 if win_key not in self._windows:
-                    self._windows[win_key] = WindowState(
-                        window_key=win_key,
-                        window_start=start,
-                        window_end=end,
-                    )
+                    # BUG-125: mirror _assign_tumbling's BUG-092 reopen --
+                    # a late event accepted via accept_to_window=True must
+                    # merge into the original window's aggregation if it
+                    # already fired, not start a disjoint fresh one.
+                    reopened = self._closed_by_key.pop(win_key, None)
+                    if reopened is not None:
+                        reopened.is_closed = False
+                        self._windows[win_key] = reopened
+                        if reopened in self._closed_windows:
+                            self._closed_windows.remove(reopened)
+                    else:
+                        self._windows[win_key] = WindowState(
+                            window_key=win_key,
+                            window_start=start,
+                            window_end=end,
+                        )
                 keys.append(win_key)
             start += slide
 
@@ -292,7 +303,7 @@ class WindowProcessor:
         gap = self.config.gap_seconds or 30
         k = key or "__global__"
 
-        # Find an existing session for this key
+        # Find an existing OPEN session for this key
         for win_key, ws in self._windows.items():
             if ws.is_closed:
                 continue
@@ -302,6 +313,22 @@ class WindowProcessor:
             if ws.window_start - gap <= et <= ws.last_event_time + gap:
                 # Extend the session
                 ws.window_end = max(ws.window_end, et + gap)
+                return [win_key]
+
+        # BUG-125: a late event may target a session that already fired
+        # and was evicted from self._windows -- reopen and merge into it
+        # from _closed_by_key rather than starting a disjoint new session
+        # for the same key (mirrors _assign_tumbling's BUG-092 reopen).
+        for win_key, ws in list(self._closed_by_key.items()):
+            if not win_key.startswith(f"{k}|"):
+                continue
+            if ws.window_start - gap <= et <= ws.last_event_time + gap:
+                ws.is_closed = False
+                ws.window_end = max(ws.window_end, et + gap)
+                self._windows[win_key] = ws
+                if ws in self._closed_windows:
+                    self._closed_windows.remove(ws)
+                del self._closed_by_key[win_key]
                 return [win_key]
 
         # No matching session → create new one
@@ -392,6 +419,10 @@ class WindowProcessor:
                     ws.is_closed = True
                     fired.append(ws)
                     self._closed_windows.append(ws)
+                    # BUG-125: session windows never populated this, so a
+                    # late event targeting a fired session had nothing to
+                    # reopen even if _assign_session checked for it.
+                    self._closed_by_key[ws.window_key] = ws
             else:
                 # Tumbling/Sliding firing decision.
                 # S20.1: when dataflow triggers are enabled, dispatch
