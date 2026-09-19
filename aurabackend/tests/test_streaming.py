@@ -288,6 +288,56 @@ class TestWindowProcessor:
         assert refined.event_count == 2, "must merge into the original window, not restart at 1"
         assert refined.aggregations["total"] == 150, "must accumulate onto the prior total, not overwrite it"
 
+    def test_late_data_update_sliding(self):
+        # BUG-125: _assign_tumbling's BUG-092 reopen-and-merge fix was never
+        # ported to _assign_sliding -- a late event targeting an already-
+        # fired sliding window created a fresh, empty WindowState instead of
+        # merging, causing the same window_key to be emitted twice with
+        # disjoint partial counts. slide_seconds == size_seconds here so the
+        # sliding path behaves like tumbling, isolating the fix from
+        # multi-window overlap.
+        wp = WindowProcessor(
+            WindowConfig(
+                type=WindowType.SLIDING, size_seconds=10, slide_seconds=10,
+                late_data_policy=LateDataPolicy.UPDATE,
+            ),
+            watermark_delay=5,
+        )
+        wp.process_event(_event(5))
+        wp.process_event(_event(20))  # watermark -> 15, fires window [0,10)
+        fired, late = wp.process_event(_event(6))  # late, targets [0,10)
+        assert len(late) == 0
+        assert len(fired) == 1
+        assert fired[0].event_count == 2, "must merge into the original window, not restart at 1"
+
+    def test_late_data_update_session(self):
+        # BUG-125: session windows never populated _closed_by_key at all
+        # (only the tumbling/sliding branch of _fire_ready_windows did), so
+        # even porting the reopen check to _assign_session would have found
+        # nothing to reopen. A late event for an already-fired session
+        # created a disjoint new session instead of merging.
+        wp = WindowProcessor(
+            WindowConfig(
+                type=WindowType.SESSION, gap_seconds=5,
+                late_data_policy=LateDataPolicy.UPDATE,
+            ),
+            watermark_delay=0,
+        )
+        wp.process_event(_event(1))
+        # t=20 doesn't extend the first session (gap exceeded) -- starts a
+        # second session and advances the watermark enough to fire the first.
+        fired_at_20, _ = wp.process_event(_event(20))
+        assert len(fired_at_20) == 1
+        first_session_key = fired_at_20[0].window_key
+        assert fired_at_20[0].event_count == 1
+
+        # Late event within the first session's original gap window.
+        fired_late, late = wp.process_event(_event(3))
+        assert late == []
+        assert len(fired_late) == 1
+        assert fired_late[0].window_key == first_session_key, "must merge into the original session"
+        assert fired_late[0].event_count == 2, "must merge into the original session, not restart at 1"
+
     # ── Sliding ──
     def test_sliding_multiple_windows(self):
         wp = WindowProcessor(
