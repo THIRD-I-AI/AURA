@@ -119,6 +119,7 @@ def _build_transform_sql(table: str, steps: List[ETLTransformStep], con=None) ->
             if not condition:
                 skipped += 1
                 continue
+            _validate_custom_sql(condition)
             cte_parts.append(f"{alias} AS (SELECT * FROM {_q(prev)} WHERE {condition})")
 
         elif t == "rename":
@@ -144,6 +145,7 @@ def _build_transform_sql(table: str, steps: List[ETLTransformStep], con=None) ->
             if not expr or not col_name:
                 skipped += 1
                 continue
+            _validate_custom_sql(expr)
             cte_parts.append(f'{alias} AS (SELECT *, ({expr}) AS "{col_name}" FROM {_q(prev)})')
 
         elif t == "sort":

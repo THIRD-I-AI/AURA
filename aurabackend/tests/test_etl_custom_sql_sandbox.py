@@ -93,3 +93,57 @@ def test_build_transform_sql_allows_benign_custom_sql_step():
     sql = _build_transform_sql("source_data", steps)
     assert "read_csv" not in sql.lower()
     assert "source_data" in sql
+
+
+# ── BUG-120 -- add_column/filter steps never called the guard at all ──────
+
+
+def test_build_transform_sql_rejects_malicious_add_column_step():
+    """The add_column step's `expression` reached the DuckDB CTE chain
+    verbatim with no guard call -- the exact vector BUG-053/082/083 closed
+    for custom_sql, left wide open here."""
+    steps = [
+        ETLTransformStep(
+            id="s1", type="add_column",
+            config={"name": "leaked", "expression": "(SELECT column0 FROM read_csv_auto('/etc/passwd'))"},
+        )
+    ]
+    with pytest.raises(ValueError):
+        _build_transform_sql("source_data", steps)
+
+
+def test_build_transform_sql_rejects_malicious_filter_step():
+    """The filter step's `condition` reached `WHERE {condition}` verbatim
+    with no guard call."""
+    steps = [
+        ETLTransformStep(
+            id="s1", type="filter",
+            config={"condition": "1=1) UNION SELECT * FROM read_csv_auto('/etc/passwd') --"},
+        )
+    ]
+    with pytest.raises(ValueError):
+        _build_transform_sql("source_data", steps)
+
+
+def test_build_transform_sql_allows_benign_add_column_step():
+    steps = [
+        ETLTransformStep(
+            id="s1", type="add_column",
+            config={"name": "doubled", "expression": "score * 2"},
+        )
+    ]
+    sql = _build_transform_sql("source_data", steps)
+    assert "read_csv" not in sql.lower()
+    assert '"doubled"' in sql
+
+
+def test_build_transform_sql_allows_benign_filter_step():
+    steps = [
+        ETLTransformStep(
+            id="s1", type="filter",
+            config={"condition": "score > 50"},
+        )
+    ]
+    sql = _build_transform_sql("source_data", steps)
+    assert "read_csv" not in sql.lower()
+    assert "score > 50" in sql
