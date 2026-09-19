@@ -349,7 +349,22 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         if self._trust_forwarded_for:
             forwarded = request.headers.get("X-Forwarded-For")
             if forwarded:
-                return forwarded.split(",")[0].strip()
+                # BUG-116: taking the LEFT-most entry trusted whatever the
+                # client itself put there -- standard reverse-proxy behavior
+                # (e.g. nginx's common `proxy_set_header X-Forwarded-For
+                # $proxy_add_x_forwarded_for`) APPENDS the proxy's own address
+                # rather than overwriting the header, so the client's own
+                # value survives unchanged at index 0. A client could rotate
+                # a fake first entry on every request to get a fresh
+                # rate-limit bucket, bypassing both the general per-IP window
+                # and the stricter auth:<ip> bucket that throttles
+                # password-guessing against /auth/token. This flag is only
+                # meant for the single-reverse-proxy topology this repo
+                # deploys (one proxy directly in front of one uvicorn
+                # worker) -- for that topology the RIGHT-most entry is the
+                # one the trusted proxy itself appended, and is the only
+                # entry safe to rely on.
+                return forwarded.split(",")[-1].strip()
         return request.client.host if request.client else "unknown"
 
     async def dispatch(self, request: Request, call_next: Callable):

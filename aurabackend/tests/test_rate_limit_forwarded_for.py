@@ -60,13 +60,28 @@ def test_x_forwarded_for_honoured_when_opted_in():
     assert mw._client_ip(req) == "1.2.3.4"
 
 
-def test_x_forwarded_for_first_token_used_when_chain_present():
-    # XFF is comma-separated when there are multiple proxies in the
-    # path. The leftmost token is the original client, which is what
-    # we want for the rate-limit key.
+def test_x_forwarded_for_rightmost_token_used_when_chain_present():
+    # BUG-116: XFF is comma-separated when there are multiple proxies in
+    # the path, and each proxy in a standard chain APPENDS its own
+    # address rather than overwriting the header -- so the leftmost
+    # token is whatever the ORIGINAL CLIENT put there, attacker-
+    # controlled. This repo's single-reverse-proxy topology means the
+    # rightmost token is the one the trusted proxy itself appended, and
+    # is the only one safe to use as the rate-limit key.
     mw = _build_middleware(trust_forwarded_for=True)
     req = _fake_request(forwarded="1.2.3.4, 10.0.0.5, 10.0.0.6")
-    assert mw._client_ip(req) == "1.2.3.4"
+    assert mw._client_ip(req) == "10.0.0.6"
+
+
+def test_x_forwarded_for_client_cannot_rotate_bucket_via_leftmost_spoofing():
+    # The exact exploit BUG-116 describes: an attacker rotates the
+    # leftmost (client-controlled) entry on every request while the
+    # trusted proxy's own appended entry stays constant -- the
+    # rate-limit key must stay pinned to that constant entry.
+    mw = _build_middleware(trust_forwarded_for=True)
+    req1 = _fake_request(forwarded="1.2.3.4, 10.0.0.9")
+    req2 = _fake_request(forwarded="9.9.9.9, 10.0.0.9")
+    assert mw._client_ip(req1) == mw._client_ip(req2) == "10.0.0.9"
 
 
 def test_no_forwarded_header_falls_back_to_client_host():
