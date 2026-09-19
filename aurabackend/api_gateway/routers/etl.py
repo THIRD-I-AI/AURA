@@ -99,6 +99,19 @@ def _serialize_value(val: Any) -> Any:
 from shared.sql_expression_guard import validate_sql_expression as _validate_custom_sql  # noqa: E402
 from shared.sql_identifiers import quote_identifier as _q  # noqa: E402
 
+# BUG-122: the aggregate step's func sits in a function-CALL position, not an
+# identifier position -- quote_identifier can't protect it (it isn't quoted
+# at all, it's the function being invoked), so unlike a column name this
+# needs an allowlist rather than escaping. Only the fixed set of aggregate
+# functions the ETL UI actually offers are permitted; anything else drops
+# the aggregation the same way a missing column/func already does.
+_ALLOWED_AGG_FUNCS = frozenset({
+    "SUM", "AVG", "COUNT", "MIN", "MAX", "MEDIAN",
+    "STDDEV", "STDDEV_POP", "STDDEV_SAMP", "VARIANCE", "VAR_POP", "VAR_SAMP",
+    "MODE", "FIRST", "LAST", "ANY_VALUE", "STRING_AGG", "ARRAY_AGG",
+    "BOOL_AND", "BOOL_OR",
+})
+
 
 def _build_transform_sql(table: str, steps: List[ETLTransformStep], con=None) -> str:
     """Convert a list of transform steps into a single DuckDB SQL pipeline."""
@@ -161,13 +174,17 @@ def _build_transform_sql(table: str, steps: List[ETLTransformStep], con=None) ->
         elif t == "aggregate":
             group_by = [c for c in (cfg.get("group_by") or []) if c]
             agg_exprs = cfg.get("aggregations") or []
-            valid_aggs = [a for a in agg_exprs if a.get("column") and a.get("func")]
+            valid_aggs = [
+                a for a in agg_exprs
+                if a.get("column") and a.get("func")
+                and str(a["func"]).strip().upper() in _ALLOWED_AGG_FUNCS
+            ]
             if not group_by or not valid_aggs:
                 skipped += 1
                 continue
             g = ", ".join(_q(c) for c in group_by)
             a = ", ".join(
-                f'{agg["func"]}({_q(agg["column"])}) AS {_q(agg.get("alias", agg["column"]))}'
+                f'{str(agg["func"]).strip().upper()}({_q(agg["column"])}) AS {_q(agg.get("alias", agg["column"]))}'
                 for agg in valid_aggs
             )
             cte_parts.append(f"{alias} AS (SELECT {g}, {a} FROM {_q(prev)} GROUP BY {g})")
