@@ -123,7 +123,7 @@ async def require_tenant(
     return str(user.get("org_id") or user.get("sub"))
 
 
-async def require_role(
+def require_role(
     *roles: str,
 ):
     """Return a dependency that checks the user has one of the given roles."""
