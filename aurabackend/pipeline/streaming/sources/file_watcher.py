@@ -37,14 +37,24 @@ class FileWatcherSource(BaseSource):
 
     async def start(self) -> None:
         self._running = True
-        # Mark existing files as already seen
-        watch_path = Path(self.watch_dir)
-        if watch_path.exists():
-            for f in watch_path.glob(self.pattern):
-                self._seen_files.add(str(f))
+        # Mark existing files as already seen. BUG-124: the directory
+        # listing (exists()+glob()) is itself a blocking filesystem call,
+        # same as the per-file parse BUG-087 already offloaded -- run it
+        # via asyncio.to_thread too, or it blocks the shared event loop for
+        # the duration of the scan.
+        existing = await asyncio.to_thread(self._scan_dir)
+        self._seen_files.update(existing)
 
     async def stop(self) -> None:
         self._running = False
+
+    def _scan_dir(self) -> List[str]:
+        """Blocking directory listing -- always call via asyncio.to_thread
+        (BUG-124), never directly on the event loop."""
+        watch_path = Path(self.watch_dir)
+        if not watch_path.exists():
+            return []
+        return [str(f) for f in watch_path.glob(self.pattern)]
 
     async def read_batch(self, max_events: int = 100) -> List[StreamEvent]:
         if not self._running:
@@ -56,17 +66,14 @@ class FileWatcherSource(BaseSource):
             self._pending_events = self._pending_events[max_events:]
             return batch
 
-        # Scan for new files
-        watch_path = Path(self.watch_dir)
-        if not watch_path.exists():
-            await asyncio.sleep(self.poll_interval)
-            return []
-
+        # Scan for new files. BUG-124: runs every poll cycle (default 2s)
+        # for every running file-watcher pipeline -- offload it, not just
+        # the per-file parse below.
+        found = await asyncio.to_thread(self._scan_dir)
         new_files: List[Path] = []
-        for f in watch_path.glob(self.pattern):
-            fstr = str(f)
+        for fstr in found:
             if fstr not in self._seen_files:
-                new_files.append(f)
+                new_files.append(Path(fstr))
                 self._seen_files.add(fstr)
 
         # Parse new files into events. BUG-087: _parse_csv/_parse_json/

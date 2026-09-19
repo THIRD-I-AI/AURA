@@ -905,11 +905,75 @@ class TestFileWatcherSource:
 
         events = asyncio.run(run())
 
-        assert len(offloaded_funcs) == 1, (
-            f"expected exactly one offloaded parse call, got {len(offloaded_funcs)}"
+        # BUG-124 also offloads the directory scan (_scan_dir), so this is
+        # now [_scan_dir, _parse_file] rather than [_parse_file] alone.
+        assert len(offloaded_funcs) == 2, (
+            f"expected the directory scan plus one offloaded parse call, got {len(offloaded_funcs)}"
         )
-        assert offloaded_funcs[0] == src._parse_file
+        assert offloaded_funcs[0] == src._scan_dir
+        assert offloaded_funcs[1] == src._parse_file
         assert len(events) == 2
+
+    def test_directory_scan_is_offloaded_to_a_thread(self, tmp_path):
+        # BUG-124: read_batch's directory listing (Path.exists()+glob()) ran
+        # directly on the event loop -- only the per-file parse (BUG-087)
+        # was offloaded. Spy on asyncio.to_thread to confirm the scan itself
+        # is now dispatched through it too, on every poll cycle, not just
+        # when new files happen to be found.
+        from unittest.mock import patch
+
+        from pipeline.streaming.sources.file_watcher import FileWatcherSource
+
+        watch_dir = tmp_path / "watched"
+        watch_dir.mkdir()
+
+        src = FileWatcherSource(config={"watch_dir": str(watch_dir), "pattern": "*.csv"})
+
+        real_to_thread = asyncio.to_thread
+        offloaded_funcs = []
+
+        async def spy_to_thread(func, *args, **kwargs):
+            offloaded_funcs.append(func)
+            return await real_to_thread(func, *args, **kwargs)
+
+        async def run():
+            with patch("pipeline.streaming.sources.file_watcher.asyncio.to_thread", side_effect=spy_to_thread):
+                await src.start()
+                return await src.read_batch(max_events=10)
+
+        events = asyncio.run(run())
+
+        # start()'s initial seen-files scan, then read_batch's own scan --
+        # both must go through to_thread even with zero files present.
+        assert offloaded_funcs.count(src._scan_dir) == 2, (
+            f"expected _scan_dir offloaded once in start() and once in read_batch(), got {offloaded_funcs}"
+        )
+        assert events == []
+
+    def test_seen_files_scan_result_is_unaffected_by_offloading(self, tmp_path):
+        # Confirms the fix doesn't change behavior, only where the blocking
+        # call runs: a file present before start() is marked seen and not
+        # re-emitted; a file added after start() is picked up on the next
+        # read_batch() call, exactly as before BUG-124.
+        from pipeline.streaming.sources.file_watcher import FileWatcherSource
+
+        watch_dir = tmp_path / "watched"
+        watch_dir.mkdir()
+        (watch_dir / "pre_existing.csv").write_text("id\n1\n", encoding="utf-8")
+
+        async def run():
+            src = FileWatcherSource(config={"watch_dir": str(watch_dir), "pattern": "*.csv"})
+            await src.start()
+            # Pre-existing file must already be marked seen -- no events yet.
+            first = await src.read_batch(max_events=10)
+            assert first == []
+
+            (watch_dir / "new_file.csv").write_text("id\n2\n", encoding="utf-8")
+            second = await src.read_batch(max_events=10)
+            assert len(second) == 1
+            assert second[0].data["id"] == "2"
+
+        asyncio.run(run())
 
 
 class TestSimulatedSource:
