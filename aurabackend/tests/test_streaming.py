@@ -1185,6 +1185,119 @@ class TestStreamingAPIStartRace:
             _engines.pop(p.id, None)
 
 
+class TestStreamingAPIStartDeleteRace:
+    """BUG-123: delete_pipeline/stop_pipeline/pause_pipeline/resume_pipeline
+    never held the BUG-089 start lock, so a request landing while
+    start_pipeline was suspended mid-STARTING (real await points inside
+    engine.start()) could pass delete's RUNNING-only guard, pop _pipelines/
+    _engines, and orphan the suspended start's own local engine reference
+    once it resumed and spawned unstoppable background tasks."""
+
+    @pytest.fixture(autouse=True)
+    def _clear_stores(self):
+        from pipeline.streaming.streaming_api import _engines, _pipelines, _start_locks
+        _pipelines.clear()
+        _engines.clear()
+        _start_locks.clear()
+        yield
+        _pipelines.clear()
+        _engines.clear()
+        _start_locks.clear()
+
+    @pytest.mark.asyncio
+    async def test_delete_cannot_race_a_mid_start_engine(self, monkeypatch):
+        from fastapi import HTTPException
+
+        from pipeline.streaming.sources.simulated import SimulatedSource
+        from pipeline.streaming.streaming_api import (
+            _engines,
+            _pipelines,
+            delete_pipeline,
+            start_pipeline,
+        )
+
+        release = asyncio.Event()
+        reached = asyncio.Event()
+        orig_start = SimulatedSource.start
+
+        async def delayed_start(self):
+            reached.set()
+            await release.wait()
+            await orig_start(self)
+
+        monkeypatch.setattr(SimulatedSource, "start", delayed_start)
+
+        p = _make_pipeline()
+        _pipelines[p.id] = p
+
+        start_task = asyncio.create_task(start_pipeline(p.id))
+        await asyncio.wait_for(reached.wait(), timeout=2.0)
+
+        # start_pipeline is now suspended inside engine.start() (status
+        # STARTING), holding _start_lock_for(p.id). A concurrent delete must
+        # block on that same lock rather than racing ahead of a RUNNING-only
+        # status check.
+        delete_task = asyncio.create_task(delete_pipeline(p.id))
+        await asyncio.sleep(0)
+        assert not delete_task.done(), "delete_pipeline must block on the start lock, not race ahead"
+        assert p.id in _pipelines and p.id in _engines, "delete must not remove entries while start is in flight"
+
+        release.set()
+        with pytest.raises(HTTPException) as exc_info:
+            await asyncio.wait_for(delete_task, timeout=2.0)
+        assert exc_info.value.status_code == 409  # must stop before deleting -- proves it never orphaned
+        await asyncio.wait_for(start_task, timeout=2.0)
+
+        engine = _engines[p.id]
+        await engine.stop()
+        _pipelines.pop(p.id, None)
+        _engines.pop(p.id, None)
+
+    @pytest.mark.asyncio
+    async def test_stop_cannot_race_a_mid_start_engine(self, monkeypatch):
+        from fastapi import HTTPException
+
+        from pipeline.streaming.sources.simulated import SimulatedSource
+        from pipeline.streaming.streaming_api import (
+            _engines,
+            _pipelines,
+            start_pipeline,
+            stop_pipeline,
+        )
+
+        release = asyncio.Event()
+        reached = asyncio.Event()
+        orig_start = SimulatedSource.start
+
+        async def delayed_start(self):
+            reached.set()
+            await release.wait()
+            await orig_start(self)
+
+        monkeypatch.setattr(SimulatedSource, "start", delayed_start)
+
+        p = _make_pipeline()
+        _pipelines[p.id] = p
+
+        start_task = asyncio.create_task(start_pipeline(p.id))
+        await asyncio.wait_for(reached.wait(), timeout=2.0)
+
+        stop_task = asyncio.create_task(stop_pipeline(p.id))
+        await asyncio.sleep(0)
+        assert not stop_task.done(), "stop_pipeline must block on the start lock, not race ahead"
+
+        release.set()
+        await asyncio.wait_for(start_task, timeout=2.0)
+        # Once start_pipeline has finished (status RUNNING, engine registered),
+        # the queued stop_pipeline call must now succeed against the REAL
+        # engine, not a stale/absent lookup made mid-STARTING.
+        result = await asyncio.wait_for(stop_task, timeout=2.0)
+        assert result["status"] in ("stopped", "STOPPED")
+
+        _pipelines.pop(p.id, None)
+        _engines.pop(p.id, None)
+
+
 # ════════════════════════════════════════════════════════════════
 # 7. BACKPRESSURE TESTS
 # ════════════════════════════════════════════════════════════════

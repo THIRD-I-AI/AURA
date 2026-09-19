@@ -196,10 +196,17 @@ async def update_pipeline(pipeline_id: str, req: UpdateStreamPipelineRequest, us
 @router.delete("/pipelines/{pipeline_id}", summary="Delete a pipeline (must be stopped)")
 async def delete_pipeline(pipeline_id: str, user: Optional[Dict[str, Any]] = Depends(get_current_user)):
     pipe = _owned_pipeline(pipeline_id, _tenant_of(user))
-    if pipe.status == StreamPipelineStatus.RUNNING:
-        raise HTTPException(status_code=409, detail="Stop the pipeline before deleting")
-    _pipelines.pop(pipeline_id, None)
-    _engines.pop(pipeline_id, None)
+    # BUG-123: must hold the same lock start_pipeline holds across its
+    # check-construct-start sequence, or a delete landing while a start is
+    # suspended mid-STARTING (real await points inside engine.start()) passes
+    # the RUNNING-only check below, pops _engines, and orphans the suspended
+    # start's own local engine reference once it resumes and spawns its
+    # background tasks -- unstoppable, since nothing points at it anymore.
+    async with _start_lock_for(pipeline_id):
+        if pipe.status == StreamPipelineStatus.RUNNING:
+            raise HTTPException(status_code=409, detail="Stop the pipeline before deleting")
+        _pipelines.pop(pipeline_id, None)
+        _engines.pop(pipeline_id, None)
     return {"deleted": pipeline_id}
 
 
@@ -232,30 +239,35 @@ async def start_pipeline(pipeline_id: str, user: Optional[Dict[str, Any]] = Depe
 @router.post("/pipelines/{pipeline_id}/stop", summary="Stop the pipeline")
 async def stop_pipeline(pipeline_id: str, user: Optional[Dict[str, Any]] = Depends(get_current_user)):
     _owned_pipeline(pipeline_id, _tenant_of(user))
-    engine = _engines.get(pipeline_id)
-    if not engine:
-        raise HTTPException(status_code=404, detail="No running engine for this pipeline")
-    await engine.stop()
+    # BUG-123: hold the same lock start_pipeline holds, so this can't read a
+    # stale/absent _engines entry while a start is still suspended mid-STARTING.
+    async with _start_lock_for(pipeline_id):
+        engine = _engines.get(pipeline_id)
+        if not engine:
+            raise HTTPException(status_code=404, detail="No running engine for this pipeline")
+        await engine.stop()
     return {"status": engine.pipeline.status.value, "pipeline_id": pipeline_id}
 
 
 @router.post("/pipelines/{pipeline_id}/pause", summary="Pause the pipeline")
 async def pause_pipeline(pipeline_id: str, user: Optional[Dict[str, Any]] = Depends(get_current_user)):
     _owned_pipeline(pipeline_id, _tenant_of(user))
-    engine = _engines.get(pipeline_id)
-    if not engine:
-        raise HTTPException(status_code=404, detail="No running engine for this pipeline")
-    await engine.pause()
+    async with _start_lock_for(pipeline_id):
+        engine = _engines.get(pipeline_id)
+        if not engine:
+            raise HTTPException(status_code=404, detail="No running engine for this pipeline")
+        await engine.pause()
     return {"status": engine.pipeline.status.value, "pipeline_id": pipeline_id}
 
 
 @router.post("/pipelines/{pipeline_id}/resume", summary="Resume a paused pipeline")
 async def resume_pipeline(pipeline_id: str, user: Optional[Dict[str, Any]] = Depends(get_current_user)):
     _owned_pipeline(pipeline_id, _tenant_of(user))
-    engine = _engines.get(pipeline_id)
-    if not engine:
-        raise HTTPException(status_code=404, detail="No running engine for this pipeline")
-    await engine.resume()
+    async with _start_lock_for(pipeline_id):
+        engine = _engines.get(pipeline_id)
+        if not engine:
+            raise HTTPException(status_code=404, detail="No running engine for this pipeline")
+        await engine.resume()
     return {"status": engine.pipeline.status.value, "pipeline_id": pipeline_id}
 
 
