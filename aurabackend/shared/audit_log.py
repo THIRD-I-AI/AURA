@@ -39,7 +39,6 @@ import json
 import logging
 import os
 import threading
-import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -66,6 +65,11 @@ class _AuditWriter:
         self._current_day: Optional[str] = None
         self._current_path: Optional[Path] = None
         self._prev_hash: str = ""
+        # BUG-118: a write that fails must not silently vanish from the
+        # chain. Count it here and stamp the next successful record with
+        # how many were dropped immediately before it, so a gap is
+        # detectable after the fact instead of the chain looking clean.
+        self._dropped_since_last_success: int = 0
 
     # ── Path resolution ───────────────────────────────────────────────
 
@@ -124,6 +128,10 @@ class _AuditWriter:
                 "payload": truncated_payload,
                 "prev_hash": self._prev_hash,
             }
+            # Only add the key when non-zero so a clean run's hash format
+            # (and verify_chain's stable-field set) stays unchanged.
+            if self._dropped_since_last_success:
+                stable_record["gap_before"] = self._dropped_since_last_success
             digest = hashlib.sha256(
                 json.dumps(stable_record, sort_keys=True, separators=(",", ":")).encode("utf-8")
             ).hexdigest()
@@ -136,10 +144,14 @@ class _AuditWriter:
                     fh.flush()
                     os.fsync(fh.fileno())
                 self._prev_hash = digest
+                self._dropped_since_last_success = 0
             except OSError as exc:
                 # An audit-write failure must NOT crash the request path,
-                # but we surface it loudly — TRAIGA gaps are reportable.
+                # but we surface it loudly — TRAIGA gaps are reportable —
+                # and remember it so the next successful record carries
+                # proof a gap happened (see gap_before above).
                 logger.error("audit log append failed: %s", exc)
+                self._dropped_since_last_success += 1
 
 
 def _truncate(v: Any) -> Any:
@@ -207,10 +219,17 @@ def audit_human_override(ai_record_hash: str, human_auditor_id: str, rationale: 
 
 def verify_chain(path: Path) -> Dict[str, Any]:
     """Re-walk the file and confirm every record_hash matches its stable
-    fields and chains correctly to its predecessor. Returns a report."""
+    fields and chains correctly to its predecessor. Returns a report.
+
+    Also surfaces BUG-118 ``gap_before`` markers (a prior write that
+    failed) as ``gaps``, distinct from ``failures`` — a gap is an honest,
+    hash-chain-consistent record of a dropped write, not tampering, so it
+    must not flip ``ok`` to False on its own.
+    """
     prev = ""
     line_no = 0
     failures = []
+    gaps = []
     with path.open("rb") as fh:
         for raw in fh:
             line_no += 1
@@ -221,7 +240,11 @@ def verify_chain(path: Path) -> Dict[str, Any]:
             except json.JSONDecodeError as exc:
                 failures.append({"line": line_no, "error": f"bad json: {exc}"})
                 continue
-            stable = {k: rec[k] for k in ("ts", "service", "kind", "payload", "prev_hash")}
+            stable_keys = ["ts", "service", "kind", "payload", "prev_hash"]
+            if "gap_before" in rec:
+                stable_keys.append("gap_before")
+                gaps.append({"line": line_no, "dropped_records": rec["gap_before"]})
+            stable = {k: rec[k] for k in stable_keys}
             expected = hashlib.sha256(
                 json.dumps(stable, sort_keys=True, separators=(",", ":")).encode("utf-8")
             ).hexdigest()
@@ -230,7 +253,10 @@ def verify_chain(path: Path) -> Dict[str, Any]:
             if rec.get("prev_hash") != prev:
                 failures.append({"line": line_no, "error": "prev_hash mismatch"})
             prev = rec.get("record_hash", "")
-    return {"path": str(path), "lines": line_no, "failures": failures, "ok": not failures}
+    return {
+        "path": str(path), "lines": line_no, "failures": failures,
+        "gaps": gaps, "ok": not failures,
+    }
 
 
 # ── Sprint 19 — TRAIGA Federation: Merkle audit log helpers ──────────
