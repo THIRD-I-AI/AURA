@@ -128,7 +128,7 @@ def _build_transform_sql(table: str, steps: List[ETLTransformStep], con=None) ->
             if not valid:
                 skipped += 1
                 continue
-            renames = [f'"{old}" AS "{new}"' for old, new in valid.items()]
+            renames = [f'{_q(old)} AS {_q(new)}' for old, new in valid.items()]
             cte_parts.append(f'{alias} AS (SELECT * RENAME ({", ".join(renames)}) FROM {_q(prev)})')
 
         elif t == "drop_columns":
@@ -136,7 +136,7 @@ def _build_transform_sql(table: str, steps: List[ETLTransformStep], con=None) ->
             if not cols:
                 skipped += 1
                 continue
-            excludes = ", ".join(f'"{c}"' for c in cols)
+            excludes = ", ".join(_q(c) for c in cols)
             cte_parts.append(f"{alias} AS (SELECT * EXCLUDE ({excludes}) FROM {_q(prev)})")
 
         elif t == "add_column":
@@ -146,7 +146,7 @@ def _build_transform_sql(table: str, steps: List[ETLTransformStep], con=None) ->
                 skipped += 1
                 continue
             _validate_custom_sql(expr)
-            cte_parts.append(f'{alias} AS (SELECT *, ({expr}) AS "{col_name}" FROM {_q(prev)})')
+            cte_parts.append(f'{alias} AS (SELECT *, ({expr}) AS {_q(col_name)} FROM {_q(prev)})')
 
         elif t == "sort":
             col = (cfg.get("column") or "").strip()
@@ -156,7 +156,7 @@ def _build_transform_sql(table: str, steps: List[ETLTransformStep], con=None) ->
             order = cfg.get("order", "ASC").upper()
             if order not in ("ASC", "DESC"):
                 order = "ASC"
-            cte_parts.append(f'{alias} AS (SELECT * FROM {_q(prev)} ORDER BY "{col}" {order})')
+            cte_parts.append(f'{alias} AS (SELECT * FROM {_q(prev)} ORDER BY {_q(col)} {order})')
 
         elif t == "aggregate":
             group_by = [c for c in (cfg.get("group_by") or []) if c]
@@ -165,14 +165,17 @@ def _build_transform_sql(table: str, steps: List[ETLTransformStep], con=None) ->
             if not group_by or not valid_aggs:
                 skipped += 1
                 continue
-            g = ", ".join(f'"{c}"' for c in group_by)
-            a = ", ".join(f'{agg["func"]}("{agg["column"]}") AS "{agg.get("alias", agg["column"])}"' for agg in valid_aggs)
+            g = ", ".join(_q(c) for c in group_by)
+            a = ", ".join(
+                f'{agg["func"]}({_q(agg["column"])}) AS {_q(agg.get("alias", agg["column"]))}'
+                for agg in valid_aggs
+            )
             cte_parts.append(f"{alias} AS (SELECT {g}, {a} FROM {_q(prev)} GROUP BY {g})")
 
         elif t == "deduplicate":
             cols = [c for c in (cfg.get("columns") or []) if c]
             if cols:
-                partition = ", ".join(f'"{c}"' for c in cols)
+                partition = ", ".join(_q(c) for c in cols)
                 cte_parts.append(
                     f"{alias} AS (SELECT * FROM (SELECT *, ROW_NUMBER() OVER "
                     f"(PARTITION BY {partition}) AS _rn FROM {_q(prev)}) WHERE _rn = 1)"
@@ -186,7 +189,7 @@ def _build_transform_sql(table: str, steps: List[ETLTransformStep], con=None) ->
             if not col or not to_type:
                 skipped += 1
                 continue
-            cte_parts.append(f'{alias} AS (SELECT * REPLACE (CAST("{col}" AS {to_type}) AS "{col}") FROM {_q(prev)})')
+            cte_parts.append(f'{alias} AS (SELECT * REPLACE (CAST({_q(col)} AS {to_type}) AS {_q(col)}) FROM {_q(prev)})')
 
         elif t == "fill_missing":
             col = (cfg.get("column") or "").strip()
@@ -209,7 +212,9 @@ def _build_transform_sql(table: str, steps: List[ETLTransformStep], con=None) ->
                         pass
 
                 try:
-                    null_count_exprs = ", ".join(f'SUM(CASE WHEN "{c}" IS NULL THEN 1 ELSE 0 END) AS "{c}"' for c, *_ in schema)
+                    null_count_exprs = ", ".join(
+                        f'SUM(CASE WHEN {_q(c)} IS NULL THEN 1 ELSE 0 END) AS {_q(c)}' for c, *_ in schema
+                    )
                     null_row = con.execute(f'SELECT {null_count_exprs} FROM {src}').fetchone()
                     cols_with_nulls = {schema[j][0] for j, cnt in enumerate(null_row) if cnt and cnt > 0}
                 except Exception:
@@ -219,22 +224,23 @@ def _build_transform_sql(table: str, steps: List[ETLTransformStep], con=None) ->
                 for c_name, c_type, *_ in schema:
                     if cols_with_nulls is not None and c_name not in cols_with_nulls:
                         continue
+                    qc = _q(c_name)
                     is_numeric = any(t in c_type.upper() for t in ("INT", "FLOAT", "DOUBLE", "DECIMAL", "NUMERIC", "BIGINT", "SMALLINT", "TINYINT", "REAL"))
                     if strategy == "mean" and is_numeric:
-                        replaces.append(f'COALESCE("{c_name}", AVG("{c_name}") OVER ()) AS "{c_name}"')
+                        replaces.append(f'COALESCE({qc}, AVG({qc}) OVER ()) AS {qc}')
                     elif strategy == "median" and is_numeric:
-                        replaces.append(f'COALESCE("{c_name}", MEDIAN("{c_name}") OVER ()) AS "{c_name}"')
+                        replaces.append(f'COALESCE({qc}, MEDIAN({qc}) OVER ()) AS {qc}')
                     elif strategy in ("mean", "median") and not is_numeric:
                         if fill_val and not _val_is_numeric:
                             safe = fill_val.replace("'", "''")
-                            replaces.append(f"COALESCE(\"{c_name}\", '{safe}') AS \"{c_name}\"")
+                            replaces.append(f"COALESCE({qc}, '{safe}') AS {qc}")
                     elif is_numeric and fill_val:
-                        replaces.append(f'COALESCE("{c_name}", {fill_val}) AS "{c_name}"')
+                        replaces.append(f'COALESCE({qc}, {fill_val}) AS {qc}')
                     elif is_numeric and not fill_val:
-                        replaces.append(f'COALESCE("{c_name}", 0) AS "{c_name}"')
+                        replaces.append(f'COALESCE({qc}, 0) AS {qc}')
                     elif not is_numeric and fill_val and not _val_is_numeric:
                         safe = fill_val.replace("'", "''")
-                        replaces.append(f"COALESCE(\"{c_name}\", '{safe}') AS \"{c_name}\"")
+                        replaces.append(f"COALESCE({qc}, '{safe}') AS {qc}")
                 if replaces:
                     cte_parts.append(f'{alias} AS (SELECT * REPLACE ({", ".join(replaces)}) FROM {_q(prev)})')
                 else:
@@ -244,7 +250,7 @@ def _build_transform_sql(table: str, steps: List[ETLTransformStep], con=None) ->
                 skipped += 1
                 continue
             else:
-                cte_parts.append(f'{alias} AS (SELECT * REPLACE (COALESCE("{col}", {fill_val}) AS "{col}") FROM {_q(prev)})')
+                cte_parts.append(f'{alias} AS (SELECT * REPLACE (COALESCE({_q(col)}, {fill_val}) AS {_q(col)}) FROM {_q(prev)})')
 
         elif t == "custom_sql":
             sql_expr = (cfg.get("sql") or "").strip()
