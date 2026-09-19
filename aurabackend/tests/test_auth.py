@@ -5,6 +5,7 @@ Tests for the dual-mode auth system (open / password).
 """
 from __future__ import annotations
 
+import asyncio
 import os
 import sys
 
@@ -12,6 +13,7 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from shared.auth import ForbiddenError, require_role
 from shared.password import hash_password, verify_password
 
 # ── Password hashing ───────────────────────────────────────────────────
@@ -269,3 +271,28 @@ class TestPasswordModeAuth:
         })
         assert resp.status_code == 200
         assert verify_password in calls
+
+
+class TestRequireRole:
+    """BUG-117: require_role() was an ``async def`` factory with no
+    ``await`` in its body, so calling it (as every ``Depends(require_role(...))``
+    call site does) returned an un-awaited coroutine object instead of running
+    the factory -- FastAPI's Depends() resolution on that coroutine breaks."""
+
+    def test_require_role_factory_is_not_a_coroutine_function(self):
+        # The regression: require_role must be an ordinary function so
+        # calling it runs immediately and returns the _check dependency,
+        # not a coroutine that still needs awaiting.
+        assert not asyncio.iscoroutinefunction(require_role)
+
+    def test_require_role_returns_a_usable_dependency_directly(self):
+        dependency = require_role("admin")
+        assert asyncio.iscoroutinefunction(dependency)
+        admin_user = {"sub": "user-1", "role": "admin"}
+        assert asyncio.run(dependency(user=admin_user)) == admin_user
+
+    def test_require_role_rejects_disallowed_role(self):
+        dependency = require_role("admin")
+        other_user = {"sub": "user-2", "role": "user"}
+        with pytest.raises(ForbiddenError):
+            asyncio.run(dependency(user=other_user))
