@@ -19,8 +19,6 @@ Usage
 """
 from __future__ import annotations
 
-import os
-import uuid
 from typing import Any, Dict, List, Optional
 
 from shared.database_adapter import DatabaseAdapter, get_adapter
@@ -58,7 +56,8 @@ class AuraVault:
             "FROM users u JOIN transactions t ON u.user_id = t.user_id "
             "GROUP BY u.email, u.display_name "
             "ORDER BY total_spend DESC "
-            f"LIMIT {limit}"
+            "LIMIT $1",
+            [limit],
         )
 
     async def get_user(self, user_id: str) -> Optional[Dict[str, Any]]:
@@ -266,8 +265,8 @@ class AuraVault:
             "velocity, orientation, captured_at "
             "FROM vr_telemetry WHERE user_id = $1 "
             "ORDER BY captured_at DESC "
-            f"LIMIT {limit}",
-            [user_id],
+            "LIMIT $2",
+            [user_id, limit],
         )
 
     async def find_users_in_area(

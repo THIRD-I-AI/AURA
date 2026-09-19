@@ -8,13 +8,13 @@ from __future__ import annotations
 
 import os
 import sys
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from shared.database_adapter import AdapterConfig, BackendType, DatabaseAdapter, DuckDBAdapter, _adapter_cache
+from shared.database_adapter import DatabaseAdapter
 
 # ── Helpers ────────────────────────────────────────────────────────
 
@@ -87,6 +87,20 @@ class TestRegularData:
         assert len(result) == 1
         assert result[0]["email"] == "a@b.com"
         adapter.execute_query.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_get_top_customers_binds_limit_not_splices_it(self):
+        """BUG-119: LIMIT must be a bound parameter, never spliced into the
+        SQL text -- a non-int limit forwarded unchecked must not be able to
+        alter the query string."""
+        from shared.vault_client import AuraVault
+        adapter = _mock_adapter()
+        v = AuraVault(adapter=adapter)
+        await v.get_top_customers(limit=5)
+        query, params = adapter.execute_query.await_args.args
+        assert "LIMIT $" in query
+        assert "5" not in query, "the literal limit value must never appear in the SQL text"
+        assert params == [5]
 
     @pytest.mark.asyncio
     async def test_get_user_found(self):
@@ -253,6 +267,19 @@ class TestVRSpatial:
         v = AuraVault(adapter=adapter)
         result = await v.get_user_vr_path("u1")
         assert len(result) == 1
+
+    @pytest.mark.asyncio
+    async def test_get_user_vr_path_binds_limit_not_splices_it(self):
+        """BUG-119: same splice bug in the VR path query -- LIMIT must be
+        bound alongside user_id, never concatenated into the SQL text."""
+        from shared.vault_client import AuraVault
+        adapter = _mock_adapter()
+        v = AuraVault(adapter=adapter)
+        await v.get_user_vr_path("u1", limit=42)
+        query, params = adapter.spatial_query.await_args.args
+        assert "LIMIT $" in query
+        assert "42" not in query, "the literal limit value must never appear in the SQL text"
+        assert params == ["u1", 42]
 
     @pytest.mark.asyncio
     async def test_find_users_in_area(self):
