@@ -104,3 +104,31 @@ def test_egress_unkeyed_still_redacts(unkeyed, monkeypatch, tmp_path):
     fr, stored = _signed_report_with_shared_employee(monkeypatch, tmp_path)
     view = fr.client_view(stored)
     assert view["findings"][0]["evidence_payload"]["employee_name"] == "[REDACTED]"
+
+
+# ── BUG-115: key matching was exact-only, and string values were never
+# scanned for embedded PII (a "notes" field with an SSN/email passed through
+# untouched) ──────────────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("key", [
+    "customer_ssn", "billing_email", "contact_phone", "dob", "date_of_birth",
+    "credit_card_number", "national_id",
+])
+def test_redact_pii_matches_key_variants_not_just_exact_names(key):
+    out = pm.redact_pii({key: "sensitive-value"})
+    assert out[key] == "[REDACTED]"
+
+
+def test_redact_pii_scrubs_pii_embedded_in_a_free_text_value():
+    out = pm.redact_pii({"notes": "Contact ada@example.com or SSN 123-45-6789 for details"})
+    assert "ada@example.com" not in out["notes"]
+    assert "123-45-6789" not in out["notes"]
+    assert "[REDACTED_EMAIL]" in out["notes"]
+    assert "[REDACTED_SSN]" in out["notes"]
+
+
+def test_tokenize_pii_also_scrubs_pii_embedded_in_a_free_text_value(keyed):
+    out = pm.tokenize_pii({"notes": "email me at ada@example.com"}, context="t1")
+    assert "ada@example.com" not in out["notes"]
+    assert "[REDACTED_EMAIL]" in out["notes"]
