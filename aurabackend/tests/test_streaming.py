@@ -652,9 +652,13 @@ class TestFileSink:
 
         asyncio.run(run())
 
-        assert len(offloaded_funcs) == 1, (
-            f"expected exactly one offloaded write call, got {len(offloaded_funcs)}"
+        # BUG-128 added a second offloaded call (os.makedirs in start()),
+        # alongside the pre-existing offloaded write from _flush().
+        assert len(offloaded_funcs) == 2, (
+            f"expected exactly two offloaded calls (makedirs + write), got {offloaded_funcs}"
         )
+        assert offloaded_funcs[0] is os.makedirs
+        assert offloaded_funcs[1].__name__ == "_write"
         files = list(os.listdir(output_dir))
         assert len(files) == 1
 
@@ -691,6 +695,34 @@ class TestFileSink:
             assert len(batch) == 1, f"{fname} should contain exactly one row, got {len(batch)}"
             seen.add(batch[0]["aggregations"]["n"])
         assert seen == {0, 1, 2, 3, 4}, f"rows lost or duplicated: {seen}"
+
+    def test_start_makedirs_is_offloaded_to_a_thread(self, tmp_path):
+        # BUG-128: start() called os.makedirs() directly on the event loop,
+        # same class as BUG-086's write offload -- blocks every tenant's
+        # concurrent request under the single-worker deployment for the
+        # duration of the mkdir, worse on a slow/network-mounted output_dir.
+        from unittest.mock import patch
+
+        from pipeline.streaming.sinks.file_sink import FileSink
+
+        output_dir = str(tmp_path / "new_nested" / "sink_output")
+        sink = FileSink(config={"output_dir": output_dir, "format": "json"})
+
+        real_to_thread = asyncio.to_thread
+        offloaded_funcs = []
+
+        async def spy_to_thread(func, *args, **kwargs):
+            offloaded_funcs.append(func)
+            return await real_to_thread(func, *args, **kwargs)
+
+        async def run():
+            with patch("pipeline.streaming.sinks.file_sink.asyncio.to_thread", side_effect=spy_to_thread):
+                await sink.start()
+
+        asyncio.run(run())
+
+        assert os.makedirs in offloaded_funcs
+        assert os.path.isdir(output_dir)
 
 
 class TestDatabaseSink:
