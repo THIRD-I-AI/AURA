@@ -8,6 +8,7 @@ Config options:
   watch_dir:            str   – directory to watch (default: data/uploads)
   pattern:              str   – glob pattern (default: "*.csv")
   poll_interval_seconds: float – how often to scan (default: 2.0)
+  max_seen_files:       int   – cap on remembered filenames (default: 10000)
 """
 from __future__ import annotations
 
@@ -16,11 +17,14 @@ import csv
 import json
 import os
 import time
+from collections import deque
 from pathlib import Path
-from typing import Any, Dict, List, Set
+from typing import Any, Deque, Dict, List, Set
 
 from pipeline.streaming.models import StreamEvent
 from pipeline.streaming.sources.base import BaseSource
+
+_DEFAULT_MAX_SEEN_FILES = 10000
 
 
 class FileWatcherSource(BaseSource):
@@ -31,9 +35,26 @@ class FileWatcherSource(BaseSource):
         self.watch_dir: str = config.get("watch_dir", "data/uploads")
         self.pattern: str = config.get("pattern", "*.csv")
         self.poll_interval: float = config.get("poll_interval_seconds", 2.0)
+        # BUG-130: an unbounded set grows for the life of the pipeline (one
+        # entry per file ever observed) and is serialized whole into every
+        # periodic checkpoint -- mirror BUG-091's AlertSink._fired bound:
+        # a set for O(1) membership plus an insertion-order deque so the
+        # OLDEST filename (not an arbitrary one) is evicted once the cap
+        # is hit.
+        self._max_seen_files = int(config.get("max_seen_files", _DEFAULT_MAX_SEEN_FILES))
         self._seen_files: Set[str] = set()
+        self._seen_files_order: Deque[str] = deque()
         self._pending_events: List[StreamEvent] = []
         self._event_count = 0
+
+    def _mark_seen(self, fstr: str) -> None:
+        if fstr in self._seen_files:
+            return
+        if len(self._seen_files) >= self._max_seen_files:
+            oldest = self._seen_files_order.popleft()
+            self._seen_files.discard(oldest)
+        self._seen_files.add(fstr)
+        self._seen_files_order.append(fstr)
 
     async def start(self) -> None:
         self._running = True
@@ -43,7 +64,8 @@ class FileWatcherSource(BaseSource):
         # via asyncio.to_thread too, or it blocks the shared event loop for
         # the duration of the scan.
         existing = await asyncio.to_thread(self._scan_dir)
-        self._seen_files.update(existing)
+        for fstr in existing:
+            self._mark_seen(fstr)
 
     async def stop(self) -> None:
         self._running = False
@@ -74,7 +96,7 @@ class FileWatcherSource(BaseSource):
         for fstr in found:
             if fstr not in self._seen_files:
                 new_files.append(Path(fstr))
-                self._seen_files.add(fstr)
+                self._mark_seen(fstr)
 
         # Parse new files into events. BUG-087: _parse_csv/_parse_json/
         # _parse_parquet do blocking file I/O (and, for Parquet, CPU-bound

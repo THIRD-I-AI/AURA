@@ -1097,6 +1097,34 @@ class TestFileWatcherSource:
 
         asyncio.run(run())
 
+    def test_seen_files_is_bounded_evicts_oldest_first(self):
+        # BUG-130: _seen_files grew without bound for the life of the
+        # pipeline (one entry per file ever observed, never pruned), same
+        # class BUG-091 fixed for AlertSink._fired -- also bloats every
+        # periodic checkpoint since get_offsets() serializes the whole set.
+        # Mark more filenames than the configured cap and confirm the set
+        # never exceeds it, evicting the OLDEST entries first (not an
+        # arbitrary/newest one, which would defeat the "already seen"
+        # dedup purpose for files still actively being watched).
+        from pipeline.streaming.sources.file_watcher import FileWatcherSource
+
+        src = FileWatcherSource(config={"watch_dir": "unused", "max_seen_files": 5})
+
+        for i in range(8):
+            src._mark_seen(f"file_{i}.csv")
+
+        assert len(src._seen_files) == 5, (
+            f"expected _seen_files capped at 5, got {len(src._seen_files)}"
+        )
+        for i in range(3):
+            assert f"file_{i}.csv" not in src._seen_files, (
+                f"file_{i}.csv should have been evicted as one of the 3 oldest"
+            )
+        for i in range(3, 8):
+            assert f"file_{i}.csv" in src._seen_files, (
+                f"file_{i}.csv should still be present (among the 5 newest)"
+            )
+
 
 class TestSimulatedSource:
     def test_read_batch(self):
