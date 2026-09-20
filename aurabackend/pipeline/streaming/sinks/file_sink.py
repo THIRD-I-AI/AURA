@@ -29,7 +29,11 @@ class FileSink(BaseSink):
         self._flush_every = int(config.get("flush_every", 50))
 
     async def start(self) -> None:
-        os.makedirs(self._output_dir, exist_ok=True)
+        # BUG-128: os.makedirs is a blocking filesystem call, same class as
+        # BUG-086's write offload below -- on a slow/network-mounted
+        # output_dir this freezes the single shared event loop for every
+        # tenant's concurrent request for the duration of the mkdir.
+        await asyncio.to_thread(os.makedirs, self._output_dir, exist_ok=True)
         self._running = True
         logger.info("File sink started (dir=%s, format=%s)", self._output_dir, self._format)
 

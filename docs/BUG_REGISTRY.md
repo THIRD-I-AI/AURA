@@ -1740,15 +1740,15 @@ the whole subsystem every time.
 - **Severity:** high — CWE-209 internal-detail leak (e.g. DB DSNs/paths from connection failures, missing-key errors) through a normal polling endpoint reachable without authentication in dev/open mode, not merely an error path.
 - **Root cause:** `aurabackend/pipeline/streaming/streaming_engine.py`'s `start()` and `_run_loop()` except blocks both do `self._metrics.errors.append(str(e))`, storing the raw exception string on the shared `StreamMetrics` object. `aurabackend/pipeline/streaming/streaming_api.py` then serializes that object verbatim via `GET /pipelines` (list), `GET /pipelines/{id}`, and `GET /pipelines/{id}/metrics` — none of which route through `shared/error_handler.py::sanitize_error`, contrary to `security.md`'s "never proxy a raw upstream/engine error string to a client" rule.
 - **Caused by:** none — pre-existing; BUG-080's tenant-ownership fix for these same endpoints enforces *access* to the pipeline, not sanitization of its metrics payload.
-- **Fix:** both `except` blocks in `streaming_engine.py` now call `sanitize_error(e, context=...)` instead of `str(e)` before appending to `self._metrics.errors`; sanitize_error already logs the full traceback server-side, so no diagnostic detail is lost. PR: pending.
+- **Fix:** both `except` blocks in `streaming_engine.py` now call `sanitize_error(e, context=...)` instead of `str(e)` before appending to `self._metrics.errors`; sanitize_error already logs the full traceback server-side, so no diagnostic detail is lost. PR: #467.
 
 ## BUG-128: FileSink.start() calls os.makedirs() synchronously in an async function
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode audit of `aurabackend/pipeline/streaming/` (rotation re-run), 2026-09-19. Adversarial-verify: 3/3 skeptics did not refute.
 - **Severity:** medium — lower-frequency than BUG-085/086's per-write offloads (only runs once per pipeline start), but the same blocking-call-on-the-shared-event-loop class, worse on a slow or network-mounted output directory.
 - **Root cause:** `aurabackend/pipeline/streaming/sinks/file_sink.py`'s `start()` calls `os.makedirs(self._output_dir, exist_ok=True)` directly with no `asyncio.to_thread` wrapper, even though the sibling write path in `_flush()` was correctly offloaded under BUG-086. BUG-086's fix text explicitly scopes itself to `_flush()` only.
 - **Caused by:** none — pre-existing; BUG-086's fix didn't cover this call site.
-- **Fix:** pending.
+- **Fix:** `start()` now awaits `asyncio.to_thread(os.makedirs, ...)`. PR: pending.
 
 ## BUG-129: DatabaseSink docstring/label claims "upsert" but emit_window() only ever INSERTs — duplicate rows for a re-fired window
 - **Status:** open
