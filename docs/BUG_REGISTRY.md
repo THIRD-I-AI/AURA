@@ -1756,15 +1756,15 @@ the whole subsystem every time.
 - **Severity:** medium — combines with any legitimate window re-fire (including BUG-092's own now-fixed tumbling reopen path, or BUG-125 above) to silently double-count aggregations for any consumer summing/joining on `window_key`.
 - **Root cause:** `aurabackend/pipeline/streaming/sinks/database_sink.py`'s module docstring ("Upsert window results into a relational table") implies idempotent writes keyed by window, but `emit_window()` always executes a plain `INSERT` (both the DuckDB f-string branch and the `_PG_INSERT` Postgres branch) with no `ON CONFLICT`/dedup key, and neither backend's `CREATE TABLE` DDL even defines a unique constraint on `window_key` to make an upsert enforceable — violating `backend.md`'s "Idempotent data inputs" rule.
 - **Caused by:** none — pre-existing.
-- **Fix:** added a `UNIQUE (pipeline_id, window_key)` constraint to both backends' `CREATE TABLE`, and both `INSERT`s now carry `ON CONFLICT (pipeline_id, window_key) DO UPDATE SET ...` so a window re-fire replaces its row instead of duplicating it. PR: pending.
+- **Fix:** added a `UNIQUE (pipeline_id, window_key)` constraint to both backends' `CREATE TABLE`, and both `INSERT`s now carry `ON CONFLICT (pipeline_id, window_key) DO UPDATE SET ...` so a window re-fire replaces its row instead of duplicating it. PR: #469.
 
 ## BUG-130: FileWatcherSource._seen_files grows without bound for the life of the pipeline
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode audit of `aurabackend/pipeline/streaming/` (rotation re-run), 2026-09-19. Adversarial-verify: 3/3 skeptics did not refute.
 - **Severity:** medium — same unbounded-growth class BUG-091 fixed for `AlertSink._fired`, but left uncovered here; also bloats the on-disk checkpoint file over the pipeline's lifetime since the full set is serialized into every periodic checkpoint.
 - **Root cause:** `aurabackend/pipeline/streaming/sources/file_watcher.py`'s `self._seen_files: Set[str] = set()` accumulates every filename ever observed by the poll-cycle glob scan and is never pruned or capped, unlike `alert_sink.py`'s `_fired` deque (BUG-091's fix, bounded via `maxlen`). `get_offsets()` serializes the full, ever-growing set into every periodic checkpoint write.
 - **Caused by:** none — pre-existing; BUG-091's fix was scoped to `alert_sink.py` only.
-- **Fix:** pending.
+- **Fix:** added a `_mark_seen()` helper backed by the set (for O(1) membership) plus an insertion-order `deque` — once `max_seen_files` (config option, default 10000) is reached, the oldest filename is evicted from both before the new one is added, mirroring `AlertSink._fired`'s bound. `get_offsets()`'s serialized payload is now capped by construction. PR: pending.
 
 ## BUG-131: _start_locks dict grows unbounded — one asyncio.Lock leaked per pipeline_id ever started, never pruned on delete
 - **Status:** open
