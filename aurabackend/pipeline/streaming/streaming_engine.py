@@ -48,6 +48,7 @@ from pipeline.streaming.sources.simulated import SimulatedSource
 from pipeline.streaming.sources.websocket_source import WebSocketSource
 from pipeline.streaming.state_manager import StateManager
 from pipeline.streaming.window_processor import WindowProcessor
+from shared.error_handler import sanitize_error
 
 logger = logging.getLogger("aura.streaming.engine")
 
@@ -345,8 +346,13 @@ class StreamingEngine:
                     logger.error("Error closing source during failed start cleanup: %s", close_exc)
 
             self.pipeline.status = StreamPipelineStatus.FAILED
-            self._metrics.errors.append(str(e))
-            logger.error("Failed to start pipeline %s: %s", self.pipeline.id, e)
+            # BUG-127: str(e) on an arbitrary exception can leak internal
+            # detail (DSNs, file paths, stack frames) into StreamMetrics.errors,
+            # which GET /pipelines, /pipelines/{id} and /pipelines/{id}/metrics
+            # return straight to the client -- sanitize before storing.
+            self._metrics.errors.append(
+                sanitize_error(e, context=f"streaming pipeline {self.pipeline.id} start")
+            )
             raise
 
     async def stop(self) -> None:
@@ -537,8 +543,9 @@ class StreamingEngine:
             logger.info("Engine loop cancelled for %s", self.pipeline.id)
         except Exception as e:
             self.pipeline.status = StreamPipelineStatus.FAILED
-            self._metrics.errors.append(str(e))
-            logger.error("Engine loop error for %s: %s", self.pipeline.id, e, exc_info=True)
+            self._metrics.errors.append(
+                sanitize_error(e, context=f"streaming pipeline {self.pipeline.id} run loop")
+            )
 
     # ── Internal helpers ──────────────────────────────────────────
 
