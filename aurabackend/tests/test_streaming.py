@@ -1532,6 +1532,38 @@ class TestStreamingEngine:
         assert pipeline.status == StreamPipelineStatus.STOPPED
         loop.close()
 
+    def test_failed_start_closes_already_opened_sinks(self, monkeypatch):
+        # BUG-126: start() registered the engine before await engine.start(),
+        # and its except block only flipped status to FAILED with no cleanup
+        # -- a sink that already opened a live resource (here, WebhookSink's
+        # httpx.AsyncClient) before a LATER sink's start() failed was left
+        # open forever, since FAILED makes a retry legal and that retry
+        # overwrites the only reference to the leaked resource.
+        from pipeline.streaming.sinks.console_sink import ConsoleSink
+        from pipeline.streaming.streaming_engine import StreamingEngine
+
+        async def failing_start(self):
+            raise RuntimeError("simulated second-sink start failure")
+
+        monkeypatch.setattr(ConsoleSink, "start", failing_start)
+
+        pipeline = self._make_engine_pipeline(
+            sinks=[
+                StreamSink(type=StreamSinkType.WEBHOOK, config={"url": "http://example.invalid/hook"}),
+                StreamSink(type=StreamSinkType.CONSOLE),
+            ],
+        )
+        engine = StreamingEngine(pipeline, batch_size=20, tick_interval=0.2)
+        loop = asyncio.new_event_loop()
+
+        with pytest.raises(RuntimeError):
+            loop.run_until_complete(engine.start())
+
+        assert pipeline.status == StreamPipelineStatus.FAILED
+        webhook_sink = engine._sinks[0]
+        assert webhook_sink._client is None, "the already-started sink's httpx.AsyncClient must be closed, not leaked"
+        loop.close()
+
     def test_engine_pause_resume(self):
         from pipeline.streaming.streaming_engine import StreamingEngine
 

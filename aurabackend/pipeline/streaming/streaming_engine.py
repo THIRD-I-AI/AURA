@@ -324,6 +324,26 @@ class StreamingEngine:
             logger.info("Pipeline %s is now RUNNING", self.pipeline.id)
 
         except Exception as e:
+            # BUG-126: a source/sink that already opened a live resource
+            # (DB connection, httpx client) before a later step in this
+            # try block failed was left open forever -- status becomes
+            # FAILED (not RUNNING), which makes a retry of start() legal,
+            # and that retry constructs a brand-new engine that
+            # unconditionally overwrites the caller's _engines[pipeline_id]
+            # entry, permanently losing the only reference that could ever
+            # close the leaked resource. Close whatever already started
+            # before re-raising, mirroring stop()'s own close loop.
+            for sink in self._sinks:
+                try:
+                    await sink.stop()
+                except Exception as close_exc:
+                    logger.error("Error closing sink during failed start cleanup: %s", close_exc)
+            if self._source:
+                try:
+                    await self._source.stop()
+                except Exception as close_exc:
+                    logger.error("Error closing source during failed start cleanup: %s", close_exc)
+
             self.pipeline.status = StreamPipelineStatus.FAILED
             self._metrics.errors.append(str(e))
             logger.error("Failed to start pipeline %s: %s", self.pipeline.id, e)
