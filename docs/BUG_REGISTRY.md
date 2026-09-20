@@ -1748,7 +1748,7 @@ the whole subsystem every time.
 - **Severity:** medium — lower-frequency than BUG-085/086's per-write offloads (only runs once per pipeline start), but the same blocking-call-on-the-shared-event-loop class, worse on a slow or network-mounted output directory.
 - **Root cause:** `aurabackend/pipeline/streaming/sinks/file_sink.py`'s `start()` calls `os.makedirs(self._output_dir, exist_ok=True)` directly with no `asyncio.to_thread` wrapper, even though the sibling write path in `_flush()` was correctly offloaded under BUG-086. BUG-086's fix text explicitly scopes itself to `_flush()` only.
 - **Caused by:** none — pre-existing; BUG-086's fix didn't cover this call site.
-- **Fix:** `start()` now awaits `asyncio.to_thread(os.makedirs, ...)`. PR: pending.
+- **Fix:** `start()` now awaits `asyncio.to_thread(os.makedirs, ...)`. PR: #468.
 
 ## BUG-129: DatabaseSink docstring/label claims "upsert" but emit_window() only ever INSERTs — duplicate rows for a re-fired window
 - **Status:** fixed
