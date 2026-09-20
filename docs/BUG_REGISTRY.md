@@ -1756,7 +1756,7 @@ the whole subsystem every time.
 - **Severity:** medium — combines with any legitimate window re-fire (including BUG-092's own now-fixed tumbling reopen path, or BUG-125 above) to silently double-count aggregations for any consumer summing/joining on `window_key`.
 - **Root cause:** `aurabackend/pipeline/streaming/sinks/database_sink.py`'s module docstring ("Upsert window results into a relational table") implies idempotent writes keyed by window, but `emit_window()` always executes a plain `INSERT` (both the DuckDB f-string branch and the `_PG_INSERT` Postgres branch) with no `ON CONFLICT`/dedup key, and neither backend's `CREATE TABLE` DDL even defines a unique constraint on `window_key` to make an upsert enforceable — violating `backend.md`'s "Idempotent data inputs" rule.
 - **Caused by:** none — pre-existing.
-- **Fix:** added a `UNIQUE (pipeline_id, window_key)` constraint to both backends' `CREATE TABLE`, and both `INSERT`s now carry `ON CONFLICT (pipeline_id, window_key) DO UPDATE SET ...` so a window re-fire replaces its row instead of duplicating it. PR: pending.
+- **Fix:** added a `UNIQUE (pipeline_id, window_key)` constraint to both backends' `CREATE TABLE`, and both `INSERT`s now carry `ON CONFLICT (pipeline_id, window_key) DO UPDATE SET ...` so a window re-fire replaces its row instead of duplicating it. PR: #469.
 
 ## BUG-130: FileWatcherSource._seen_files grows without bound for the life of the pipeline
 - **Status:** open
