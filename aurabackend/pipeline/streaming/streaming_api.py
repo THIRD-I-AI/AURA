@@ -207,6 +207,14 @@ async def delete_pipeline(pipeline_id: str, user: Optional[Dict[str, Any]] = Dep
             raise HTTPException(status_code=409, detail="Stop the pipeline before deleting")
         _pipelines.pop(pipeline_id, None)
         _engines.pop(pipeline_id, None)
+    # BUG-131: _start_locks (BUG-089's registry) grows one entry per
+    # pipeline_id ever started and is never pruned elsewhere -- evict it
+    # here, now that the pipeline itself is gone. Safe to pop after the
+    # `async with` above has released the lock: any coroutine already
+    # waiting on this exact Lock object still holds its own reference and
+    # completes normally; only a later _start_lock_for() call for this
+    # (now-deleted) pipeline_id gets a fresh Lock instead.
+    _start_locks.pop(pipeline_id, None)
     return {"deleted": pipeline_id}
 
 

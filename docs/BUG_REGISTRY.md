@@ -58,7 +58,7 @@ the whole subsystem every time.
 |---|---|---|---|
 | `api_gateway/routers/` | `4726a3e` | 2026-09-19 | 3 confirmed (BUG-120..122), 0 refuted — all fixed (re-audit re-run, diffed forward from `c00cbd6`; only 2 files had changed since) |
 | `uasr/` | `e84721f` | 2026-09-14 | 12 confirmed (BUG-063..074), 2 refuted — all fixed except BUG-072 (deliberately deferred, see entry) |
-| `pipeline/` (core + streaming) | `95e236d` | 2026-09-15 | 15 confirmed (BUG-079..093), 0 refuted — all fixed |
+| `pipeline/` (core + streaming) | `00aeeca` | 2026-09-19 | 24 confirmed total (BUG-079..093, BUG-123..131), 0 refuted — all fixed (re-audit re-run of `streaming/`, diffed forward from `95e236d`) |
 | `counterfactual_service/` | `27e60e0` | 2026-09-17 | 9 confirmed (BUG-095..103), 0 refuted — all fixed except BUG-101 (corrected to false-positive post-filing, see entry) |
 | `frontend/src/` | `a2f76ab` | 2026-09-18 | 10 confirmed (BUG-104..113), 5 refuted — all fixed |
 | `shared/` (security-sensitive) | `87699e2` | 2026-09-18 | 6 confirmed (BUG-114..119), 3 refuted — all fixed |
@@ -1767,12 +1767,12 @@ the whole subsystem every time.
 - **Fix:** added a `_mark_seen()` helper backed by the set (for O(1) membership) plus an insertion-order `deque` — once `max_seen_files` (config option, default 10000) is reached, the oldest filename is evicted from both before the new one is added, mirroring `AlertSink._fired`'s bound. `get_offsets()`'s serialized payload is now capped by construction. PR: pending.
 
 ## BUG-131: _start_locks dict grows unbounded — one asyncio.Lock leaked per pipeline_id ever started, never pruned on delete
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode audit of `aurabackend/pipeline/streaming/` (rotation re-run), 2026-09-19. Adversarial-verify: 3/3 skeptics did not refute.
 - **Severity:** low — a bare `asyncio.Lock` is a small object; only matters under long-running single-process deployments with heavy pipeline create/delete churn (demos, CI, tenant turnover).
 - **Root cause:** `aurabackend/pipeline/streaming/streaming_api.py`'s `_start_lock_for()` lazily creates and caches an `asyncio.Lock` per `pipeline_id` in the module-level `_start_locks` dict, introduced by BUG-089's fix — but nothing ever removes an entry, not even `delete_pipeline`, which does clean up `_pipelines` and `_engines` for the same id.
 - **Caused by:** none — pre-existing; BUG-089's fix added the lock registry but no corresponding eviction.
-- **Fix:** pending.
+- **Fix:** `delete_pipeline` now pops `_start_locks[pipeline_id]` right after releasing the lock it held across the delete. Safe because any coroutine already waiting on that specific `Lock` object still holds its own reference and completes normally — only a later `_start_lock_for()` call for the (now-deleted) id gets a fresh `Lock`. PR: pending.
 
 ## Refuted (adversarial-verify, ≥2/3 skeptics refuted — filed for the record, no fix needed)
 

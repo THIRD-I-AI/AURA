@@ -1512,6 +1512,47 @@ class TestStreamingAPIStartDeleteRace:
         _engines.pop(p.id, None)
 
 
+class TestStartLocksPruning:
+    """BUG-131: _start_locks (BUG-089's per-pipeline_id lock registry) grew
+    one entry per pipeline_id ever started and was never pruned, not even
+    by delete_pipeline, which already cleans up _pipelines/_engines for the
+    same id."""
+
+    @pytest.fixture(autouse=True)
+    def _clear_stores(self):
+        from pipeline.streaming.streaming_api import _engines, _pipelines, _start_locks
+        _pipelines.clear()
+        _engines.clear()
+        _start_locks.clear()
+        yield
+        _pipelines.clear()
+        _engines.clear()
+        _start_locks.clear()
+
+    @pytest.mark.asyncio
+    async def test_delete_prunes_the_start_lock_entry(self):
+        from pipeline.streaming.streaming_api import (
+            _pipelines,
+            _start_lock_for,
+            _start_locks,
+            delete_pipeline,
+        )
+
+        p = _make_pipeline()
+        _pipelines[p.id] = p
+        # Simulate a lock having been created for this pipeline (any prior
+        # start/stop/pause/resume call does this via _start_lock_for).
+        _start_lock_for(p.id)
+        assert p.id in _start_locks
+
+        await delete_pipeline(p.id)
+
+        assert p.id not in _start_locks, (
+            "delete_pipeline must evict the pipeline's _start_locks entry, "
+            "not leak it forever"
+        )
+
+
 # ════════════════════════════════════════════════════════════════
 # 7. BACKPRESSURE TESTS
 # ════════════════════════════════════════════════════════════════
