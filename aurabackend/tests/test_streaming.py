@@ -861,6 +861,46 @@ class TestDatabaseSink:
             f"insert in emit_window()), got {len(offloaded_funcs)}"
         )
 
+    def test_rewritten_window_upserts_not_duplicates(self, tmp_path):
+        # BUG-129: the module docstring/label claim "upsert" semantics, but
+        # emit_window() only ever INSERTed -- a legitimate re-fire of the
+        # same window (e.g. BUG-092's tumbling reopen-and-merge path, or
+        # BUG-125's sliding/session port) silently duplicated the row
+        # instead of replacing it, double-counting any consumer summing on
+        # window_key. Emit the same (pipeline_id, window_key) twice with
+        # different aggregations and confirm exactly one row survives, with
+        # the SECOND emit's values (an upsert, not an insert-then-ignore).
+        from pipeline.streaming.sinks.database_sink import DatabaseSink
+
+        db_path = str(tmp_path / "streaming.duckdb")
+        sink = DatabaseSink(config={"path": db_path, "table": "t"})
+        loop = asyncio.new_event_loop()
+        loop.run_until_complete(sink.start())
+
+        first = WindowState(
+            window_key="k1|0-60", window_start=0, window_end=60,
+            event_count=3, aggregations={"count": 3},
+        )
+        loop.run_until_complete(sink.emit_window(first, "p1"))
+
+        reopened = WindowState(
+            window_key="k1|0-60", window_start=0, window_end=60,
+            event_count=7, aggregations={"count": 7},
+        )
+        loop.run_until_complete(sink.emit_window(reopened, "p1"))
+
+        loop.run_until_complete(sink.stop())
+        loop.close()
+
+        import duckdb
+        conn = duckdb.connect(db_path)
+        try:
+            rows = conn.execute('SELECT event_count FROM "t" WHERE window_key = ?', ["k1|0-60"]).fetchall()
+            assert len(rows) == 1, f"expected exactly one row after re-fire, got {len(rows)}: {rows}"
+            assert rows[0][0] == 7, f"expected the second emit's value to win, got {rows[0][0]}"
+        finally:
+            conn.close()
+
 
 class TestWebhookSink:
     def test_emit_late_event_does_not_raise_and_sends_the_event_timestamp(self):

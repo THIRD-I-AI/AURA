@@ -25,13 +25,26 @@ CREATE TABLE IF NOT EXISTS {table} (
     window_end     TIMESTAMP,
     event_count    INTEGER,
     aggregations   JSONB,
-    inserted_at    TIMESTAMP DEFAULT NOW()
+    inserted_at    TIMESTAMP DEFAULT NOW(),
+    UNIQUE (pipeline_id, window_key)
 )
 """
 
+# BUG-129: this module's docstring/label promise "upsert" semantics, but a
+# plain INSERT duplicates rows on any legitimate window re-fire (BUG-092's
+# reopen-and-merge path, BUG-125's sliding/session port). ON CONFLICT DO
+# UPDATE, keyed by the same (pipeline_id, window_key) UNIQUE constraint
+# above, makes a re-fire of the same window replace its row instead of
+# adding a duplicate one.
 _PG_INSERT = """
 INSERT INTO {table} (pipeline_id, window_key, window_start, window_end, event_count, aggregations)
 VALUES ($1, $2, $3, $4, $5, $6::jsonb)
+ON CONFLICT (pipeline_id, window_key) DO UPDATE SET
+    window_start = EXCLUDED.window_start,
+    window_end = EXCLUDED.window_end,
+    event_count = EXCLUDED.event_count,
+    aggregations = EXCLUDED.aggregations,
+    inserted_at = NOW()
 """
 
 
@@ -60,7 +73,8 @@ class DatabaseSink(BaseSink):
                         window_end     TIMESTAMP,
                         event_count    INTEGER,
                         aggregations   VARCHAR,
-                        inserted_at    TIMESTAMP DEFAULT current_timestamp
+                        inserted_at    TIMESTAMP DEFAULT current_timestamp,
+                        UNIQUE (pipeline_id, window_key)
                     )
                 """)
                 return conn
@@ -116,7 +130,12 @@ class DatabaseSink(BaseSink):
             # BUG-085: same reasoning as start() -- conn.execute() blocks.
             await asyncio.to_thread(
                 self._conn.execute,
-                f'INSERT INTO {self._quoted_table} (pipeline_id, window_key, window_start, window_end, event_count, aggregations) VALUES (?, ?, ?, ?, ?, ?)',
+                f'INSERT INTO {self._quoted_table} (pipeline_id, window_key, window_start, window_end, event_count, aggregations) '
+                'VALUES (?, ?, ?, ?, ?, ?) '
+                'ON CONFLICT (pipeline_id, window_key) DO UPDATE SET '
+                'window_start = excluded.window_start, window_end = excluded.window_end, '
+                'event_count = excluded.event_count, aggregations = excluded.aggregations, '
+                'inserted_at = now()',
                 [
                     pipeline_id,
                     window.window_key,
