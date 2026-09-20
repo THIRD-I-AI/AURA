@@ -1659,6 +1659,58 @@ class TestStreamingEngine:
             if os.path.exists(checkpoint_dir):
                 shutil.rmtree(checkpoint_dir)
 
+    def test_start_failure_error_is_sanitized_not_raw(self, monkeypatch):
+        # BUG-127: StreamMetrics.errors is returned verbatim by
+        # GET /pipelines, /pipelines/{id} and /pipelines/{id}/metrics.
+        # A raw str(exc) can leak internal detail (paths, DSNs, module
+        # names) to the client -- it must go through sanitize_error first.
+        from pipeline.streaming.sources.simulated import SimulatedSource
+        from pipeline.streaming.streaming_engine import StreamingEngine
+
+        sensitive_detail = "connect failed: postgresql://admin:s3cr3t@10.0.0.5/prod"
+
+        async def failing_start(self):
+            raise RuntimeError(sensitive_detail)
+
+        monkeypatch.setattr(SimulatedSource, "start", failing_start)
+
+        pipeline = self._make_engine_pipeline()
+        engine = StreamingEngine(pipeline, batch_size=20, tick_interval=0.2)
+        loop = asyncio.new_event_loop()
+
+        with pytest.raises(RuntimeError):
+            loop.run_until_complete(engine.start())
+
+        assert pipeline.status == StreamPipelineStatus.FAILED
+        assert len(engine.metrics.errors) == 1
+        assert sensitive_detail not in engine.metrics.errors[0]
+        assert engine.metrics.errors[0] == "Internal server error"
+        loop.close()
+
+    def test_run_loop_failure_error_is_sanitized_not_raw(self, monkeypatch):
+        from pipeline.streaming.streaming_engine import StreamingEngine
+
+        sensitive_detail = "/etc/aura/secrets/signing_key.pem not found"
+
+        pipeline = self._make_engine_pipeline()
+        engine = StreamingEngine(pipeline, batch_size=20, tick_interval=0.2)
+        loop = asyncio.new_event_loop()
+
+        loop.run_until_complete(engine.start())
+
+        async def failing_get_batch(*args, **kwargs):
+            raise RuntimeError(sensitive_detail)
+
+        monkeypatch.setattr(engine._backpressure, "get_batch", failing_get_batch)
+
+        loop.run_until_complete(engine._task)
+
+        assert pipeline.status == StreamPipelineStatus.FAILED
+        assert len(engine.metrics.errors) == 1
+        assert sensitive_detail not in engine.metrics.errors[0]
+        assert engine.metrics.errors[0] == "Internal server error"
+        loop.close()
+
     def test_engine_with_filter_transform(self):
         from pipeline.streaming.streaming_engine import StreamingEngine
 

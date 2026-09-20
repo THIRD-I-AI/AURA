@@ -1735,12 +1735,12 @@ the whole subsystem every time.
 - **Fix:** `StreamingEngine.start()`'s except block now closes whatever already started (every constructed sink's `.stop()`, then the source's `.stop()` if it was created) before flipping `status = FAILED` and re-raising — mirroring `stop()`'s own close loop. Each sink type's `stop()` was verified safe to call even on a sink whose `start()` was never reached (all guard on `if self._conn`/`if self._client`/an empty buffer, or are unconditionally trivial), so calling it on the full `self._sinks` list — including sinks constructed but not yet started when an earlier one failed — is safe. Added `test_failed_start_closes_already_opened_sinks` to `tests/test_streaming.py::TestStreamingEngine`: a two-sink pipeline (`WebhookSink` then a `ConsoleSink` whose `start()` is monkeypatched to raise) confirms the already-started `WebhookSink`'s `httpx.AsyncClient` is closed (`._client is None`) after the failed `start()` call, not left open. Confirmed non-vacuous by stashing the fix — the test fails against pre-fix code with the real `httpx.AsyncClient` object still present instead of `None` — then restored and confirmed the full `test_streaming.py` suite (78 tests) passes, no regressions. Also records BUG-125's PR link (#465). PR: pending.
 
 ## BUG-127: Raw exception text stored in StreamMetrics.errors is returned unsanitized to API callers
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode audit of `aurabackend/pipeline/streaming/` (rotation re-run), 2026-09-19. Adversarial-verify: 3/3 skeptics did not refute.
 - **Severity:** high — CWE-209 internal-detail leak (e.g. DB DSNs/paths from connection failures, missing-key errors) through a normal polling endpoint reachable without authentication in dev/open mode, not merely an error path.
 - **Root cause:** `aurabackend/pipeline/streaming/streaming_engine.py`'s `start()` and `_run_loop()` except blocks both do `self._metrics.errors.append(str(e))`, storing the raw exception string on the shared `StreamMetrics` object. `aurabackend/pipeline/streaming/streaming_api.py` then serializes that object verbatim via `GET /pipelines` (list), `GET /pipelines/{id}`, and `GET /pipelines/{id}/metrics` — none of which route through `shared/error_handler.py::sanitize_error`, contrary to `security.md`'s "never proxy a raw upstream/engine error string to a client" rule.
 - **Caused by:** none — pre-existing; BUG-080's tenant-ownership fix for these same endpoints enforces *access* to the pipeline, not sanitization of its metrics payload.
-- **Fix:** pending.
+- **Fix:** both `except` blocks in `streaming_engine.py` now call `sanitize_error(e, context=...)` instead of `str(e)` before appending to `self._metrics.errors`; sanitize_error already logs the full traceback server-side, so no diagnostic detail is lost. PR: pending.
 
 ## BUG-128: FileSink.start() calls os.makedirs() synchronously in an async function
 - **Status:** open
