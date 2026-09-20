@@ -1748,15 +1748,15 @@ the whole subsystem every time.
 - **Severity:** medium — lower-frequency than BUG-085/086's per-write offloads (only runs once per pipeline start), but the same blocking-call-on-the-shared-event-loop class, worse on a slow or network-mounted output directory.
 - **Root cause:** `aurabackend/pipeline/streaming/sinks/file_sink.py`'s `start()` calls `os.makedirs(self._output_dir, exist_ok=True)` directly with no `asyncio.to_thread` wrapper, even though the sibling write path in `_flush()` was correctly offloaded under BUG-086. BUG-086's fix text explicitly scopes itself to `_flush()` only.
 - **Caused by:** none — pre-existing; BUG-086's fix didn't cover this call site.
-- **Fix:** `start()` now awaits `asyncio.to_thread(os.makedirs, ...)`. PR: pending.
+- **Fix:** `start()` now awaits `asyncio.to_thread(os.makedirs, ...)`. PR: #468.
 
 ## BUG-129: DatabaseSink docstring/label claims "upsert" but emit_window() only ever INSERTs — duplicate rows for a re-fired window
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode audit of `aurabackend/pipeline/streaming/` (rotation re-run), 2026-09-19. Adversarial-verify: 3/3 skeptics did not refute.
 - **Severity:** medium — combines with any legitimate window re-fire (including BUG-092's own now-fixed tumbling reopen path, or BUG-125 above) to silently double-count aggregations for any consumer summing/joining on `window_key`.
 - **Root cause:** `aurabackend/pipeline/streaming/sinks/database_sink.py`'s module docstring ("Upsert window results into a relational table") implies idempotent writes keyed by window, but `emit_window()` always executes a plain `INSERT` (both the DuckDB f-string branch and the `_PG_INSERT` Postgres branch) with no `ON CONFLICT`/dedup key, and neither backend's `CREATE TABLE` DDL even defines a unique constraint on `window_key` to make an upsert enforceable — violating `backend.md`'s "Idempotent data inputs" rule.
 - **Caused by:** none — pre-existing.
-- **Fix:** pending.
+- **Fix:** added a `UNIQUE (pipeline_id, window_key)` constraint to both backends' `CREATE TABLE`, and both `INSERT`s now carry `ON CONFLICT (pipeline_id, window_key) DO UPDATE SET ...` so a window re-fire replaces its row instead of duplicating it. PR: pending.
 
 ## BUG-130: FileWatcherSource._seen_files grows without bound for the life of the pipeline
 - **Status:** open
