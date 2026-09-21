@@ -58,7 +58,7 @@ the whole subsystem every time.
 |---|---|---|---|
 | `api_gateway/routers/` | `4726a3e` | 2026-09-19 | 3 confirmed (BUG-120..122), 0 refuted — all fixed (re-audit re-run, diffed forward from `c00cbd6`; only 2 files had changed since) |
 | `uasr/` | `e84721f` | 2026-09-14 | 12 confirmed (BUG-063..074), 2 refuted — all fixed except BUG-072 (deliberately deferred, see entry) |
-| `pipeline/` (core + streaming) | `00aeeca` | 2026-09-19 | 24 confirmed total (BUG-079..093, BUG-123..131), 0 refuted — all fixed (re-audit re-run of `streaming/`, diffed forward from `95e236d`) |
+| `pipeline/` (core + streaming) | `88c39a2` | 2026-09-20 | 24 confirmed total (BUG-079..093, BUG-123..131), 0 refuted — all fixed (SHA refreshed past all 9 BUG-123..131 fix commits, which otherwise show up as unaccounted-for drift on the next re-audit diff) |
 | `counterfactual_service/` | `27e60e0` | 2026-09-17 | 9 confirmed (BUG-095..103), 0 refuted — all fixed except BUG-101 (corrected to false-positive post-filing, see entry) |
 | `frontend/src/` | `a2f76ab` | 2026-09-18 | 10 confirmed (BUG-104..113), 5 refuted — all fixed |
 | `shared/` (security-sensitive) | `87699e2` | 2026-09-18 | 6 confirmed (BUG-114..119), 3 refuted — all fixed |
