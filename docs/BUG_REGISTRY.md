@@ -1772,7 +1772,7 @@ the whole subsystem every time.
 - **Severity:** low — a bare `asyncio.Lock` is a small object; only matters under long-running single-process deployments with heavy pipeline create/delete churn (demos, CI, tenant turnover).
 - **Root cause:** `aurabackend/pipeline/streaming/streaming_api.py`'s `_start_lock_for()` lazily creates and caches an `asyncio.Lock` per `pipeline_id` in the module-level `_start_locks` dict, introduced by BUG-089's fix — but nothing ever removes an entry, not even `delete_pipeline`, which does clean up `_pipelines` and `_engines` for the same id.
 - **Caused by:** none — pre-existing; BUG-089's fix added the lock registry but no corresponding eviction.
-- **Fix:** `delete_pipeline` now pops `_start_locks[pipeline_id]` right after releasing the lock it held across the delete. Safe because any coroutine already waiting on that specific `Lock` object still holds its own reference and completes normally — only a later `_start_lock_for()` call for the (now-deleted) id gets a fresh `Lock`. PR: pending.
+- **Fix:** `delete_pipeline` now pops `_start_locks[pipeline_id]` right after releasing the lock it held across the delete. Safe because any coroutine already waiting on that specific `Lock` object still holds its own reference and completes normally — only a later `_start_lock_for()` call for the (now-deleted) id gets a fresh `Lock`. PR: #471.
 
 ## BUG-132: test_audit_wiring_creates_job_and_stores_result races its own background job against a per-request TestClient portal teardown
 - **Status:** fixed
