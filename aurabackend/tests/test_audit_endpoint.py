@@ -105,13 +105,28 @@ def test_audit_rejects_path_traversal(tmp_path, monkeypatch):
 def test_audit_wiring_creates_job_and_stores_result(tmp_path, monkeypatch):
     """Endpoint wiring: pre-validate → offload → store the worker's result. Uses a
     fast stub (engine correctness is covered by the worker test) so this is
-    deterministic, not a 30s TestClient background-task race."""
+    deterministic, not a 30s TestClient background-task race.
+
+    Must enter TestClient as a context manager (`with ... as c:`), not via the
+    bare `_client()` helper. Starlette's TestClient only reuses one persistent
+    portal/event loop across calls when entered this way (see testclient.py's
+    `_portal_factory`); otherwise every single request gets its OWN fresh
+    portal, and the POST's `asyncio.create_task(...)` background job gets torn
+    down along with the portal that scheduled it as soon as that one request
+    finishes -- turning "does the job finish in time" into "does it finish
+    before this specific request's portal exits," a race that's usually won
+    on a fast/idle machine but was observed to be lost under the full suite's
+    load (`AssertionError: None` -- the polling loop below never saw the job
+    reach succeeded/failed because nothing was left running it forward).
+    """
     import time
 
     import pandas as pd
 
     from counterfactual_service import main as m
-    c = _client(tmp_path, monkeypatch)
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "data" / "uploads").mkdir(parents=True, exist_ok=True)
     pd.DataFrame({"flag": [0, 1] * 80, "approved": [1, 0] * 80, "score": [0.1] * 160}).to_csv(
         tmp_path / "data" / "uploads" / "d.csv", index=False)
 
@@ -127,18 +142,19 @@ def test_audit_wiring_creates_job_and_stores_result(tmp_path, monkeypatch):
     monkeypatch.setattr(m, "run_audit_subprocess", _fast_audit)
     monkeypatch.setattr(m, "get_audit_pool", lambda: None)  # default thread executor
 
-    r = c.post("/counterfactual/audit", json={
-        "uploaded_file": "d.csv", "treatment": "flag", "outcome": "approved",
-        "confounders": ["score"]})
-    assert r.status_code == 200
-    job_id = r.json()["job_id"]
-    art = None
-    for _ in range(40):
-        jr = c.get(f"/counterfactual/jobs/{job_id}").json()
-        if jr["state"] in ("succeeded", "failed"):
-            art = jr
-            break
-        time.sleep(0.25)
+    with TestClient(m.app, headers=_auth()) as c:
+        r = c.post("/counterfactual/audit", json={
+            "uploaded_file": "d.csv", "treatment": "flag", "outcome": "approved",
+            "confounders": ["score"]})
+        assert r.status_code == 200
+        job_id = r.json()["job_id"]
+        art = None
+        for _ in range(40):
+            jr = c.get(f"/counterfactual/jobs/{job_id}").json()
+            if jr["state"] in ("succeeded", "failed"):
+                art = jr
+                break
+            time.sleep(0.25)
     assert art is not None and art["state"] == "succeeded", art
     assert art["artifact"]["sensitivity_headline"]
     assert art["artifact"]["data_quality"]["n_clean"] == 160
