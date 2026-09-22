@@ -134,6 +134,44 @@ class TestE2EChatPipeline:
         # Columns match record keys
         assert set(columns) == set(records[0].keys())
 
+    def test_chat_zero_row_result_is_a_success_not_a_failure(self, client, monkeypatch):
+        """BUG-136: a query whose correct answer is "no matching rows" (e.g.
+        a filter with no matches) ran with row_count == 0 and no error, but
+        chat_endpoint's `if state.execution and state.execution.row_count >
+        0:` gate left execution_result.success False -- the frontend then
+        rendered "Query failed." for a query that actually worked.
+
+        Monkeypatch run_orchestrator directly (mirrors
+        test_chat_call_drives_run_orchestrator's spy pattern) to return a
+        real, successfully-executed zero-row state, since driving a real
+        SQL generation to a guaranteed-empty result is not deterministic
+        through the mock LLM's rule matching.
+        """
+        import api_gateway.routers.chat as chat_module
+        from agents.schemas import ExecutionOutput, OrchestratorState, SQLGenOutput
+
+        async def _zero_row_orchestrator(*args, **kwargs):
+            return OrchestratorState(
+                user_prompt=kwargs.get("user_prompt", args[0] if args else "q"),
+                session_id=kwargs.get("session_id") or "s",
+                sql=SQLGenOutput(sql="SELECT * FROM _e2e_test_sales WHERE 1=0", explanation="no rows match"),
+                execution=ExecutionOutput(columns=["Date", "Product"], records=[], rows=[], row_count=0),
+                completed_nodes=["sql_gen", "execution"],
+            )
+
+        monkeypatch.setattr(chat_module, "run_orchestrator", _zero_row_orchestrator)
+
+        resp = client.post(f"{V1}/chat", json={"message": "cancelled orders from last week"})
+        assert resp.status_code == 200
+        data = resp.json()
+
+        assert data["status"] == "Success", f"a genuinely error-free zero-row query must not report Error: {data}"
+        er = data["execution_result"]
+        assert er["success"] is True, f"zero rows with no error is a successful query, not a failure: {er}"
+        assert er["row_count"] == 0
+        assert er["columns"] == ["Date", "Product"], "columns (from the cursor description) must survive a zero-row result"
+        assert er.get("error") is None
+
     def test_chat_empty_message_returns_400(self, client):
         """Empty message should be rejected."""
         resp = client.post(f"{V1}/chat", json={"message": ""})

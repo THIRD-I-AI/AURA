@@ -610,7 +610,15 @@ async def chat_endpoint(request: ChatRequest, http_request: Request) -> ChatResp
     if state.sql and state.sql.explanation:
         execution_result.sql_explanation = state.sql.explanation
 
-    if state.execution and state.execution.row_count > 0:
+    # BUG-136: a query whose correct answer is "no matching rows" (e.g. a
+    # filter with no matches) ran successfully with row_count == 0 and no
+    # error, but the old `row_count > 0` gate left success False -- the
+    # frontend then rendered "Query failed." for a query that actually
+    # worked. execution_node only ever sets state.execution when the SQL
+    # ran without error (a failure returns via _err() and leaves it None),
+    # so presence alone is the correct success signal; columns come from
+    # the cursor description and are populated regardless of row count.
+    if state.execution:
         execution_result.success = True
         execution_result.data = state.execution.records
         execution_result.columns = state.execution.columns
