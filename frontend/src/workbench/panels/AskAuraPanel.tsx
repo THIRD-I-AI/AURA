@@ -10,6 +10,7 @@ import { Button } from '@/components/ui-kit/button';
 import { EmptyState } from '@/components/ui-kit/empty-state';
 import { cn } from '@/lib/cn';
 import { chatService } from '../../services/api';
+import RechartsVisualization, { type ChartSpec } from '../../components/RechartsVisualization';
 
 type Msg = {
   id: string;
@@ -19,6 +20,7 @@ type Msg = {
   columns?: string[];
   data?: Record<string, unknown>[];
   rowCount?: number;
+  chartSpec?: ChartSpec | null;
   error?: string;
   pending?: boolean;
 };
@@ -52,6 +54,11 @@ export default function AskAuraPanel() {
         columns: (er.columns as string[]) || undefined,
         data: (er.data as Record<string, unknown>[]) || undefined,
         rowCount: typeof er.row_count === 'number' ? (er.row_count as number) : undefined,
+        // BUG-134: the backend's visualization_node produces a real
+        // chart_spec on every successful query, but no live chat surface
+        // ever read it -- RechartsVisualization (the only component built
+        // to render one) was imported by nothing outside its own test.
+        chartSpec: (er.chart_spec as ChartSpec) || undefined,
         // A failure BEFORE execution (SQL generation, planning) reports on the
         // top-level error_message, not execution_result.error — and the gateway
         // has already humanized it (chat.py _humanize_pipeline_error). Reading
@@ -102,6 +109,9 @@ export default function AskAuraPanel() {
                   {m.text && <div className="text-sm leading-relaxed text-card-foreground">{m.text}</div>}
                   {m.sql && (
                     <pre className="overflow-x-auto whitespace-pre-wrap border border-border bg-secondary px-2.5 py-2 font-mono text-xs text-signal">{m.sql}</pre>
+                  )}
+                  {m.chartSpec && m.chartSpec.type !== 'table' && m.data && m.data.length > 0 && (
+                    <RechartsVisualization data={m.data} chartSpec={m.chartSpec} height={280} />
                   )}
                   {m.data && m.columns && m.data.length > 0 && (
                     <div className="overflow-x-auto border border-border">

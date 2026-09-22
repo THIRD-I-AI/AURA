@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import type { IDockviewPanelProps } from 'dockview-react';
 import { chatService, type QueryResponse } from '../../services/api';
+import RechartsVisualization, { type ChartSpec } from '../../components/RechartsVisualization';
 import { useCockpit } from '../CockpitProvider';
 
 export default function QueryPanel(_props: IDockviewPanelProps) {
@@ -50,6 +51,9 @@ export default function QueryPanel(_props: IDockviewPanelProps) {
       </div>
       {error && <div className="panel-error-inline">{error}</div>}
       {result?.final_query && <pre className="query-sql">{result.final_query}</pre>}
+      {er?.success !== false && er?.chart_spec && (er.chart_spec as ChartSpec).type !== 'table' && er?.data && er.data.length > 0 && (
+        <RechartsVisualization data={er.data} chartSpec={er.chart_spec as ChartSpec} height={280} />
+      )}
       {er?.columns && er.rows && (
         <table className="query-table">
           <thead><tr>{er.columns.map((c) => <th key={c}>{c}</th>)}</tr></thead>

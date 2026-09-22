@@ -64,6 +64,36 @@ describe('AskAuraChat commander fallback', () => {
     });
   });
 
+  it('renders the chart from a real chart_spec on the fallback path (BUG-134)', async () => {
+    if (typeof ResizeObserver === 'undefined') {
+      (globalThis as unknown as { ResizeObserver: unknown }).ResizeObserver = class {
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      };
+    }
+    vi.spyOn(chatService, 'streamMessage').mockRejectedValue(new Error('commander_disabled'));
+    vi.spyOn(chatService, 'sendMessage').mockResolvedValue({
+      job_id: 'j3',
+      status: 'Success',
+      final_query: 'SELECT region, revenue FROM sales',
+      execution_result: {
+        success: true,
+        columns: ['region', 'revenue'],
+        rows: [['east', 10], ['west', 20]],
+        data: [{ region: 'east', revenue: 10 }, { region: 'west', revenue: 20 }],
+        row_count: 2,
+        chart_spec: { type: 'bar', x: 'region', y: 'revenue', title: 'Revenue by region' },
+      },
+    } as never);
+
+    await ask();
+
+    await waitFor(() => {
+      expect(screen.getByText(/revenue by region/i)).toBeInTheDocument();
+    });
+  });
+
   it('still shows the offline message for a genuine server error unrelated to commander being disabled', async () => {
     vi.spyOn(chatService, 'streamMessage').mockRejectedValue(new Error('stream failed: 503'));
     vi.spyOn(chatService, 'sendMessage');
