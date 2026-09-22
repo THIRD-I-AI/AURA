@@ -1,5 +1,6 @@
 /* Shared shape types for the Cockpit board's extracted panels. */
 import type { ChartSpec } from '../../components/RechartsVisualization';
+import type { VerificationResult } from '../../services/api';
 
 export type Msg = {
   q: string;
@@ -9,6 +10,7 @@ export type Msg = {
   rows?: string[][];
   data?: Record<string, unknown>[];
   chartSpec?: ChartSpec | null;
+  verification?: VerificationResult | null;
   answer?: string;
 };
 export type Heal = { id: string; title: string; method: string; safe: boolean; sub: string; state: 'pending' | 'deployed' | 'rejected'; resolution?: string };

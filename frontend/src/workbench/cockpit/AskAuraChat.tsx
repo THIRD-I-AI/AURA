@@ -2,7 +2,7 @@
    Owns its own message/thinking state; reports back to the shared session
    feed and query-history table via the callbacks Workbench.tsx passes down. */
 import { useRef, useState } from 'react';
-import { chatService } from '../../services/api';
+import { chatService, type VerificationResult } from '../../services/api';
 import RechartsVisualization, { type ChartSpec } from '../../components/RechartsVisualization';
 import type { Msg, HistoryEntry } from './types';
 
@@ -47,6 +47,7 @@ export function AskAuraChat({ pushFeed, setHistory }: Props) {
     let sql: string | undefined; let critic: string | undefined; let answer = '';
     let columns: string[] | undefined; let rows: string[][] | undefined;
     let data: Record<string, unknown>[] | undefined; let chartSpec: ChartSpec | null | undefined;
+    let verification: VerificationResult | null | undefined;
     try {
       await chatService.streamMessage(q, {
         onEvent: (ev: { event: string; data: Record<string, unknown> }) => {
@@ -82,6 +83,10 @@ export function AskAuraChat({ pushFeed, setHistory }: Props) {
             chartSpec = er.chart_spec as ChartSpec;
             data = er.data;
           }
+          // BUG-137: DPC's "mismatch" verdict was only ever logged
+          // server-side; this panel advertises "DPC cross-check" but
+          // never showed a mismatch to the user it protects.
+          verification = er?.verification;
           critic = ok ? `executed · ${er?.row_count ?? 0} rows` : undefined;
           answer = ok
             ? (er?.conclusion || er?.sql_explanation || resp.message || 'Done.')
@@ -96,7 +101,7 @@ export function AskAuraChat({ pushFeed, setHistory }: Props) {
     setThinking(null);
     setMessages((m) => {
       const last = m[m.length - 1];
-      return [...m.slice(0, -1), { ...last, sql, critic, columns, rows, data, chartSpec, answer: answer || '(no answer)' }];
+      return [...m.slice(0, -1), { ...last, sql, critic, columns, rows, data, chartSpec, verification, answer: answer || '(no answer)' }];
     });
     pushFeed('QUERY', 'var(--text2)', `commander run: ${q.slice(0, 48)}`);
     setHistory((h) => [{ time: now(), q: q.length > 52 ? q.slice(0, 52) + '…' : q, engine: 'DuckDB', status: sql ? 'executed' : 'answered', cost: '—', dur: '—', by: 'you' }, ...h]);
@@ -123,6 +128,11 @@ export function AskAuraChat({ pushFeed, setHistory }: Props) {
             <div className="self-end max-w-[70%] bg-[var(--raised)] border border-[var(--border)] rounded-[10px_10px_3px_10px] py-[9px] px-3.5 text-[13px]">{m.q}</div>
             {m.sql && <div className="aw-mono bg-[var(--sunken)] border border-[var(--hair)] rounded-none py-3 px-3.5 text-[11.5px] leading-[1.65] text-[var(--text2)] whitespace-pre-wrap">{m.sql}</div>}
             {m.critic && <div className="text-[11px] text-[var(--text3)]">{m.critic}</div>}
+            {m.verification?.status === 'mismatch' && (
+              <div className="aw-mono border border-[var(--warn)] bg-[var(--sunken)] rounded-none py-2.5 px-3.5 text-[11.5px] leading-[1.5] text-[var(--warn)]">
+                ⚠ DPC cross-check disagreed with this answer{m.verification.reason ? `: ${m.verification.reason}` : ''}
+              </div>
+            )}
             {m.chartSpec && m.chartSpec.type !== 'table' && m.data && m.data.length > 0 && (
               <RechartsVisualization data={m.data} chartSpec={m.chartSpec} height={260} />
             )}

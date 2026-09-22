@@ -57,6 +57,26 @@ describe('QueryPanel', () => {
     expect(await screen.findByText(/revenue by region/i)).toBeInTheDocument();
   });
 
+  it('surfaces a DPC mismatch warning (BUG-137)', async () => {
+    sendMessage.mockResolvedValue({
+      job_id: 'j3', status: 'Success', final_query: 'SELECT SUM(revenue) FROM sales',
+      execution_result: {
+        success: true,
+        columns: ['total'],
+        rows: [[42]],
+        verification: {
+          status: 'mismatch', verified: false,
+          reason: 'pandas independently computed 40, not 42',
+          method: 'dual_paradigm_pandas',
+        },
+      },
+    });
+    render(<QueryPanel api={{} as never} params={{} as never} containerApi={{} as never} />);
+    fireEvent.change(screen.getByTestId('query-input'), { target: { value: 'total revenue' } });
+    fireEvent.click(screen.getByTestId('query-run'));
+    expect(await screen.findByText(/DPC cross-check disagreed/i)).toBeInTheDocument();
+  });
+
   it('prompts to pick a dataset and does not query when none is active', async () => {
     cockpit.activeDataset = null;
     render(<QueryPanel api={{} as never} params={{} as never} containerApi={{} as never} />);

@@ -205,6 +205,20 @@
   border-left-width: 3px;
 }
 .aura-terminal .panel-error strong { display: block; margin-bottom: 4px; letter-spacing: 0.05em; }
+
+/* BUG-137: DPC cross-check "mismatch" warning -- same shape as
+   panel-error-inline, amber instead of red since a mismatch is a
+   caveat on the answer, not a failed request. */
+.aura-terminal .panel-warn-inline {
+  margin: 10px;
+  padding: 10px 12px;
+  font-family: var(--t-mono);
+  font-size: 11px;
+  color: var(--t-amber);
+  background: color-mix(in srgb, var(--t-amber) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--t-amber) 35%, transparent);
+  border-left-width: 3px;
+}
 .aura-terminal .panel-error button {
   margin-top: 8px; padding: 3px 10px;
   background: transparent; color: var(--t-red);

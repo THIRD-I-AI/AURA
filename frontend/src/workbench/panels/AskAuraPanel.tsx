@@ -9,7 +9,7 @@ import { Panel, PanelBody } from '@/components/ui-kit/panel';
 import { Button } from '@/components/ui-kit/button';
 import { EmptyState } from '@/components/ui-kit/empty-state';
 import { cn } from '@/lib/cn';
-import { chatService } from '../../services/api';
+import { chatService, type VerificationResult } from '../../services/api';
 import RechartsVisualization, { type ChartSpec } from '../../components/RechartsVisualization';
 
 type Msg = {
@@ -21,6 +21,7 @@ type Msg = {
   data?: Record<string, unknown>[];
   rowCount?: number;
   chartSpec?: ChartSpec | null;
+  verification?: VerificationResult | null;
   error?: string;
   pending?: boolean;
 };
@@ -59,6 +60,12 @@ export default function AskAuraPanel() {
         // ever read it -- RechartsVisualization (the only component built
         // to render one) was imported by nothing outside its own test.
         chartSpec: (er.chart_spec as ChartSpec) || undefined,
+        // BUG-137: the backend's DPC (dual-paradigm cross-check) can flag
+        // an answer as "mismatch" against an independent pandas
+        // computation, but that verdict was only ever logged server-side
+        // -- the panel advertises "DPC cross-check" in its own header copy
+        // but never showed a mismatch to the user it's meant to protect.
+        verification: (er.verification as VerificationResult) || undefined,
         // A failure BEFORE execution (SQL generation, planning) reports on the
         // top-level error_message, not execution_result.error — and the gateway
         // has already humanized it (chat.py _humanize_pipeline_error). Reading
@@ -107,6 +114,11 @@ export default function AskAuraPanel() {
                     <div className="border border-border bg-secondary px-2.5 py-1.5 font-mono text-xs text-destructive">{m.error}</div>
                   )}
                   {m.text && <div className="text-sm leading-relaxed text-card-foreground">{m.text}</div>}
+                  {m.verification?.status === 'mismatch' && (
+                    <div className="border border-warn bg-secondary px-2.5 py-1.5 font-mono text-xs text-warn">
+                      ⚠ DPC cross-check disagreed with this answer{m.verification.reason ? `: ${m.verification.reason}` : ''}
+                    </div>
+                  )}
                   {m.sql && (
                     <pre className="overflow-x-auto whitespace-pre-wrap border border-border bg-secondary px-2.5 py-2 font-mono text-xs text-signal">{m.sql}</pre>
                   )}
