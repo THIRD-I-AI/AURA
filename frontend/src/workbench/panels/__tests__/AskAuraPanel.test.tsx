@@ -81,4 +81,31 @@ describe('AskAuraPanel error reporting', () => {
       expect(screen.getByText('Query failed.')).toBeInTheDocument();
     });
   });
+
+  it('renders the chart from a real chart_spec (BUG-134: backend produced it, nothing ever rendered it)', async () => {
+    if (typeof ResizeObserver === 'undefined') {
+      (globalThis as unknown as { ResizeObserver: unknown }).ResizeObserver = class {
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      };
+    }
+    vi.spyOn(chatService, 'sendMessage').mockResolvedValue({
+      status: 'Success',
+      final_query: 'SELECT region, revenue FROM sales',
+      execution_result: {
+        success: true,
+        columns: ['region', 'revenue'],
+        data: [{ region: 'east', revenue: 10 }, { region: 'west', revenue: 20 }],
+        row_count: 2,
+        chart_spec: { type: 'bar', x: 'region', y: 'revenue', title: 'Revenue by region' },
+      },
+    } as never);
+
+    await ask();
+
+    await waitFor(() => {
+      expect(screen.getByText(/revenue by region/i)).toBeInTheDocument();
+    });
+  });
 });

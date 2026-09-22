@@ -1,6 +1,16 @@
 /* Shared shape types for the Cockpit board's extracted panels. */
+import type { ChartSpec } from '../../components/RechartsVisualization';
 
-export type Msg = { q: string; sql?: string; critic?: string; columns?: string[]; rows?: string[][]; answer?: string };
+export type Msg = {
+  q: string;
+  sql?: string;
+  critic?: string;
+  columns?: string[];
+  rows?: string[][];
+  data?: Record<string, unknown>[];
+  chartSpec?: ChartSpec | null;
+  answer?: string;
+};
 export type Heal = { id: string; title: string; method: string; safe: boolean; sub: string; state: 'pending' | 'deployed' | 'rejected'; resolution?: string };
 export type FeedEv = { time: string; k: string; color: string; t: string };
 export type HistoryEntry = { time: string; q: string; engine: string; status: string; cost: string; dur: string; by: string };

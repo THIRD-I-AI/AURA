@@ -3,6 +3,7 @@
    feed and query-history table via the callbacks Workbench.tsx passes down. */
 import { useRef, useState } from 'react';
 import { chatService } from '../../services/api';
+import RechartsVisualization, { type ChartSpec } from '../../components/RechartsVisualization';
 import type { Msg, HistoryEntry } from './types';
 
 const now = () => new Date().toTimeString().slice(0, 5);
@@ -45,6 +46,7 @@ export function AskAuraChat({ pushFeed, setHistory }: Props) {
     setThinking('generator drafting SQL · critic reviewing…');
     let sql: string | undefined; let critic: string | undefined; let answer = '';
     let columns: string[] | undefined; let rows: string[][] | undefined;
+    let data: Record<string, unknown>[] | undefined; let chartSpec: ChartSpec | null | undefined;
     try {
       await chatService.streamMessage(q, {
         onEvent: (ev: { event: string; data: Record<string, unknown> }) => {
@@ -74,6 +76,12 @@ export function AskAuraChat({ pushFeed, setHistory }: Props) {
             columns = er.columns;
             rows = er.rows.map((r) => r.map((cell) => String(cell ?? '')));
           }
+          // BUG-134: the backend produces a real chart_spec on every
+          // successful query; nothing on this panel ever rendered it.
+          if (ok && er?.chart_spec && er.data && er.data.length > 0) {
+            chartSpec = er.chart_spec as ChartSpec;
+            data = er.data;
+          }
           critic = ok ? `executed · ${er?.row_count ?? 0} rows` : undefined;
           answer = ok
             ? (er?.conclusion || er?.sql_explanation || resp.message || 'Done.')
@@ -88,7 +96,7 @@ export function AskAuraChat({ pushFeed, setHistory }: Props) {
     setThinking(null);
     setMessages((m) => {
       const last = m[m.length - 1];
-      return [...m.slice(0, -1), { ...last, sql, critic, columns, rows, answer: answer || '(no answer)' }];
+      return [...m.slice(0, -1), { ...last, sql, critic, columns, rows, data, chartSpec, answer: answer || '(no answer)' }];
     });
     pushFeed('QUERY', 'var(--text2)', `commander run: ${q.slice(0, 48)}`);
     setHistory((h) => [{ time: now(), q: q.length > 52 ? q.slice(0, 52) + '…' : q, engine: 'DuckDB', status: sql ? 'executed' : 'answered', cost: '—', dur: '—', by: 'you' }, ...h]);
@@ -115,6 +123,9 @@ export function AskAuraChat({ pushFeed, setHistory }: Props) {
             <div className="self-end max-w-[70%] bg-[var(--raised)] border border-[var(--border)] rounded-[10px_10px_3px_10px] py-[9px] px-3.5 text-[13px]">{m.q}</div>
             {m.sql && <div className="aw-mono bg-[var(--sunken)] border border-[var(--hair)] rounded-none py-3 px-3.5 text-[11.5px] leading-[1.65] text-[var(--text2)] whitespace-pre-wrap">{m.sql}</div>}
             {m.critic && <div className="text-[11px] text-[var(--text3)]">{m.critic}</div>}
+            {m.chartSpec && m.chartSpec.type !== 'table' && m.data && m.data.length > 0 && (
+              <RechartsVisualization data={m.data} chartSpec={m.chartSpec} height={260} />
+            )}
             {m.columns && m.rows && (
               <div className="border border-[var(--hair)] rounded-none overflow-hidden">
                 <div className="flex bg-[var(--raised)]">{m.columns.map((c) => <div key={c} className="aw-mono flex-1 py-[7px] px-3.5 text-[10px] font-semibold text-[var(--text3)] tracking-[0.06em]">{c}</div>)}</div>
