@@ -387,19 +387,16 @@ async def auto_generate_model_from_file(file_id: str, request: Request) -> Dict[
     """Auto-generate semantic model from dataset profile.
 
     The generated model is stamped with the caller's workspace so it is only
-    ever readable by them.
-
-    Note the remaining gap this route inherits: get_dataset_profile is still
-    unscoped, because dataset_profiles has no tenant column yet (the
-    /files/{id}/profile route contains the equivalent read by checking file
-    ownership instead). Giving that table its own column is tracked with the
-    rest of the metadata_store schema.
+    ever readable by them. get_dataset_profile is scoped by the caller's
+    tenant (BUG-145) — the same key files.py's upload/read paths use, since
+    a DatasetProfile is tied to a tenant-directory-scoped uploaded file, not
+    to a per-workspace-folder subdivision within that tenant.
     """
     if semantic_builder is None or get_repository is None:
         return {"status": "error", "error": "Semantic builder or repository not available"}
     try:
         async for repo in get_repository():
-            profile_record = await repo.get_dataset_profile(file_id)
+            profile_record = await repo.get_dataset_profile(file_id, workspace_id=_request_tenant(request))
             if profile_record is None:
                 raise HTTPException(status_code=404, detail="Dataset profile not found")
             model_payload = semantic_builder.generate_model_from_profile(file_id=file_id, dataset_name=profile_record.dataset_name or f"dataset_{file_id[:8]}", profile=profile_record.profile)

@@ -276,6 +276,7 @@ async def upload_universal(
                         profile={"columns": schema["columns"], "sample_data": schema.get("sample_data")},
                         rows_count=schema.get("row_count"),
                         columns_count=len(schema.get("columns") or []),
+                        workspace_id=tenant,
                     )
                     break
 
@@ -355,21 +356,19 @@ async def get_file_profile(file_id: str, request: Request) -> Dict[str, Any]:
         # column profile INCLUDING sample values — so an unscoped read handed
         # one org another org's data, not merely its metadata.
         #
-        # Gated on file ownership rather than a column on the profile, because
-        # DatasetProfile has no org_id/tenant column at all. Adding one is the
-        # right long-term fix for the whole metadata_store schema; until then,
-        # "you may read the profile only for a file that exists in YOUR
-        # tenant's upload dir" reuses the scoping that is already correct next
-        # door and closes the read today.
+        # BUG-145: DatasetProfile now carries its own workspace_id column, so
+        # this filters directly on it (defense-in-depth) in addition to the
+        # file-ownership check below, rather than relying on ownership alone.
+        tenant = _request_tenant(request)
         if file_service is not None:
-            sub = tenant_dir_name(_request_tenant(request))
+            sub = tenant_dir_name(tenant)
             if not file_service.get_file_info(file_id, subdir=sub):
                 # 404, not 403 — a 403 would confirm the file exists under some
                 # other tenant, which is the existence oracle the rest of the
                 # gateway's routes deliberately avoid.
                 raise HTTPException(status_code=404, detail="Profile not found")
         async for repo in get_repository():
-            profile = await repo.get_dataset_profile(file_id)
+            profile = await repo.get_dataset_profile(file_id, workspace_id=tenant)
             break
         if profile is None:
             raise HTTPException(status_code=404, detail="Profile not found")

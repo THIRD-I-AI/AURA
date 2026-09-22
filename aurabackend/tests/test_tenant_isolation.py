@@ -107,7 +107,7 @@ def test_file_profile_is_tenant_scoped(tmp_path, monkeypatch):
         updated_at = None
 
     class _Repo:
-        async def get_dataset_profile(self, file_id):
+        async def get_dataset_profile(self, file_id, workspace_id=None):
             return _Profile()                          # always found
 
     async def _fake_get_repository():
@@ -125,6 +125,49 @@ def test_file_profile_is_tenant_scoped(tmp_path, monkeypatch):
         f"{resp.status_code} {resp.text[:200]}"
     )
     assert "100000" not in resp.text
+
+
+def test_file_profile_route_scopes_repo_call_by_tenant(tmp_path, monkeypatch):
+    """The route must hand the repository the caller's tenant (BUG-145),
+    not call get_dataset_profile bare -- defense-in-depth alongside the
+    file-ownership gate above, now that DatasetProfile has its own column.
+    """
+    monkeypatch.setenv("AURA_UPLOADS_ROOT", str(tmp_path))
+    from shared.storage import reset_storage_backend
+    reset_storage_backend()
+
+    (tmp_path / "default").mkdir()
+    (tmp_path / "default" / "owned.csv").write_text("id\n1\n")
+
+    import api_gateway.routers.files as files_mod
+
+    received = {}
+
+    class _Profile:
+        dataset_name = "owned.csv"
+        rows_count = 1
+        columns_count = 1
+        profile = {}
+        updated_at = None
+
+    class _Repo:
+        async def get_dataset_profile(self, file_id, workspace_id=None):
+            received["file_id"] = file_id
+            received["workspace_id"] = workspace_id
+            return _Profile()
+
+    async def _fake_get_repository():
+        yield _Repo()
+
+    monkeypatch.setattr(files_mod, "get_repository", _fake_get_repository)
+
+    from fastapi.testclient import TestClient
+
+    from api_gateway.main import app
+    resp = TestClient(app).get("/api/v1/files/owned.csv/profile")
+
+    assert resp.status_code == 200, resp.text
+    assert "workspace_id" in received, "route never scoped the repository call"
 
 
 # ── /semantic/models must not serve (or let you overwrite) another tenant's ──
@@ -228,3 +271,45 @@ def test_semantic_list_route_passes_the_tenant_scope(monkeypatch):
     # No JWT in this request -> the unauthenticated default bucket, never None
     # (None would match the pre-tenanting NULL rows of every org).
     assert received["workspace_id"] == DEFAULT_WORKSPACE_ID
+
+
+# ── DatasetProfile must not collide/leak across tenants (BUG-145) ────────────
+
+def test_dataset_profile_does_not_collide_across_tenants(tmp_path, monkeypatch):
+    """Two tenants uploading a same-named file must not share one profile row.
+
+    Before this fix DatasetProfile.id was the bare file_id, so orgA and orgB
+    both uploading "sales.csv" collided on one row -- whichever upserted last
+    silently overwrote the other's profile (including sample data), and
+    either tenant's read returned it. The composite id + workspace_id column
+    (BUG-145) must keep them fully separate.
+    """
+    db_mod = _fresh_metadata_db(tmp_path, monkeypatch)
+    from metadata_store.repository import MetadataRepository
+
+    async def scenario():
+        await db_mod.init_db()
+        async for session in db_mod.get_session():
+            repo = MetadataRepository(session)
+            await repo.upsert_dataset_profile(
+                file_id="sales.csv", dataset_name="orgA-sales",
+                profile={"salary": {"samples": [111111]}}, workspace_id="orgA",
+            )
+            await repo.upsert_dataset_profile(
+                file_id="sales.csv", dataset_name="orgB-sales",
+                profile={"salary": {"samples": [222222]}}, workspace_id="orgB",
+            )
+
+            a = await repo.get_dataset_profile("sales.csv", workspace_id="orgA")
+            b = await repo.get_dataset_profile("sales.csv", workspace_id="orgB")
+            cross = await repo.get_dataset_profile("sales.csv", workspace_id="orgC")
+            await session.close()
+            return a, b, cross
+
+    a, b, cross = asyncio.run(scenario())
+
+    assert a is not None and a.dataset_name == "orgA-sales"
+    assert b is not None and b.dataset_name == "orgB-sales"
+    assert a.id != b.id, "the two tenants' profiles collided on one row"
+    assert a.profile["salary"]["samples"] == [111111], "orgA's profile was overwritten by orgB's upsert"
+    assert cross is None, "an unrelated tenant could read another org's profile"

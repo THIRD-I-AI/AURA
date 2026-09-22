@@ -155,6 +155,14 @@ class DatasetProfile(Base):
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     file_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    # Tenant boundary. `id` used to be the bare file_id, so two tenants
+    # uploading a same-named file collided on the same row and could read
+    # or overwrite each other's profile (BUG-145). `id` is now
+    # `f"{workspace_id or 'default'}::{file_id}"`; this column is kept as an
+    # explicit, defense-in-depth filter on reads rather than relying on the
+    # composite id alone. Nullable so pre-migration rows fail closed (NULL
+    # reads as "not mine"), mirroring SemanticModel.workspace_id below.
+    workspace_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
     dataset_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     profile: Mapped[Dict[str, Any]] = mapped_column(JSON, default=dict)
     rows_count: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
