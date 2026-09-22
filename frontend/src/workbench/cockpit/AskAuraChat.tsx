@@ -44,6 +44,7 @@ export function AskAuraChat({ pushFeed, setHistory }: Props) {
     setMessages((m) => [...m, { q }]);
     setThinking('generator drafting SQL · critic reviewing…');
     let sql: string | undefined; let critic: string | undefined; let answer = '';
+    let columns: string[] | undefined; let rows: string[][] | undefined;
     try {
       await chatService.streamMessage(q, {
         onEvent: (ev: { event: string; data: Record<string, unknown> }) => {
@@ -55,12 +56,39 @@ export function AskAuraChat({ pushFeed, setHistory }: Props) {
         },
       });
     } catch (err) {
-      answer = describeChatError(err);
+      // BUG-133: Commander (POST /chat/stream) is off by default
+      // (AURA_COMMANDER_ENABLED=false) and 404s -- streamMessage's own
+      // docstring says callers should fall back to sendMessage (POST
+      // /chat, always live) on that case, but nothing ever did, so every
+      // query on this panel -- the app's default landing view -- rendered
+      // a static "offline" message with no SQL, no execution, no answer,
+      // in the default configuration. Fall back for real.
+      if (err instanceof Error && err.message === 'commander_disabled') {
+        setThinking('commander disabled · falling back to gateway…');
+        try {
+          const resp = await chatService.sendMessage(q);
+          const er = resp.execution_result;
+          sql = resp.final_query;
+          const ok = resp.status !== 'Error' && er?.success !== false;
+          if (er?.columns && er.rows) {
+            columns = er.columns;
+            rows = er.rows.map((r) => r.map((cell) => String(cell ?? '')));
+          }
+          critic = ok ? `executed · ${er?.row_count ?? 0} rows` : undefined;
+          answer = ok
+            ? (er?.conclusion || er?.sql_explanation || resp.message || 'Done.')
+            : (er?.error || resp.error_message || 'Query failed.');
+        } catch {
+          answer = 'Could not reach AURA — please check your connection and try again.';
+        }
+      } else {
+        answer = describeChatError(err);
+      }
     }
     setThinking(null);
     setMessages((m) => {
       const last = m[m.length - 1];
-      return [...m.slice(0, -1), { ...last, sql, critic, answer: answer || '(no answer)' }];
+      return [...m.slice(0, -1), { ...last, sql, critic, columns, rows, answer: answer || '(no answer)' }];
     });
     pushFeed('QUERY', 'var(--text2)', `commander run: ${q.slice(0, 48)}`);
     setHistory((h) => [{ time: now(), q: q.length > 52 ? q.slice(0, 52) + '…' : q, engine: 'DuckDB', status: sql ? 'executed' : 'answered', cost: '—', dur: '—', by: 'you' }, ...h]);
