@@ -46,6 +46,17 @@ async handler freezes every concurrent request for every tenant. Covers:
     calls the sync llm.generate_json (e.g. GeminiProvider.generate's blocking
     generate_content) inline from its async method; it must be offloaded via
     asyncio.to_thread, same as the other LLM call sites above.
+
+BUG-162: every "ticks >= N" assertion below proves the event loop wasn't
+BLOCKED (a genuinely blocked loop services only the handful of ticks that
+ran before the sync call started), not that it hit some specific throughput.
+The original thresholds (40% of the ideal tick count for each test's sleep
+duration) were tight enough to flake under this repo's full ~2600-test,
+44-minute pre-push suite -- observed 19/20 twice on
+test_sql_generator_llm_call_does_not_block_event_loop under real thread-pool
+contention from other concurrent asyncio.to_thread calls. Lowered to 20% of
+ideal, which still fails hard on a real regression (a blocked loop services
+next to none) while giving real headroom against full-suite load.
 """
 from __future__ import annotations
 
@@ -103,7 +114,7 @@ async def test_critic_llm_call_does_not_block_event_loop():
     # ~0.5s of "LLM" time / 10ms tick period == ~50 ticks if the loop stayed
     # live the whole time. A blocked loop services at most the handful of
     # ticks that happened to run before the sync call started.
-    assert ticks >= 20, (
+    assert ticks >= 10, (
         f"only {ticks} ticker iterations ran during the critic call — "
         "the event loop was blocked by a synchronous llm.generate() call"
     )
@@ -146,7 +157,7 @@ async def test_sql_generator_llm_call_does_not_block_event_loop():
     # ~0.5s of "LLM" time / 10ms tick period == ~50 ticks if the loop stayed
     # live the whole time. A blocked loop services at most the handful of
     # ticks that happened to run before the sync call started.
-    assert ticks >= 20, (
+    assert ticks >= 10, (
         f"only {ticks} ticker iterations ran during _generate_sql — "
         "the event loop was blocked by a synchronous llm.generate() call"
     )
@@ -272,7 +283,7 @@ async def test_pipeline_file_schema_does_not_block_event_loop(monkeypatch):
     # ~0.5s of "generator" time / 10ms tick period == ~50 ticks if the loop
     # stayed live the whole time. A blocked loop services at most the handful
     # of ticks that happened to run before the sync call started.
-    assert ticks >= 20, (
+    assert ticks >= 10, (
         f"only {ticks} ticker iterations ran during pipeline_file_schema — "
         "the event loop was blocked by a synchronous get_file_schema() call"
     )
@@ -321,7 +332,7 @@ async def test_delete_webhook_does_not_block_event_loop(monkeypatch):
     # ~0.5s of "save" time / 10ms tick period == ~50 ticks if the loop stayed
     # live the whole time. A blocked loop services at most the handful of
     # ticks that happened to run before the sync call started.
-    assert ticks >= 20, (
+    assert ticks >= 10, (
         f"only {ticks} ticker iterations ran during delete_webhook — "
         "the event loop was blocked by a synchronous _save() call"
     )
@@ -367,7 +378,7 @@ async def test_suggest_steps_llm_call_does_not_block_event_loop(monkeypatch):
     # ~0.5s of "LLM" time / 10ms tick period == ~50 ticks if the loop stayed
     # live the whole time. A blocked loop services at most the handful of
     # ticks that happened to run before the sync call started.
-    assert ticks >= 20, (
+    assert ticks >= 10, (
         f"only {ticks} ticker iterations ran during suggest_steps — "
         "the event loop was blocked by a synchronous generate_json() call"
     )
@@ -420,7 +431,7 @@ async def test_generate_llm_fallback_does_not_block_event_loop(monkeypatch):
     # ~1s of "LLM" time (generate_json + generate fallback) / 10ms tick period
     # == ~100 ticks if the loop stayed live. A blocked loop services at most
     # the handful of ticks that happened to run before the sync calls started.
-    assert ticks >= 40, (
+    assert ticks >= 20, (
         f"only {ticks} ticker iterations ran during generate() — "
         "the event loop was blocked by a synchronous generate_json()/generate() call"
     )
@@ -477,7 +488,7 @@ async def test_llm_diagnosis_does_not_block_event_loop(monkeypatch):
     # ~0.5s of "LLM" time / 10ms tick period == ~50 ticks if the loop stayed
     # live the whole time. A blocked loop services at most the handful of
     # ticks that happened to run before the sync call started.
-    assert ticks >= 20, (
+    assert ticks >= 10, (
         f"only {ticks} ticker iterations ran during _llm_diagnosis — "
         "the event loop was blocked by a synchronous generate_json() call"
     )
@@ -531,7 +542,7 @@ async def test_mapek_analyze_detect_drift_does_not_block_event_loop(monkeypatch)
     # ~0.5s of "detect" time / 10ms tick period == ~50 ticks if the loop
     # stayed live the whole time. A blocked loop services at most the
     # handful of ticks that happened to run before the sync call started.
-    assert ticks >= 20, (
+    assert ticks >= 10, (
         f"only {ticks} ticker iterations ran during _analyze_detect_drift — "
         "the event loop was blocked by a synchronous detector.detect() call"
     )
@@ -589,7 +600,7 @@ async def test_evolution_proposal_llm_call_does_not_block_event_loop(monkeypatch
     # ~0.5s of "LLM" time / 10ms tick period == ~50 ticks if the loop stayed
     # live the whole time. A blocked loop services at most the handful of
     # ticks that happened to run before the sync call started.
-    assert ticks >= 20, (
+    assert ticks >= 10, (
         f"only {ticks} ticker iterations ran during _generate_improvement_proposal — "
         "the event loop was blocked by a synchronous llm.generate_json() call"
     )
