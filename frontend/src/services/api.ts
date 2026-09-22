@@ -215,6 +215,18 @@ export interface QueryResponse {
   };
 }
 
+// DPC (dual-paradigm cross-check) verdict — tri-state on purpose.
+// "skipped" is NOT a pass: it means the check could not run at all
+// (no LLM, timeout, unsupported shape); collapsing it into "verified"
+// would let an unchecked answer look confirmed.
+export interface VerificationResult {
+  status: 'verified' | 'mismatch' | 'skipped';
+  verified: boolean | null;
+  reason: string;
+  pandas_expr?: string | null;
+  method: string;
+}
+
 export interface ExecutionResult {
   success: boolean;
   data?: Array<Record<string, any>>;
@@ -226,6 +238,7 @@ export interface ExecutionResult {
   chart_spec?: Record<string, any>;
   conclusion?: string;
   sql_explanation?: string;
+  verification?: VerificationResult | null;
 }
 
 export interface DataSource {

@@ -51,6 +51,11 @@ export default function QueryPanel(_props: IDockviewPanelProps) {
       </div>
       {error && <div className="panel-error-inline">{error}</div>}
       {result?.final_query && <pre className="query-sql">{result.final_query}</pre>}
+      {er?.verification?.status === 'mismatch' && (
+        <div className="panel-warn-inline">
+          ⚠ DPC cross-check disagreed with this answer{er.verification.reason ? `: ${er.verification.reason}` : ''}
+        </div>
+      )}
       {er?.success !== false && er?.chart_spec && (er.chart_spec as ChartSpec).type !== 'table' && er?.data && er.data.length > 0 && (
         <RechartsVisualization data={er.data} chartSpec={er.chart_spec as ChartSpec} height={280} />
       )}

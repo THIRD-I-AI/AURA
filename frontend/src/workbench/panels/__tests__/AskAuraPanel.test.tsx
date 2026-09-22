@@ -82,6 +82,55 @@ describe('AskAuraPanel error reporting', () => {
     });
   });
 
+  it('surfaces a DPC mismatch warning instead of silently showing the answer (BUG-137)', async () => {
+    vi.spyOn(chatService, 'sendMessage').mockResolvedValue({
+      status: 'Success',
+      final_query: 'SELECT SUM(revenue) FROM sales',
+      execution_result: {
+        success: true,
+        columns: ['total'],
+        data: [{ total: 42 }],
+        row_count: 1,
+        conclusion: 'Total revenue is 42.',
+        verification: {
+          status: 'mismatch',
+          verified: false,
+          reason: 'pandas independently computed 40, not 42',
+          method: 'dual_paradigm_pandas',
+        },
+      },
+    } as never);
+
+    await ask();
+
+    await waitFor(() => {
+      expect(screen.getByText(/DPC cross-check disagreed/i)).toBeInTheDocument();
+    });
+    expect(screen.getByText(/pandas independently computed 40/i)).toBeInTheDocument();
+  });
+
+  it('shows no mismatch warning when DPC verified the answer', async () => {
+    vi.spyOn(chatService, 'sendMessage').mockResolvedValue({
+      status: 'Success',
+      final_query: 'SELECT SUM(revenue) FROM sales',
+      execution_result: {
+        success: true,
+        columns: ['total'],
+        data: [{ total: 42 }],
+        row_count: 1,
+        conclusion: 'Total revenue is 42.',
+        verification: { status: 'verified', verified: true, reason: '', method: 'dual_paradigm_pandas' },
+      },
+    } as never);
+
+    await ask();
+
+    await waitFor(() => {
+      expect(screen.getByText('Total revenue is 42.')).toBeInTheDocument();
+    });
+    expect(screen.queryByText(/DPC cross-check disagreed/i)).not.toBeInTheDocument();
+  });
+
   it('renders the chart from a real chart_spec (BUG-134: backend produced it, nothing ever rendered it)', async () => {
     if (typeof ResizeObserver === 'undefined') {
       (globalThis as unknown as { ResizeObserver: unknown }).ResizeObserver = class {

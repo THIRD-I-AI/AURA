@@ -94,6 +94,34 @@ describe('AskAuraChat commander fallback', () => {
     });
   });
 
+  it('surfaces a DPC mismatch warning on the fallback path (BUG-137)', async () => {
+    vi.spyOn(chatService, 'streamMessage').mockRejectedValue(new Error('commander_disabled'));
+    vi.spyOn(chatService, 'sendMessage').mockResolvedValue({
+      job_id: 'j4',
+      status: 'Success',
+      final_query: 'SELECT SUM(revenue) FROM sales',
+      execution_result: {
+        success: true,
+        columns: ['total'],
+        rows: [[42]],
+        row_count: 1,
+        conclusion: 'Total revenue is 42.',
+        verification: {
+          status: 'mismatch',
+          verified: false,
+          reason: 'pandas independently computed 40, not 42',
+          method: 'dual_paradigm_pandas',
+        },
+      },
+    } as never);
+
+    await ask();
+
+    await waitFor(() => {
+      expect(screen.getByText(/DPC cross-check disagreed/i)).toBeInTheDocument();
+    });
+  });
+
   it('still shows the offline message for a genuine server error unrelated to commander being disabled', async () => {
     vi.spyOn(chatService, 'streamMessage').mockRejectedValue(new Error('stream failed: 503'));
     vi.spyOn(chatService, 'sendMessage');
