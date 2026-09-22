@@ -128,12 +128,21 @@ def test_p3_fifo_fairness_within_severity():
         async def occupy():
             await nA.submit("occ", S.HIGH, lambda: rep("OCC"))
 
+        # BUG-161: _enqueue's ordering comes from a real Redis INCR, executed
+        # via asyncio.to_thread -- so the gap here must outlast thread-pool
+        # dispatch jitter, not just event-loop scheduling. 2-4ms gaps were
+        # comfortably inside that jitter under this suite's full ~2600-test,
+        # 40+ minute run (heavy default-executor contention from every other
+        # to_thread call in flight), reordering M1/M2/M3 and failing the
+        # test though nothing about admission fairness had actually broken.
+        # Matched to test_p2_cross_node_priority_ordering's proven-robust
+        # 50ms gaps above, not tightened back down.
         occ = asyncio.create_task(occupy())
-        await asyncio.sleep(0.004)
+        await asyncio.sleep(0.05)
         t1 = asyncio.create_task(nA.submit("m1", S.MEDIUM, lambda: rep("M1")))
-        await asyncio.sleep(0.002)
+        await asyncio.sleep(0.05)
         t2 = asyncio.create_task(nB.submit("m2", S.MEDIUM, lambda: rep("M2")))
-        await asyncio.sleep(0.002)
+        await asyncio.sleep(0.05)
         t3 = asyncio.create_task(nA.submit("m3", S.MEDIUM, lambda: rep("M3")))
         await asyncio.gather(occ, t1, t2, t3)
         return [x for x in order if x.startswith("M")]
