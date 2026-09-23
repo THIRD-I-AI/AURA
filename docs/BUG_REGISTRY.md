@@ -2020,7 +2020,7 @@ the whole subsystem every time.
 - **Severity:** low — test-only; no product code path is affected. Repeatedly blocks pushes while the suite is under load, though.
 - **Root cause:** each of the file's 11 tests spawns a 10ms ticker alongside a mocked slow sync LLM call (offloaded via `asyncio.to_thread`) and asserts the ticker ran at least 40% of the ideal tick count for that call's duration, to prove the event loop wasn't blocked. Under this suite's full ~2600-test, 44-minute run, real thread-pool contention from every other concurrent `to_thread` call in flight measurably slows the ticker's own scheduling (not just this one test's — all 11 share the same fragile margin, this one simply sat closest to its threshold), so the 40%-of-ideal bound was tight enough to flake though the event loop was never actually blocked.
 - **Caused by:** none — pre-existing, timing-sensitive by construction; surfaced by this session's slow full-suite pre-push runs, not by any code change.
-- **Fix:** lowered every "ticks >= N" threshold in `test_scalability_fixes.py` from 40% to 20% of each test's ideal tick count — still fails hard on a real regression (a genuinely blocked loop services next to none), with real headroom against full-suite load. Verified full-file pass (12/12) plus a clean ruff check. PR #TODO.
+- **Fix:** lowered every "ticks >= N" threshold in `test_scalability_fixes.py` from 40% to 20% of each test's ideal tick count — still fails hard on a real regression (a genuinely blocked loop services next to none), with real headroom against full-suite load. Verified full-file pass (12/12) plus a clean ruff check. PR #481.
 
 ## Refuted (adversarial-verify, ≥2/3 skeptics refuted — filed for the record, no fix needed)
 
