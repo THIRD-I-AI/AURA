@@ -17,6 +17,7 @@ import PipelineMonitor, { type PipelineRunSummary } from '../components/Pipeline
 import { Button } from '@/components/ui-kit/button';
 import { EmptyState } from '@/components/ui-kit/empty-state';
 import { cn } from '@/lib/cn';
+import { useToast } from '../contexts/ToastContext';
 
 /* ================================================================
    Types
@@ -206,12 +207,11 @@ const PipelinesPanel: React.FC<PipelinesPanelProps> = () => {
   const [savedError, setSavedError] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
 
-  // ── Toast Notification State ──
-  const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
-
+  // ── Toast Notifications — shared queue owned by Workbench.tsx (BUG-148) ──
+  const toastCtx = useToast();
   const showToast = (message: string, type: 'success' | 'error' = 'success') => {
-    setToast({ message, type });
-    setTimeout(() => setToast(null), 4000);
+    if (type === 'success') toastCtx.success(message);
+    else toastCtx.error(message);
   };
 
   // ── Fetch available uploaded files ──
@@ -549,28 +549,6 @@ const PipelinesPanel: React.FC<PipelinesPanelProps> = () => {
      ============================================================== */
   return (
     <div className="flex h-full min-h-0 flex-col gap-4">
-      {/* ── Toast Notification ── */}
-      {toast && (
-        <div
-          className={cn(
-            'fixed bottom-5 right-5 z-50 flex max-w-sm items-center gap-3 rounded-none border px-4 py-3 font-mono text-xs',
-            toast.type === 'success'
-              ? 'border-signal/40 bg-signal/10 text-signal'
-              : 'border-danger/40 bg-danger/10 text-danger',
-          )}
-        >
-          <span>{toast.message}</span>
-          <button
-            aria-label="Dismiss"
-            title="Dismiss"
-            onClick={() => setToast(null)}
-            className="ml-auto opacity-60 hover:opacity-100"
-          >
-            <span aria-hidden="true">✕</span>
-          </button>
-        </div>
-      )}
-
       {/* ── Header ── */}
       <div className="flex flex-wrap items-center justify-between gap-3 rounded-none border border-border bg-card px-4 py-3">
         <div className="flex items-center gap-3">

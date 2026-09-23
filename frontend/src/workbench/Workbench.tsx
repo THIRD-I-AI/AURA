@@ -35,7 +35,8 @@ import { BOOT_STAGES } from './bootStages';
 import { WorkbenchTopbar } from './WorkbenchTopbar';
 import { WorkbenchNav } from './WorkbenchNav';
 import { CommandPalette, type Command } from './CommandPalette';
-import { Toast } from './Toast';
+import { ToastProvider, useToast } from '../contexts/ToastContext';
+import ToastContainer from '../components/ui/Toast';
 import { CockpitStats, type Stat } from './cockpit/CockpitStats';
 import { LiveRadarPanel } from './cockpit/LiveRadarPanel';
 import { AskAuraChat } from './cockpit/AskAuraChat';
@@ -52,13 +53,25 @@ import './workbench.css';
 const now = () => new Date().toTimeString().slice(0, 5);
 
 export default function Workbench() {
+  /* Toast provider lives here, above the one component that consumes it, so
+     the whole shell (including ViewHost's classic pages) shares a single
+     queued toast — see BUG-148 for the three-independent-systems bug this
+     replaced. */
+  return (
+    <ToastProvider>
+      <WorkbenchInner />
+    </ToastProvider>
+  );
+}
+
+function WorkbenchInner() {
   /* ProtectedRoute guarantees a real authenticated session before this mounts,
      so there is no inner login — the cockpit boots straight in. */
   const { logout } = useAuth();
   const navigate = useNavigate();
+  const toast = useToast();
   const [view, setView] = useState<'boot' | 'app'>('boot');
   const [nav, setNav] = useState('Cockpit');
-  const [toast, setToast] = useState<string | null>(null);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [navOpen, setNavOpen] = useState(false); // mobile nav drawer (<860px)
   const [navCollapsed, setNavCollapsed] = useState(false); // desktop icon-only rail
@@ -81,16 +94,12 @@ export default function Workbench() {
   const paletteInput = useRef<HTMLInputElement>(null);
   const cfBusy = useRef(false);
 
-  const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const showToast = useCallback((t: string) => {
-    if (toastTimer.current) clearTimeout(toastTimer.current);
-    setToast(t);
-    toastTimer.current = setTimeout(() => setToast(null), 2600);
-  }, []);
-
-  // Stable identity so the memoized SystemRadar isn't re-rendered every poll.
-  const onRadarService = useCallback((id: string) => showToast(`service · ${id}`), [showToast]);
-  useEffect(() => () => { if (toastTimer.current) clearTimeout(toastTimer.current); }, []);
+  // Stable identity so the memoized SystemRadar isn't re-rendered every poll —
+  // toast's own object identity is not stable across renders, so read it
+  // through a ref rather than depending on it directly.
+  const toastRef = useRef(toast);
+  toastRef.current = toast;
+  const onRadarService = useCallback((id: string) => toastRef.current.info(`service · ${id}`), []);
 
   const pushFeed = useCallback((k: string, color: string, t: string) => {
     setFeed((f) => [{ time: now(), k, color, t }, ...f].slice(0, 8));
@@ -263,7 +272,7 @@ export default function Workbench() {
         raw: JSON.stringify({ record_hash: j.record_hash, n_findings: j.n_findings, signature_status: j.signature_status, dataset_fingerprint: j.dataset_fingerprint }, null, 1),
       });
       pushFeed('AUDIT', 'var(--accent)', `signed forensic audit → ledger · ${String(j.record_hash ?? '').slice(0, 12)}…`);
-      showToast('Audit complete — record signed to ledger');
+      toast.success('Audit complete — record signed to ledger');
     } catch (e) {
       setCf({ status: 'error', message: e instanceof Error ? e.message : 'audit service unreachable' });
     } finally {
@@ -282,9 +291,10 @@ export default function Workbench() {
         resolution: ok ? '✓ approved — shim deploying, override signed' : '✕ rejected — recovery halted',
       } : h));
       pushFeed('HEAL', 'var(--warn)', `${ok ? 'approved' : 'rejected'} recovery ${id.slice(0, 10)}`);
-      showToast(ok ? 'Shim approved — deploying upstream' : 'Healing proposal rejected');
+      if (ok) toast.success('Shim approved — deploying upstream');
+      else toast.warning('Healing proposal rejected');
     } catch (e) {
-      showToast(`Decision failed: ${e instanceof Error ? e.message : 'service unreachable'}`);
+      toast.error('Decision failed', { message: e instanceof Error ? e.message : 'service unreachable' });
     }
   };
 
@@ -472,7 +482,7 @@ export default function Workbench() {
         commands={commands}
       />
 
-      <Toast toast={toast} />
+      <ToastContainer />
     </div>
   );
 }
