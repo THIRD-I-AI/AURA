@@ -83,13 +83,16 @@ def test_dar_research_agent_does_not_block_event_loop():
         f"event loop was blocked: only {tick_count}/20 ticker iterations ran "
         "while the LLM call was in flight"
     )
-    # Sanity: both coroutines ran concurrently, not serially. Serial execution
-    # would take >= 0.3 (LLM) + 0.4 (ticker: 20 * 0.02) = 0.7s; concurrent
-    # execution is bounded by the slower one (~0.3-0.4s) plus scheduling slop.
-    # Generous slack (vs. the 0.7s serial floor) to absorb this machine's
-    # agent-construction/logging overhead without weakening the real proof,
-    # which is the tick_count assertion above.
-    assert elapsed < 0.69
+    # Loose hang-detector only -- NOT a concurrency discriminator. A serial
+    # run's floor is ~0.3 (LLM) + 0.4 (ticker: 20 * 0.02) = 0.7s, but under
+    # this repo's full ~2600-test pre-push suite, scheduling contention alone
+    # can push even a genuinely concurrent run past that floor (observed
+    # 0.7035s against a prior 0.69s ceiling). elapsed can't
+    # reliably tell concurrent from serial once the whole process is under
+    # load (BUG-163); tick_count == 20 above is the real, load-independent
+    # proof this test exists for. This bound only catches a true multi-second
+    # hang.
+    assert elapsed < 5.0
 
 
 def test_dar_research_agent_scores_via_generate_json():
