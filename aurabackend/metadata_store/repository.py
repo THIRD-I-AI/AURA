@@ -133,13 +133,18 @@ class MetadataRepository:
         profile: Dict[str, Any],
         rows_count: Optional[int] = None,
         columns_count: Optional[int] = None,
+        workspace_id: Optional[str] = None,
     ) -> DatasetProfile:
-        profile_id = file_id
+        # BUG-145: id used to be the bare file_id, so two tenants uploading a
+        # same-named file collided on one row. Composite id closes the
+        # collision; workspace_id column is a defense-in-depth filter for reads.
+        profile_id = f"{workspace_id or 'default'}::{file_id}"
         existing = await self._session.get(DatasetProfile, profile_id)
         if existing is None:
             existing = DatasetProfile(
                 id=profile_id,
                 file_id=file_id,
+                workspace_id=workspace_id,
                 dataset_name=dataset_name,
                 profile=profile,
                 rows_count=rows_count,
@@ -156,8 +161,15 @@ class MetadataRepository:
         await self._session.refresh(existing)
         return existing
 
-    async def get_dataset_profile(self, file_id: str) -> Optional[DatasetProfile]:
-        result = await self._session.execute(select(DatasetProfile).where(DatasetProfile.file_id == file_id))
+    async def get_dataset_profile(self, file_id: str, workspace_id: Optional[str] = None) -> Optional[DatasetProfile]:
+        profile_id = f"{workspace_id or 'default'}::{file_id}"
+        result = await self._session.execute(
+            select(DatasetProfile).where(
+                DatasetProfile.id == profile_id,
+                DatasetProfile.file_id == file_id,
+                DatasetProfile.workspace_id == workspace_id,
+            )
+        )
         return result.scalar_one_or_none()
 
     async def upsert_semantic_model(
