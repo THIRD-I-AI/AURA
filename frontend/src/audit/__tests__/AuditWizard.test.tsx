@@ -21,6 +21,21 @@ describe('AuditWizard (audit your own data)', () => {
     expect(screen.getByText('Upload').closest('li')!.className).toContain('ui-step--current');
   });
 
+  // BUG-149: the wizard's nav buttons used to import the legacy ../ui/Button
+  // (hand-written .ui-btn classes, a plain outline focus style), one screen
+  // after AuditFrontDoor's Retry button which already used the ui-kit
+  // Button. Only the ui-kit component stamps data-slot="button" — assert
+  // that marker instead of a CSS class, so this survives incidental
+  // restyling and only breaks if the wrong component comes back.
+  it('the Next button renders through the shared ui-kit Button, not the legacy one', async () => {
+    vi.spyOn(auditApi, 'uploadDataset').mockResolvedValue({ filename: 'loans.csv' });
+    const user = userEvent.setup();
+    render(<MemoryRouter><AuditWizard /></MemoryRouter>);
+    await user.upload(screen.getByTestId('wizard-file-input'), csvFile());
+    await waitFor(() => expect(screen.getByTestId('wizard-next')).toBeEnabled());
+    expect(screen.getByTestId('wizard-next')).toHaveAttribute('data-slot', 'button');
+  });
+
   it('uploads a CSV, maps columns, and runs the audit', async () => {
     vi.spyOn(auditApi, 'uploadDataset').mockResolvedValue({ filename: 'loans.csv' });
     const run = vi.spyOn(auditApi, 'runDataAudit').mockResolvedValue({ job_id: 'audit_42' });

@@ -9,7 +9,7 @@ import { UploadStep } from './wizard/UploadStep';
 import { MapStep } from './wizard/MapStep';
 import { ReviewStep } from './wizard/ReviewStep';
 import { Stepper } from '../ui/Stepper';
-import { Button } from '../ui/Button';
+import { Button } from '@/components/ui-kit/button';
 
 const EMPTY_MAPPING: ColumnMapping = { treatment: '', outcome: '', confounders: [] };
 
@@ -101,7 +101,7 @@ export function AuditWizard() {
 
       <div className="aud-wizard__nav">
         {step > 0
-          ? <Button data-testid="wizard-back" variant="secondary" onClick={() => setStep((s) => s - 1)}>Back</Button>
+          ? <Button data-testid="wizard-back" variant="outline" onClick={() => setStep((s) => s - 1)}>Back</Button>
           : <span />}
         {step < 2
           ? <Button data-testid="wizard-next" disabled={!canNext} onClick={() => setStep((s) => s + 1)}>Next</Button>
