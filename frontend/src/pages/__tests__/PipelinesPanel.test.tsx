@@ -26,6 +26,13 @@ vi.mock('../../components/PipelineMonitor', () => ({
 }));
 
 import PipelinesPanel from '../PipelinesPanel';
+import { ToastProvider } from '../../contexts/ToastContext';
+
+// PipelinesPanel reads useToast() (BUG-148: unified onto the shared queue),
+// so it needs a real provider in the tree, not a bare render.
+function renderPanel() {
+  return render(<ToastProvider><PipelinesPanel /></ToastProvider>);
+}
 
 describe('PipelinesPanel', () => {
   beforeEach(() => {
@@ -33,19 +40,19 @@ describe('PipelinesPanel', () => {
   });
 
   it('renders the page heading', () => {
-    render(<PipelinesPanel />);
+    renderPanel();
     expect(screen.getByText('Data Pipeline Builder')).toBeInTheDocument();
   });
 
   it('renders tab buttons', () => {
-    render(<PipelinesPanel />);
+    renderPanel();
     expect(screen.getByText('AI Pipeline')).toBeInTheDocument();
     expect(screen.getByText('Visual Builder')).toBeInTheDocument();
     expect(screen.getByText('Saved')).toBeInTheDocument();
   });
 
   it('renders KPI cards', () => {
-    render(<PipelinesPanel />);
+    renderPanel();
     expect(screen.getByText('Source Files')).toBeInTheDocument();
     expect(screen.getByText('Pipeline Steps')).toBeInTheDocument();
   });

@@ -1,11 +1,13 @@
 /* One app: the classic pages mount INSIDE the Workbench shell. Each view runs
-   under the same providers App.tsx used (AuraProvider + ToastProvider) and
-   behind an error boundary, so one incompatible page degrades to an honest
-   fallback instead of taking down the cockpit. Registry: viewRegistry.ts. */
+   under AuraProvider and behind an error boundary, so one incompatible page
+   degrades to an honest fallback instead of taking down the cockpit.
+   Toasts are NOT re-provided here — Workbench.tsx owns the single
+   ToastProvider/ToastContainer for the whole shell (BUG-148: this file used
+   to mount its own nested provider per view, which is what let classic pages
+   and the shell drift into separate, mutually-unaware toast queues).
+   Registry: viewRegistry.ts. */
 import { Component, Suspense, type ReactNode } from 'react';
 import { AuraProvider } from '../store';
-import { ToastProvider } from '../contexts/ToastContext';
-import ToastContainer from '../components/ui/Toast';
 import { PAGE_ID_TO_NAV, VIEW_REGISTRY } from './viewRegistry';
 
 class ViewBoundary extends Component<{ nav: string; children: ReactNode }, { failed: boolean }> {
@@ -36,12 +38,9 @@ export function ViewHost({ nav, onNavigate }: { nav: string; onNavigate: (nav: s
     <div data-testid="wb-view" style={{ minHeight: 0 }}>
       <ViewBoundary nav={nav}>
         <AuraProvider>
-          <ToastProvider>
-            <Suspense fallback={<div style={{ padding: 24, fontSize: 12.5, color: 'var(--text3)' }}>Loading {nav}…</div>}>
-              {entry.needsSetPage ? <V setCurrentPage={setCurrentPage} /> : <V />}
-            </Suspense>
-            <ToastContainer />
-          </ToastProvider>
+          <Suspense fallback={<div style={{ padding: 24, fontSize: 12.5, color: 'var(--text3)' }}>Loading {nav}…</div>}>
+            {entry.needsSetPage ? <V setCurrentPage={setCurrentPage} /> : <V />}
+          </Suspense>
         </AuraProvider>
       </ViewBoundary>
     </div>

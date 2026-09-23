@@ -113,6 +113,26 @@ describe('Workbench', () => {
     vi.useRealTimers();
   });
 
+  // BUG-148: Workbench used to render every toast — including failures —
+  // through its own bottom-center component, which unconditionally showed a
+  // green ✓ regardless of the message. It now renders through the shared
+  // ToastContext queue, which picks a real error variant.
+  it('a failed healing decision surfaces a real error toast, not a fake success checkmark', async () => {
+    vi.useFakeTimers();
+    vi.mocked(healingService.approve).mockRejectedValueOnce(new Error('service unreachable'));
+    await boot();
+    const approve = await screen.findByText('Approve & deploy');
+    await act(async () => { fireEvent.click(approve); });
+
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent('Decision failed');
+    expect(alert).toHaveTextContent('service unreachable');
+    // The error variant's icon dot — never the success green.
+    expect(alert.querySelector('.bg-danger')).toBeInTheDocument();
+    expect(alert.querySelector('.bg-signal')).not.toBeInTheDocument();
+    vi.useRealTimers();
+  });
+
   it('stats bar shows live ledger + health values, not seeds', async () => {
     vi.useFakeTimers();
     await boot();
