@@ -2056,12 +2056,13 @@ the whole subsystem every time.
 - **Fix:** pending. Needs a decision on where connector-specific config lives (encrypted alongside the password for secrets like `credentials_json`), plus a pipeline `_load_source` branch for BigQuery (aurabackend/pipeline/engine.py:207-216, noted in BUG-157) before the UI should offer it. Citations: aurabackend/api_gateway/routers/connections.py:58-67,221-260; aurabackend/connectors/registry.py (bigquery/faiss specs).
 
 ## BUG-166: connector registry lists the `port` field twice for postgresql and mysql
-- **Status:** open
+- **Status:** fixed
 - **Found by:** BUG-157 fix — a registry-driven form rendered two Port inputs for the same key.
 - **Severity:** low — cosmetic/duplicate-key hazard for any generic consumer of `GET /connectors/registry`; the Connectors form now works around it.
 - **Root cause:** `_DB_FIELDS` already contains `ConnectorField("port", ..., required=True)` (aurabackend/connectors/registry.py:126) and the postgresql/mysql specs then do `list(_DB_FIELDS) + [ConnectorField("port", ..., default=5432|3306)]` (:157, :169), so the same key appears twice — the first without a default, the second with one.
 - **Caused by:** none — pre-existing.
-- **Fix:** pending. Give the shared `port` field no entry in `_DB_FIELDS`, or build the specs by replacing it (override by key) rather than appending. Citations: aurabackend/connectors/registry.py:126,157,169.
+- **Fix:** `connectors/registry.py` now builds the postgresql and mysql field lists with a new `_override_field`, which swaps the shared `port` field for the connector's own (default 5432 / 3306) IN PLACE — same position, right after host — instead of appending a second one. `register_connector` now also REJECTS any spec that lists a field key more than once (ValueError naming the key, spec not registered), so the class of bug cannot return through a built-in or third-party registration. New `tests/test_connector_registry_fields.py` (10 tests): every registered connector lists each key once; postgresql/mysql have exactly one required `port` with the right default, positioned after host; the wire form (`to_dict`, incl. `config_required`) has no repeats; a duplicate-key spec is rejected and not registered — 6 of them FAIL on the old registry. The 47 existing connector tests still pass; ruff clean. The Connectors form's client-side dedupe (BUG-157) is kept as a defensive measure and its comment updated to say the registry no longer serves the duplicate. PR #TODO.
+- **Citations:** Give the shared `port` field no entry in `_DB_FIELDS`, or build the specs by replacing it (override by key) rather than appending. Citations: aurabackend/connectors/registry.py:126,157,169.
 
 ## BUG-167: financial-audit bring-your-own-data flow has no column mapping, and the flagship panels stay sample-only
 - **Status:** open

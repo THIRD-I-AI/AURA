@@ -79,7 +79,16 @@ _registry: Dict[str, ConnectorSpec] = {}
 
 
 def register_connector(spec: ConnectorSpec) -> None:
-    """Idempotent registration. Re-registering the same id replaces the spec."""
+    """Idempotent registration. Re-registering the same id replaces the spec.
+
+    Rejects a spec that lists the same field key twice: the registry is the
+    single source of truth the UI builds its form from, so a repeated key means
+    two inputs bound to one value (BUG-166). Checked here so no registration
+    path -- built-in or third-party -- can reintroduce it."""
+    keys = [f.key for f in spec.fields]
+    repeated = sorted({k for k in keys if keys.count(k) > 1})
+    if repeated:
+        raise ValueError(f"connector '{spec.id}' lists field key(s) more than once: {', '.join(repeated)}")
     with _lock:
         _registry[spec.id] = spec
 
@@ -131,6 +140,24 @@ _DB_FIELDS = [
 ]
 
 
+def _override_field(fields: List[ConnectorField], replacement: ConnectorField) -> List[ConnectorField]:
+    """Copy of ``fields`` with the field sharing ``replacement.key`` swapped for
+    it IN PLACE (appended only if absent). Used to give a connector its own
+    default for a shared base field -- appending instead produced two ``port``
+    entries in the served registry (BUG-166)."""
+    out: List[ConnectorField] = []
+    replaced = False
+    for f in fields:
+        if f.key == replacement.key:
+            out.append(replacement)
+            replaced = True
+        else:
+            out.append(f)
+    if not replaced:
+        out.append(replacement)
+    return out
+
+
 def _seed_builtins() -> None:
     """Register the connectors AURA ships with. Each spec checks for its
     driver — if the import failed in ``connectors.__init__``, we still
@@ -154,7 +181,7 @@ def _seed_builtins() -> None:
         kind="relational",
         icon="🐘",
         capabilities=["sql", "vector", "spatial"],
-        fields=list(_DB_FIELDS) + [ConnectorField("port", "Port", "number", required=True, default=5432)],
+        fields=_override_field(_DB_FIELDS, ConnectorField("port", "Port", "number", required=True, default=5432)),
         factory=(lambda cfg: PostgreSQLConnector(cfg)) if PostgreSQLConnector else None,
         available=PostgreSQLConnector is not None,
         unavailable_reason=None if PostgreSQLConnector else "asyncpg driver not installed",
@@ -166,7 +193,7 @@ def _seed_builtins() -> None:
         kind="relational",
         icon="🐬",
         capabilities=["sql"],
-        fields=list(_DB_FIELDS) + [ConnectorField("port", "Port", "number", required=True, default=3306)],
+        fields=_override_field(_DB_FIELDS, ConnectorField("port", "Port", "number", required=True, default=3306)),
         factory=(lambda cfg: MySQLConnector(cfg)) if MySQLConnector else None,
         available=MySQLConnector is not None,
         unavailable_reason=None if MySQLConnector else "aiomysql driver not installed",

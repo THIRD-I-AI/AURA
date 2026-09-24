@@ -32,10 +32,13 @@ function creatableConnectors(specs: ConnectorSpec[]): ConnectorSpec[] {
   );
 }
 
-/** The registry lists `port` twice for postgresql/mysql: the shared base field
-    (no default) and the connector's own (default 5432/3306) appended after it.
-    The later definition is the intended override, so it wins — at the position
-    of the first — otherwise the port would render blank. */
+/** Defensive: one input per field key. The registry used to serve `port` twice
+    for postgresql/mysql (the shared base field with no default, then the
+    connector's own with default 5432/3306 appended; fixed server-side in
+    BUG-166, which now also rejects duplicates at registration). If an older
+    gateway or a third-party spec still repeats a key, the later definition is
+    the intended override, so it wins — at the position of the first — rather
+    than rendering a blank port. */
 function uniqueFields(spec: ConnectorSpec): ConnectorField[] {
   const byKey = new Map<string, ConnectorField>();
   for (const f of spec.fields) byKey.set(f.key, f);
