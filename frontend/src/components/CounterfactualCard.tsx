@@ -66,6 +66,10 @@ export interface CounterfactualOperatorView {
   confidence: 'low' | 'medium' | 'high';
   top_challenges: CounterfactualChallenge[];
   audit_record_hash: string;
+  // DSR-008 / BUG-153 — estimators that ran as a weaker fallback (double_ml
+  // -> linear regression when econml is missing) yet still fed the headline
+  // number. Absent when nothing degraded.
+  degraded_methods?: string[];
   // Sprint 14 additions — both optional so older artifacts that
   // pre-date the propensity work still render cleanly.
   propensity_summary?: PropensitySummary;
@@ -399,6 +403,18 @@ const CounterfactualCard: React.FC<Props> = ({ artifact }) => {
           </span>
         )}
       </div>
+
+      {artifact.degraded_methods && artifact.degraded_methods.length > 0 && (
+        <div
+          data-testid="degraded-notice"
+          role="note"
+          className="mt-2 border border-warn/50 bg-warn/10 px-2 py-1 text-xs text-warn"
+        >
+          Degraded estimator: <span className="font-mono">{artifact.degraded_methods.join(', ')}</span>{' '}
+          ran as a weaker linear-regression fallback because econml is unavailable, so the
+          headline is not from the doubly-robust DR-Learner.
+        </div>
+      )}
 
       {artifact.propensity_summary && (
         <PropensityBlock summary={artifact.propensity_summary} />

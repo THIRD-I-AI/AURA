@@ -170,6 +170,14 @@ def _operator(art: CounterfactualArtifact) -> Dict[str, Any]:
         "top_challenges": top_challenges,
         "audit_record_hash": art.audit_record_hash,
     }
+    # DSR-008 / BUG-153: an estimator that silently ran as a weaker fallback
+    # (double_ml -> DoWhy linear regression when econml is missing) still
+    # feeds the point/CI above, so the operator must be told. Only estimates
+    # that actually contributed count; present only when non-empty, like the
+    # other optional fields.
+    degraded_methods = [e.method for e in valid if e.degraded]
+    if degraded_methods:
+        out["degraded_methods"] = degraded_methods
     # Sprint 14 additions — both optional so old fixtures still match.
     prop = _propensity_summary(art)
     if prop is not None:
