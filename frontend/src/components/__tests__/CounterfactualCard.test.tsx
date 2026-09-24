@@ -24,6 +24,29 @@ const baseFixture: CounterfactualOperatorView = {
 };
 
 describe('CounterfactualCard', () => {
+  // BUG-150: the card used to be hand-built from inline styles with raw hex
+  // colors and borderRadius 8. It now composes the ui-kit Card + Button and
+  // token utilities, so it repaints with the theme and keeps sharp corners.
+  it('renders through the ui-kit Card with sharp corners and no inline colors', () => {
+    render(<CounterfactualCard artifact={baseFixture} />);
+    const card = screen.getByTestId('counterfactual-card');
+    expect(card).toHaveAttribute('data-slot', 'card');
+    expect(card.className).toContain('rounded-none');
+    expect(card.getAttribute('style')).toBeNull();
+  });
+
+  it('colors the confidence badge with design tokens, not raw hex', () => {
+    render(<CounterfactualCard artifact={{ ...baseFixture, confidence: 'low' }} />);
+    const badge = screen.getByTestId('confidence-badge');
+    expect(badge.className).toContain('text-danger');
+    expect(badge.getAttribute('style')).toBeNull();
+  });
+
+  it('renders the debate toggle through the ui-kit Button', () => {
+    render(<CounterfactualCard artifact={baseFixture} />);
+    expect(screen.getByText(/See the debate/i)).toHaveAttribute('data-slot', 'button');
+  });
+
   it('renders the headline', () => {
     render(<CounterfactualCard artifact={baseFixture} />);
     expect(screen.getByText(/Counterfactual decrease/)).toBeInTheDocument();
