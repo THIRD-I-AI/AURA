@@ -244,7 +244,7 @@ export interface ExecutionResult {
 export interface DataSource {
   id: string;
   name: string;
-  type: 'postgresql' | 'mysql' | 'sqlite' | 'csv' | 'excel';
+  type: string;
   host?: string;
   port?: number;
   database?: string;
@@ -273,14 +273,17 @@ export interface ChatMessage {
   };
 }
 
+// Mirrors the gateway's ConnectionCreateRequest: `type` is any connector id
+// from the registry, and every connection field is optional (an embedded
+// DuckDB source has only a `database` path).
 export interface ConnectionCredentials {
   name: string;
-  type: 'postgresql' | 'mysql' | 'sqlite';
-  host: string;
-  port: number;
-  database: string;
-  username: string;
-  password: string;
+  type: string;
+  host?: string;
+  port?: number;
+  database?: string;
+  username?: string;
+  password?: string;
   ssl?: boolean;
 }
 

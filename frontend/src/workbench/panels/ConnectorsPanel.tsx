@@ -8,13 +8,14 @@
    live inline ... not a modal, for anything already visible in a dense
    table") rather than opening a Sheet/dialog. */
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { RefreshCw, DatabaseZap } from 'lucide-react';
+import { RefreshCw, DatabaseZap, Plus } from 'lucide-react';
 
 import { Panel } from '@/components/ui-kit/panel';
 import { Button } from '@/components/ui-kit/button';
 import { DataTable, type ColumnDef } from '@/components/ui-kit/data-table';
 import { cn } from '@/lib/cn';
 import { connectorService } from '../../services/api';
+import { AddConnectionForm } from './AddConnectionForm';
 
 type Connection = { id?: string; name?: string; type?: string; source_id?: string; status?: string };
 type SourcesResp = { connections?: Connection[]; count?: number; file_sources?: number };
@@ -116,6 +117,7 @@ function SyncCell({
 export default function ConnectorsPanel() {
   const [data, setData] = useState<SourcesResp | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [adding, setAdding] = useState(false);
 
   // "Sync to Chat" picker state, keyed by row id — only one row's picker is
   // open at a time, everything else here is honest fetched/derived state.
@@ -251,10 +253,15 @@ export default function ConnectorsPanel() {
           {data === null && !error ? 'loading…' : `${conns.length} database connection${conns.length === 1 ? '' : 's'} · ${fileSources} file source${fileSources === 1 ? '' : 's'}`}
         </span>
         <div className="flex-1" />
+        <Button size="sm" onClick={() => setAdding((a) => !a)} aria-expanded={adding} data-testid="wb-connectors-add">
+          <Plus /> Add connection
+        </Button>
         <Button variant="outline" size="sm" onClick={load}>
           <RefreshCw /> Refresh
         </Button>
       </div>
+
+      {adding && <AddConnectionForm onCreated={load} onClose={() => setAdding(false)} />}
 
       {error && data !== null && (
         <div className="border border-border bg-secondary px-3 py-1.5 font-mono text-xs text-danger">{error}</div>
@@ -269,7 +276,7 @@ export default function ConnectorsPanel() {
         onRetry={load}
         errorTitle="Unavailable"
         emptyTitle="No connections yet"
-        emptyDescription="Add PostgreSQL, MySQL, or BigQuery to query live warehouses alongside your files."
+        emptyDescription="Use Add connection to link a PostgreSQL or MySQL database and query it alongside your files."
         filterPlaceholder="Filter connections…"
         getRowKey={(c, i) => rowKey(c, i)}
       />
