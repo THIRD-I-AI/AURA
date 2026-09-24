@@ -210,6 +210,10 @@ class StreamingEngine:
         self._task: Optional[asyncio.Task] = None
         self._ingest_task: Optional[asyncio.Task] = None
         self._paused = False
+        # BUG-169: checked by both loops so one that absorbs a cancellation
+        # still exits on its next iteration; see _cancel_loop_task.
+        self._stopping = False
+        self._loop_stop_timeout = 5.0
         self._start_time: float = 0.0
 
         # Metrics
@@ -320,6 +324,7 @@ class StreamingEngine:
             self.pipeline.status = StreamPipelineStatus.RUNNING
             self._start_time = time.time()
             self._paused = False
+            self._stopping = False
             self._ingest_task = asyncio.create_task(self._ingest_loop())
             self._task = asyncio.create_task(self._run_loop())
             logger.info("Pipeline %s is now RUNNING", self.pipeline.id)
@@ -364,23 +369,11 @@ class StreamingEngine:
             return
 
         self.pipeline.status = StreamPipelineStatus.STOPPING
+        self._stopping = True
         logger.info("Stopping pipeline %s ...", self.pipeline.id)
 
-        # Cancel ingest loop
-        if self._ingest_task and not self._ingest_task.done():
-            self._ingest_task.cancel()
-            try:
-                await self._ingest_task
-            except asyncio.CancelledError:
-                pass
-
-        # Cancel processing loop
-        if self._task and not self._task.done():
-            self._task.cancel()
-            try:
-                await self._task
-            except asyncio.CancelledError:
-                pass
+        await self._cancel_loop_task(self._ingest_task, "ingest loop")
+        await self._cancel_loop_task(self._task, "processing loop")
 
         # Flush backpressure buffer
         if self._backpressure:
@@ -406,6 +399,34 @@ class StreamingEngine:
         self.pipeline.status = StreamPipelineStatus.STOPPED
         logger.info("Pipeline %s stopped", self.pipeline.id)
 
+    async def _cancel_loop_task(self, task: Optional[asyncio.Task], name: str) -> None:
+        """Cancel a loop task and wait for it: bounded, re-cancelling as needed.
+
+        BUG-169: `task.cancel(); await task` is unsafe. If the task absorbs the
+        CancelledError and keeps looping -- which Python 3.11's asyncio.wait_for
+        can do when a cancel races its inner future completing, and the loops
+        call it every tick -- the await never returns and stop() hangs (it froze
+        the 3.11 CI lane for 20 minutes). The old `except CancelledError: pass`
+        around that await also could not tell "the task I awaited was cancelled"
+        from "I was cancelled", so it swallowed a cancellation aimed at stop()
+        itself. asyncio.wait() does neither: it never raises the awaited task's
+        cancellation and it lets ours through."""
+        if task is None:
+            return
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + self._loop_stop_timeout
+        while not task.done():
+            task.cancel()
+            await asyncio.wait({task}, timeout=min(0.5, max(deadline - loop.time(), 0.01)))
+            if not task.done() and loop.time() >= deadline:
+                logger.error(
+                    "%s for %s did not stop within %.0fs; continuing shutdown",
+                    name, self.pipeline.id, self._loop_stop_timeout,
+                )
+                return
+        if not task.cancelled():
+            task.exception()  # mark retrieved so asyncio does not warn about it
+
     async def pause(self) -> None:
         self._paused = True
         self.pipeline.status = StreamPipelineStatus.PAUSED
@@ -423,7 +444,7 @@ class StreamingEngine:
         logger.info("Ingest loop started for %s", self.pipeline.id)
         last_tick = time.time()
         try:
-            while True:
+            while not self._stopping:
                 if self._paused:
                     await asyncio.sleep(self.tick_interval)
                     continue
@@ -456,7 +477,7 @@ class StreamingEngine:
         logger.info("Engine loop started for %s", self.pipeline.id)
         tick_count = 0
         try:
-            while True:
+            while not self._stopping:
                 if self._paused:
                     await asyncio.sleep(self.tick_interval)
                     continue
