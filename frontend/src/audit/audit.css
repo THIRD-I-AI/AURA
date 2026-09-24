@@ -62,5 +62,4 @@
 /* Wizard */
 .aud-wizard { max-width: 640px; margin: 0 auto; }
 .aud-wizard__steps { margin: var(--space-3) 0 var(--space-6); }
-.aud-wizard__err { color: var(--danger); }
 .aud-wizard__nav { display: flex; justify-content: space-between; margin-top: var(--space-6); }
