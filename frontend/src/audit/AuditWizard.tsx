@@ -8,6 +8,7 @@ import type { ColumnMapping } from './types';
 import { UploadStep } from './wizard/UploadStep';
 import { MapStep } from './wizard/MapStep';
 import { ReviewStep } from './wizard/ReviewStep';
+import { WizardError } from './wizard/WizardError';
 import { Stepper } from '../ui/Stepper';
 import { Button } from '@/components/ui-kit/button';
 
@@ -97,7 +98,7 @@ export function AuditWizard() {
       {step === 1 && <MapStep columns={preview.columns} mapping={mapping} errors={mapErrors} notes={guard.notes} onChange={setMapping} />}
       {step === 2 && <ReviewStep filename={filename} mapping={mapping} />}
 
-      {runError && <p className="aud-wizard__err">{runError}</p>}
+      {runError && <WizardError testId="wizard-run-error">{runError}</WizardError>}
 
       <div className="aud-wizard__nav">
         {step > 0

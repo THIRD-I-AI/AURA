@@ -27,6 +27,37 @@ describe('AuditWizard (audit your own data)', () => {
   // Button. Only the ui-kit component stamps data-slot="button" — assert
   // that marker instead of a CSS class, so this survives incidental
   // restyling and only breaks if the wrong component comes back.
+  // BUG-152: wizard failures were bare <p>s — silent to assistive tech.
+  it('announces an upload failure as an alert', async () => {
+    vi.spyOn(auditApi, 'uploadDataset').mockRejectedValue(new Error('disk full'));
+    const user = userEvent.setup();
+    render(<MemoryRouter><AuditWizard /></MemoryRouter>);
+    await user.upload(screen.getByTestId('wizard-file-input'), csvFile());
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveAttribute('data-testid', 'wizard-upload-error');
+    expect(alert).toHaveTextContent('disk full');
+  });
+
+  it('announces a run failure as an alert and leaves Run audit available to retry', async () => {
+    vi.spyOn(auditApi, 'uploadDataset').mockResolvedValue({ filename: 'loans.csv' });
+    vi.spyOn(auditApi, 'runDataAudit').mockRejectedValue(new Error('engine offline'));
+    const user = userEvent.setup();
+    render(<MemoryRouter><AuditWizard /></MemoryRouter>);
+    await user.upload(screen.getByTestId('wizard-file-input'), csvFile());
+    await waitFor(() => expect(screen.getByTestId('wizard-next')).toBeEnabled());
+    await user.click(screen.getByTestId('wizard-next'));
+    await user.selectOptions(screen.getByTestId('map-treatment'), 'protected_class');
+    await user.selectOptions(screen.getByTestId('map-outcome'), 'approved');
+    await user.click(screen.getByTestId('confounder-income'));
+    await user.click(screen.getByTestId('wizard-next'));
+    await user.click(screen.getByTestId('wizard-run'));
+
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveAttribute('data-testid', 'wizard-run-error');
+    expect(alert).toHaveTextContent('engine offline');
+    await waitFor(() => expect(screen.getByTestId('wizard-run')).toBeEnabled());
+  });
+
   it('the Next button renders through the shared ui-kit Button, not the legacy one', async () => {
     vi.spyOn(auditApi, 'uploadDataset').mockResolvedValue({ filename: 'loans.csv' });
     const user = userEvent.setup();

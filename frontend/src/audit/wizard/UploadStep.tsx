@@ -2,6 +2,7 @@ import { useRef, useState } from 'react';
 
 import { cn } from '@/lib/cn';
 import type { ColumnType } from '../csv';
+import { WizardError } from './WizardError';
 
 export function UploadStep({ file, columns, previewRows, types, uploading, error, onPick }: {
   file: File | null;
@@ -60,7 +61,7 @@ export function UploadStep({ file, columns, previewRows, types, uploading, error
         </p>
       </div>
       {uploading && <p data-testid="wizard-uploading" className="text-sm text-text-tertiary">Uploading {file?.name}…</p>}
-      {error && <p data-testid="wizard-upload-error" className="text-danger">{error}</p>}
+      {error && <WizardError testId="wizard-upload-error">{error}</WizardError>}
       {columns.length > 0 && (
         <div data-testid="wizard-preview" className="overflow-x-auto border border-border rounded-none">
           <table className="border-collapse text-sm w-full">
