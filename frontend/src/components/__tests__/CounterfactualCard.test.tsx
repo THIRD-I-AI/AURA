@@ -47,6 +47,22 @@ describe('CounterfactualCard', () => {
     expect(screen.getByText(/See the debate/i)).toHaveAttribute('data-slot', 'button');
   });
 
+  // BUG-153: a silent econml->DoWhy fallback must be disclosed on the card.
+  it('discloses a degraded estimator when the backend reports one', () => {
+    render(<CounterfactualCard artifact={{ ...baseFixture, degraded_methods: ['double_ml'] }} />);
+    const notice = screen.getByTestId('degraded-notice');
+    expect(notice).toHaveTextContent('double_ml');
+    expect(notice).toHaveTextContent(/weaker/i);
+    expect(notice.className).toContain('text-warn');
+  });
+
+  it('shows no degraded notice when nothing degraded', () => {
+    render(<CounterfactualCard artifact={baseFixture} />);
+    expect(screen.queryByTestId('degraded-notice')).not.toBeInTheDocument();
+    render(<CounterfactualCard artifact={{ ...baseFixture, degraded_methods: [] }} />);
+    expect(screen.queryByTestId('degraded-notice')).not.toBeInTheDocument();
+  });
+
   it('renders the headline', () => {
     render(<CounterfactualCard artifact={baseFixture} />);
     expect(screen.getByText(/Counterfactual decrease/)).toBeInTheDocument();

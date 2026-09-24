@@ -347,6 +347,59 @@ def test_renderers_produce_three_views():
     assert "raw_artifact" in an
 
 
+def _artifact_with(estimates):
+    from counterfactual_service.schemas import CounterfactualArtifact
+
+    q = CounterfactualQuery(
+        question="test",
+        treatment=InterventionSpec(column="t", actual=1, counterfactual=0),
+        outcome=OutcomeSpec(column="y", agg="sum", window=("2025-01-01", "2025-12-31")),
+        dag=DAGSpec(edges=[("t", "y")]),
+        dataset=DatasetRef(source_id="ds"),
+    )
+    return CounterfactualArtifact(
+        record_id="ca_deg", query=q, estimates=estimates, refutations=[],
+        challenges=[], confidence="high", schema_version="v1",
+        dataset_fingerprint="abc", audit_record_hash="0xdead" * 8,
+    )
+
+
+def _est(method, **kw):
+    from counterfactual_service.schemas import CounterfactualEstimate
+
+    return CounterfactualEstimate(
+        method=method, point=1.5, ci_lower=1.0, ci_upper=2.0, n_samples=100, **kw,
+    )
+
+
+def test_operator_view_discloses_a_degraded_estimator():
+    """BUG-153: double_ml silently ran as DoWhy linear regression (econml
+    missing) and its result fed the headline ATE/CI -- the flag was computed
+    by the engine but dropped by the renderer, so the operator card looked
+    like a normal four-estimator result."""
+    from counterfactual_service.renderers import render
+
+    art = _artifact_with([_est("ipw"), _est("double_ml", degraded=True)])
+    for audience in ("operator", "auditor", "analyst"):
+        assert render(art, audience)["degraded_methods"] == ["double_ml"]
+
+
+def test_operator_view_omits_degraded_methods_when_nothing_degraded():
+    from counterfactual_service.renderers import render
+
+    art = _artifact_with([_est("ipw"), _est("double_ml")])
+    assert "degraded_methods" not in render(art, "operator")
+
+
+def test_operator_view_ignores_a_degraded_estimator_that_errored():
+    """An errored estimate contributes nothing to point/CI, so it must not
+    trigger a 'weaker estimator ran' warning about a number the user never saw."""
+    from counterfactual_service.renderers import render
+
+    art = _artifact_with([_est("ipw"), _est("double_ml", degraded=True, error="ValueError: x")])
+    assert "degraded_methods" not in render(art, "operator")
+
+
 # ── Service endpoints ─────────────────────────────────────────────────
 
 def _poll_until_done(client, url: str, budget_s: float = 300.0, sleep_s: float = 0.5):
