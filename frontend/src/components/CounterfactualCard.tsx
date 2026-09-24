@@ -70,6 +70,9 @@ export interface CounterfactualOperatorView {
   // -> linear regression when econml is missing) yet still fed the headline
   // number. Absent when nothing degraded.
   degraded_methods?: string[];
+  // BUG-154 — how many of the run's estimators actually produced the number
+  // the confidence badge describes. A lone survivor still scores "high".
+  estimator_coverage?: { valid: number; total: number };
   // Sprint 14 additions — both optional so older artifacts that
   // pre-date the propensity work still render cleanly.
   propensity_summary?: PropensitySummary;
@@ -403,6 +406,21 @@ const CounterfactualCard: React.FC<Props> = ({ artifact }) => {
           </span>
         )}
       </div>
+
+      {artifact.estimator_coverage && artifact.estimator_coverage.valid < artifact.estimator_coverage.total && (
+        <div
+          data-testid="coverage-notice"
+          role="note"
+          className="mt-2 border border-warn/50 bg-warn/10 px-2 py-1 text-xs text-warn"
+        >
+          This estimate rests on{' '}
+          <span className="font-mono">
+            {artifact.estimator_coverage.valid} of {artifact.estimator_coverage.total}
+          </span>{' '}
+          estimators; the rest failed and were excluded, so the confidence badge reflects fewer
+          independent methods than a full run.
+        </div>
+      )}
 
       {artifact.degraded_methods && artifact.degraded_methods.length > 0 && (
         <div

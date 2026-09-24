@@ -56,6 +56,29 @@ describe('CounterfactualCard', () => {
     expect(notice.className).toContain('text-warn');
   });
 
+  // BUG-154: "high" on 1 surviving estimator must not read like a full run.
+  it('discloses partial estimator coverage under the confidence badge', () => {
+    render(
+      <CounterfactualCard
+        artifact={{ ...baseFixture, estimator_coverage: { valid: 1, total: 4 } }}
+      />,
+    );
+    const notice = screen.getByTestId('coverage-notice');
+    expect(notice).toHaveTextContent('1 of 4');
+    expect(screen.getByTestId('confidence-badge').textContent).toBe('high');
+  });
+
+  it('shows no coverage notice on a full run or when the field is absent', () => {
+    const { rerender } = render(
+      <CounterfactualCard
+        artifact={{ ...baseFixture, estimator_coverage: { valid: 4, total: 4 } }}
+      />,
+    );
+    expect(screen.queryByTestId('coverage-notice')).not.toBeInTheDocument();
+    rerender(<CounterfactualCard artifact={baseFixture} />);
+    expect(screen.queryByTestId('coverage-notice')).not.toBeInTheDocument();
+  });
+
   it('shows no degraded notice when nothing degraded', () => {
     render(<CounterfactualCard artifact={baseFixture} />);
     expect(screen.queryByTestId('degraded-notice')).not.toBeInTheDocument();

@@ -391,6 +391,38 @@ def test_operator_view_omits_degraded_methods_when_nothing_degraded():
     assert "degraded_methods" not in render(art, "operator")
 
 
+def test_operator_view_reports_estimator_coverage():
+    """BUG-154: one surviving estimator still scores 'high' (by design, see
+    test_counterfactual_confidence), so the view must say how many of the
+    estimators actually produced the number the badge describes."""
+    from counterfactual_service.engine import score_confidence
+    from counterfactual_service.renderers import render
+    from counterfactual_service.schemas import RefutationResult
+
+    ests = [
+        _est("ipw"),
+        _est("psm", error="RuntimeError: singular"),
+        _est("linear_regression", error="TimeoutError"),
+        _est("double_ml", error="ImportError: econml"),
+    ]
+    refs = [RefutationResult(refuter="placebo", passed=True),
+            RefutationResult(refuter="data_subset", passed=True)]
+    # The real scorer, not a hardcoded label: 3 of 4 estimators failed and
+    # the badge is still "high".
+    assert score_confidence(ests, refs, []) == "high"
+
+    art = _artifact_with(ests)
+    assert render(art, "operator")["estimator_coverage"] == {"valid": 1, "total": 4}
+    assert render(art, "auditor")["estimator_coverage"] == {"valid": 1, "total": 4}
+
+
+def test_operator_view_estimator_coverage_when_all_succeed():
+    from counterfactual_service.renderers import render
+
+    art = _artifact_with([_est("ipw"), _est("psm"), _est("double_ml")])
+    assert render(art, "operator")["estimator_coverage"] == {"valid": 3, "total": 3}
+
+
 def test_operator_view_ignores_a_degraded_estimator_that_errored():
     """An errored estimate contributes nothing to point/CI, so it must not
     trigger a 'weaker estimator ran' warning about a number the user never saw."""
