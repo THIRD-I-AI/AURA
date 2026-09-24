@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 
@@ -127,6 +127,83 @@ describe('ExceptionQueue (HITL workbench)', () => {
       ledger: [{ internal_id: 'L-1', account_code: '4000', amount: 1 }],
     });
     await waitFor(() => expect(screen.getByText(/AS 2201/)).toBeInTheDocument());
+  });
+
+  // BUG-158: the only real-data path was a raw JSON textarea.
+  describe('uploading ledger files', () => {
+    const csv = (name: string, body: string) => new File([body], name, { type: 'text/csv' });
+    const pick = (label: RegExp, file: File) => userEvent.upload(screen.getByLabelText(label), file);
+
+    beforeEach(() => {
+      svc.runAudit.mockResolvedValue(REPORT);
+      svc.getExceptions.mockResolvedValue(queueBefore);
+      svc.verify.mockResolvedValue({ verified: true });
+    });
+
+    it('parses a CSV, shows its row count and columns, and audits the parsed rows with numeric amounts', async () => {
+      render(<ExceptionQueue />);
+      await pick(/^general ledger$/i, csv('gl.csv', 'internal_id,account_code,amount\nL-1,4000,"1,250.00"\nL-2,5000,75\n'));
+
+      const status = await screen.findByTestId('ledger-file-status-ledger');
+      expect(status).toHaveTextContent('2 rows');
+      expect(status).toHaveTextContent('internal_id, account_code, amount');
+
+      await userEvent.click(screen.getByRole('button', { name: /run my audit/i }));
+      await waitFor(() => expect(svc.runAudit).toHaveBeenCalledOnce());
+      expect(svc.runAudit.mock.calls[0][0]).toMatchObject({
+        ledger: [
+          { internal_id: 'L-1', account_code: '4000', amount: 1250 },
+          { internal_id: 'L-2', account_code: '5000', amount: 75 },
+        ],
+      });
+    });
+
+    it('explains a bad file and blocks the run instead of silently auditing without it', async () => {
+      render(<ExceptionQueue />);
+      await pick(/^invoices$/i, csv('inv.csv', 'invoice_number,po_number,amount\nI-1,P-1,12\nI-2,P-2,twelve\n'));
+
+      const alert = await within(screen.getByTestId('ledger-file-invoices')).findByRole('alert');
+      expect(alert).toHaveTextContent(/row 2: amount "twelve"/);
+
+      await userEvent.click(screen.getByRole('button', { name: /run my audit/i }));
+      expect(await screen.findByText(/fix or remove invoices before running/i)).toBeInTheDocument();
+      expect(svc.runAudit).not.toHaveBeenCalled();
+    });
+
+    it('warns, without blocking, when a recommended column is missing', async () => {
+      render(<ExceptionQueue />);
+      await pick(/^invoices$/i, csv('inv.csv', 'invoice_number,amount\nI-1,5\n'));
+      const note = await within(screen.getByTestId('ledger-file-invoices')).findByRole('note');
+      expect(note).toHaveTextContent(/no po_number column/i);
+      await userEvent.click(screen.getByRole('button', { name: /run my audit/i }));
+      await waitFor(() => expect(svc.runAudit).toHaveBeenCalledOnce());
+    });
+
+    it('lets an uploaded file override the same key pasted as JSON while keeping the other pasted keys', async () => {
+      render(<ExceptionQueue />);
+      fireEvent.change(screen.getByLabelText(/ledger json/i), {
+        target: { value: '{"ledger":[{"internal_id":"OLD","amount":1}],"purchase_orders":[{"po_number":"P-1"}]}' },
+      });
+      await pick(/^general ledger$/i, csv('gl.csv', 'internal_id,account_code,amount\nNEW,4000,2\n'));
+      await screen.findByTestId('ledger-file-status-ledger');
+      await userEvent.click(screen.getByRole('button', { name: /run my audit/i }));
+      await waitFor(() => expect(svc.runAudit).toHaveBeenCalledOnce());
+      const sent = svc.runAudit.mock.calls[0][0];
+      expect(sent.ledger).toEqual([{ internal_id: 'NEW', account_code: '4000', amount: 2 }]);
+      expect(sent.purchase_orders).toEqual([{ po_number: 'P-1' }]);
+    });
+
+    it('disables Run again once the only file is removed', async () => {
+      render(<ExceptionQueue />);
+      const run = screen.getByRole('button', { name: /run my audit/i });
+      expect(run).toBeDisabled();
+      await pick(/^general ledger$/i, csv('gl.csv', 'internal_id,account_code,amount\nL-1,4000,1\n'));
+      await screen.findByTestId('ledger-file-status-ledger');
+      expect(run).toBeEnabled();
+      await userEvent.click(within(screen.getByTestId('ledger-file-ledger')).getByRole('button', { name: /remove/i }));
+      expect(screen.queryByTestId('ledger-file-status-ledger')).not.toBeInTheDocument();
+      expect(run).toBeDisabled();
+    });
   });
 
   it('shows an inline parse error for malformed ledger JSON without crashing', async () => {
