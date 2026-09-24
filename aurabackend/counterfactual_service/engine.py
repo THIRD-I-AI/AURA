@@ -17,11 +17,12 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import math
 import os
 import time
 import uuid
 from itertools import combinations
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional, Tuple
 
 import pandas as pd
 
@@ -909,6 +910,48 @@ def _run_one_tmle(
         )
 
 
+def _dowhy_confidence_interval(est: Any, point: float) -> Optional[Tuple[float, float]]:
+    """(lo, hi) for a DoWhy estimate, or None when no real interval exists.
+
+    DoWhy is inconsistent about the shape: psm/ipw return a flat ``(lo, hi)``
+    pair, but backdoor.linear_regression returns a (1, 2) array, i.e.
+    ``[[lo, hi]]``. The outer list has length 1, which the old ``len(ci) >= 2``
+    guard rejected -- so linear_regression always fell through to a fallback
+    that read a ``stderr`` attribute DoWhy estimates do not have, yielding 0.0
+    and a zero-width ``[point, point]`` interval (BUG-155). The fallback here is
+    DoWhy's real ``get_standard_error()``; with no usable one we return None
+    rather than invent certainty.
+    """
+    ci_attr = getattr(est, "get_confidence_intervals", None)
+    if callable(ci_attr):
+        try:
+            ci = ci_attr()
+            if hasattr(ci, "tolist"):
+                ci = ci.tolist()
+            if isinstance(ci, (list, tuple)) and ci and isinstance(ci[0], (list, tuple)):
+                ci = ci[0]
+            if isinstance(ci, (list, tuple)) and len(ci) >= 2:
+                lo, hi = float(ci[0]), float(ci[1])
+                if math.isfinite(lo) and math.isfinite(hi):
+                    return lo, hi
+        except Exception:
+            pass
+    se_attr = getattr(est, "get_standard_error", None)
+    if callable(se_attr):
+        try:
+            se = se_attr()
+            if hasattr(se, "tolist"):
+                se = se.tolist()
+            while isinstance(se, (list, tuple)) and se:
+                se = se[0]
+            se = float(se)
+            if math.isfinite(se) and se > 0:
+                return point - 2 * se, point + 2 * se
+        except Exception:
+            pass
+    return None
+
+
 def _run_one_estimator(
     method_key: EstimatorMethod,
     df: pd.DataFrame,
@@ -1000,27 +1043,16 @@ def _run_one_estimator(
             confidence_intervals=True,
         )
         point = float(est.value)
-        ci_attr = getattr(est, "get_confidence_intervals", None)
-        ci = None
-        if callable(ci_attr):
-            try:
-                ci = ci_attr()
-            except Exception:
-                ci = None
-        if ci is not None:
-            try:
-                if hasattr(ci, "tolist"):
-                    ci = ci.tolist()
-                if isinstance(ci, (list, tuple)) and len(ci) >= 2:
-                    flat = ci[0] if isinstance(ci[0], (list, tuple)) else ci
-                    lo, hi = float(flat[0]), float(flat[1])
-                else:
-                    raise ValueError("unexpected CI shape")
-            except Exception:
-                ci = None
-        if ci is None:
-            stderr = float(getattr(est, "stderr", 0.0) or 0.0)
-            lo, hi = point - 2 * stderr, point + 2 * stderr
+        interval = _dowhy_confidence_interval(est, point)
+        if interval is None:
+            # No real interval and no usable standard error: surface an
+            # errored estimate (excluded from the point/CI aggregate, the
+            # verdict and the confidence score) instead of a fabricated
+            # [point, point] that reads as perfect certainty (BUG-155).
+            raise ValueError(
+                "DoWhy returned neither a confidence interval nor a usable standard error"
+            )
+        lo, hi = interval
         if hi < lo:
             lo, hi = hi, lo
         return CounterfactualEstimate(
