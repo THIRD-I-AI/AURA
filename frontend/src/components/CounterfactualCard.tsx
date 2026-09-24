@@ -1,5 +1,9 @@
 import React, { useState } from 'react';
 
+import { Button } from '@/components/ui-kit/button';
+import { Card } from '@/components/ui-kit/card';
+import { cn } from '@/lib/cn';
+
 export interface CounterfactualChallenge {
   text: string;
   severity: 'low' | 'medium' | 'high';
@@ -72,41 +76,40 @@ export interface CounterfactualOperatorView {
   cate_distribution_summary?: CATEDistributionSummary;
 }
 
-const CONFIDENCE_BG: Record<string, string> = {
-  low: 'rgba(220, 38, 38, 0.18)',
-  medium: 'rgba(202, 138, 4, 0.18)',
-  high: 'rgba(5, 150, 105, 0.18)',
-};
+// Trust palette on design tokens (danger = fragile, warn = caution, signal =
+// healthy). Tailwind needs whole class strings at build time, so each tone is
+// spelled out rather than assembled from a color name.
+const TONE_BADGE = {
+  danger: 'border-danger/50 bg-danger/15 text-danger',
+  warn: 'border-warn/50 bg-warn/15 text-warn',
+  signal: 'border-signal/50 bg-signal/15 text-signal',
+  neutral: 'border-border-hairline bg-raised text-text-tertiary',
+} as const;
+const TONE_FILL = {
+  danger: 'bg-danger',
+  warn: 'bg-warn',
+  signal: 'bg-signal',
+} as const;
+const TONE_BAND = {
+  danger: 'border-danger/50 bg-danger/15',
+  warn: 'border-warn/50 bg-warn/15',
+  signal: 'border-signal/50 bg-signal/15',
+} as const;
+type Tone = keyof typeof TONE_FILL;
 
-const CONFIDENCE_FG: Record<string, string> = {
-  low: '#fca5a5',
-  medium: '#fde68a',
-  high: '#86efac',
-};
-
-const CONFIDENCE_BORDER: Record<string, string> = {
-  low: '#7f1d1d',
-  medium: '#854d0e',
-  high: '#065f46',
+const CONFIDENCE_TONE: Record<string, Tone> = {
+  low: 'danger',
+  medium: 'warn',
+  high: 'signal',
 };
 
 // Reuses the confidence palette: red = fragile, amber = caution, ok = healthy.
 // Mapping is deliberate — the operator already reads red badges as
 // "trustworthiness problem" so the propensity badge speaks the same vocabulary.
-const FRAGILITY_BG: Record<string, string> = {
-  red:    CONFIDENCE_BG.low,
-  amber:  CONFIDENCE_BG.medium,
-  ok:     CONFIDENCE_BG.high,
-};
-const FRAGILITY_FG: Record<string, string> = {
-  red:    CONFIDENCE_FG.low,
-  amber:  CONFIDENCE_FG.medium,
-  ok:     CONFIDENCE_FG.high,
-};
-const FRAGILITY_BORDER: Record<string, string> = {
-  red:    CONFIDENCE_BORDER.low,
-  amber:  CONFIDENCE_BORDER.medium,
-  ok:     CONFIDENCE_BORDER.high,
+const FRAGILITY_TONE: Record<string, Tone> = {
+  red: 'danger',
+  amber: 'warn',
+  ok: 'signal',
 };
 const FRAGILITY_LABEL: Record<string, string> = {
   red:    'IPW-fragile',
@@ -118,26 +121,18 @@ const FRAGILITY_LABEL: Record<string, string> = {
 // `high` reads as "the population is meaningfully split" — same red
 // vocabulary the operator already knows for fragility and low
 // confidence. `low` reads as "one number is enough" — green.
-const HETEROGENEITY_BG: Record<string, string> = {
-  high:     CONFIDENCE_BG.low,
-  moderate: CONFIDENCE_BG.medium,
-  low:      CONFIDENCE_BG.high,
-};
-const HETEROGENEITY_FG: Record<string, string> = {
-  high:     CONFIDENCE_FG.low,
-  moderate: CONFIDENCE_FG.medium,
-  low:      CONFIDENCE_FG.high,
-};
-const HETEROGENEITY_BORDER: Record<string, string> = {
-  high:     CONFIDENCE_BORDER.low,
-  moderate: CONFIDENCE_BORDER.medium,
-  low:      CONFIDENCE_BORDER.high,
+const HETEROGENEITY_TONE: Record<string, Tone> = {
+  high: 'danger',
+  moderate: 'warn',
+  low: 'signal',
 };
 const HETEROGENEITY_LABEL: Record<string, string> = {
   high:     'heterogeneous',
   moderate: 'some heterogeneity',
   low:      'homogeneous',
 };
+
+const BADGE_BASE = 'border px-1.5 py-px text-2xs';
 
 // ── Sprint 14 — propensity quantile bar ──────────────────────────────
 //
@@ -147,6 +142,9 @@ const HETEROGENEITY_LABEL: Record<string, string> = {
 // badge with the n_extreme fraction. The visual maps the math: a
 // fragile estimate is one whose band crosses or hugs the 0/1 boundary,
 // and the eye can see that without reading the numbers.
+//
+// Inline `style` below is reserved for data-driven geometry (percent
+// offsets computed from the estimate), which no static utility can express.
 
 const PropensityBlock: React.FC<{ summary: PropensitySummary }> = ({ summary }) => {
   const extremeFrac = summary.n_total > 0 ? summary.n_extreme / summary.n_total : 0;
@@ -155,83 +153,37 @@ const PropensityBlock: React.FC<{ summary: PropensitySummary }> = ({ summary }) 
   const left = Math.max(0, Math.min(1, summary.p05)) * 100;
   const right = Math.max(0, Math.min(1, summary.p95)) * 100;
   const mean = Math.max(0, Math.min(1, summary.mean)) * 100;
+  const tone = FRAGILITY_TONE[summary.fragility];
 
   return (
-    <div data-testid="propensity-block" style={{ marginTop: 10 }}>
-      <div
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: 8,
-          fontSize: 12,
-          color: 'var(--text-secondary, #cbd5e1)',
-        }}
-      >
-        <span style={{ minWidth: 92 }}>Propensity ({summary.method})</span>
+    <div data-testid="propensity-block" className="mt-2.5">
+      <div className="flex items-center gap-2 text-xs text-text-secondary">
+        <span className="min-w-23">Propensity ({summary.method})</span>
         <span
           data-testid="propensity-fragility"
-          style={{
-            padding: '1px 6px',
-            borderRadius: 3,
-            fontSize: 10,
-            background: FRAGILITY_BG[summary.fragility],
-            color: FRAGILITY_FG[summary.fragility],
-            border: `1px solid ${FRAGILITY_BORDER[summary.fragility]}`,
-          }}
+          className={cn(BADGE_BASE, TONE_BADGE[tone])}
         >
           {FRAGILITY_LABEL[summary.fragility]}
         </span>
-        <span style={{ fontFamily: 'monospace', opacity: 0.8 }}>
+        <span className="font-mono opacity-80">
           {summary.n_extreme}/{summary.n_total} extreme ({(extremeFrac * 100).toFixed(1)}%)
         </span>
       </div>
-      <div
-        style={{
-          marginTop: 4,
-          position: 'relative',
-          height: 8,
-          background: 'rgba(148, 163, 184, 0.15)',
-          borderRadius: 4,
-          overflow: 'hidden',
-        }}
-      >
+      <div className="relative mt-1 h-2 overflow-hidden bg-raised">
         {/* Central 90% (p05 → p95) band */}
         <div
           data-testid="propensity-band"
-          style={{
-            position: 'absolute',
-            left: `${left}%`,
-            width: `${Math.max(0, right - left)}%`,
-            top: 0,
-            bottom: 0,
-            background: FRAGILITY_BG[summary.fragility],
-            borderLeft: `2px solid ${FRAGILITY_BORDER[summary.fragility]}`,
-            borderRight: `2px solid ${FRAGILITY_BORDER[summary.fragility]}`,
-          }}
+          className={cn('absolute inset-y-0 border-x-2', TONE_BAND[tone])}
+          style={{ left: `${left}%`, width: `${Math.max(0, right - left)}%` }}
         />
         {/* Mean tick */}
         <div
           data-testid="propensity-mean"
-          style={{
-            position: 'absolute',
-            left: `calc(${mean}% - 1px)`,
-            top: 0,
-            bottom: 0,
-            width: 2,
-            background: FRAGILITY_FG[summary.fragility],
-          }}
+          className={cn('absolute inset-y-0 w-0.5', TONE_FILL[tone])}
+          style={{ left: `calc(${mean}% - 1px)` }}
         />
       </div>
-      <div
-        style={{
-          display: 'flex',
-          justifyContent: 'space-between',
-          fontSize: 10,
-          color: 'var(--text-muted, #64748b)',
-          fontFamily: 'monospace',
-          marginTop: 2,
-        }}
-      >
+      <div className="mt-0.5 flex justify-between font-mono text-2xs text-text-tertiary">
         <span>0.0</span>
         <span>p05={summary.p05.toFixed(2)}</span>
         <span>p50={summary.p50.toFixed(2)}</span>
@@ -269,65 +221,30 @@ const SensitivityBlock: React.FC<{
   const baselinePct = ((band.baseline - minV) / span) * 100;
 
   return (
-    <div data-testid="sensitivity-block" style={{ marginTop: 10 }}>
-      <div
-        style={{
-          fontSize: 12,
-          color: 'var(--text-secondary, #cbd5e1)',
-          display: 'flex',
-          gap: 8,
-        }}
-      >
-        <span style={{ minWidth: 92 }}>Sensitivity</span>
-        <span style={{ fontFamily: 'monospace', opacity: 0.8 }}>
+    <div data-testid="sensitivity-block" className="mt-2.5">
+      <div className="flex gap-2 text-xs text-text-secondary">
+        <span className="min-w-23">Sensitivity</span>
+        <span className="font-mono opacity-80">
           baseline {band.baseline.toFixed(2)} · {band.perturbations.length} refuters
         </span>
       </div>
-      <div
-        style={{
-          marginTop: 4,
-          position: 'relative',
-          height: 18,
-          background: 'rgba(148, 163, 184, 0.15)',
-          borderRadius: 4,
-        }}
-      >
+      <div className="relative mt-1 h-4.5 bg-raised">
         {/* Baseline marker */}
         <div
           data-testid="sensitivity-baseline"
-          style={{
-            position: 'absolute',
-            left: `calc(${baselinePct}% - 1px)`,
-            top: 0,
-            bottom: 0,
-            width: 2,
-            background: 'var(--text-primary, #f1f5f9)',
-            opacity: 0.5,
-          }}
+          className="absolute inset-y-0 w-0.5 bg-text-primary opacity-50"
+          style={{ left: `calc(${baselinePct}% - 1px)` }}
         />
         {band.perturbations.map(p => {
           const pct = ((p.estimate_after - minV) / span) * 100;
-          const color = p.passed
-            ? CONFIDENCE_FG.high
-            : CONFIDENCE_FG.medium;
-          const border = p.passed
-            ? CONFIDENCE_BORDER.high
-            : CONFIDENCE_BORDER.medium;
+          const tone: Tone = p.passed ? 'signal' : 'warn';
           return (
             <div
               key={p.refuter}
               data-testid={`sensitivity-dot-${p.refuter}`}
               title={`${p.refuter}: ${p.estimate_after.toFixed(3)} ${p.passed ? '(passed)' : '(failed)'}`}
-              style={{
-                position: 'absolute',
-                left: `calc(${pct}% - 5px)`,
-                top: 4,
-                width: 10,
-                height: 10,
-                borderRadius: 5,
-                background: color,
-                border: `1px solid ${border}`,
-              }}
+              className={cn('absolute top-1 size-2.5 border', TONE_FILL[tone], TONE_BAND[tone])}
+              style={{ left: `calc(${pct}% - 5px)` }}
             />
           );
         })}
@@ -358,64 +275,34 @@ const CATEDistributionBlock: React.FC<{
   const meanPct = ((summary.point - domainLo) / span) * 100;
   const zeroPct = ((0 - domainLo) / span) * 100;
 
-  const fg = HETEROGENEITY_FG[summary.heterogeneity];
-  const border = HETEROGENEITY_BORDER[summary.heterogeneity];
+  const tone = HETEROGENEITY_TONE[summary.heterogeneity];
 
   // Each bar represents the CATE value at one decile. We render the
   // bars side-by-side so the eye reads them as a CDF/histogram hybrid.
   const barWidthPct = 100 / summary.quantiles.length;
 
   return (
-    <div data-testid="cate-distribution-block" style={{ marginTop: 10 }}>
-      <div
-        style={{
-          fontSize: 12,
-          color: 'var(--text-secondary, #cbd5e1)',
-          display: 'flex',
-          gap: 8,
-          alignItems: 'center',
-        }}
-      >
-        <span style={{ minWidth: 92 }}>CATE ({summary.method})</span>
+    <div data-testid="cate-distribution-block" className="mt-2.5">
+      <div className="flex items-center gap-2 text-xs text-text-secondary">
+        <span className="min-w-23">CATE ({summary.method})</span>
         <span
           data-testid="cate-heterogeneity"
-          style={{
-            padding: '1px 6px',
-            borderRadius: 3,
-            fontSize: 10,
-            background: HETEROGENEITY_BG[summary.heterogeneity],
-            color: fg,
-            border: `1px solid ${border}`,
-          }}
+          className={cn(BADGE_BASE, TONE_BADGE[tone])}
         >
           {HETEROGENEITY_LABEL[summary.heterogeneity]}
         </span>
-        <span style={{ fontFamily: 'monospace', opacity: 0.8 }}>
+        <span className="font-mono opacity-80">
           spread {summary.idr.toFixed(2)}
         </span>
       </div>
-      <div
-        style={{
-          marginTop: 4,
-          position: 'relative',
-          height: 36,
-          background: 'rgba(148, 163, 184, 0.1)',
-          borderRadius: 4,
-          overflow: 'hidden',
-        }}
-      >
+      <div className="relative mt-1 h-9 overflow-hidden bg-raised">
         {/* Zero reference line — when CATE crosses zero in either
             direction, this is the visual anchor for "no effect" */}
         {zeroPct >= 0 && zeroPct <= 100 && (
           <div
             data-testid="cate-zero-line"
-            style={{
-              position: 'absolute',
-              left: `calc(${zeroPct}% - 1px)`,
-              top: 0, bottom: 0, width: 2,
-              background: 'var(--text-muted, #64748b)',
-              opacity: 0.6,
-            }}
+            className="absolute inset-y-0 w-0.5 bg-text-tertiary opacity-60"
+            style={{ left: `calc(${zeroPct}% - 1px)` }}
           />
         )}
         {/* Per-decile bars laid out as a histogram. Each bar's height
@@ -430,15 +317,10 @@ const CATEDistributionBlock: React.FC<{
               key={i}
               data-testid={`cate-bar-${i}`}
               title={`p${(5 + i * 10).toString().padStart(2, '0')}: CATE=${q.toFixed(3)}`}
+              className={cn('absolute inset-y-1.5 opacity-85', TONE_FILL[tone])}
               style={{
-                position: 'absolute',
                 left: `calc(${pct}% - ${barWidthPct / 4}%)`,
                 width: `${barWidthPct / 2}%`,
-                top: 6,
-                bottom: 6,
-                background: fg,
-                opacity: 0.85,
-                borderRadius: 2,
               }}
             />
           );
@@ -446,25 +328,11 @@ const CATEDistributionBlock: React.FC<{
         {/* ATE marker */}
         <div
           data-testid="cate-mean"
-          style={{
-            position: 'absolute',
-            left: `calc(${meanPct}% - 1px)`,
-            top: 0, bottom: 0,
-            width: 2,
-            background: 'var(--text-primary, #f1f5f9)',
-          }}
+          className="absolute inset-y-0 w-0.5 bg-text-primary"
+          style={{ left: `calc(${meanPct}% - 1px)` }}
         />
       </div>
-      <div
-        style={{
-          display: 'flex',
-          justifyContent: 'space-between',
-          fontSize: 10,
-          color: 'var(--text-muted, #64748b)',
-          fontFamily: 'monospace',
-          marginTop: 2,
-        }}
-      >
+      <div className="mt-0.5 flex justify-between font-mono text-2xs text-text-tertiary">
         <span>{domainLo.toFixed(2)}</span>
         <span>ATE = {summary.point.toFixed(2)}</span>
         <span>{domainHi.toFixed(2)}</span>
@@ -477,45 +345,42 @@ interface Props {
   artifact: CounterfactualOperatorView;
 }
 
+// Conformal = stronger contract = same green tint as high-confidence;
+// asymptotic stays neutral.
+const CI_METHOD_BADGE: Record<NonNullable<CounterfactualOperatorView['ci_method']>, string> = {
+  conformal: TONE_BADGE.signal,
+  mixed: TONE_BADGE.warn,
+  asymptotic: TONE_BADGE.neutral,
+};
+
 const CounterfactualCard: React.FC<Props> = ({ artifact }) => {
   const [showDebate, setShowDebate] = useState(false);
 
   return (
-    <div
+    <Card
       data-testid="counterfactual-card"
-      style={{
-        border: '1px solid var(--border, #1e293b)',
-        background: 'var(--card-bg, rgba(15, 23, 42, 0.6))',
-        borderRadius: 8,
-        padding: 16,
-        margin: '12px 0',
-      }}
+      className="my-3 gap-0 px-4 shadow-none"
     >
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12 }}>
-        <h3 style={{ margin: 0, fontSize: 16, color: 'var(--text-primary, #f1f5f9)', fontWeight: 500 }}>
+      <div className="flex items-start justify-between gap-3">
+        <h3 className="m-0 font-display text-base font-medium text-text-primary">
           {artifact.headline}
         </h3>
         <span
           data-testid="confidence-badge"
-          style={{
-            padding: '2px 8px',
-            borderRadius: 4,
-            fontSize: 12,
-            background: CONFIDENCE_BG[artifact.confidence],
-            color: CONFIDENCE_FG[artifact.confidence],
-            border: `1px solid ${CONFIDENCE_BORDER[artifact.confidence]}`,
-            whiteSpace: 'nowrap',
-          }}
+          className={cn(
+            'border px-2 py-0.5 text-xs whitespace-nowrap',
+            TONE_BADGE[CONFIDENCE_TONE[artifact.confidence]],
+          )}
         >
           {artifact.confidence}
         </span>
       </div>
 
-      <div style={{ marginTop: 8, fontSize: 13, color: 'var(--text-secondary, #cbd5e1)' }}>
+      <div className="mt-2 text-[13px] text-text-secondary">
         Point estimate{' '}
-        <span style={{ fontFamily: 'monospace' }}>{artifact.point_estimate.toFixed(2)}</span>
+        <span className="font-mono">{artifact.point_estimate.toFixed(2)}</span>
         {' '}· 95% CI{' '}
-        <span style={{ fontFamily: 'monospace' }}>
+        <span className="font-mono">
           [{artifact.ci[0].toFixed(2)}, {artifact.ci[1].toFixed(2)}]
         </span>
         {artifact.ci_method && (
@@ -528,34 +393,7 @@ const CounterfactualCard: React.FC<Props> = ({ artifact }) => {
                 ? 'Multiple estimators contributed; at least one shipped a conformal interval. Read as the weakest contract.'
                 : 'Asymptotic-normal CI from statsmodels / BLB. Coverage requires correctly-specified nuisance and large-n asymptotics.'
             }
-            style={{
-              marginLeft: 8,
-              padding: '1px 6px',
-              borderRadius: 3,
-              fontSize: 10,
-              fontFamily: 'inherit',
-              cursor: 'help',
-              // Conformal = stronger contract = same green-ish tint
-              // as high-confidence; asymptotic stays neutral.
-              background:
-                artifact.ci_method === 'conformal'
-                  ? CONFIDENCE_BG.high
-                  : artifact.ci_method === 'mixed'
-                  ? CONFIDENCE_BG.medium
-                  : 'rgba(148, 163, 184, 0.15)',
-              color:
-                artifact.ci_method === 'conformal'
-                  ? CONFIDENCE_FG.high
-                  : artifact.ci_method === 'mixed'
-                  ? CONFIDENCE_FG.medium
-                  : 'var(--text-muted, #94a3b8)',
-              border:
-                artifact.ci_method === 'conformal'
-                  ? `1px solid ${CONFIDENCE_BORDER.high}`
-                  : artifact.ci_method === 'mixed'
-                  ? `1px solid ${CONFIDENCE_BORDER.medium}`
-                  : '1px solid var(--border, #334155)',
-            }}
+            className={cn('ml-2 cursor-help', BADGE_BASE, CI_METHOD_BADGE[artifact.ci_method])}
           >
             {artifact.ci_method}
           </span>
@@ -574,50 +412,37 @@ const CounterfactualCard: React.FC<Props> = ({ artifact }) => {
         <CATEDistributionBlock summary={artifact.cate_distribution_summary} />
       )}
 
-      <button
+      <Button
         type="button"
+        variant="link"
+        size="xs"
         onClick={() => setShowDebate(s => !s)}
-        style={{
-          marginTop: 12,
-          background: 'transparent',
-          border: 'none',
-          color: 'var(--accent, #38bdf8)',
-          fontSize: 12,
-          cursor: 'pointer',
-          padding: 0,
-          textDecoration: 'underline',
-          textUnderlineOffset: 2,
-        }}
+        className="mt-3 h-auto self-start rounded-none p-0 text-xs underline"
       >
         {showDebate ? 'Hide the debate' : 'See the debate'}
-      </button>
+      </Button>
 
       {showDebate && (
-        <ul style={{ marginTop: 8, paddingLeft: 0, listStyle: 'none', display: 'flex', flexDirection: 'column', gap: 6 }}>
+        <ul className="mt-2 flex list-none flex-col gap-1.5 pl-0">
           {artifact.top_challenges.length === 0 && (
-            <li style={{ fontSize: 13, color: 'var(--text-secondary, #cbd5e1)', fontStyle: 'italic' }}>
+            <li className="text-[13px] italic text-text-secondary">
               No challenges raised — refutation tests passed and the critic had no objections.
             </li>
           )}
           {artifact.top_challenges.map((c, i) => (
-            <li key={i} style={{ fontSize: 13, color: 'var(--text-secondary, #cbd5e1)' }}>
+            <li key={i} className="text-[13px] text-text-secondary">
               <span
-                style={{
-                  display: 'inline-block',
-                  marginRight: 8,
-                  padding: '1px 6px',
-                  borderRadius: 3,
-                  fontSize: 10,
-                  background: CONFIDENCE_BG[c.severity],
-                  color: CONFIDENCE_FG[c.severity],
-                  border: `1px solid ${CONFIDENCE_BORDER[c.severity]}`,
-                }}
+                className={cn(
+                  'mr-2 inline-block',
+                  BADGE_BASE,
+                  TONE_BADGE[CONFIDENCE_TONE[c.severity]],
+                )}
               >
                 {c.severity}
               </span>
               {c.text}
               {c.suggested_check && (
-                <div style={{ marginLeft: 36, marginTop: 2, fontSize: 12, opacity: 0.7 }}>
+                <div className="ml-9 mt-0.5 text-xs opacity-70">
                   → {c.suggested_check}
                 </div>
               )}
@@ -626,17 +451,10 @@ const CounterfactualCard: React.FC<Props> = ({ artifact }) => {
         </ul>
       )}
 
-      <div
-        style={{
-          marginTop: 12,
-          fontSize: 10,
-          color: 'var(--text-muted, #64748b)',
-          fontFamily: 'monospace',
-        }}
-      >
+      <div className="mt-3 font-mono text-2xs text-text-tertiary">
         audit_record_hash: {artifact.audit_record_hash.slice(0, 16)}…
       </div>
-    </div>
+    </Card>
   );
 };
 
