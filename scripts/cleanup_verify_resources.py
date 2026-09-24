@@ -74,6 +74,7 @@ Safety notes
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import sqlite3
 import sys
@@ -82,6 +83,15 @@ from pathlib import Path
 
 DEFAULT_METADATA_DB = "/data/state/metadata.db"
 DEFAULT_UASR_DB = "/data/state/uasr.db"
+
+# The defaults above are the CONTAINER's paths. Run on the host (the documented
+# "run it on the box" procedure) they do not exist: the same files live in the
+# aura-data Docker volume, so both databases were skipped and the script still
+# reported "Nothing to do." (BUG-171). A default that is missing is therefore
+# retried here; a path the operator passed explicitly is never substituted.
+DOCKER_VOLUME_STATE_DIR = os.environ.get(
+    "AURA_CLEANUP_FALLBACK_STATE_DIR", "/var/lib/docker/volumes/aura_aura-data/_data/state"
+)
 
 # The one manually-created test account. There is no auto-namespaced email
 # convention in verify_live_deployment.py -- every check reuses one fixed
@@ -115,6 +125,18 @@ def is_verify_email(email: str) -> bool:
 
 def is_verify_source_id(source_id: str) -> bool:
     return bool(VERIFY_SOURCE_ID_RE.match(source_id))
+
+
+def resolve_db_path(path: str, default: str, filename: str) -> str:
+    """The path to actually open: `path` itself unless it is the untouched
+    default and missing, in which case the Docker-volume copy if that exists."""
+    if path != default or Path(path).exists():
+        return path
+    fallback = Path(DOCKER_VOLUME_STATE_DIR) / filename
+    if fallback.exists():
+        print(f"[note] {path} not found; using the Docker volume copy at {fallback}")
+        return str(fallback)
+    return path
 
 
 def open_db_readonly(path: str) -> sqlite3.Connection | None:
@@ -248,13 +270,16 @@ def main() -> int:
                          help="Actually delete the matched rows. Without this flag, only reports what would be deleted.")
     args = parser.parse_args()
 
+    metadata_path = resolve_db_path(args.metadata_db, DEFAULT_METADATA_DB, "metadata.db")
+    uasr_path = resolve_db_path(args.uasr_db, DEFAULT_UASR_DB, "uasr.db")
+
     print("cleanup_verify_resources.py")
-    print(f"  metadata db: {args.metadata_db}")
-    print(f"  uasr db:     {args.uasr_db}")
+    print(f"  metadata db: {metadata_path}")
+    print(f"  uasr db:     {uasr_path}")
     print(f"  mode:        {'DELETE (--confirm given)' if args.confirm else 'DRY RUN (pass --confirm to delete)'}")
 
     metadata_matches: list[Match] = []
-    metadata_conn = open_db_readonly(args.metadata_db)
+    metadata_conn = open_db_readonly(metadata_path)
     if metadata_conn is not None:
         try:
             metadata_matches = find_metadata_matches(metadata_conn)
@@ -262,12 +287,23 @@ def main() -> int:
             metadata_conn.close()
 
     uasr_matches: list[Match] = []
-    uasr_conn = open_db_readonly(args.uasr_db)
+    uasr_conn = open_db_readonly(uasr_path)
     if uasr_conn is not None:
         try:
             uasr_matches = find_uasr_matches(uasr_conn)
         finally:
             uasr_conn.close()
+
+    if metadata_conn is None and uasr_conn is None:
+        # Reporting "Nothing to do." here would read as a clean box when in fact
+        # no database was examined at all.
+        print()
+        print("NOTHING WAS CHECKED: neither database could be opened, so leftover test rows may still be there.")
+        print(
+            "Point the script at the real files with --metadata-db and --uasr-db "
+            f"(on the box they are in {DOCKER_VOLUME_STATE_DIR}, and may need sudo)."
+        )
+        return 2
 
     print_report("Gateway metadata.db -- users to delete", metadata_matches)
     print_report("UASR uasr.db -- source_ids to delete", uasr_matches)
@@ -284,7 +320,7 @@ def main() -> int:
     exit_code = 0
 
     if metadata_matches:
-        ok, deleted, msg = delete_metadata_matches(args.metadata_db, metadata_matches)
+        ok, deleted, msg = delete_metadata_matches(metadata_path, metadata_matches)
         status = "OK" if ok else "FAILED"
         print(f"\nmetadata.db: {status} -- {deleted} row(s) deleted. {msg}")
         if not ok:
@@ -293,7 +329,7 @@ def main() -> int:
         print("\nmetadata.db: nothing matched, no delete attempted.")
 
     if uasr_matches:
-        ok, deleted, msg = delete_uasr_matches(args.uasr_db, uasr_matches)
+        ok, deleted, msg = delete_uasr_matches(uasr_path, uasr_matches)
         status = "OK" if ok else "FAILED"
         print(f"uasr.db: {status} -- {deleted} row(s) deleted. {msg}")
         if not ok:
