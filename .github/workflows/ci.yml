@@ -414,20 +414,21 @@ jobs:
         run: |
           python -m pytest tests/test_scheduler_distributed.py tests/test_scheduler_worker_integration.py -v --tb=short
 
-  # ── Storage S3 integration (MinIO required) ─────────────────────────────
+  # ── Storage S3 integration (S3-compatible server required) ─────────────────────────────
   # Sprint S45: tests/test_storage_s3_duckdb.py is a Tier-B test that
   # proves DuckDB reads CSVs from a real S3-compatible store end-to-end.
   # The base backend-test lane runs Tier A and silently skips Tier B
-  # (AURA_S3_TEST_ENDPOINT absent). This dedicated lane starts the
-  # official MinIO image (quay.io/minio/minio — MinIO's current Docker
-  # distribution channel, see the Start MinIO step) via `docker run`
-  # (MinIO's own recommended GitHub Actions pattern — a services: block
-  # cannot pass the required `server /data` command), exports the
+  # (AURA_S3_TEST_ENDPOINT absent). This dedicated lane starts a pinned
+  # SeaweedFS S3 gateway (MinIO's community images are gone -- see the
+  # Start step) via `docker run` (a services: block cannot pass the
+  # required server command), exports the
   # AURA_S3_TEST_* vars, and runs the file so Tier B actually executes.
   #
   # Avoids the silent-skip false-green pattern — same pattern as
   # scheduler-distributed-test (Postgres / Sprint 20b).
   storage-s3:
+    # The name still says MinIO on purpose: it is the status-check name branch
+    # protection matches on, and renaming it would orphan that rule.
     name: Storage S3 (MinIO integration)
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -439,18 +440,21 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Start MinIO
-        # MinIO stopped publishing minio/minio to Docker Hub -- pulling it
-        # now fails with "pull access denied ... repository does not exist"
-        # (confirmed on main's own CI, 2026-09-11/12, unrelated to any code
-        # change). quay.io/minio/minio is MinIO's current official
-        # distribution channel for this image.
+      - name: Start S3-compatible server (SeaweedFS)
+        # MinIO withdrew its community distribution from every official
+        # channel, in two steps: Docker Hub (minio/minio) went first, then
+        # quay.io/minio/minio started answering "unauthorized" to anonymous
+        # pulls (BUG-168, 2026-09-24), and dl.min.io now returns 410 Gone for
+        # even the pinned release binaries. Nothing in the test is
+        # MinIO-specific -- it needs any S3-compatible endpoint on :9000 with
+        # path-style access -- so this runs SeaweedFS's S3 gateway instead. The
+        # tag is PINNED: a floating tag is what let this lane break twice.
+        # With no -s3.config the gateway accepts the test's static keys.
         run: |
-          docker run -d --name minio \
+          docker run -d --name s3 \
             -p 9000:9000 \
-            -e MINIO_ROOT_USER=test \
-            -e MINIO_ROOT_PASSWORD=test12345 \
-            quay.io/minio/minio server /data
+            chrislusf/seaweedfs:4.47 \
+            server -s3 -s3.port=9000 -dir=/data -master.volumeSizeLimitMB=64
 
       - name: Set up Python 3.12
         uses: actions/setup-python@v7
@@ -465,13 +469,17 @@ jobs:
           pip install -r requirements.txt
           pip install pytest pytest-asyncio
 
-      - name: Wait for MinIO
+      - name: Wait for the S3 endpoint
+        # The S3 API answers ListBuckets on / (200, or 403 if auth is on);
+        # a refused connection reads as 000, and 5xx means the filer behind
+        # the gateway is not ready yet -- keep waiting on both.
         run: |
-          for i in $(seq 1 30); do
-            if curl -sf http://localhost:9000/minio/health/live; then echo "minio up"; exit 0; fi
+          for i in $(seq 1 45); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:9000/ || true)
+            if [ "$code" = "200" ] || [ "$code" = "403" ]; then echo "s3 up ($code)"; exit 0; fi
             sleep 2
           done
-          echo "minio did not become ready"; exit 1
+          echo "s3 endpoint did not become ready (last status: $code)"; exit 1
 
       - name: Run S3 integration test
         working-directory: aurabackend
@@ -481,6 +489,11 @@ jobs:
           AURA_S3_TEST_SECRET: test12345
           AURA_S3_TEST_BUCKET: aura-test
         run: python -m pytest tests/test_storage_s3_duckdb.py -v
+
+      - name: S3 server logs (on failure)
+        if: failure()
+        working-directory: .
+        run: docker logs s3 2>&1 | tail -80
 
   # ── Frontend build ───────────────────────────────────────────────────────
   # Runs the REAL production build (tsc -b + vite build), identical to the
