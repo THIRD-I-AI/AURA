@@ -115,3 +115,24 @@ def pytest_sessionfinish(session, exitstatus):
             _module._engine = None
         except Exception:
             pass
+
+    # Third source (BUG-164): the two disposals above only reach the three
+    # named module-level engines. Any other aiosqlite connection still alive
+    # here -- a checked-out pooled connection dispose() cannot close, or an
+    # engine orphaned when a test re-pointed a global (e.g. the audit ledger's)
+    # at its own tmp_path database -- keeps a NON-DAEMON worker thread parked
+    # in queue.get() and hangs threading._shutdown after "N passed". The set of
+    # leakers varies with test order/GC timing, which is why the hang was
+    # intermittent. The session is over, so stop every survivor:
+    # Connection.stop() is aiosqlite's public synchronous close-and-stop.
+    import gc as _gc
+    try:
+        from aiosqlite.core import Connection as _AioConnection
+    except Exception:
+        return
+    for _obj in _gc.get_objects():
+        try:
+            if isinstance(_obj, _AioConnection) and _obj._thread.is_alive():
+                _obj.stop()
+        except Exception:
+            pass
