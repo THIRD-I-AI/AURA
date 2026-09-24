@@ -9,14 +9,19 @@
    theme_honesty: we ship one honest surface, not a fake toggle. */
 
 .aw {
-  --bg: #0a0e14; --surface: #0f141b; --raised: #161d27; --sunken: #070a0f;
-  --border: #1d2530; --hair: #131a23;
-  --text: #e6e9ef; --text2: #9aa4b2; --text3: #87919d;
-  --accent: #22c55e; --accent-dim: rgba(34, 197, 94, .12); --accent-bd: rgba(34, 197, 94, .4);
+  /* Short workbench names ALIAS the canonical tokens.css vocabulary (BUG-151)
+     instead of restating its hex, so a tokens.css rebrand reaches the cockpit.
+     --accent/--warn/--danger/--cyan are deliberately NOT redeclared: they carry
+     the identical values at :root and inherit. Only values that genuinely
+     differ from tokens.css stay local: --text3 is brighter than
+     --text-tertiary for contrast, and the *-dim washes are .12, not .14. */
+  --bg: var(--bg-base); --surface: var(--bg-surface); --raised: var(--bg-raised); --sunken: var(--bg-sunken);
+  --border: var(--border-default); --hair: var(--border-hairline);
+  --text: var(--text-primary); --text2: var(--text-secondary); --text3: #87919d;
+  --accent-dim: rgba(34, 197, 94, .12); --accent-bd: var(--accent-border);
   --on-accent: #07100a;
-  --warn: #f59e0b; --warn-dim: rgba(245, 158, 11, .12);
-  --danger: #ef4444; --danger-dim: rgba(239, 68, 68, .12);
-  --cyan: #22d3ee;
+  --warn-dim: rgba(245, 158, 11, .12);
+  --danger-dim: rgba(239, 68, 68, .12);
   --shadow: none; --overlay: rgba(2, 4, 8, .6);
   /* One motion vocabulary, tuned once. */
   --ease-out: cubic-bezier(.22, 1, .36, 1);
