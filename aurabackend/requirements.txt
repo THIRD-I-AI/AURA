@@ -22,7 +22,16 @@ numpy>=1.26,<3.0
 pyarrow>=23.0.1,<24
 
 # Database drivers (core)
-sqlalchemy>=2.0,<3.0
+# BUG-172: capped below 2.1. SQLAlchemy 2.1.0 (released 2026-09-24) stopped
+# installing greenlet by default, so every import of sqlalchemy.ext.asyncio --
+# the gateway, alembic's env.py, half the test suite -- failed with "requires
+# that the Python 'greenlet' library is installed" and took CI down. The code
+# is built and tested on 2.0.x; moving to 2.1 is a deliberate upgrade to test
+# on its own, not something a `<3.0` range should do to us on release day.
+sqlalchemy>=2.0,<2.1
+# Required by sqlalchemy.ext.asyncio, which we use directly. Declared rather
+# than relying on SQLAlchemy to pull it in.
+greenlet>=3.0,<4.0
 alembic>=1.19.1,<2.0
 tzdata>=2026.3  # Windows: required for Alembic timezone = UTC in alembic.ini
 asyncpg>=0.29,<1.0
