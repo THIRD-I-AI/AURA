@@ -64,6 +64,18 @@ export interface DemoSubmitResult {
   cached?: boolean;
 }
 
+/** GET /audit/ledger/proof/{cert_hash}: RFC 6962 inclusion proof for the ledger
+    record that certified `cert_hash` within the caller's tenant chain. */
+export interface LedgerProof {
+  tenant_id: string;
+  tree_size: number;
+  leaf_index: number;
+  cert_hash: string;
+  record_hash: string;
+  proof_hex: string[];
+  root_hash_hex: string;
+}
+
 export interface VerifyResult {
   record_hash: string;
   verified: boolean;

@@ -1,5 +1,6 @@
 import { Link } from 'react-router-dom';
 import { auditApi } from './auditApi';
+import { LedgerProof } from './LedgerProof';
 import { CertificateTheme } from '../ui/CertificateTheme';
 import { Badge } from '../ui/Badge';
 import type { BadgeStatus } from '../ui/status';
@@ -92,6 +93,10 @@ export function Certificate({ artifact, verifyResult, readOnly = false }: {
             {verifyResult.verified ? 'Independently verified ✓' : `NOT verified — ${verifyResult.reason ?? verifyResult.signature_status}`}
           </div>
         )}
+
+        {/* Proofs are scoped to the signed-in tenant's chain, so this is only
+            meaningful on the owner's view, never the public read-only verify page. */}
+        {!readOnly && <LedgerProof certHash={artifact.audit_record_hash} />}
 
         {!readOnly && (
           <div className="aud-cert__actions">

@@ -1672,6 +1672,26 @@ export interface ExceptionQueueView {
   n_decided: number;
 }
 
+/** One ledger entry from GET /audit/ledger/subject/{id} (BUG-159). */
+export interface SubjectAuditEntry {
+  seq: number;
+  kind: string;
+  subject_type: string;
+  preparer_id: string;
+  reviewer_id: string | null;
+  cert_hash: string | null;
+  input_fingerprint: string | null;
+  ts: string;
+  record_hash: string;
+}
+
+export interface SubjectHistory {
+  tenant_id: string;
+  subject_id: string;
+  count: number;
+  audits: SubjectAuditEntry[];
+}
+
 export interface HumanOverrideRecord {
   record_hash: string;
   document_type: string;
@@ -1726,6 +1746,14 @@ export const financialAuditService = {
     preparer_id?: string;
   }): Promise<FinancialAuditReport> {
     return client.post<FinancialAuditReport>('/counterfactual/audit/financial', payload);
+  },
+
+  /** Every audit recorded for one subject (model / cohort / applicant) in the
+   *  caller's tenant, oldest first. Tenant comes from the JWT server-side. */
+  async subjectHistory(subjectId: string): Promise<SubjectHistory> {
+    return client.get<SubjectHistory>(
+      `/counterfactual/audit/ledger/subject/${encodeURIComponent(subjectId)}`,
+    );
   },
 
   async getExceptions(recordHash: string): Promise<ExceptionQueueView> {

@@ -33,6 +33,14 @@ describe('auditApi', () => {
     expect(out.state).toBe('running');
   });
 
+  it('ledgerProof GETs the tenant-scoped proof endpoint with the hash URL-encoded', async () => {
+    const proof = { tenant_id: 't', tree_size: 2, leaf_index: 1, cert_hash: 'a/b', record_hash: 'r', proof_hex: [], root_hash_hex: 'x' };
+    (fetch as ReturnType<typeof vi.fn>).mockReturnValue(mockJson(proof));
+    const out = await auditApi.ledgerProof('a/b');
+    expect(fetch).toHaveBeenCalledWith(`${API_BASE_URL}/counterfactual/audit/ledger/proof/a%2Fb`, expect.anything());
+    expect(out.leaf_index).toBe(1);
+  });
+
   it('verify GETs the artifact verify endpoint', async () => {
     (fetch as ReturnType<typeof vi.fn>).mockReturnValue(mockJson({ record_hash: 'h', verified: true, signature_status: 'ok', signing_key_source: 'persisted_file' }));
     const out = await auditApi.verify('h');

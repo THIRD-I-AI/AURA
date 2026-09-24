@@ -28,6 +28,7 @@ vi.mock('../../../services/api', () => ({
     getExceptions: vi.fn(),
     decide: vi.fn(),
     verify: vi.fn(),
+    subjectHistory: vi.fn(),
   },
   // Real implementation, not a mock: ExceptionQueue uses it for client-side
   // hash validation and the behavior under test depends on its actual regex.
@@ -203,6 +204,54 @@ describe('ExceptionQueue (HITL workbench)', () => {
       await userEvent.click(within(screen.getByTestId('ledger-file-ledger')).getByRole('button', { name: /remove/i }));
       expect(screen.queryByTestId('ledger-file-status-ledger')).not.toBeInTheDocument();
       expect(run).toBeDisabled();
+    });
+  });
+
+  // BUG-159: per-subject ledger history existed server-side with no UI.
+  describe('subject audit history', () => {
+    const HISTORY = {
+      tenant_id: 't1', subject_id: 'loan-model-v3', count: 2,
+      audits: [
+        { seq: 1, kind: 'financial_audit_completed', subject_type: 'dataset', preparer_id: 'system',
+          reviewer_id: null, cert_hash: 'a'.repeat(64), input_fingerprint: 'f1', ts: '2026-09-01T10:00:00', record_hash: 'r1' },
+        { seq: 4, kind: 'human_review', subject_type: 'dataset', preparer_id: 'system',
+          reviewer_id: 'auditor-7', cert_hash: 'b'.repeat(64), input_fingerprint: 'f2', ts: '2026-09-02T09:30:00', record_hash: 'r2' },
+      ],
+    };
+
+    it('looks up a subject and lists its audits oldest-first with reviewer and certificate links', async () => {
+      svc.subjectHistory.mockResolvedValue(HISTORY);
+      render(<ExceptionQueue />);
+      const button = screen.getByRole('button', { name: /look up history/i });
+      expect(button).toBeDisabled();
+      await userEvent.type(screen.getByLabelText(/subject to look up/i), '  loan-model-v3  ');
+      await userEvent.click(button);
+
+      const table = await screen.findByTestId('subject-history-table');
+      expect(svc.subjectHistory).toHaveBeenCalledWith('loan-model-v3');
+      expect(table).toHaveTextContent('2 audits for "loan-model-v3", oldest first');
+      const rows = within(table).getAllByRole('row').slice(1);
+      expect(rows[0]).toHaveTextContent('financial_audit_completed');
+      expect(rows[1]).toHaveTextContent('auditor-7');
+      const link = within(rows[0]).getByRole('link');
+      expect(link).toHaveAttribute('href', `/certificate/${'a'.repeat(64)}`);
+      expect(link).toHaveTextContent('aaaaaaaaaaaa…');
+    });
+
+    it('says plainly when a subject has no audits', async () => {
+      svc.subjectHistory.mockResolvedValue({ tenant_id: 't1', subject_id: 'nope', count: 0, audits: [] });
+      render(<ExceptionQueue />);
+      await userEvent.type(screen.getByLabelText(/subject to look up/i), 'nope');
+      await userEvent.click(screen.getByRole('button', { name: /look up history/i }));
+      expect(await screen.findByTestId('subject-history-empty')).toHaveTextContent(/no audits recorded for "nope"/i);
+    });
+
+    it('shows a lookup failure as an alert', async () => {
+      svc.subjectHistory.mockRejectedValue(new Error('HTTP 401: unauthorized'));
+      render(<ExceptionQueue />);
+      await userEvent.type(screen.getByLabelText(/subject to look up/i), 'x');
+      await userEvent.click(screen.getByRole('button', { name: /look up history/i }));
+      expect(await screen.findByText(/HTTP 401/)).toHaveAttribute('role', 'alert');
     });
   });
 

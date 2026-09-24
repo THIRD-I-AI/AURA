@@ -31,6 +31,7 @@ import {
 import { SAMPLE_AUDIT_BATCH } from '../../audit/sampleAuditBatch';
 import { LEDGER_DATASETS, parseLedgerFile, type LedgerDatasetKey, type LedgerDatasetSpec } from '../../audit/ledgerFiles';
 import { LedgerFilePicker, type LoadedLedgerFiles } from './LedgerFilePicker';
+import { SubjectHistory } from './SubjectHistory';
 
 // Shown as placeholder text (not a pre-filled value) so the empty textarea
 // documents the accepted shape without looking like real fabricated rows.
@@ -369,6 +370,8 @@ export function ExceptionQueue() {
           </PanelBody>
         </Panel>
       </div>
+
+      <SubjectHistory />
 
       {queue && (
         <div className="grid grid-cols-1 gap-5 md:grid-cols-2">

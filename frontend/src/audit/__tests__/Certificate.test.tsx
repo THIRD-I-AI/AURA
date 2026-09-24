@@ -32,6 +32,17 @@ describe('Certificate', () => {
     expect(screen.getByTestId('cert-verify-link')).toBeInTheDocument();
   });
 
+  // BUG-159: the Merkle proof machinery existed server-side but no UI reached it.
+  it('offers the ledger inclusion check on the owner view, but not on the public read-only page', () => {
+    const { unmount } = render(<MemoryRouter><Certificate artifact={artifact} /></MemoryRouter>);
+    expect(screen.getByTestId('ledger-proof')).toBeInTheDocument();
+    expect(screen.getByTestId('ledger-proof-check')).toBeInTheDocument();
+    unmount();
+    render(<MemoryRouter><Certificate artifact={artifact} readOnly /></MemoryRouter>);
+    // Proofs are scoped to the signed-in tenant's chain; the public page has no tenant.
+    expect(screen.queryByTestId('ledger-proof')).not.toBeInTheDocument();
+  });
+
   it('hides actions in readOnly mode (used by the public verify page)', () => {
     render(<MemoryRouter><Certificate artifact={artifact} readOnly /></MemoryRouter>);
     expect(screen.queryByTestId('cert-download-pdf')).not.toBeInTheDocument();
