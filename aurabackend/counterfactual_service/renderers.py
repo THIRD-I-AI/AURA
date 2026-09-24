@@ -167,6 +167,11 @@ def _operator(art: CounterfactualArtifact) -> Dict[str, Any]:
         "ci": [ci_lo, ci_hi],
         "ci_method": ci_method_overall,
         "confidence": art.confidence,
+        # BUG-154: score_confidence deliberately treats a lone surviving
+        # estimator as "no disagreement" (1.0 overlap), so a badge of "high"
+        # can rest on one method out of several. Report the denominator so
+        # the operator can see what the badge is built on.
+        "estimator_coverage": {"valid": len(valid), "total": len(art.estimates)},
         "top_challenges": top_challenges,
         "audit_record_hash": art.audit_record_hash,
     }
