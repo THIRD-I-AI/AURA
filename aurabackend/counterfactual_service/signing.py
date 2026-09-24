@@ -31,7 +31,9 @@ from __future__ import annotations
 import base64
 import logging
 import os
+import tempfile
 import threading
+import time
 from pathlib import Path
 from typing import Optional, Tuple
 
@@ -73,6 +75,88 @@ _KEY_SOURCE: str = "uninitialized"
 # losing key can never verify again. Double-checked locking: the fast
 # path (key already resolved) never touches the lock.
 _KEY_RESOLUTION_LOCK = threading.Lock()
+
+
+def _load_persisted_key(key_file: Path) -> "ed25519.Ed25519PrivateKey":
+    """Load the persisted key, retrying briefly. A file another process is still
+    writing (only possible on filesystems where the atomic publish below falls
+    back to exclusive-create) can be momentarily empty or truncated; a genuinely
+    corrupt file keeps failing and raises after the last attempt."""
+    last: Optional[Exception] = None
+    for attempt in range(6):
+        try:
+            sk = serialization.load_pem_private_key(key_file.read_bytes(), password=None)
+            if not isinstance(sk, ed25519.Ed25519PrivateKey):
+                raise TypeError(f"key at {key_file} is not Ed25519")
+            return sk
+        except TypeError:
+            raise  # wrong key type is not a transient state
+        except Exception as exc:
+            last = exc
+            time.sleep(0.05 * (attempt + 1))
+    assert last is not None
+    raise last
+
+
+def _create_persisted_key_once(key_file: Path) -> Tuple["ed25519.Ed25519PrivateKey", bool]:
+    """Create the key file at most once across ALL processes; returns
+    ``(key, created)``. The threading lock above cannot serialise separate
+    processes (BUG-160), so exactly one creator is decided by the filesystem:
+
+    The PEM is written in full to a temp file in the same directory and then
+    hard-linked to its final name. ``os.link`` is atomic and fails with
+    FileExistsError if the name is taken, so the file is never visible
+    half-written and a second creator can never overwrite the first. The loser
+    discards the key it generated and adopts the winner's."""
+    sk = ed25519.Ed25519PrivateKey.generate()
+    key_file.parent.mkdir(parents=True, exist_ok=True)
+    pem = sk.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.PKCS8,
+        encryption_algorithm=serialization.NoEncryption(),
+    )
+    fd, tmp_name = tempfile.mkstemp(dir=key_file.parent, prefix=".signing_ed25519.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(pem)
+            fh.flush()
+            os.fsync(fh.fileno())
+        try:
+            os.chmod(tmp_name, 0o600)
+        except OSError:
+            pass
+        try:
+            os.link(tmp_name, key_file)
+        except FileExistsError:
+            return _load_persisted_key(key_file), False
+        except OSError:
+            # No hard-link support (some network / container filesystems).
+            # O_EXCL still guarantees a single creator, at the cost of a brief
+            # window in which readers can see a partial file -- covered by the
+            # retry in _load_persisted_key.
+            try:
+                efd = os.open(key_file, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+            except FileExistsError:
+                return _load_persisted_key(key_file), False
+            try:
+                with os.fdopen(efd, "wb") as fh:
+                    fh.write(pem)
+                    fh.flush()
+                    os.fsync(fh.fileno())
+            except Exception:
+                # A failed write must not leave a truncated key file that would
+                # block every later start.
+                try:
+                    os.unlink(key_file)
+                except OSError:
+                    pass
+                raise
+        return sk, True
+    finally:
+        try:
+            os.unlink(tmp_name)
+        except OSError:
+            pass
 
 
 def _resolve_key_pair() -> Optional[Tuple[object, object]]:
@@ -128,31 +212,24 @@ def _resolve_key_pair_locked() -> Optional[Tuple[object, object]]:
     # demo. Default dir data/keys/; override with AURA_SIGNING_KEY_DIR.
     key_dir = os.getenv("AURA_SIGNING_KEY_DIR", "data/keys").strip() or "data/keys"
     key_file = Path(key_dir) / "signing_ed25519.pem"
+    persisted_error: Optional[Exception] = None
     try:
         if key_file.exists():
-            sk = serialization.load_pem_private_key(key_file.read_bytes(), password=None)
-            if isinstance(sk, ed25519.Ed25519PrivateKey):
-                _KEY_PAIR = (sk, sk.public_key())
-                _KEY_SOURCE = "persisted_file"
-                logger.info("ED25519 signing key loaded from %s", key_file)
-                return _KEY_PAIR
-        sk = ed25519.Ed25519PrivateKey.generate()
-        key_file.parent.mkdir(parents=True, exist_ok=True)
-        pem = sk.private_bytes(
-            encoding=serialization.Encoding.PEM,
-            format=serialization.PrivateFormat.PKCS8,
-            encryption_algorithm=serialization.NoEncryption(),
-        )
-        key_file.write_bytes(pem)
-        try:
-            os.chmod(key_file, 0o600)
-        except OSError:
-            pass
+            sk = _load_persisted_key(key_file)
+            _KEY_PAIR = (sk, sk.public_key())
+            _KEY_SOURCE = "persisted_file"
+            logger.info("ED25519 signing key loaded from %s", key_file)
+            return _KEY_PAIR
+        sk, created = _create_persisted_key_once(key_file)
         _KEY_PAIR = (sk, sk.public_key())
         _KEY_SOURCE = "persisted_file"
-        logger.info("ED25519 signing key generated + persisted at %s", key_file)
+        if created:
+            logger.info("ED25519 signing key generated + persisted at %s", key_file)
+        else:
+            logger.info("ED25519 signing key loaded from %s (another process created it first)", key_file)
         return _KEY_PAIR
     except Exception as exc:
+        persisted_error = exc
         logger.warning("persisted-key path failed (%s); using ephemeral key", exc)
 
     # Ephemeral fallback (final). Logged loudly because it changes the
@@ -161,14 +238,17 @@ def _resolve_key_pair_locked() -> Optional[Tuple[object, object]]:
     # that's not an acceptable silent degradation — fail startup instead of
     # minting signatures auditors would wrongly trust as stable.
     if settings.is_production:
+        # Name the real cause: this used to say "not writable" even when the
+        # directory was fine and the key file itself was unreadable or corrupt.
+        cause = f" Underlying error: {type(persisted_error).__name__}: {persisted_error}." if persisted_error else ""
         raise RuntimeError(
             "ED25519 signing key could not be loaded from "
             "AURA_SIGNING_PRIVATE_KEY_HEX / AURA_SIGNING_PRIVATE_KEY_PATH, "
-            "and the persisted-key directory (AURA_SIGNING_KEY_DIR, default "
-            "data/keys) is not writable. Refusing to fall back to an "
-            "ephemeral key in production — it would invalidate every prior "
-            "signature on the next restart. Fix the key dir permissions or "
-            "set AURA_SIGNING_PRIVATE_KEY_HEX/_PATH."
+            "and the persisted key (AURA_SIGNING_KEY_DIR, default data/keys) "
+            "could not be loaded or created." + cause + " Refusing to fall "
+            "back to an ephemeral key in production — it would invalidate every "
+            "prior signature on the next restart. Fix the key directory or key "
+            "file, or set AURA_SIGNING_PRIVATE_KEY_HEX/_PATH."
         )
     sk = ed25519.Ed25519PrivateKey.generate()
     _KEY_PAIR = (sk, sk.public_key())
