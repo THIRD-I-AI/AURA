@@ -29,6 +29,8 @@ import {
   type FinancialAuditReport,
 } from '../../services/api';
 import { SAMPLE_AUDIT_BATCH } from '../../audit/sampleAuditBatch';
+import { LEDGER_DATASETS, parseLedgerFile, type LedgerDatasetKey, type LedgerDatasetSpec } from '../../audit/ledgerFiles';
+import { LedgerFilePicker, type LoadedLedgerFiles } from './LedgerFilePicker';
 
 // Shown as placeholder text (not a pre-filled value) so the empty textarea
 // documents the accepted shape without looking like real fabricated rows.
@@ -75,6 +77,7 @@ export function ExceptionQueue() {
   const [hashInput, setHashInput] = useState('');
   const [hashError, setHashError] = useState<string | null>(null);
   const [ledgerText, setLedgerText] = useState('');
+  const [ledgerFiles, setLedgerFiles] = useState<LoadedLedgerFiles>({});
   const [ledgerError, setLedgerError] = useState<string | null>(null);
   // Scalar AS-1215/AS-2401 fields — kept as their own inputs (not JSON) since
   // a user would reasonably type single values here; left blank means "omit
@@ -135,18 +138,58 @@ export function ExceptionQueue() {
     }
   }, [hashInput, refreshQueue]);
 
+  const loadLedgerFile = useCallback((spec: LedgerDatasetSpec, file: File) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = parseLedgerFile(spec, file.name, String(reader.result ?? ''));
+      setLedgerFiles((prev) => ({ ...prev, [spec.key]: { name: file.name, result } }));
+      setLedgerError(null);
+    };
+    reader.onerror = () => {
+      setLedgerFiles((prev) => ({
+        ...prev,
+        [spec.key]: { name: file.name, result: { rows: [], columns: [], errors: ['Could not read this file.'], warnings: [] } },
+      }));
+    };
+    reader.readAsText(file);
+  }, []);
+
+  const removeLedgerFile = useCallback((key: LedgerDatasetKey) => {
+    setLedgerFiles((prev) => {
+      const next = { ...prev };
+      delete next[key];
+      return next;
+    });
+  }, []);
+
+  // A file counts once it parsed cleanly; a broken one blocks the run (below)
+  // rather than being silently dropped from a signed audit.
+  const usableFileKeys = LEDGER_DATASETS
+    .filter((d) => { const f = ledgerFiles[d.key]; return f && f.result.errors.length === 0 && f.result.rows.length > 0; })
+    .map((d) => d.key);
+  const brokenFiles = LEDGER_DATASETS.filter((d) => (ledgerFiles[d.key]?.result.errors.length ?? 0) > 0);
+
   const runOwnLedger = useCallback(async () => {
-    let ledgerFields: Record<string, unknown>;
-    try {
-      const parsed: unknown = JSON.parse(ledgerText);
-      if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
-        throw new Error('Expected a JSON object with array fields, e.g. { "ledger": [...], "invoices": [...] }.');
-      }
-      ledgerFields = parsed as Record<string, unknown>;
-    } catch (e) {
-      setLedgerError(`Invalid JSON: ${e instanceof Error ? e.message : String(e)}`);
+    if (brokenFiles.length > 0) {
+      setLedgerError(`Fix or remove ${brokenFiles.map((d) => d.label).join(', ')} before running — a file with errors is not included in the audit.`);
       return;
     }
+    let ledgerFields: Record<string, unknown> = {};
+    if (ledgerText.trim()) {
+      try {
+        const parsed: unknown = JSON.parse(ledgerText);
+        if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+          throw new Error('Expected a JSON object with array fields, e.g. { "ledger": [...], "invoices": [...] }.');
+        }
+        ledgerFields = parsed as Record<string, unknown>;
+      } catch (e) {
+        setLedgerError(`Invalid JSON: ${e instanceof Error ? e.message : String(e)}`);
+        return;
+      }
+    }
+    // An uploaded file is the more deliberate input, so it wins over the same
+    // key pasted as JSON.
+    for (const key of usableFileKeys) ledgerFields[key] = ledgerFiles[key]!.result.rows;
     setLedgerError(null);
     setError(null);
     setBusy(true);
@@ -174,7 +217,7 @@ export function ExceptionQueue() {
     } finally {
       setBusy(false);
     }
-  }, [ledgerText, periodEnd, subjectId, preparerId, refreshQueue]);
+  }, [ledgerText, ledgerFiles, usableFileKeys, brokenFiles, periodEnd, subjectId, preparerId, refreshQueue]);
 
   const submitDecision = useCallback(async (approved: boolean) => {
     if (!queue || !selected || !rationale.trim()) return;
@@ -260,8 +303,10 @@ export function ExceptionQueue() {
           <PanelHeader title="Audit your ledger" />
           <PanelBody className="flex flex-col gap-3">
             <p className="text-xs leading-snug text-text-tertiary">
-              Paste your own ledger/invoice/PO/journal-entry rows as JSON and run a real audit.
+              Upload your own ledger, invoices, purchase orders and journal entries as CSV or JSON files
+              (or paste JSON below) and run a real audit. Numeric columns are checked before anything is sent.
             </p>
+            <LedgerFilePicker files={ledgerFiles} disabled={busy} onLoad={loadLedgerFile} onRemove={removeLedgerFile} />
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
               <label className="flex flex-col gap-2 text-sm text-text-secondary">
                 Period end (optional)
@@ -294,7 +339,7 @@ export function ExceptionQueue() {
               </label>
             </div>
             <label className="flex flex-col gap-2 text-sm text-text-secondary">
-              Ledger JSON (goods receipts / historical reports go here as arrays)
+              Ledger JSON (optional — paste instead of, or alongside, the files above)
               <textarea
                 value={ledgerText}
                 onChange={(e) => { setLedgerText(e.target.value); setLedgerError(null); }}
@@ -306,7 +351,7 @@ export function ExceptionQueue() {
             {ledgerError && (
               <p role="alert" className="font-mono text-2xs text-danger">{ledgerError}</p>
             )}
-            <Button variant="outline" onClick={runOwnLedger} disabled={busy || !ledgerText.trim()}>
+            <Button variant="outline" onClick={runOwnLedger} disabled={busy || (!ledgerText.trim() && usableFileKeys.length === 0 && brokenFiles.length === 0)}>
               {busy ? 'Working…' : 'Run my audit'}
             </Button>
           </PanelBody>
