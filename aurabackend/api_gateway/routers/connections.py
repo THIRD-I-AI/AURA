@@ -55,6 +55,13 @@ def _make_connector(conn_type: str, config: ConnectorConfig):
 
 # ── Models ───────────────────────────────────────────────────────────
 
+# The only connection settings create_connection persists. Everything else a
+# connector might need (BigQuery's project/credentials, FAISS's dimension, ...)
+# has nowhere to live yet, so it is rejected up front rather than accepted and
+# dropped (BUG-165).
+_STORABLE_CONNECTION_FIELDS = frozenset({"host", "port", "database", "username", "password", "ssl"})
+
+
 class ConnectionCreateRequest(BaseModel):
     name: str
     type: str  # postgresql, mysql, bigquery, sqlite, csv, duckdb
@@ -240,6 +247,33 @@ async def create_connection(req: ConnectionCreateRequest, request: Request):
             detail={
                 "error": f"Connector '{req.type}' is registered but unavailable.",
                 "reason": spec.unavailable_reason or "driver not installed",
+            },
+        )
+
+    # BUG-165: never answer 200 for settings we are about to throw away -- the
+    # caller would believe a working connection exists. (Persisting them needs a
+    # schema change plus encryption for secrets like credentials_json, which is
+    # a separate, deliberately unmade decision.) This is not a validator: the
+    # registry's `required` flags for storable fields were never enforced here
+    # and still are not.
+    if req.extra:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "error": "Connector-specific settings (`extra`) are not stored yet, so they would be silently lost.",
+                "unsupported_fields": sorted(req.extra),
+            },
+        )
+    unstorable_required = [f.key for f in spec.fields if f.required and f.key not in _STORABLE_CONNECTION_FIELDS]
+    if unstorable_required:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "error": (
+                    f"Connector '{req.type}' requires settings that this endpoint cannot store yet, "
+                    "so a connection created here could not work."
+                ),
+                "unsupported_fields": unstorable_required,
             },
         )
 

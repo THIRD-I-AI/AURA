@@ -280,6 +280,52 @@ def test_create_connection_rejects_unavailable_driver(connections_client, monkey
         unregister_connector("needs-driver")
 
 
+# BUG-165: POST /connections accepted an `extra` dict (and connectors like
+# BigQuery whose required settings live outside host/port/database/username/
+# password/ssl) and returned 200 while storing none of it. Silent data loss:
+# the caller believes a working connection exists.
+
+def _connection_count(client):
+    return client.get("/api/v1/connections").json()["count"]
+
+
+def test_create_connection_rejects_extra_it_would_silently_discard(connections_client):
+    before = _connection_count(connections_client)
+    resp = connections_client.post("/api/v1/connections", json={
+        "name": "vec", "type": "faiss", "database": "idx.faiss",
+        "extra": {"dimension": 384, "index_type": "hnsw"},
+    })
+    assert resp.status_code == 400
+    detail = resp.json()["detail"]
+    assert "not stored" in detail["error"]
+    assert detail["unsupported_fields"] == ["dimension", "index_type"]
+    assert _connection_count(connections_client) == before, "a rejected request must not create a connection"
+
+
+def test_create_connection_rejects_a_connector_whose_required_settings_it_cannot_store(connections_client):
+    before = _connection_count(connections_client)
+    resp = connections_client.post("/api/v1/connections", json={
+        "name": "warehouse", "type": "bigquery", "database": "my_dataset",
+    })
+    assert resp.status_code == 400
+    detail = resp.json()["detail"]
+    assert "bigquery" in detail["error"]
+    assert set(detail["unsupported_fields"]) == {"project_id", "credentials_json"}
+    assert _connection_count(connections_client) == before
+
+
+def test_create_connection_still_accepts_empty_extra_and_stays_lenient_about_required_fields(connections_client):
+    """The guard must not become a validator: this endpoint has never enforced
+    the registry's `required` flags (a postgresql connection without a password
+    is accepted), and an empty `extra` is not data loss."""
+    resp = connections_client.post("/api/v1/connections", json={
+        "name": "pg", "type": "postgresql", "host": "localhost", "port": 5432,
+        "database": "d", "username": "u", "extra": {},
+    })
+    assert resp.status_code == 200
+    connections_client.delete(f"/api/v1/connections/{resp.json()['connection']['id']}")
+
+
 def test_create_connection_accepts_known_type(connections_client):
     resp = connections_client.post("/api/v1/connections", json={
         "name": "my-duck", "type": "duckdb",
