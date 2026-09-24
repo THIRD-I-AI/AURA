@@ -1,5 +1,5 @@
 import { API_BASE_URL, getAuthToken } from '../services/api';
-import type { Scenario, JobSnapshot, DemoSubmitResult, VerifyResult, Artifact, DataAuditRequest } from './types';
+import type { Scenario, JobSnapshot, DemoSubmitResult, VerifyResult, Artifact, DataAuditRequest, LedgerProof } from './types';
 
 const CF = `${API_BASE_URL}/counterfactual`;
 
@@ -37,6 +37,12 @@ export const auditApi = {
 
   getArtifact(hash: string): Promise<Artifact> {
     return getJson<Artifact>(`${CF}/artifacts/${hash}`);
+  },
+
+  /** Tenant-scoped (JWT) Merkle inclusion proof for one certificate; 404 when
+      no ledger record certifies that hash. */
+  ledgerProof(certHash: string): Promise<LedgerProof> {
+    return getJson<LedgerProof>(`${CF}/audit/ledger/proof/${encodeURIComponent(certHash)}`);
   },
 
   async verify(hash: string): Promise<VerifyResult> {
