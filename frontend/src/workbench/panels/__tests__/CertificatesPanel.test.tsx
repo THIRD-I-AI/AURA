@@ -58,7 +58,11 @@ describe('CertificatesPanel', () => {
     const user = userEvent.setup();
     await user.type(screen.getByLabelText(/certificate record hash/i), hash);
     await user.click(screen.getByRole('button', { name: /verify/i }));
-    await waitFor(() => expect(screen.getByText(/verification failed/i)).toBeInTheDocument());
-    expect(screen.getByText(/HTTP 404: unknown record/)).toBeInTheDocument();
+    // Both in one waitFor: the panel sets status and error as two states, so the
+    // title can be on screen a render before the detail text (BUG-135).
+    await waitFor(() => {
+      expect(screen.getByText(/verification failed/i)).toBeInTheDocument();
+      expect(screen.getByText(/HTTP 404: unknown record/)).toBeInTheDocument();
+    });
   });
 });
