@@ -1845,16 +1845,17 @@ the whole subsystem every time.
 - **Severity:** high — The main chat input on the Cockpit landing screen has a placeholder but no <label> and no aria-label, so it has no accessible name for assistive technology, contradicting the project's own stated forms rule ('every input gets a real label... never a placeholder standing in as the label').
 - **Root cause:** A screen-reader user tabs to the primary input on the app's default landing screen and hears only 'edit text' with no indication of what it's for, because the placeholder text is not exposed as an accessible name.
 - **Caused by:** none — pre-existing.
-- **Fix:** the chat `<input>` now carries `aria-label="Ask AURA"` (matching AskAuraPanel). Test: `getByRole('textbox', {name:'Ask AURA'})`. Both tests confirmed failing without the change (stash) and passing with it; fixed together with the sibling cockpit-chat bug in one PR since they are the same two lines of one component. Not checked with a real screen reader. PR #TODO.
+- **Fix:** the chat `<input>` now carries `aria-label="Ask AURA"` (matching AskAuraPanel). Test: `getByRole('textbox', {name:'Ask AURA'})`. Both tests confirmed failing without the change (stash) and passing with it; fixed together with the sibling cockpit-chat bug in one PR since they are the same two lines of one component. Not checked with a real screen reader. PR #512.
 
 
 ## BUG-141: Audit wizard Map step — validation errors not exposed to assistive tech
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode completeness/UX audit (added 2026-09-21 to the standing loop rotation). Adversarial-verify: 3/3 skeptics did not refute.
 - **Severity:** medium — The Map-columns step shows field-level validation errors as plain sibling <span> text but never sets aria-invalid or aria-describedby on the corresponding <select>, and the confounder multi-select toggle buttons carry no aria-pressed — all state is color/visual-only.
 - **Root cause:** A screen-reader user fills in the audit mapping step, leaves 'Treatment' unmapped, and hears nothing indicating the field is invalid when the error appears — only sighted users relying on the adjacent red text know why 'Next' is disabled. Similarly, which confounder columns are currently selected is only conveyed by color, not by ARIA toggle state.
 - **Caused by:** none — pre-existing.
-- **Fix:** pending. Citations: frontend/src/audit/wizard/MapStep.tsx:28-33 (`<select data-testid="map-treatment" .../>` + `errors.treatment` span at line 32, no aria-invalid/aria-describedby link); frontend/src/audit/wizard/MapStep.tsx:50-58 (confounder `<button>`s with no `aria-pressed`). Contradicts .claude/rules/frontend.md's own 'Forms' rule: 'Invalid state is aria-invalid + the paired styling'.
+- **Fix:** `MapStep` selects now carry `aria-invalid` and `aria-describedby` pointing at the visible error (else note); error spans have ids and `role="alert"`; the confounder buttons have `aria-pressed` and sit in a `role="group"` labelled 'Confounders' and described by its error. New `audit/__tests__/MapStep.a11y.test.tsx` (3 tests) fails on the old component and passes now; audit suite (159), eslint and `npm run build` pass. Not checked with a real screen reader. PR #TODO.
+
 
 ## BUG-142: Design-system split: Cockpit (first screen) is the least-migrated surface
 - **Status:** open
@@ -1878,7 +1879,7 @@ the whole subsystem every time.
 - **Severity:** low — The Cockpit chat's 'Ask' button has no disabled/aria-busy state while a request is in flight, so it remains fully clickable during a pending request; the equivalent AskAuraPanel button correctly disables itself.
 - **Root cause:** A user double-clicks 'Ask' while the first query is still streaming; nothing visually indicates the button shouldn't be pressed again, unlike the nav-accessible Ask AURA panel which greys out its button and swaps its label to a busy indicator.
 - **Caused by:** none — pre-existing.
-- **Fix:** the Ask button is `disabled` and `aria-busy` while `thinking` is set (with a disabled style), re-enabled on completion. Test holds `streamMessage` open and asserts disabled+aria-busy then re-enabled. Both tests confirmed failing without the change (stash) and passing with it; fixed together with the sibling cockpit-chat bug in one PR since they are the same two lines of one component. Not checked with a real screen reader. PR #TODO.
+- **Fix:** the Ask button is `disabled` and `aria-busy` while `thinking` is set (with a disabled style), re-enabled on completion. Test holds `streamMessage` open and asserts disabled+aria-busy then re-enabled. Both tests confirmed failing without the change (stash) and passing with it; fixed together with the sibling cockpit-chat bug in one PR since they are the same two lines of one component. Not checked with a real screen reader. PR #512.
 
 
 ## BUG-145: backend: cross-tenant dataset-profile leak (metadata_store DatasetProfile / semantic model auto-generation)
