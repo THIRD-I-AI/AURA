@@ -148,8 +148,8 @@ export function AskAuraChat({ pushFeed, setHistory }: Props) {
         {thinking && <div className="aw-mono flex items-center gap-2.5 text-[11px] font-medium text-[var(--text3)]"><span className="aw-spinner" />{thinking}</div>}
       </div>
       <div className="pt-3 px-[18px] pb-4 border-t border-[var(--hair)] flex gap-2">
-        <input ref={chatInput} onKeyDown={(e) => e.key === 'Enter' && ask()} placeholder="Ask anything about your data — SQL is generated, checked, and signed" className="aw-input flex-1 py-2.5 px-3.5 text-[13px]" />
-        <button onClick={ask} className="aw-btn-accent text-[12.5px] py-2.5 px-[18px]">Ask</button>
+        <input ref={chatInput} aria-label="Ask AURA" onKeyDown={(e) => e.key === 'Enter' && ask()} placeholder="Ask anything about your data — SQL is generated, checked, and signed" className="aw-input flex-1 py-2.5 px-3.5 text-[13px]" />
+        <button onClick={ask} disabled={thinking !== null} aria-busy={thinking !== null} className="aw-btn-accent text-[12.5px] py-2.5 px-[18px] disabled:opacity-50 disabled:pointer-events-none">Ask</button>
       </div>
     </div>
   );
