@@ -5,6 +5,7 @@ import {
   MAX_LEDGER_ROWS,
   parseCsv,
   parseLedgerFile,
+  suggestMapping,
   toNumber,
 } from '../ledgerFiles';
 
@@ -135,5 +136,45 @@ describe('parseLedgerFile — JSON', () => {
     const r = parseLedgerFile(spec('ledger'), 'gl.json', text);
     expect(r.errors[0]).toMatch(message);
     expect(r.rows).toEqual([]);
+  });
+});
+
+describe('column mapping (BUG-167)', () => {
+  const csv = 'Ref,Acct,Amt\nL-1,4000,12\n';
+
+  it('renames mapped columns to backend fields and clears the missing-column warning', () => {
+    const r = parseLedgerFile(spec('ledger'), 'gl.csv', csv, { internal_id: 'Ref', account_code: 'Acct', amount: 'Amt' });
+    expect(r.errors).toEqual([]);
+    expect(r.rows).toEqual([{ internal_id: 'L-1', account_code: '4000', amount: 12 }]);
+    expect(r.columns).toEqual(['internal_id', 'account_code', 'amount']);
+    expect(r.sourceColumns).toEqual(['Ref', 'Acct', 'Amt']);
+    expect(r.warnings).toEqual([]);
+  });
+
+  it('coerces a mapped numeric column and rejects bad values under the backend name', () => {
+    const r = parseLedgerFile(spec('ledger'), 'gl.csv', 'Ref,Acct,Amt\nL-1,4000,x\n', { amount: 'Amt' });
+    expect(r.errors[0]).toContain('amount "x"');
+  });
+
+  it('never overrides a column the file already names, and ignores unknown sources', () => {
+    const r = parseLedgerFile(spec('ledger'), 'gl.csv', 'internal_id,account_code,amount,Other\nL-1,4000,5,zzz\n', {
+      amount: 'Other', internal_id: 'Nope',
+    });
+    expect(r.rows[0]).toMatchObject({ amount: 5, internal_id: 'L-1', Other: 'zzz' });
+  });
+
+  it('suggests only exact header matches ignoring case and punctuation', () => {
+    expect(suggestMapping(spec('invoices'), ['Invoice Number', 'PO-Number', 'Total'])).toEqual({
+      invoice_number: 'Invoice Number', po_number: 'PO-Number',
+    });
+  });
+
+  it('does not suggest for fields already present or for near-misses', () => {
+    expect(suggestMapping(spec('invoices'), ['invoice_number', 'PO', 'amount'])).toEqual({});
+  });
+
+  it('works for JSON rows too', () => {
+    const r = parseLedgerFile(spec('purchase_orders'), 'po.json', JSON.stringify([{ 'PO No': 'P-1' }]), { po_number: 'PO No' });
+    expect(r.rows).toEqual([{ po_number: 'P-1' }]);
   });
 });
