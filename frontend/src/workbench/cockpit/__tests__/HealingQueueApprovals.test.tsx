@@ -30,21 +30,38 @@ describe('HealingQueueApprovals', () => {
     expect(approve).not.toHaveAttribute('tabindex', '-1');
   });
 
-  it('clicking Approve & deploy calls decideHeal(id, true)', () => {
+  // BUG-143: the decision is signed into the WORM log (and approve deploys a
+  // shim), so one stray click must not commit it.
+  it('Approve & deploy only arms the decision; Confirm approve commits it', () => {
     const decideHeal = vi.fn();
     render(<HealingQueueApprovals healing={[PENDING]} pendingCount={1} decideHeal={decideHeal} />);
 
     fireEvent.click(screen.getByRole('button', { name: /approve & deploy/i }));
+    expect(decideHeal).not.toHaveBeenCalled();
 
-    expect(decideHeal).toHaveBeenCalledWith('h1', true);
+    fireEvent.click(screen.getByRole('button', { name: /confirm approve/i }));
+    expect(decideHeal).toHaveBeenCalledExactlyOnceWith('h1', true);
   });
 
-  it('clicking Reject calls decideHeal(id, false)', () => {
+  it('Reject only arms the decision; Confirm reject commits it', () => {
     const decideHeal = vi.fn();
     render(<HealingQueueApprovals healing={[PENDING]} pendingCount={1} decideHeal={decideHeal} />);
 
-    fireEvent.click(screen.getByRole('button', { name: /reject/i }));
+    fireEvent.click(screen.getByRole('button', { name: /^reject$/i }));
+    expect(decideHeal).not.toHaveBeenCalled();
 
-    expect(decideHeal).toHaveBeenCalledWith('h1', false);
+    fireEvent.click(screen.getByRole('button', { name: /confirm reject/i }));
+    expect(decideHeal).toHaveBeenCalledExactlyOnceWith('h1', false);
+  });
+
+  it('Cancel backs out without deciding and restores the original buttons', () => {
+    const decideHeal = vi.fn();
+    render(<HealingQueueApprovals healing={[PENDING]} pendingCount={1} decideHeal={decideHeal} />);
+
+    fireEvent.click(screen.getByRole('button', { name: /approve & deploy/i }));
+    fireEvent.click(screen.getByRole('button', { name: /cancel/i }));
+
+    expect(decideHeal).not.toHaveBeenCalled();
+    expect(screen.getByRole('button', { name: /approve & deploy/i })).toBeInTheDocument();
   });
 });

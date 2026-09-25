@@ -1866,12 +1866,13 @@ the whole subsystem every time.
 - **Fix:** pending. Citations: style={{...}} inline styles found in frontend/src/workbench/cockpit/HealingQueueApprovals.tsx, SessionEventsFeed.tsx, LineageSummaryCard.tsx, LiveRadarPanel.tsx, PipelinesStreamingPanel.tsx, CockpitStats.tsx, ForensicAuditPanel.tsx, AskAuraChat.tsx, and frontend/src/workbench/Workbench.tsx:420 (`style={{ fontWeight: 600, color: statusColor, background: statusBg, ... }}`); contrast with the migrated frontend/src/workbench/panels/ConnectorsPanel.tsx and DashboardsPanel.tsx which use only Tailwind token utilities. Rule stated in frontend/CLAUDE.md: 'do not hand-roll inline style={{…}} objects' and .claude/rules/frontend.md 'Anti-slop layout discipline'.
 
 ## BUG-143: Healing queue approvals — irreversible action with no confirmation
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode completeness/UX audit (added 2026-09-21 to the standing loop rotation). Adversarial-verify: 3/3 skeptics did not refute.
 - **Severity:** medium — 'Approve & deploy' and 'Reject' on a pending self-healing recovery fire immediately on a single click with no confirmation dialog, even though the panel's own copy states every decision is 'a signed override in the WORM audit log' (i.e. permanent).
 - **Root cause:** In a dense list of small (11px), closely-spaced buttons, a misclick instantly approves a production shim deploy or permanently rejects a recovery, with no undo and no 'are you sure' — a real operational risk being handled with the interaction weight of a toast dismiss.
 - **Caused by:** none — pre-existing.
-- **Fix:** pending. Citations: frontend/src/workbench/cockpit/HealingQueueApprovals.tsx:37-50 (`onClick={() => decideHeal(h.id, true)}` / `onClick={() => decideHeal(h.id, false)}`, no confirm step); line 56 states the action is 'a signed override in the WORM audit log'.
+- **Fix:** `HealingQueueApprovals` now needs two clicks: Approve & deploy / Reject only arms the row (inline, no modal, per the frontend rules), which swaps in a description of what will happen plus `Confirm approve` / `Confirm reject` (autofocused) and `Cancel`. Only the confirm click calls `decideHeal`. Tests: the two old click tests now assert nothing is called until confirm, plus a Cancel test; `Workbench.test.tsx`'s two approve tests confirm too. workbench suite (103), eslint and build pass. Not run: the old-behaviour tests against the old component (the change is a strict additional step, so the new 'not called after first click' assertions cannot pass on it). Not checked in a browser. PR #TODO.
+
 
 ## BUG-144: Cockpit chat — missing busy state on submit control
 - **Status:** fixed

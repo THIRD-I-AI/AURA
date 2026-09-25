@@ -108,6 +108,7 @@ describe('Workbench', () => {
     await boot();
     const approve = await screen.findByText('Approve & deploy');
     await act(async () => { fireEvent.click(approve); });
+    await act(async () => { fireEvent.click(screen.getByText('Confirm approve')); });
     expect(healingService.approve).toHaveBeenCalledWith('rec-1', 'workbench-ui');
     expect(screen.getByText('✓ approved — shim deploying, override signed')).toBeInTheDocument();
     vi.useRealTimers();
@@ -123,6 +124,7 @@ describe('Workbench', () => {
     await boot();
     const approve = await screen.findByText('Approve & deploy');
     await act(async () => { fireEvent.click(approve); });
+    await act(async () => { fireEvent.click(screen.getByText('Confirm approve')); });
 
     const alert = await screen.findByRole('alert');
     expect(alert).toHaveTextContent('Decision failed');
