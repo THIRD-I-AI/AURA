@@ -1824,12 +1824,13 @@ the whole subsystem every time.
 - **Fix:** added a `VerificationResult` type to `api.ts` and wired a `status === 'mismatch'` warning banner into all three surfaces — `AskAuraPanel.tsx` (amber `border-warn`/`text-warn` banner, matching its existing error-banner pattern), `AskAuraChat.tsx` (amber `--warn`-token banner on both the Commander and `sendMessage`-fallback paths, extending the shared `cockpit/types.ts` `Msg` type), and `QueryPanel.tsx` (new `.panel-warn-inline` CSS class in `terminal.css`, mirroring the existing `.panel-error-inline` rule but amber instead of red — a mismatch is a caveat on the answer, not a failed request). New tests in all three surfaces' test files assert the mismatch warning renders with the DPC verdict's `reason` text, and (for `AskAuraPanel.tsx`) that no warning renders when `status === 'verified'`. Confirmed non-vacuous via `git stash` (all 3 new tests fail against pre-fix code; 12 pre-existing tests in the same files still pass). `tsc -b` and `eslint --max-warnings 0` clean on all 9 touched files. PR: #478.
 
 ## BUG-138: Dashboards panel — dead click affordance
-- **Status:** open
+- **Status:** fixed (partial)
 - **Found by:** ultracode completeness/UX audit (added 2026-09-21 to the standing loop rotation). Adversarial-verify: 3/3 skeptics did not refute.
 - **Severity:** high — Dashboard cards are styled as clickable (cursor-pointer, hover border highlight) but have no onClick handler, no keyboard handler, and aren't a real button/link — clicking or tabbing to a dashboard card does nothing.
 - **Root cause:** A user opens Dashboards, sees saved dashboard cards with a hover highlight that reads as 'click to open', clicks one, and nothing happens — no navigation, no detail view, no error. In a demo this looks like a broken feature.
 - **Caused by:** none — pre-existing.
-- **Fix:** pending. Citations: frontend/src/workbench/panels/DashboardsPanel.tsx:60-67 — `<Panel key={d.id} className="flex cursor-pointer flex-col gap-1.5 p-4 transition-colors hover:border-signal">` renders the whole tile with no onClick/onKeyDown/role, unlike every other interactive tile in the codebase (e.g. AuditFrontDoor.tsx:72-83 uses a real `<button>`).
+- **Fix:** nothing in the app opens a dashboard (no detail view or route exists), so the honest fix is to stop promising an action: the tile no longer has `cursor-pointer` or the hover-border highlight. New `DashboardsPanel.test.tsx` fails on the old markup and passes now; eslint and build pass. NOT done: an actual dashboard detail/open view — that is a product feature, not a defect fix, and remains a gap. PR #TODO.
+
 
 ## BUG-139: Ask AURA — two incompatible chat UIs for the same feature
 - **Status:** open
