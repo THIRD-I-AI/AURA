@@ -134,3 +134,33 @@ describe('AskAuraChat commander fallback', () => {
     expect(chatService.sendMessage).not.toHaveBeenCalled();
   });
 });
+
+describe('AskAuraChat accessibility and busy state (BUG-140, BUG-144)', () => {
+  afterEach(() => { vi.restoreAllMocks(); });
+
+  it('exposes the input by an accessible name, not just its placeholder', () => {
+    render(<AskAuraChat pushFeed={vi.fn()} setHistory={vi.fn()} />);
+    expect(screen.getByRole('textbox', { name: 'Ask AURA' })).toBeInTheDocument();
+  });
+
+  it('disables the Ask button and marks it busy while a request is in flight', async () => {
+    let release!: () => void;
+    vi.spyOn(chatService, 'streamMessage').mockImplementation(
+      () => new Promise<void>((resolve) => { release = resolve; }),
+    );
+    const user = userEvent.setup();
+    render(<AskAuraChat pushFeed={vi.fn()} setHistory={vi.fn()} />);
+    const button = screen.getByRole('button', { name: /^ask$/i });
+    expect(button).toBeEnabled();
+
+    await user.type(screen.getByRole('textbox', { name: 'Ask AURA' }), 'total revenue?');
+    await user.click(button);
+
+    await waitFor(() => expect(button).toBeDisabled());
+    expect(button).toHaveAttribute('aria-busy', 'true');
+
+    release();
+    await waitFor(() => expect(button).toBeEnabled());
+    expect(button).toHaveAttribute('aria-busy', 'false');
+  });
+});

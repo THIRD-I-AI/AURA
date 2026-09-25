@@ -1840,12 +1840,13 @@ the whole subsystem every time.
 - **Fix:** pending. Citations: frontend/src/workbench/Workbench.tsx:440 mounts `<AskAuraChat .../>` for the default Cockpit nav; frontend/src/workbench/viewRegistry.ts:18,34 maps the 'Ask AURA' nav item to AskAuraPanel instead. Compare frontend/src/workbench/cockpit/AskAuraChat.tsx:87-94 (rounded `rounded-[10px_10px_3px_10px]` bubble, div-grid pseudo-table at lines 90-95) with frontend/src/workbench/panels/AskAuraPanel.tsx:93-126 (sharp-cornered bubbles, real `<table>` with `<th>`/`<td>`).
 
 ## BUG-140: Cockpit chat input — no accessible name
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode completeness/UX audit (added 2026-09-21 to the standing loop rotation). Adversarial-verify: 3/3 skeptics did not refute.
 - **Severity:** high — The main chat input on the Cockpit landing screen has a placeholder but no <label> and no aria-label, so it has no accessible name for assistive technology, contradicting the project's own stated forms rule ('every input gets a real label... never a placeholder standing in as the label').
 - **Root cause:** A screen-reader user tabs to the primary input on the app's default landing screen and hears only 'edit text' with no indication of what it's for, because the placeholder text is not exposed as an accessible name.
 - **Caused by:** none — pre-existing.
-- **Fix:** pending. Citations: frontend/src/workbench/cockpit/AskAuraChat.tsx:102 — `<input ref={chatInput} onKeyDown={...} placeholder="Ask anything about your data..." className="aw-input flex-1 py-2.5 px-3.5 text-[13px]" />` has no `<label>`/`aria-label`, unlike the sibling implementation which does (frontend/src/workbench/panels/AskAuraPanel.tsx:141-151, `aria-label="Ask AURA"`). Rule stated in frontend/CLAUDE.md and .claude/rules/frontend.md ('Forms' section).
+- **Fix:** the chat `<input>` now carries `aria-label="Ask AURA"` (matching AskAuraPanel). Test: `getByRole('textbox', {name:'Ask AURA'})`. Both tests confirmed failing without the change (stash) and passing with it; fixed together with the sibling cockpit-chat bug in one PR since they are the same two lines of one component. Not checked with a real screen reader. PR #TODO.
+
 
 ## BUG-141: Audit wizard Map step — validation errors not exposed to assistive tech
 - **Status:** open
@@ -1872,12 +1873,13 @@ the whole subsystem every time.
 - **Fix:** pending. Citations: frontend/src/workbench/cockpit/HealingQueueApprovals.tsx:37-50 (`onClick={() => decideHeal(h.id, true)}` / `onClick={() => decideHeal(h.id, false)}`, no confirm step); line 56 states the action is 'a signed override in the WORM audit log'.
 
 ## BUG-144: Cockpit chat — missing busy state on submit control
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode completeness/UX audit (added 2026-09-21 to the standing loop rotation). Adversarial-verify: 3/3 skeptics did not refute.
 - **Severity:** low — The Cockpit chat's 'Ask' button has no disabled/aria-busy state while a request is in flight, so it remains fully clickable during a pending request; the equivalent AskAuraPanel button correctly disables itself.
 - **Root cause:** A user double-clicks 'Ask' while the first query is still streaming; nothing visually indicates the button shouldn't be pressed again, unlike the nav-accessible Ask AURA panel which greys out its button and swaps its label to a busy indicator.
 - **Caused by:** none — pre-existing.
-- **Fix:** pending. Citations: frontend/src/workbench/cockpit/AskAuraChat.tsx:103 (`<button onClick={ask} ...>Ask</button>`, no disabled prop) vs frontend/src/workbench/panels/AskAuraPanel.tsx:152 (`disabled={busy || !input.trim()}`).
+- **Fix:** the Ask button is `disabled` and `aria-busy` while `thinking` is set (with a disabled style), re-enabled on completion. Test holds `streamMessage` open and asserts disabled+aria-busy then re-enabled. Both tests confirmed failing without the change (stash) and passing with it; fixed together with the sibling cockpit-chat bug in one PR since they are the same two lines of one component. Not checked with a real screen reader. PR #TODO.
+
 
 ## BUG-145: backend: cross-tenant dataset-profile leak (metadata_store DatasetProfile / semantic model auto-generation)
 - **Status:** fixed
