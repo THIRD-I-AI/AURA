@@ -124,7 +124,7 @@ export default function FilesAndDataPanel() {
           {files === null ? 'loading…' : `${count} dataset${count === 1 ? '' : 's'} · ${fmtSize(totalBytes)} · workspace uploads`}
         </span>
         <div className="flex-1" />
-        <input ref={inputRef} type="file" accept=".csv,.xlsx,.xls,.json,.parquet" onChange={onFile} className="hidden" data-testid="wb-files-input" />
+        <input ref={inputRef} type="file" accept=".csv,.xlsx,.json,.parquet" onChange={onFile} className="hidden" data-testid="wb-files-input" />
         <Button variant="outline" size="sm" onClick={() => inputRef.current?.click()} disabled={uploading} data-testid="wb-files-upload">
           <Upload /> {uploading ? 'Uploading…' : 'Upload dataset'}
         </Button>

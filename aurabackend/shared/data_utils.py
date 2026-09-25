@@ -345,13 +345,39 @@ def smart_load_csv(
     return result
 
 
+EXCEL_EXTENSIONS = (".xlsx",)
+# Sentinel stored in a schema-cache loader recipe: DuckDB has no built-in reader
+# for Excel (its excel extension is a runtime download), so the file is read with
+# pandas/openpyxl instead of `read_fn(uri)`.
+EXCEL_READ_FN = "__excel__"
+
+
+def _load_excel_table(conn: Any, file_path: str, qtable: str) -> None:
+    """Load the first sheet of an .xlsx workbook into DuckDB table *qtable* (BUG-146).
+
+    Only local paths: a remote (s3://...) object can't be opened by openpyxl here,
+    and failing loudly beats the old behaviour of parsing the binary as CSV.
+    """
+    import pandas as pd
+
+    if "://" in str(file_path):
+        raise ValueError("Excel files are only supported on local storage; convert to CSV or Parquet.")
+    df = pd.read_excel(file_path, sheet_name=0, engine="openpyxl")
+    df.columns = [str(c) for c in df.columns]
+    conn.register("_aura_excel_tmp", df)
+    try:
+        conn.execute(f"CREATE OR REPLACE TABLE {qtable} AS SELECT * FROM _aura_excel_tmp")
+    finally:
+        conn.unregister("_aura_excel_tmp")
+
+
 def smart_load_file(
     conn: Any,
     file_path: str,
     table_name: str,
     use_llm: bool = True,
 ) -> Dict[str, Any]:
-    """Smart loader for any file type (CSV, Parquet, JSON)."""
+    """Smart loader for any file type (CSV, Parquet, JSON, Excel .xlsx)."""
     ext = Path(file_path).suffix.lower()
 
     if ext == ".csv":
@@ -361,10 +387,13 @@ def smart_load_file(
         file_path_str = str(file_path).replace("\\", "/")
         read_fn = {".parquet": "read_parquet", ".json": "read_json_auto"}.get(ext, "read_csv_auto")
         qtable = quote_identifier(table_name)
-        conn.execute(
-            f"CREATE OR REPLACE TABLE {qtable} AS "
-            f"SELECT * FROM {read_fn}({quote_literal(file_path_str)})"
-        )
+        if ext in EXCEL_EXTENSIONS:
+            _load_excel_table(conn, file_path_str, qtable)
+        else:
+            conn.execute(
+                f"CREATE OR REPLACE TABLE {qtable} AS "
+                f"SELECT * FROM {read_fn}({quote_literal(file_path_str)})"
+            )
         cols = conn.execute(f"DESCRIBE {qtable}").fetchall()
         row_count = conn.execute(f"SELECT COUNT(*) FROM {qtable}").fetchone()[0]
         sample_rows = conn.execute(f"SELECT * FROM {qtable} LIMIT 5").fetchall()
@@ -406,7 +435,7 @@ def build_schema_context(
 
     for obj in backend.list(tenant):
         ext = os.path.splitext(obj.name)[1].lower()
-        if ext not in (".csv", ".parquet", ".json"):
+        if ext not in (".csv", ".parquet", ".json", *EXCEL_EXTENSIONS):
             continue
         table_name = re.sub(r"[^A-Za-z0-9_]", "_", os.path.splitext(obj.name)[0])
         try:
@@ -584,6 +613,7 @@ _READ_FN_BY_EXT = {
     ".csv": "read_csv_auto",
     ".parquet": "read_parquet",
     ".json": "read_json_auto",
+    **{e: EXCEL_READ_FN for e in EXCEL_EXTENSIONS},
 }
 
 
@@ -608,10 +638,13 @@ def _replay_tables(conn: Any, loaders: List[Dict[str, Any]]) -> None:
         read_fn = loader["read_fn"]
         try:
             qtable = quote_identifier(table_name)
-            conn.execute(
-                f"CREATE OR REPLACE TABLE {qtable} AS "
-                f"SELECT * FROM {read_fn}({quote_literal(uri)})"
-            )
+            if read_fn == EXCEL_READ_FN:
+                _load_excel_table(conn, uri, qtable)
+            else:
+                conn.execute(
+                    f"CREATE OR REPLACE TABLE {qtable} AS "
+                    f"SELECT * FROM {read_fn}({quote_literal(uri)})"
+                )
             for old, new in loader.get("renames", []):
                 if old != new:
                     conn.execute(

@@ -48,16 +48,15 @@ def get_supported_formats() -> Dict[str, Any]:
         "status": "success",
         "supported_formats": {
             "csv": {"extensions": [".csv"], "description": "Comma-separated values", "icon": "📊"},
-            "excel": {"extensions": [".xlsx", ".xls"], "description": "Microsoft Excel", "icon": "📈"},
+            "excel": {"extensions": [".xlsx"], "description": "Microsoft Excel workbook (first sheet)", "icon": "📈"},
             "json": {"extensions": [".json"], "description": "JavaScript Object Notation", "icon": "🔗"},
-            "text": {"extensions": [".txt"], "description": "Plain text files", "icon": "📄"},
             "parquet": {"extensions": [".parquet"], "description": "Apache Parquet columnar storage", "icon": "🗃️"},
         },
         "max_file_size": "25MB",
         "notes": {
             "parquet": "Optimized for analytics workloads, supports compression and efficient querying",
             "csv": "Most common format, human-readable",
-            "excel": "Supports multiple sheets and formatting",
+            "excel": "First sheet only; legacy .xls is not supported (save as .xlsx or CSV)",
             "json": "Flexible structure, good for nested data",
         },
     }
