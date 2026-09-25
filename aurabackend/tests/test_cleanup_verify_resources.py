@@ -96,12 +96,13 @@ def _table_source_ids(path: Path, table: str) -> list[str]:
         conn.close()
 
 
-def _run_script(*args: str, timeout: int = 30) -> subprocess.CompletedProcess:
+def _run_script(*args: str, timeout: int = 30, env: dict[str, str] | None = None) -> subprocess.CompletedProcess:
     return subprocess.run(
         [sys.executable, str(SCRIPT_PATH), *args],
         capture_output=True,
         text=True,
         timeout=timeout,
+        env={**os.environ, **env} if env else None,
     )
 
 
@@ -243,3 +244,65 @@ def test_no_matches_reports_nothing_to_do(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stderr
     assert "Nothing to do." in result.stdout
     assert _users_snapshot(metadata_db) == [REAL_EMAIL]
+
+
+
+# --- BUG-171: a cleanup that inspected nothing must not say "Nothing to do." ---
+#
+# The documented procedure is "run it on the box", but the defaults
+# (/data/state/*.db) are the CONTAINER's paths. On the host the same files sit in
+# the Docker volume, so both databases were skipped as "not found" and the script
+# still printed "Nothing to do." with exit 0 -- reading as a clean box while
+# leaving every leftover verify_ row (and the report) unexamined.
+
+
+def test_when_neither_database_can_be_opened_it_says_nothing_was_checked_and_fails(tmp_path: Path) -> None:
+    result = _run_script(
+        "--metadata-db", str(tmp_path / "no_metadata.db"),
+        "--uasr-db", str(tmp_path / "no_uasr.db"),
+    )
+
+    assert result.returncode == 2, (result.returncode, result.stdout, result.stderr)
+    assert "NOTHING WAS CHECKED" in result.stdout
+    assert "Nothing to do." not in result.stdout
+    # Tells the operator how to fix it rather than just refusing.
+    assert "--metadata-db" in result.stdout and "--uasr-db" in result.stdout
+
+
+def test_missing_default_paths_fall_back_to_the_docker_volume_copy(tmp_path: Path) -> None:
+    """No flags: the container defaults do not exist on this machine, so the
+    script must look in the deployment's Docker-volume state directory."""
+    _seed_metadata_db(tmp_path / "metadata.db", [REAL_EMAIL, MANUAL_VERIFY_EMAIL])
+    _seed_uasr_db(tmp_path / "uasr.db", {REAL_SOURCE_ID: 1, NAMESPACED_MATCH_SOURCE_ID: 2})
+
+    result = _run_script(env={"AURA_CLEANUP_FALLBACK_STATE_DIR": str(tmp_path)})
+
+    assert result.returncode == 0, result.stderr
+    assert "[note]" in result.stdout and str(tmp_path) in result.stdout
+    assert "NOTHING WAS CHECKED" not in result.stdout
+    assert "9 row(s) would be deleted" in result.stdout  # 1 login + 2 rows x 4 UASR tables
+    assert "verify-uasr@example.com" in result.stdout
+    assert NAMESPACED_MATCH_SOURCE_ID in result.stdout
+    # Dry run: nothing was touched.
+    assert MANUAL_VERIFY_EMAIL in _users_snapshot(tmp_path / "metadata.db")
+
+
+def test_an_explicit_path_is_never_replaced_by_the_fallback(tmp_path: Path) -> None:
+    """--metadata-db pointed at a missing file is how an operator deliberately
+    skips the metadata half (leaving the persistent test login alone). The
+    fallback must not quietly substitute a real database for it."""
+    _seed_metadata_db(tmp_path / "metadata.db", [MANUAL_VERIFY_EMAIL])
+    _seed_uasr_db(tmp_path / "uasr.db", {NAMESPACED_MATCH_SOURCE_ID: 1})
+
+    result = _run_script(
+        "--metadata-db", str(tmp_path / "skip_me.db"),
+        "--uasr-db", str(tmp_path / "uasr.db"),
+        "--confirm",
+        env={"AURA_CLEANUP_FALLBACK_STATE_DIR": str(tmp_path)},
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "[skip] database not found" in result.stdout
+    assert "[note]" not in result.stdout
+    assert MANUAL_VERIFY_EMAIL in _users_snapshot(tmp_path / "metadata.db"), "the skipped half was modified"
+    assert NAMESPACED_MATCH_SOURCE_ID not in _table_source_ids(tmp_path / "uasr.db", "uasr_drift_events")
