@@ -57,7 +57,7 @@ export default function DashboardsPanel() {
             </Panel>
           )}
           {(items ?? []).map((d) => (
-            <Panel key={d.id} className="flex cursor-pointer flex-col gap-1.5 p-4 transition-colors hover:border-signal">
+            <Panel key={d.id} data-testid="dashboard-tile" className="flex flex-col gap-1.5 p-4">
               <div className="flex items-center gap-2">
                 <span className="size-1.5 shrink-0 bg-signal" />
                 <span className="truncate text-sm font-semibold text-card-foreground">{d.name || '(untitled)'}</span>
