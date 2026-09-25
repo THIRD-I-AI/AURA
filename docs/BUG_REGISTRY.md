@@ -2106,12 +2106,13 @@ the whole subsystem every time.
 - **Fix:** both dependency files now declare `sqlalchemy>=2.0,<2.1` and an explicit `greenlet>=3.0,<4.0` (the async layer is used directly, so it should not depend on SQLAlchemy pulling it in). The cap keeps CI and Docker on the 2.0.x line the code was built and tested on; adopting 2.1 is a deliberate upgrade to test separately, not something a `<3.0` range should do on release day. New `tests/test_dependency_contract.py` (6 tests) reads the two declaration files and asserts the cap, the explicit greenlet and that the files agree, plus that the running environment can import `sqlalchemy.ext.asyncio` — 4 of the 6 fail against the old declarations. Full local suite and lint pass; the PR's own CI (the lanes that failed) is the confirmation. PR #TODO.
 
 ## BUG-173: dependency resolution is unpinned, so CI and Docker builds change underneath us whenever any upstream releases
-- **Status:** open
+- **Status:** fixed
 - **Found by:** BUG-172 — the second time in one day an unpinned external dependency broke the pipeline (MinIO's image in BUG-168, SQLAlchemy 2.1.0 in BUG-172).
 - **Severity:** medium — recurring, and each occurrence blocks all merges until someone diagnoses it.
 - **Root cause:** `requirements.txt` uses open ranges (`<3.0`, `<2.0`, `>=x`) with no lock file or constraints file, so every CI run and every image build resolves the newest matching release of every direct AND transitive dependency. Nothing distinguishes 'the code changed' from 'the world changed' when a run goes red, and a scheduled or deploy-time rebuild can pick up a breaking release with no code change at all.
 - **Caused by:** none — a build-reproducibility gap.
-- **Fix:** pending. Generate a hashed lock/constraints file from the currently-green resolution (e.g. `pip-compile` or `uv pip compile` into `requirements.lock`), install with it in CI and the Dockerfiles, and add a scheduled job that tries the latest versions and opens an issue on failure — so upgrades are noticed on the project's schedule instead of on merge day. Citations: aurabackend/requirements.txt; .github/workflows/ci.yml install steps; the Dockerfiles.
+- **Fix:** new `aurabackend/constraints.txt`, generated with `uv pip compile requirements.txt requirements-causal.txt requirements-streaming.txt --universal --python-version 3.11` (237 pins, covers 3.11-3.13), applied as `-c constraints.txt` at every `pip install -r requirements*.txt` in `.github/workflows/ci.yml` and every `pip wheel`/`pip install` in `aurabackend/Dockerfile` (which now COPYs it). `tests/test_constraints_file.py` fails if a new install site omits `-c` or SQLAlchemy drifts off 2.0.x. Checked: `uv pip compile -c constraints.txt` succeeds for base, +causal and +streaming on 3.11, 3.12 and 3.13. NOT proven: the PR's own CI is the first real install from the file across all lanes. NOT done: the scheduled 'try latest versions' job, and requirements-multimodal.txt is not covered. Upgrades are now a deliberate regenerate-and-commit. PR #TODO.
+
 
 ## Refuted (adversarial-verify, ≥2/3 skeptics refuted — filed for the record, no fix needed)
 
