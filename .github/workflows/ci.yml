@@ -48,7 +48,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          pip install -r requirements.txt -c constraints.txt
           pip install pytest pytest-asyncio pytest-cov
 
       - name: Run tests with coverage
@@ -92,7 +92,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          pip install -r requirements.txt -c constraints.txt
           pip install 'schemathesis>=3.36,<3.40' uvicorn
 
       - name: Run Schemathesis API Fuzzing
@@ -144,8 +144,8 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install -r requirements-causal.txt
+          pip install -r requirements.txt -c constraints.txt
+          pip install -r requirements-causal.txt -c constraints.txt
           pip install pytest pytest-asyncio pytest-cov
 
       - name: Run tests with coverage
@@ -181,8 +181,8 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install -r requirements-streaming.txt
+          pip install -r requirements.txt -c constraints.txt
+          pip install -r requirements-streaming.txt -c constraints.txt
           pip install pytest pytest-asyncio pytest-cov
 
       - name: Run tests with coverage
@@ -224,13 +224,13 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          pip install -r requirements.txt -c constraints.txt
           # Sprint 12: counterfactual eval gate (Layers 9-11) requires the
           # full causal stack — dowhy for estimator fan-out, econml for the
           # double_ml DR-Learner. Without these the layers silently
           # pytest.skipif() out and the gate becomes false-green. Install
           # the same way the causal_service pod does in prod.
-          pip install -r requirements-causal.txt
+          pip install -r requirements-causal.txt -c constraints.txt
           pip install pytest pytest-asyncio
 
       - name: Run 8-layer eval gate (mock LLM)
@@ -275,7 +275,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          pip install -r requirements.txt -c constraints.txt
           pip install pytest pytest-asyncio
 
       - name: Run 8-layer eval gate (real LLM)
@@ -321,8 +321,8 @@ jobs:
         # sklearn / dowhy chain transitively.
         run: |
           python -m pip install --upgrade pip
-          pip install -r aurabackend/requirements.txt
-          pip install -r aurabackend/requirements-causal.txt
+          pip install -r aurabackend/requirements.txt -c aurabackend/constraints.txt
+          pip install -r aurabackend/requirements-causal.txt -c aurabackend/constraints.txt
 
       - name: Regenerate gateway client (pre-S21d snapshot)
         # Kept as a separate step so the gateway openapi.json snapshot
@@ -399,7 +399,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          pip install -r requirements.txt -c constraints.txt
           pip install pytest pytest-asyncio asyncpg
 
       - name: Run scheduler distributed tests against real Postgres
@@ -466,7 +466,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          pip install -r requirements.txt -c constraints.txt
           pip install pytest pytest-asyncio
 
       - name: Wait for the S3 endpoint
@@ -739,7 +739,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          pip install -r requirements.txt -c constraints.txt
           pip install asyncpg
 
       - name: Single migration head

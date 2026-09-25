@@ -13,19 +13,19 @@ FROM python:3.13-slim AS base-builder
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc g++ unixodbc-dev && rm -rf /var/lib/apt/lists/*
 WORKDIR /build
-COPY requirements.txt .
+COPY requirements.txt constraints.txt ./
 RUN pip install --no-cache-dir --upgrade pip \
-    && pip wheel --no-cache-dir --wheel-dir=/build/wheels -r requirements.txt
+    && pip wheel --no-cache-dir --wheel-dir=/build/wheels -r requirements.txt -c constraints.txt
 
 # ── Causal Builder ───────────────────────────────────────────────────────
 FROM base-builder AS causal-builder
-COPY requirements-causal.txt .
-RUN pip wheel --no-cache-dir --wheel-dir=/build/wheels -r requirements-causal.txt
+COPY requirements-causal.txt constraints.txt ./
+RUN pip wheel --no-cache-dir --wheel-dir=/build/wheels -r requirements-causal.txt -c constraints.txt
 
 # ── Streaming Builder ────────────────────────────────────────────────────
 FROM base-builder AS streaming-builder
-COPY requirements-streaming.txt .
-RUN pip wheel --no-cache-dir --wheel-dir=/build/wheels -r requirements-streaming.txt
+COPY requirements-streaming.txt constraints.txt ./
+RUN pip wheel --no-cache-dir --wheel-dir=/build/wheels -r requirements-streaming.txt -c constraints.txt
 
 # ── Base Runtime (Shared Setup) ──────────────────────────────────────────
 FROM python:3.13-slim AS base-os
@@ -37,9 +37,9 @@ RUN useradd --create-home --shell /bin/bash aura && chown -R aura:aura /app
 # ── Base Runtime ─────────────────────────────────────────────────────────
 FROM base-os AS base-runtime
 COPY --from=base-builder /build/wheels /tmp/wheels
-COPY requirements.txt .
+COPY requirements.txt constraints.txt ./
 RUN pip install --no-cache-dir --upgrade pip \
-    && pip install --no-cache-dir --no-index --find-links=/tmp/wheels -r requirements.txt \
+    && pip install --no-cache-dir --no-index --find-links=/tmp/wheels -r requirements.txt -c constraints.txt \
     && rm -rf /tmp/wheels
 COPY . .
 RUN mkdir -p /app/data/uploads /app/data/db && chown -R aura:aura /app/data
@@ -55,9 +55,9 @@ CMD ["uvicorn", "api_gateway.main:app", "--host", "0.0.0.0", "--port", "8000"]
 # ── Causal Runtime ───────────────────────────────────────────────────────
 FROM base-os AS causal-runtime
 COPY --from=causal-builder /build/wheels /tmp/wheels
-COPY requirements.txt requirements-causal.txt ./
+COPY requirements.txt requirements-causal.txt constraints.txt ./
 RUN pip install --no-cache-dir --upgrade pip \
-    && pip install --no-cache-dir --no-index --find-links=/tmp/wheels -r requirements.txt -r requirements-causal.txt \
+    && pip install --no-cache-dir --no-index --find-links=/tmp/wheels -r requirements.txt -r requirements-causal.txt -c constraints.txt \
     && rm -rf /tmp/wheels
 COPY . .
 RUN mkdir -p /app/data/uploads /app/data/db && chown -R aura:aura /app/data
@@ -71,9 +71,9 @@ CMD ["uvicorn", "counterfactual_service.main:app", "--host", "0.0.0.0", "--port"
 # ── Streaming Runtime ────────────────────────────────────────────────────
 FROM base-os AS streaming-runtime
 COPY --from=streaming-builder /build/wheels /tmp/wheels
-COPY requirements.txt requirements-streaming.txt ./
+COPY requirements.txt requirements-streaming.txt constraints.txt ./
 RUN pip install --no-cache-dir --upgrade pip \
-    && pip install --no-cache-dir --no-index --find-links=/tmp/wheels -r requirements.txt -r requirements-streaming.txt \
+    && pip install --no-cache-dir --no-index --find-links=/tmp/wheels -r requirements.txt -r requirements-streaming.txt -c constraints.txt \
     && rm -rf /tmp/wheels
 COPY . .
 RUN mkdir -p /app/data/uploads /app/data/db && chown -R aura:aura /app/data
