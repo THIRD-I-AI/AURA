@@ -40,9 +40,15 @@ export const LEDGER_DATASETS: LedgerDatasetSpec[] = [
 export const MAX_LEDGER_ROWS = 50_000;
 const MAX_LISTED_ERRORS = 3;
 
+/** backend field -> the file column that holds it (BUG-167). */
+export type ColumnMapping = Record<string, string>;
+
 export interface ParsedLedgerFile {
   rows: Record<string, unknown>[];
+  /** Columns as the rows now carry them, i.e. after `mapping` was applied. */
   columns: string[];
+  /** Columns exactly as the file named them; what a mapping picks from. */
+  sourceColumns: string[];
   errors: string[];
   warnings: string[];
 }
@@ -99,10 +105,28 @@ export function toNumber(raw: unknown): number | null {
 }
 
 function fail(errors: string[], columns: string[] = []): ParsedLedgerFile {
-  return { rows: [], columns, errors, warnings: [] };
+  return { rows: [], columns, sourceColumns: columns, errors, warnings: [] };
 }
 
-export function parseLedgerFile(spec: LedgerDatasetSpec, filename: string, text: string): ParsedLedgerFile {
+const normalizeHeader = (h: string) => h.toLowerCase().replace(/[^a-z0-9]/g, '');
+
+/** Recommended fields the file lacks but that a column of the same name, ignoring
+    case/spacing/punctuation, plainly holds ("PO Number" -> po_number). Exact
+    matches only: a guess that is wrong would silently mislabel an auditor's data. */
+export function suggestMapping(spec: LedgerDatasetSpec, columns: string[]): ColumnMapping {
+  const out: ColumnMapping = {};
+  const taken = new Set(columns.filter((c) => spec.recommended.includes(c)));
+  for (const field of spec.recommended) {
+    if (columns.includes(field)) continue;
+    const hit = columns.find((c) => !taken.has(c) && normalizeHeader(c) === normalizeHeader(field));
+    if (hit) { out[field] = hit; taken.add(hit); }
+  }
+  return out;
+}
+
+export function parseLedgerFile(
+  spec: LedgerDatasetSpec, filename: string, text: string, mapping: ColumnMapping = {},
+): ParsedLedgerFile {
   let raw: Record<string, unknown>[];
   let columns: string[];
 
@@ -149,6 +173,22 @@ export function parseLedgerFile(spec: LedgerDatasetSpec, filename: string, text:
     return fail([`${raw.length.toLocaleString()} rows exceeds the ${MAX_LEDGER_ROWS.toLocaleString()}-row limit for one file.`], columns);
   }
 
+  const sourceColumns = columns;
+  // A mapped column is renamed to the backend field. A field the file already
+  // names natively is never overridden, and one source column feeds one field.
+  const renames = Object.entries(mapping).filter(
+    ([field, src]) => src !== '' && !sourceColumns.includes(field) && sourceColumns.includes(src),
+  );
+  if (renames.length > 0) {
+    const bySource = new Map(renames.map(([field, src]) => [src, field]));
+    raw = raw.map((r) => {
+      const o: Record<string, unknown> = {};
+      for (const [k, v] of Object.entries(r)) o[bySource.get(k) ?? k] = v;
+      return o;
+    });
+    columns = columns.map((c) => bySource.get(c) ?? c);
+  }
+
   const errors: string[] = [];
   const bad: string[] = [];
   const rows = raw.map((r, idx) => {
@@ -171,5 +211,5 @@ export function parseLedgerFile(spec: LedgerDatasetSpec, filename: string, text:
   if (missing.length > 0) {
     warnings.push(`No ${missing.join(', ')} column — the audit checks that read it will see every row as missing that value, which can change or add findings.`);
   }
-  return { rows: errors.length > 0 ? [] : rows, columns, errors, warnings };
+  return { rows: errors.length > 0 ? [] : rows, columns, sourceColumns, errors, warnings };
 }

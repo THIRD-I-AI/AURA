@@ -2066,12 +2066,13 @@ the whole subsystem every time.
 - **Citations:** Give the shared `port` field no entry in `_DB_FIELDS`, or build the specs by replacing it (override by key) rather than appending. Citations: aurabackend/connectors/registry.py:126,157,169.
 
 ## BUG-167: financial-audit bring-your-own-data flow has no column mapping, and the flagship panels stay sample-only
-- **Status:** open
+- **Status:** fixed (partial)
 - **Found by:** BUG-158 fix — the remainder of that report that was deliberately not done in one change.
 - **Severity:** medium — a non-technical auditor can now upload files, but only if their headers already match the backend's field names (`internal_id`, `account_code`, `amount`, `invoice_number`, `po_number`, ...); anything else uploads 'successfully' with only an advisory warning and can yield misleading findings (a missing/misnamed `po_number` reads as 'no purchase order'). The Cockpit's 'Run demo audit' and the Terminal Audit/Findings panels still only run `SAMPLE_AUDIT_BATCH`.
 - **Root cause:** `audit/ledgerFiles.ts` validates types and reports absent recommended columns but has no header-to-field mapping step; `ForensicAuditPanel.tsx`, `terminal/panels/AuditPanel.tsx` (+ `useAuditDeck.ts`) and `FindingsPanel.tsx` call `financialAuditService.runAudit(SAMPLE_AUDIT_BATCH)` unconditionally with no way to supply real data.
 - **Caused by:** none — the gap predates BUG-158 and is the part of it left open.
-- **Fix:** pending. Add a mapping step (suggest matches by normalized header, let the user assign each backend field to a column, persist nothing sensitive), modelled on `AuditWizard`'s upload->map->review; then let the Cockpit/Terminal panels launch that flow instead of only the canned batch. Citations: frontend/src/audit/ledgerFiles.ts; frontend/src/components/HITL/LedgerFilePicker.tsx; frontend/src/workbench/cockpit/ForensicAuditPanel.tsx; frontend/src/terminal/panels/AuditPanel.tsx; frontend/src/terminal/audit/useAuditDeck.ts; frontend/src/terminal/panels/FindingsPanel.tsx; frontend/src/audit/AuditWizard.tsx.
+- **Fix:** the upload half is done. `parseLedgerFile` takes an optional `ColumnMapping` (backend field -> file column) that renames columns before numeric coercion and the missing-column check; `suggestMapping` auto-applies exact header matches ignoring case/punctuation ("PO Number" -> po_number), never near-misses. `LedgerFilePicker` shows a select per missing recommended field (auto-filled, user-changeable) and re-parses on change; nothing is persisted. Tests: 6 in `ledgerFiles.test.ts`, 1 component test in `ExceptionQueue.test.tsx`; frontend suites, eslint and `npm run build` pass. NOT done: the Cockpit `ForensicAuditPanel` and Terminal `AuditPanel`/`FindingsPanel` still only run `SAMPLE_AUDIT_BATCH` (that needs a design decision on where they get real data); no browser check of the new selects. PR #TODO.
+
 
 ## BUG-168: CI 'Storage S3 (MinIO integration)' lane broken for every PR — MinIO's community image is no longer pullable from any official channel
 - **Status:** fixed

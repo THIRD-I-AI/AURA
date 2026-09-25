@@ -171,6 +171,25 @@ describe('ExceptionQueue (HITL workbench)', () => {
       expect(svc.runAudit).not.toHaveBeenCalled();
     });
 
+    // BUG-167: headers that don't match backend field names.
+    it('auto-maps a same-named header, and lets the user map a differently named one before auditing', async () => {
+      render(<ExceptionQueue />);
+      await pick(/^invoices$/i, csv('inv.csv', 'Invoice Number,Our Ref,Total\nI-1,P-1,12\n'));
+      const box = screen.getByTestId('ledger-file-invoices');
+
+      expect(within(box).getByLabelText('invoice_number column')).toHaveValue('Invoice Number');
+      expect(within(box).getByLabelText('po_number column')).toHaveValue('');
+      await userEvent.selectOptions(within(box).getByLabelText('po_number column'), 'Our Ref');
+      await userEvent.selectOptions(within(box).getByLabelText('amount column'), 'Total');
+      expect(within(box).queryByRole('note')).toBeNull();
+
+      await userEvent.click(screen.getByRole('button', { name: /run my audit/i }));
+      await waitFor(() => expect(svc.runAudit).toHaveBeenCalledOnce());
+      expect(svc.runAudit.mock.calls[0][0]).toMatchObject({
+        invoices: [{ invoice_number: 'I-1', po_number: 'P-1', amount: 12 }],
+      });
+    });
+
     it('warns, without blocking, when a recommended column is missing', async () => {
       render(<ExceptionQueue />);
       await pick(/^invoices$/i, csv('inv.csv', 'invoice_number,amount\nI-1,5\n'));

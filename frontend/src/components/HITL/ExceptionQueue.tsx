@@ -29,7 +29,7 @@ import {
   type FinancialAuditReport,
 } from '../../services/api';
 import { SAMPLE_AUDIT_BATCH } from '../../audit/sampleAuditBatch';
-import { LEDGER_DATASETS, parseLedgerFile, type LedgerDatasetKey, type LedgerDatasetSpec } from '../../audit/ledgerFiles';
+import { LEDGER_DATASETS, parseLedgerFile, suggestMapping, type LedgerDatasetKey, type LedgerDatasetSpec } from '../../audit/ledgerFiles';
 import { LedgerFilePicker, type LoadedLedgerFiles } from './LedgerFilePicker';
 import { SubjectHistory } from './SubjectHistory';
 
@@ -142,17 +142,30 @@ export function ExceptionQueue() {
   const loadLedgerFile = useCallback((spec: LedgerDatasetSpec, file: File) => {
     const reader = new FileReader();
     reader.onload = () => {
-      const result = parseLedgerFile(spec, file.name, String(reader.result ?? ''));
-      setLedgerFiles((prev) => ({ ...prev, [spec.key]: { name: file.name, result } }));
+      const text = String(reader.result ?? '');
+      // Header-name matches are applied up front and shown in the mapping selects, so they can be changed.
+      const mapping = suggestMapping(spec, parseLedgerFile(spec, file.name, text).sourceColumns);
+      const result = parseLedgerFile(spec, file.name, text, mapping);
+      setLedgerFiles((prev) => ({ ...prev, [spec.key]: { name: file.name, text, mapping, result } }));
       setLedgerError(null);
     };
     reader.onerror = () => {
       setLedgerFiles((prev) => ({
         ...prev,
-        [spec.key]: { name: file.name, result: { rows: [], columns: [], errors: ['Could not read this file.'], warnings: [] } },
+        [spec.key]: { name: file.name, text: '', mapping: {}, result: { rows: [], columns: [], sourceColumns: [], errors: ['Could not read this file.'], warnings: [] } },
       }));
     };
     reader.readAsText(file);
+  }, []);
+
+  const mapLedgerColumn = useCallback((spec: LedgerDatasetSpec, field: string, column: string) => {
+    setLedgerFiles((prev) => {
+      const cur = prev[spec.key];
+      if (!cur) return prev;
+      const mapping = { ...cur.mapping };
+      if (column === '') delete mapping[field]; else mapping[field] = column;
+      return { ...prev, [spec.key]: { ...cur, mapping, result: parseLedgerFile(spec, cur.name, cur.text, mapping) } };
+    });
   }, []);
 
   const removeLedgerFile = useCallback((key: LedgerDatasetKey) => {
@@ -307,7 +320,8 @@ export function ExceptionQueue() {
               Upload your own ledger, invoices, purchase orders and journal entries as CSV or JSON files
               (or paste JSON below) and run a real audit. Numeric columns are checked before anything is sent.
             </p>
-            <LedgerFilePicker files={ledgerFiles} disabled={busy} onLoad={loadLedgerFile} onRemove={removeLedgerFile} />
+            <LedgerFilePicker files={ledgerFiles} disabled={busy} onLoad={loadLedgerFile} onRemove={removeLedgerFile}
+              onMap={mapLedgerColumn} />
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
               <label className="flex flex-col gap-2 text-sm text-text-secondary">
                 Period end (optional)
