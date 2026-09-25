@@ -109,6 +109,8 @@ databricks-sql-connector>=3.1,<5.0
 clickhouse-driver>=0.2,<1.0
 cassandra-driver>=3.29,<4.0
 duckdb>=1.5.5,<2.0
+# .xlsx uploads (BUG-146); pandas.read_excel needs it and it was only present transitively.
+openpyxl>=3.1,<4.0
 
 # Cryptography (for ED25519 deterministic signatures)
 cryptography>=42.0.0
