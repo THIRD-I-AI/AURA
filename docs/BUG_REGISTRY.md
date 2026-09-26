@@ -1950,7 +1950,7 @@ the whole subsystem every time.
 - **Severity:** medium — Error states are surfaced through at least three different patterns across pages — a mandated `EmptyState intent="error"` component, a raw unstyled `<p>` of the error string, and inline error-typed toasts — with no shared convention for retry affordances.
 - **Root cause:** `frontend.md` mandates composing every error state from `ui-kit`'s `EmptyState intent="error"` (with a Retry action), citing `CostPanel.tsx` as the reference. `AuditWizard.tsx`, however, renders its run-error as a bare paragraph — `{runError && <p className="aud-wizard__err">{runError}</p>}` (AuditWizard.tsx:100) — with no retry button, no icon, no `role="alert"`. `pages/PipelinesPanel.tsx` instead surfaces load/save/delete failures exclusively as its bespoke bottom-right toast (`showToast(e.message, 'error')`, PipelinesPanel.tsx:258,270,482,513) rather than an inline `EmptyState`. A user hitting the same class of failure (a failed backend call) sees a dismissible toast on one page and a plain red-less paragraph with no dismissal or retry on another.
 - **Caused by:** none — pre-existing.
-- **Fix:** partly real, partly mis-diagnosed. REAL: the audit wizard's two failure lines (`AuditWizard.tsx` run error, `UploadStep.tsx` upload error) were bare `<p>`s with no `role="alert"`, so assistive tech was never told an upload or run had failed. Both now render through one shared `audit/wizard/WizardError.tsx` (`role="alert"`, token `danger` border/fill/text, mono, sharp corners) with stable test ids (`wizard-upload-error`, `wizard-run-error`), and the dead `.aud-wizard__err` CSS rule was removed. NOT A DEFECT: (a) the report's 'red-less paragraph' was wrong — `.aud-wizard__err` did set `color: var(--danger)`; (b) 'no retry' is inherent — after a failed run `running` resets so **Run audit** is enabled again, and a failed upload is retried by re-picking the file, so an `EmptyState` Retry button would duplicate the step's own control (EmptyState is a region-level surface, not a form's inline error); (c) `PipelinesPanel`'s load/delete/save failures are transient action feedback and, since BUG-148, already run through the shared `ToastContext` (`role="alert"`), which is the right pattern for an action error — not an inline empty state. Two new AuditWizard tests assert an upload failure and a run failure each surface as `role=alert` with the message (and that Run stays enabled to retry) — both confirmed failing pre-fix via stash; full frontend suite 365/365, build and eslint clean. PR #TODO.
+- **Fix:** partly real, partly mis-diagnosed. REAL: the audit wizard's two failure lines (`AuditWizard.tsx` run error, `UploadStep.tsx` upload error) were bare `<p>`s with no `role="alert"`, so assistive tech was never told an upload or run had failed. Both now render through one shared `audit/wizard/WizardError.tsx` (`role="alert"`, token `danger` border/fill/text, mono, sharp corners) with stable test ids (`wizard-upload-error`, `wizard-run-error`), and the dead `.aud-wizard__err` CSS rule was removed. NOT A DEFECT: (a) the report's 'red-less paragraph' was wrong — `.aud-wizard__err` did set `color: var(--danger)`; (b) 'no retry' is inherent — after a failed run `running` resets so **Run audit** is enabled again, and a failed upload is retried by re-picking the file, so an `EmptyState` Retry button would duplicate the step's own control (EmptyState is a region-level surface, not a form's inline error); (c) `PipelinesPanel`'s load/delete/save failures are transient action feedback and, since BUG-148, already run through the shared `ToastContext` (`role="alert"`), which is the right pattern for an action error — not an inline empty state. Two new AuditWizard tests assert an upload failure and a run failure each surface as `role=alert` with the message (and that Run stays enabled to retry) — both confirmed failing pre-fix via stash; full frontend suite 365/365, build and eslint clean. PR #495.
 
 ## BUG-153: counterfactual_service backend -> operator UI (dependency-missing fallback disclosure)
 - **Status:** fixed
@@ -2182,7 +2182,7 @@ the whole subsystem every time.
 - **Severity:** medium
 - **Root cause:** `api_gateway/routers/files.py:97-160`: FastAPI/Starlette parses the entire multipart body into a spooled temp file before the handler's 413 check runs, and no request-size guard exists in the repo; concurrent oversized uploads can exhaust temp disk on the single worker. An upstream proxy might cap the body -- nothing in the repo does.
 - **Caused by:** none -- pre-existing.
-- **Fix:** new pure-ASGI `UploadBodyLimitMiddleware` (`shared/middleware.py`), installed by `shared/service_factory.py` ahead of CORS so its 413 still carries CORS headers: a POST to a path ending `/upload` whose declared `Content-Length` exceeds `AURA_MAX_UPLOAD_BODY_BYTES` (default 26MB = the 25MB file limit + multipart overhead) is answered 413 before the body is read or spooled. 4 tests (oversized rejected and the handler never runs; within-limit passes; other routes unaffected; the factory installs it) -- the first fails on the old code (no such middleware). NOT covered: a chunked upload (no Content-Length) still falls through to the handler's post-spool check; and the double copy at `files.py:173` (BytesIO + getvalue) is untouched. Not tried against the live gateway/proxy. PR #TODO.
+- **Fix:** new pure-ASGI `UploadBodyLimitMiddleware` (`shared/middleware.py`), installed by `shared/service_factory.py` ahead of CORS so its 413 still carries CORS headers: a POST to a path ending `/upload` whose declared `Content-Length` exceeds `AURA_MAX_UPLOAD_BODY_BYTES` (default 26MB = the 25MB file limit + multipart overhead) is answered 413 before the body is read or spooled. 4 tests (oversized rejected and the handler never runs; within-limit passes; other routes unaffected; the factory installs it) -- the first fails on the old code (no such middleware). NOT covered: a chunked upload (no Content-Length) still falls through to the handler's post-spool check; and the double copy at `files.py:173` (BytesIO + getvalue) is untouched. Not tried against the live gateway/proxy. PR #525.
 
 
 ## BUG-180: pandas.read_excel has no row / decompressed-size bound (zip-bomb .xlsx can exhaust memory of the single worker)
@@ -2191,7 +2191,7 @@ the whole subsystem every time.
 - **Severity:** medium
 - **Root cause:** `shared/data_utils.py` `_load_excel_table` (added for BUG-146) reads the whole first sheet with `pd.read_excel` and copies it again into DuckDB; the upload gate checks only the compressed size. Also re-read on every schema-cache replay. Introduced by BUG-146 (PR #515).
 - **Caused by:** BUG-146 (PR #515) -- its fix left this gap.
-- **Fix:** `_load_excel_table` now (1) sums the workbook zip's uncompressed member sizes and refuses over `MAX_EXCEL_UNCOMPRESSED_BYTES` (200MB) BEFORE parsing, (2) reads with `nrows=MAX_EXCEL_ROWS+1` (1,000,000) and refuses if the first sheet exceeds the cap, (3) turns a non-zip file named .xlsx into a clear 'Not a valid .xlsx workbook' ValueError instead of a BadZipFile. 3 tests (each fails on the old code). NOT done: the parse still runs in pure Python holding the GIL (a workbook just under the caps can still tie up the worker for a while -- the real fix is a subprocess or a read-only streaming reader); nothing measured against a genuine zip bomb; the schema-cache replay still re-reads the workbook on every cache hit. PR #TODO.
+- **Fix:** `_load_excel_table` now (1) sums the workbook zip's uncompressed member sizes and refuses over `MAX_EXCEL_UNCOMPRESSED_BYTES` (200MB) BEFORE parsing, (2) reads with `nrows=MAX_EXCEL_ROWS+1` (1,000,000) and refuses if the first sheet exceeds the cap, (3) turns a non-zip file named .xlsx into a clear 'Not a valid .xlsx workbook' ValueError instead of a BadZipFile. 3 tests (each fails on the old code). NOT done: the parse still runs in pure Python holding the GIL (a workbook just under the caps can still tie up the worker for a while -- the real fix is a subprocess or a read-only streaming reader); nothing measured against a genuine zip bomb; the schema-cache replay still re-reads the workbook on every cache hit. PR #526.
 
 
 ## BUG-181: `test_create_connection_stores_extra_and_never_returns_it` failed intermittently -- it asserted the string "384" was absent from a response that contains a microsecond timestamp
@@ -2208,7 +2208,111 @@ the whole subsystem every time.
 - **Severity:** low -- test-only, but it fails CI for unrelated PRs.
 - **Root cause:** `loadLedgerFile` reads the file with an async `FileReader`, so the per-field mapping selects render a moment after `userEvent.upload` resolves. The test did `getByTestId('ledger-file-invoices')` (the container exists immediately) and then a synchronous `getByLabelText('invoice_number column')`, which loses the race on a slower runner. Inferred from the code and the error; the failure was not reproduced locally.
 - **Caused by:** BUG-167 (PR #510) -- I wrote the test.
-- **Fix:** the first lookup is now `await within(box).findByLabelText(...)`, so it waits for the selects. The HITL suite (17 tests) passed three times in a row locally; that does not prove the race is gone, only that nothing regressed. PR #TODO.
+- **Fix:** the first lookup is now `await within(box).findByLabelText(...)`, so it waits for the selects. The HITL suite (17 tests) passed three times in a row locally; that does not prove the race is gone, only that nothing regressed. PR #527.
+
+## BUG-183: COPY output paths (pipeline file sink and ETL execute) were spliced into single-quoted SQL without quote_literal -- a quote in the file name runs arbitrary SQL
+- **Status:** fixed
+- **Found by:** ultracode audit (3 lenses + adversarial verify) of the pipeline engine / ETL router / connection sync, 2026-09-26. Verifier confirmed from the code; the DuckDB connection has no external-access restriction, so injected SQL can read and write local files. Not run end to end unless stated.
+- **Severity:** high
+- **Root cause:** `pipeline/engine.py` `_write_file_sink` and `api_gateway/routers/etl.py` `/etl/execute` built `COPY ... TO '{out_path}'`. `Path(name).stem` strips slashes and the final extension but not quotes, so a slash-free, dot-free `file_name` / `destination_filename` such as `a' (FORMAT CSV); COPY (SELECT 1) TO 'zz_pwned` closes the literal and runs a second statement. REPRODUCED against the old code: it wrote `zz_pwned.csv` into the working directory; the same call on the fixed code did not.
+- **Caused by:** none -- pre-existing.
+- **Fix:** `quote_literal(...)` on all four engine COPY statements and all three ETL ones. Test `test_engine_file_sink_name_with_a_quote_is_a_filename_not_sql` fails on the old code (the file is still written under its literal odd name). The ETL COPY sites use the same one-line change and have no dedicated test. Fixed together with its siblings in one PR (same files, one shared cause: values and names spliced into SQL text); each bug has its own entry and test. PR #TODO.
+
+## BUG-184: PIVOT agg_function was spliced raw into USING <agg>(...) (only .upper() applied)
+- **Status:** fixed
+- **Found by:** ultracode audit (3 lenses + adversarial verify) of the pipeline engine / ETL router / connection sync, 2026-09-26. Verifier confirmed from the code; the DuckDB connection has no external-access restriction, so injected SQL can read and write local files. Not run end to end unless stated.
+- **Severity:** high
+- **Root cause:** `pipeline/engine.py` PIVOT step: `agg_func = cfg.get('agg_function','SUM').upper()` then `USING {agg_func}(...)`. Step configs are free-form dicts (and the LLM generator emits them); ADD_COLUMN / CUSTOM_SQL run `_validate_expression` and WINDOW uses an allowlist, PIVOT had neither.
+- **Caused by:** none -- pre-existing.
+- **Fix:** New `_PIVOT_AGG_FUNCTIONS` allowlist (SUM/AVG/COUNT/MIN/MAX/MEDIAN/FIRST/LAST/ANY_VALUE/STDDEV*/VAR*); anything else returns no SQL for the step. Tests: a subquery-carrying aggregate is refused (fails on the old code), and an allowlisted one still builds and runs. Fixed together with its siblings in one PR (same files, one shared cause: values and names spliced into SQL text); each bug has its own entry and test. PR #TODO.
+
+## BUG-185: fill_missing spliced the caller's fill value raw into COALESCE(...) (engine star path; ETL star and single-column paths)
+- **Status:** fixed
+- **Found by:** ultracode audit (3 lenses + adversarial verify) of the pipeline engine / ETL router / connection sync, 2026-09-26. Verifier confirmed from the code; the DuckDB connection has no external-access restriction, so injected SQL can read and write local files. Not run end to end unless stated.
+- **Severity:** high
+- **Root cause:** `pipeline/engine.py` (star branch: `COALESCE(col, {value})`, with `_val_is_numeric` computed but not enforced) and `api_gateway/routers/etl.py` (`{fill_val}` unquoted in both the star and single-column paths).
+- **Caused by:** none -- pre-existing.
+- **Fix:** A value is only used when it parses as a number and is then re-rendered from the parsed float; ETL's single-column path uses new `_fill_literal` (a number, else a quoted string literal). Tests: numeric fills still work and a payload value never reaches the SQL text (engine and ETL). Fixed together with its siblings in one PR (same files, one shared cause: values and names spliced into SQL text); each bug has its own entry and test. PR #TODO.
+
+## BUG-186: engine FILL_MISSING star path wrapped DESCRIBE column names in raw double quotes (no escaping)
+- **Status:** fixed
+- **Found by:** ultracode audit (3 lenses + adversarial verify) of the pipeline engine / ETL router / connection sync, 2026-09-26. Verifier confirmed from the code; the DuckDB connection has no external-access restriction, so injected SQL can read and write local files. Not run end to end unless stated.
+- **Severity:** medium
+- **Root cause:** `pipeline/engine.py` used a bare double-quoted name instead of `quote_identifier` on the star path; a CSV header containing a double quote survives `smart_load_file` and breaks out of the identifier.
+- **Caused by:** none -- pre-existing.
+- **Fix:** Every such site now uses `_q(...)`. The test builds the step against a table with a column literally named `we"ird` and executes the result (fails on the old code with a ParserException). Fixed together with its siblings in one PR (same files, one shared cause: values and names spliced into SQL text); each bug has its own entry and test. PR #TODO.
+
+## BUG-187: ETL cast_type spliced to_type unvalidated into CAST(... AS <type>)
+- **Status:** fixed
+- **Found by:** ultracode audit (3 lenses + adversarial verify) of the pipeline engine / ETL router / connection sync, 2026-09-26. Verifier confirmed from the code; the DuckDB connection has no external-access restriction, so injected SQL can read and write local files. Not run end to end unless stated.
+- **Severity:** high
+- **Root cause:** `api_gateway/routers/etl.py` cast_type: `CAST({_q(col)} AS {to_type})` with the caller's string (the engine's own CAST step already had an allowlist; ETL did not).
+- **Caused by:** none -- pre-existing.
+- **Fix:** New `_CAST_TYPES` allowlist (same set as the engine's); an unknown type skips the step. Tests: a payload type produces no SQL containing it, and `double` still casts. Fixed together with its siblings in one PR (same files, one shared cause: values and names spliced into SQL text); each bug has its own entry and test. PR #TODO.
+
+## BUG-188: ETL preview-source `limit` came straight from the JSON body into the SQL text
+- **Status:** fixed
+- **Found by:** ultracode audit (3 lenses + adversarial verify) of the pipeline engine / ETL router / connection sync, 2026-09-26. Verifier confirmed from the code; the DuckDB connection has no external-access restriction, so injected SQL can read and write local files. Not run end to end unless stated.
+- **Severity:** medium
+- **Root cause:** `api_gateway/routers/etl.py` preview endpoint: `limit = payload.get('limit', 20)` then `LIMIT {limit}` (also a raw table name in an f-string).
+- **Caused by:** none -- pre-existing.
+- **Fix:** `limit` is coerced to an int clamped to 1..1000 (400 if it is not an integer) and the table name goes through `_q`. The existing ETL suites pass; there is no dedicated test for the 400. Fixed together with its siblings in one PR (same files, one shared cause: values and names spliced into SQL text); each bug has its own entry and test. PR #TODO.
+
+## BUG-189: pipeline DuckDB-source `query` is executed as raw SQL with no guard
+- **Status:** open
+- **Found by:** ultracode audit (3 lenses + adversarial verify) of the pipeline engine / ETL router / connection sync, 2026-09-26. Verifier confirmed from the code; the DuckDB connection has no external-access restriction, so injected SQL can read and write local files. Not run end to end unless stated.
+- **Severity:** high
+- **Root cause:** `pipeline/engine.py` (~418 and ~426): `CREATE TABLE ... AS {source.query}`; `PipelineSource.query` is an unvalidated string, unlike ADD_COLUMN/CUSTOM_SQL which call `_validate_expression`. A query such as `SELECT * FROM read_csv_auto('/etc/passwd')` executes on the unrestricted connection.
+- **Caused by:** none -- pre-existing.
+- **Fix:** pending -- needs a decision: a query source is a deliberate feature (arbitrary SELECT), so the fix is to run it through the same guard as CUSTOM_SQL (blocking file/URL readers and ATTACH) or to connect with `enable_external_access=false`; both can break legitimate queries, so look at real usage first.
+
+## BUG-190: connection sync overwrites a good snapshot with partial or empty data when a connector query fails
+- **Status:** open
+- **Found by:** ultracode audit (3 lenses + adversarial verify) of the pipeline engine / ETL router / connection sync, 2026-09-26. Verifier confirmed from the code; the DuckDB connection has no external-access restriction, so injected SQL can read and write local files. Not run end to end unless stated.
+- **Severity:** high
+- **Root cause:** `api_gateway/routers/connections.py` ~717: the connectors swallow query errors and return [] / partial rows, and sync then writes that as the new snapshot file, replacing the previous good one.
+- **Caused by:** none -- pre-existing.
+- **Fix:** pending.
+
+## BUG-191: PostgreSQL pipeline sink drops the destination table and re-creates it with no transaction
+- **Status:** open
+- **Found by:** ultracode audit (3 lenses + adversarial verify) of the pipeline engine / ETL router / connection sync, 2026-09-26. Verifier confirmed from the code; the DuckDB connection has no external-access restriction, so injected SQL can read and write local files. Not run end to end unless stated.
+- **Severity:** high
+- **Root cause:** `pipeline/engine.py` `_write_pg_sink` (~830): DROP then CREATE/INSERT without a transaction, so a failure mid-way leaves the destination table missing or half-loaded.
+- **Caused by:** none -- pre-existing.
+- **Fix:** pending.
+
+## BUG-192: DB source loader silently truncates at 100,000 rows and treats a failed query as 'no data'
+- **Status:** open
+- **Found by:** ultracode audit (3 lenses + adversarial verify) of the pipeline engine / ETL router / connection sync, 2026-09-26. Verifier confirmed from the code; the DuckDB connection has no external-access restriction, so injected SQL can read and write local files. Not run end to end unless stated.
+- **Severity:** medium
+- **Root cause:** `pipeline/engine.py` ~275 calls `execute_query(query, limit=100_000)`; the Postgres/MySQL connectors append LIMIT (with a substring check that matches the word in any column or string) and swallow errors into `[]`, which surfaces as 'Source query returned no data'.
+- **Caused by:** none -- pre-existing.
+- **Fix:** pending.
+
+## BUG-193: unbounded row accumulation in connection sync and ingest on the single worker
+- **Status:** open
+- **Found by:** ultracode audit (3 lenses + adversarial verify) of the pipeline engine / ETL router / connection sync, 2026-09-26. Verifier confirmed from the code; the DuckDB connection has no external-access restriction, so injected SQL can read and write local files. Not run end to end unless stated.
+- **Severity:** medium
+- **Root cause:** `api_gateway/routers/connections.py` ~709: rows are collected into memory with no ceiling before writing.
+- **Caused by:** none -- pre-existing.
+- **Fix:** pending.
+
+## BUG-194: ETL preview / natural-language endpoints leak the DuckDB connection on exception; a failed COPY leaves a partial output file
+- **Status:** open
+- **Found by:** ultracode audit (3 lenses + adversarial verify) of the pipeline engine / ETL router / connection sync, 2026-09-26. Verifier confirmed from the code; the DuckDB connection has no external-access restriction, so injected SQL can read and write local files. Not run end to end unless stated.
+- **Severity:** medium
+- **Root cause:** `api_gateway/routers/etl.py` ~324 (no try/finally around the connection) and ~431 (a partial file stays when COPY fails mid-write).
+- **Caused by:** none -- pre-existing.
+- **Fix:** pending.
+
+## BUG-195: ingest writes the dataset profile and UASR baseline/drift state under a global, un-namespaced source_id
+- **Status:** open
+- **Found by:** ultracode audit (3 lenses + adversarial verify) of the pipeline engine / ETL router / connection sync, 2026-09-26. Verifier confirmed from the code; the DuckDB connection has no external-access restriction, so injected SQL can read and write local files. Not run end to end unless stated.
+- **Severity:** medium
+- **Root cause:** `api_gateway/routers/connections.py` ~473: two workspaces ingesting a source with the same id share profile and drift-baseline state (same class as BUG-175).
+- **Caused by:** none -- pre-existing.
+- **Fix:** pending -- likely the same tenant-namespacing approach as BUG-175's `schema_source_id`.
 
 ## BUG-183: COPY output paths (pipeline file sink and ETL execute) were spliced into single-quoted SQL without quote_literal -- a quote in the file name runs arbitrary SQL
 - **Status:** fixed
