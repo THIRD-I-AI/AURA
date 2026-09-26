@@ -413,6 +413,7 @@ def test_stored_connector_config_maps_bigquery_settings_onto_the_connector():
 
     conn = {"type": "bigquery", "name": "bq", "database": None}
     cfg = _stored_connector_config(conn, None, {"project_id": "proj", "dataset": "d", "credentials_json": {"k": "v"}})
-    assert cfg.database == "proj"
+    # BUG-201: BigQuery reads config.database as the dataset; the project rides in extra_params.
+    assert cfg.database == "d"
     assert cfg.credentials_json == {"k": "v"}
-    assert cfg.extra_params == {"dataset": "d"}
+    assert cfg.extra_params == {"project_id": "proj"}
