@@ -2296,12 +2296,12 @@ the whole subsystem every time.
 - **Fix:** the pipeline loader (`_load_db_source`) now asks for `_MAX_SOURCE_ROWS + 1` rows and raises a clear error if the source exceeds the cap instead of loading a truncated copy; the Postgres/MySQL connectors' `execute_query` take `raise_errors` (default False, so other callers are unchanged) and the loader passes True so a failed query surfaces instead of becoming 'Source query returned no data'; LIMIT detection is now a trailing-clause regex (`connectors/sql_limit.py`) rather than a substring match on the word. Tests `tests/test_db_source_loader_truncation.py` (12): the error-surfacing test fails on the old code on its assertion; the two cap tests fail there because the cap constant does not exist, i.e. they prove presence, not the old wrong behaviour. Not run against a real Postgres/MySQL server. BigQuery/DuckDB sources are not covered.
 
 ## BUG-193: unbounded row accumulation in connection sync and ingest on the single worker
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode audit (3 lenses + adversarial verify) of the pipeline engine / ETL router / connection sync, 2026-09-26. Verifier confirmed from the code; the DuckDB connection has no external-access restriction, so injected SQL can read and write local files. Not run end to end unless stated.
 - **Severity:** medium
 - **Root cause:** `api_gateway/routers/connections.py` ~709: rows are collected into memory with no ceiling before writing.
 - **Caused by:** none -- pre-existing.
-- **Fix:** pending.
+- **Fix:** `POST /connections/{id}/sync` now reads at most `_SYNC_ROW_CEILING + 1` (2,000,001) rows when no `max_rows` is given, so a table that the COUNT(*) estimate could not size is detected and refused (400, snapshot untouched) instead of paged without limit; a `max_rows` above the ceiling is a 400. `POST /connectors/{type}/ingest` applies the same cap (default = ceiling; a caller `max_rows` above it is a 400), reports `truncated: true` when the default cap stopped it, and keeps only the first 50 per-batch UASR results in the response (`_INGEST_DETAIL_LIMIT`; the `batches` count stays exact), so the response no longer grows with the table. Tests `tests/test_connections_row_ceiling.py` (4): 3 fail on the old code (sync returned success; ingest proceeded), 1 confirms a table exactly at the ceiling still syncs. Not covered: the rows are still held in memory up to the ceiling (2M rows is large for a 1GB box) -- lowering the ceiling or streaming to parquet in chunks is the real fix and is a separate change; the ingest body is only tested up to its validation, not a full run (needs the UASR service).
 
 ## BUG-194: ETL preview / natural-language endpoints leak the DuckDB connection on exception; a failed COPY leaves a partial output file
 - **Status:** fixed
