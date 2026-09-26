@@ -167,13 +167,14 @@ async def _run_tile(tile: Dict[str, Any], saved_queries: List[Dict[str, Any]], r
         }
 
     from shared.data_utils import build_schema_context_cached
-    from shared.duckdb_factory import new_connection
+    from shared.duckdb_factory import lock_down_connection, new_connection
 
     tenant = _request_tenant(request)
     con = new_connection()
     started = time.perf_counter()
     try:
         await build_schema_context_cached(con, tenant, use_llm=False)
+        lock_down_connection(con)  # BUG-196: stored, unvalidated SQL runs next
 
         def _run() -> tuple[list[str], list[tuple]]:
             cur = con.execute(sq["sql"])

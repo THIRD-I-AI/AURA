@@ -107,6 +107,10 @@ def _get_duckdb():
         # ``read_only=True`` lets multiple processes (this server + the
         # UASR worker) share the same .duckdb file safely.
         _duck_con = duckdb.connect(DUCKDB_PATH, read_only=True)
+        # BUG-196: duckdb_query runs caller SQL here; the file is already open, so no
+        # further filesystem/network access is needed.
+        _duck_con.execute("SET enable_external_access=false")
+        _duck_con.execute("SET lock_configuration=true")
     return _duck_con
 
 

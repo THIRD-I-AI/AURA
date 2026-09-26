@@ -2314,6 +2314,46 @@ the whole subsystem every time.
 - **Caused by:** none -- pre-existing.
 - **Fix:** pending -- likely the same tenant-namespacing approach as BUG-175's `schema_source_id`.
 
+## BUG-196: connections that run user, stored or LLM-generated SQL have unrestricted filesystem and network access (read_csv, read_text, COPY TO, ATTACH, httpfs)
+- **Status:** fixed
+- **Found by:** repo-wide ultracode sweep for SQL built from untrusted names/values (7 subsystem reviewers + adversarial verify), 2026-09-26, run after the pipeline/ETL audit showed the class was wider than the sites first fixed. Verifier confirmed from the code; not run end to end unless stated.
+- **Severity:** high
+- **Root cause:** `shared/duckdb_factory.new_connection()` applies no `enable_external_access` restriction, and the SQL validators in front of it are keyword/AST filters that do not block file readers or COPY. Six execution sites were affected: `POST /execute` (`api_gateway/routers/queries.py`), the scheduled saved-query runner (`queries.py` `_execute_saved_query_sql`, which ran stored SQL with NO validation at all), dashboard tiles (`dashboards.py` `_run_tile`, same), the chat endpoint and the commander's `run_sql` tool (`chat.py`), and the MCP server's `duckdb_query` (`mcp_servers/aura_mcp_server.py`). A tenant could save `SELECT * FROM read_text('<path>')` as a saved query, put it on a dashboard, and read any file the server can (or `COPY ... TO` / `ATTACH` to write). REPRODUCED on the old code: a dashboard tile over a planted secret file returned its contents, and the scheduled-query runner read it successfully.
+- **Caused by:** none -- pre-existing.
+- **Fix:** Root-cause fix, not per-validator patching: new `shared.duckdb_factory.lock_down_connection(con)` runs `SET enable_external_access=false` then `SET lock_configuration=true`, and is called at each site AFTER the tenant's tables are materialised (`build_schema_context_cached` uses CREATE TABLE AS, so loaded tables stay fully queryable) and BEFORE the user SQL runs; the MCP server's read-only handle is locked when it is opened. Verified on DuckDB 1.5.2: read_csv, read_text, replacement scans (`FROM '/path'`), glob, COPY TO, ATTACH, INSTALL and re-enabling access are all refused, while SUM/window queries over loaded tables work. Tests (`tests/test_duckdb_user_sql_lockdown.py`, 4): the helper, the scheduled-query runner, the dashboard tile and the MCP handle each fail to read a planted secret file and still answer normal queries; the 235 existing chat/commander/dashboard/query/DPC/MCP/data-utils tests pass unchanged. Not covered: `execution_agent.py` and `commander_tools.py` receive their connection from the callers above (locked at creation there), so a caller that hands them an unlocked connection would bypass this; the pipeline engine and ETL run their own connections and are not locked (BUG-189 is the same class for `source.query`); S3-backed tenants were not exercised. PR #TODO.
+
+## BUG-197: causal discover splices a request-supplied WHERE clause and duckdb_path into DuckDB SQL
+- **Status:** open
+- **Found by:** repo-wide ultracode sweep for SQL built from untrusted names/values (7 subsystem reviewers + adversarial verify), 2026-09-26, run after the pipeline/ETL audit showed the class was wider than the sites first fixed. Verifier confirmed from the code; not run end to end unless stated.
+- **Severity:** high
+- **Root cause:** `causal_service/main.py` ~60-71: `duckdb.connect(duckdb_path, read_only=True)` with a request-controlled path, and an unvalidated WHERE clause concatenated into the query. (Whether `causal_service` is deployed on the free-tier box is unverified; the counterfactual/audit engine itself runs in the gateway.)
+- **Caused by:** none -- pre-existing.
+- **Fix:** pending.
+
+## BUG-198: BigQuery connector splices project / dataset / table names into backtick-quoted SQL with no escaping, and the gateway profile route skips the identifier check
+- **Status:** open
+- **Found by:** repo-wide ultracode sweep for SQL built from untrusted names/values (7 subsystem reviewers + adversarial verify), 2026-09-26, run after the pipeline/ETL audit showed the class was wider than the sites first fixed. Verifier confirmed from the code; not run end to end unless stated.
+- **Severity:** medium
+- **Root cause:** `connectors/bigquery_connector.py` ~115 and ~159 build the table reference by f-string; `POST /connectors/{type}/profile` (`api_gateway/routers/connections.py` ~254) passes `table_name` unvalidated while the sibling sync/ingest routes check `_IDENT_RE`. A backtick in the name closes the identifier. Bounded by the fact `execute_query` already runs arbitrary SQL with the same credentials.
+- **Caused by:** none -- pre-existing.
+- **Fix:** pending.
+
+## BUG-199: quality agent builds check SQL from raw table and column names inside double quotes
+- **Status:** open
+- **Found by:** repo-wide ultracode sweep for SQL built from untrusted names/values (7 subsystem reviewers + adversarial verify), 2026-09-26, run after the pipeline/ETL audit showed the class was wider than the sites first fixed. Verifier confirmed from the code; not run end to end unless stated.
+- **Severity:** medium
+- **Root cause:** `agents/specialists/quality_agent.py` ~125-156: names derive from uploaded CSV headers / table names and are wrapped in bare double quotes, so a header containing a double quote breaks out; the SQL runs through the sandbox `execute_sql` tool.
+- **Caused by:** none -- pre-existing.
+- **Fix:** pending -- mechanical: `quote_identifier` at every site.
+
+## BUG-200: optimization agent interpolates LLM-supplied index table, columns and type into CREATE INDEX DDL
+- **Status:** open
+- **Found by:** repo-wide ultracode sweep for SQL built from untrusted names/values (7 subsystem reviewers + adversarial verify), 2026-09-26, run after the pipeline/ETL audit showed the class was wider than the sites first fixed. Verifier confirmed from the code; not run end to end unless stated.
+- **Severity:** medium
+- **Root cause:** `agents/specialists/optimization_agent.py` ~160: the values come from LLM output and are formatted straight into DDL that is then executed.
+- **Caused by:** none -- pre-existing.
+- **Fix:** pending -- allowlist the index type and `quote_identifier` the rest.
+
 ## Refuted (adversarial-verify, ≥2/3 skeptics refuted — filed for the record, no fix needed)
 
 **database_adapter.py:466 get_table_schema-unquoted-table claim** — a reviewer flagged `DuckDBAdapter.get_table_schema` splicing `table` unquoted into `f"DESCRIBE {table}"` as direct SQL injection, with a working local PoC. All 3 verifiers confirmed the code-level fact and PoC are accurate, but refuted the finding: `DuckDBAdapter` backs `shared/vault_client.py`'s internal "vault" (users/transactions, embeddings, VR telemetry) reached only via `connectors/main.py`'s `/vault/*` routes, a distinct subsystem from the uploaded-dataset query path (ETL/pipeline) where a caller-controlled table name could actually originate — no real caller passes attacker-influenced input to this `table` parameter today. Recorded here so a future re-audit doesn't re-flag it without checking this reachability note first; still worth fixing defensively (call `quote_identifier` to match the file's own sibling methods) if anyone touches this function.
@@ -2341,3 +2381,5 @@ the whole subsystem every time.
 - **Audit 2026-09-26 (connector-settings path, BUG-170):** refuted -- 'database column silently overrides extra.project_id for BigQuery'. The precedence quirk exists in `_stored_connector_config`, but `BigQueryConnector.connect()` only reads `config.database` when no `credentials_json` is present, and create validation requires credentials for bigquery, so a validated connection always takes its project from the credentials.
 
 - **Audit 2026-09-26 (upload path):** refuted -- 'glob metacharacters in an uploaded filename are interpreted by DuckDB readers'. The premise holds (`safe_object_name` only rejects separators/NUL/dot names) but the verifier could not confirm it end to end, so no entry was filed; re-check before re-flagging.
+
+- **Sweep 2026-09-26 (SQL splicing):** refuted -- 'unquoted CSV-header column name in the NL2SQL fallback alias' (`orchestration_service/agents/generator_agent.py`): the unquoted alias is real but the fallback only returns SQL text in an AgentResponse; it is not executed on that path.
