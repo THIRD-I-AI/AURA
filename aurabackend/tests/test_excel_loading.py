@@ -84,3 +84,29 @@ async def test_schema_signature_is_computed_off_the_event_loop(monkeypatch):
     out = await data_utils.build_schema_context_cached(duckdb.connect(":memory:"), "t", use_llm=False)
     assert out["tables"] == {}
     assert seen["thread"] != threading.get_ident(), "signature ran on the event-loop thread"
+
+
+def test_files_that_sanitise_to_the_same_table_name_do_not_overwrite_each_other(tmp_path, monkeypatch):
+    """BUG-178: 'q1-sales.csv' / 'q1_sales.csv' and 'sales.csv' / 'sales.parquet' shared one table."""
+    from shared import storage
+    from shared.storage.local import LocalBackend
+
+    backend = LocalBackend(str(tmp_path / "store"))
+    backend.write("t", "q1-sales.csv", b"a,b\n1,2\n")
+    backend.write("t", "q1_sales.csv", b"a,b\n3,4\n5,6\n")
+    pd.DataFrame({"x": [1]}).to_parquet(tmp_path / "s.parquet")
+    backend.write("t", "sales.parquet", (tmp_path / "s.parquet").read_bytes())
+    backend.write("t", "sales.csv", b"y\n1\n2\n3\n")
+
+    monkeypatch.setattr(storage, "get_storage_backend", lambda: backend)
+    ctx = data_utils.build_schema_context(duckdb.connect(":memory:"), "t", use_llm=False)
+
+    rows = {name: info["row_count"] for name, info in ctx["tables"].items()}
+    assert len(rows) == 4, f"a file was silently replaced: {rows}"
+    assert sorted(rows.values()) == [1, 1, 2, 3]
+
+
+def test_unique_table_name_keeps_the_plain_name_for_the_first_file():
+    assert data_utils._unique_table_name("orders.csv", {}) == "orders"
+    assert data_utils._unique_table_name("orders.parquet", {"orders": 1}) == "orders_parquet"
+    assert data_utils._unique_table_name("orders.parquet", {"orders": 1, "orders_parquet": 1}) == "orders_2"

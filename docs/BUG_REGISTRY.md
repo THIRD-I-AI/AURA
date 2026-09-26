@@ -2168,12 +2168,13 @@ the whole subsystem every time.
 
 
 ## BUG-178: filename -> table-name mapping collides and silently overwrites tables (q1-sales.csv vs q1_sales.csv, sales.csv vs sales.parquet)
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode audit (3 lenses + adversarial verify) of the upload / xlsx / schema-context path, 2026-09-26. Verifier confirmed from the code; not run end to end unless stated.
 - **Severity:** medium
 - **Root cause:** `shared/data_utils.py` (~440 and ~675) builds `table_name = re.sub(r"[^A-Za-z0-9_]", "_", stem)` with no duplicate check, so distinct files can map to one table and the later load `CREATE OR REPLACE`s the earlier, silently.
 - **Caused by:** none -- pre-existing.
-- **Fix:** pending.
+- **Fix:** new `_unique_table_name(filename, taken)` used at both sites (`build_schema_context` and the cache-recipe builder): the first file keeps the plain sanitised name, a colliding one gets its extension appended, then a counter. Listing is sorted so names are stable across runs. Tests: a real `LocalBackend` with `q1-sales.csv`/`q1_sales.csv` and `sales.csv`/`sales.parquet` yields 4 distinct tables with the right row counts (fails on the old code: a file silently replaced), plus a unit test of the naming rule. Caveat: when a collision exists the second file's table name is new, so an LLM-generated query written against the old (shadowed) name would now hit the first file's table; that ambiguity is what the bug was. PR #TODO.
+
 
 ## BUG-179: upload size limit is enforced only after the whole multipart body has been received and spooled
 - **Status:** open
