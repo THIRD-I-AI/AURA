@@ -8,3 +8,4 @@ fixes the deployed system does not yet exhibit (not deployed, or regressed).
 |---|---|---|---|---|---|
 | 2026-09-26 14:03 UTC | 14/14 | 0/5 | - | bug196_dashboard_fs_locked, bug179_oversized_upload_413, bug188_preview_limit_400, bug174_170_connection_settings, bug146_xlsx_profiles | - |
 | 2026-09-26 15:42 UTC (build absent) | 14/14 | 5/5 | bug196_dashboard_fs_locked, bug179_oversized_upload_413, bug188_preview_limit_400, bug174_170_connection_settings, bug146_xlsx_profiles | - | - |
+| 2026-09-26 19:01 UTC (build c67e698) | 14/14 | 5/5 | bug196_dashboard_fs_locked, bug179_oversized_upload_413, bug188_preview_limit_400, bug174_170_connection_settings, bug146_xlsx_profiles | - | - |
