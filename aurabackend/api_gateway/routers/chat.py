@@ -26,7 +26,7 @@ from agents.specialists.intent_agent import IntentAgent
 from api_gateway.persistence import insert_chat_message, list_chat_messages
 from shared.config import settings
 from shared.data_utils import build_schema_context_cached
-from shared.duckdb_factory import new_connection
+from shared.duckdb_factory import lock_down_connection, new_connection
 from shared.llm_provider import get_llm
 from shared.logging_config import get_logger
 from shared.observability import CHAT_REQUESTS
@@ -320,6 +320,7 @@ async def chat_endpoint(request: ChatRequest, http_request: Request) -> ChatResp
     tenant = _request_tenant(http_request)
     con = new_connection()
     schema_result = await build_schema_context_cached(con, tenant, use_llm=True)
+    lock_down_connection(con)  # BUG-196: LLM-generated SQL runs on this connection
     all_tables = schema_result["tables"]
 
     # ── Focus the schema context on a single table if the user clearly
@@ -673,6 +674,7 @@ async def _build_commander_session(http_request: Request, req: "ChatStreamReques
     # The model fetches columns on demand via describe_table, keeping each LLM
     # turn small (the rich dump was ~3.2k tokens → provider rate-limit latency).
     schema_result = await build_schema_context_cached(con, tenant, use_llm=True)
+    lock_down_connection(con)  # BUG-196: the commander's run_sql tool executes on this connection
     table_names = list(schema_result.get("tables", {}).keys())
     context_text = ("Loaded tables: " + ", ".join(table_names)) if table_names else "No tables loaded yet."
     if req.context:
