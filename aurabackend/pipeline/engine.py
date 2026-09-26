@@ -53,6 +53,13 @@ def _sanitize_id(name: str) -> str:
 # it. Aliasing covers every existing call site without touching them.
 from shared.sql_expression_guard import validate_sql_expression as _validate_expression  # noqa: E402
 from shared.sql_identifiers import quote_identifier as _q  # noqa: E402
+from shared.sql_identifiers import quote_literal  # noqa: E402
+
+# Aggregates PIVOT ... USING may apply (BUG-184). Anything else is refused, not spliced.
+_PIVOT_AGG_FUNCTIONS = frozenset({
+    "SUM", "AVG", "COUNT", "MIN", "MAX", "MEDIAN", "FIRST", "LAST", "ANY_VALUE",
+    "STDDEV", "STDDEV_SAMP", "STDDEV_POP", "VARIANCE", "VAR_SAMP", "VAR_POP",
+})
 from shared.storage.base import tenant_slug  # noqa: E402
 
 
@@ -588,7 +595,7 @@ class PipelineEngine:
                 # ── Optimisation: only touch columns that actually have NULLs ──
                 try:
                     null_count_exprs = ", ".join(
-                        f'SUM(CASE WHEN "{c}" IS NULL THEN 1 ELSE 0 END) AS "{c}"'
+                        f'SUM(CASE WHEN {_q(c)} IS NULL THEN 1 ELSE 0 END) AS {_q(c)}'
                         for c, *_ in schema
                     )
                     null_row = conn.execute(
@@ -605,18 +612,20 @@ class PipelineEngine:
                         continue
                     is_numeric = any(t in c_type.upper() for t in ("INT", "FLOAT", "DOUBLE", "DECIMAL", "NUMERIC", "BIGINT", "SMALLINT", "TINYINT", "REAL"))
                     if strategy == "mean" and is_numeric:
-                        replaces.append(f'COALESCE("{c_name}", AVG("{c_name}") OVER ()) AS "{c_name}"')
+                        replaces.append(f'COALESCE({_q(c_name)}, AVG({_q(c_name)}) OVER ()) AS {_q(c_name)}')
                     elif strategy == "median" and is_numeric:
-                        replaces.append(f'COALESCE("{c_name}", MEDIAN("{c_name}") OVER ()) AS "{c_name}"')
+                        replaces.append(f'COALESCE({_q(c_name)}, MEDIAN({_q(c_name)}) OVER ()) AS {_q(c_name)}')
                     elif strategy in ("mean", "median") and not is_numeric:
                         if value and not _val_is_numeric:
                             safe = str(value).replace("'", "''")
-                            replaces.append(f"COALESCE(\"{c_name}\", '{safe}') AS \"{c_name}\"")
+                            replaces.append(f"COALESCE({_q(c_name)}, '{safe}') AS {_q(c_name)}")
                         # else: skip text cols for mean/median
-                    elif is_numeric and value:
-                        replaces.append(f'COALESCE("{c_name}", {value}) AS "{c_name}"')
+                    elif is_numeric and value and _val_is_numeric:
+                        # BUG-185: only a value that parsed as a number, re-rendered from the
+                        # parsed float -- never the caller's raw string.
+                        replaces.append(f'COALESCE({_q(c_name)}, {float(value)!r}) AS {_q(c_name)}')
                     elif is_numeric and not value:
-                        replaces.append(f'COALESCE("{c_name}", 0) AS "{c_name}"')
+                        replaces.append(f'COALESCE({_q(c_name)}, 0) AS {_q(c_name)}')
                     elif not is_numeric and value and not _val_is_numeric:
                         safe = str(value).replace("'", "''")
                         replaces.append(f"COALESCE(\"{c_name}\", '{safe}') AS \"{c_name}\"")
@@ -705,7 +714,10 @@ class PipelineEngine:
         elif t == StepType.PIVOT:
             values_col = cfg.get("values_column", "")
             pivot_col = cfg.get("pivot_column", "")
-            agg_func = cfg.get("agg_function", "SUM").upper()
+            agg_func = str(cfg.get("agg_function", "SUM")).strip().upper()
+            # BUG-184: this used to be spliced raw into `USING <agg>(...)`.
+            if agg_func not in _PIVOT_AGG_FUNCTIONS:
+                return None
             if not values_col or not pivot_col:
                 return None
             return (
@@ -783,13 +795,13 @@ class PipelineEngine:
         out_path = os.path.join(tenant_dir, out_name)
 
         if fmt == "csv":
-            conn.execute(f"COPY {_q(final_table)} TO '{out_path}' (HEADER, DELIMITER ',')")
+            conn.execute(f"COPY {_q(final_table)} TO {quote_literal(out_path)} (HEADER, DELIMITER ',')")
         elif fmt == "parquet":
-            conn.execute(f"COPY {_q(final_table)} TO '{out_path}' (FORMAT PARQUET)")
+            conn.execute(f"COPY {_q(final_table)} TO {quote_literal(out_path)} (FORMAT PARQUET)")
         elif fmt == "json":
-            conn.execute(f"COPY {_q(final_table)} TO '{out_path}' (FORMAT JSON, ARRAY true)")
+            conn.execute(f"COPY {_q(final_table)} TO {quote_literal(out_path)} (FORMAT JSON, ARRAY true)")
         else:
-            conn.execute(f"COPY {_q(final_table)} TO '{out_path}' (HEADER, DELIMITER ',')")
+            conn.execute(f"COPY {_q(final_table)} TO {quote_literal(out_path)} (HEADER, DELIMITER ',')")
 
         run.output_file = out_name
         logger.info(f"[Pipeline] Wrote {out_name} ({run.rows_written} rows)")
