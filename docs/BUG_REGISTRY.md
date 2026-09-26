@@ -2147,7 +2147,7 @@ the whole subsystem every time.
 - **Severity:** high
 - **Root cause:** `shared/schema_indexer.py:50` derives `source_id` from `Path(file_path).stem`, dropping the per-tenant storage directory, so two tenants uploading `sales.csv` share source_id `sales`. `SchemaColumn` (`metadata_store/models.py:89-101`) has no tenant/workspace column and its unique key is (source_id, table_name, column_name); `_upsert_columns` (`schema_indexer.py:149-164`) deletes by source_id+table_name only, so B's upload wipes A's rows. The MCP tools `metadata_search_columns` / `metadata_describe_table` (`mcp_servers/aura_mcp_server.py` ~289-351) query it with no tenant filter and return sample_values (first rows of the file). Not checked: whether the MCP server is reachable by an authenticated tenant; the overwrite/delete half does not depend on that.
 - **Caused by:** none -- pre-existing.
-- **Fix:** the overwrite/delete half is fixed without a schema change: new `schema_source_id(tenant, filename)` makes `source_id` `<tenant_slug>::<stem>`, and `upload_universal` passes it to `index_uploaded_file`, so two tenants' `sales.csv` no longer share a key (test: both tenants' rows survive; fails on the old code with ImportError/assert; plus a check that the route uses the helper -- a source-level assertion, weaker than driving the upload). NOT fixed: (1) the READ half -- `metadata_search_columns` / `metadata_describe_table` in `mcp_servers/aura_mcp_server.py` still query `schema_columns` with no tenant filter, so column names and sample values remain readable across tenants if that server is reachable by a tenant (not verified either way); a real fix needs a tenant column (migration) or caller-scoped queries and is a decision for the owner; (2) rows indexed before this change keep the old bare ids and can still be overwritten/collide; (3) the MCP tools now surface `<tenant>::<stem>` ids, so callers passing a bare `source_id` to `describe_table` see no rows for new uploads. PR #TODO.
+- **Fix:** the overwrite/delete half is fixed without a schema change: new `schema_source_id(tenant, filename)` makes `source_id` `<tenant_slug>::<stem>`, and `upload_universal` passes it to `index_uploaded_file`, so two tenants' `sales.csv` no longer share a key (test: both tenants' rows survive; fails on the old code with ImportError/assert; plus a check that the route uses the helper -- a source-level assertion, weaker than driving the upload). NOT fixed: (1) the READ half -- `metadata_search_columns` / `metadata_describe_table` in `mcp_servers/aura_mcp_server.py` still query `schema_columns` with no tenant filter, so column names and sample values remain readable across tenants if that server is reachable by a tenant (not verified either way); a real fix needs a tenant column (migration) or caller-scoped queries and is a decision for the owner; (2) rows indexed before this change keep the old bare ids and can still be overwritten/collide; (3) the MCP tools now surface `<tenant>::<stem>` ids, so callers passing a bare `source_id` to `describe_table` see no rows for new uploads. PR #522.
 
 
 ## BUG-176: LocalBackend.list only returned .csv/.parquet/.json, so uploaded .xlsx workbooks never reached the schema context on local storage (BUG-146's fix was incomplete)
@@ -2156,7 +2156,7 @@ the whole subsystem every time.
 - **Severity:** medium
 - **Root cause:** `shared/storage/local.py` `_READ_EXTS` omitted `.xlsx`; `build_schema_context` and the cache-recipe path iterate `backend.list(tenant)` and only then check `EXCEL_EXTENSIONS`, so the Excel branch added for BUG-146 was unreachable locally (S3 lists everything, so S3 was unaffected -- but S3 Excel is rejected by design).
 - **Caused by:** BUG-146 (PR #515) -- its fix left this gap.
-- **Fix:** `.xlsx` added to `_READ_EXTS`. New test `test_local_storage_lists_xlsx_and_schema_context_includes_it` writes a real workbook into a `LocalBackend`, asserts it is listed and that `build_schema_context` yields the table with its columns; it fails without the change (`[] == ['sales.xlsx']`). PR #TODO.
+- **Fix:** `.xlsx` added to `_READ_EXTS`. New test `test_local_storage_lists_xlsx_and_schema_context_includes_it` writes a real workbook into a `LocalBackend`, asserts it is listed and that `build_schema_context` yields the table with its columns; it fails without the change (`[] == ['sales.xlsx']`). PR #521.
 
 ## BUG-177: build_schema_context_cached lists storage synchronously on the event loop (S3 = blocking network round trips on a single-worker gateway)
 - **Status:** fixed
@@ -2164,7 +2164,7 @@ the whole subsystem every time.
 - **Severity:** medium
 - **Root cause:** `shared/data_utils.py:728` calls `_signature_for_tenant` (which calls `backend.list(tenant)`, a blocking boto3 paginator on S3 / iterdir+stat locally) directly inside an async function awaited by every chat, query and dashboard request; every other blocking step in that function is offloaded with `asyncio.to_thread`. Violates `.claude/rules/backend.md` (async safety).
 - **Caused by:** none -- pre-existing.
-- **Fix:** `await asyncio.to_thread(_signature_for_tenant, effective_tenant)` (its only call site). New test replaces `_signature_for_tenant` with a stub recording its thread and asserts it is not the event-loop thread; it fails on the old code and passes now (it lives in `tests/test_excel_loading.py` alongside the other data_utils tests). Not measured: the actual latency win against a real S3 endpoint. PR #TODO.
+- **Fix:** `await asyncio.to_thread(_signature_for_tenant, effective_tenant)` (its only call site). New test replaces `_signature_for_tenant` with a stub recording its thread and asserts it is not the event-loop thread; it fails on the old code and passes now (it lives in `tests/test_excel_loading.py` alongside the other data_utils tests). Not measured: the actual latency win against a real S3 endpoint. PR #523.
 
 
 ## BUG-178: filename -> table-name mapping collides and silently overwrites tables (q1-sales.csv vs q1_sales.csv, sales.csv vs sales.parquet)
@@ -2177,12 +2177,13 @@ the whole subsystem every time.
 
 
 ## BUG-179: upload size limit is enforced only after the whole multipart body has been received and spooled
-- **Status:** open
+- **Status:** fixed (partial)
 - **Found by:** ultracode audit (3 lenses + adversarial verify) of the upload / xlsx / schema-context path, 2026-09-26. Verifier confirmed from the code; not run end to end unless stated.
 - **Severity:** medium
 - **Root cause:** `api_gateway/routers/files.py:97-160`: FastAPI/Starlette parses the entire multipart body into a spooled temp file before the handler's 413 check runs, and no request-size guard exists in the repo; concurrent oversized uploads can exhaust temp disk on the single worker. An upstream proxy might cap the body -- nothing in the repo does.
 - **Caused by:** none -- pre-existing.
-- **Fix:** pending.
+- **Fix:** new pure-ASGI `UploadBodyLimitMiddleware` (`shared/middleware.py`), installed by `shared/service_factory.py` ahead of CORS so its 413 still carries CORS headers: a POST to a path ending `/upload` whose declared `Content-Length` exceeds `AURA_MAX_UPLOAD_BODY_BYTES` (default 26MB = the 25MB file limit + multipart overhead) is answered 413 before the body is read or spooled. 4 tests (oversized rejected and the handler never runs; within-limit passes; other routes unaffected; the factory installs it) -- the first fails on the old code (no such middleware). NOT covered: a chunked upload (no Content-Length) still falls through to the handler's post-spool check; and the double copy at `files.py:173` (BytesIO + getvalue) is untouched. Not tried against the live gateway/proxy. PR #TODO.
+
 
 ## BUG-180: pandas.read_excel has no row / decompressed-size bound (zip-bomb .xlsx can exhaust memory of the single worker)
 - **Status:** open
@@ -2198,7 +2199,7 @@ the whole subsystem every time.
 - **Severity:** low -- test-only, but it would have failed CI for whoever's run landed on it (roughly 1 run in 1000) and it had already passed CI once by luck.
 - **Root cause:** the test used the number 384 (the FAISS dimension it posted) as its 'not leaked' probe; the wire dict legitimately contains timestamps whose digits can contain 384. Not a product defect -- the `extra` value was not in the response.
 - **Caused by:** BUG-170 (PR #517) -- I wrote the assertion.
-- **Fix:** the probe is now the distinctive string `zz-marker-hnsw` (posted as `index_type`); the test still asserts `extra` and `config_encrypted` are absent. PR #TODO.
+- **Fix:** the probe is now the distinctive string `zz-marker-hnsw` (posted as `index_type`); the test still asserts `extra` and `config_encrypted` are absent. PR #522.
 
 ## BUG-182: the BUG-167 mapping test in ExceptionQueue.test.tsx failed in CI -- it queried the mapping selects synchronously after an async file read
 - **Status:** fixed

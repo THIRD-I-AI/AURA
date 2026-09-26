@@ -456,6 +456,43 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         return response
 
 
+class UploadBodyLimitMiddleware:
+    """Refuse an oversized upload from its Content-Length, before the body is read (BUG-179).
+
+    FastAPI parses a multipart body (spooling it to a temp file) *before* the handler
+    runs, so the handler's own 413 check only fires after the whole body has been
+    received and written to disk. On a single-worker deployment a few concurrent large
+    uploads could fill the temp disk first. This rejects on the declared length.
+
+    Limits: only requests that declare Content-Length are caught -- a chunked body has
+    no length up front and still falls through to the handler's check. It bounds the
+    body, not the file, so ``max_bytes`` should be the file limit plus multipart overhead.
+    """
+
+    def __init__(self, app, *, max_bytes: int, path_suffix: str = "/upload") -> None:
+        self.app = app
+        self.max_bytes = max_bytes
+        self.path_suffix = path_suffix
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http" and scope["method"] == "POST" and scope["path"].endswith(self.path_suffix):
+            for name, value in scope.get("headers", []):
+                if name == b"content-length":
+                    try:
+                        too_big = int(value) > self.max_bytes
+                    except ValueError:
+                        too_big = False
+                    if too_big:
+                        response = JSONResponse(
+                            {"detail": f"Request body exceeds the {self.max_bytes // (1024 * 1024)}MB upload limit"},
+                            status_code=413,
+                        )
+                        await response(scope, receive, send)
+                        return
+                    break
+        await self.app(scope, receive, send)
+
+
 def register_exception_handlers(app: FastAPI) -> None:
     """Attach global exception handlers so every error returns structured JSON."""
 
