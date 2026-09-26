@@ -98,6 +98,17 @@ def _serialize_value(val: Any) -> Any:
 # had never had this guard applied, can reuse it.
 from shared.sql_expression_guard import validate_sql_expression as _validate_custom_sql  # noqa: E402
 from shared.sql_identifiers import quote_identifier as _q  # noqa: E402
+from shared.sql_identifiers import quote_literal  # noqa: E402
+
+_CAST_TYPES = frozenset({"INTEGER", "VARCHAR", "DOUBLE", "BOOLEAN", "DATE", "TIMESTAMP", "BIGINT", "FLOAT", "TEXT"})
+
+
+def _fill_literal(value: str) -> str:
+    """SQL literal for a fill value (BUG-185): a number re-rendered from its parse, else a quoted string."""
+    try:
+        return repr(float(value))
+    except ValueError:
+        return quote_literal(value)
 
 # BUG-122: the aggregate step's func sits in a function-CALL position, not an
 # identifier position -- quote_identifier can't protect it (it isn't quoted
@@ -206,7 +217,11 @@ def _build_transform_sql(table: str, steps: List[ETLTransformStep], con=None) ->
             if not col or not to_type:
                 skipped += 1
                 continue
-            cte_parts.append(f'{alias} AS (SELECT * REPLACE (CAST({_q(col)} AS {to_type}) AS {_q(col)}) FROM {_q(prev)})')
+            # BUG-187: to_type used to be spliced raw; only a known DuckDB type may follow AS.
+            if to_type.upper() not in _CAST_TYPES:
+                skipped += 1
+                continue
+            cte_parts.append(f'{alias} AS (SELECT * REPLACE (CAST({_q(col)} AS {to_type.upper()}) AS {_q(col)}) FROM {_q(prev)})')
 
         elif t == "fill_missing":
             col = (cfg.get("column") or "").strip()
@@ -251,8 +266,8 @@ def _build_transform_sql(table: str, steps: List[ETLTransformStep], con=None) ->
                         if fill_val and not _val_is_numeric:
                             safe = fill_val.replace("'", "''")
                             replaces.append(f"COALESCE({qc}, '{safe}') AS {qc}")
-                    elif is_numeric and fill_val:
-                        replaces.append(f'COALESCE({qc}, {fill_val}) AS {qc}')
+                    elif is_numeric and fill_val and _val_is_numeric:  # BUG-185: numeric only, re-rendered
+                        replaces.append(f'COALESCE({qc}, {float(fill_val)!r}) AS {qc}')
                     elif is_numeric and not fill_val:
                         replaces.append(f'COALESCE({qc}, 0) AS {qc}')
                     elif not is_numeric and fill_val and not _val_is_numeric:
@@ -267,7 +282,7 @@ def _build_transform_sql(table: str, steps: List[ETLTransformStep], con=None) ->
                 skipped += 1
                 continue
             else:
-                cte_parts.append(f'{alias} AS (SELECT * REPLACE (COALESCE({_q(col)}, {fill_val}) AS {_q(col)}) FROM {_q(prev)})')
+                cte_parts.append(f'{alias} AS (SELECT * REPLACE (COALESCE({_q(col)}, {_fill_literal(fill_val)}) AS {_q(col)}) FROM {_q(prev)})')
 
         elif t == "custom_sql":
             sql_expr = (cfg.get("sql") or "").strip()
@@ -301,7 +316,11 @@ async def etl_preview_source(payload: Dict[str, Any], request: Request):
     from shared.duckdb_factory import new_connection
 
     source_file = payload.get("source_file", "")
-    limit = payload.get("limit", 20)
+    # BUG-188: limit came straight from the JSON body and was spliced into the SQL.
+    try:
+        limit = max(1, min(int(payload.get("limit", 20)), 1000))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="limit must be an integer")
     tenant = _request_tenant(request)
     backend = get_storage_backend()
 
@@ -327,7 +346,7 @@ async def etl_preview_source(payload: Dict[str, Any], request: Request):
 
         def _load_and_preview():
             file_info = smart_load_file(con, duckdb_uri, table_name, use_llm=True)
-            preview = con.execute(f'SELECT * FROM "{table_name}" LIMIT {limit}').fetchall()
+            preview = con.execute(f'SELECT * FROM {_q(table_name)} LIMIT {int(limit)}').fetchall()
             return file_info, preview
 
         file_info, preview = await asyncio.to_thread(_load_and_preview)
@@ -428,15 +447,15 @@ async def etl_execute(pipeline: ETLPipelineRequest, request: Request):
                 if fmt == "csv":
                     download_filename = f"{dest_name}.csv"
                     output_path = str(output_dir / download_filename)
-                    con.execute(f"COPY _etl_output TO '{output_path}' (HEADER, DELIMITER ',')")
+                    con.execute(f"COPY _etl_output TO {quote_literal(output_path)} (HEADER, DELIMITER ',')")
                 elif fmt == "parquet":
                     download_filename = f"{dest_name}.parquet"
                     output_path = str(output_dir / download_filename)
-                    con.execute(f"COPY _etl_output TO '{output_path}' (FORMAT PARQUET)")
+                    con.execute(f"COPY _etl_output TO {quote_literal(output_path)} (FORMAT PARQUET)")
                 elif fmt == "json":
                     download_filename = f"{dest_name}.json"
                     output_path = str(output_dir / download_filename)
-                    con.execute(f"COPY _etl_output TO '{output_path}' (FORMAT JSON, ARRAY true)")
+                    con.execute(f"COPY _etl_output TO {quote_literal(output_path)} (FORMAT JSON, ARRAY true)")
                 else:
                     raise HTTPException(status_code=400, detail=f"Unsupported destination format: {fmt}")
 
