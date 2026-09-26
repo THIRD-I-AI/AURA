@@ -2312,12 +2312,12 @@ the whole subsystem every time.
 - **Fix:** the preview-source and suggest (natural-language) endpoints now close their DuckDB connection in a `finally` (it was closed only after a successful read); `/etl/execute` already used try/finally. New `_copy_or_cleanup(con, sql, path)` wraps the three COPY statements and deletes the partial output file if the COPY fails, then re-raises. Tests (`tests/test_etl_connection_lifecycle.py`): the preview endpoint closes the connection when the read fails (fails on the old code -- the leak is reproduced), and the helper removes a partial file / leaves a good one alone (these two fail on the old code only because the helper does not exist; a real disk-full COPY was not induced). PR #TODO.
 
 ## BUG-195: ingest writes the dataset profile and UASR baseline/drift state under a global, un-namespaced source_id
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode audit (3 lenses + adversarial verify) of the pipeline engine / ETL router / connection sync, 2026-09-26. Verifier confirmed from the code; the DuckDB connection has no external-access restriction, so injected SQL can read and write local files. Not run end to end unless stated.
 - **Severity:** medium
 - **Root cause:** `api_gateway/routers/connections.py` ~473: two workspaces ingesting a source with the same id share profile and drift-baseline state (same class as BUG-175).
 - **Caused by:** none -- pre-existing.
-- **Fix:** pending -- likely the same tenant-namespacing approach as BUG-175's `schema_source_id`.
+- **Fix:** `POST /connectors/{type}/ingest` now takes the request and namespaces the source id as `<workspace/tenant>::<source_id>` (`current_workspace_id`, the same isolation key the other connection routes use) before it is sent to UASR `/uasr/baseline` and `/uasr/ingest` and stored as the dataset-profile `file_id`; the profile is also written with `workspace_id`. The response returns the namespaced id. Test `test_ingest_source_id_is_namespaced_by_workspace` (two workspaces, same source name, UASR calls captured) fails on the old code (both used the bare id). CHANGE: callers that looked up UASR/profile state by the bare `source_id` must now use the returned namespaced id; state already stored under bare ids from before this fix is not migrated and is orphaned. Not run against a real UASR service.
 
 ## BUG-196: connections that run user, stored or LLM-generated SQL have unrestricted filesystem and network access (read_csv, read_text, COPY TO, ATTACH, httpfs)
 - **Status:** fixed

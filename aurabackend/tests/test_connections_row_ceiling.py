@@ -152,3 +152,51 @@ def test_ingest_max_rows_above_the_ceiling_is_rejected(client, duckdb_source, mo
     )
     assert resp.status_code == 400, resp.text
     assert "max_rows" in resp.json()["detail"]
+
+
+def test_ingest_source_id_is_namespaced_by_workspace(client, duckdb_source, monkeypatch):
+    """BUG-195: two workspaces ingesting the same source name must not share UASR state."""
+    import httpx
+
+    from api_gateway.routers import connections as mod
+
+    sent = []
+
+    class _Resp:
+        status_code = 200
+
+        def json(self):
+            return {"drift_detected": False}
+
+    class _FakeClient:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def post(self, url, json=None, **k):
+            sent.append((url, json["source_id"]))
+            return _Resp()
+
+    monkeypatch.setattr(httpx, "AsyncClient", _FakeClient)
+
+    def _ingest(ws):
+        monkeypatch.setattr(mod, "current_workspace_id", lambda request: ws)
+        return client.post(
+            f"{V1}/connectors/duckdb/ingest",
+            json={
+                "connector_config": {"database": duckdb_source},
+                "table_name": "customers",
+                "source_id": "shared-name",
+            },
+        )
+
+    a, b = _ingest("tenant-a"), _ingest("tenant-b")
+    assert a.status_code == 200 and b.status_code == 200, (a.text, b.text)
+    assert a.json()["source_id"] != b.json()["source_id"]
+    assert a.json()["source_id"].startswith("tenant-a::")
+    assert {sid for _, sid in sent} == {a.json()["source_id"], b.json()["source_id"]}
