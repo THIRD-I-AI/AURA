@@ -236,3 +236,29 @@ class TestMultiTable:
             )).scalars().all()
             tables = {c.table_name for c in all_cols}
             assert tables == {"sales", "orders"}
+
+
+# BUG-175: schema_columns has no tenant column, and source_id was the bare file stem.
+@pytest.mark.asyncio
+async def test_two_tenants_uploading_the_same_filename_do_not_overwrite_each_other(engine):
+    from shared.schema_indexer import _upsert_columns, schema_source_id
+
+    a, b = schema_source_id("tenant-a", "sales.csv"), schema_source_id("tenant-b", "sales.csv")
+    assert a != b and a.endswith("::sales") and b.endswith("::sales")
+
+    await _upsert_columns(a, _rows("sales", [{"name": "secret_a", "samples": ["A-ONLY"]}]))
+    await _upsert_columns(b, _rows("sales", [{"name": "col_b", "samples": ["B-ONLY"]}]))
+
+    from metadata_store.db import get_session_factory
+    async with get_session_factory()() as s:
+        got = {(r.source_id, r.column_name) for r in (await s.execute(select(SchemaColumn))).scalars()}
+    assert got == {(a, "secret_a"), (b, "col_b")}, "tenant B's upload must not delete tenant A's rows"
+
+
+def test_upload_route_passes_the_tenant_namespaced_source_id():
+    import inspect
+
+    from api_gateway.routers import files
+
+    src = inspect.getsource(files)
+    assert "source_id=schema_source_id(tenant, safe_name)" in src

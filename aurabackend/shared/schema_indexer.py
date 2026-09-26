@@ -40,6 +40,18 @@ _SAMPLE_LIMIT = int(os.getenv("AURA_SCHEMA_INDEXER_SAMPLES", "5"))
 
 # ── Public API ────────────────────────────────────────────────────────
 
+def schema_source_id(tenant: Optional[str], filename: str) -> str:
+    """Tenant-namespaced ``source_id`` for an uploaded file (BUG-175).
+
+    The bare file stem made two tenants' ``sales.csv`` the same source: the
+    second upload's delete-and-insert wiped the first's rows. ``schema_columns``
+    has no tenant column, so the tenant rides in the id instead.
+    """
+    from shared.storage.base import tenant_slug
+
+    return f"{tenant_slug(tenant or '')}::{Path(filename).stem}"
+
+
 async def index_uploaded_file(file_path: str, source_id: Optional[str] = None) -> Dict[str, int]:
     """Introspect ``file_path`` (CSV / Parquet / JSON) via DuckDB and
     upsert one row per column into ``schema_columns``.

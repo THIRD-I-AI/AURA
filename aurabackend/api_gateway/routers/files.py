@@ -204,10 +204,10 @@ async def upload_universal(
         # Pass the duckdb_uri (local path or s3://) so the indexer can
         # read the file directly without depending on local disk presence.
         try:
-            from shared.schema_indexer import index_uploaded_file
+            from shared.schema_indexer import index_uploaded_file, schema_source_id
             from shared.tasks import fire_and_forget
             fire_and_forget(
-                index_uploaded_file(obj_info.duckdb_uri),
+                index_uploaded_file(obj_info.duckdb_uri, source_id=schema_source_id(tenant, safe_name)),
                 name=f"schema-index-{upload_id}",
             )
         except Exception as _idx_exc:
