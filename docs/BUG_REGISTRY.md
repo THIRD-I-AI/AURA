@@ -2267,12 +2267,12 @@ the whole subsystem every time.
 - **Fix:** pending -- needs a decision: a query source is a deliberate feature (arbitrary SELECT), so the fix is to run it through the same guard as CUSTOM_SQL (blocking file/URL readers and ATTACH) or to connect with `enable_external_access=false`; both can break legitimate queries, so look at real usage first.
 
 ## BUG-190: connection sync overwrites a good snapshot with partial or empty data when a connector query fails
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode audit (3 lenses + adversarial verify) of the pipeline engine / ETL router / connection sync, 2026-09-26. Verifier confirmed from the code; the DuckDB connection has no external-access restriction, so injected SQL can read and write local files. Not run end to end unless stated.
 - **Severity:** high
 - **Root cause:** `api_gateway/routers/connections.py` ~717: the connectors swallow query errors and return [] / partial rows, and sync then writes that as the new snapshot file, replacing the previous good one.
 - **Caused by:** none -- pre-existing.
-- **Fix:** pending.
+- **Fix:** `sync_table` now refuses to write (502, existing snapshot untouched) when the result is empty and the source did not confirm the table is empty (`row_estimate != 0`), or when it read fewer rows than the confirmed count and no `max_rows` slice was requested. REPRODUCED: with the source table dropped, the old code answered `success: true` and replaced the 3-row snapshot with an empty one; the new test asserts a 502 and that the original 3-row parquet survives (fails on the old code). Caveat: a table that is legitimately empty AND whose row count could not be obtained now cannot be synced (retry, or the user sees the 502 message); `row_estimate` comes from the connector's profile and could be stale, in which case the user passes `max_rows`. PR #TODO.
 
 ## BUG-191: PostgreSQL pipeline sink drops the destination table and re-creates it with no transaction
 - **Status:** open

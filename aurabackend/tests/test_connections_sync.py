@@ -234,3 +234,26 @@ async def test_synced_table_is_picked_up_by_chat_schema_context(client, duckdb_s
     # discovered and loaded purely by scanning the upload dir.
     assert any("customers" in t for t in result["tables"])
     assert "spend" in result["context_text"]
+
+
+@pytest.mark.asyncio
+async def test_failed_source_query_does_not_overwrite_the_previous_snapshot(client, duckdb_source, tmp_path):
+    """BUG-190: the connector swallows a failed query and returns [], which used to be written
+    as an empty snapshot over the last good one."""
+    import duckdb
+    import pandas as pd
+
+    conn = await _register_connection("default", duckdb_source)
+    first = client.post(f"{V1}/connections/{conn['id']}/sync", json={"table_name": "customers"})
+    assert first.status_code == 200 and first.json()["row_count"] == 3
+
+    con = duckdb.connect(duckdb_source)
+    con.execute("DROP TABLE customers")
+    con.close()
+
+    second = client.post(f"{V1}/connections/{conn['id']}/sync", json={"table_name": "customers"})
+    assert second.status_code == 502, second.text
+    assert "left unchanged" in second.json()["detail"]
+
+    written = os.path.join(str(tmp_path / "uploads"), "default", first.json()["file_name"])
+    assert len(pd.read_parquet(written)) == 3, "the good snapshot must survive a failed re-sync"
