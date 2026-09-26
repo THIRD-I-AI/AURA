@@ -47,3 +47,22 @@ def test_supported_formats_only_advertise_what_loads():
     fmts = get_supported_formats()["supported_formats"]
     assert fmts["excel"]["extensions"] == [".xlsx"]
     assert "text" not in fmts
+
+
+def test_local_storage_lists_xlsx_and_schema_context_includes_it(tmp_path, monkeypatch):
+    """BUG-176: LocalBackend.list filtered on .csv/.parquet/.json, so a stored workbook
+    never reached build_schema_context even though smart_load_file could read it."""
+    from shared import storage
+    from shared.storage.local import LocalBackend
+
+    src = tmp_path / "src.xlsx"
+    pd.DataFrame({"region": ["e", "w"], "amount": [1, 2]}).to_excel(src, index=False)
+    backend = LocalBackend(str(tmp_path / "store"))
+    backend.write("tenant-a", "sales.xlsx", src.read_bytes())
+
+    assert [o.name for o in backend.list("tenant-a")] == ["sales.xlsx"]
+
+    monkeypatch.setattr(storage, "get_storage_backend", lambda: backend)
+    ctx = data_utils.build_schema_context(duckdb.connect(":memory:"), "tenant-a", use_llm=False)
+    assert "sales" in ctx["tables"]
+    assert [c["name"] for c in ctx["tables"]["sales"]["columns"]] == ["region", "amount"]
