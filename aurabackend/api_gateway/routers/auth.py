@@ -158,6 +158,13 @@ async def register_user(body: RegisterRequest):
             "provision accounts via SSO / an administrator."
         )
 
+    # BUG-205: this endpoint is unauthenticated, so the caller must never choose a
+    # privileged role -- a self-registered "admin"/"auditor" got a token that passed
+    # require_role checks (key revocation, AS 1215 sign-off). Privileged accounts are
+    # provisioned by an administrator or via SSO, not here.
+    if body.role != "user":
+        raise ForbiddenError("Self-registration can only create accounts with the 'user' role.")
+
     from metadata_store.db import get_session_factory
     from metadata_store.models import User
     from shared.password import hash_password
@@ -177,7 +184,7 @@ async def register_user(body: RegisterRequest):
             name=body.name,
             email=body.email,
             password_hash=password_hash,
-            role=body.role,
+            role="user",
             # New users get their own org (single-user tenant); org invites
             # that add members to an existing org come in a later phase.
             org_id=str(uuid.uuid4()),
