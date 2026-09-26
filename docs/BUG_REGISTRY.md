@@ -2399,6 +2399,30 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Caused by:** none -- a missing feature.
 - **Fix:** every runtime image now bakes the commit in (`ARG GIT_SHA` / `ENV AURA_GIT_SHA` at the end of each runtime stage of `aurabackend/Dockerfile`, so a changing value invalidates no earlier layer), `cd.yml` passes `GIT_SHA=${{ github.sha }}` as a build arg, `/health` returns `build` (`unknown` outside CD builds), the live `health` check reports it, and each ledger row in `docs/LIVE_DEPLOYMENT_LOG.md` records `(build <sha7>)`. Tests (`tests/test_health_build_id.py`, 4): 3 fail on the old code (no `build` key; the ledger row has no build) and the Dockerfile/cd.yml wiring is asserted. NOT verified end to end: no image has been built with the build arg yet -- the first CD build after this merges is the proof, and the ledger row after the next deploy should show a real sha instead of 'absent'; if it still says 'unknown' the build arg did not reach the runtime stage. The frontend image is not covered. PR #TODO.
 - **Live verification 2026-09-26 19:01 UTC:** production `/health` returned `build: c67e698...` (the merge commit of #539, after #546 merged) and the ledger row shows `(build c67e698)`; the build arg reached the runtime image. The frontend image is still not covered.
+## BUG-205: self-registration let the caller choose their own role (admin / auditor)
+- **Status:** fixed
+- **Found by:** ultracode audit of auth / security-sensitive shared code (3 lenses + adversarial verify), 2026-09-26. The verifier confirmed it from the code; nothing was run end to end unless stated.
+- **Severity:** critical
+- **Root cause:** `api_gateway/routers/auth.py` `RegisterRequest.role` was a free client string, and the unauthenticated `POST /auth/register` stored it verbatim; `/auth/token` then put it in the JWT. `allow_self_registration` defaults to true (also in production), so anyone could register `role=admin`, pass `require_role('admin')` and the auditor gates (`counterfactual_service` key revocation, AS 1215 sign-off).
+- **Caused by:** none -- pre-existing.
+- **Fix:** `register_user` now returns 403 for any role other than `user` and always stores `user`. Tests `test_register_cannot_choose_a_privileged_role` (admin/auditor/root; also asserts no account was created): 3 fail on the old code. Not exploited against production (that would create a privileged account there). NOT DONE: the `allow_self_registration=true` default in production is still a policy question; the field is still accepted (and rejected unless `user`) rather than removed, to avoid an SDK schema change; any admin account created through this hole before the fix on a deployment is not detected -- audit `users.role` on any deployment with password mode and open registration.
+
+## BUG-206: AuditLogMiddleware never records the acting user
+- **Status:** open
+- **Found by:** ultracode audit of auth / security-sensitive shared code (3 lenses + adversarial verify), 2026-09-26. The verifier confirmed it from the code; nothing was run end to end unless stated.
+- **Severity:** medium
+- **Root cause:** `shared/middleware.py` ~98 reads `request.state.principal`, but `JWTAuthMiddleware` sets only `request.state.user`; nothing assigns `principal`, so every audit entry has `user=""` and the compliance trail cannot attribute an action to an identity.
+- **Caused by:** none -- pre-existing.
+- **Fix:** pending.
+
+## BUG-207: SQL expression guard blocklist misses DuckDB file-reading table functions
+- **Status:** open
+- **Found by:** ultracode audit of auth / security-sensitive shared code (3 lenses + adversarial verify), 2026-09-26. The verifier confirmed it from the code; nothing was run end to end unless stated.
+- **Severity:** high
+- **Root cause:** `shared/sql_expression_guard.py` ~30 blocks a fixed list (read_csv, read_parquet, read_json, ...) but not `parquet_scan`, `read_json_objects` (the trailing `` defeats the `read_json` match), `read_ndjson_objects`, `sniff_csv`, `parquet_metadata`, `parquet_schema`; the replacement-scan pattern only catches `FROM 'path'`. The ETL/pipeline steps that use the guard run on a DuckDB connection without `enable_external_access=false`, so a filter/add_column expression can read another tenant's uploaded file (bypasses the BUG-053/114 fix). Reported by the verifier without a live run.
+- **Caused by:** none -- pre-existing.
+- **Fix:** pending -- likely run those steps on a locked-down connection (`lock_down_connection`, as in BUG-196) rather than extending the blocklist.
+
 ## Refuted (adversarial-verify, ≥2/3 skeptics refuted — filed for the record, no fix needed)
 
 **database_adapter.py:466 get_table_schema-unquoted-table claim** — a reviewer flagged `DuckDBAdapter.get_table_schema` splicing `table` unquoted into `f"DESCRIBE {table}"` as direct SQL injection, with a working local PoC. All 3 verifiers confirmed the code-level fact and PoC are accurate, but refuted the finding: `DuckDBAdapter` backs `shared/vault_client.py`'s internal "vault" (users/transactions, embeddings, VR telemetry) reached only via `connectors/main.py`'s `/vault/*` routes, a distinct subsystem from the uploaded-dataset query path (ETL/pipeline) where a caller-controlled table name could actually originate — no real caller passes attacker-influenced input to this `table` parameter today. Recorded here so a future re-audit doesn't re-flag it without checking this reachability note first; still worth fixing defensively (call `quote_identifier` to match the file's own sibling methods) if anyone touches this function.

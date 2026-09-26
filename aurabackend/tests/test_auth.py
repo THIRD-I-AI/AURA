@@ -142,6 +142,22 @@ class TestPasswordModeAuth:
         assert resp.status_code == 200
         assert "access_token" in resp.json()
 
+    @pytest.mark.parametrize("role", ["admin", "auditor", "root"])
+    def test_register_cannot_choose_a_privileged_role(self, password_client, role):
+        """BUG-205: an unauthenticated caller must not mint an admin/auditor account."""
+        resp = password_client.post(f"{V1}/auth/register", json={
+            "email": f"eve-{role}@example.com",
+            "password": "strong-pass-123",
+            "name": "Eve",
+            "role": role,
+        })
+        assert resp.status_code == 403, resp.text
+        # and no account was created
+        login = password_client.post(f"{V1}/auth/token", json={
+            "email": f"eve-{role}@example.com", "password": "strong-pass-123",
+        })
+        assert login.status_code in (401, 403, 404)
+
     def test_login_wrong_password_rejected(self, password_client):
         # Register first
         password_client.post(f"{V1}/auth/register", json={
