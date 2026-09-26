@@ -132,6 +132,14 @@ def correlation_flags() -> tuple[float, int, bool]:
     semantics channel: enabling auto-heal with no window configured would
     build a detector that never fires and a heal path nothing reaches, so
     it promotes to a 30s default rather than silently doing nothing.
+
+    WARNING (BUG-072, accepted risk): do NOT enable ``UASR_CORRELATION_AUTO_HEAL``
+    on a multi-tenant deployment. The sibling-shim lookup matches on
+    ``drift_type`` and recency only; UASR's ingest path carries no tenant/org
+    identifier, so one tenant's deployed shim can be borrowed and run against
+    another tenant's batch when both drift within the window. Safe only where
+    every source belongs to one tenant. Scoping it needs a tenant field through
+    ingest -> detect -> recover (see docs/BUG_REGISTRY.md, BUG-072).
     """
     auto_heal = _truthy("UASR_CORRELATION_AUTO_HEAL")
     window = _env_float("UASR_CORRELATION_WINDOW_SECONDS", 0.0)
