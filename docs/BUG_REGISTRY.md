@@ -2139,7 +2139,7 @@ the whole subsystem every time.
 - **Severity:** low -- a wrong status code (500), no crash and no data exposure.
 - **Root cause:** `_validated_extra` parsed `credentials_json` with `json.loads` inside `except ValueError`. CPython raises `RecursionError` (a `RuntimeError`, not a `ValueError`) for a deeply nested document, and the 64KB size check ran only after the parse, so a few-KB string of `[` characters escaped as an unhandled exception and the catch-all handler turned it into a 500.
 - **Caused by:** BUG-170 (PR #517) -- introduced by that change.
-- **Fix:** catch `(ValueError, RecursionError)` around the parse (-> 400 'must be a JSON object'), refuse an oversized string before parsing (-> 413), and wrap the final `json.dumps` size check so a non-plain-JSON structure gets a 400 rather than a 500. Two new tests in `tests/test_connector_registry.py`; both fail on the old code (RecursionError / 400 instead of 413) and pass now. Not checked: nesting inside a non-string `credentials_json` object sent as JSON (the request parser bounds that first). PR #TODO.
+- **Fix:** catch `(ValueError, RecursionError)` around the parse (-> 400 'must be a JSON object'), refuse an oversized string before parsing (-> 413), and wrap the final `json.dumps` size check so a non-plain-JSON structure gets a 400 rather than a 500. Two new tests in `tests/test_connector_registry.py`; both fail on the old code (RecursionError / 400 instead of 413) and pass now. Not checked: nesting inside a non-string `credentials_json` object sent as JSON (the request parser bounds that first). PR #520.
 
 ## Refuted (adversarial-verify, ≥2/3 skeptics refuted — filed for the record, no fix needed)
 
