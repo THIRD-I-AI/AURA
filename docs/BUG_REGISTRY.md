@@ -2142,12 +2142,13 @@ the whole subsystem every time.
 - **Fix:** catch `(ValueError, RecursionError)` around the parse (-> 400 'must be a JSON object'), refuse an oversized string before parsing (-> 413), and wrap the final `json.dumps` size check so a non-plain-JSON structure gets a 400 rather than a 500. Two new tests in `tests/test_connector_registry.py`; both fail on the old code (RecursionError / 400 instead of 413) and pass now. Not checked: nesting inside a non-string `credentials_json` object sent as JSON (the request parser bounds that first). PR #520.
 
 ## BUG-175: schema_columns index is not tenant-scoped: one tenant's upload overwrites another's, and column names + sample values are readable across tenants
-- **Status:** open
+- **Status:** fixed (partial)
 - **Found by:** ultracode audit (3 lenses + adversarial verify) of the upload / xlsx / schema-context path, 2026-09-26. Verifier confirmed from the code; not run end to end unless stated.
 - **Severity:** high
 - **Root cause:** `shared/schema_indexer.py:50` derives `source_id` from `Path(file_path).stem`, dropping the per-tenant storage directory, so two tenants uploading `sales.csv` share source_id `sales`. `SchemaColumn` (`metadata_store/models.py:89-101`) has no tenant/workspace column and its unique key is (source_id, table_name, column_name); `_upsert_columns` (`schema_indexer.py:149-164`) deletes by source_id+table_name only, so B's upload wipes A's rows. The MCP tools `metadata_search_columns` / `metadata_describe_table` (`mcp_servers/aura_mcp_server.py` ~289-351) query it with no tenant filter and return sample_values (first rows of the file). Not checked: whether the MCP server is reachable by an authenticated tenant; the overwrite/delete half does not depend on that.
 - **Caused by:** none -- pre-existing.
-- **Fix:** pending -- see the fix PR for what is and is not covered.
+- **Fix:** the overwrite/delete half is fixed without a schema change: new `schema_source_id(tenant, filename)` makes `source_id` `<tenant_slug>::<stem>`, and `upload_universal` passes it to `index_uploaded_file`, so two tenants' `sales.csv` no longer share a key (test: both tenants' rows survive; fails on the old code with ImportError/assert; plus a check that the route uses the helper -- a source-level assertion, weaker than driving the upload). NOT fixed: (1) the READ half -- `metadata_search_columns` / `metadata_describe_table` in `mcp_servers/aura_mcp_server.py` still query `schema_columns` with no tenant filter, so column names and sample values remain readable across tenants if that server is reachable by a tenant (not verified either way); a real fix needs a tenant column (migration) or caller-scoped queries and is a decision for the owner; (2) rows indexed before this change keep the old bare ids and can still be overwritten/collide; (3) the MCP tools now surface `<tenant>::<stem>` ids, so callers passing a bare `source_id` to `describe_table` see no rows for new uploads. PR #TODO.
+
 
 ## BUG-176: LocalBackend.list only returned .csv/.parquet/.json, so uploaded .xlsx workbooks never reached the schema context on local storage (BUG-146's fix was incomplete)
 - **Status:** fixed
@@ -2189,6 +2190,14 @@ the whole subsystem every time.
 - **Root cause:** `shared/data_utils.py` `_load_excel_table` (added for BUG-146) reads the whole first sheet with `pd.read_excel` and copies it again into DuckDB; the upload gate checks only the compressed size. Also re-read on every schema-cache replay. Introduced by BUG-146 (PR #515).
 - **Caused by:** BUG-146 (PR #515) -- its fix left this gap.
 - **Fix:** pending.
+
+## BUG-181: `test_create_connection_stores_extra_and_never_returns_it` failed intermittently -- it asserted the string "384" was absent from a response that contains a microsecond timestamp
+- **Status:** fixed
+- **Found by:** the pre-push hook of the BUG-175 branch (1 failed, 2664 passed): `assert ... '384' not in json.dumps(conn)` failed because `created_at` was `2026-09-25T23:20:24.384239`.
+- **Severity:** low -- test-only, but it would have failed CI for whoever's run landed on it (roughly 1 run in 1000) and it had already passed CI once by luck.
+- **Root cause:** the test used the number 384 (the FAISS dimension it posted) as its 'not leaked' probe; the wire dict legitimately contains timestamps whose digits can contain 384. Not a product defect -- the `extra` value was not in the response.
+- **Caused by:** BUG-170 (PR #517) -- I wrote the assertion.
+- **Fix:** the probe is now the distinctive string `zz-marker-hnsw` (posted as `index_type`); the test still asserts `extra` and `config_encrypted` are absent. PR #TODO.
 
 ## Refuted (adversarial-verify, ≥2/3 skeptics refuted — filed for the record, no fix needed)
 
