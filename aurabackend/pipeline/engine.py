@@ -628,7 +628,7 @@ class PipelineEngine:
                         replaces.append(f'COALESCE({_q(c_name)}, 0) AS {_q(c_name)}')
                     elif not is_numeric and value and not _val_is_numeric:
                         safe = str(value).replace("'", "''")
-                        replaces.append(f"COALESCE(\"{c_name}\", '{safe}') AS \"{c_name}\"")
+                        replaces.append(f"COALESCE({_q(c_name)}, '{safe}') AS {_q(c_name)}")
                     # else: text column + numeric value → skip
                 if not replaces:
                     return None
