@@ -119,8 +119,10 @@ def _stored_connector_config(conn: Dict[str, Any], password: Optional[str], extr
     """ConnectorConfig for a saved connection, including its decrypted extra settings."""
     extra = dict(extra)
     credentials = extra.pop("credentials_json", None)
-    database = conn.get("database") or extra.pop("project_id", None) or ""
-    extra.pop("project_id", None)
+    # BigQuery reads config.database as the DATASET; the project stays in extra_params as
+    # `project_id`. This used to put the project id into `database`, so a saved BigQuery
+    # connection queried <project>.<PROJECT>.<table> (BUG-201).
+    database = conn.get("database") or extra.pop("dataset", None) or ""
     return ConnectorConfig(
         source_type=SourceType(conn["type"]), name=conn["name"],
         host=conn.get("host") or "", port=conn.get("port") or 5432,
@@ -245,6 +247,9 @@ async def list_connector_tables(connector_type: str, config: Dict[str, Any]) -> 
 @router.post("/connectors/{connector_type}/profile")
 async def profile_table(connector_type: str, request: ProfileTableRequest) -> Dict[str, Any]:
     """Profile a table from connector."""
+    # BUG-198: the sibling sync/ingest routes check the table name; this one did not.
+    if not _IDENT_RE.match(request.table_name):
+        raise HTTPException(status_code=400, detail=f"Invalid table name: {request.table_name!r}")
     try:
         connector_config = _build_connector_config(connector_type, f"profile-{connector_type}", request.connector_config)
         connector = _make_connector(connector_type, connector_config)

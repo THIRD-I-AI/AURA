@@ -2331,12 +2331,12 @@ the whole subsystem every time.
 - **Fix:** pending.
 
 ## BUG-198: BigQuery connector splices project / dataset / table names into backtick-quoted SQL with no escaping, and the gateway profile route skips the identifier check
-- **Status:** open
+- **Status:** fixed
 - **Found by:** repo-wide ultracode sweep for SQL built from untrusted names/values (7 subsystem reviewers + adversarial verify), 2026-09-26, run after the pipeline/ETL audit showed the class was wider than the sites first fixed. Verifier confirmed from the code; not run end to end unless stated.
 - **Severity:** medium
 - **Root cause:** `connectors/bigquery_connector.py` ~115 and ~159 build the table reference by f-string; `POST /connectors/{type}/profile` (`api_gateway/routers/connections.py` ~254) passes `table_name` unvalidated while the sibling sync/ingest routes check `_IDENT_RE`. A backtick in the name closes the identifier. Bounded by the fact `execute_query` already runs arbitrary SQL with the same credentials.
 - **Caused by:** none -- pre-existing.
-- **Fix:** pending.
+- **Fix:** new `build_table_ref(project, dataset, table)` in `connectors/bigquery_connector.py` validates every part against a strict character set (a backtick cannot be escaped inside a backtick-quoted identifier, so allowlisting is the safe form) and raises ValueError otherwise; `get_table_schema`, `sample_rows` and `profile_table` use it, and `sample_rows`'s `limit` is `int()`-coerced. `POST /connectors/{type}/profile` now checks `table_name` with `_IDENT_RE` like its sync/ingest siblings (400). REPRODUCED against the old connector with a recording fake client: `sample_rows("t` LIMIT 1; DROP TABLE prod.users; --")` sent `SELECT * FROM `proj.ds.t` LIMIT 1; DROP TABLE prod.users; --` LIMIT 100` to BigQuery; the fixed connector sends nothing. Tests: `tests/test_bigquery_identifiers.py` (11). Limitation: there is no BigQuery emulator, so this is verified at the SQL-text / client-call level with a fake client, never against real BigQuery; `_IDENT_RE` (used by the gateway route) still permits `.` and `"`, which is why the connector's own allowlist is the real guard. PR #TODO.
 
 ## BUG-199: quality agent builds check SQL from raw table and column names inside double quotes
 - **Status:** fixed
@@ -2353,6 +2353,14 @@ the whole subsystem every time.
 - **Root cause:** `agents/specialists/optimization_agent.py` ~160: the values come from LLM output and are formatted straight into DDL that is then executed.
 - **Caused by:** none -- pre-existing.
 - **Fix:** `optimization_agent._build_create_index` quotes the table, columns and index name with `quote_identifier`, requires `columns` to be a list, and only accepts an index type from a fixed allowlist (`btree, hash, gin, gist, brin, spgist, art`; an index type is not an identifier, so it cannot be quoted); anything else returns no DDL. Tests: quoting produces DDL that really runs in DuckDB for names containing double quotes, an injected type string and string-valued columns are refused, and the default type still works (all fail on the old code except the still-works control). Not covered: this only builds DDL text -- whether the agent's suggestions are ever executed automatically was not traced. PR #TODO.
+
+## BUG-201: a saved BigQuery connection used the project id as its dataset
+- **Status:** fixed
+- **Found by:** reading `bigquery_connector.py` while fixing BUG-198 (the earlier BUG-170 audit examined a different precedence scenario and refuted it, so this was missed).
+- **Severity:** medium -- every BigQuery connection created through the new BUG-170 form would query the wrong dataset, so test/introspect/sync could not work against a real project.
+- **Root cause:** `BigQueryConnector` reads `config.database` as the DATASET in `get_table_schema`/`sample_rows`/`profile_table` (and as the project only on the no-credentials path). `_stored_connector_config` (my BUG-170 change) put the `project_id` setting into `database`, so the table reference became `<project>.<PROJECT>.<table>`. Also `connect()` ignored an explicit project and always took the key's own.
+- **Caused by:** BUG-170 (PR #517/#518) -- I wrote the mapping without tracing how the connector consumes `database`.
+- **Fix:** for a saved BigQuery connection `database` is now the `dataset` setting and the project stays in `extra_params['project_id']`; `connect()` uses an explicit `project_id` when given, else the key's project, and passes it to the client. The BUG-170 mapping test that asserted the old (wrong) behaviour was corrected. Verified at the config/table-reference level only (no real BigQuery available): `my-proj.sales.orders` is produced for `{project_id: my-proj, dataset: sales}`. PR #TODO.
 
 ## Refuted (adversarial-verify, ≥2/3 skeptics refuted — filed for the record, no fix needed)
 
