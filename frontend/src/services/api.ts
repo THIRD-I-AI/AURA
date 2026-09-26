@@ -285,6 +285,8 @@ export interface ConnectionCredentials {
   username?: string;
   password?: string;
   ssl?: boolean;
+  /** Connector-specific settings (BigQuery credentials, FAISS dimension, ...); stored encrypted. */
+  extra?: Record<string, unknown>;
 }
 
 export interface UploadResponse {

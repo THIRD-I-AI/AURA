@@ -2,11 +2,11 @@
    connector registry (GET /connectors/registry), the single source of truth
    for each connector's fields.
 
-   Only connectors whose fields POST /connections can actually PERSIST are
-   offered: that endpoint stores name/type/host/port/database/username/
-   password/ssl and drops everything else (its `extra` dict is never written),
-   so BigQuery (project_id/dataset/credentials_json) cannot be created through
-   it today — offering it would accept input the backend silently discards. */
+   POST /connections has dedicated columns for host/port/database/username/
+   password/ssl; every other field a connector declares (BigQuery's project_id/
+   dataset/credentials_json, FAISS's dimension, ...) is sent under `extra` and
+   stored encrypted (BUG-170). Before that the backend could not keep them, so
+   those connectors were hidden here (BUG-157). */
 import { useEffect, useMemo, useState } from 'react';
 
 import { Button } from '@/components/ui-kit/button';
@@ -25,11 +25,9 @@ const INPUT_CLASS = cn(
 
 type Values = Record<string, string | boolean>;
 
-/** Connectors this form can create end-to-end, in registry order. */
+/** Connectors this form can create, in registry order. */
 function creatableConnectors(specs: ConnectorSpec[]): ConnectorSpec[] {
-  return specs.filter(
-    (s) => s.available && s.fields.length > 0 && s.fields.every((f) => STORABLE_KEYS.has(f.key)),
-  );
+  return specs.filter((s) => s.available && s.fields.length > 0);
 }
 
 /** Defensive: one input per field key. The registry used to serve `port` twice
@@ -102,6 +100,13 @@ export function AddConnectionForm({ onCreated, onClose }: { onCreated: () => voi
     setSaveError(null);
     setOutcome(null);
     const str = (k: string) => (typeof values[k] === 'string' && values[k] !== '' ? (values[k] as string) : undefined);
+    const extra: Record<string, unknown> = {};
+    for (const f of fields) {
+      if (STORABLE_KEYS.has(f.key)) continue;
+      const v = values[f.key];
+      if (f.type === 'boolean') extra[f.key] = v === true;
+      else if (typeof v === 'string' && v.trim() !== '') extra[f.key] = f.type === 'number' ? Number(v) : v;
+    }
     try {
       const saved = await connectorService.registerSource({
         name: name.trim(),
@@ -112,6 +117,7 @@ export function AddConnectionForm({ onCreated, onClose }: { onCreated: () => voi
         username: str('username'),
         password: str('password'),
         ssl: values.ssl === true,
+        ...(Object.keys(extra).length > 0 ? { extra } : {}),
       });
       // Saving proves nothing about reachability, so test it and say what
       // happened rather than leaving a green-looking row that may not connect.
@@ -199,17 +205,32 @@ export function AddConnectionForm({ onCreated, onClose }: { onCreated: () => voi
                   <label htmlFor={`wb-conn-field-${f.key}`} className="font-mono text-2xs text-text-secondary">
                     {f.label}{f.required ? ' *' : ''}
                   </label>
-                  <input
-                    id={`wb-conn-field-${f.key}`}
-                    data-testid={`wb-conn-field-${f.key}`}
-                    type={f.type === 'secret' ? 'password' : f.type === 'number' ? 'number' : 'text'}
-                    value={String(values[f.key] ?? '')}
-                    onChange={(e) => setValues((v) => ({ ...v, [f.key]: e.target.value }))}
-                    disabled={busy}
-                    placeholder={f.placeholder ?? undefined}
-                    autoComplete={f.type === 'secret' ? 'new-password' : 'off'}
-                    className={INPUT_CLASS}
-                  />
+                  {f.type === 'textarea' ? (
+                    <textarea
+                      id={`wb-conn-field-${f.key}`}
+                      data-testid={`wb-conn-field-${f.key}`}
+                      value={String(values[f.key] ?? '')}
+                      onChange={(e) => setValues((v) => ({ ...v, [f.key]: e.target.value }))}
+                      disabled={busy}
+                      placeholder={f.placeholder ?? undefined}
+                      rows={4}
+                      spellCheck={false}
+                      autoComplete="off"
+                      className={cn(INPUT_CLASS, 'h-auto py-1.5')}
+                    />
+                  ) : (
+                    <input
+                      id={`wb-conn-field-${f.key}`}
+                      data-testid={`wb-conn-field-${f.key}`}
+                      type={f.type === 'secret' ? 'password' : f.type === 'number' ? 'number' : 'text'}
+                      value={String(values[f.key] ?? '')}
+                      onChange={(e) => setValues((v) => ({ ...v, [f.key]: e.target.value }))}
+                      disabled={busy}
+                      placeholder={f.placeholder ?? undefined}
+                      autoComplete={f.type === 'secret' ? 'new-password' : 'off'}
+                      className={INPUT_CLASS}
+                    />
+                  )}
                   {f.help && <span className="text-2xs text-text-tertiary">{f.help}</span>}
                 </div>
               ),
