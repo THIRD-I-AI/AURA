@@ -25,8 +25,8 @@ const testConnection = connectorService.testConnection as ReturnType<typeof vi.f
 
 // Shaped like GET /connectors/registry. postgresql lists `port` TWICE exactly as
 // the real registry does (the shared base field with no default, then the
-// connector's own with default 5432); bigquery/faiss carry fields POST
-// /connections cannot persist, so the form must not offer them.
+// connector's own with default 5432); bigquery/faiss carry connector-specific
+// fields that travel under `extra` (BUG-170).
 const field = (key: string, label: string, type: string, extra: Record<string, unknown> = {}) =>
   ({ key, label, type, required: false, ...extra });
 const relationalFields = [
@@ -219,16 +219,39 @@ describe('ConnectorsPanel', () => {
       expect(screen.queryByText(/bigquery/i)).not.toBeInTheDocument();
     });
 
-    it('offers only connectors the backend can store, and lists a duplicated registry field once', async () => {
+    it('offers every available connector, and lists a duplicated registry field once', async () => {
       const user = userEvent.setup();
       render(<ConnectorsPanel />);
       await openForm(user);
 
       const options = Array.from(screen.getByLabelText('Type').querySelectorAll('option')).map((o) => o.textContent);
-      expect(options).toEqual(['PostgreSQL', 'MySQL', 'DuckDB']);
+      expect(options).toEqual(['PostgreSQL', 'MySQL', 'DuckDB', 'BigQuery', 'FAISS']);
       expect(screen.getAllByTestId('wb-conn-field-port')).toHaveLength(1);
       expect(screen.getByTestId('wb-conn-field-port')).toHaveValue(5432);
       expect(screen.getByTestId('wb-conn-field-password')).toHaveAttribute('type', 'password');
+    });
+
+    // BUG-170: connector-specific fields are sent under `extra`, not dropped.
+    it('sends BigQuery settings under extra and renders credentials as a textarea', async () => {
+      registerSource.mockResolvedValue({ id: 'bq-1', name: 'Warehouse', type: 'bigquery', is_active: false });
+      testConnection.mockResolvedValue({ success: true, message: 'Connected. Found 3 tables.' });
+      const user = userEvent.setup();
+      render(<ConnectorsPanel />);
+      await openForm(user);
+      await user.selectOptions(screen.getByLabelText('Type'), 'bigquery');
+      expect(screen.getByTestId('wb-conn-field-credentials_json').tagName).toBe('TEXTAREA');
+
+      await user.type(screen.getByLabelText('Name'), 'Warehouse');
+      await user.type(screen.getByTestId('wb-conn-field-project_id'), 'my-proj');
+      await user.click(screen.getByTestId('wb-conn-field-credentials_json'));
+      await user.paste('{"type":"service_account"}');
+      await user.click(screen.getByTestId('wb-add-connection-save'));
+
+      await waitFor(() => expect(registerSource).toHaveBeenCalledWith({
+        name: 'Warehouse', type: 'bigquery', ssl: false,
+        extra: { project_id: 'my-proj', credentials_json: '{"type":"service_account"}' },
+      }));
+      await waitFor(() => expect(screen.getByTestId('wb-conn-field-credentials_json')).toHaveValue(''));
     });
 
     it('keeps Save disabled until the name and required fields are filled', async () => {
