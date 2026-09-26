@@ -2416,12 +2416,12 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Fix:** pending.
 
 ## BUG-207: SQL expression guard blocklist misses DuckDB file-reading table functions
-- **Status:** open
+- **Status:** fixed (hardened; still a blocklist)
 - **Found by:** ultracode audit of auth / security-sensitive shared code (3 lenses + adversarial verify), 2026-09-26. The verifier confirmed it from the code; nothing was run end to end unless stated.
 - **Severity:** high
 - **Root cause:** `shared/sql_expression_guard.py` ~30 blocks a fixed list (read_csv, read_parquet, read_json, ...) but not `parquet_scan`, `read_json_objects` (the trailing `` defeats the `read_json` match), `read_ndjson_objects`, `sniff_csv`, `parquet_metadata`, `parquet_schema`; the replacement-scan pattern only catches `FROM 'path'`. The ETL/pipeline steps that use the guard run on a DuckDB connection without `enable_external_access=false`, so a filter/add_column expression can read another tenant's uploaded file (bypasses the BUG-053/114 fix). Reported by the verifier without a live run.
 - **Caused by:** none -- pre-existing.
-- **Fix:** pending -- likely run those steps on a locked-down connection (`lock_down_connection`, as in BUG-196) rather than extending the blocklist.
+- **Fix:** `shared/sql_expression_guard.py` gains `_BLOCKED_CALL_PATTERN`: in call position (`name (`) it blocks the families `read_*`, `*_scan`, `parquet_*`, `sniff_csv`, `st_read*`, `iceberg_*`, `delta_*`, `duckdb_*` (settings/secrets introspection), plus `query`, `query_table`, `json_execute_serialized_sql` (run a string as SQL, which would let `'read_' || 'csv'` dodge every name pattern), `getenv`, `current_setting`. Call position keeps a column such as `read_count` legal. Tests `tests/test_sql_expression_guard_families.py` (20): the 14 bypass cases fail on the old guard, the 6 legitimate expressions pass on both. RESIDUAL RISK, unchanged: this is still a pattern blocklist, not a sandbox -- the real fix is running these steps on a connection with `enable_external_access=false` (as BUG-196 did for chat/queries/dashboards); that needs the source-load/sink-write steps split onto a different connection and is not done. Not run against a live pipeline/ETL request.
 
 ## Refuted (adversarial-verify, ≥2/3 skeptics refuted — filed for the record, no fix needed)
 
