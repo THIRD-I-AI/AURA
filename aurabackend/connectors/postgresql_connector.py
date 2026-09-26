@@ -13,6 +13,7 @@ try:
 except ImportError:  # pragma: no cover - exercised only when driver absent
     asyncpg = None
 
+from connectors.sql_limit import has_trailing_limit as _has_trailing_limit  # noqa: E402
 from shared.sql_identifiers import quote_identifier
 
 from .base import BaseConnector, ConnectorConfig
@@ -138,7 +139,9 @@ class PostgreSQLConnector(BaseConnector):
             logger.warning("PostgreSQL sample_rows failed: %s", e)
             return []
 
-    async def execute_query(self, query: str, limit: int = 1000) -> List[Dict[str, Any]]:
+    async def execute_query(
+        self, query: str, limit: int = 1000, raise_errors: bool = False
+    ) -> List[Dict[str, Any]]:
         """Execute SQL query against PostgreSQL"""
         if not self._is_connected or not self.pool:
             return []
@@ -146,13 +149,15 @@ class PostgreSQLConnector(BaseConnector):
         try:
             async with self.pool.acquire() as conn:
                 # Append LIMIT if not present
-                if "LIMIT" not in query.upper():
+                if not _has_trailing_limit(query):
                     query = f"{query} LIMIT {limit}"
 
                 rows = await conn.fetch(query)
                 return [dict(row) for row in rows]
         except Exception as e:
             logger.warning("PostgreSQL query failed: %s", e)
+            if raise_errors:
+                raise
             return []
 
     async def profile_table(self, table_name: str) -> Dict[str, Any]:

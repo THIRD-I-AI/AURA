@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional
 
 import aiomysql
 
+from connectors.sql_limit import has_trailing_limit as _has_trailing_limit  # noqa: E402
 from shared.sql_identifiers import quote_identifier
 
 from .base import BaseConnector, ConnectorConfig
@@ -122,7 +123,9 @@ class MySQLConnector(BaseConnector):
             logger.warning("MySQL sample_rows failed: %s", e)
             return []
 
-    async def execute_query(self, query: str, limit: int = 1000) -> List[Dict[str, Any]]:
+    async def execute_query(
+        self, query: str, limit: int = 1000, raise_errors: bool = False
+    ) -> List[Dict[str, Any]]:
         """Execute SQL query against MySQL"""
         if not self._is_connected or not self.pool:
             return []
@@ -131,7 +134,7 @@ class MySQLConnector(BaseConnector):
             async with self.pool.acquire() as conn:
                 async with conn.cursor(aiomysql.DictCursor) as cur:
                     # Append LIMIT if not present
-                    if "LIMIT" not in query.upper():
+                    if not _has_trailing_limit(query):
                         query = f"{query} LIMIT {limit}"
 
                     await cur.execute(query)
@@ -139,6 +142,8 @@ class MySQLConnector(BaseConnector):
                     return rows or []
         except Exception as e:
             logger.warning("MySQL query failed: %s", e)
+            if raise_errors:
+                raise
             return []
 
     async def profile_table(self, table_name: str) -> Dict[str, Any]:

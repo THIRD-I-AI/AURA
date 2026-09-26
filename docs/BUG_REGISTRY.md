@@ -2288,12 +2288,12 @@ the whole subsystem every time.
 - **Fix:** `_write_pg_sink` now reads the DuckDB schema first, then runs DROP, CREATE and INSERT inside one `pg_conn.transaction()` (Postgres DDL is transactional), so a failure rolls back to the previous table. New Tier B test `tests/test_pipeline_pg_sink_transaction.py` (skipped without `AURA_PG_TEST_DSN`, added to the CI 'Scheduler (Postgres)' lane): a first run creates the table; a second run that fails AFTER the DROP/CREATE (a BLOB value that asyncpg refuses for a TEXT column) must leave the original rows in place; a normal replace still replaces. The existing fake-Postgres unit test gained a `transaction()` stub. VERIFICATION: no Postgres or Docker was available locally, so the pass-after was observed only in CI's real-Postgres lane (both new tests PASSED there on postgres:16). The fail-before against the old code was NOT observed. PR #532.
 
 ## BUG-192: DB source loader silently truncates at 100,000 rows and treats a failed query as 'no data'
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode audit (3 lenses + adversarial verify) of the pipeline engine / ETL router / connection sync, 2026-09-26. Verifier confirmed from the code; the DuckDB connection has no external-access restriction, so injected SQL can read and write local files. Not run end to end unless stated.
 - **Severity:** medium
 - **Root cause:** `pipeline/engine.py` ~275 calls `execute_query(query, limit=100_000)`; the Postgres/MySQL connectors append LIMIT (with a substring check that matches the word in any column or string) and swallow errors into `[]`, which surfaces as 'Source query returned no data'.
 - **Caused by:** none -- pre-existing.
-- **Fix:** pending.
+- **Fix:** the pipeline loader (`_load_db_source`) now asks for `_MAX_SOURCE_ROWS + 1` rows and raises a clear error if the source exceeds the cap instead of loading a truncated copy; the Postgres/MySQL connectors' `execute_query` take `raise_errors` (default False, so other callers are unchanged) and the loader passes True so a failed query surfaces instead of becoming 'Source query returned no data'; LIMIT detection is now a trailing-clause regex (`connectors/sql_limit.py`) rather than a substring match on the word. Tests `tests/test_db_source_loader_truncation.py` (12): the error-surfacing test fails on the old code on its assertion; the two cap tests fail there because the cap constant does not exist, i.e. they prove presence, not the old wrong behaviour. Not run against a real Postgres/MySQL server. BigQuery/DuckDB sources are not covered.
 
 ## BUG-193: unbounded row accumulation in connection sync and ingest on the single worker
 - **Status:** open
