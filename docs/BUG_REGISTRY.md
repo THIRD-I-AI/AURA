@@ -2141,6 +2141,54 @@ the whole subsystem every time.
 - **Caused by:** BUG-170 (PR #517) -- introduced by that change.
 - **Fix:** catch `(ValueError, RecursionError)` around the parse (-> 400 'must be a JSON object'), refuse an oversized string before parsing (-> 413), and wrap the final `json.dumps` size check so a non-plain-JSON structure gets a 400 rather than a 500. Two new tests in `tests/test_connector_registry.py`; both fail on the old code (RecursionError / 400 instead of 413) and pass now. Not checked: nesting inside a non-string `credentials_json` object sent as JSON (the request parser bounds that first). PR #520.
 
+## BUG-175: schema_columns index is not tenant-scoped: one tenant's upload overwrites another's, and column names + sample values are readable across tenants
+- **Status:** open
+- **Found by:** ultracode audit (3 lenses + adversarial verify) of the upload / xlsx / schema-context path, 2026-09-26. Verifier confirmed from the code; not run end to end unless stated.
+- **Severity:** high
+- **Root cause:** `shared/schema_indexer.py:50` derives `source_id` from `Path(file_path).stem`, dropping the per-tenant storage directory, so two tenants uploading `sales.csv` share source_id `sales`. `SchemaColumn` (`metadata_store/models.py:89-101`) has no tenant/workspace column and its unique key is (source_id, table_name, column_name); `_upsert_columns` (`schema_indexer.py:149-164`) deletes by source_id+table_name only, so B's upload wipes A's rows. The MCP tools `metadata_search_columns` / `metadata_describe_table` (`mcp_servers/aura_mcp_server.py` ~289-351) query it with no tenant filter and return sample_values (first rows of the file). Not checked: whether the MCP server is reachable by an authenticated tenant; the overwrite/delete half does not depend on that.
+- **Caused by:** none -- pre-existing.
+- **Fix:** pending -- see the fix PR for what is and is not covered.
+
+## BUG-176: LocalBackend.list only returned .csv/.parquet/.json, so uploaded .xlsx workbooks never reached the schema context on local storage (BUG-146's fix was incomplete)
+- **Status:** fixed
+- **Found by:** ultracode audit (3 lenses + adversarial verify) of the upload / xlsx / schema-context path, 2026-09-26. Verifier confirmed from the code; not run end to end unless stated.
+- **Severity:** medium
+- **Root cause:** `shared/storage/local.py` `_READ_EXTS` omitted `.xlsx`; `build_schema_context` and the cache-recipe path iterate `backend.list(tenant)` and only then check `EXCEL_EXTENSIONS`, so the Excel branch added for BUG-146 was unreachable locally (S3 lists everything, so S3 was unaffected -- but S3 Excel is rejected by design).
+- **Caused by:** BUG-146 (PR #515) -- its fix left this gap.
+- **Fix:** `.xlsx` added to `_READ_EXTS`. New test `test_local_storage_lists_xlsx_and_schema_context_includes_it` writes a real workbook into a `LocalBackend`, asserts it is listed and that `build_schema_context` yields the table with its columns; it fails without the change (`[] == ['sales.xlsx']`). PR #TODO.
+
+## BUG-177: build_schema_context_cached lists storage synchronously on the event loop (S3 = blocking network round trips on a single-worker gateway)
+- **Status:** open
+- **Found by:** ultracode audit (3 lenses + adversarial verify) of the upload / xlsx / schema-context path, 2026-09-26. Verifier confirmed from the code; not run end to end unless stated.
+- **Severity:** medium
+- **Root cause:** `shared/data_utils.py:728` calls `_signature_for_tenant` (which calls `backend.list(tenant)`, a blocking boto3 paginator on S3 / iterdir+stat locally) directly inside an async function awaited by every chat, query and dashboard request; every other blocking step in that function is offloaded with `asyncio.to_thread`. Violates `.claude/rules/backend.md` (async safety).
+- **Caused by:** none -- pre-existing.
+- **Fix:** pending.
+
+## BUG-178: filename -> table-name mapping collides and silently overwrites tables (q1-sales.csv vs q1_sales.csv, sales.csv vs sales.parquet)
+- **Status:** open
+- **Found by:** ultracode audit (3 lenses + adversarial verify) of the upload / xlsx / schema-context path, 2026-09-26. Verifier confirmed from the code; not run end to end unless stated.
+- **Severity:** medium
+- **Root cause:** `shared/data_utils.py` (~440 and ~675) builds `table_name = re.sub(r"[^A-Za-z0-9_]", "_", stem)` with no duplicate check, so distinct files can map to one table and the later load `CREATE OR REPLACE`s the earlier, silently.
+- **Caused by:** none -- pre-existing.
+- **Fix:** pending.
+
+## BUG-179: upload size limit is enforced only after the whole multipart body has been received and spooled
+- **Status:** open
+- **Found by:** ultracode audit (3 lenses + adversarial verify) of the upload / xlsx / schema-context path, 2026-09-26. Verifier confirmed from the code; not run end to end unless stated.
+- **Severity:** medium
+- **Root cause:** `api_gateway/routers/files.py:97-160`: FastAPI/Starlette parses the entire multipart body into a spooled temp file before the handler's 413 check runs, and no request-size guard exists in the repo; concurrent oversized uploads can exhaust temp disk on the single worker. An upstream proxy might cap the body -- nothing in the repo does.
+- **Caused by:** none -- pre-existing.
+- **Fix:** pending.
+
+## BUG-180: pandas.read_excel has no row / decompressed-size bound (zip-bomb .xlsx can exhaust memory of the single worker)
+- **Status:** open
+- **Found by:** ultracode audit (3 lenses + adversarial verify) of the upload / xlsx / schema-context path, 2026-09-26. Verifier confirmed from the code; not run end to end unless stated.
+- **Severity:** medium
+- **Root cause:** `shared/data_utils.py` `_load_excel_table` (added for BUG-146) reads the whole first sheet with `pd.read_excel` and copies it again into DuckDB; the upload gate checks only the compressed size. Also re-read on every schema-cache replay. Introduced by BUG-146 (PR #515).
+- **Caused by:** BUG-146 (PR #515) -- its fix left this gap.
+- **Fix:** pending.
+
 ## Refuted (adversarial-verify, ≥2/3 skeptics refuted — filed for the record, no fix needed)
 
 **database_adapter.py:466 get_table_schema-unquoted-table claim** — a reviewer flagged `DuckDBAdapter.get_table_schema` splicing `table` unquoted into `f"DESCRIBE {table}"` as direct SQL injection, with a working local PoC. All 3 verifiers confirmed the code-level fact and PoC are accurate, but refuted the finding: `DuckDBAdapter` backs `shared/vault_client.py`'s internal "vault" (users/transactions, embeddings, VR telemetry) reached only via `connectors/main.py`'s `/vault/*` routes, a distinct subsystem from the uploaded-dataset query path (ETL/pipeline) where a caller-controlled table name could actually originate — no real caller passes attacker-influenced input to this `table` parameter today. Recorded here so a future re-audit doesn't re-flag it without checking this reachability note first; still worth fixing defensively (call `quote_identifier` to match the file's own sibling methods) if anyone touches this function.
@@ -2166,3 +2214,5 @@ the whole subsystem every time.
 **numeric_heal_controller.py:966 missing-approval-gate claim** — a reviewer flagged `NumericHealController`'s verified-auto-heal commit path (opt-in via `UASR_NUMERIC_AUTO_HEAL`, default off) as bypassing the S41/DSR-015 human-approval gate that every other UASR repair path goes through. All 3 verifiers refuted: the sequential-verification gate (`k_confirm` consecutive canary confirmations) was judged to be the intended, documented safety mechanism for this specific opt-in numeric-correction feature, not a bypass of the schema/template-shim approval gate (which governs a different class of repair). No entry filed as open; recorded here only so a future re-audit doesn't re-flag it without checking this note first.
 
 - **Audit 2026-09-26 (connector-settings path, BUG-170):** refuted -- 'database column silently overrides extra.project_id for BigQuery'. The precedence quirk exists in `_stored_connector_config`, but `BigQueryConnector.connect()` only reads `config.database` when no `credentials_json` is present, and create validation requires credentials for bigquery, so a validated connection always takes its project from the credentials.
+
+- **Audit 2026-09-26 (upload path):** refuted -- 'glob metacharacters in an uploaded filename are interpreted by DuckDB readers'. The premise holds (`safe_object_name` only rejects separators/NUL/dot names) but the verifier could not confirm it end to end, so no entry was filed; re-check before re-flagging.

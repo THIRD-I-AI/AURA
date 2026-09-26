@@ -7,7 +7,9 @@ from typing import List
 
 from shared.storage.base import ObjectInfo, StorageBackend, safe_object_name, tenant_slug
 
-_READ_EXTS = (".csv", ".parquet", ".json")
+# .xlsx: shared.data_utils loads it (BUG-146); leaving it out here hid every workbook
+# from the schema context on local storage (BUG-176).
+_READ_EXTS = (".csv", ".parquet", ".json", ".xlsx")
 
 
 def _default_root() -> str:
