@@ -475,7 +475,7 @@ class ConnectorIngestRequest(BaseModel):
 
 
 @router.post("/connectors/{connector_type}/ingest")
-async def ingest_connector_data(connector_type: str, req: ConnectorIngestRequest):
+async def ingest_connector_data(connector_type: str, req: ConnectorIngestRequest, request: Request):
     """Stream a connector table through the UASR self-healing pipeline.
 
     Flow: build connector → connect → (optionally) register the first
@@ -517,7 +517,11 @@ async def ingest_connector_data(connector_type: str, req: ConnectorIngestRequest
     row_cap = req.max_rows if req.max_rows is not None else _SYNC_ROW_CEILING
     truncated = False
 
-    source_id = req.source_id or f"{connector_type}:{req.table_name}"
+    # BUG-195: the UASR baseline/drift state and the dataset profile are keyed by
+    # source_id, which was global -- two workspaces ingesting the same source name shared
+    # (and overwrote) each other's state. Namespace it by the caller's workspace/tenant.
+    wsid = current_workspace_id(request)
+    source_id = f"{wsid}::{req.source_id or f'{connector_type}:{req.table_name}'}"
     batches: List[Dict[str, Any]] = []
     batch_count = 0
     total_rows = 0
@@ -612,6 +616,7 @@ async def ingest_connector_data(connector_type: str, req: ConnectorIngestRequest
                 },
                 rows_count=total_rows,
                 columns_count=len(schema_snapshot) if schema_snapshot else None,
+                workspace_id=wsid,
             )
             profile_recorded = True
             break
