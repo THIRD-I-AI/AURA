@@ -49,6 +49,10 @@ USER aura
 # Runs as the `aura` user (after USER directive) so the extension is written
 # to /home/aura/.duckdb/extensions — the same path DuckDB looks up at runtime.
 RUN python -c "import duckdb; duckdb.connect().execute('INSTALL httpfs')"
+# The commit this image was built from, surfaced by GET /health (BUG-204). Placed last so a changing
+# value cannot invalidate any earlier layer.
+ARG GIT_SHA=unknown
+ENV AURA_GIT_SHA=${GIT_SHA}
 EXPOSE 8000 8001 8002 8003 8004 8005 8006 8007
 CMD ["uvicorn", "api_gateway.main:app", "--host", "0.0.0.0", "--port", "8000"]
 
@@ -65,6 +69,10 @@ ENV PYTHONPATH=/app
 USER aura
 # Pre-install DuckDB httpfs so air-gapped s3:// reads work with no network.
 RUN python -c "import duckdb; duckdb.connect().execute('INSTALL httpfs')"
+# The commit this image was built from, surfaced by GET /health (BUG-204). Placed last so a changing
+# value cannot invalidate any earlier layer.
+ARG GIT_SHA=unknown
+ENV AURA_GIT_SHA=${GIT_SHA}
 EXPOSE 8000 8001 8002 8003 8004 8005 8006 8007
 CMD ["uvicorn", "counterfactual_service.main:app", "--host", "0.0.0.0", "--port", "8000"]
 
@@ -81,5 +89,9 @@ ENV PYTHONPATH=/app
 USER aura
 # Pre-install DuckDB httpfs so air-gapped s3:// reads work with no network.
 RUN python -c "import duckdb; duckdb.connect().execute('INSTALL httpfs')"
+# The commit this image was built from, surfaced by GET /health (BUG-204). Placed last so a changing
+# value cannot invalidate any earlier layer.
+ARG GIT_SHA=unknown
+ENV AURA_GIT_SHA=${GIT_SHA}
 EXPOSE 8000 8001 8002 8003 8004 8005 8006 8007
 CMD ["uvicorn", "uasr.service:app", "--host", "0.0.0.0", "--port", "8009"]
