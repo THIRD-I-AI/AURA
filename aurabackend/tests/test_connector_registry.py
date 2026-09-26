@@ -359,6 +359,24 @@ def test_create_connection_accepts_known_type(connections_client):
 
 # BUG-170: at-rest encryption and the way stored settings reach the connector.
 
+def test_deeply_nested_credentials_get_a_400_not_a_500(connections_client):
+    """BUG-174: json.loads on ~5k nested brackets (well under the size cap) raises RecursionError, which is not a ValueError."""
+    resp = connections_client.post("/api/v1/connections", json={
+        "name": "warehouse", "type": "bigquery",
+        "extra": {"project_id": "p", "credentials_json": "[" * 5_000},
+    })
+    assert resp.status_code == 400
+    assert "JSON object" in resp.json()["detail"]["error"]
+
+
+def test_oversized_credentials_are_refused_before_parsing(connections_client):
+    resp = connections_client.post("/api/v1/connections", json={
+        "name": "warehouse", "type": "bigquery",
+        "extra": {"project_id": "p", "credentials_json": "x" * 70_000},
+    })
+    assert resp.status_code == 413
+
+
 def test_extra_is_encrypted_at_rest_and_round_trips():
     import asyncio
     import uuid

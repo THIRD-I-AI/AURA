@@ -88,10 +88,17 @@ def _validated_extra(spec: Any, extra: Dict[str, Any]) -> Dict[str, Any]:
             status_code=status.HTTP_400_BAD_REQUEST,
             detail={"error": f"Connector '{spec.id}' requires these settings.", "missing_fields": missing},
         )
+    too_large = HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail={"error": "Connector settings are too large."})
     if "credentials_json" in extra:
+        raw = extra["credentials_json"]
+        # Size first: it is the cheap bound that keeps the parse below from being fed
+        # something huge. RecursionError (a deeply nested document, BUG-174) is not a
+        # ValueError, so it must be caught by name or it escapes as a 500.
+        if isinstance(raw, str) and len(raw) > _MAX_EXTRA_BYTES:
+            raise too_large
         try:
-            parsed = json.loads(extra["credentials_json"]) if isinstance(extra["credentials_json"], str) else extra["credentials_json"]
-        except ValueError:
+            parsed = json.loads(raw) if isinstance(raw, str) else raw
+        except (ValueError, RecursionError):
             parsed = None
         if not isinstance(parsed, dict):
             raise HTTPException(
@@ -99,8 +106,12 @@ def _validated_extra(spec: Any, extra: Dict[str, Any]) -> Dict[str, Any]:
                 detail={"error": "credentials_json must be a JSON object."},
             )
         extra = {**extra, "credentials_json": parsed}
-    if len(json.dumps(extra)) > _MAX_EXTRA_BYTES:
-        raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail={"error": "Connector settings are too large."})
+    try:
+        size = len(json.dumps(extra))
+    except (TypeError, ValueError, RecursionError):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail={"error": "Connector settings must be plain JSON values."})
+    if size > _MAX_EXTRA_BYTES:
+        raise too_large
     return extra
 
 
