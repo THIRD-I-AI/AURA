@@ -507,8 +507,19 @@ async def ingest_connector_data(connector_type: str, req: ConnectorIngestRequest
     if not connected:
         raise HTTPException(status_code=502, detail=f"Could not connect to {connector_type} source")
 
+    # BUG-193: bound how much one request may pull through the single worker.
+    if req.max_rows is not None and req.max_rows > _SYNC_ROW_CEILING:
+        await connector.disconnect()
+        raise HTTPException(
+            status_code=400,
+            detail=f"max_rows may not exceed {_SYNC_ROW_CEILING:,}",
+        )
+    row_cap = req.max_rows if req.max_rows is not None else _SYNC_ROW_CEILING
+    truncated = False
+
     source_id = req.source_id or f"{connector_type}:{req.table_name}"
     batches: List[Dict[str, Any]] = []
+    batch_count = 0
     total_rows = 0
     drift_events = 0
 
@@ -522,10 +533,11 @@ async def ingest_connector_data(connector_type: str, req: ConnectorIngestRequest
         first = True
         async with httpx.AsyncClient(timeout=120) as client:
             while True:
-                remaining = None if req.max_rows is None else max(0, req.max_rows - total_rows)
+                remaining = max(0, row_cap - total_rows)
                 if remaining == 0:
+                    truncated = req.max_rows is None
                     break
-                limit = req.batch_size if remaining is None else min(req.batch_size, remaining)
+                limit = min(req.batch_size, remaining)
                 query = f'SELECT * FROM {req.table_name} LIMIT {limit} OFFSET {offset}'
                 rows = await connector.execute_query(query, limit=limit)
                 if not rows:
@@ -568,12 +580,14 @@ async def ingest_connector_data(connector_type: str, req: ConnectorIngestRequest
                 if drifted:
                     drift_events += 1
                 total_rows += len(rows)
-                batches.append({
-                    "offset": offset,
-                    "rows": len(rows),
-                    "drift_detected": drifted,
-                    "result": result,
-                })
+                batch_count += 1
+                if len(batches) < _INGEST_DETAIL_LIMIT:
+                    batches.append({
+                        "offset": offset,
+                        "rows": len(rows),
+                        "drift_detected": drifted,
+                        "result": result,
+                    })
 
                 offset += len(rows)
                 if len(rows) < limit:
@@ -593,7 +607,7 @@ async def ingest_connector_data(connector_type: str, req: ConnectorIngestRequest
                     "source": connector_type,
                     "table": req.table_name,
                     "schema": schema_snapshot,
-                    "batches": len(batches),
+                    "batches": batch_count,
                     "drift_events": drift_events,
                 },
                 rows_count=total_rows,
@@ -611,7 +625,8 @@ async def ingest_connector_data(connector_type: str, req: ConnectorIngestRequest
         "source_id": source_id,
         "table": req.table_name,
         "total_rows": total_rows,
-        "batches": len(batches),
+        "batches": batch_count,
+        "truncated": truncated,
         "drift_events": drift_events,
         "profile_recorded": profile_recorded,
         "detail": batches,
@@ -644,6 +659,8 @@ def _safe_filename_component(s: str) -> str:
 # cheaply (or at all) — when it's unavailable we fall through and rely on
 # batch_size/max_rows pagination alone as the hard memory bound.
 _SYNC_ROW_CEILING = 2_000_000
+# Per-batch UASR results returned by /ingest; the batch count is always exact.
+_INGEST_DETAIL_LIMIT = 50
 
 
 class ConnectionSyncRequest(BaseModel):
@@ -669,6 +686,10 @@ async def sync_connection_table(connection_id: str, req: ConnectionSyncRequest, 
         raise HTTPException(status_code=400, detail="batch_size must be in [1, 50000]")
     if req.max_rows is not None and req.max_rows < 1:
         raise HTTPException(status_code=400, detail="max_rows must be positive")
+    if req.max_rows is not None and req.max_rows > _SYNC_ROW_CEILING:
+        raise HTTPException(
+            status_code=400, detail=f"max_rows may not exceed {_SYNC_ROW_CEILING:,}"
+        )
 
     wsid = current_workspace_id(request)
     conn = await persistence.get_connection(connection_id, wsid)
@@ -714,11 +735,15 @@ async def sync_connection_table(connection_id: str, req: ConnectionSyncRequest, 
             # the cheap COUNT(*) above wasn't available.
             all_rows: List[Dict[str, Any]] = []
             offset = 0
+            # BUG-193: with no max_rows and no usable row estimate the loop used to be
+            # unbounded; read at most one row past the ceiling so an over-large table is
+            # detected and refused instead of exhausting the worker's memory.
+            fetch_cap = req.max_rows if req.max_rows is not None else _SYNC_ROW_CEILING + 1
             while True:
-                remaining = None if req.max_rows is None else max(0, req.max_rows - len(all_rows))
+                remaining = max(0, fetch_cap - len(all_rows))
                 if remaining == 0:
                     break
-                limit = req.batch_size if remaining is None else min(req.batch_size, remaining)
+                limit = min(req.batch_size, remaining)
                 query = f'SELECT * FROM {req.table_name} LIMIT {limit} OFFSET {offset}'
                 rows = await connector.execute_query(query, limit=limit)
                 if not rows:
@@ -729,6 +754,15 @@ async def sync_connection_table(connection_id: str, req: ConnectionSyncRequest, 
                     break
         finally:
             await connector.disconnect()
+
+        if req.max_rows is None and len(all_rows) > _SYNC_ROW_CEILING:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Table '{req.table_name}' has more than {_SYNC_ROW_CEILING:,} rows, above "
+                    "the safety ceiling. Pass max_rows to sync a bounded slice."
+                ),
+            )
 
         # BUG-190: the connectors swallow query errors and hand back [] (or stop paging
         # early), so a failure looked identical to "no rows" and this overwrote the previous
