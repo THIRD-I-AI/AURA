@@ -4,6 +4,7 @@ BigQuery connector for AURA
 
 import json
 import logging
+import re
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
@@ -13,6 +14,22 @@ from google.oauth2 import service_account
 from .base import BaseConnector, ConnectorConfig
 
 logger = logging.getLogger("aura.connectors.bigquery")
+
+# BUG-198: project / dataset / table names are spliced into backtick-quoted SQL, and a backtick
+# cannot be escaped inside one, so each part is validated against a strict character set instead.
+_PROJECT_RE = re.compile(r"^[A-Za-z0-9_\-:.]{1,128}$")
+_NAME_RE = re.compile(r"^[A-Za-z0-9_\-]{1,1024}$")
+
+
+def build_table_ref(project: Optional[str], dataset: Optional[str], table: str) -> str:
+    """``project.dataset.table`` with every part validated; raises ValueError otherwise."""
+    if not project or not _PROJECT_RE.match(str(project)):
+        raise ValueError("Invalid BigQuery project id")
+    if not dataset or not _NAME_RE.match(str(dataset)):
+        raise ValueError("Invalid BigQuery dataset name")
+    if not table or not _NAME_RE.match(str(table)):
+        raise ValueError("Invalid BigQuery table name")
+    return f"{project}.{dataset}.{table}"
 
 
 class BigQueryConnector(BaseConnector):
@@ -31,8 +48,10 @@ class BigQueryConnector(BaseConnector):
                 credentials = service_account.Credentials.from_service_account_info(
                     self.config.credentials_json
                 )
-                self.client = bigquery.Client(credentials=credentials)
-                self.project_id = credentials.project_id
+                # An explicit project (BUG-201: stored as a connector setting) wins over
+                # the one baked into the key; otherwise fall back to the key's project.
+                self.project_id = (self.config.extra_params or {}).get("project_id") or credentials.project_id
+                self.client = bigquery.Client(credentials=credentials, project=self.project_id)
             else:
                 # Use default credentials from environment
                 self.client = bigquery.Client(project=self.config.database)
@@ -79,8 +98,7 @@ class BigQueryConnector(BaseConnector):
             return {}
 
         try:
-            dataset_id = self.config.database or ""
-            table_id = f"{self.project_id}.{dataset_id}.{table_name}"
+            table_id = build_table_ref(self.project_id, self.config.database, table_name)
             table = self.client.get_table(table_id)
 
             schema = {
@@ -109,10 +127,9 @@ class BigQueryConnector(BaseConnector):
             return []
 
         try:
-            dataset_id = self.config.database or ""
-            table_id = f"{self.project_id}.{dataset_id}.{table_name}"
+            table_id = build_table_ref(self.project_id, self.config.database, table_name)
 
-            query = f"SELECT * FROM `{table_id}` LIMIT {limit}"
+            query = f"SELECT * FROM `{table_id}` LIMIT {int(limit)}"
             results = self.client.query(query).result()
 
             rows = []
@@ -153,8 +170,7 @@ class BigQueryConnector(BaseConnector):
             samples = await self.sample_rows(table_name, limit=1000)
 
             # Get row count
-            dataset_id = self.config.database or ""
-            table_id = f"{self.project_id}.{dataset_id}.{table_name}"
+            table_id = build_table_ref(self.project_id, self.config.database, table_name)
 
             count_query = f"SELECT COUNT(*) as cnt FROM `{table_id}`"
             count_result = self.client.query(count_query).result()
