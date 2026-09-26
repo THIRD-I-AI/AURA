@@ -9,12 +9,15 @@ from __future__ import annotations
 
 import logging
 import os
+from pathlib import Path
 from typing import List
 
 import pandas as pd
 from fastapi import HTTPException
 
 from shared.service_factory import create_service
+from shared.sql_expression_guard import validate_sql_expression
+from shared.sql_identifiers import quote_identifier
 
 from .discovery import attribute, dowhy_available, summarise
 from .models import (
@@ -50,14 +53,32 @@ def _load(source: DataSource, role: str) -> pd.DataFrame:
     if source.duckdb_table is None:
         raise HTTPException(400, f"{role}: must supply rows or duckdb_table.")
 
-    duckdb_path = source.duckdb_path or os.getenv("UASR_DUCKDB_PATH", "data/uasr_lake.duckdb")
+    default_path = os.getenv("UASR_DUCKDB_PATH", "data/uasr_lake.duckdb")
+    duckdb_path = source.duckdb_path or default_path
+    # BUG-197: the request used to choose ANY database file on disk. Only files inside the
+    # configured lake's directory may be opened.
+    lake_dir = Path(default_path).resolve().parent
+    if not Path(duckdb_path).resolve().is_relative_to(lake_dir):
+        raise HTTPException(400, f"{role}: duckdb_path must be inside the configured data directory.")
+    if source.where:
+        # BUG-197: a caller-supplied WHERE is spliced into the query. Single statement only, and the
+        # shared file/network-function guard (the connection is locked down as well, below).
+        if ";" in source.where:
+            raise HTTPException(400, f"{role}: where must be a single expression.")
+        try:
+            validate_sql_expression(source.where)
+        except ValueError as exc:
+            raise HTTPException(400, f"{role}: {exc}") from exc
     try:
         import duckdb
     except ImportError as exc:
         raise HTTPException(500, f"duckdb not installed: {exc}") from exc
 
+    con = None
     try:
         con = duckdb.connect(duckdb_path, read_only=True)
+        con.execute("SET enable_external_access=false")
+        con.execute("SET lock_configuration=true")
         # Whitelist the table name via information_schema before quoting.
         ok = con.execute(
             "SELECT 1 FROM information_schema.tables "
@@ -66,16 +87,17 @@ def _load(source: DataSource, role: str) -> pd.DataFrame:
         ).fetchone()
         if not ok:
             raise HTTPException(404, f"{role}: unknown DuckDB table {source.duckdb_table!r}")
-        sql = f'SELECT * FROM "{source.duckdb_table}"'
+        sql = f"SELECT * FROM {quote_identifier(source.duckdb_table)}"
         if source.where:
             sql += f" WHERE {source.where}"
-        sql += f" LIMIT {source.limit or 10_000}"
+        sql += f" LIMIT {int(source.limit or 10_000)}"
         return con.execute(sql).fetch_df()
     finally:
-        try:
-            con.close()  # type: ignore[name-defined]
-        except Exception as exc:
-            logger.debug("duckdb close failed: %s", exc)
+        if con is not None:
+            try:
+                con.close()
+            except Exception as exc:
+                logger.debug("duckdb close failed: %s", exc)
 
 
 # ── Endpoint ──────────────────────────────────────────────────────────
