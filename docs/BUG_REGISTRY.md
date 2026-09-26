@@ -2275,12 +2275,12 @@ the whole subsystem every time.
 - **Fix:** `sync_table` now refuses to write (502, existing snapshot untouched) when the result is empty and the source did not confirm the table is empty (`row_estimate != 0`), or when it read fewer rows than the confirmed count and no `max_rows` slice was requested. REPRODUCED: with the source table dropped, the old code answered `success: true` and replaced the 3-row snapshot with an empty one; the new test asserts a 502 and that the original 3-row parquet survives (fails on the old code). Caveat: a table that is legitimately empty AND whose row count could not be obtained now cannot be synced (retry, or the user sees the 502 message); `row_estimate` comes from the connector's profile and could be stale, in which case the user passes `max_rows`. PR #530.
 
 ## BUG-191: PostgreSQL pipeline sink drops the destination table and re-creates it with no transaction
-- **Status:** fixed (unverified locally)
+- **Status:** fixed
 - **Found by:** ultracode audit (3 lenses + adversarial verify) of the pipeline engine / ETL router / connection sync, 2026-09-26. Verifier confirmed from the code; the DuckDB connection has no external-access restriction, so injected SQL can read and write local files. Not run end to end unless stated.
 - **Severity:** high
 - **Root cause:** `pipeline/engine.py` `_write_pg_sink` (~830): DROP then CREATE/INSERT without a transaction, so a failure mid-way leaves the destination table missing or half-loaded.
 - **Caused by:** none -- pre-existing.
-- **Fix:** `_write_pg_sink` now reads the DuckDB schema first, then runs DROP, CREATE and INSERT inside one `pg_conn.transaction()` (Postgres DDL is transactional), so a failure rolls back to the previous table. New Tier B test `tests/test_pipeline_pg_sink_transaction.py` (skipped without `AURA_PG_TEST_DSN`, added to the CI 'Scheduler (Postgres)' lane): a first run creates the table; a second run that fails AFTER the DROP/CREATE (a BLOB value that asyncpg refuses for a TEXT column) must leave the original rows in place; a normal replace still replaces. The existing fake-Postgres unit test gained a `transaction()` stub. NOT VERIFIED HERE: no Postgres or Docker was available locally (I did not probe the unidentified listener on :5432), so neither the fail-before nor the pass-after of the Tier B test has been observed; CI's Postgres lane is the first real run. PR #TODO.
+- **Fix:** `_write_pg_sink` now reads the DuckDB schema first, then runs DROP, CREATE and INSERT inside one `pg_conn.transaction()` (Postgres DDL is transactional), so a failure rolls back to the previous table. New Tier B test `tests/test_pipeline_pg_sink_transaction.py` (skipped without `AURA_PG_TEST_DSN`, added to the CI 'Scheduler (Postgres)' lane): a first run creates the table; a second run that fails AFTER the DROP/CREATE (a BLOB value that asyncpg refuses for a TEXT column) must leave the original rows in place; a normal replace still replaces. The existing fake-Postgres unit test gained a `transaction()` stub. VERIFICATION: no Postgres or Docker was available locally, so the pass-after was observed only in CI's real-Postgres lane (both new tests PASSED there on postgres:16). The fail-before against the old code was NOT observed. PR #532.
 
 ## BUG-192: DB source loader silently truncates at 100,000 rows and treats a failed query as 'no data'
 - **Status:** open
@@ -2299,12 +2299,12 @@ the whole subsystem every time.
 - **Fix:** pending.
 
 ## BUG-194: ETL preview / natural-language endpoints leak the DuckDB connection on exception; a failed COPY leaves a partial output file
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode audit (3 lenses + adversarial verify) of the pipeline engine / ETL router / connection sync, 2026-09-26. Verifier confirmed from the code; the DuckDB connection has no external-access restriction, so injected SQL can read and write local files. Not run end to end unless stated.
 - **Severity:** medium
 - **Root cause:** `api_gateway/routers/etl.py` ~324 (no try/finally around the connection) and ~431 (a partial file stays when COPY fails mid-write).
 - **Caused by:** none -- pre-existing.
-- **Fix:** pending.
+- **Fix:** the preview-source and suggest (natural-language) endpoints now close their DuckDB connection in a `finally` (it was closed only after a successful read); `/etl/execute` already used try/finally. New `_copy_or_cleanup(con, sql, path)` wraps the three COPY statements and deletes the partial output file if the COPY fails, then re-raises. Tests (`tests/test_etl_connection_lifecycle.py`): the preview endpoint closes the connection when the read fails (fails on the old code -- the leak is reproduced), and the helper removes a partial file / leaves a good one alone (these two fail on the old code only because the helper does not exist; a real disk-full COPY was not induced). PR #TODO.
 
 ## BUG-195: ingest writes the dataset profile and UASR baseline/drift state under a global, un-namespaced source_id
 - **Status:** open
