@@ -21,6 +21,7 @@ Usage:
 from __future__ import annotations
 
 import asyncio
+import os
 from contextlib import asynccontextmanager
 from typing import Any, AsyncGenerator, Awaitable, Callable, Mapping, Optional
 
@@ -38,6 +39,7 @@ from shared.middleware import (
     RequestIDMiddleware,
     RequestLoggingMiddleware,
     SecurityHeadersMiddleware,
+    UploadBodyLimitMiddleware,
     register_exception_handlers,
 )
 from shared.observability import init_metrics, init_sentry
@@ -117,6 +119,12 @@ def create_service(
     )
 
     # ── Middleware (order matters — outermost first) ─────────────────────
+    #  0. Upload body limit -- added before CORS so its 413 still carries CORS headers (BUG-179).
+    #     25MB file limit (shared/file_service.py) + 1MB multipart overhead; AURA_MAX_UPLOAD_BODY_BYTES overrides.
+    app.add_middleware(
+        UploadBodyLimitMiddleware,
+        max_bytes=int(os.getenv("AURA_MAX_UPLOAD_BODY_BYTES", str(26 * 1024 * 1024))),
+    )
     #  1. CORS  (outermost so preflight always gets headers)
     # Explicit methods/headers when allow_credentials=True; wildcard + credentials
     # is spec-violating and browsers silently drop such responses. Expose the
@@ -182,7 +190,6 @@ def create_service(
 
     # ── OpenTelemetry Tracing ───────────────────────────────────────────
     try:
-        import os
 
         from opentelemetry import trace
         from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
