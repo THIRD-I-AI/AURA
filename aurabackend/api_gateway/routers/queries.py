@@ -322,7 +322,7 @@ async def execute_for_chat(req: _ChatExecuteRequest, request: Request):
         import pathlib
 
         from shared.data_utils import build_schema_context_cached
-        from shared.duckdb_factory import new_connection
+        from shared.duckdb_factory import lock_down_connection, new_connection
 
         # upload_dirs kept for compute_schema_fingerprint / refresh_schema_context
         # (dir-path based, graceful no-op in s3 mode when dir is empty).
@@ -336,6 +336,7 @@ async def execute_for_chat(req: _ChatExecuteRequest, request: Request):
         # task after upload and persisted in gateway_schema_context; if
         # no cached context exists yet we kick off a rebuild here.
         await build_schema_context_cached(con, tenant, use_llm=False)
+        lock_down_connection(con)  # BUG-196: caller-supplied SQL runs next
         from api_gateway import persistence as _gw_persistence
         _fp = _gw_persistence.compute_schema_fingerprint(
             [str(d) for d in upload_dirs]
@@ -768,13 +769,14 @@ async def _execute_saved_query_sql(sql: str, workspace_id: Optional[str] = None)
     — thread it through rather than defaulting.
     """
     from shared.data_utils import build_schema_context_cached
-    from shared.duckdb_factory import new_connection
+    from shared.duckdb_factory import lock_down_connection, new_connection
 
     con = new_connection()
     try:
         # None still slugs to "default", correct only for records that really
         # do belong to the default workspace.
         await build_schema_context_cached(con, workspace_id, use_llm=False)
+        lock_down_connection(con)  # BUG-196: stored, unvalidated SQL runs next
 
         def _run() -> tuple[list[str], list[tuple]]:
             cur = con.execute(sql)
