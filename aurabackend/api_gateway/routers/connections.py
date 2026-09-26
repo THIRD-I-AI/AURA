@@ -686,6 +686,7 @@ async def sync_connection_table(connection_id: str, req: ConnectionSyncRequest, 
         if not connected:
             raise HTTPException(status_code=502, detail=f"Could not connect to {conn['type']} source")
 
+        row_estimate = None
         try:
             if req.max_rows is None:
                 try:
@@ -723,6 +724,27 @@ async def sync_connection_table(connection_id: str, req: ConnectionSyncRequest, 
                     break
         finally:
             await connector.disconnect()
+
+        # BUG-190: the connectors swallow query errors and hand back [] (or stop paging
+        # early), so a failure looked identical to "no rows" and this overwrote the previous
+        # good snapshot with an empty or truncated one. Refuse to write unless the result is
+        # confirmed complete; the existing snapshot is left untouched.
+        if not all_rows and row_estimate != 0:
+            raise HTTPException(
+                status_code=502,
+                detail=(
+                    f"The source returned no rows for '{req.table_name}' and did not confirm the table "
+                    "is empty (the query may have failed). The existing snapshot was left unchanged."
+                ),
+            )
+        if req.max_rows is None and isinstance(row_estimate, int) and len(all_rows) < row_estimate:
+            raise HTTPException(
+                status_code=502,
+                detail=(
+                    f"Only {len(all_rows):,} of ~{row_estimate:,} rows could be read from '{req.table_name}'. "
+                    "The existing snapshot was left unchanged; retry, or pass max_rows for a bounded slice."
+                ),
+            )
 
         import pandas as pd
 
