@@ -371,6 +371,26 @@ def _load_excel_table(conn: Any, file_path: str, qtable: str) -> None:
         conn.unregister("_aura_excel_tmp")
 
 
+def _unique_table_name(filename: str, taken: Any) -> str:
+    """Table name for an uploaded file, distinct from every name in ``taken`` (BUG-178).
+
+    ``q1-sales.csv`` and ``q1_sales.csv`` (or ``sales.csv`` and ``sales.parquet``) both
+    sanitise to one name, and the second load used to ``CREATE OR REPLACE`` the first
+    silently. The first file keeps the plain name; a colliding one gets its extension
+    and then a counter appended. Listing order is sorted, so the result is stable.
+    """
+    stem, ext = os.path.splitext(filename)
+    base = re.sub(r"[^A-Za-z0-9_]", "_", stem)
+    if base not in taken:
+        return base
+    candidate = f"{base}_{ext.lstrip('.').lower()}" if ext else base
+    n = 2
+    while candidate in taken:
+        candidate = f"{base}_{n}"
+        n += 1
+    return candidate
+
+
 def smart_load_file(
     conn: Any,
     file_path: str,
@@ -437,7 +457,7 @@ def build_schema_context(
         ext = os.path.splitext(obj.name)[1].lower()
         if ext not in (".csv", ".parquet", ".json", *EXCEL_EXTENSIONS):
             continue
-        table_name = re.sub(r"[^A-Za-z0-9_]", "_", os.path.splitext(obj.name)[0])
+        table_name = _unique_table_name(obj.name, tables)
         try:
             info = smart_load_file(conn, obj.duckdb_uri, table_name, use_llm=use_llm)
             tables[table_name] = info
@@ -672,7 +692,7 @@ def _build_schema_context_with_recipe(
         read_fn = _READ_FN_BY_EXT.get(ext)
         if not read_fn:
             continue
-        table_name = re.sub(r"[^A-Za-z0-9_]", "_", os.path.splitext(obj.name)[0])
+        table_name = _unique_table_name(obj.name, tables)
         try:
             info = smart_load_file(conn, obj.duckdb_uri, table_name, use_llm=use_llm)
             tables[table_name] = info

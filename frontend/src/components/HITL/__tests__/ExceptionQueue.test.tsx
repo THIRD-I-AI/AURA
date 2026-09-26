@@ -177,7 +177,9 @@ describe('ExceptionQueue (HITL workbench)', () => {
       await pick(/^invoices$/i, csv('inv.csv', 'Invoice Number,Our Ref,Total\nI-1,P-1,12\n'));
       const box = screen.getByTestId('ledger-file-invoices');
 
-      expect(within(box).getByLabelText('invoice_number column')).toHaveValue('Invoice Number');
+      // The file is read by an async FileReader, so the selects appear a moment after the
+      // upload resolves; wait for them instead of querying synchronously (BUG-182).
+      expect(await within(box).findByLabelText('invoice_number column')).toHaveValue('Invoice Number');
       expect(within(box).getByLabelText('po_number column')).toHaveValue('');
       await userEvent.selectOptions(within(box).getByLabelText('po_number column'), 'Our Ref');
       await userEvent.selectOptions(within(box).getByLabelText('amount column'), 'Total');
