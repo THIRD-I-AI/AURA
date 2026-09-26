@@ -94,8 +94,10 @@ class AuditLogMiddleware(BaseHTTPMiddleware):
             from shared.audit_log import AUDIT_ENABLED, audit_request
             if AUDIT_ENABLED:
                 user = ""
-                # JWTAuthMiddleware stashes the decoded principal here
-                principal = getattr(request.state, "principal", None)
+                # JWTAuthMiddleware stashes the decoded token on ``state.user``
+                # (BUG-206: this used to read ``state.principal``, which nothing
+                # sets, so every audit entry had an empty user).
+                principal = getattr(request.state, "user", None)
                 if isinstance(principal, dict):
                     user = principal.get("sub", "") or principal.get("email", "")
                 audit_request(

@@ -2408,12 +2408,12 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Fix:** `register_user` now returns 403 for any role other than `user` and always stores `user`. Tests `test_register_cannot_choose_a_privileged_role` (admin/auditor/root; also asserts no account was created): 3 fail on the old code. Not exploited against production (that would create a privileged account there). NOT DONE: the `allow_self_registration=true` default in production is still a policy question; the field is still accepted (and rejected unless `user`) rather than removed, to avoid an SDK schema change; any admin account created through this hole before the fix on a deployment is not detected -- audit `users.role` on any deployment with password mode and open registration.
 
 ## BUG-206: AuditLogMiddleware never records the acting user
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode audit of auth / security-sensitive shared code (3 lenses + adversarial verify), 2026-09-26. The verifier confirmed it from the code; nothing was run end to end unless stated.
 - **Severity:** medium
 - **Root cause:** `shared/middleware.py` ~98 reads `request.state.principal`, but `JWTAuthMiddleware` sets only `request.state.user`; nothing assigns `principal`, so every audit entry has `user=""` and the compliance trail cannot attribute an action to an identity.
 - **Caused by:** none -- pre-existing.
-- **Fix:** pending.
+- **Fix:** `AuditLogMiddleware` now reads the decoded token from `request.state.user` (what `JWTAuthMiddleware` sets). Tests `tests/test_audit_middleware_user.py` (2) run the real middleware pair in the production order: the authenticated-user test fails on the old code (user was empty), the unauthenticated case still records an empty user. NOT DONE: audit entries written BEFORE this fix have no user and cannot be reconstructed; only requests that pass through the JWT gate are attributed (open-mode/API-key deployments still record none). Not checked against the live audit ledger (AURA_AUDIT_ENABLED must be on in production for entries to exist at all).
 
 ## BUG-207: SQL expression guard blocklist misses DuckDB file-reading table functions
 - **Status:** fixed (hardened; still a blocklist)
