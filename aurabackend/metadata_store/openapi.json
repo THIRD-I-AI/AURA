@@ -86,7 +86,7 @@
     },
     "/dataset-profiles/{file_id}": {
       "get": {
-        "description": "Retrieve a dataset profile by file ID.",
+        "description": "Retrieve a dataset profile by file ID, scoped to the caller's workspace (BUG-018).",
         "operationId": "get_dataset_profile_dataset_profiles__file_id__get",
         "parameters": [
           {
@@ -126,7 +126,7 @@
         "summary": "Get Dataset Profile"
       },
       "post": {
-        "description": "Create or update a dataset profile.",
+        "description": "Create or update a dataset profile in the caller's workspace (BUG-018).",
         "operationId": "upsert_dataset_profile_dataset_profiles__file_id__post",
         "parameters": [
           {
