@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 from agents.base import AgentContext, AgentResult, BaseAgent, Severity
+from shared.sql_identifiers import quote_identifier
 
 
 @dataclass
@@ -122,8 +123,8 @@ class QualityAgent(BaseAgent):
                         column=col_name,
                         threshold=0.10,
                         sql=(
-                            f"SELECT ROUND(COUNT(*) FILTER (WHERE \"{col_name}\" IS NULL)::numeric "
-                            f"/ GREATEST(COUNT(*), 1), 4) AS null_rate FROM \"{table_name}\";"
+                            f"SELECT ROUND(COUNT(*) FILTER (WHERE {quote_identifier(col_name)} IS NULL)::numeric "
+                            f"/ GREATEST(COUNT(*), 1), 4) AS null_rate FROM {quote_identifier(table_name)};"
                         ),
                     )
                 )
@@ -137,9 +138,9 @@ class QualityAgent(BaseAgent):
                             column=col_name,
                             threshold=1.0,
                             sql=(
-                                f"SELECT ROUND(COUNT(DISTINCT \"{col_name}\")::numeric "
+                                f"SELECT ROUND(COUNT(DISTINCT {quote_identifier(col_name)})::numeric "
                                 f"/ GREATEST(COUNT(*), 1), 4) AS uniqueness "
-                                f"FROM \"{table_name}\";"
+                                f"FROM {quote_identifier(table_name)};"
                             ),
                         )
                     )
@@ -153,7 +154,7 @@ class QualityAgent(BaseAgent):
                         name=f"{tname}_row_count",
                         check_type="row_count",
                         threshold=1.0,
-                        sql=f'SELECT COUNT(*) AS cnt FROM "{tname}";',
+                        sql=f"SELECT COUNT(*) AS cnt FROM {quote_identifier(tname)};",
                     )
                 )
 
