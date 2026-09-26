@@ -2200,6 +2200,14 @@ the whole subsystem every time.
 - **Caused by:** BUG-170 (PR #517) -- I wrote the assertion.
 - **Fix:** the probe is now the distinctive string `zz-marker-hnsw` (posted as `index_type`); the test still asserts `extra` and `config_encrypted` are absent. PR #TODO.
 
+## BUG-182: the BUG-167 mapping test in ExceptionQueue.test.tsx failed in CI -- it queried the mapping selects synchronously after an async file read
+- **Status:** fixed
+- **Found by:** the Frontend Tests (Vitest) job on PR #525 (BUG-179, an unrelated backend change), reported by the user: `TestingLibraryElementError: Unable to find a label with the text of: invoice_number column` (1 failed, 477 passed). The same test passed on its own PR and locally.
+- **Severity:** low -- test-only, but it fails CI for unrelated PRs.
+- **Root cause:** `loadLedgerFile` reads the file with an async `FileReader`, so the per-field mapping selects render a moment after `userEvent.upload` resolves. The test did `getByTestId('ledger-file-invoices')` (the container exists immediately) and then a synchronous `getByLabelText('invoice_number column')`, which loses the race on a slower runner. Inferred from the code and the error; the failure was not reproduced locally.
+- **Caused by:** BUG-167 (PR #510) -- I wrote the test.
+- **Fix:** the first lookup is now `await within(box).findByLabelText(...)`, so it waits for the selects. The HITL suite (17 tests) passed three times in a row locally; that does not prove the race is gone, only that nothing regressed. PR #TODO.
+
 ## Refuted (adversarial-verify, ≥2/3 skeptics refuted — filed for the record, no fix needed)
 
 **database_adapter.py:466 get_table_schema-unquoted-table claim** — a reviewer flagged `DuckDBAdapter.get_table_schema` splicing `table` unquoted into `f"DESCRIBE {table}"` as direct SQL injection, with a working local PoC. All 3 verifiers confirmed the code-level fact and PoC are accurate, but refuted the finding: `DuckDBAdapter` backs `shared/vault_client.py`'s internal "vault" (users/transactions, embeddings, VR telemetry) reached only via `connectors/main.py`'s `/vault/*` routes, a distinct subsystem from the uploaded-dataset query path (ETL/pipeline) where a caller-controlled table name could actually originate — no real caller passes attacker-influenced input to this `table` parameter today. Recorded here so a future re-audit doesn't re-flag it without checking this reachability note first; still worth fixing defensively (call `quote_identifier` to match the file's own sibling methods) if anyone touches this function.
