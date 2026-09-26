@@ -483,7 +483,12 @@ def check_fix_bug179_oversized_upload_rejected_early(v: Verifier) -> str:
     u = urlparse(v.base_url)
     host, port = u.hostname, u.port or (443 if u.scheme == "https" else 80)
     raw = socket.create_connection((host, port), timeout=10)
-    sock = ssl.create_default_context().wrap_socket(raw, server_hostname=host) if u.scheme == "https" else raw
+    if u.scheme == "https":
+        ctx = ssl.create_default_context()
+        ctx.minimum_version = ssl.TLSVersion.TLSv1_2  # never negotiate below TLS 1.2 (CodeQL: insecure protocol)
+        sock = ctx.wrap_socket(raw, server_hostname=host)
+    else:
+        sock = raw
     try:
         sock.settimeout(10)
         req = (
