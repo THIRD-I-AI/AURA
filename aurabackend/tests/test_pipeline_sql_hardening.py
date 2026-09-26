@@ -134,3 +134,32 @@ def test_fill_missing_star_quotes_column_names_and_ignores_a_non_numeric_value()
         conn, ProcessingStep(id="s2", type=StepType.FILL_MISSING,
                              config={"column": "*", "strategy": "value", "fill_value": "1) AS pwned, (SELECT 1"}), "prev_t")
     assert bad is None or "pwned" not in bad
+
+
+def test_fill_missing_star_quotes_a_text_column_name_with_a_double_quote():
+    """BUG-186 (remaining branch): a VARCHAR column filled with a non-numeric value used a raw-quoted name."""
+    conn = duckdb.connect(":memory:")
+    conn.execute('CREATE TABLE prev_t ("we""ird" VARCHAR, n INTEGER)')
+    conn.execute("INSERT INTO prev_t VALUES (NULL, 1), ('kept', 2)")
+    sql = PipelineEngine()._step_to_sql(
+        conn, ProcessingStep(id="s1", type=StepType.FILL_MISSING,
+                             config={"column": "*", "strategy": "value", "fill_value": "unknown"}), "prev_t")
+    assert sql is not None
+    conn.execute(f"CREATE TABLE filled AS {sql}")
+    rows = conn.execute("SELECT * FROM filled ORDER BY n").fetchall()
+    assert rows == [("unknown", 1), ("kept", 2)]
+
+
+def test_etl_preview_limit_must_be_an_integer_and_is_rejected_before_the_file_is_looked_up():
+    """BUG-188 (regression test that was missing): `limit` used to go straight into the SQL text."""
+    import asyncio
+
+    from starlette.requests import Request
+
+    from api_gateway.routers import etl
+
+    req = Request({"type": "http", "method": "POST", "headers": [], "query_string": b"", "path": "/x"})
+    for bad in ("abc", "1; DROP TABLE t", None, [5]):
+        with pytest.raises(Exception) as exc:
+            asyncio.run(etl.etl_preview_source({"source_file": "nope.csv", "limit": bad}, req))
+        assert getattr(exc.value, "status_code", None) == 400, f"limit={bad!r} should be a 400, got {exc.value!r}"

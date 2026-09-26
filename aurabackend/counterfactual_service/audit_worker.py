@@ -47,8 +47,12 @@ def run_audit_subprocess(payload: Dict[str, Any]) -> Dict[str, Any]:
     # slow/rate-limited provider (the COMPAS run hung here). Deterministic
     # checks still run; the skip is surfaced in the artifact warnings.
     critic_timeout = float(os.getenv("AURA_AUDIT_CRITIC_TIMEOUT_S", "8"))
+    # BUG-096: the tenant is part of the critic-cache key (engine._request_hash). It was
+    # dropped here, so this path always hashed as tenant=None and two tenants auditing
+    # structurally identical data could be served each other's cached critique.
     artifact = asyncio.run(run_job(query, df=clean_df, methods=methods,
-                                   critic_timeout=critic_timeout))
+                                   critic_timeout=critic_timeout,
+                                   tenant=payload.get("tenant_id") or None))
     artifact.rendered = render(artifact, query.audience)
 
     result = artifact.model_dump(mode="json")

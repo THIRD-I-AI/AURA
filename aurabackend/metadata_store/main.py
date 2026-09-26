@@ -116,10 +116,11 @@ def _serialize_dataset_profile(profile) -> Dict[str, Any]:
 @metadata_app.get("/dataset-profiles/{file_id}")
 async def get_dataset_profile(
     file_id: str,
+    request: Request,
     repo: MetadataRepository = Depends(get_repository),
 ) -> Dict[str, Any]:
-    """Retrieve a dataset profile by file ID."""
-    profile = await repo.get_dataset_profile(file_id)
+    """Retrieve a dataset profile by file ID, scoped to the caller's workspace (BUG-018)."""
+    profile = await repo.get_dataset_profile(file_id, _workspace_id(request))
     if profile is None:
         raise HTTPException(status_code=404, detail="Dataset profile not found")
     return {"profile": _serialize_dataset_profile(profile)}
@@ -128,16 +129,18 @@ async def get_dataset_profile(
 @metadata_app.post("/dataset-profiles/{file_id}")
 async def upsert_dataset_profile(
     file_id: str,
+    request: Request,
     payload: Dict[str, Any] = Body(...),
     repo: MetadataRepository = Depends(get_repository),
 ) -> Dict[str, Any]:
-    """Create or update a dataset profile."""
+    """Create or update a dataset profile in the caller's workspace (BUG-018)."""
     profile = await repo.upsert_dataset_profile(
         file_id=file_id,
         dataset_name=payload.get("dataset_name"),
         profile=payload.get("profile", {}),
         rows_count=payload.get("rows_count"),
         columns_count=payload.get("columns_count"),
+        workspace_id=_workspace_id(request),
     )
     return {"profile": _serialize_dataset_profile(profile)}
 

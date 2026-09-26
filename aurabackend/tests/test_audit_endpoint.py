@@ -221,3 +221,29 @@ def test_audit_through_gateway_requires_auth():
     r = TestClient(gw).post("/api/v1/counterfactual/audit", json={
         "uploaded_file": "nope.csv", "treatment": "t", "outcome": "y", "confounders": []})
     assert r.status_code == 401
+
+
+def test_audit_worker_passes_the_tenant_into_the_critic_cache_key(tmp_path, monkeypatch):
+    """BUG-096 (remaining gap): audit_worker dropped the tenant, so run_job always hashed as tenant=None
+    and two tenants auditing identical data shared a critic-cache key."""
+    pytest.importorskip("econml")
+    monkeypatch.chdir(tmp_path)
+    up = tmp_path / "data" / "uploads"
+    up.mkdir(parents=True)
+    _write_demo_like_csv(up / "decisions.csv")
+
+    import counterfactual_service.engine as engine
+    seen = []
+    real_run_job = engine.run_job
+
+    async def spy(*args, **kwargs):
+        seen.append(kwargs.get("tenant"))
+        return await real_run_job(*args, **kwargs)
+
+    monkeypatch.setattr(engine, "run_job", spy)
+    from counterfactual_service.audit_worker import run_audit_subprocess
+    payload = {"uploaded_file": "decisions.csv", "treatment": "flag", "outcome": "approved",
+               "confounders": ["score"], "instrument": None}
+    run_audit_subprocess({**payload, "tenant_id": "org-a"})
+    run_audit_subprocess({**payload, "tenant_id": "org-b"})
+    assert seen == ["org-a", "org-b"], f"the worker must forward the payload's tenant, got {seen}"
