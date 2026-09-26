@@ -12,6 +12,10 @@ import logging
 from typing import Any, Dict, List, Optional
 
 from agents.base import AgentContext, AgentResult, BaseAgent, Severity
+from shared.sql_identifiers import quote_identifier
+
+# Index methods a suggested CREATE INDEX may use (BUG-200); anything else is dropped.
+_INDEX_TYPES = frozenset({"btree", "hash", "gin", "gist", "brin", "spgist", "art"})
 
 logger = logging.getLogger("aura.agents.optimization")
 
@@ -157,9 +161,16 @@ class OptimizationAgent(BaseAgent):
         idx_type = idx.get("type", "btree")
         if not table or not columns:
             return None
-        col_list = ", ".join(f'"{c}"' for c in columns)
-        idx_name = f"idx_{'_'.join(columns)}_{table}"[:63]
-        return f'CREATE INDEX IF NOT EXISTS "{idx_name}" ON "{table}" USING {idx_type} ({col_list});'
+        # BUG-200: table, columns and type come from LLM output. Identifiers go through the shared
+        # quoter and the index type must be a known one -- it is not an identifier and cannot be quoted.
+        if str(idx_type).lower() not in _INDEX_TYPES or not isinstance(columns, (list, tuple)):
+            return None
+        col_list = ", ".join(quote_identifier(str(c)) for c in columns)
+        idx_name = f"idx_{'_'.join(str(c) for c in columns)}_{table}"[:63]
+        return (
+            f"CREATE INDEX IF NOT EXISTS {quote_identifier(idx_name)} "
+            f"ON {quote_identifier(str(table))} USING {str(idx_type).lower()} ({col_list});"
+        )
 
     @staticmethod
     def _collect_upstream_sqls(upstream: Dict[str, Any]) -> List[str]:
