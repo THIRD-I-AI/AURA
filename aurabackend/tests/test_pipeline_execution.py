@@ -699,7 +699,7 @@ async def test_db_source_insert_is_batched_not_per_row(monkeypatch):
         async def disconnect(self):
             return True
 
-        async def execute_query(self, query, limit=None):
+        async def execute_query(self, query, limit=None, raise_errors=False):
             return [{"id": str(i), "amount": str(i * 10)} for i in range(50)]
 
     monkeypatch.setattr(connectors, "PostgreSQLConnector", FakePostgreSQLConnector)

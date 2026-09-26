@@ -56,6 +56,8 @@ from shared.sql_identifiers import quote_identifier as _q  # noqa: E402
 from shared.sql_identifiers import quote_literal  # noqa: E402
 
 # Aggregates PIVOT ... USING may apply (BUG-184). Anything else is refused, not spliced.
+_MAX_SOURCE_ROWS = 100_000
+
 _PIVOT_AGG_FUNCTIONS = frozenset({
     "SUM", "AVG", "COUNT", "MIN", "MAX", "MEDIAN", "FIRST", "LAST", "ANY_VALUE",
     "STDDEV", "STDDEV_SAMP", "STDDEV_POP", "VARIANCE", "VAR_SAMP", "VAR_POP",
@@ -279,12 +281,22 @@ class PipelineEngine:
 
         try:
             query = source.query or f"SELECT * FROM {_q(source.table)}"
-            rows = await connector.execute_query(query, limit=100_000)
+            # Ask for one row more than the cap so an over-large source is detected
+            # rather than silently truncated; let query errors surface instead of
+            # being reported as "no data" (BUG-192).
+            rows = await connector.execute_query(
+                query, limit=_MAX_SOURCE_ROWS + 1, raise_errors=True
+            )
         finally:
             await connector.disconnect()
 
         if not rows:
             raise ValueError("Source query returned no data")
+        if len(rows) > _MAX_SOURCE_ROWS:
+            raise ValueError(
+                f"Source has more than {_MAX_SOURCE_ROWS:,} rows; narrow the query "
+                "(add a WHERE or LIMIT) instead of loading a truncated copy"
+            )
 
         # Load into DuckDB
         import duckdb
