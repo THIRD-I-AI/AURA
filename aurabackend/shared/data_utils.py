@@ -350,6 +350,9 @@ EXCEL_EXTENSIONS = (".xlsx",)
 # for Excel (its excel extension is a runtime download), so the file is read with
 # pandas/openpyxl instead of `read_fn(uri)`.
 EXCEL_READ_FN = "__excel__"
+# Ceilings for one workbook (BUG-180); generous for real spreadsheets, hostile to bombs.
+MAX_EXCEL_UNCOMPRESSED_BYTES = 200 * 1024 * 1024
+MAX_EXCEL_ROWS = 1_000_000
 
 
 def _load_excel_table(conn: Any, file_path: str, qtable: str) -> None:
@@ -358,11 +361,28 @@ def _load_excel_table(conn: Any, file_path: str, qtable: str) -> None:
     Only local paths: a remote (s3://...) object can't be opened by openpyxl here,
     and failing loudly beats the old behaviour of parsing the binary as CSV.
     """
+    import zipfile
+
     import pandas as pd
 
     if "://" in str(file_path):
         raise ValueError("Excel files are only supported on local storage; convert to CSV or Parquet.")
-    df = pd.read_excel(file_path, sheet_name=0, engine="openpyxl")
+    # Bound the work before parsing (BUG-180). An .xlsx is a zip: the upload gate sees only
+    # its compressed size, so a small file can expand enormously, and openpyxl parses in pure
+    # Python inside a single-worker process.
+    try:
+        with zipfile.ZipFile(file_path) as zf:
+            expanded = sum(i.file_size for i in zf.infolist())
+    except zipfile.BadZipFile as exc:
+        raise ValueError("Not a valid .xlsx workbook.") from exc
+    if expanded > MAX_EXCEL_UNCOMPRESSED_BYTES:
+        raise ValueError(
+            f"Workbook expands to {expanded // (1024 * 1024)}MB, over the "
+            f"{MAX_EXCEL_UNCOMPRESSED_BYTES // (1024 * 1024)}MB limit; export it as CSV or Parquet."
+        )
+    df = pd.read_excel(file_path, sheet_name=0, engine="openpyxl", nrows=MAX_EXCEL_ROWS + 1)
+    if len(df) > MAX_EXCEL_ROWS:
+        raise ValueError(f"The first sheet has more than {MAX_EXCEL_ROWS:,} rows; export it as CSV or Parquet.")
     df.columns = [str(c) for c in df.columns]
     conn.register("_aura_excel_tmp", df)
     try:
