@@ -21,6 +21,16 @@ os.environ.setdefault("MPLBACKEND", "Agg")
 # the WSL limitation. setdefault preserves an explicit override (e.g. CI
 # pointing at Postgres).
 _gateway_test_db = os.path.join(_tempfile.gettempdir(), "aura_gateway_test.db")
+# "Throwaway" has to be true across runs too: create_all never ALTERs an existing
+# table, so a file left by an earlier run keeps its old schema and any newly added
+# column fails with "no such column" (hit when gateway_connections gained one).
+# Only when we own the path -- an explicit GATEWAY_DATABASE_URL is left alone.
+if "GATEWAY_DATABASE_URL" not in os.environ:
+    for _suffix in ("", "-journal", "-wal", "-shm"):
+        try:
+            os.remove(_gateway_test_db + _suffix)
+        except OSError:
+            pass
 os.environ.setdefault(
     "GATEWAY_DATABASE_URL", f"sqlite+aiosqlite:///{_gateway_test_db}"
 )

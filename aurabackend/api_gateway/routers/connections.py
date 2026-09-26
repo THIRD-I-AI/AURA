@@ -6,6 +6,7 @@ Database connection CRUD, testing, schema introspection, and connector proxies.
 
 import asyncio
 import io
+import json
 import os
 import re
 import uuid as _uuid
@@ -55,11 +56,66 @@ def _make_connector(conn_type: str, config: ConnectorConfig):
 
 # ── Models ───────────────────────────────────────────────────────────
 
-# The only connection settings create_connection persists. Everything else a
-# connector might need (BigQuery's project/credentials, FAISS's dimension, ...)
-# has nowhere to live yet, so it is rejected up front rather than accepted and
-# dropped (BUG-165).
+# Settings that have their own columns. Any other field a connector declares
+# (BigQuery's project/credentials, FAISS's dimension, ...) travels in `extra` and
+# is stored as one encrypted blob (BUG-170; before that it was rejected, BUG-165).
 _STORABLE_CONNECTION_FIELDS = frozenset({"host", "port", "database", "username", "password", "ssl"})
+
+
+_MAX_EXTRA_BYTES = 64 * 1024
+
+
+def _validated_extra(spec: Any, extra: Dict[str, Any]) -> Dict[str, Any]:
+    """Check connector-specific settings against the connector's declared fields.
+
+    Unknown keys are rejected (they would be stored and never read), required
+    settings that have no dedicated column must be present, and credentials_json
+    must be a JSON object. Nothing about the values is echoed back in errors.
+    """
+    declared = {f.key for f in spec.fields} - _STORABLE_CONNECTION_FIELDS
+    unknown = sorted(set(extra) - declared)
+    if unknown:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"error": f"Unknown settings for connector '{spec.id}'.", "unsupported_fields": unknown},
+        )
+    missing = sorted(
+        f.key for f in spec.fields
+        if f.required and f.key not in _STORABLE_CONNECTION_FIELDS and extra.get(f.key) in (None, "", {})
+    )
+    if missing:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"error": f"Connector '{spec.id}' requires these settings.", "missing_fields": missing},
+        )
+    if "credentials_json" in extra:
+        try:
+            parsed = json.loads(extra["credentials_json"]) if isinstance(extra["credentials_json"], str) else extra["credentials_json"]
+        except ValueError:
+            parsed = None
+        if not isinstance(parsed, dict):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={"error": "credentials_json must be a JSON object."},
+            )
+        extra = {**extra, "credentials_json": parsed}
+    if len(json.dumps(extra)) > _MAX_EXTRA_BYTES:
+        raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail={"error": "Connector settings are too large."})
+    return extra
+
+
+def _stored_connector_config(conn: Dict[str, Any], password: Optional[str], extra: Dict[str, Any]) -> ConnectorConfig:
+    """ConnectorConfig for a saved connection, including its decrypted extra settings."""
+    extra = dict(extra)
+    credentials = extra.pop("credentials_json", None)
+    database = conn.get("database") or extra.pop("project_id", None) or ""
+    extra.pop("project_id", None)
+    return ConnectorConfig(
+        source_type=SourceType(conn["type"]), name=conn["name"],
+        host=conn.get("host") or "", port=conn.get("port") or 5432,
+        username=conn.get("username") or "", password=password or "",
+        database=database, credentials_json=credentials, extra_params=extra or None,
+    )
 
 
 class ConnectionCreateRequest(BaseModel):
@@ -250,32 +306,7 @@ async def create_connection(req: ConnectionCreateRequest, request: Request):
             },
         )
 
-    # BUG-165: never answer 200 for settings we are about to throw away -- the
-    # caller would believe a working connection exists. (Persisting them needs a
-    # schema change plus encryption for secrets like credentials_json, which is
-    # a separate, deliberately unmade decision.) This is not a validator: the
-    # registry's `required` flags for storable fields were never enforced here
-    # and still are not.
-    if req.extra:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail={
-                "error": "Connector-specific settings (`extra`) are not stored yet, so they would be silently lost.",
-                "unsupported_fields": sorted(req.extra),
-            },
-        )
-    unstorable_required = [f.key for f in spec.fields if f.required and f.key not in _STORABLE_CONNECTION_FIELDS]
-    if unstorable_required:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail={
-                "error": (
-                    f"Connector '{req.type}' requires settings that this endpoint cannot store yet, "
-                    "so a connection created here could not work."
-                ),
-                "unsupported_fields": unstorable_required,
-            },
-        )
+    extra = _validated_extra(spec, req.extra)
 
     ts = datetime.now()
     now = ts.isoformat()
@@ -291,7 +322,7 @@ async def create_connection(req: ConnectionCreateRequest, request: Request):
     # repository, so a plaintext secret is never a member of the dict that gets
     # logged or returned. It used to be read off the request and then simply
     # dropped, which is why no saved connection could ever authenticate.
-    conn = await persistence.insert_connection(record, req.password)
+    conn = await persistence.insert_connection(record, req.password, extra)
     logger.info("Connection created: %s (%s/%s)", conn["id"], req.type, req.name)
     return {"success": True, "connection": conn}
 
@@ -309,11 +340,8 @@ async def test_connection_by_id(connection_id: str, request: Request):
         # This test previously always passed password="" and so could never
         # report anything truthful about whether the connection works.
         password = await persistence.get_connection_secret(connection_id, wsid)
-        connector_config = ConnectorConfig(
-            source_type=SourceType(conn["type"]), name=conn["name"],
-            host=conn.get("host") or "", port=conn.get("port") or 5432,
-            username=conn.get("username") or "", password=password or "",
-            database=conn.get("database") or "",
+        connector_config = _stored_connector_config(
+            conn, password, await persistence.get_connection_extra(connection_id, wsid),
         )
         connector = _make_connector(conn["type"], connector_config)
         if connector is None:
@@ -360,11 +388,8 @@ async def get_connection_schema(connection_id: str, request: Request):
         # credential, and passing password="" meant this could only ever
         # succeed against a database that requires no authentication.
         password = await persistence.get_connection_secret(connection_id, wsid)
-        connector_config = ConnectorConfig(
-            source_type=SourceType(conn["type"]), name=conn["name"],
-            host=conn.get("host") or "", port=conn.get("port") or 5432,
-            username=conn.get("username") or "", password=password or "",
-            database=conn.get("database") or "",
+        connector_config = _stored_connector_config(
+            conn, password, await persistence.get_connection_extra(connection_id, wsid),
         )
         connector = _make_connector(conn["type"], connector_config)
         if connector is None:
@@ -638,11 +663,8 @@ async def sync_connection_table(connection_id: str, req: ConnectionSyncRequest, 
 
     # Decrypt only here, where a real connection is about to be opened.
     password = await persistence.get_connection_secret(connection_id, wsid)
-    connector_config = ConnectorConfig(
-        source_type=SourceType(conn["type"]), name=conn["name"],
-        host=conn.get("host") or "", port=conn.get("port") or 5432,
-        username=conn.get("username") or "", password=password or "",
-        database=conn.get("database") or "",
+    connector_config = _stored_connector_config(
+        conn, password, await persistence.get_connection_extra(connection_id, wsid),
     )
     connector = _make_connector(conn["type"], connector_config)
     if connector is None:

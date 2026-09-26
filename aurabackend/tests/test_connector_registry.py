@@ -6,6 +6,7 @@ get/available API and the entry-point discovery hook used by third-party
 plugins.
 """
 
+import json
 import os
 import sys
 from typing import List
@@ -289,29 +290,46 @@ def _connection_count(client):
     return client.get("/api/v1/connections").json()["count"]
 
 
-def test_create_connection_rejects_extra_it_would_silently_discard(connections_client):
-    before = _connection_count(connections_client)
+def test_create_connection_stores_extra_and_never_returns_it(connections_client):
+    """BUG-170: connector-specific settings are persisted (encrypted) instead of rejected."""
     resp = connections_client.post("/api/v1/connections", json={
         "name": "vec", "type": "faiss", "database": "idx.faiss",
         "extra": {"dimension": 384, "index_type": "hnsw"},
     })
+    assert resp.status_code == 200, resp.text
+    conn = resp.json()["connection"]
+    assert "extra" not in conn and "config_encrypted" not in conn and "384" not in json.dumps(conn)
+    connections_client.delete(f"/api/v1/connections/{conn['id']}")
+
+
+def test_create_connection_rejects_unknown_extra_keys(connections_client):
+    before = _connection_count(connections_client)
+    resp = connections_client.post("/api/v1/connections", json={
+        "name": "vec", "type": "faiss", "database": "idx.faiss", "extra": {"not_a_setting": 1},
+    })
     assert resp.status_code == 400
-    detail = resp.json()["detail"]
-    assert "not stored" in detail["error"]
-    assert detail["unsupported_fields"] == ["dimension", "index_type"]
+    assert resp.json()["detail"]["unsupported_fields"] == ["not_a_setting"]
     assert _connection_count(connections_client) == before, "a rejected request must not create a connection"
 
 
-def test_create_connection_rejects_a_connector_whose_required_settings_it_cannot_store(connections_client):
+def test_create_connection_requires_the_settings_a_connector_cannot_work_without(connections_client):
     before = _connection_count(connections_client)
     resp = connections_client.post("/api/v1/connections", json={
         "name": "warehouse", "type": "bigquery", "database": "my_dataset",
     })
     assert resp.status_code == 400
-    detail = resp.json()["detail"]
-    assert "bigquery" in detail["error"]
-    assert set(detail["unsupported_fields"]) == {"project_id", "credentials_json"}
+    assert set(resp.json()["detail"]["missing_fields"]) == {"project_id", "credentials_json"}
     assert _connection_count(connections_client) == before
+
+
+def test_create_connection_rejects_credentials_that_are_not_a_json_object(connections_client):
+    resp = connections_client.post("/api/v1/connections", json={
+        "name": "warehouse", "type": "bigquery",
+        "extra": {"project_id": "p", "credentials_json": "not json"},
+    })
+    assert resp.status_code == 400
+    assert "JSON object" in resp.json()["detail"]["error"]
+    assert "not json" not in resp.text
 
 
 def test_create_connection_still_accepts_empty_extra_and_stays_lenient_about_required_fields(connections_client):
@@ -337,3 +355,44 @@ def test_create_connection_accepts_known_type(connections_client):
     # Cleanup the in-memory store entry we just created.
     conn_id = body["connection"]["id"]
     connections_client.delete(f"/api/v1/connections/{conn_id}")
+
+
+# BUG-170: at-rest encryption and the way stored settings reach the connector.
+
+def test_extra_is_encrypted_at_rest_and_round_trips():
+    import asyncio
+    import uuid
+
+    from sqlalchemy import select
+
+    from api_gateway import persistence
+
+    secret = {"credentials_json": {"type": "service_account", "private_key": "TOP-SECRET-KEY"}, "project_id": "p1"}
+    cid = str(uuid.uuid4())
+    record = {
+        "id": cid, "workspace_id": "ws-170", "name": "bq", "type": "bigquery",
+        "created_at": "2026-09-25T00:00:00", "created_ts": 1.0, "updated_at": "2026-09-25T00:00:00",
+    }
+
+    async def go():
+        await persistence.insert_connection(record, None, secret)
+        async with persistence.session_scope() as s:
+            raw = (await s.execute(
+                select(persistence.ConnectionRow.config_encrypted).where(persistence.ConnectionRow.id == cid)
+            )).scalar_one()
+        return raw, await persistence.get_connection_extra(cid, "ws-170"), await persistence.get_connection_extra(cid, "other-ws")
+
+    raw, mine, theirs = asyncio.run(go())
+    assert raw and "TOP-SECRET-KEY" not in raw and "service_account" not in raw
+    assert mine == secret
+    assert theirs == {}, "another workspace must not read this connection's settings"
+
+
+def test_stored_connector_config_maps_bigquery_settings_onto_the_connector():
+    from api_gateway.routers.connections import _stored_connector_config
+
+    conn = {"type": "bigquery", "name": "bq", "database": None}
+    cfg = _stored_connector_config(conn, None, {"project_id": "proj", "dataset": "d", "credentials_json": {"k": "v"}})
+    assert cfg.database == "proj"
+    assert cfg.credentials_json == {"k": "v"}
+    assert cfg.extra_params == {"dataset": "d"}
