@@ -201,6 +201,9 @@ class ConnectionRow(Base):
     database = Column(String(255), nullable=True)
     username = Column(String(255), nullable=True)
     password_encrypted = Column(Text, nullable=True)
+    # Fernet token over a JSON object of connector-specific settings (BigQuery's
+    # credentials_json, FAISS's dimension, ...). Same handling as the password.
+    config_encrypted = Column(Text, nullable=True)
     ssl = Column(Boolean, nullable=False, default=False)
     is_active = Column(Boolean, nullable=False, default=False)
     last_tested = Column(String(64), nullable=True)
@@ -1704,7 +1707,25 @@ async def get_connection_secret(connection_id: str, workspace_id: str) -> Option
     return decrypt_secret(token) if token else None
 
 
-async def insert_connection(record: Dict[str, Any], password: Optional[str]) -> Dict[str, Any]:
+async def get_connection_extra(connection_id: str, workspace_id: str) -> Dict[str, Any]:
+    """Decrypted connector-specific settings, or {} when none were stored.
+    Like get_connection_secret, kept off the wire dict so the plaintext (e.g. a
+    service-account key) is only produced where a connection is being opened."""
+    from shared.credentials import decrypt_secret
+
+    async with session_scope() as s:
+        stmt = (
+            select(ConnectionRow.config_encrypted)
+            .where(ConnectionRow.id == connection_id)
+            .where(ConnectionRow.workspace_id == workspace_id)
+        )
+        token = (await s.execute(stmt)).scalar_one_or_none()
+    return json.loads(decrypt_secret(token)) if token else {}
+
+
+async def insert_connection(
+    record: Dict[str, Any], password: Optional[str], extra: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     """Persist a connection, encrypting the password if one was supplied.
 
     ``password`` is passed separately from ``record`` so a plaintext secret
@@ -1723,6 +1744,7 @@ async def insert_connection(record: Dict[str, Any], password: Optional[str]) -> 
             database=record.get("database"),
             username=record.get("username"),
             password_encrypted=encrypt_secret(password) if password else None,
+            config_encrypted=encrypt_secret(json.dumps(extra)) if extra else None,
             ssl=bool(record.get("ssl", False)),
             is_active=False,
             last_tested=None,
