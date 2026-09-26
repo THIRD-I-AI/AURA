@@ -2275,12 +2275,12 @@ the whole subsystem every time.
 - **Fix:** `sync_table` now refuses to write (502, existing snapshot untouched) when the result is empty and the source did not confirm the table is empty (`row_estimate != 0`), or when it read fewer rows than the confirmed count and no `max_rows` slice was requested. REPRODUCED: with the source table dropped, the old code answered `success: true` and replaced the 3-row snapshot with an empty one; the new test asserts a 502 and that the original 3-row parquet survives (fails on the old code). Caveat: a table that is legitimately empty AND whose row count could not be obtained now cannot be synced (retry, or the user sees the 502 message); `row_estimate` comes from the connector's profile and could be stale, in which case the user passes `max_rows`. PR #530.
 
 ## BUG-191: PostgreSQL pipeline sink drops the destination table and re-creates it with no transaction
-- **Status:** open
+- **Status:** fixed (unverified locally)
 - **Found by:** ultracode audit (3 lenses + adversarial verify) of the pipeline engine / ETL router / connection sync, 2026-09-26. Verifier confirmed from the code; the DuckDB connection has no external-access restriction, so injected SQL can read and write local files. Not run end to end unless stated.
 - **Severity:** high
 - **Root cause:** `pipeline/engine.py` `_write_pg_sink` (~830): DROP then CREATE/INSERT without a transaction, so a failure mid-way leaves the destination table missing or half-loaded.
 - **Caused by:** none -- pre-existing.
-- **Fix:** pending.
+- **Fix:** `_write_pg_sink` now reads the DuckDB schema first, then runs DROP, CREATE and INSERT inside one `pg_conn.transaction()` (Postgres DDL is transactional), so a failure rolls back to the previous table. New Tier B test `tests/test_pipeline_pg_sink_transaction.py` (skipped without `AURA_PG_TEST_DSN`, added to the CI 'Scheduler (Postgres)' lane): a first run creates the table; a second run that fails AFTER the DROP/CREATE (a BLOB value that asyncpg refuses for a TEXT column) must leave the original rows in place; a normal replace still replaces. The existing fake-Postgres unit test gained a `transaction()` stub. NOT VERIFIED HERE: no Postgres or Docker was available locally (I did not probe the unidentified listener on :5432), so neither the fail-before nor the pass-after of the Tier B test has been observed; CI's Postgres lane is the first real run. PR #TODO.
 
 ## BUG-192: DB source loader silently truncates at 100,000 rows and treats a failed query as 'no data'
 - **Status:** open

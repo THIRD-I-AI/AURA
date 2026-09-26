@@ -376,6 +376,17 @@ async def test_pg_sink_quotes_table_name_containing_double_quote(monkeypatch):
         async def executemany(self, sql, rows):
             executed_sql.append(sql)
 
+        def transaction(self):
+            # The sink now wraps DROP/CREATE/INSERT in a transaction (BUG-191).
+            class _Tx:
+                async def __aenter__(self_inner):
+                    return self_inner
+
+                async def __aexit__(self_inner, *exc):
+                    return False
+
+            return _Tx()
+
     class FakeAcquireCtx:
         async def __aenter__(self):
             return FakePgConn()
