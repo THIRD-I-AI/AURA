@@ -110,3 +110,23 @@ def test_unique_table_name_keeps_the_plain_name_for_the_first_file():
     assert data_utils._unique_table_name("orders.csv", {}) == "orders"
     assert data_utils._unique_table_name("orders.parquet", {"orders": 1}) == "orders_parquet"
     assert data_utils._unique_table_name("orders.parquet", {"orders": 1, "orders_parquet": 1}) == "orders_2"
+
+
+def test_xlsx_that_expands_beyond_the_limit_is_refused_before_parsing(xlsx, monkeypatch):
+    """BUG-180: only the compressed size was checked, so a small zip could expand enormously."""
+    monkeypatch.setattr(data_utils, "MAX_EXCEL_UNCOMPRESSED_BYTES", 10)
+    with pytest.raises(ValueError, match="expands to"):
+        smart_load_file(duckdb.connect(":memory:"), xlsx, "sales", use_llm=False)
+
+
+def test_xlsx_with_too_many_rows_is_refused(xlsx, monkeypatch):
+    monkeypatch.setattr(data_utils, "MAX_EXCEL_ROWS", 2)  # the fixture sheet has 3 data rows
+    with pytest.raises(ValueError, match="more than"):
+        smart_load_file(duckdb.connect(":memory:"), xlsx, "sales", use_llm=False)
+
+
+def test_a_non_workbook_named_xlsx_gets_a_clear_error(tmp_path):
+    bad = tmp_path / "fake.xlsx"
+    bad.write_bytes(b"not a zip at all")
+    with pytest.raises(ValueError, match="valid .xlsx"):
+        smart_load_file(duckdb.connect(":memory:"), str(bad).replace("\\", "/"), "fake", use_llm=False)

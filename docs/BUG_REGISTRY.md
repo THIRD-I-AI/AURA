@@ -2173,7 +2173,7 @@ the whole subsystem every time.
 - **Severity:** medium
 - **Root cause:** `shared/data_utils.py` (~440 and ~675) builds `table_name = re.sub(r"[^A-Za-z0-9_]", "_", stem)` with no duplicate check, so distinct files can map to one table and the later load `CREATE OR REPLACE`s the earlier, silently.
 - **Caused by:** none -- pre-existing.
-- **Fix:** new `_unique_table_name(filename, taken)` used at both sites (`build_schema_context` and the cache-recipe builder): the first file keeps the plain sanitised name, a colliding one gets its extension appended, then a counter. Listing is sorted so names are stable across runs. Tests: a real `LocalBackend` with `q1-sales.csv`/`q1_sales.csv` and `sales.csv`/`sales.parquet` yields 4 distinct tables with the right row counts (fails on the old code: a file silently replaced), plus a unit test of the naming rule. Caveat: when a collision exists the second file's table name is new, so an LLM-generated query written against the old (shadowed) name would now hit the first file's table; that ambiguity is what the bug was. PR #TODO.
+- **Fix:** new `_unique_table_name(filename, taken)` used at both sites (`build_schema_context` and the cache-recipe builder): the first file keeps the plain sanitised name, a colliding one gets its extension appended, then a counter. Listing is sorted so names are stable across runs. Tests: a real `LocalBackend` with `q1-sales.csv`/`q1_sales.csv` and `sales.csv`/`sales.parquet` yields 4 distinct tables with the right row counts (fails on the old code: a file silently replaced), plus a unit test of the naming rule. Caveat: when a collision exists the second file's table name is new, so an LLM-generated query written against the old (shadowed) name would now hit the first file's table; that ambiguity is what the bug was. PR #524.
 
 
 ## BUG-179: upload size limit is enforced only after the whole multipart body has been received and spooled
@@ -2186,12 +2186,13 @@ the whole subsystem every time.
 
 
 ## BUG-180: pandas.read_excel has no row / decompressed-size bound (zip-bomb .xlsx can exhaust memory of the single worker)
-- **Status:** open
+- **Status:** fixed (partial)
 - **Found by:** ultracode audit (3 lenses + adversarial verify) of the upload / xlsx / schema-context path, 2026-09-26. Verifier confirmed from the code; not run end to end unless stated.
 - **Severity:** medium
 - **Root cause:** `shared/data_utils.py` `_load_excel_table` (added for BUG-146) reads the whole first sheet with `pd.read_excel` and copies it again into DuckDB; the upload gate checks only the compressed size. Also re-read on every schema-cache replay. Introduced by BUG-146 (PR #515).
 - **Caused by:** BUG-146 (PR #515) -- its fix left this gap.
-- **Fix:** pending.
+- **Fix:** `_load_excel_table` now (1) sums the workbook zip's uncompressed member sizes and refuses over `MAX_EXCEL_UNCOMPRESSED_BYTES` (200MB) BEFORE parsing, (2) reads with `nrows=MAX_EXCEL_ROWS+1` (1,000,000) and refuses if the first sheet exceeds the cap, (3) turns a non-zip file named .xlsx into a clear 'Not a valid .xlsx workbook' ValueError instead of a BadZipFile. 3 tests (each fails on the old code). NOT done: the parse still runs in pure Python holding the GIL (a workbook just under the caps can still tie up the worker for a while -- the real fix is a subprocess or a read-only streaming reader); nothing measured against a genuine zip bomb; the schema-cache replay still re-reads the workbook on every cache hit. PR #TODO.
+
 
 ## BUG-181: `test_create_connection_stores_extra_and_never_returns_it` failed intermittently -- it asserted the string "384" was absent from a response that contains a microsecond timestamp
 - **Status:** fixed
