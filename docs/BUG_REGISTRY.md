@@ -2190,6 +2190,14 @@ the whole subsystem every time.
 - **Caused by:** BUG-146 (PR #515) -- its fix left this gap.
 - **Fix:** pending.
 
+## BUG-181: `test_create_connection_stores_extra_and_never_returns_it` failed intermittently -- it asserted the string "384" was absent from a response that contains a microsecond timestamp
+- **Status:** fixed
+- **Found by:** the pre-push hook of the BUG-175 branch (1 failed, 2664 passed): `assert ... '384' not in json.dumps(conn)` failed because `created_at` was `2026-09-25T23:20:24.384239`.
+- **Severity:** low -- test-only, but it would have failed CI for whoever's run landed on it (roughly 1 run in 1000) and it had already passed CI once by luck.
+- **Root cause:** the test used the number 384 (the FAISS dimension it posted) as its 'not leaked' probe; the wire dict legitimately contains timestamps whose digits can contain 384. Not a product defect -- the `extra` value was not in the response.
+- **Caused by:** BUG-170 (PR #517) -- I wrote the assertion.
+- **Fix:** the probe is now the distinctive string `zz-marker-hnsw` (posted as `index_type`); the test still asserts `extra` and `config_encrypted` are absent. PR #TODO.
+
 ## Refuted (adversarial-verify, ≥2/3 skeptics refuted — filed for the record, no fix needed)
 
 **database_adapter.py:466 get_table_schema-unquoted-table claim** — a reviewer flagged `DuckDBAdapter.get_table_schema` splicing `table` unquoted into `f"DESCRIBE {table}"` as direct SQL injection, with a working local PoC. All 3 verifiers confirmed the code-level fact and PoC are accurate, but refuted the finding: `DuckDBAdapter` backs `shared/vault_client.py`'s internal "vault" (users/transactions, embeddings, VR telemetry) reached only via `connectors/main.py`'s `/vault/*` routes, a distinct subsystem from the uploaded-dataset query path (ETL/pipeline) where a caller-controlled table name could actually originate — no real caller passes attacker-influenced input to this `table` parameter today. Recorded here so a future re-audit doesn't re-flag it without checking this reachability note first; still worth fixing defensively (call `quote_identifier` to match the file's own sibling methods) if anyone touches this function.

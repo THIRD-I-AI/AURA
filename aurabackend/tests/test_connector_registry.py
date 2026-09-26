@@ -294,11 +294,13 @@ def test_create_connection_stores_extra_and_never_returns_it(connections_client)
     """BUG-170: connector-specific settings are persisted (encrypted) instead of rejected."""
     resp = connections_client.post("/api/v1/connections", json={
         "name": "vec", "type": "faiss", "database": "idx.faiss",
-        "extra": {"dimension": 384, "index_type": "hnsw"},
+        "extra": {"dimension": 384, "index_type": "zz-marker-hnsw"},
     })
     assert resp.status_code == 200, resp.text
     conn = resp.json()["connection"]
-    assert "extra" not in conn and "config_encrypted" not in conn and "384" not in json.dumps(conn)
+    # A distinctive string, not the number 384: the response carries a microsecond
+    # timestamp and "384" matches it about 1 run in 1000 (BUG-181).
+    assert "extra" not in conn and "config_encrypted" not in conn and "zz-marker-hnsw" not in json.dumps(conn)
     connections_client.delete(f"/api/v1/connections/{conn['id']}")
 
 
