@@ -34,6 +34,19 @@ _BLOCKED_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
+# BUG-207: the named list above missed most of DuckDB's file-reading table functions
+# (parquet_scan, read_json_objects -- the trailing word boundary defeats the read_json match --
+# read_ndjson_objects, sniff_csv, parquet_metadata/schema, read_xlsx, st_read, delta/
+# iceberg scans ...). Match them by *family* in call position instead of by exact name,
+# and block the functions that run a string as SQL (query / query_table), which would
+# otherwise let an obfuscated name ('read_' || 'csv') slip past every pattern here.
+# Call position (`name (`) keeps a plain column called e.g. "read_count" legal.
+_BLOCKED_CALL_PATTERN = re.compile(
+    r"\b(read_\w+|\w+_scan|parquet_\w+|sniff_csv|st_read\w*|iceberg_\w+|delta_\w+|"
+    r"duckdb_\w+|query|query_table|json_execute_serialized_sql|getenv|current_setting)\s*\(",
+    re.IGNORECASE,
+)
+
 # BUG-114: DuckDB also opens a file directly as a table when a bare string
 # literal appears where a table reference is expected -- a "replacement
 # scan" -- e.g. `SELECT * FROM '/etc/passwd'` or a nested
@@ -53,6 +66,11 @@ def validate_sql_expression(expr: str) -> None:
         raise ValueError(
             "expression may not reference file/network access functions "
             "(read_csv, read_parquet, ATTACH, COPY, PRAGMA, INSTALL, LOAD, etc.)"
+        )
+    if _BLOCKED_CALL_PATTERN.search(expr):
+        raise ValueError(
+            "expression may not call file-reading, introspection or dynamic-SQL "
+            "table functions (read_*, *_scan, parquet_*, sniff_csv, query, ...)"
         )
     if "://" in expr:
         raise ValueError("expression may not reference URIs")
