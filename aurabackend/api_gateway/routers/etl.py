@@ -103,6 +103,18 @@ from shared.sql_identifiers import quote_literal  # noqa: E402
 _CAST_TYPES = frozenset({"INTEGER", "VARCHAR", "DOUBLE", "BOOLEAN", "DATE", "TIMESTAMP", "BIGINT", "FLOAT", "TEXT"})
 
 
+def _copy_or_cleanup(con: Any, sql: str, output_path: str) -> None:
+    """Run a COPY ... TO statement; if it fails part-way, delete the partial file (BUG-194)."""
+    try:
+        con.execute(sql)
+    except Exception:
+        try:
+            os.remove(output_path)
+        except OSError:
+            pass
+        raise
+
+
 def _fill_literal(value: str) -> str:
     """SQL literal for a fill value (BUG-185): a number re-rendered from its parse, else a quoted string."""
     try:
@@ -340,6 +352,7 @@ async def etl_preview_source(payload: Dict[str, Any], request: Request):
         raise HTTPException(status_code=404, detail=f"Source file '{source_file}' not found in uploads")
     duckdb_uri = backend.duckdb_uri(tenant, safe_name)
 
+    con = None
     try:
         con = new_connection()
         table_name = re.sub(r"[^A-Za-z0-9_]", "_", Path(source_file).stem)
@@ -359,7 +372,6 @@ async def etl_preview_source(payload: Dict[str, Any], request: Request):
             {col: _serialize_value(val) for col, val in zip(col_names, row)}
             for row in preview
         ]
-        con.close()
         return {
             "status": "success", "source_file": source_file, "table_name": table_name,
             "columns": columns, "row_count": row_count, "preview": preview_records,
@@ -369,6 +381,10 @@ async def etl_preview_source(payload: Dict[str, Any], request: Request):
         raise
     except Exception as e:
         return {"status": "error", "error": sanitize_error(e, logger=logger, context="etl preview")}
+    finally:
+        # BUG-194: the connection used to be closed only on the success path.
+        if con is not None:
+            con.close()
 
 
 @router.post("/etl/execute")
@@ -447,15 +463,15 @@ async def etl_execute(pipeline: ETLPipelineRequest, request: Request):
                 if fmt == "csv":
                     download_filename = f"{dest_name}.csv"
                     output_path = str(output_dir / download_filename)
-                    con.execute(f"COPY _etl_output TO {quote_literal(output_path)} (HEADER, DELIMITER ',')")
+                    _copy_or_cleanup(con, f"COPY _etl_output TO {quote_literal(output_path)} (HEADER, DELIMITER ',')", output_path)
                 elif fmt == "parquet":
                     download_filename = f"{dest_name}.parquet"
                     output_path = str(output_dir / download_filename)
-                    con.execute(f"COPY _etl_output TO {quote_literal(output_path)} (FORMAT PARQUET)")
+                    _copy_or_cleanup(con, f"COPY _etl_output TO {quote_literal(output_path)} (FORMAT PARQUET)", output_path)
                 elif fmt == "json":
                     download_filename = f"{dest_name}.json"
                     output_path = str(output_dir / download_filename)
-                    con.execute(f"COPY _etl_output TO {quote_literal(output_path)} (FORMAT JSON, ARRAY true)")
+                    _copy_or_cleanup(con, f"COPY _etl_output TO {quote_literal(output_path)} (FORMAT JSON, ARRAY true)", output_path)
                 else:
                     raise HTTPException(status_code=400, detail=f"Unsupported destination format: {fmt}")
 
@@ -567,6 +583,7 @@ async def etl_from_natural_language(req: ETLNaturalLanguageRequest, request: Req
         raise HTTPException(status_code=404, detail="Source file not found")
     duckdb_uri = backend.duckdb_uri(tenant, safe_name)
 
+    con = None
     try:
         con = new_connection()
         table_name = re.sub(r"[^A-Za-z0-9_]", "_", Path(req.source_file).stem)
@@ -580,7 +597,6 @@ async def etl_from_natural_language(req: ETLNaturalLanguageRequest, request: Req
         schema_rows = [(c["name"], c["type"]) for c in file_info["columns"]]
         col_names = [c["name"] for c in file_info["columns"]]
         sample_records = [dict(zip(col_names, row)) for row in sample]
-        con.close()
         schema_text = ", ".join(f"{r[0]} ({r[1]})" for r in schema_rows)
     except Exception as e:
         # Sec-3 #18: f"{e}" leaks server-side paths + duckdb internals
@@ -596,6 +612,10 @@ async def etl_from_natural_language(req: ETLNaturalLanguageRequest, request: Req
             ),
             "transforms": [],
         }
+    finally:
+        # BUG-194: closed on every path, not only when the read succeeded.
+        if con is not None:
+            con.close()
 
     llm = get_llm()
 
