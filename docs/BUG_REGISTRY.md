@@ -2216,7 +2216,7 @@ the whole subsystem every time.
 - **Severity:** high
 - **Root cause:** `pipeline/engine.py` `_write_file_sink` and `api_gateway/routers/etl.py` `/etl/execute` built `COPY ... TO '{out_path}'`. `Path(name).stem` strips slashes and the final extension but not quotes, so a slash-free, dot-free `file_name` / `destination_filename` such as `a' (FORMAT CSV); COPY (SELECT 1) TO 'zz_pwned` closes the literal and runs a second statement. REPRODUCED against the old code: it wrote `zz_pwned.csv` into the working directory; the same call on the fixed code did not.
 - **Caused by:** none -- pre-existing.
-- **Fix:** `quote_literal(...)` on all four engine COPY statements and all three ETL ones. Test `test_engine_file_sink_name_with_a_quote_is_a_filename_not_sql` fails on the old code (the file is still written under its literal odd name). The ETL COPY sites use the same one-line change and have no dedicated test. Fixed together with its siblings in one PR (same files, one shared cause: values and names spliced into SQL text); each bug has its own entry and test. PR #TODO.
+- **Fix:** `quote_literal(...)` on all four engine COPY statements and all three ETL ones. Test `test_engine_file_sink_name_with_a_quote_is_a_filename_not_sql` fails on the old code (the file is still written under its literal odd name). The ETL COPY sites use the same one-line change and have no dedicated test. Fixed together with its siblings in one PR (same files, one shared cause: values and names spliced into SQL text); each bug has its own entry and test. PR #529.
 
 ## BUG-184: PIVOT agg_function was spliced raw into USING <agg>(...) (only .upper() applied)
 - **Status:** fixed
@@ -2224,7 +2224,7 @@ the whole subsystem every time.
 - **Severity:** high
 - **Root cause:** `pipeline/engine.py` PIVOT step: `agg_func = cfg.get('agg_function','SUM').upper()` then `USING {agg_func}(...)`. Step configs are free-form dicts (and the LLM generator emits them); ADD_COLUMN / CUSTOM_SQL run `_validate_expression` and WINDOW uses an allowlist, PIVOT had neither.
 - **Caused by:** none -- pre-existing.
-- **Fix:** New `_PIVOT_AGG_FUNCTIONS` allowlist (SUM/AVG/COUNT/MIN/MAX/MEDIAN/FIRST/LAST/ANY_VALUE/STDDEV*/VAR*); anything else returns no SQL for the step. Tests: a subquery-carrying aggregate is refused (fails on the old code), and an allowlisted one still builds and runs. Fixed together with its siblings in one PR (same files, one shared cause: values and names spliced into SQL text); each bug has its own entry and test. PR #TODO.
+- **Fix:** New `_PIVOT_AGG_FUNCTIONS` allowlist (SUM/AVG/COUNT/MIN/MAX/MEDIAN/FIRST/LAST/ANY_VALUE/STDDEV*/VAR*); anything else returns no SQL for the step. Tests: a subquery-carrying aggregate is refused (fails on the old code), and an allowlisted one still builds and runs. Fixed together with its siblings in one PR (same files, one shared cause: values and names spliced into SQL text); each bug has its own entry and test. PR #529.
 
 ## BUG-185: fill_missing spliced the caller's fill value raw into COALESCE(...) (engine star path; ETL star and single-column paths)
 - **Status:** fixed
@@ -2232,7 +2232,7 @@ the whole subsystem every time.
 - **Severity:** high
 - **Root cause:** `pipeline/engine.py` (star branch: `COALESCE(col, {value})`, with `_val_is_numeric` computed but not enforced) and `api_gateway/routers/etl.py` (`{fill_val}` unquoted in both the star and single-column paths).
 - **Caused by:** none -- pre-existing.
-- **Fix:** A value is only used when it parses as a number and is then re-rendered from the parsed float; ETL's single-column path uses new `_fill_literal` (a number, else a quoted string literal). Tests: numeric fills still work and a payload value never reaches the SQL text (engine and ETL). Fixed together with its siblings in one PR (same files, one shared cause: values and names spliced into SQL text); each bug has its own entry and test. PR #TODO.
+- **Fix:** A value is only used when it parses as a number and is then re-rendered from the parsed float; ETL's single-column path uses new `_fill_literal` (a number, else a quoted string literal). Tests: numeric fills still work and a payload value never reaches the SQL text (engine and ETL). Fixed together with its siblings in one PR (same files, one shared cause: values and names spliced into SQL text); each bug has its own entry and test. PR #529.
 
 ## BUG-186: engine FILL_MISSING star path wrapped DESCRIBE column names in raw double quotes (no escaping)
 - **Status:** fixed
@@ -2240,7 +2240,7 @@ the whole subsystem every time.
 - **Severity:** medium
 - **Root cause:** `pipeline/engine.py` used a bare double-quoted name instead of `quote_identifier` on the star path; a CSV header containing a double quote survives `smart_load_file` and breaks out of the identifier.
 - **Caused by:** none -- pre-existing.
-- **Fix:** Every such site now uses `_q(...)`. The test builds the step against a table with a column literally named `we"ird` and executes the result (fails on the old code with a ParserException). Fixed together with its siblings in one PR (same files, one shared cause: values and names spliced into SQL text); each bug has its own entry and test. PR #TODO.
+- **Fix:** Every such site now uses `_q(...)`. The test builds the step against a table with a column literally named `we"ird` and executes the result (fails on the old code with a ParserException). Fixed together with its siblings in one PR (same files, one shared cause: values and names spliced into SQL text); each bug has its own entry and test. PR #529.
 
 ## BUG-187: ETL cast_type spliced to_type unvalidated into CAST(... AS <type>)
 - **Status:** fixed
@@ -2248,7 +2248,7 @@ the whole subsystem every time.
 - **Severity:** high
 - **Root cause:** `api_gateway/routers/etl.py` cast_type: `CAST({_q(col)} AS {to_type})` with the caller's string (the engine's own CAST step already had an allowlist; ETL did not).
 - **Caused by:** none -- pre-existing.
-- **Fix:** New `_CAST_TYPES` allowlist (same set as the engine's); an unknown type skips the step. Tests: a payload type produces no SQL containing it, and `double` still casts. Fixed together with its siblings in one PR (same files, one shared cause: values and names spliced into SQL text); each bug has its own entry and test. PR #TODO.
+- **Fix:** New `_CAST_TYPES` allowlist (same set as the engine's); an unknown type skips the step. Tests: a payload type produces no SQL containing it, and `double` still casts. Fixed together with its siblings in one PR (same files, one shared cause: values and names spliced into SQL text); each bug has its own entry and test. PR #529.
 
 ## BUG-188: ETL preview-source `limit` came straight from the JSON body into the SQL text
 - **Status:** fixed
@@ -2256,7 +2256,7 @@ the whole subsystem every time.
 - **Severity:** medium
 - **Root cause:** `api_gateway/routers/etl.py` preview endpoint: `limit = payload.get('limit', 20)` then `LIMIT {limit}` (also a raw table name in an f-string).
 - **Caused by:** none -- pre-existing.
-- **Fix:** `limit` is coerced to an int clamped to 1..1000 (400 if it is not an integer) and the table name goes through `_q`. The existing ETL suites pass; there is no dedicated test for the 400. Fixed together with its siblings in one PR (same files, one shared cause: values and names spliced into SQL text); each bug has its own entry and test. PR #TODO.
+- **Fix:** `limit` is coerced to an int clamped to 1..1000 (400 if it is not an integer) and the table name goes through `_q`. The existing ETL suites pass; there is no dedicated test for the 400. Fixed together with its siblings in one PR (same files, one shared cause: values and names spliced into SQL text); each bug has its own entry and test. PR #529.
 
 ## BUG-189: pipeline DuckDB-source `query` is executed as raw SQL with no guard
 - **Status:** open
