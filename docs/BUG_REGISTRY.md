@@ -2158,12 +2158,13 @@ the whole subsystem every time.
 - **Fix:** `.xlsx` added to `_READ_EXTS`. New test `test_local_storage_lists_xlsx_and_schema_context_includes_it` writes a real workbook into a `LocalBackend`, asserts it is listed and that `build_schema_context` yields the table with its columns; it fails without the change (`[] == ['sales.xlsx']`). PR #TODO.
 
 ## BUG-177: build_schema_context_cached lists storage synchronously on the event loop (S3 = blocking network round trips on a single-worker gateway)
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode audit (3 lenses + adversarial verify) of the upload / xlsx / schema-context path, 2026-09-26. Verifier confirmed from the code; not run end to end unless stated.
 - **Severity:** medium
 - **Root cause:** `shared/data_utils.py:728` calls `_signature_for_tenant` (which calls `backend.list(tenant)`, a blocking boto3 paginator on S3 / iterdir+stat locally) directly inside an async function awaited by every chat, query and dashboard request; every other blocking step in that function is offloaded with `asyncio.to_thread`. Violates `.claude/rules/backend.md` (async safety).
 - **Caused by:** none -- pre-existing.
-- **Fix:** pending.
+- **Fix:** `await asyncio.to_thread(_signature_for_tenant, effective_tenant)` (its only call site). New test replaces `_signature_for_tenant` with a stub recording its thread and asserts it is not the event-loop thread; it fails on the old code and passes now (it lives in `tests/test_excel_loading.py` alongside the other data_utils tests). Not measured: the actual latency win against a real S3 endpoint. PR #TODO.
+
 
 ## BUG-178: filename -> table-name mapping collides and silently overwrites tables (q1-sales.csv vs q1_sales.csv, sales.csv vs sales.parquet)
 - **Status:** open
