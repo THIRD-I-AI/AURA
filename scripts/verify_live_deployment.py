@@ -35,13 +35,18 @@ never written to the output report.
 from __future__ import annotations
 
 import argparse
+import io
 import os
+import socket
+import ssl
 import sys
 import time
 import uuid
+import zipfile
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Callable, List, Optional
+from urllib.parse import urlparse
 
 import httpx
 
@@ -384,6 +389,190 @@ def check_uasr_self_heal(v: Verifier) -> str:
     return f"drift detected -> held for approval -> approved -> deployed (recovery_id={recovery_id})"
 
 
+# ── Fix-verification probes ─────────────────────────────────────────────
+#
+# The checks above prove the product's features work. These prove that specific
+# bug FIXES are live on the deployed system: each one drives the real endpoint
+# the bug lived behind and fails if the OLD behaviour is still there. A FAIL means
+# "the fix is not deployed, or it regressed" -- passing unit tests and a green CI
+# say nothing about what the box is actually running (its /health reports only
+# version 2.0.0, no build id), so this is the only direct evidence.
+#
+# Every probe is non-destructive (rejected requests, or resources namespaced
+# verify_* and deleted before the check returns).
+
+def _minimal_xlsx(header: List[str], rows: List[List[object]]) -> bytes:
+    """A real .xlsx built with the stdlib only (inline strings), so the script keeps needing just httpx."""
+    def cell(ref: str, val: object) -> str:
+        if isinstance(val, (int, float)):
+            return f'<c r="{ref}"><v>{val}</v></c>'
+        return f'<c r="{ref}" t="inlineStr"><is><t>{val}</t></is></c>'
+
+    all_rows = [header] + rows
+    sheet_rows = ""
+    for ri, row in enumerate(all_rows, start=1):
+        cells = "".join(cell(f"{chr(65 + ci)}{ri}", val) for ci, val in enumerate(row))
+        sheet_rows += f'<row r="{ri}">{cells}</row>'
+    files = {
+        "[Content_Types].xml": (
+            '<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+            '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+            '<Default Extension="xml" ContentType="application/xml"/>'
+            '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>'
+            '<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>'
+            "</Types>"),
+        "_rels/.rels": (
+            '<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+            '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>'
+            "</Relationships>"),
+        "xl/workbook.xml": (
+            '<?xml version="1.0" encoding="UTF-8"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
+            'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets>'
+            '<sheet name="Sheet1" sheetId="1" r:id="rId1"/></sheets></workbook>'),
+        "xl/_rels/workbook.xml.rels": (
+            '<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+            '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>'
+            "</Relationships>"),
+        "xl/worksheets/sheet1.xml": (
+            '<?xml version="1.0" encoding="UTF-8"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+            f"<sheetData>{sheet_rows}</sheetData></worksheet>"),
+    }
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for name, content in files.items():
+            zf.writestr(name, content)
+    return buf.getvalue()
+
+
+def check_fix_bug196_dashboard_cannot_read_files(v: Verifier) -> str:
+    """BUG-196: a saved query on a dashboard tile could read the server's filesystem.
+    glob('/etc/*') is the probe because it is decisive whether or not any particular file exists:
+    on the old code the tile answers 'success'; on the fixed code DuckDB refuses (file access is off)."""
+    h = v._auth_headers()
+    sq_id = dash_id = None
+    try:
+        r = v.client.post(f"{V1}/saved-queries", headers=h, json={"name": v.ns("fs_probe"), "sql": "SELECT COUNT(*) AS n FROM glob('/etc/*')"})
+        r.raise_for_status()
+        sq_id = r.json().get("id") or r.json().get("query", {}).get("id")
+        if not sq_id:
+            raise AssertionError(f"could not read the saved query id from {r.text[:200]}")
+        r = v.client.post(f"{V1}/dashboards", headers=h, json={"name": v.ns("fs_probe_dash"), "tiles": [{"saved_query_id": sq_id}]})
+        r.raise_for_status()
+        dash_id = r.json().get("id") or r.json().get("dashboard", {}).get("id")
+        if not dash_id:
+            raise AssertionError(f"could not read the dashboard id from {r.text[:200]}")
+        r = v.client.post(f"{V1}/dashboards/{dash_id}/render", headers=h)
+        r.raise_for_status()
+        tiles = r.json().get("tiles", [])
+        if not tiles:
+            raise AssertionError("render returned no tiles")
+        if tiles[0].get("status") == "success":
+            raise AssertionError("BUG-196 NOT FIXED: a dashboard tile listed the server filesystem (glob('/etc/*') succeeded)")
+        return f"tile refused the filesystem probe (status={tiles[0].get('status')})"
+    finally:
+        if dash_id:
+            v.client.delete(f"{V1}/dashboards/{dash_id}", headers=h)
+        if sq_id:
+            v.client.delete(f"{V1}/saved-queries/{sq_id}", headers=h)
+
+
+def check_fix_bug179_oversized_upload_rejected_early(v: Verifier) -> str:
+    """BUG-179: the 25MB limit only fired after the whole body was spooled. Declares a 200MB body and
+    sends none: a fixed gateway answers 413 from the header alone; the old one waits for a body that
+    never arrives. (A reverse proxy with its own body limit could also produce the 413 -- see detail.)"""
+    u = urlparse(v.base_url)
+    host, port = u.hostname, u.port or (443 if u.scheme == "https" else 80)
+    raw = socket.create_connection((host, port), timeout=10)
+    sock = ssl.create_default_context().wrap_socket(raw, server_hostname=host) if u.scheme == "https" else raw
+    try:
+        sock.settimeout(10)
+        req = (
+            f"POST {V1}/upload HTTP/1.1\r\nHost: {host}\r\nAuthorization: Bearer {v.token}\r\n"
+            "Content-Type: multipart/form-data; boundary=verify\r\nContent-Length: 209715200\r\nConnection: close\r\n\r\n"
+        )
+        sock.sendall(req.encode())
+        try:
+            status_line = sock.recv(200).split(b"\r\n", 1)[0].decode(errors="replace")
+        except socket.timeout:
+            raise AssertionError("BUG-179 NOT FIXED: no response within 10s to a 200MB Content-Length (the server is waiting for the body)")
+    finally:
+        sock.close()
+    if " 413 " not in status_line:
+        raise AssertionError(f"expected 413 for a 200MB declared body, got: {status_line}")
+    return "413 returned from the declared length alone (may come from the app or a proxy in front of it)"
+
+
+def check_fix_bug188_preview_limit_validated(v: Verifier) -> str:
+    """BUG-188: ETL preview's `limit` was spliced into SQL unvalidated. The fixed handler validates it
+    BEFORE it looks for the file, so a non-integer limit is a 400; the old handler got as far as 404."""
+    r = v.client.post(f"{V1}/etl/preview-source", headers=v._auth_headers(), json={"source_file": "verify_missing.csv", "limit": "abc"})
+    if r.status_code != 400:
+        raise AssertionError(f"BUG-188 NOT FIXED: a non-integer limit returned {r.status_code}, expected 400")
+    return "non-integer limit rejected with 400"
+
+
+def check_fix_bug174_170_connection_settings(v: Verifier) -> str:
+    """BUG-174 + BUG-170: pathological credentials get a clean 400 (was a 500 RecursionError), and a
+    valid BigQuery connection persists its encrypted settings (proves the config_encrypted migration ran)."""
+    h = v._auth_headers()
+    r = v.client.post(f"{V1}/connections", headers=h, json={
+        "name": v.ns("bq_bad"), "type": "bigquery", "extra": {"project_id": "p", "credentials_json": "[" * 5000}})
+    if r.status_code == 400 and "unavailable" in r.text.lower():
+        raise SkipCheck("bigquery connector is not available on this box")
+    if r.status_code != 400 or "JSON object" not in r.text:
+        # An old gateway ACCEPTS this request and creates a connection: remove it before failing.
+        if r.status_code == 200:
+            stray = r.json().get("connection", {}).get("id")
+            if stray:
+                v.client.delete(f"{V1}/connections/{stray}", headers=h)
+        raise AssertionError(f"BUG-174/170 NOT LIVE: nested credentials returned {r.status_code}: {r.text[:160]}")
+    conn_id = None
+    try:
+        r = v.client.post(f"{V1}/connections", headers=h, json={
+            "name": v.ns("bq_ok"), "type": "bigquery",
+            "extra": {"project_id": "verify-proj", "dataset": "verify_ds", "credentials_json": '{"type": "service_account"}'}})
+        if r.status_code != 200:
+            raise AssertionError(f"BUG-170 NOT LIVE: a valid BigQuery connection returned {r.status_code}: {r.text[:160]}")
+        conn = r.json().get("connection", {})
+        conn_id = conn.get("id")
+        if "credentials_json" in r.text or "service_account" in r.text:
+            raise AssertionError("BUG-170 REGRESSION: the response echoed the stored credentials")
+        return "bad credentials -> 400; valid settings stored and not echoed"
+    finally:
+        if conn_id:
+            v.client.delete(f"{V1}/connections/{conn_id}", headers=h)
+
+
+def check_fix_bug146_xlsx_upload_profiles(v: Verifier) -> str:
+    """BUG-146/176/180: an uploaded .xlsx workbook must load and profile (it was stored, then ignored)."""
+    filename = f"{v.ns('xlsx')}.xlsx"
+    body = _minimal_xlsx(["id", "name", "amount"], [[1, "alpha", 10.5], [2, "beta", 20.25], [3, "gamma", 30.75]])
+    r = v.client.post(f"{V1}/upload", headers=v._auth_headers(), files={"file": (filename, body, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")})
+    r.raise_for_status()
+    file_id = r.json().get("filename") or filename
+    profile = None
+    for _ in range(12):
+        r2 = v.client.get(f"{V1}/files/{file_id}/profile", headers=v._auth_headers())
+        if r2.status_code == 200 and r2.json().get("status") == "success":
+            profile = r2.json()
+            break
+        time.sleep(0.5)
+    if profile is None:
+        raise AssertionError(f"BUG-146 NOT FIXED: the .xlsx never produced a profile (last: {r2.status_code} {r2.text[:160]})")
+    if profile.get("columns_count") != 3 or profile.get("rows_count") != 3:
+        raise AssertionError(f"xlsx profiled wrongly: {profile.get('columns_count')} cols / {profile.get('rows_count')} rows, expected 3/3")
+    return f"{file_id} profiled: 3 cols, 3 rows"
+
+
+FIX_CHECKS: List[tuple[str, Callable[[Verifier], Optional[str]]]] = [
+    ("fix:bug196_dashboard_fs_locked", check_fix_bug196_dashboard_cannot_read_files),
+    ("fix:bug179_oversized_upload_413", check_fix_bug179_oversized_upload_rejected_early),
+    ("fix:bug188_preview_limit_400", check_fix_bug188_preview_limit_validated),
+    ("fix:bug174_170_connection_settings", check_fix_bug174_170_connection_settings),
+    ("fix:bug146_xlsx_profiles", check_fix_bug146_xlsx_upload_profiles),
+]
+
+
 CHECKS: List[tuple[str, Callable[[Verifier], Optional[str]]]] = [
     ("health", check_health),
     ("login", check_login),
@@ -424,10 +613,44 @@ def write_report(results: List[CheckResult], base_url: str, out_path: str) -> No
     print(f"\nReport written to {out_path}")
 
 
+def append_ledger(results: List[CheckResult], base_url: str, path: str) -> None:
+    """One row per run in a committed ledger, so the deployed state over time is a tracked fact."""
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    features = [r for r in results if not r.name.startswith("fix:")]
+    fixes = [r for r in results if r.name.startswith("fix:")]
+    feat_ok = sum(1 for r in features if r.status == "pass")
+    live = [r.name[4:] for r in fixes if r.status == "pass"]
+    missing = [r.name[4:] for r in fixes if r.status == "fail"]
+    skipped = [r.name[4:] for r in fixes if r.status == "skip"]
+    row = (f"| {now} | {feat_ok}/{len(features)} | {len(live)}/{len(fixes)} | "
+           f"{', '.join(live) or '-'} | {', '.join(missing) or '-'} | {', '.join(skipped) or '-'} |")
+    header_lines = [
+        "# Live deployment ledger",
+        "",
+        f"Target: `{base_url}`. One row per `scripts/verify_live_deployment.py --append-log` run.",
+        "`Fixes live` counts the `fix:` probes that PASS against the deployed system; `NOT live` are merged bug",
+        "fixes the deployed system does not yet exhibit (not deployed, or regressed).",
+        "",
+        "| Run (UTC) | Features | Fixes live | Live | NOT live | Skipped |",
+        "|---|---|---|---|---|---|",
+    ]
+    existing = ""
+    if os.path.exists(path):
+        with open(path, encoding="utf-8") as f:
+            existing = f.read()
+    if not existing.strip():
+        existing = "\n".join(header_lines) + "\n"
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(existing.rstrip("\n") + "\n" + row + "\n")
+    print(f"Ledger row appended to {path}")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--url", default=os.getenv("STAGING_URL", DEFAULT_URL))
     parser.add_argument("--out", default=None, help="Markdown report path (default: timestamped in cwd)")
+    parser.add_argument("--append-log", default=None, metavar="PATH",
+                        help="Append one dated summary row (incl. which fixes are live) to this ledger file")
     args = parser.parse_args()
 
     email = os.getenv("STAGING_EMAIL")
@@ -438,7 +661,7 @@ def main() -> int:
 
     print(f"Verifying {args.url} ...\n")
     v = Verifier(base_url=args.url, email=email, password=password)
-    for name, fn in CHECKS:
+    for name, fn in CHECKS + FIX_CHECKS:
         v.run(name, lambda fn=fn: fn(v))
 
     passed = sum(1 for r in v.results if r.status == "pass")
@@ -448,6 +671,8 @@ def main() -> int:
 
     out_path = args.out or f"live_verify_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}.md"
     write_report(v.results, args.url, out_path)
+    if args.append_log:
+        append_ledger(v.results, args.url, args.append_log)
 
     return 1 if failed else 0
 
