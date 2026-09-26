@@ -725,7 +725,8 @@ async def build_schema_context_cached(
     # Resolve tenant=None to "default" so the storage backend slug is stable.
     effective_tenant: str = tenant if tenant is not None else "default"
 
-    sig = _signature_for_tenant(effective_tenant)
+    # backend.list() is blocking I/O (a boto3 paginator on S3): keep it off the loop (BUG-177).
+    sig = await asyncio.to_thread(_signature_for_tenant, effective_tenant)
     if not sig:
         return {"tables": {}, "relationships": [], "context_text": ""}
 

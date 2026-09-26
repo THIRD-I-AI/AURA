@@ -66,3 +66,21 @@ def test_local_storage_lists_xlsx_and_schema_context_includes_it(tmp_path, monke
     ctx = data_utils.build_schema_context(duckdb.connect(":memory:"), "tenant-a", use_llm=False)
     assert "sales" in ctx["tables"]
     assert [c["name"] for c in ctx["tables"]["sales"]["columns"]] == ["region", "amount"]
+
+
+@pytest.mark.asyncio
+async def test_schema_signature_is_computed_off_the_event_loop(monkeypatch):
+    """BUG-177: build_schema_context_cached listed storage on the loop thread, which on S3
+    is blocking network I/O in a single-worker gateway."""
+    import threading
+
+    seen = {}
+
+    def fake_signature(tenant):
+        seen["thread"] = threading.get_ident()
+        return ""  # empty signature -> the function returns early, no cache/DB needed
+
+    monkeypatch.setattr(data_utils, "_signature_for_tenant", fake_signature)
+    out = await data_utils.build_schema_context_cached(duckdb.connect(":memory:"), "t", use_llm=False)
+    assert out["tables"] == {}
+    assert seen["thread"] != threading.get_ident(), "signature ran on the event-loop thread"
