@@ -233,6 +233,8 @@ def create_service(
             "status": "healthy",
             "service": service_tag,
             "version": version,
+            # BUG-204: which commit is actually running (set at image build); 'unknown' outside CD builds.
+            "build": os.getenv("AURA_GIT_SHA", "unknown"),
             "environment": settings.environment,
         }
         if not checks:

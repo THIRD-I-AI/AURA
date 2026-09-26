@@ -117,7 +117,7 @@ def check_health(v: Verifier) -> str:
     body = r.json()
     if body.get("status") != "healthy":
         raise AssertionError(f"unexpected /health body: {body}")
-    return f"environment={body.get('environment')}"
+    return f"environment={body.get('environment')} build={body.get('build', 'absent')}"
 
 
 def check_login(v: Verifier) -> str:
@@ -621,6 +621,9 @@ def write_report(results: List[CheckResult], base_url: str, out_path: str) -> No
 def append_ledger(results: List[CheckResult], base_url: str, path: str) -> None:
     """One row per run in a committed ledger, so the deployed state over time is a tracked fact."""
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    health = next((r.detail for r in results if r.name == "health"), "")
+    build = health.split("build=")[-1].split()[0] if "build=" in health else "absent"
+    now = f"{now} (build {build[:7]})"
     features = [r for r in results if not r.name.startswith("fix:")]
     fixes = [r for r in results if r.name.startswith("fix:")]
     feat_ok = sum(1 for r in features if r.status == "pass")

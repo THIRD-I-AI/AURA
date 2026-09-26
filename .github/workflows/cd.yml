@@ -68,6 +68,8 @@ jobs:
         with:
           context: ./aurabackend
           target: ${{ matrix.target }}
+          build-args: |
+            GIT_SHA=${{ github.sha }}
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
