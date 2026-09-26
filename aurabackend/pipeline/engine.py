@@ -839,15 +839,17 @@ class PipelineEngine:
             if not pg.pool:
                 raise ConnectionError("PostgreSQL pool not available")
 
-            async with pg.pool.acquire() as pg_conn:
-                # Drop + recreate if replace mode
+            # Read the DuckDB schema before touching the destination.
+            duck_schema = await asyncio.to_thread(
+                lambda: conn.execute(f"DESCRIBE {_q(final_table)}").fetchall()
+            )
+
+            async with pg.pool.acquire() as pg_conn, pg_conn.transaction():
+                # BUG-191: DROP, CREATE and INSERT are one transaction (Postgres DDL is
+                # transactional), so a failure part-way rolls back to the previous table
+                # instead of leaving it missing or half-loaded.
                 if sink.if_exists == "replace":
                     await pg_conn.execute(f"DROP TABLE IF EXISTS {_q(table_name)}")
-
-                # Build CREATE TABLE from DuckDB column info (blocking; offload)
-                duck_schema = await asyncio.to_thread(
-                    lambda: conn.execute(f"DESCRIBE {_q(final_table)}").fetchall()
-                )
                 pg_type_map = {
                     "INTEGER": "INTEGER", "BIGINT": "BIGINT", "DOUBLE": "DOUBLE PRECISION",
                     "FLOAT": "REAL", "VARCHAR": "TEXT", "BOOLEAN": "BOOLEAN",

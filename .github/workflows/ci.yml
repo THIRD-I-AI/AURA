@@ -412,7 +412,7 @@ jobs:
         # election + NOTIFY-wake against the same postgres:16 service
         # container. Both files use the AURA_PG_TEST_DSN env-var gate.
         run: |
-          python -m pytest tests/test_scheduler_distributed.py tests/test_scheduler_worker_integration.py -v --tb=short
+          python -m pytest tests/test_scheduler_distributed.py tests/test_scheduler_worker_integration.py tests/test_pipeline_pg_sink_transaction.py -v --tb=short
 
   # ── Storage S3 integration (S3-compatible server required) ─────────────────────────────
   # Sprint S45: tests/test_storage_s3_duckdb.py is a Tier-B test that
