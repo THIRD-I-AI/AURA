@@ -130,7 +130,7 @@ def attribute(
     if chosen == "gcm":
         attrs = _gcm_attribute(training, anomalies, target, numeric_cands, edges, warnings)
     else:
-        attrs = _correlation_attribute(training, anomalies, target, numeric_cands)
+        attrs = _correlation_attribute(training, anomalies, target, numeric_cands, warnings)
 
     attrs.sort(key=lambda a: a.score, reverse=True)
     return attrs[:top_k], chosen, warnings, verdict
@@ -292,6 +292,7 @@ def _correlation_attribute(
     anomalies: pd.DataFrame,
     target: str,
     candidates: Sequence[str],
+    warnings: Optional[List[str]] = None,
 ) -> List[Attribution]:
     """
     Partial correlation: |corr(c, target | other candidates)|.
@@ -307,8 +308,18 @@ def _correlation_attribute(
         controls = [x for x in candidates if x != c]
         try:
             r = _partial_corr(df, c, target, controls)
-        except Exception:
-            r = 0.0
+        except Exception as exc:
+            # BUG-214: a failed computation used to become a real-looking r=0.0 with no
+            # trace. Keep the score at 0 (nothing to rank on) but say it was not computable.
+            logger.warning("partial correlation failed for %r (%s)", c, exc)
+            if warnings is not None:
+                warnings.append(
+                    f"Partial correlation for {c!r} could not be computed "
+                    f"({type(exc).__name__}: {exc}) — its score is 0 because it is unknown, "
+                    "not because there is no association."
+                )
+            out.append(Attribution(cause=c, score=0.0, confidence=0.0, direction="unknown"))
+            continue
         # Anomaly-aware boost: if the candidate's anomalous value deviates
         # strongly from its training mean, weight it up. This gives the
         # naive engine some sensitivity to *which* cause moved during the

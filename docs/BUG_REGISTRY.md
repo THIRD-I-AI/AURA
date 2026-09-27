@@ -2472,12 +2472,12 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Fix:** an ADF exception (constant series, numerical failure) is now logged at WARNING and recorded in the verdict as `ADF test could not run (...) -- stationarity of this series is NOT confirmed`; `attribute()` copies such advisories (and the existing 'statsmodels not installed' one) into the response `warnings` even when the verdict is stationary. It is deliberately ADVISORY, not blocking: 'could not test' is not evidence of non-stationarity, and refusing would change behaviour for legitimate constant/short series -- say if you would rather it refuse. Tests `tests/test_causal_stationarity_adf_failure.py` (4): 2 fail on the old code (verdict silent; warning absent), 2 confirm a working ADF adds nothing and a real p>alpha still blocks. dowhy is not installed locally, so the gcm branch is driven through a stubbed `_gcm_attribute`.
 
 ## BUG-214: causal correlation engine converts partial-correlation exceptions into r=0.0 with no warning
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode audit of `uasr` + `counterfactual_service` + `causal_service` (3 lenses + adversarial verify), 2026-09-26. The verifier confirmed it from the code; nothing was run end to end unless stated.
 - **Severity:** low
 - **Root cause:** `causal_service/discovery.py` ~288: a failed partial correlation becomes a real-looking 0.0 score.
 - **Caused by:** none -- pre-existing.
-- **Fix:** pending -- skip the candidate or report it as not computable, and log.
+- **Fix:** `_correlation_attribute` takes an optional `warnings` list; a candidate whose partial correlation raises is logged at WARNING, appended to the response `warnings` (`Partial correlation for 'x' could not be computed (...) -- its score is 0 because it is unknown, not because there is no association`), and returned with score 0, confidence 0 and direction `unknown`; the other candidates still score. `attribute()` passes its warnings through. Tests `tests/test_causal_partial_corr_failure.py` (4): 3 fail on the old code (two because the old function has no `warnings` argument, i.e. they prove presence; the end-to-end test fails on its real assertion -- zero warnings), 1 confirms the argument is optional. The score is still 0 for a failed candidate (there is nothing to rank on) -- it is now distinguishable, not different.
 
 ## BUG-215: 2SLS estimator returns an authoritative confidence interval with no first-stage strength or rank diagnostics
 - **Status:** open
