@@ -1011,8 +1011,11 @@ def _run_one_estimator(
         try:
             if not instruments:
                 raise ValueError("no instrument in DAG (need a node -> treatment, not -> outcome)")
+            from .iv_estimator import WEAK_INSTRUMENT_F
+
             point, lo, hi = run_iv_2sls(
                 df, treatment.column, outcome.column, instruments, sorted(set(confounders)),
+                min_first_stage_f=WEAK_INSTRUMENT_F,
             )
             return CounterfactualEstimate(
                 method="iv", point=point, ci_lower=lo, ci_upper=hi,
