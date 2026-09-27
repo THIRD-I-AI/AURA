@@ -2464,12 +2464,12 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Fix:** in `causal_discover` the two `_load` calls (DuckDB reads) and the `attribute(...)` call (DoWhy fit / ADF test / correlation) now run through `asyncio.to_thread`. Test `tests/test_causal_offloads_blocking_work.py` records the thread each runs on and asserts none is the event-loop thread; it fails on the old code. It checks WHERE the work runs, not that a slow request no longer delays a concurrent one (no concurrency/latency measurement was done), and the engines themselves are unchanged (dowhy not installed locally, so the gcm path was not exercised).
 
 ## BUG-213: causal stationarity guardrail silently passes when the ADF test raises or the series is constant
-- **Status:** open
+- **Status:** fixed (surfaced, not blocking)
 - **Found by:** ultracode audit of `uasr` + `counterfactual_service` + `causal_service` (3 lenses + adversarial verify), 2026-09-26. The verifier confirmed it from the code; nothing was run end to end unless stated.
 - **Severity:** medium
 - **Root cause:** `causal_service/discovery.py` ~181: an exception from the ADF test (or a constant series) is swallowed and the series is treated as stationary, so the guardrail gives false assurance.
 - **Caused by:** none -- pre-existing.
-- **Fix:** pending -- treat an ADF failure as non-stationary/unknown and surface it in the response.
+- **Fix:** an ADF exception (constant series, numerical failure) is now logged at WARNING and recorded in the verdict as `ADF test could not run (...) -- stationarity of this series is NOT confirmed`; `attribute()` copies such advisories (and the existing 'statsmodels not installed' one) into the response `warnings` even when the verdict is stationary. It is deliberately ADVISORY, not blocking: 'could not test' is not evidence of non-stationarity, and refusing would change behaviour for legitimate constant/short series -- say if you would rather it refuse. Tests `tests/test_causal_stationarity_adf_failure.py` (4): 2 fail on the old code (verdict silent; warning absent), 2 confirm a working ADF adds nothing and a real p>alpha still blocks. dowhy is not installed locally, so the gcm branch is driven through a stubbed `_gcm_attribute`.
 
 ## BUG-214: causal correlation engine converts partial-correlation exceptions into r=0.0 with no warning
 - **Status:** open

@@ -114,6 +114,9 @@ def attribute(
     verdict: Optional[StationarityVerdict] = None
     if chosen == "gcm" and enforce_stationarity:
         verdict = check_stationarity(training[target])
+        if verdict.stationary:
+            # advisories ("ADF could not run", "statsmodels not installed") must be visible
+            warnings.extend(r for r in verdict.reasons if any(m in r for m in _ADVISORY_MARKERS))
         if not verdict.stationary:
             warnings.extend(verdict.reasons)
             warnings.append(
@@ -145,6 +148,10 @@ _ADF_ALPHA = 0.05
 _DRIFT_SIGMA_LIMIT = 3.0
 # Minimum sample size before either test is meaningful.
 _STATIONARITY_MIN_SAMPLES = 30
+
+
+# Reasons that inform but do not, by themselves, mark a series non-stationary.
+_ADVISORY_MARKERS = ("not installed", "could not run")
 
 
 def check_stationarity(series: pd.Series) -> StationarityVerdict:
@@ -179,7 +186,14 @@ def check_stationarity(series: pd.Series) -> StationarityVerdict:
                     f"ADF p-value {adf_p:.4f} > {_ADF_ALPHA} — fails to reject unit root"
                 )
         except Exception as exc:
-            logger.debug("ADF failed (%s) — skipping ADF half of guardrail", exc)
+            # BUG-213: this used to be a debug log, so a constant series or a numerical
+            # failure was silently reported as "stationary". Say so in the verdict; it is
+            # advisory (not blocking) because "could not test" is not "non-stationary".
+            logger.warning("ADF test failed (%s) — stationarity not confirmed", exc)
+            reasons.append(
+                f"ADF test could not run ({type(exc).__name__}: {exc}) — "
+                "stationarity of this series is NOT confirmed"
+            )
     else:
         reasons.append("statsmodels not installed — ADF test skipped (only split-mean drift checked)")
 
@@ -199,7 +213,7 @@ def check_stationarity(series: pd.Series) -> StationarityVerdict:
 
     # ``stationary`` is True only if neither check fired a reason — but a
     # statsmodels-not-installed advisory shouldn't itself trip the guard.
-    blocking = [r for r in reasons if "not installed" not in r]
+    blocking = [r for r in reasons if not any(m in r for m in _ADVISORY_MARKERS)]
     return StationarityVerdict(
         stationary=not blocking,
         adf_p_value=adf_p,
