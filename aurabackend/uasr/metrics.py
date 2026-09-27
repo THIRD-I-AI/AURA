@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import logging
 import math
+import os
 import statistics
 import time
 from collections import defaultdict
@@ -140,7 +141,18 @@ class HealingMetricTracker:
         correlation_window_seconds: float = 0.0,
         correlation_min_sources: int = 3,
         trend_min_interval_seconds: float = 30.0,
+        max_events: Optional[int] = None,
     ) -> None:
+        # BUG-210: the tracker is a process-lifetime singleton and every drifting ingest
+        # appended an event forever, while compute()/check_alerts() rescan the whole list on
+        # each poll -- memory and metrics latency grew without bound. Keep only the newest
+        # ``max_events`` (reports therefore cover the most recent N events).
+        if max_events is None:
+            try:
+                max_events = int(os.getenv("AURA_UASR_MAX_EVENTS", "10000"))
+            except ValueError:
+                max_events = 10000
+        self._max_events = max(1, max_events)
         self._events: List[RecoveryEvent] = []
         self._trend_window = trend_window
         self._sla_seconds = sla_seconds
@@ -165,6 +177,8 @@ class HealingMetricTracker:
     def record(self, event: RecoveryEvent) -> None:
         """Record a recovery event."""
         self._events.append(event)
+        if len(self._events) > self._max_events:
+            del self._events[: len(self._events) - self._max_events]
         logger.debug(
             "Recorded recovery event: source=%s, type=%s, status=%s, latency=%.2fs",
             event.source_id,
@@ -420,6 +434,10 @@ class HealingMetricTracker:
         if now - self._last_trend_recorded_at >= self._trend_min_interval_seconds:
             self._hu_history.append(hu_score)
             self._composite_history.append(hu_composite)
+            keep = max(self._trend_window, 1000)  # only the trailing trend_window is ever read
+            if len(self._hu_history) > keep:
+                del self._hu_history[: len(self._hu_history) - keep]
+                del self._composite_history[: len(self._composite_history) - keep]
             self._last_trend_recorded_at = now
 
         report = HealingReport(
