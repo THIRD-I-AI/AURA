@@ -7,6 +7,7 @@ Launched alongside the other AURA microservices (suggested port: 8010).
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from pathlib import Path
@@ -104,8 +105,10 @@ def _load(source: DataSource, role: str) -> pd.DataFrame:
 
 @app.post("/causal/discover", response_model=CausalDiscoverResponse)
 async def causal_discover(req: CausalDiscoverRequest) -> CausalDiscoverResponse:
-    training_df = _load(req.training_data, "training_data")
-    anomaly_df = _load(req.anomaly_data, "anomaly_data")
+    # BUG-212: the DuckDB reads and the DoWhy fit / ADF test are blocking and CPU-bound;
+    # run them off the event loop so one request cannot stall the single worker.
+    training_df = await asyncio.to_thread(_load, req.training_data, "training_data")
+    anomaly_df = await asyncio.to_thread(_load, req.anomaly_data, "anomaly_data")
 
     if req.target_metric not in training_df.columns:
         raise HTTPException(400, f"target_metric {req.target_metric!r} not in training data columns.")
@@ -129,7 +132,8 @@ async def causal_discover(req: CausalDiscoverRequest) -> CausalDiscoverResponse:
     if missing_anom:
         raise HTTPException(400, f"Candidate cause columns missing from anomaly data: {missing_anom}")
 
-    attributions, method_used, warnings, verdict = attribute(
+    attributions, method_used, warnings, verdict = await asyncio.to_thread(
+        attribute,
         training_df,
         anomaly_df,
         target=req.target_metric,

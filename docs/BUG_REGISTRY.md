@@ -2456,12 +2456,12 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Fix:** `causal_discover` now de-duplicates the candidate list, drops the target from it, and returns 400 for a candidate missing from the ANOMALY data (it already did for the training data); `_gcm_attribute` returns no attributions with a warning when the anomaly frame is empty after `dropna()`. Tests `tests/test_causal_candidate_validation.py` (4) all fail on the old code and pass now (the missing-column test drives the correlation engine, which did not raise -- the KeyError was gcm-only, as the finding said; the gcm KeyError itself was not reproduced because dowhy is not installed here). Note: a request whose only candidate is the target now gets 400 instead of an error deep in the engine.
 
 ## BUG-212: causal endpoint runs the DoWhy gcm fit, ADF test and DuckDB read inside the async handler
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode audit of `uasr` + `counterfactual_service` + `causal_service` (3 lenses + adversarial verify), 2026-09-26. The verifier confirmed it from the code; nothing was run end to end unless stated.
 - **Severity:** medium
 - **Root cause:** `causal_service/main.py` ~106: blocking CPU/IO work runs directly on the event loop of the single worker (same class as BUG-042/102).
 - **Caused by:** none -- pre-existing.
-- **Fix:** pending -- offload with `asyncio.to_thread`.
+- **Fix:** in `causal_discover` the two `_load` calls (DuckDB reads) and the `attribute(...)` call (DoWhy fit / ADF test / correlation) now run through `asyncio.to_thread`. Test `tests/test_causal_offloads_blocking_work.py` records the thread each runs on and asserts none is the event-loop thread; it fails on the old code. It checks WHERE the work runs, not that a slow request no longer delays a concurrent one (no concurrency/latency measurement was done), and the engines themselves are unchanged (dowhy not installed locally, so the gcm path was not exercised).
 
 ## BUG-213: causal stationarity guardrail silently passes when the ADF test raises or the series is constant
 - **Status:** open
