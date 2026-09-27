@@ -2440,12 +2440,12 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Fix:** `_load_revoked` now distinguishes a MISSING file (nothing revoked) from an unreadable/corrupt one (`RevocationStateError`); `is_revoked` catches that, logs an error and returns True (fail closed -- the three signing call sites already fall back to unsigned when revoked, and `/jwks` reports `revoked`). `soft_revoke_key` is serialised by a lock and replaces the file atomically (tmp + `os.replace`); revoking over a corrupt file repairs it. Tests `tests/test_key_revocation_fail_closed.py` (9): 5 fail on the old code (corrupt/empty/wrong-type/unreadable file, the repair case), 4 confirm the normal paths. Consequence to know: a corrupt revocation file now stops signing (documents are sealed unsigned) until it is repaired or the key is re-revoked -- that is intended, but it is a behaviour change. Not verified live; the lock protects one process only (single uvicorn worker), not several.
 
 ## BUG-210: UASR `HealingMetricTracker` event list and trend histories grow without bound
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode audit of `uasr` + `counterfactual_service` + `causal_service` (3 lenses + adversarial verify), 2026-09-26. The verifier confirmed it from the code; nothing was run end to end unless stated.
 - **Severity:** medium
 - **Root cause:** `uasr/metrics.py` ~167: `record()` appends every event to a process-lifetime singleton with no cap/TTL; `compute()`/`check_alerts()` rescan the whole list on each poll, so memory and metrics latency grow with every drifting ingest.
 - **Caused by:** none -- pre-existing.
-- **Fix:** pending -- bound the event list (deque with maxlen / time window) and the two history lists.
+- **Fix:** `HealingMetricTracker` keeps only the newest `max_events` events (constructor arg, else `AURA_UASR_MAX_EVENTS`, default 10,000; a bad env value falls back to the default), and trims the two trend histories to `max(trend_window, 1000)` entries (only the trailing `trend_window` was ever read). Tests `tests/test_uasr_metrics_bounded.py` (4) all fail on the old code (no `max_events`, lists grew). BEHAVIOUR CHANGE: reports (`total_events`, rates, per-source stats, correlation) now cover the most recent 10,000 events instead of everything since process start; sources whose events are older than that window drop out of the report. Not measured under real load. The 'no auth / tenant scoping on the route' part of the finding was not addressed here.
 
 ## BUG-211: causal `gcm` path returns 500 when a candidate column is missing from the anomaly data
 - **Status:** fixed
