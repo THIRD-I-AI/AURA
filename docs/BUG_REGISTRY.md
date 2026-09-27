@@ -2423,6 +2423,70 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Caused by:** none -- pre-existing.
 - **Fix:** `shared/sql_expression_guard.py` gains `_BLOCKED_CALL_PATTERN`: in call position (`name (`) it blocks the families `read_*`, `*_scan`, `parquet_*`, `sniff_csv`, `st_read*`, `iceberg_*`, `delta_*`, `duckdb_*` (settings/secrets introspection), plus `query`, `query_table`, `json_execute_serialized_sql` (run a string as SQL, which would let `'read_' || 'csv'` dodge every name pattern), `getenv`, `current_setting`. Call position keeps a column such as `read_count` legal. Tests `tests/test_sql_expression_guard_families.py` (20): the 14 bypass cases fail on the old guard, the 6 legitimate expressions pass on both. RESIDUAL RISK, unchanged: this is still a pattern blocklist, not a sandbox -- the real fix is running these steps on a connection with `enable_external_access=false` (as BUG-196 did for chat/queries/dashboards); that needs the source-load/sink-write steps split onto a different connection and is not done. Not run against a live pipeline/ETL request.
 
+## BUG-208: artifact read / PDF routes served any tenant's artifact (incl. un-redacted completion documents)
+- **Status:** fixed
+- **Found by:** ultracode audit of `uasr` + `counterfactual_service` + `causal_service` (3 lenses + adversarial verify), 2026-09-26. The verifier confirmed it from the code; nothing was run end to end unless stated.
+- **Severity:** medium
+- **Root cause:** `counterfactual_service/main.py` `get_artifact` / `get_artifact_pdf` returned `persistence.read_artifact(record_hash)` with no tenant comparison, and the gateway wrappers added no auth dependency. The store is one shared content-addressed directory that also holds completion documents (raw findings/evidence); BUG-098 added a tenant check only to `pending_exceptions`.
+- **Caused by:** none -- pre-existing.
+- **Fix:** New `_artifact_for_caller`: an artifact stamped with a `tenant_id` is served only to that tenant (from the verified token; anonymous counts as `default`), a mismatch answers 404 exactly like a missing hash, unstamped artifacts behave as before. Both handlers take `user` (optional auth) and the gateway routes pass it through. Tests `tests/test_artifact_tenant_scope.py` (5): all 5 fail on the old code (the handlers had no `user` parameter and no check) and pass now. `/artifacts/{hash}/verify` is deliberately left public (returns only verified/status, and external auditors need it). Not run against the live service (the counterfactual service is not part of the free-tier compose). Artifacts with no tenant stamp remain readable by anyone.
+
+## BUG-209: counterfactual key revocation fails open: a corrupt or unreadable `revoked_kids.json` means nothing is revoked, and the write is non-atomic
+- **Status:** open
+- **Found by:** ultracode audit of `uasr` + `counterfactual_service` + `causal_service` (3 lenses + adversarial verify), 2026-09-26. The verifier confirmed it from the code; nothing was run end to end unless stated.
+- **Severity:** medium
+- **Root cause:** `counterfactual_service/cryptography.py` `_load_revoked()` wraps everything in `except Exception: return set()`; `soft_revoke_key()` does an unlocked read-modify-write with a plain `write_text`. A crash mid-write, a corrupt file or an I/O error makes `is_revoked()` False and signing resumes with a revoked key; nothing is logged.
+- **Caused by:** none -- pre-existing.
+- **Fix:** pending -- fail closed (treat an unreadable file as all-revoked / refuse to sign) and write atomically under a lock.
+
+## BUG-210: UASR `HealingMetricTracker` event list and trend histories grow without bound
+- **Status:** open
+- **Found by:** ultracode audit of `uasr` + `counterfactual_service` + `causal_service` (3 lenses + adversarial verify), 2026-09-26. The verifier confirmed it from the code; nothing was run end to end unless stated.
+- **Severity:** medium
+- **Root cause:** `uasr/metrics.py` ~167: `record()` appends every event to a process-lifetime singleton with no cap/TTL; `compute()`/`check_alerts()` rescan the whole list on each poll, so memory and metrics latency grow with every drifting ingest.
+- **Caused by:** none -- pre-existing.
+- **Fix:** pending -- bound the event list (deque with maxlen / time window) and the two history lists.
+
+## BUG-211: causal `gcm` path returns 500 when a candidate column is missing from the anomaly data
+- **Status:** open
+- **Found by:** ultracode audit of `uasr` + `counterfactual_service` + `causal_service` (3 lenses + adversarial verify), 2026-09-26. The verifier confirmed it from the code; nothing was run end to end unless stated.
+- **Severity:** medium
+- **Root cause:** `causal_service/main.py` ~110 validates candidates against the training frame only; `discovery.py` ~223 `anomalies[cols]` then raises KeyError on the default (dowhy) engine. An all-NaN anomaly frame after `dropna()` is also passed through unchecked, and a candidate equal to the target duplicates a column.
+- **Caused by:** none -- pre-existing.
+- **Fix:** pending -- validate candidates against the anomaly frame, reject an empty frame, drop the target from candidates; return 400.
+
+## BUG-212: causal endpoint runs the DoWhy gcm fit, ADF test and DuckDB read inside the async handler
+- **Status:** open
+- **Found by:** ultracode audit of `uasr` + `counterfactual_service` + `causal_service` (3 lenses + adversarial verify), 2026-09-26. The verifier confirmed it from the code; nothing was run end to end unless stated.
+- **Severity:** medium
+- **Root cause:** `causal_service/main.py` ~106: blocking CPU/IO work runs directly on the event loop of the single worker (same class as BUG-042/102).
+- **Caused by:** none -- pre-existing.
+- **Fix:** pending -- offload with `asyncio.to_thread`.
+
+## BUG-213: causal stationarity guardrail silently passes when the ADF test raises or the series is constant
+- **Status:** open
+- **Found by:** ultracode audit of `uasr` + `counterfactual_service` + `causal_service` (3 lenses + adversarial verify), 2026-09-26. The verifier confirmed it from the code; nothing was run end to end unless stated.
+- **Severity:** medium
+- **Root cause:** `causal_service/discovery.py` ~181: an exception from the ADF test (or a constant series) is swallowed and the series is treated as stationary, so the guardrail gives false assurance.
+- **Caused by:** none -- pre-existing.
+- **Fix:** pending -- treat an ADF failure as non-stationary/unknown and surface it in the response.
+
+## BUG-214: causal correlation engine converts partial-correlation exceptions into r=0.0 with no warning
+- **Status:** open
+- **Found by:** ultracode audit of `uasr` + `counterfactual_service` + `causal_service` (3 lenses + adversarial verify), 2026-09-26. The verifier confirmed it from the code; nothing was run end to end unless stated.
+- **Severity:** low
+- **Root cause:** `causal_service/discovery.py` ~288: a failed partial correlation becomes a real-looking 0.0 score.
+- **Caused by:** none -- pre-existing.
+- **Fix:** pending -- skip the candidate or report it as not computable, and log.
+
+## BUG-215: 2SLS estimator returns an authoritative confidence interval with no first-stage strength or rank diagnostics
+- **Status:** open
+- **Found by:** ultracode audit of `uasr` + `counterfactual_service` + `causal_service` (3 lenses + adversarial verify), 2026-09-26. The verifier confirmed it from the code; nothing was run end to end unless stated.
+- **Severity:** medium
+- **Root cause:** `counterfactual_service/iv_estimator.py` ~47: no first-stage F-statistic / weak-instrument or rank check, so a weak or collinear instrument yields a confident, wrong estimate.
+- **Caused by:** none -- pre-existing.
+- **Fix:** pending -- compute and return first-stage F, refuse or flag F < 10 and rank-deficient designs.
+
 ## Refuted (adversarial-verify, ≥2/3 skeptics refuted — filed for the record, no fix needed)
 
 **database_adapter.py:466 get_table_schema-unquoted-table claim** — a reviewer flagged `DuckDBAdapter.get_table_schema` splicing `table` unquoted into `f"DESCRIBE {table}"` as direct SQL injection, with a working local PoC. All 3 verifiers confirmed the code-level fact and PoC are accurate, but refuted the finding: `DuckDBAdapter` backs `shared/vault_client.py`'s internal "vault" (users/transactions, embeddings, VR telemetry) reached only via `connectors/main.py`'s `/vault/*` routes, a distinct subsystem from the uploaded-dataset query path (ETL/pipeline) where a caller-controlled table name could actually originate — no real caller passes attacker-influenced input to this `table` parameter today. Recorded here so a future re-audit doesn't re-flag it without checking this reachability note first; still worth fixing defensively (call `quote_identifier` to match the file's own sibling methods) if anyone touches this function.

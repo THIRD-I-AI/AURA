@@ -535,8 +535,25 @@ async def run_audit(req: AuditRequest,
 
 # ── Sprint 9 — Auditor view ───────────────────────────────────────────
 
+def _artifact_for_caller(art: Optional[Dict[str, Any]], record_hash: str, user: Any) -> Dict[str, Any]:
+    """BUG-208: the artifact store is one content-addressed directory shared by all
+    tenants, and completion documents in it carry raw (un-redacted) findings. An
+    artifact stamped with a tenant is only served to that tenant; a mismatch is
+    answered exactly like a missing hash (never a 403), and artifacts with no tenant
+    stamp keep their old behaviour. ``user`` may be a FastAPI ``Depends`` marker when
+    a handler is called directly rather than through the router -- treat as anonymous."""
+    if art is None:
+        raise HTTPException(404, f"artifact {record_hash} not found")
+    owner = art.get("tenant_id")
+    caller = _ledger_tenant(user if isinstance(user, dict) else None)
+    if owner and str(owner) != caller:
+        raise HTTPException(404, f"artifact {record_hash} not found")
+    return art
+
+
 @app.get("/counterfactual/artifacts/{record_hash}")
-async def get_artifact(record_hash: str) -> Dict[str, Any]:
+async def get_artifact(record_hash: str,
+                       user: Optional[Dict[str, Any]] = Depends(get_current_user)) -> Dict[str, Any]:
     """Replay endpoint — returns the persisted artifact dict.
 
     Byte-identical to the artifact produced when the original job
@@ -545,13 +562,12 @@ async def get_artifact(record_hash: str) -> Dict[str, Any]:
     audit_record_hash in the body must equal the URL parameter.
     """
     art = await asyncio.to_thread(persistence.read_artifact, record_hash)
-    if art is None:
-        raise HTTPException(404, f"artifact {record_hash} not found")
-    return art
+    return _artifact_for_caller(art, record_hash, user)
 
 
 @app.get("/counterfactual/artifacts/{record_hash}/report.pdf")
-async def get_artifact_pdf(record_hash: str) -> Response:
+async def get_artifact_pdf(record_hash: str,
+                           user: Optional[Dict[str, Any]] = Depends(get_current_user)) -> Response:
     """Auditor-grade printable report.
 
     Returns 501 (Not Implemented) when the deployment lacks reportlab.
@@ -566,8 +582,7 @@ async def get_artifact_pdf(record_hash: str) -> Response:
     unlike get_artifact above which correctly offloads via
     asyncio.to_thread."""
     art = await asyncio.to_thread(persistence.read_artifact, record_hash)
-    if art is None:
-        raise HTTPException(404, f"artifact {record_hash} not found")
+    art = _artifact_for_caller(art, record_hash, user)
     pdf_bytes = await asyncio.to_thread(pdf_renderer.render_pdf, art)
     if pdf_bytes is None:
         raise HTTPException(
