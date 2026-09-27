@@ -17,7 +17,7 @@ import secrets
 import uuid
 
 from fastapi import APIRouter, Cookie, Depends
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import select
 
 from shared.auth import create_access_token, require_user
@@ -60,6 +60,18 @@ class RegisterRequest(BaseModel):
     password: str = Field(..., min_length=8)
     name: str = Field(..., min_length=1)
     role: str = "user"
+
+    @field_validator("password")
+    @classmethod
+    def _password_fits_bcrypt(cls, v: str) -> str:
+        from shared.password import MAX_PASSWORD_BYTES
+
+        if len(v.encode()) > MAX_PASSWORD_BYTES:
+            raise ValueError(
+                f"password must be at most {MAX_PASSWORD_BYTES} bytes (UTF-8); "
+                "non-ASCII characters count as more than one"
+            )
+        return v
 
 
 class TokenResponse(BaseModel):

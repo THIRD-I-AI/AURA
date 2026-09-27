@@ -2536,12 +2536,12 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Fix:** pending -- route the PyJWT exception through `sanitize_error` (or a fixed, curated message) instead of interpolating `str(exc)`.
 
 ## BUG-222: hash_password/verify_password crash with an unhandled ValueError (500) on a password over bcrypt's 72-byte limit
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode audit of shared/security-sensitive modules (3 lenses + adversarial verify), 2026-09-27. The verifier confirmed each from the code (one with a live TestClient/DuckDB repro); nothing was run against the live deployment unless stated.
 - **Severity:** medium
 - **Root cause:** `shared/password.py` calls `bcrypt.hashpw`/`bcrypt.checkpw` with no length check first. bcrypt raises `ValueError: password cannot be longer than 72 bytes` for any input over that size (in UTF-8 bytes, so it can trigger well under 72 characters for non-ASCII input). `RegisterRequest.password` has `min_length=8` but no maximum, and `TokenRequest.password` has no length constraint at all, so `POST /auth/register` or `/auth/token` with an over-length password reaches this unhandled and falls through to the generic 500 handler instead of a clean 400/401.
 - **Caused by:** none -- pre-existing.
-- **Fix:** pending -- reject (400) or truncate to 72 bytes before calling bcrypt, and add a max_length to the request models.
+- **Fix:** `RegisterRequest.password` gets a validator rejecting more than 72 UTF-8 bytes (422 with a message that multi-byte characters count extra); `hash_password` raises a clear ValueError past 72 bytes (defence in depth); `verify_password` compares only the first 72 bytes -- exactly what bcrypt < 5.0 did -- so an over-length login is a plain mismatch (401) and any user whose long password was silently truncated at registration under an older bcrypt can still sign in. Demonstrated on the old code: register with a 100-byte password and login with a 200-byte password both raised `ValueError: password cannot be longer than 72 bytes` (500); now 422 and 401. Tests `tests/test_password_bcrypt_limit.py` (5; the module cannot import on the old code because `MAX_PASSWORD_BYTES` is new, so the HTTP before/after above is the real proof). Auth + rate-limit suites pass.
 
 ## BUG-223: CORSMiddleware sits inside RateLimitMiddleware/JWTAuthMiddleware, not outside, so a 401/429 response carries no CORS headers
 - **Status:** open
