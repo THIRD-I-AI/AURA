@@ -73,7 +73,11 @@ def decode_access_token(token: str) -> Dict[str, Any]:
     except jwt.ExpiredSignatureError:
         raise AuthenticationError("Token has expired")
     except jwt.InvalidTokenError as exc:
-        raise AuthenticationError(f"Invalid token: {exc}")
+        # BUG-221: AuraError.message goes to the client verbatim, so it must not
+        # carry PyJWT's internals ("Invalid header string: 'utf-8' codec...",
+        # "Invalid crypto padding"). Log the class server-side; never the token.
+        logger.info("JWT rejected: %s", type(exc).__name__)
+        raise AuthenticationError("Invalid token") from exc
 
     if "sub" not in payload:
         raise AuthenticationError("Token missing 'sub' claim")
