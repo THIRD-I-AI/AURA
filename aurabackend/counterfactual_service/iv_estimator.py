@@ -9,7 +9,7 @@ what is the causal effect?").
 """
 from __future__ import annotations
 
-from typing import List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -27,16 +27,82 @@ def _ols(X: np.ndarray, y: np.ndarray) -> np.ndarray:
     return beta
 
 
+# Staiger-Stock rule of thumb: a first-stage F below ~10 marks a weak instrument, for which
+# 2SLS is biased toward OLS and its analytic CI is unreliable (BUG-215).
+WEAK_INSTRUMENT_F = 10.0
+
+
+class WeakInstrumentError(ValueError):
+    """The instrument(s) cannot support a trustworthy 2SLS estimate."""
+
+
+def first_stage_diagnostics(
+    df: pd.DataFrame,
+    treatment: str,
+    instruments: List[str],
+    confounders: List[str],
+) -> Dict[str, float]:
+    """First-stage strength: the partial F statistic of the EXCLUDED instruments in
+    ``T ~ [1, Z, X]`` versus ``T ~ [1, X]``, plus the rank of the first-stage design."""
+    n = len(df)
+    intercept = np.ones((n, 1))
+    Xc = df[confounders].to_numpy(dtype=float) if confounders else np.empty((n, 0))
+    Z = df[instruments].to_numpy(dtype=float)
+    T = df[treatment].to_numpy(dtype=float)
+
+    full = np.hstack([intercept, Z, Xc])
+    restricted = np.hstack([intercept, Xc])
+
+    def rss(X):
+        beta = _ols(X, T)
+        r = T - X @ beta
+        return float(r @ r)
+
+    q = Z.shape[1]
+    rank_full = int(np.linalg.matrix_rank(full))
+    dof = n - rank_full
+    rss_u, rss_r = rss(full), rss(restricted)
+    if dof <= 0 or rss_u <= 0:
+        f_stat = float("inf") if rss_u <= 0 < dof else 0.0
+    else:
+        f_stat = max(((rss_r - rss_u) / q) / (rss_u / dof), 0.0)
+    return {
+        "first_stage_f": float(f_stat),
+        "n": n,
+        "n_instruments": q,
+        "design_rank": rank_full,
+        "design_columns": int(full.shape[1]),
+    }
+
+
 def run_iv_2sls(
     df: pd.DataFrame,
     treatment: str,
     outcome: str,
     instruments: List[str],
     confounders: List[str],
+    min_first_stage_f: Optional[float] = None,
 ) -> Tuple[float, float, float]:
-    """Return (point, ci_lower, ci_upper) for the IV ATE of treatment on outcome."""
+    """Return (point, ci_lower, ci_upper) for the IV ATE of treatment on outcome.
+
+    With ``min_first_stage_f`` set, refuse (``WeakInstrumentError``) when the first-stage F of
+    the instruments is below it or the first-stage design is rank-deficient. Off by default so
+    direct callers keep their behaviour; the engine turns it on (BUG-215)."""
     if not instruments:
         raise ValueError("IV requires at least one instrument")
+    if min_first_stage_f is not None:
+        diag = first_stage_diagnostics(df, treatment, instruments, confounders)
+        if diag["design_rank"] < diag["design_columns"]:
+            raise WeakInstrumentError(
+                "first-stage design is rank-deficient "
+                f"(rank {diag['design_rank']} of {diag['design_columns']} columns): the instrument "
+                "is collinear with the confounders or constant"
+            )
+        if diag["first_stage_f"] < min_first_stage_f:
+            raise WeakInstrumentError(
+                f"weak instrument: first-stage F = {diag['first_stage_f']:.2f} < {min_first_stage_f:g}; "
+                "the 2SLS estimate and its confidence interval are not reliable"
+            )
     n = len(df)
     intercept = np.ones((n, 1))
     Xc = df[confounders].to_numpy(dtype=float) if confounders else np.empty((n, 0))
