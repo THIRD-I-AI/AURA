@@ -125,13 +125,15 @@ async def info() -> Dict[str, Any]:
 # ── Sprint 9 — Auditor view ───────────────────────────────────────────
 
 @router.get("/artifacts/{record_hash}")
-async def replay_artifact(record_hash: str) -> Dict[str, Any]:
-    return await _svc_get_artifact(record_hash)
+async def replay_artifact(record_hash: str,
+                          user: Optional[Dict[str, Any]] = Depends(get_current_user)) -> Dict[str, Any]:
+    return await _svc_get_artifact(record_hash, user=user)
 
 
 @router.get("/artifacts/{record_hash}/report.pdf")
-async def report_pdf(record_hash: str) -> Response:
-    return await _svc_get_artifact_pdf(record_hash)
+async def report_pdf(record_hash: str,
+                     user: Optional[Dict[str, Any]] = Depends(get_current_user)) -> Response:
+    return await _svc_get_artifact_pdf(record_hash, user=user)
 
 
 @router.get("/artifacts/{record_hash}/verify")
