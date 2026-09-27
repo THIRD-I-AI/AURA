@@ -2544,12 +2544,12 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Fix:** pending -- reject (400) or truncate to 72 bytes before calling bcrypt, and add a max_length to the request models.
 
 ## BUG-223: CORSMiddleware sits inside RateLimitMiddleware/JWTAuthMiddleware, not outside, so a 401/429 response carries no CORS headers
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode audit of shared/security-sensitive modules (3 lenses + adversarial verify), 2026-09-27. The verifier confirmed each from the code (one with a live TestClient/DuckDB repro); nothing was run against the live deployment unless stated.
 - **Severity:** high
 - **Root cause:** `shared/service_factory.py`'s own comments say CORS is added first so it is 'outermost', but Starlette's `add_middleware()` prepends and `build_middleware_stack()` wraps in reverse order, so the LAST-added middleware is actually outermost. Confirmed live: `app.user_middleware` order is SecurityHeaders, AuditLog, RequestLogging, RequestID, JWTAuth, RateLimit, CORS, Upload -- CORS is near the bottom, not the top. A cross-origin request to a JWT-protected route with no/invalid token gets a 401 with no `Access-Control-Allow-Origin` header even though the origin is allow-listed, so the browser's own CORS check hides the real 401 behind an opaque network error and the frontend cannot show 'please log in.'
 - **Caused by:** none -- pre-existing.
-- **Fix:** pending -- add CORSMiddleware LAST (so it ends up outermost given Starlette's reversed wrapping), or move it explicitly after rate-limit/JWT/API-key in the add order; add a regression test asserting `app.user_middleware[0]` is CORS.
+- **Fix:** `shared/service_factory.py` now adds `CORSMiddleware` after rate-limit / JWT / API-key / request-id / logging / audit and just before `SecurityHeadersMiddleware`, so it wraps them (Starlette: last added = outermost); only the security headers and Prometheus sit outside it. The misleading 'outermost first' comment now states the real rule. BUG-179's upload-limit ordering (added before CORS, so inside it) is unchanged and still correct. Tests `tests/test_cors_outermost.py` (3): the middleware-order test and the cross-origin 401 test (asserts `Access-Control-Allow-Origin` on a JWT 401) fail on the old code; the preflight test confirms preflight still works and security headers still wrap CORS. All 86 middleware/auth/rate-limit/upload tests still pass. Side effect, intended: a CORS preflight is now answered before the rate limiter/logging/audit see it, so preflights are no longer rate-limited, logged or audited. Not verified against the live deployment (JWT middleware is not enabled there -- `AURA_JWT_ENABLED` defaults to false).
 
 ## BUG-224: causal discovery forked one ~250MB process per CPU core on every gcm request (dowhy's default n_jobs=-1) -- the cause of the pre-push suite exhausting RAM
 - **Status:** fixed

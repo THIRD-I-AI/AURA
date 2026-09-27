@@ -118,29 +118,12 @@ def create_service(
         lifespan=effective_lifespan,
     )
 
-    # ── Middleware (order matters — outermost first) ─────────────────────
+    # ── Middleware (order matters: the LAST add_middleware call is the OUTERMOST layer) ──
     #  0. Upload body limit -- added before CORS so its 413 still carries CORS headers (BUG-179).
     #     25MB file limit (shared/file_service.py) + 1MB multipart overhead; AURA_MAX_UPLOAD_BODY_BYTES overrides.
     app.add_middleware(
         UploadBodyLimitMiddleware,
         max_bytes=int(os.getenv("AURA_MAX_UPLOAD_BODY_BYTES", str(26 * 1024 * 1024))),
-    )
-    #  1. CORS  (outermost so preflight always gets headers)
-    # Explicit methods/headers when allow_credentials=True; wildcard + credentials
-    # is spec-violating and browsers silently drop such responses. Expose the
-    # request-id header so the frontend can surface it in error reports.
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=settings.cors_origins,
-        allow_credentials=True,
-        allow_methods=["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS", "HEAD"],
-        allow_headers=[
-            "Authorization", "Content-Type", "X-API-Key", "X-Request-ID",
-            "X-AURA-Signature", "X-AURA-Event", "X-AURA-Delivery",
-            "X-Upload-Id", "X-Workspace-Id",
-            "Last-Event-ID", "Accept", "Origin",
-        ],
-        expose_headers=["X-Request-ID"],
     )
     #  2. Rate limiting  (env-driven; can be disabled via AURA_RATE_LIMIT_ENABLED=0)
     if settings.rate_limit_enabled:
@@ -174,6 +157,27 @@ def create_service(
     #     Records every non-health request to the immutable hash-chained
     #     JSONL on the audit PVC mounted by the Helm chart.
     app.add_middleware(AuditLogMiddleware)
+    #  CORS -- added near-LAST on purpose (BUG-223). Starlette makes the last-added
+    #  middleware the OUTERMOST, so CORS must be added after rate-limit / JWT / API-key
+    #  for their 401/429 responses to carry Access-Control-Allow-Origin; otherwise the
+    #  browser hides the real status behind an opaque CORS failure. Only the security
+    #  headers (and metrics) are added after it, so they still wrap every response.
+    # Explicit methods/headers when allow_credentials=True; wildcard + credentials
+    # is spec-violating and browsers silently drop such responses. Expose the
+    # request-id header so the frontend can surface it in error reports.
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=settings.cors_origins,
+        allow_credentials=True,
+        allow_methods=["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS", "HEAD"],
+        allow_headers=[
+            "Authorization", "Content-Type", "X-API-Key", "X-Request-ID",
+            "X-AURA-Signature", "X-AURA-Event", "X-AURA-Delivery",
+            "X-Upload-Id", "X-Workspace-Id",
+            "Last-Event-ID", "Accept", "Origin",
+        ],
+        expose_headers=["X-Request-ID"],
+    )
     #  8. Security headers  (Sec-4 — sets X-Content-Type-Options /
     #     X-Frame-Options / Referrer-Policy on every response. HSTS only
     #     in production so the http:// localhost dev flow stays working.)
