@@ -38,6 +38,11 @@ logger = logging.getLogger("aura.causal.discovery")
 try:
     import networkx as nx
     from dowhy import gcm  # type: ignore
+    # BUG-224: gcm's model selection (assign_causal_mechanisms -> find_best_model)
+    # takes no n_jobs argument and falls back to this global, which defaults to
+    # -1 -- one ~250MB loky worker process per CPU core, forked inside the single
+    # uvicorn worker on every gcm request and kept alive afterwards.
+    gcm.config.default_n_jobs = 1
     _DOWHY_AVAILABLE = True
 except ImportError:  # pragma: no cover
     nx = None  # type: ignore[assignment]

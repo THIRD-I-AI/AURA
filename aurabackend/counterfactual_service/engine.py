@@ -586,8 +586,8 @@ def _run_one_econml_forest_dr_learner(
     Determinism: same seed pattern as the LinearDR path. The forest's
     bootstrap-of-little-bags inference samples a lot of np.random
     state; ``_seed_numpy(seed)`` + ``random_state=seed`` everywhere
-    keeps it pinned. ``n_jobs=1`` (the default) keeps sklearn single-
-    threaded — parallelism would interleave the BLB iterations and
+    keeps it pinned. ``n_jobs=1`` (set explicitly -- econml defaults to -1)
+    keeps it single-threaded — parallelism would interleave the BLB iterations and
     break Layer 10 byte-identity. ``n_estimators=50`` (default is 100)
     keeps total runtime reasonable on the eval-gate n=300..600 range.
 
@@ -670,6 +670,10 @@ def _run_one_econml_forest_dr_learner(
             min_samples_leaf=max(10, n // 30),
             cv=cv_folds,
             random_state=seed,
+            # BUG-224: econml's default is n_jobs=-1 (NOT 1 as the docstring
+            # assumed), which forked one ~250MB joblib worker per CPU core
+            # inside the single uvicorn worker and parallelised the BLB.
+            n_jobs=1,
         )
         est.fit(Y=Y, T=T_bin, X=X, W=W)
 
