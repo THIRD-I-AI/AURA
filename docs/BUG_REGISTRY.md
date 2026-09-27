@@ -2487,6 +2487,38 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Caused by:** none -- pre-existing.
 - **Fix:** `counterfactual_service/iv_estimator.py` gains `first_stage_diagnostics` (partial F of the excluded instruments in `T ~ [1, Z, X]` vs `T ~ [1, X]`, plus first-stage design rank) and `run_iv_2sls(..., min_first_stage_f=None)`: when set it raises `WeakInstrumentError` for a rank-deficient first-stage design or F below the threshold (`WEAK_INSTRUMENT_F = 10`, the Staiger-Stock rule of thumb). The engine's `iv` branch now passes 10, so a weak or degenerate instrument comes back as an ERRORED estimate (`IV (2SLS) failed: weak instrument: first-stage F = ... < 10 ...`), which the existing aggregate already excludes -- no schema change. Direct callers of `run_iv_2sls` are unchanged (default off). Demonstrated on the old code: weak instrument (n=400, true effect 2.0) -> point 3.61, CI (2.81, 4.41), no error -- confidently wrong; now refused. Tests `tests/test_iv_first_stage_diagnostics.py` (8, incl. two through the real engine dispatch); the 5 existing IV tests still pass. BEHAVIOUR CHANGE: IV estimates with first-stage F < 10 no longer contribute to the aggregate. LIMITS: F is only reported inside the error text, not as a field on successful estimates (that would be an API/SDK schema change); the F < 10 threshold is a convention, not a proof of validity; the exclusion restriction itself cannot be tested from data.
 
+## BUG-216: chatService.streamMessage's 401 never cleared the session token or notified AuthContext
+- **Status:** fixed
+- **Found by:** ultracode audit of the frontend (3 lenses + adversarial verify), 2026-09-27. The verifier confirmed it from the code; nothing was run against the live deployment unless stated.
+- **Severity:** medium
+- **Root cause:** BUG-104/105's session-expiry handling (clear the token, notify `_sessionExpiredListeners` so AuthContext logs the user out) lives entirely inside `ApiClient.request()`'s error branch. `chatService.streamMessage` (`frontend/src/services/api.ts`) is a separate raw `fetch()` to `/chat/stream` that never routes through `request()`; on a 401/403 it only threw an error, which `AskAuraChat.tsx` turned into cosmetic 'session expired' copy -- the stored token stayed live and kept being sent on every later request until the user reloaded or logged out manually.
+- **Caused by:** none -- pre-existing.
+- **Fix:** `streamMessage` now calls `setAuthToken(null)` and fires `_sessionExpiredListeners` on a 401/403 when a token was present, mirroring `ApiClient.request()`; a 401 with no ambient token (a failed login-adjacent case) and a 404 (`commander_disabled`) do not fire it. Tests `streamMessageSessionExpiry.test.ts` (3): the main case fails on the old code. Not run against the live deployment.
+
+## BUG-217: ConstellationPanel's manual refresh races the background poll and can silently revert to stale lineage data
+- **Status:** open
+- **Found by:** ultracode audit of the frontend (3 lenses + adversarial verify), 2026-09-27. The verifier confirmed it from the code; nothing was run against the live deployment unless stated.
+- **Severity:** low
+- **Root cause:** `frontend/src/terminal/panels/ConstellationPanel.tsx`: the mount-effect poll (~8s interval) and the `refresh()` callback each independently fetch lineage+files and call `setGraph`/`setLastUpdate`/`setConn` with no shared in-flight tracking or request ordering. Whichever response resolves last wins, not whichever request started last.
+- **Caused by:** none -- pre-existing.
+- **Fix:** pending -- track a request sequence number (or AbortController per fetch) and drop a response that is not the latest.
+
+## BUG-218: Datasets panel row selection is mouse-only -- keyboard/screen-reader users cannot select a dataset to query
+- **Status:** open
+- **Found by:** ultracode audit of the frontend (3 lenses + adversarial verify), 2026-09-27. The verifier confirmed it from the code; nothing was run against the live deployment unless stated.
+- **Severity:** high
+- **Root cause:** `frontend/src/terminal/panels/DatasetsPanel.tsx` ~47: the `<tr>` that calls `setActiveDataset` on click has no `tabIndex`, `onKeyDown` or `role`/`aria-pressed`. QueryPanel requires an `activeDataset` before it will run a query, so a keyboard-only or screen-reader user hits a dead end in the terminal cockpit. Same defect class as BUG-106 (`HealingQueueApprovals.tsx`), different file, not covered by that fix.
+- **Caused by:** none -- pre-existing.
+- **Fix:** pending -- make the row a real button/role='button' with tabIndex and an Enter/Space key handler, per frontend.md's clickable-element rule.
+
+## BUG-219: Terminal Query panel's main input has no accessible name (placeholder-only)
+- **Status:** open
+- **Found by:** ultracode audit of the frontend (3 lenses + adversarial verify), 2026-09-27. The verifier confirmed it from the code; nothing was run against the live deployment unless stated.
+- **Severity:** medium
+- **Root cause:** `frontend/src/terminal/panels/QueryPanel.tsx`: the query input relies on a placeholder for its label, which screen readers do not reliably announce as the field's name once it has a value.
+- **Caused by:** none -- pre-existing.
+- **Fix:** pending -- add a visible or `aria-label`/`aria-labelledby` accessible name.
+
 ## Refuted (adversarial-verify, ≥2/3 skeptics refuted — filed for the record, no fix needed)
 
 **database_adapter.py:466 get_table_schema-unquoted-table claim** — a reviewer flagged `DuckDBAdapter.get_table_schema` splicing `table` unquoted into `f"DESCRIBE {table}"` as direct SQL injection, with a working local PoC. All 3 verifiers confirmed the code-level fact and PoC are accurate, but refuted the finding: `DuckDBAdapter` backs `shared/vault_client.py`'s internal "vault" (users/transactions, embeddings, VR telemetry) reached only via `connectors/main.py`'s `/vault/*` routes, a distinct subsystem from the uploaded-dataset query path (ETL/pipeline) where a caller-controlled table name could actually originate — no real caller passes attacker-influenced input to this `table` parameter today. Recorded here so a future re-audit doesn't re-flag it without checking this reachability note first; still worth fixing defensively (call `quote_identifier` to match the file's own sibling methods) if anyone touches this function.

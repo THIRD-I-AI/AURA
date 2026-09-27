@@ -613,7 +613,17 @@ export const chatService = {
       signal: opts.signal,
     });
     if (res.status === 404) throw new Error('commander_disabled');
-    if (!res.ok || !res.body) throw new Error(`stream failed: ${res.status}`);
+    if (!res.ok || !res.body) {
+      // BUG-216: streamMessage is a raw fetch() that bypasses ApiClient.request(), so it
+      // never ran the 401 handling that clears the dead token and notifies AuthContext
+      // (BUG-104/105). Without this, a 401 here only produced cosmetic "session expired"
+      // copy in the chat UI -- the stored token stayed live and kept being sent.
+      if ((res.status === 401 || res.status === 403) && _authToken) {
+        setAuthToken(null);
+        _sessionExpiredListeners.forEach((cb) => cb());
+      }
+      throw new Error(`stream failed: ${res.status}`);
+    }
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
     let buffer = '';
