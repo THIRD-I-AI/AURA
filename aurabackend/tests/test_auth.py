@@ -56,9 +56,14 @@ def password_client(monkeypatch, tmp_path):
     """FastAPI TestClient in password auth mode with file-based SQLite."""
     db_path = tmp_path / "test.db"
 
-    # Patch the module-level settings object that the auth router already imported
+    # Patch the module-level settings object that the auth router already imported.
+    # Patch the router's own reference too: a test that importlib.reload()s
+    # shared.config (test_commander_endpoint does) rebinds shared.config.settings to
+    # a NEW object, and patching only that one silently leaves the router in open mode.
+    from api_gateway.routers import auth as auth_router
     from shared.config import settings
     monkeypatch.setattr(settings, "auth_mode", "password")
+    monkeypatch.setattr(auth_router.settings, "auth_mode", "password")
 
     # Create tables using a temporary sync engine (avoids event-loop mismatch)
     from sqlalchemy import create_engine
