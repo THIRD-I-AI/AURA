@@ -2432,12 +2432,12 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Fix:** New `_artifact_for_caller`: an artifact stamped with a `tenant_id` is served only to that tenant (from the verified token; anonymous counts as `default`), a mismatch answers 404 exactly like a missing hash, unstamped artifacts behave as before. Both handlers take `user` (optional auth) and the gateway routes pass it through. Tests `tests/test_artifact_tenant_scope.py` (5): all 5 fail on the old code (the handlers had no `user` parameter and no check) and pass now. `/artifacts/{hash}/verify` is deliberately left public (returns only verified/status, and external auditors need it). Not run against the live service (the counterfactual service is not part of the free-tier compose). Artifacts with no tenant stamp remain readable by anyone.
 
 ## BUG-209: counterfactual key revocation fails open: a corrupt or unreadable `revoked_kids.json` means nothing is revoked, and the write is non-atomic
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode audit of `uasr` + `counterfactual_service` + `causal_service` (3 lenses + adversarial verify), 2026-09-26. The verifier confirmed it from the code; nothing was run end to end unless stated.
 - **Severity:** medium
 - **Root cause:** `counterfactual_service/cryptography.py` `_load_revoked()` wraps everything in `except Exception: return set()`; `soft_revoke_key()` does an unlocked read-modify-write with a plain `write_text`. A crash mid-write, a corrupt file or an I/O error makes `is_revoked()` False and signing resumes with a revoked key; nothing is logged.
 - **Caused by:** none -- pre-existing.
-- **Fix:** pending -- fail closed (treat an unreadable file as all-revoked / refuse to sign) and write atomically under a lock.
+- **Fix:** `_load_revoked` now distinguishes a MISSING file (nothing revoked) from an unreadable/corrupt one (`RevocationStateError`); `is_revoked` catches that, logs an error and returns True (fail closed -- the three signing call sites already fall back to unsigned when revoked, and `/jwks` reports `revoked`). `soft_revoke_key` is serialised by a lock and replaces the file atomically (tmp + `os.replace`); revoking over a corrupt file repairs it. Tests `tests/test_key_revocation_fail_closed.py` (9): 5 fail on the old code (corrupt/empty/wrong-type/unreadable file, the repair case), 4 confirm the normal paths. Consequence to know: a corrupt revocation file now stops signing (documents are sealed unsigned) until it is repaired or the key is re-revoked -- that is intended, but it is a behaviour change. Not verified live; the lock protects one process only (single uvicorn worker), not several.
 
 ## BUG-210: UASR `HealingMetricTracker` event list and trend histories grow without bound
 - **Status:** open
