@@ -117,11 +117,17 @@ async def causal_discover(req: CausalDiscoverRequest) -> CausalDiscoverResponse:
         c for c in training_df.columns
         if c != req.target_metric and pd.api.types.is_numeric_dtype(training_df[c])
     ])
+    # BUG-211: a candidate equal to the target duplicated a column in the gcm frame, and a
+    # candidate absent from the anomaly data made ``anomalies[cols]`` raise KeyError (a 500).
+    candidates = [c for c in dict.fromkeys(candidates) if c != req.target_metric]
     if not candidates:
         raise HTTPException(400, "No candidate cause columns available — supply candidate_causes explicitly.")
     missing = [c for c in candidates if c not in training_df.columns]
     if missing:
         raise HTTPException(400, f"Candidate cause columns missing from training data: {missing}")
+    missing_anom = [c for c in candidates if c not in anomaly_df.columns]
+    if missing_anom:
+        raise HTTPException(400, f"Candidate cause columns missing from anomaly data: {missing_anom}")
 
     attributions, method_used, warnings, verdict = attribute(
         training_df,

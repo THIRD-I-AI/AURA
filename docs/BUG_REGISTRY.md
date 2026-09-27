@@ -2448,12 +2448,12 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Fix:** pending -- bound the event list (deque with maxlen / time window) and the two history lists.
 
 ## BUG-211: causal `gcm` path returns 500 when a candidate column is missing from the anomaly data
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode audit of `uasr` + `counterfactual_service` + `causal_service` (3 lenses + adversarial verify), 2026-09-26. The verifier confirmed it from the code; nothing was run end to end unless stated.
 - **Severity:** medium
 - **Root cause:** `causal_service/main.py` ~110 validates candidates against the training frame only; `discovery.py` ~223 `anomalies[cols]` then raises KeyError on the default (dowhy) engine. An all-NaN anomaly frame after `dropna()` is also passed through unchecked, and a candidate equal to the target duplicates a column.
 - **Caused by:** none -- pre-existing.
-- **Fix:** pending -- validate candidates against the anomaly frame, reject an empty frame, drop the target from candidates; return 400.
+- **Fix:** `causal_discover` now de-duplicates the candidate list, drops the target from it, and returns 400 for a candidate missing from the ANOMALY data (it already did for the training data); `_gcm_attribute` returns no attributions with a warning when the anomaly frame is empty after `dropna()`. Tests `tests/test_causal_candidate_validation.py` (4) all fail on the old code and pass now (the missing-column test drives the correlation engine, which did not raise -- the KeyError was gcm-only, as the finding said; the gcm KeyError itself was not reproduced because dowhy is not installed here). Note: a request whose only candidate is the target now gets 400 instead of an error deep in the engine.
 
 ## BUG-212: causal endpoint runs the DoWhy gcm fit, ADF test and DuckDB read inside the async handler
 - **Status:** open

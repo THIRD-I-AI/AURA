@@ -222,6 +222,14 @@ def _gcm_attribute(
     train_df = training[cols].dropna()
     anom_df = anomalies[cols].dropna()
 
+    if anom_df.empty:
+        # BUG-211: every anomaly row had a NaN in some candidate; nothing left to attribute.
+        warnings.append(
+            "No complete anomaly rows (every row has a missing value in the target or a "
+            "candidate) — nothing to attribute."
+        )
+        return []
+
     if len(train_df) < 30:
         warnings.append(
             f"Training set has only {len(train_df)} complete rows — "
