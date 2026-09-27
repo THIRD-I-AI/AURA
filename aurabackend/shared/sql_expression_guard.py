@@ -30,9 +30,27 @@ import re
 _BLOCKED_PATTERN = re.compile(
     r"\b(read_csv(_auto)?|read_parquet|read_json(_auto)?|read_ndjson|"
     r"read_text|read_blob|glob|attach|detach|copy|pragma|install|load|"
-    r"httpfs)\b",
+    r"httpfs|export|import|database)\b",
     re.IGNORECASE,
 )
+
+# BUG-220: an expression is meant to be a single, self-contained SQL *expression*
+# (a WHERE condition, a computed column) -- it must never contain a second,
+# top-level statement. Without this, the word-level checks above are moot: a
+# caller can close out the enclosing parens/CTE and stack ``; EXPORT DATABASE
+# '<path>' (FORMAT CSV); --`` (or any other statement) after a semicolon, since
+# none of the patterns above look at statement *structure*, only at words that
+# appear anywhere in the string. Confirmed live: DuckDB's Connection.execute()
+# runs semicolon-separated statements and returns the last one's result, so the
+# stacked statement really does run. A semicolon can legitimately appear only
+# inside a quoted string literal or identifier, so strip those first.
+_STRING_OR_IDENTIFIER = re.compile(r"'(?:[^']|'')*'|\"(?:[^\"]|\"\")*\"")
+
+
+def _strip_quoted(expr: str) -> str:
+    """``expr`` with every quoted string literal / quoted identifier blanked out,
+    so a semicolon or keyword inside one is not mistaken for SQL structure."""
+    return _STRING_OR_IDENTIFIER.sub(" ", expr)
 
 # BUG-207: the named list above missed most of DuckDB's file-reading table functions
 # (parquet_scan, read_json_objects -- the trailing word boundary defeats the read_json match --
@@ -61,13 +79,19 @@ _REPLACEMENT_SCAN_PATTERN = re.compile(r"\b(from|join)\s*\(*\s*'", re.IGNORECASE
 
 def validate_sql_expression(expr: str) -> None:
     """Raise ``ValueError`` if ``expr`` references a blocked file/network
-    access function or table, or a bare URI."""
-    if _BLOCKED_PATTERN.search(expr):
+    access function or table, contains a second statement, or a bare URI."""
+    bare = _strip_quoted(expr)
+    if ";" in bare:
+        raise ValueError(
+            "expression may not contain a second statement "
+            "(a bare ';' outside a string literal)"
+        )
+    if _BLOCKED_PATTERN.search(bare):
         raise ValueError(
             "expression may not reference file/network access functions "
             "(read_csv, read_parquet, ATTACH, COPY, PRAGMA, INSTALL, LOAD, etc.)"
         )
-    if _BLOCKED_CALL_PATTERN.search(expr):
+    if _BLOCKED_CALL_PATTERN.search(bare):
         raise ValueError(
             "expression may not call file-reading, introspection or dynamic-SQL "
             "table functions (read_*, *_scan, parquet_*, sniff_csv, query, ...)"
