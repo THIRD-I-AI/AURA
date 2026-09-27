@@ -2519,6 +2519,38 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Caused by:** none -- pre-existing.
 - **Fix:** pending -- add a visible or `aria-label`/`aria-labelledby` accessible name.
 
+## BUG-220: SQL expression guard had no statement-boundary check -- a caller could stack `; EXPORT DATABASE '<path>' (FORMAT CSV)` and exfiltrate every table on the shared connection
+- **Status:** fixed
+- **Found by:** ultracode audit of shared/security-sensitive modules (3 lenses + adversarial verify), 2026-09-27. The verifier confirmed each from the code (one with a live TestClient/DuckDB repro); nothing was run against the live deployment unless stated.
+- **Severity:** critical
+- **Root cause:** `shared/sql_expression_guard.py` was a pure word/call-position blocklist with no notion of SQL statement structure. DuckDB's `Connection.execute()` genuinely runs semicolon-separated multi-statement SQL. Since the guard's word list also omitted `export`/`import`/`database`, an expression like `SELECT 1) SELECT 1; EXPORT DATABASE '/tmp/x' (FORMAT CSV); SELECT 1 AS x; --` closed the enclosing CTE, stacked a second top-level statement, and dumped every table materialized on that connection (including other tenants' source data per this module's own docstring) to an attacker-chosen path on disk. Reproduced live end to end against a real DuckDB connection using the exact splice shape from `etl.py`'s `custom_sql` branch: the file was written before the harmless trailing error.
+- **Caused by:** none -- pre-existing.
+- **Fix:** The word list now also blocks `export`/`import`/`database`. More importantly, `validate_sql_expression` now strips quoted string literals/identifiers (so a semicolon inside a value is not mistaken for structure) and rejects any bare `;` in what remains -- an expression must be a single statement, full stop. Tests `tests/test_sql_guard_statement_stacking.py` (12), including an end-to-end test against a real DuckDB connection proving the old code actually wrote the exfiltrated table to disk and the new code refuses before that write happens; 7 of the parametrized cases fail on the old guard. The existing 71 guard/ETL/pipeline SQL-hardening tests still pass (one earlier attempt at this fix broke 5 of them by also stripping literals from the URI/replacement-scan checks, which need to see inside the string -- caught before commit). Residual risk unchanged from before: still a blocklist, not a sandbox.
+
+## BUG-221: decode_access_token embeds the raw PyJWT exception message in the client-facing error, bypassing sanitize_error
+- **Status:** open
+- **Found by:** ultracode audit of shared/security-sensitive modules (3 lenses + adversarial verify), 2026-09-27. The verifier confirmed each from the code (one with a live TestClient/DuckDB repro); nothing was run against the live deployment unless stated.
+- **Severity:** medium
+- **Root cause:** `shared/auth.py` ~76: `raise AuthenticationError(f"Invalid token: {exc}")` puts `str(exc)` -- library-internal text, e.g. "Invalid header string: 'utf-8' codec can't decode byte 0x9e..." or "Invalid header padding" -- straight into `AuraError.message`, which `shared/middleware.py`'s `_handle_aura_error` returns verbatim via `exc.to_dict()`. `error_handler.py`'s `sanitize_error` (the Sec-2 fix this class was meant to close) is never called on this path. Any malformed/tampered bearer token on any protected route triggers it.
+- **Caused by:** none -- pre-existing.
+- **Fix:** pending -- route the PyJWT exception through `sanitize_error` (or a fixed, curated message) instead of interpolating `str(exc)`.
+
+## BUG-222: hash_password/verify_password crash with an unhandled ValueError (500) on a password over bcrypt's 72-byte limit
+- **Status:** open
+- **Found by:** ultracode audit of shared/security-sensitive modules (3 lenses + adversarial verify), 2026-09-27. The verifier confirmed each from the code (one with a live TestClient/DuckDB repro); nothing was run against the live deployment unless stated.
+- **Severity:** medium
+- **Root cause:** `shared/password.py` calls `bcrypt.hashpw`/`bcrypt.checkpw` with no length check first. bcrypt raises `ValueError: password cannot be longer than 72 bytes` for any input over that size (in UTF-8 bytes, so it can trigger well under 72 characters for non-ASCII input). `RegisterRequest.password` has `min_length=8` but no maximum, and `TokenRequest.password` has no length constraint at all, so `POST /auth/register` or `/auth/token` with an over-length password reaches this unhandled and falls through to the generic 500 handler instead of a clean 400/401.
+- **Caused by:** none -- pre-existing.
+- **Fix:** pending -- reject (400) or truncate to 72 bytes before calling bcrypt, and add a max_length to the request models.
+
+## BUG-223: CORSMiddleware sits inside RateLimitMiddleware/JWTAuthMiddleware, not outside, so a 401/429 response carries no CORS headers
+- **Status:** open
+- **Found by:** ultracode audit of shared/security-sensitive modules (3 lenses + adversarial verify), 2026-09-27. The verifier confirmed each from the code (one with a live TestClient/DuckDB repro); nothing was run against the live deployment unless stated.
+- **Severity:** high
+- **Root cause:** `shared/service_factory.py`'s own comments say CORS is added first so it is 'outermost', but Starlette's `add_middleware()` prepends and `build_middleware_stack()` wraps in reverse order, so the LAST-added middleware is actually outermost. Confirmed live: `app.user_middleware` order is SecurityHeaders, AuditLog, RequestLogging, RequestID, JWTAuth, RateLimit, CORS, Upload -- CORS is near the bottom, not the top. A cross-origin request to a JWT-protected route with no/invalid token gets a 401 with no `Access-Control-Allow-Origin` header even though the origin is allow-listed, so the browser's own CORS check hides the real 401 behind an opaque network error and the frontend cannot show 'please log in.'
+- **Caused by:** none -- pre-existing.
+- **Fix:** pending -- add CORSMiddleware LAST (so it ends up outermost given Starlette's reversed wrapping), or move it explicitly after rate-limit/JWT/API-key in the add order; add a regression test asserting `app.user_middleware[0]` is CORS.
+
 ## Refuted (adversarial-verify, ≥2/3 skeptics refuted — filed for the record, no fix needed)
 
 **database_adapter.py:466 get_table_schema-unquoted-table claim** — a reviewer flagged `DuckDBAdapter.get_table_schema` splicing `table` unquoted into `f"DESCRIBE {table}"` as direct SQL injection, with a working local PoC. All 3 verifiers confirmed the code-level fact and PoC are accurate, but refuted the finding: `DuckDBAdapter` backs `shared/vault_client.py`'s internal "vault" (users/transactions, embeddings, VR telemetry) reached only via `connectors/main.py`'s `/vault/*` routes, a distinct subsystem from the uploaded-dataset query path (ETL/pipeline) where a caller-controlled table name could actually originate — no real caller passes attacker-influenced input to this `table` parameter today. Recorded here so a future re-audit doesn't re-flag it without checking this reachability note first; still worth fixing defensively (call `quote_identifier` to match the file's own sibling methods) if anyone touches this function.
