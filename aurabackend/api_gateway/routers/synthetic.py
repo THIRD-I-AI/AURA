@@ -125,8 +125,9 @@ class SchemaModel(BaseModel):
 class PlanRequest(BaseModel):
     schema_def: SchemaModel = Field(..., alias="schema")
     target_size: str = Field(..., description="e.g. 500MB, 1TB, 2PiB")
-    chunk_rows: int = 1_000_000
-    file_target_bytes: int = 128 * 10**6
+    # BUG-227: bounded so one request cannot ask for a multi-GB chunk in memory.
+    chunk_rows: int = Field(1_000_000, ge=1, le=1_000_000)
+    file_target_bytes: int = Field(128 * 10**6, ge=10**6, le=10**9)
 
     class Config:
         populate_by_name = True
@@ -136,7 +137,16 @@ class GenerateRequest(PlanRequest):
     output_uri: str = Field(..., description="file:///path or s3://bucket/prefix or gs://…")
     seed: int = 0
     compression: str = "snappy"
-    max_files: Optional[int] = Field(None, description="cap files (bounded/preview run)")
+    max_files: Optional[int] = Field(None, ge=1, le=10_000, description="cap files (bounded/preview run)")
+
+
+def _max_generate_bytes() -> int:
+    """Largest dataset one /synthetic/generate job may write (BUG-227). /synthetic/plan
+    stays unbounded -- it only does arithmetic -- but generate writes to the server's disk."""
+    try:
+        return int(os.getenv("AURA_SYNTHETIC_MAX_BYTES", str(1024**3)))
+    except ValueError:
+        return 1024**3
 
 
 def _build_schema(sm: SchemaModel) -> TableSchema:
@@ -200,7 +210,13 @@ async def synthetic_generate(req: GenerateRequest, request: Request):
     try:
         # Validate schema + size eagerly so bad requests fail fast (not in the thread).
         _build_schema(req.schema_def)
-        parse_size(req.target_size)
+        target_bytes = parse_size(req.target_size)
+        cap = _max_generate_bytes()
+        if target_bytes > cap:
+            raise ValueError(
+                f"target_size {req.target_size} exceeds the {cap:,}-byte limit for one "
+                "generate job (AURA_SYNTHETIC_MAX_BYTES); use /synthetic/plan to size larger datasets"
+            )
         # BUG-058: confine a local output_uri to the caller's own tenant
         # subdirectory before it ever reaches the writer -- was a fully
         # caller-controlled local-filesystem write destination. job_id
