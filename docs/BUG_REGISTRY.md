@@ -2584,12 +2584,12 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Fix:** `POST /synthetic/generate` (which writes to the server's disk) now caps the total size of one job at `AURA_SYNTHETIC_MAX_BYTES` (default 1 GiB, 400 with a pointer to /synthetic/plan above it), and range-checks `chunk_rows` (1..1,000,000), `file_target_bytes` (1 MB..1 GB) and `max_files` (1..10,000) via Pydantic (422). `/synthetic/plan` stays unbounded because it only computes arithmetic. Tests `tests/test_synthetic_generate_bounds.py` (10): 8 fail on the old code (the 2 that pass on both assert that a small generate and a large plan still work). 29 synthetic tests pass. Per-tenant concurrency of generate jobs is still not limited.
 
 ## BUG-228: The DuckDB branch of POST /execute fetchall()s an unbounded result set, although the validator says results are truncated to 10000
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode audit of `api_gateway/routers` (3 lenses + adversarial verify), 2026-09-29. The verifier confirmed it from the code; nothing was run end to end unless stated.
 - **Severity:** high
 - **Root cause:** `api_gateway/routers/queries.py` ~353: execute_for_chat runs the caller's SQL with cur.fetchall(), turns every row into a dict (line 356), returns all of them in the JSON response and also passes them to AnalysisAgent. SQLSafetyValidator.validate only adds a warning, 'No LIMIT clause: results will be truncated to 10000', and nothing ever truncates. The sandbox branch of the same endpoint sends limit=DEFAULT_QUERY_LIMIT (1000); the local DuckDB branch has no limit. lock_down_connection does not block generator table functions such as range(). The same unbounded fetchall appears in dashboards.py:181 (_run_tile fetches everything and only then slices [:500]) and in queries.py:783 (_execute_saved_query_sql, which only needs len(rows)).
 - **Caused by:** none -- pre-existing.
-- **Fix:** pending.
+- **Fix:** `POST /execute`'s DuckDB branch and the saved-query runner (`_execute_saved_query_sql`) now read at most `AURA_QUERY_MAX_ROWS` (default 10,000) + 1 rows via `fetchmany` instead of `fetchall()`, return the first N, and report `truncated: true|false` -- making true the validator's existing promise that results "will be truncated to 10000". Neither route has a response model, so the OpenAPI/SDK is unchanged. Tests `tests/test_query_result_row_cap.py` (3, using DuckDB's `range()` so no file access is needed on the locked-down connection): all fail on the old code. 51 related tests pass, including the BUG-196 lockdown tests. The `/execute/query` connector path and the connectors' own `execute_query` limits are separate and unchanged.
 
 ## BUG-229: Connector->UASR ingest bridge never forwards Authorization and ignores UASR's HTTP status, so every batch is silently counted as ingested with no drift
 - **Status:** open
