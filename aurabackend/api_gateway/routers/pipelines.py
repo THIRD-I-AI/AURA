@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import httpx
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
@@ -725,6 +725,15 @@ async def causal_info(request: Request):
 
 _SCHEDULER_URL = os.getenv("AURA_SCHEDULER_URL", "http://localhost:8004")
 
+# BUG-226: scheduler_service has no tenant/workspace/owner concept at all -- every job,
+# execution and log is global -- so these proxies let any user list, edit, run or delete
+# another tenant's jobs, and /admin/cleanup let any user wipe every tenant's history.
+# Until the scheduler stores an owner and filters on it, the whole surface is admin-only
+# (no frontend screen calls it).
+from shared.auth import require_role  # noqa: E402
+
+_SCHEDULER_ADMIN_ONLY = [Depends(require_role("admin"))]
+
 
 async def _scheduler(
     method: str,
@@ -759,53 +768,53 @@ async def _scheduler(
     return JSONResponse(status_code=resp.status_code, content=payload)
 
 
-@router.post("/scheduler/jobs")
+@router.post("/scheduler/jobs", dependencies=_SCHEDULER_ADMIN_ONLY)
 async def scheduler_create_job(req: Dict[str, Any], request: Request):
     return await _scheduler("POST", "/jobs", 30, request, json=req)
 
 
-@router.get("/scheduler/jobs")
+@router.get("/scheduler/jobs", dependencies=_SCHEDULER_ADMIN_ONLY)
 async def scheduler_list_jobs(request: Request, is_active: Optional[bool] = None):
     params = {"is_active": is_active} if is_active is not None else {}
     return await _scheduler("GET", "/jobs", 15, request, params=params)
 
 
-@router.get("/scheduler/jobs/{job_id}")
+@router.get("/scheduler/jobs/{job_id}", dependencies=_SCHEDULER_ADMIN_ONLY)
 async def scheduler_get_job(job_id: str, request: Request):
     return await _scheduler("GET", f"/jobs/{job_id}", 15, request)
 
 
-@router.put("/scheduler/jobs/{job_id}")
+@router.put("/scheduler/jobs/{job_id}", dependencies=_SCHEDULER_ADMIN_ONLY)
 async def scheduler_update_job(job_id: str, req: Dict[str, Any], request: Request):
     return await _scheduler("PUT", f"/jobs/{job_id}", 30, request, json=req)
 
 
-@router.delete("/scheduler/jobs/{job_id}")
+@router.delete("/scheduler/jobs/{job_id}", dependencies=_SCHEDULER_ADMIN_ONLY)
 async def scheduler_delete_job(job_id: str, request: Request):
     return await _scheduler("DELETE", f"/jobs/{job_id}", 15, request)
 
 
-@router.post("/scheduler/jobs/{job_id}/pause")
+@router.post("/scheduler/jobs/{job_id}/pause", dependencies=_SCHEDULER_ADMIN_ONLY)
 async def scheduler_pause_job(job_id: str, request: Request):
     return await _scheduler("POST", f"/jobs/{job_id}/pause", 15, request)
 
 
-@router.post("/scheduler/jobs/{job_id}/resume")
+@router.post("/scheduler/jobs/{job_id}/resume", dependencies=_SCHEDULER_ADMIN_ONLY)
 async def scheduler_resume_job(job_id: str, request: Request):
     return await _scheduler("POST", f"/jobs/{job_id}/resume", 15, request)
 
 
-@router.post("/scheduler/jobs/{job_id}/execute")
+@router.post("/scheduler/jobs/{job_id}/execute", dependencies=_SCHEDULER_ADMIN_ONLY)
 async def scheduler_execute_job(job_id: str, request: Request):
     return await _scheduler("POST", f"/jobs/{job_id}/execute", 300, request)
 
 
-@router.post("/scheduler/jobs/{job_id}/run")
+@router.post("/scheduler/jobs/{job_id}/run", dependencies=_SCHEDULER_ADMIN_ONLY)
 async def scheduler_trigger_job_run(job_id: str, request: Request):
     return await _scheduler("POST", f"/jobs/{job_id}/run", 15, request)
 
 
-@router.get("/scheduler/executions")
+@router.get("/scheduler/executions", dependencies=_SCHEDULER_ADMIN_ONLY)
 async def scheduler_list_executions(
     request: Request,
     job_id: Optional[str] = None,
@@ -823,19 +832,19 @@ async def scheduler_list_executions(
     return await _scheduler("GET", "/executions", 15, request, params=params)
 
 
-@router.get("/scheduler/executions/{execution_id}")
+@router.get("/scheduler/executions/{execution_id}", dependencies=_SCHEDULER_ADMIN_ONLY)
 async def scheduler_get_execution(execution_id: str, request: Request):
     return await _scheduler("GET", f"/executions/{execution_id}", 15, request)
 
 
-@router.get("/scheduler/executions/{execution_id}/logs")
+@router.get("/scheduler/executions/{execution_id}/logs", dependencies=_SCHEDULER_ADMIN_ONLY)
 async def scheduler_get_execution_logs(execution_id: str, request: Request, level: Optional[str] = None):
     params = {"level": level} if level is not None else {}
     return await _scheduler("GET", f"/executions/{execution_id}/logs", 15, request, params=params)
 
 
-@router.post("/scheduler/admin/cleanup")
-async def scheduler_cleanup_old_executions(request: Request, retention_days: int = 30):
+@router.post("/scheduler/admin/cleanup", dependencies=_SCHEDULER_ADMIN_ONLY)
+async def scheduler_cleanup_old_executions(request: Request, retention_days: int = Query(30, ge=1)):
     return await _scheduler(
         "POST", "/admin/cleanup", 30, request, params={"retention_days": retention_days},
     )
