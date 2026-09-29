@@ -2559,6 +2559,174 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Caused by:** none -- pre-existing.
 - **Fix:** `causal_service/discovery.py` sets `gcm.config.default_n_jobs = 1` right after importing gcm. Also, `counterfactual_service/engine.py`'s `ForestDRLearner` now passes `n_jobs=1` explicitly: its docstring claimed `n_jobs=1` was the default and that parallelism would break byte-identical replays, but econml's real default is -1 (measured: econml parallelises the forest with threads, not processes, so this one was NOT the memory cause -- it is a correctness/intent fix). Tests `tests/test_no_process_pool_fanout.py` (3): the gcm test spies on `LokyBackend.configure` during a real gcm attribution and fails on the old code (a parallel pool was requested); the ForestDR test asserts `n_jobs=1` and fails on the old code; a determinism test confirms forest_dr stays byte-identical across runs. Verified across the WHOLE suite with the spy logging every parallel request: 2816 passed, 26 skipped, and zero parallel process-pool requests. Not measured in production (the causal service's CPU count there is lower than the laptop's, so the effect there is smaller but the same shape). Also corrects the BUG-211/212/213 notes that wrongly said dowhy was not installed locally.
 
+## BUG-225: POST /execute/query lets any user open an unrestricted DuckDB connection and read or write every tenant's uploaded files
+- **Status:** fixed
+- **Found by:** ultracode audit of `api_gateway/routers` (3 lenses + adversarial verify), 2026-09-29. The verifier confirmed it from the code; nothing was run end to end unless stated.
+- **Severity:** high
+- **Root cause:** `api_gateway/routers/queries.py` ~383: execute_query_with_insights takes connector_type and connector_config straight from the request body and calls build_connector(...).connect() and execute_query(request.query). It has no tenant check. With connector_type="duckdb" and database=":memory:", DuckDBConnector.connect() (connectors/duckdb_connector.py:59) opens a plain duckdb.connect() with external access enabled. lock_down_connection (the BUG-196 fix) is never applied on this path. The only gate is SQLSafetyValidator (safety/validator.py:36-56), a keyword blocklist of DROP/DELETE/INSERT/CREATE/... that does not block read_csv_auto, read_text, glob, COPY or ATTACH. BUG-196 lists six execution sites; this one and the connector class are not among them.
+- **Caused by:** none -- pre-existing.
+- **Fix:** `POST /execute/query` now refuses any connector whose registry spec is `kind == "embedded"` (duckdb, duckdb_spatial, faiss) with a 400, before a connector is built or connected; this route is for external databases, and tenant files are queried through `/execute` (which has the BUG-196 lockdown). The handler's generic `except Exception` also swallowed every HTTPException into an HTTP 200 `success: false` -- including the existing query-validation 400 -- so `except HTTPException: raise` was added. Tests `tests/test_execute_query_embedded_refused.py` (5): all fail on the old code; one proves `DuckDBConnector.connect` is never reached. Only the generated SDK calls this route. The connector-path exposure through `/connections` routes is BUG-232, separate.
+
+## BUG-226: Scheduler proxy routes have no tenant scoping, and /scheduler/admin/cleanup is callable by any user
+- **Status:** open
+- **Found by:** ultracode audit of `api_gateway/routers` (3 lenses + adversarial verify), 2026-09-29. The verifier confirmed it from the code; nothing was run end to end unless stated.
+- **Severity:** high
+- **Root cause:** `api_gateway/routers/pipelines.py` ~837: The gateway's /scheduler/* routes (pipelines.py:762-841) forward to scheduler_service with no workspace or role check. scheduler_service/main.py has no tenant, workspace or owner concept at all: list_jobs, get_job, update_job, delete_job, pause, resume, execute, run, list_executions, get_execution and get_execution_logs all act on a bare id or the global set. POST /admin/cleanup (scheduler_service/main.py:558) is labelled an admin endpoint, but neither service checks a role. Nothing in BUG_REGISTRY covers the scheduler.
+- **Caused by:** none -- pre-existing.
+- **Fix:** pending.
+
+## BUG-227: POST /synthetic/generate has no upper bound on target_size, max_files or chunk_rows, so any authenticated caller can fill the server disk or OOM the single worker
+- **Status:** open
+- **Found by:** ultracode audit of `api_gateway/routers` (3 lenses + adversarial verify), 2026-09-29. The verifier confirmed it from the code; nothing was run end to end unless stated.
+- **Severity:** high
+- **Root cause:** `api_gateway/routers/synthetic.py` ~127: GenerateRequest.target_size is a free string parsed by parse_size, which accepts 'TB' and 'PiB' (the field description even advertises '1TB, 2PiB'). max_files defaults to None and chunk_rows is an unbounded int. synthetic_generate (line 197) only checks that the size parses. BUG-058 then confines a local output_uri to <aurabackend>/data/synthetic/<tenant>/<job_id>/, but that is still the server's own disk. _run_job is started with run_in_executor(None, ...) at line 226 and has no cancel path, no quota and no per-tenant concurrency limit. In SyntheticDatasetWriter.generate, n = min(chunk_rows, rows_per_file, remaining), and plan_generation clamps rows_per_file to at least chunk_rows, so a huge chunk_rows makes one generate_chunk call allocate billions of rows at once. BUG-058 fixed only where the data is written, not how much.
+- **Caused by:** none -- pre-existing.
+- **Fix:** pending.
+
+## BUG-228: The DuckDB branch of POST /execute fetchall()s an unbounded result set, although the validator says results are truncated to 10000
+- **Status:** open
+- **Found by:** ultracode audit of `api_gateway/routers` (3 lenses + adversarial verify), 2026-09-29. The verifier confirmed it from the code; nothing was run end to end unless stated.
+- **Severity:** high
+- **Root cause:** `api_gateway/routers/queries.py` ~353: execute_for_chat runs the caller's SQL with cur.fetchall(), turns every row into a dict (line 356), returns all of them in the JSON response and also passes them to AnalysisAgent. SQLSafetyValidator.validate only adds a warning, 'No LIMIT clause: results will be truncated to 10000', and nothing ever truncates. The sandbox branch of the same endpoint sends limit=DEFAULT_QUERY_LIMIT (1000); the local DuckDB branch has no limit. lock_down_connection does not block generator table functions such as range(). The same unbounded fetchall appears in dashboards.py:181 (_run_tile fetches everything and only then slices [:500]) and in queries.py:783 (_execute_saved_query_sql, which only needs len(rows)).
+- **Caused by:** none -- pre-existing.
+- **Fix:** pending.
+
+## BUG-229: Connector->UASR ingest bridge never forwards Authorization and ignores UASR's HTTP status, so every batch is silently counted as ingested with no drift
+- **Status:** open
+- **Found by:** ultracode audit of `api_gateway/routers` (3 lenses + adversarial verify), 2026-09-29. The verifier confirmed it from the code; nothing was run end to end unless stated.
+- **Severity:** high
+- **Root cause:** `api_gateway/routers/connections.py` ~568: ingest_connector_data POSTs to {_UASR_URL}/uasr/baseline (line 554) and /uasr/ingest (line 568) with no headers, and parses the reply with resp.json() without checking resp.status_code. UASR is built with create_service(), which installs JWTAuthMiddleware when AURA_JWT_ENABLED is on. pipelines.py:507-512 already records that unauthenticated calls to UASR get 'Bearer token required'. The 401 body {error: AUTHENTICATION_REQUIRED} goes into `result`, drift_detected evaluates False, total_rows/batch_count go up, and the route returns success:true with drift_events:0 and a dataset profile saying so. The baseline POST failing is also swallowed, because only httpx.HTTPError is caught and a 401 is not an exception. Any UASR 4xx/5xx (a 422 on a bad payload, a 500) is misreported the same way. This breaks the backend.md proxy rule and turns the 'end-to-end slice' into a silent no-op.
+- **Caused by:** none -- pre-existing.
+- **Fix:** pending.
+
+## BUG-230: Inbound hook target pipeline is never checked for ownership; firing the hook runs another tenant's pipeline
+- **Status:** open
+- **Found by:** ultracode audit of `api_gateway/routers` (3 lenses + adversarial verify), 2026-09-29. The verifier confirmed it from the code; nothing was run end to end unless stated.
+- **Severity:** medium
+- **Root cause:** `api_gateway/routers/inbound_hooks.py` ~184: create_hook (line 72) and update_hook (line 97) accept `target` (a pipeline_id) with no check that the pipeline belongs to the caller's workspace. InboundHookRegistry.register and update in shared/inbound_hooks.py do not validate it either. The public fire path, _fire_pipeline, then loads the pipeline unscoped via get_pipeline(pipeline_id) (persistence.get_pipeline with workspace_id=None). It executes the pipeline with tenant = tenant_from_workspace_id(<owner's workspace>), so it runs with the victim's storage and sinks. BUG-016 scoped the hook CRUD but not the pipeline the hook points at.
+- **Caused by:** none -- pre-existing.
+- **Fix:** pending.
+
+## BUG-231: Lossy tenant slug makes different org_ids share one upload/storage directory (cross-tenant file read under OIDC domain mapping)
+- **Status:** open
+- **Found by:** ultracode audit of `api_gateway/routers` (3 lenses + adversarial verify), 2026-09-29. The verifier confirmed it from the code; nothing was run end to end unless stated.
+- **Severity:** medium
+- **Root cause:** `api_gateway/routers/workspaces.py` ~145: tenant_dir_name, and the byte-identical shared/storage/base.py tenant_slug, strip every character outside [A-Za-z0-9_-] and then strip leading and trailing -/_. Different org_ids therefore collapse to the same directory: 'example.com', 'examplec.om' and 'examp.lecom' all become 'examplecom', and 'acme' and 'acme-' also collide. DB rows are scoped on the raw org_id, but uploads, chat/query schema context (build_schema_context_cached(con, tenant)), ETL sources, file listing and deletion, and processed outputs are all keyed by the slug. shared/oidc.py map_org sets org_id to the verified email domain (or an hd/tid/org claim), so two distinct companies can land on one slug.
+- **Caused by:** none -- pre-existing.
+- **Fix:** pending.
+
+## BUG-232: Connector routes open any server-side DuckDB file path supplied by the caller, exposing other tenants' .duckdb uploads
+- **Status:** open
+- **Found by:** ultracode audit of `api_gateway/routers` (3 lenses + adversarial verify), 2026-09-29. The verifier confirmed it from the code; nothing was run end to end unless stated.
+- **Severity:** medium
+- **Root cause:** `api_gateway/routers/connections.py` ~679: POST /connections (line 299) stores `database` for type duckdb with no path confinement. /connectors/{type}/test, /tables, /profile and /ingest (lines 207-266 and 477) take the config straight from the body. DuckDBConnector.connect() calls duckdb.connect(str(path)) on whatever path it is given. Tenants upload .duckdb files into their storage (pipeline DuckDB sources read 'warehouse.duckdb' from tenant storage), so another tenant's database file can be opened by absolute path. /connections/{id}/sync then copies its tables into the caller's own upload directory. A nonexistent path also makes duckdb.connect create a new file anywhere the gateway process can write.
+- **Caused by:** none -- pre-existing.
+- **Fix:** pending.
+
+## BUG-233: POST /query-history takes an unvalidated dict, and its 200-row eviction is global, so any tenant can wipe every other tenant's query history
+- **Status:** open
+- **Found by:** ultracode audit of `api_gateway/routers` (3 lenses + adversarial verify), 2026-09-29. The verifier confirmed it from the code; nothing was run end to end unless stated.
+- **Severity:** medium
+- **Root cause:** `api_gateway/persistence.py` ~591: save_query_history (queries.py:924) accepts payload: Dict[str, Any] (backend.md requires a Pydantic model) and passes it to insert_query_history. After each insert, that function keeps the 200 newest rows ACROSS ALL WORKSPACES (keep_ids_q has no workspace_id filter) and deletes every other row. BUG-039 only noted the global cap as a fairness/perf choice. In practice, one tenant's writes destroy other tenants' data. The unvalidated body also turns bad input into 500s: rows='abc' makes int() raise ValueError, and a client-supplied 'id' that already exists (ids are guessable 'q_<ms>') raises IntegrityError. Same root as the separate low-severity report: POST /query-history (queries.py:923) is tenant-stamped, but insert_query_history keeps only the newest QUERY_HISTORY_CAP (200) rows across ALL workspaces and deletes every other row. The eviction query has no workspace filter, unlike insert_saved_query and insert_chat_message, which evict per workspace. The BUG-039 fix note leaves the global cap in place as a 'fairness/perf decision'. It does not register the cross-tenant destructive effect.
+- **Caused by:** none -- pre-existing.
+- **Fix:** pending.
+
+## BUG-234: Dashboard tiles list is unbounded, and render runs every tile at once, each loading all of the tenant's tables into a new in-memory DuckDB
+- **Status:** open
+- **Found by:** ultracode audit of `api_gateway/routers` (3 lenses + adversarial verify), 2026-09-29. The verifier confirmed it from the code; nothing was run end to end unless stated.
+- **Severity:** medium
+- **Root cause:** `api_gateway/routers/dashboards.py` ~61: DashboardCreate.tiles and DashboardUpdate.tiles are List[DashboardTileInput] with no max_length. render_dashboard (line 232) calls asyncio.gather on _run_tile for every tile with no semaphore. Each _run_tile opens new_connection() and calls build_schema_context_cached, which replays CREATE TABLE ... AS for every file the tenant has uploaded. Peak memory is therefore tiles x total size of the tenant's data, all at once on the single worker, and the concurrent to_thread calls also saturate the shared default thread pool.
+- **Caused by:** none -- pre-existing.
+- **Fix:** pending.
+
+## BUG-235: POST /chat/history stores any JSON value as metadata, and a non-object metadata makes GET /chat/history for that session return 500 permanently
+- **Status:** open
+- **Found by:** ultracode audit of `api_gateway/routers` (3 lenses + adversarial verify), 2026-09-29. The verifier confirmed it from the code; nothing was run end to end unless stated.
+- **Severity:** medium
+- **Root cause:** `api_gateway/routers/chat.py` ~761: save_chat_message accepts payload: Dict[str, Any] with no model and saves payload.get('metadata') as-is. insert_chat_message json.dumps any value, including a list, string or number. get_chat_history (line 746) then builds ChatHistoryEntry(**m), whose metadata is Optional[Dict[str, Any]], and pydantic v2 raises ValidationError for a list or string. The failure is uncaught, so the whole history read for that session returns 500 until the bad row is evicted, which takes 100 newer messages under the per-session cap.
+- **Caused by:** none -- pre-existing.
+- **Fix:** pending.
+
+## BUG-236: Execution-sandbox and orchestration proxies in queries.py drop the Authorization header and collapse upstream status to HTTP 200
+- **Status:** open
+- **Found by:** ultracode audit of `api_gateway/routers` (3 lenses + adversarial verify), 2026-09-29. The verifier confirmed it from the code; nothing was run end to end unless stated.
+- **Severity:** medium
+- **Root cause:** `api_gateway/routers/queries.py` ~289: POST /execute with connection_id posts to {EXECUTION_SANDBOX_URL}/execute_sql, and POST /generate_query posts to ORCHESTRATION_SERVICE_URL (line 441). Neither forwards the caller's Authorization header. Both downstream services use create_service() and so enforce JWT when armed. Every call then gets a 401. /execute returns HTTP 200 {success:false, error:<raw upstream body>}. The error is the raw exc.response.text, because the middleware body has no 'detail' key, so unsanitized upstream text also reaches the client. /generate_query returns HTTP 200 {status:'Error'} for any upstream status. This is the exact BUG-060 class, but in these two sibling proxies that the BUG-060 fix never touched.
+- **Caused by:** none -- pre-existing.
+- **Fix:** pending.
+
+## BUG-237: Chat 'audit' intent issues a signed certificate that is never appended to the tenant's tamper-evident audit ledger
+- **Status:** open
+- **Found by:** ultracode audit of `api_gateway/routers` (3 lenses + adversarial verify), 2026-09-29. The verifier confirmed it from the code; nothing was run end to end unless stated.
+- **Severity:** medium
+- **Root cause:** `api_gateway/routers/chat.py` ~544: The chat audit path calls sign_and_persist(doc) and returns action {type:'audit_created', record_hash}, but it never calls audit_ledger.append_audit_with_retry. The canonical path, counterfactual_service/main.py:754-780, does make that call, and its comment says returning a cert that has no ledger entry is 'an orphan that defeats the whole tamper-evident-chain guarantee' (it returns 500 rather than doing that). Every certificate created from chat is exactly that orphan. /counterfactual/audit/ledger/proof/{cert_hash} and the subject history never contain it, and ledger verification never covers it. The doc is also built with str(tenant), so an unauthenticated tenant is stamped as the literal string 'None'.
+- **Caused by:** none -- pre-existing.
+- **Fix:** pending.
+
+## BUG-238: chat_endpoint runs blocking storage listing and certificate signing/persisting inline on the event loop
+- **Status:** open
+- **Found by:** ultracode audit of `api_gateway/routers` (3 lenses + adversarial verify), 2026-09-29. The verifier confirmed it from the code; nothing was run end to end unless stated.
+- **Severity:** medium
+- **Root cause:** `api_gateway/routers/chat.py` ~441: In the pipeline intent branch, `get_storage_backend().list(tenant)` (line 441) is called synchronously. It is a boto3 paginator on S3, or iterdir+stat locally. pipelines.py:119 offloads the identical call with asyncio.to_thread, and BUG-177 fixed the same call in data_utils. In the audit branch, `sign_and_persist(doc)` (line 544) does ED25519 signing plus artifact file writes plus audit_event I/O, also synchronously. BUG-043 offloaded that same function in counterfactual_service/main.py:752, but this call site was missed. On the single uvicorn worker, both calls stall every tenant's requests.
+- **Caused by:** none -- pre-existing.
+- **Fix:** pending.
+
+## BUG-239: POST /connections/{id}/sync writes the parquet snapshot to storage synchronously inside the async handler
+- **Status:** open
+- **Found by:** ultracode audit of `api_gateway/routers` (3 lenses + adversarial verify), 2026-09-29. The verifier confirmed it from the code; nothing was run end to end unless stated.
+- **Severity:** medium
+- **Root cause:** `api_gateway/routers/connections.py` ~808: `get_storage_backend().write(tenant, file_name, parquet_bytes)` is called directly, with no asyncio.to_thread. The snapshot can be up to 2,000,000 rows (_SYNC_ROW_CEILING), and the write is a blocking write_bytes locally or a boto3 put_object on S3. BUG-055 fixed this exact call in files.py upload, and BUG-042 offloaded only the DataFrame->parquet serialization on this route, not the write that follows it.
+- **Caused by:** none -- pre-existing.
+- **Fix:** pending.
+
+## BUG-240: Commander chat paths return raw exception text to the client, bypassing sanitize_error
+- **Status:** open
+- **Found by:** ultracode audit of `api_gateway/routers` (3 lenses + adversarial verify), 2026-09-29. The verifier confirmed it from the code; nothing was run end to end unless stated.
+- **Severity:** low
+- **Root cause:** `api_gateway/routers/chat.py` ~479: The pipeline-intent handler returns message=f"I couldn't build that pipeline: {str(exc)[:200]}" (line 479). The audit-intent handler returns f"I couldn't run that audit: {str(exc)[:200]}" (line 577). The /chat/stream worker sends ErrorEvent(kind='internal', message=str(exc)) to the SSE client (line 709). The wrapped calls include save_pipeline (SQLAlchemy errors embed '[SQL: INSERT INTO gateway_pipelines ...]' and parameters), get_storage_backend().list (botocore errors name the bucket and key), LLM client errors, and DuckDB errors. security.md requires sanitize_error, and the rest of chat.py already uses it. This is the same class as BUG-024 and BUG-221 but at different call sites.
+- **Caused by:** none -- pre-existing.
+- **Fix:** pending.
+
+## BUG-241: ETL routes call StorageBackend.exists() synchronously on the event loop (S3 head_object per request)
+- **Status:** open
+- **Found by:** ultracode audit of `api_gateway/routers` (3 lenses + adversarial verify), 2026-09-29. The verifier confirmed it from the code; nothing was run end to end unless stated.
+- **Severity:** low
+- **Root cause:** `api_gateway/routers/etl.py` ~422: etl_preview_source (line 351), etl_execute (line 422) and etl_from_natural_language (line 582) all call backend.exists(tenant, safe_name) inline. S3Backend.exists is a synchronous boto3 head_object network call (shared/storage/s3.py:99-105). This is the same class BUG-177 fixed for list(). Everything else in these handlers is already offloaded with asyncio.to_thread.
+- **Caused by:** none -- pre-existing.
+- **Fix:** pending.
+
+## BUG-242: Inbound-hook registry rewrites its whole JSON store synchronously on every public fire and every CRUD call
+- **Status:** open
+- **Found by:** ultracode audit of `api_gateway/routers` (3 lenses + adversarial verify), 2026-09-29. The verifier confirmed it from the code; nothing was run end to end unless stated.
+- **Severity:** low
+- **Root cause:** `api_gateway/routers/inbound_hooks.py` ~149: fire_hook calls inbound_hooks.record_fire(hook), and create/update/delete call register/update/delete (lines 75, 100, 112). Each of these ends in InboundHookRegistry._save(), which does open(_STORE_PATH,'w') and json.dump of every hook (shared/inbound_hooks.py:91-95), directly on the event loop. The sibling webhooks.py offloads the identical dispatcher disk writes with asyncio.to_thread (BUG-042, test_webhooks_router_bug_async_save). /hooks/fire/{slug} is public (BUG-017 allowlist), so an external caller can drive blocking disk writes at the rate limit.
+- **Caused by:** none -- pre-existing.
+- **Fix:** pending.
+
+## BUG-243: Inbound hook pipeline trigger 500s on any non-object JSON body after already recording the fire
+- **Status:** open
+- **Found by:** ultracode audit of `api_gateway/routers` (3 lenses + adversarial verify), 2026-09-29. The verifier confirmed it from the code; nothing was run end to end unless stated.
+- **Severity:** low
+- **Root cause:** `api_gateway/routers/inbound_hooks.py` ~197: fire_hook accepts any JSON (`payload = await request.json()`), so a list, string or number is allowed. It calls record_fire and publishes the 'fired' event, and only then does _fire_pipeline evaluate `payload.get('preview_only', False)`. That raises AttributeError for a JSON array, which surfaces as a 500. Common webhook senders post arrays (batched events). The hook's fire_count is incremented and a hooks:{slug} 'complete' event is broadcast, but the pipeline never runs. The background tasks also publish raw str(exc) over SSE (lines 233, 307), unlike pipelines.py, which sanitizes the same path (Sec-2 #27).
+- **Caused by:** none -- pre-existing.
+- **Fix:** pending.
+
+## BUG-244: GET /stream/{topic}?replay=true loses events published between the buffer replay and the live subscribe
+- **Status:** open
+- **Found by:** ultracode audit of `api_gateway/routers` (3 lenses + adversarial verify), 2026-09-29. The verifier confirmed it from the code; nothing was run end to end unless stated.
+- **Severity:** low
+- **Root cause:** `api_gateway/routers/stream.py` ~114: In _gen, for replay=true with no Last-Event-ID, the code first yields every buffered event and only then enters _event_generator, which is where streaming_manager.subscribe() runs. Each yield suspends while bytes go to the client. Any event published during that window lands only in the ring buffer, never in a queue this client holds, and is never replayed. The Last-Event-ID path does it the right way round: subscribe first, then replay. A 'complete'/'error' event for a short ETL, pipeline or upload run can be lost, leaving the UI spinner hanging.
+- **Caused by:** none -- pre-existing.
+- **Fix:** pending.
+
+## BUG-245: Any tenant can rename or re-describe the shared 'default' workspace for every other tenant
+- **Status:** open
+- **Found by:** ultracode audit of `api_gateway/routers` (3 lenses + adversarial verify), 2026-09-29. The verifier confirmed it from the code; nothing was run end to end unless stated.
+- **Severity:** low
+- **Root cause:** `api_gateway/routers/workspaces.py` ~247: _visible_to() returns True for DEFAULT_WORKSPACE_ID for every caller, and update_workspace applies the PATCH to that one global record in the module-level _workspaces_store. delete_workspace explicitly protects the default record (line 265), but update does not. Any authenticated org's edit therefore shows up in every other org's GET /workspaces.
+- **Caused by:** none -- pre-existing.
+- **Fix:** pending.
+
 ## Refuted (adversarial-verify, ≥2/3 skeptics refuted — filed for the record, no fix needed)
 
 **database_adapter.py:466 get_table_schema-unquoted-table claim** — a reviewer flagged `DuckDBAdapter.get_table_schema` splicing `table` unquoted into `f"DESCRIBE {table}"` as direct SQL injection, with a working local PoC. All 3 verifiers confirmed the code-level fact and PoC are accurate, but refuted the finding: `DuckDBAdapter` backs `shared/vault_client.py`'s internal "vault" (users/transactions, embeddings, VR telemetry) reached only via `connectors/main.py`'s `/vault/*` routes, a distinct subsystem from the uploaded-dataset query path (ETL/pipeline) where a caller-controlled table name could actually originate — no real caller passes attacker-influenced input to this `table` parameter today. Recorded here so a future re-audit doesn't re-flag it without checking this reachability note first; still worth fixing defensively (call `quote_identifier` to match the file's own sibling methods) if anyone touches this function.
