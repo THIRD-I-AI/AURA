@@ -535,7 +535,12 @@ async def ingest_connector_data(connector_type: str, req: ConnectorIngestRequest
 
         offset = 0
         first = True
-        async with httpx.AsyncClient(timeout=120) as client:
+        # BUG-229: forward the caller's credentials -- UASR rejects unauthenticated
+        # calls when JWT is on, and every batch then "succeeded" with an error body.
+        uasr_headers = {}
+        if request.headers.get("Authorization"):
+            uasr_headers["Authorization"] = request.headers["Authorization"]
+        async with httpx.AsyncClient(timeout=120, headers=uasr_headers) as client:
             while True:
                 remaining = max(0, row_cap - total_rows)
                 if remaining == 0:
@@ -551,7 +556,7 @@ async def ingest_connector_data(connector_type: str, req: ConnectorIngestRequest
 
                 if first and req.register_baseline:
                     try:
-                        await client.post(
+                        base_resp = await client.post(
                             f"{_UASR_URL}/uasr/baseline",
                             json={
                                 "source_id": source_id,
@@ -560,6 +565,8 @@ async def ingest_connector_data(connector_type: str, req: ConnectorIngestRequest
                                 "schema_snapshot": schema_snapshot,
                             },
                         )
+                        if base_resp.status_code >= 400:
+                            logger.warning("UASR baseline registration returned HTTP %s", base_resp.status_code)
                     except httpx.HTTPError as e:
                         logger.warning("UASR baseline registration failed: %s", e)
                     first = False
@@ -575,10 +582,23 @@ async def ingest_connector_data(connector_type: str, req: ConnectorIngestRequest
                             "metadata": {"connector_type": connector_type, "table": req.table_name},
                         },
                     )
-                    result = resp.json()
                 except httpx.HTTPError as e:
                     await connector.disconnect()
                     raise HTTPException(status_code=502, detail=f"UASR ingest failed: {sanitize_error(e, logger=logger, context='uasr ingest')}")
+                # BUG-229: a 4xx/5xx from UASR used to be parsed as a result and the
+                # batch counted as ingested; stop and report the real upstream status.
+                if resp.status_code >= 400:
+                    await connector.disconnect()
+                    raise HTTPException(
+                        status_code=502,
+                        detail=f"UASR ingest returned HTTP {resp.status_code} at row offset {offset}; "
+                               f"{total_rows} rows were ingested before it failed",
+                    )
+                try:
+                    result = resp.json()
+                except ValueError:
+                    await connector.disconnect()
+                    raise HTTPException(status_code=502, detail="UASR ingest returned a non-JSON response")
 
                 drifted = bool(result.get("drift_detected") or (result.get("drift") or {}).get("detected"))
                 if drifted:
