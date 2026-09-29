@@ -389,6 +389,19 @@ async def execute_query_with_insights(request: ExecuteQueryRequest):
         if not validation.is_valid:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Query validation failed: {validation.errors}")
 
+        # BUG-225: an "embedded" connector (DuckDB, DuckDB-spatial, FAISS) runs on the
+        # SERVER's own files at a path the caller chooses, with no tenant check and no
+        # BUG-196 lockdown -- any user could open ':memory:' and read_csv/glob/COPY every
+        # tenant's uploads, or point `database` at another tenant's .duckdb. This route
+        # is for querying an external database; tenant files are queried via /execute.
+        from connectors.registry import get_connector
+        spec = get_connector(request.connector_type)
+        if spec is not None and spec.kind == "embedded":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Connector type '{request.connector_type}' runs on server-local files and "
+                       "cannot be queried through /execute/query; use /execute for uploaded data.",
+            )
         connector_config = ConnectorConfig(source_type=SourceType(request.connector_type), name=f"exec-{request.connector_type}", **request.connector_config)
         connector = build_connector(request.connector_type, connector_config)
         if connector is None:
@@ -428,6 +441,8 @@ async def execute_query_with_insights(request: ExecuteQueryRequest):
             insights={"conclusion": conclusion} if conclusion else None,
             execution_time_ms=execution_time,
         )
+    except HTTPException:
+        raise
     except Exception as e:
         return ExecuteQueryResponse(success=False, data=None, rows=0, columns=[], error=sanitize_error(e, logger=logger, context="execute query with insights"), execution_time_ms=0)
 
