@@ -251,6 +251,24 @@ class QueryRequest(BaseModel):
 
 # ── Execute endpoints ────────────────────────────────────────────────
 
+def _max_result_rows() -> int:
+    """Row cap for SQL run against a tenant's uploaded data (BUG-228). The validator
+    already told callers results "will be truncated to 10000", but both paths used
+    fetchall(), so one SELECT over a big upload materialised every row in the single
+    uvicorn worker's memory and serialised it into one JSON response."""
+    try:
+        return max(1, int(os.getenv("AURA_QUERY_MAX_ROWS", "10000")))
+    except ValueError:
+        return 10000
+
+
+def _fetch_capped(cur) -> tuple:
+    """(columns, rows, truncated) -- reads at most cap+1 rows to detect truncation."""
+    cap = _max_result_rows()
+    rows = cur.fetchmany(cap + 1)
+    return [d[0] for d in cur.description], rows[:cap], len(rows) > cap
+
+
 @router.post("/execute")
 async def execute_for_chat(req: _ChatExecuteRequest, request: Request):
     """Execute SQL from the chat interface.
@@ -348,11 +366,10 @@ async def execute_for_chat(req: _ChatExecuteRequest, request: Request):
                 name="schema-ctx-refresh",
             )
 
-        def _run_sql() -> tuple[list[str], list[tuple]]:
-            cur = con.execute(sql)
-            return [d[0] for d in cur.description], cur.fetchall()
+        def _run_sql() -> tuple:
+            return _fetch_capped(con.execute(sql))
 
-        columns, rows = await asyncio.to_thread(_run_sql)
+        columns, rows, truncated = await asyncio.to_thread(_run_sql)
         records = [dict(zip(columns, row)) for row in rows]
 
         conclusion = None
@@ -374,7 +391,7 @@ async def execute_for_chat(req: _ChatExecuteRequest, request: Request):
         return {
             "success": True, "data": records, "columns": columns,
             "row_count": len(records), "execution_time_ms": round(elapsed, 1),
-            "conclusion": conclusion,
+            "conclusion": conclusion, "truncated": truncated,
         }
     except Exception as exc:
         return {"success": False, "error": sanitize_error(exc, logger=logger, context="duckdb query execute"), "data": [], "columns": []}
@@ -793,18 +810,18 @@ async def _execute_saved_query_sql(sql: str, workspace_id: Optional[str] = None)
         await build_schema_context_cached(con, workspace_id, use_llm=False)
         lock_down_connection(con)  # BUG-196: stored, unvalidated SQL runs next
 
-        def _run() -> tuple[list[str], list[tuple]]:
-            cur = con.execute(sql)
-            return [d[0] for d in cur.description], cur.fetchall()
+        def _run() -> tuple:
+            return _fetch_capped(con.execute(sql))
 
         start = time.perf_counter()
-        columns, rows = await asyncio.to_thread(_run)
+        columns, rows, truncated = await asyncio.to_thread(_run)
         elapsed = (time.perf_counter() - start) * 1000
         return {
             "success": True,
             "row_count": len(rows),
             "columns": columns,
             "execution_time_ms": round(elapsed, 1),
+            "truncated": truncated,
         }
     finally:
         try:
