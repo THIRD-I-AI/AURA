@@ -15,10 +15,12 @@ Contract surface (the rest of the service depends on these names):
 from __future__ import annotations
 
 import asyncio
+import functools
 import hashlib
 import logging
 import math
 import os
+import threading
 import time
 import uuid
 from itertools import combinations
@@ -775,6 +777,24 @@ def _seed_for(request_hash: str, name: str) -> int:
     return int.from_bytes(h[:4], "big")
 
 
+# BUG-246: ``_seed_numpy`` pins numpy's PROCESS-WIDE generator, and ``concurrent=False``
+# only serialises the estimators *within one job*. Two jobs overlapping in the gateway
+# process (two users, or a background audit job still running) re-seeded the same
+# generator under each other, so DoWhy's bootstrap CIs came out different on every run
+# -- silently breaking the byte-identical replay guarantee (Layer 10). Every
+# seed-then-compute section below holds this lock, making it atomic across jobs.
+# Re-entrant so a nested call on the same thread cannot deadlock.
+_ENGINE_RNG_LOCK = threading.RLock()
+
+
+def _rng_serialized(fn):
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        with _ENGINE_RNG_LOCK:
+            return fn(*args, **kwargs)
+    return wrapper
+
+
 def _seed_numpy(seed: int) -> None:
     """Pre-seed numpy's *global* RNG.
 
@@ -956,6 +976,7 @@ def _dowhy_confidence_interval(est: Any, point: float) -> Optional[Tuple[float, 
     return None
 
 
+@_rng_serialized
 def _run_one_estimator(
     method_key: EstimatorMethod,
     df: pd.DataFrame,
@@ -1247,6 +1268,7 @@ def _refuter_passed(refuter: RefuterName, baseline: float, refuted: float) -> bo
     return abs(refuted - baseline) < threshold
 
 
+@_rng_serialized
 def _run_one_refuter(
     refuter_key: RefuterName,
     model: Any,
@@ -1348,6 +1370,7 @@ async def run_refuters(
 
     loop = asyncio.get_event_loop()
 
+    @_rng_serialized
     def _build_baseline():
         # Baseline estimate — also pinned. Bootstrap CI here would
         # otherwise leak entropy that downstream refuters consume.
