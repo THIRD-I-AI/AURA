@@ -2600,12 +2600,12 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Fix:** The `/connectors/{type}/ingest` bridge now builds its httpx client with the caller's `Authorization` header, so UASR sees the same identity as the gateway; an ingest response with status >= 400 now stops the run with a 502 naming the upstream status and how many rows were ingested before it failed (previously the error body was parsed as a result and every batch counted as ingested); a non-JSON body is a 502 too; a failing baseline registration now logs its HTTP status (still non-fatal, as before). Tests `tests/test_ingest_bridge_auth_and_status.py` (3): the auth-forwarding and error-status tests fail on the old code; the healthy path passes on both. 38 connection/ingestion tests pass. Not run against a real UASR service.
 
 ## BUG-230: Inbound hook target pipeline is never checked for ownership; firing the hook runs another tenant's pipeline
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode audit of `api_gateway/routers` (3 lenses + adversarial verify), 2026-09-29. The verifier confirmed it from the code; nothing was run end to end unless stated.
 - **Severity:** medium
 - **Root cause:** `api_gateway/routers/inbound_hooks.py` ~184: create_hook (line 72) and update_hook (line 97) accept `target` (a pipeline_id) with no check that the pipeline belongs to the caller's workspace. InboundHookRegistry.register and update in shared/inbound_hooks.py do not validate it either. The public fire path, _fire_pipeline, then loads the pipeline unscoped via get_pipeline(pipeline_id) (persistence.get_pipeline with workspace_id=None). It executes the pipeline with tenant = tenant_from_workspace_id(<owner's workspace>), so it runs with the victim's storage and sinks. BUG-016 scoped the hook CRUD but not the pipeline the hook points at.
 - **Caused by:** none -- pre-existing.
-- **Fix:** pending.
+- **Fix:** `POST /hooks` and `PATCH /hooks/{id}` now require a `pipeline` hook's target to be a pipeline in the caller's own workspace (`get_pipeline(target, workspace_id=caller)`), answering 404 -- the same as a missing pipeline -- so the response never confirms another tenant's id exists; `agent` hooks are unaffected (their fire path already carries the owner's workspace). The public fire path now loads the pipeline scoped to the HOOK OWNER's workspace, so a cross-tenant hook registered before this check existed also 404s instead of running the victim's pipeline. Tests `tests/test_inbound_hook_target_ownership.py` (4, real SQLite-persisted pipelines, hook registry redirected to a temp file): create, retarget and legacy-fire each fail on the old code; registering against your own pipeline passes on both. 57 hook/middleware tests pass.
 
 ## BUG-231: Lossy tenant slug makes different org_ids share one upload/storage directory (cross-tenant file read under OIDC domain mapping)
 - **Status:** open
