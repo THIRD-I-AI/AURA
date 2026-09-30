@@ -29,6 +29,10 @@ class LocalBackend(StorageBackend):
         d.mkdir(parents=True, exist_ok=True)
         return d
 
+    def tenant_dir(self, tenant: str) -> Path:
+        """The tenant's own directory on local disk (created if missing)."""
+        return self._dir(tenant)
+
     def _path(self, tenant: str, filename: str) -> Path:
         filename = safe_object_name(filename)
         return self._dir(tenant) / filename
