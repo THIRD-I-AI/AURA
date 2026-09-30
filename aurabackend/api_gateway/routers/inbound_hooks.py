@@ -59,6 +59,19 @@ class HookUpdateRequest(BaseModel):
     active: Optional[bool] = None
 
 
+async def _require_owned_pipeline(kind: Optional[str], target: Optional[str], workspace_id: str) -> None:
+    """BUG-230: a pipeline hook may only target a pipeline in the caller's own workspace.
+    Otherwise anyone could register a public hook that fires another tenant's pipeline
+    (it then ran with the victim's storage and sinks). Same 404 as a missing pipeline so
+    the response does not confirm that another tenant's id exists."""
+    if kind != "pipeline" or not target:
+        return
+    from api_gateway.persistence import get_pipeline
+
+    if not await get_pipeline(target, workspace_id=workspace_id):
+        raise HTTPException(status_code=404, detail=f"Pipeline '{target}' not found")
+
+
 # ── CRUD ───────────────────────────────────────────────────────────
 
 @router.get("/hooks")
@@ -71,6 +84,7 @@ async def list_hooks(request: Request) -> Dict[str, Any]:
 
 @router.post("/hooks")
 async def create_hook(req: HookCreateRequest, request: Request) -> Dict[str, Any]:
+    await _require_owned_pipeline(req.kind, req.target, current_workspace_id(request))
     try:
         hook = inbound_hooks.register(
             workspace_id=current_workspace_id(request),
@@ -96,6 +110,12 @@ async def get_hook(hook_id: str, request: Request) -> Dict[str, Any]:
 
 @router.patch("/hooks/{hook_id}")
 async def update_hook(hook_id: str, req: HookUpdateRequest, request: Request) -> Dict[str, Any]:
+    wsid = current_workspace_id(request)
+    if req.kind is not None or req.target is not None:
+        current = inbound_hooks.get(hook_id, wsid)
+        if current is None:
+            raise HTTPException(status_code=404, detail="Hook not found")
+        await _require_owned_pipeline(req.kind or current.kind, req.target or current.target, wsid)
     try:
         h = inbound_hooks.update(
             hook_id, current_workspace_id(request), **req.model_dump(exclude_none=True),
@@ -163,7 +183,7 @@ async def fire_hook(slug: str, request: Request) -> Dict[str, Any]:
         pass
 
     if hook.kind == "pipeline":
-        return await _fire_pipeline(hook.target, payload)
+        return await _fire_pipeline(hook.target, payload, hook.workspace_id)
     elif hook.kind == "agent":
         return await _fire_agent(hook.target, payload, hook.pass_payload_as, hook.workspace_id)
     else:
@@ -172,16 +192,17 @@ async def fire_hook(slug: str, request: Request) -> Dict[str, Any]:
 
 # ── Trigger helpers ────────────────────────────────────────────────
 
-async def _fire_pipeline(pipeline_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+async def _fire_pipeline(pipeline_id: str, payload: Dict[str, Any], owner_workspace_id: str) -> Dict[str, Any]:
     from api_gateway.persistence import get_pipeline, get_pipeline_workspace_id
     from pipeline.engine import PipelineEngine
     from pipeline.models import Pipeline as PipelineModel
 
     from .workspaces import tenant_from_workspace_id
 
-    # Trusted internal path (the registered hook is the auth boundary), so the
-    # pipeline is fetched unscoped from the durable store and rebuilt (S50).
-    definition = await get_pipeline(pipeline_id)
+    # The registered hook is the auth boundary, but only for its OWNER's pipelines
+    # (BUG-230): fetch scoped to the hook's workspace, so a hook that points at another
+    # tenant's pipeline -- including one registered before this check existed -- 404s.
+    definition = await get_pipeline(pipeline_id, workspace_id=owner_workspace_id)
     if not definition:
         raise HTTPException(status_code=404, detail=f"Pipeline '{pipeline_id}' not found")
     pipeline: PipelineModel = PipelineModel(**definition)
