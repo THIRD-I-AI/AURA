@@ -2632,12 +2632,12 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Fix:** pending.
 
 ## BUG-234: Dashboard tiles list is unbounded, and render runs every tile at once, each loading all of the tenant's tables into a new in-memory DuckDB
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode audit of `api_gateway/routers` (3 lenses + adversarial verify), 2026-09-29. The verifier confirmed it from the code; nothing was run end to end unless stated.
 - **Severity:** medium
 - **Root cause:** `api_gateway/routers/dashboards.py` ~61: DashboardCreate.tiles and DashboardUpdate.tiles are List[DashboardTileInput] with no max_length. render_dashboard (line 232) calls asyncio.gather on _run_tile for every tile with no semaphore. Each _run_tile opens new_connection() and calls build_schema_context_cached, which replays CREATE TABLE ... AS for every file the tenant has uploaded. Peak memory is therefore tiles x total size of the tenant's data, all at once on the single worker, and the concurrent to_thread calls also saturate the shared default thread pool.
 - **Caused by:** none -- pre-existing.
-- **Fix:** pending.
+- **Fix:** `DashboardCreate`/`DashboardUpdate.tiles` capped at `MAX_DASHBOARD_TILES = 50` (422 beyond; stored dashboards also capped at render). Render opens ONE connection via `_open_locked_tenant_connection` (tables loaded once, then `lock_down_connection`) and runs tiles sequentially on it; each tile reads `fetchmany(501)` and reports `truncated` instead of `fetchall()`. `row_count` is now the returned row count. Regression: `tests/test_dashboard_render_bounds.py` (old code: 70 table loads for 70 tiles, unbounded fetch, no cap).
 
 ## BUG-235: POST /chat/history stores any JSON value as metadata, and a non-object metadata makes GET /chat/history for that session return 500 permanently
 - **Status:** open
