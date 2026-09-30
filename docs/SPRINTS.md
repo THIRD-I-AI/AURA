@@ -250,6 +250,12 @@ S1-S6 pre-dated this registry; see commit `157b293` and earlier for that history
 | ~~**S30**~~ | ~~Ops~~ | ~~Mouni~~ | ~~CI/CD Pipeline (Build & Push to GHCR)~~ |
 | **S31a** | YC Demo — Service Front Door | **Rohith** · claimed 2026-05-30 · **SHIPPED** (PR #40, merged 2026-05-31; CI green incl. CodeQL) | Frontend pivot: reposition AURA as an AI-native audit service (not a tool). Public front door (hero + scenario grid), live estimator-checklist progress view, formal Audit Certificate page (hash + ED25519 badge + PDF download), public `/verify/{hash}` page, custom-audit wizard (replaces raw JSON editor). Adds `react-router-dom`; existing dashboard moves under `/app/*`. Branch: `feature/s31a-service-frontend`. Spec: `docs/superpowers/specs/2026-05-30-s31a-service-frontend-design.md`. Plan: `docs/superpowers/plans/2026-05-30-s31a-service-frontend.md` |
 | **S31b** | YC Demo — Audit Engine & Data | **Mounith** · claimed 2026-05-30 · status: spec landed, building MVP | Backend pivot: pre-loaded compliance demo dataset + scenario, persistent ED25519 signing key (non-ephemeral), IV estimator as 7th slot (S31 analytic depth), PDF report polish, single `/demo` endpoint that runs the full audit on pre-loaded data. Branch: `feature/s31b-audit-engine`. Spec: `docs/superpowers/specs/2026-05-29-s31b-audit-engine-design.md` |
+| **S55** | Trust defaults | unclaimed | DPC cross-check on for chat; approval-gated (risk-tiered) healing by default; persist UASR repair state. Lane B in `docs/STRATEGY.md`. Waits on the trust-defaults decision. |
+| **S56** | Tenancy | unclaimed | Close remaining tenant gaps (BUG-062 `users`/`data_sources`, metadata tables, BUG-072 shim scoping). Sole owner of Alembic migrations while in flight. Waits on the BUG-072 decision. |
+| **S57** | Data scientist | unclaimed | Predictive ML v1: tabular train / evaluate / predict, each run signed into the ledger. New `ml_service/` + gateway router. |
+| **S58** | Data engineer | unclaimed | Object-storage / Parquet (lakehouse) connector + user-declared data-quality tests. |
+| **S59** | Cross-role | unclaimed | End-to-end demo on real data: source → pipeline → UASR drift catch → analyst impact → causal "why" → signed result. After S57 + S58. |
+| **S60** | Data analyst | unclaimed | Analyst UX: unify chat UIs (BUG-139), migrate Cockpit (BUG-142), dataset-profile view (BUG-147), BUG-217..219. Frontend only. |
 
 **⚡ Action needed — claim your track:**
 - Update the Owner column above with your name + today's date
