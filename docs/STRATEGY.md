@@ -24,16 +24,17 @@ ledger — so the gap between roles is owned by the system.
 
 | Area | Gap |
 |---|---|
-| Engineer | 4 DB connectors; no object storage (S3/Parquet/Iceberg) or Snowflake found; no user-declared data-quality tests; UASR repair state in-memory; single node |
+| Engineer | 4 DB connectors; no object storage (S3/Parquet/Iceberg) or Snowflake found; no user-declared data-quality tests; single node |
 | Scientist | No predictive ML (train/evaluate/predict, experiment tracking) |
-| Analyst | DPC off by default on chat (`AURA_DPC_CHAT_ENABLED=0`); BUG-139, BUG-142, BUG-147 |
-| Cross-cutting | Tenant isolation partial (BUG-062, BUG-072); healing auto-deploys by default (`UASR_RISK_TIERED=false`); fixes since 2026-09-27 not live-verified |
+| Analyst | BUG-139, BUG-142, BUG-147 |
+| Cross-cutting | Tenant isolation partial (BUG-062, BUG-072); fixes since 2026-09-27 not live-verified |
+| Docs | README is stale: says DPC is off on chat and healing auto-deploys, but code defaults both safe (`agents/langgraph_orchestrator.py:206`, `uasr/service.py:117`); also says shims are lost on restart, but `hydrate_deployed_shims` reloads them |
 
 ## Roadmap
 
 | Phase | Work | Gate to next phase |
 |---|---|---|
-| 1. Harden (now) | BUG-226..245, S55, Dependabot triage, live verification | no `blocks-feature` bugs open; live verification green |
+| 1. Harden (now) | BUG-226..245, S55 truth pass, Dependabot triage, live verification | no `blocks-feature` bugs open; live verification green |
 | 2. Fill the roles | S56, S57, S58, S60 | tenant isolation complete; ML and lakehouse merged |
 | 3. Prove it | S59, pilot on a real dataset | one signed result through all three roles on real data |
 
@@ -47,7 +48,7 @@ the bottleneck, so at most ~5 new lanes run at once.
 | Lane | Work | Owns | Starts |
 |---|---|---|---|
 | A | Bug burn-down BUG-226..245 (existing session) | per bug, one PR each | running |
-| B | S55 trust defaults | `shared/config.py`, `agents/dpc_verifier.py`, `uasr/` config | now |
+| B | S55 trust truth pass: confirm safe defaults live, correct README | `README.md`, `scripts/verify_live_deployment.py` | now |
 | C | S56 tenant closure | `metadata_store/`, `alembic/` (sole migration owner) | after BUG-072 decision |
 | D | S57 predictive ML v1 | new `ml_service/`, new gateway router `ml.py` | now |
 | E | S58 lakehouse connector + data-quality tests | new files in `connectors/`, `connectors/registry.py` | now |
@@ -69,6 +70,6 @@ Coordination rules:
 ## Open decisions
 
 - BUG-072: scope shared shims per tenant, or disable cross-source shim borrowing until scoped? (gates lane C)
-- Trust defaults: DPC-on-chat and approval-gated healing everywhere, or production only? (gates lane B)
+- ~~Trust defaults~~ — decided 2026-09-30: on everywhere (already the code default); S55 verifies live.
 - Predictive ML v1 scope: tabular train/evaluate/predict only (suggested), or also serving + tracking?
 - Product shape: one self-serve workbench for all roles, or headless engine + internal review workbench?
