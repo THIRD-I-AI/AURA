@@ -2608,12 +2608,12 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Fix:** pending.
 
 ## BUG-231: Lossy tenant slug makes different org_ids share one upload/storage directory (cross-tenant file read under OIDC domain mapping)
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode audit of `api_gateway/routers` (3 lenses + adversarial verify), 2026-09-29. The verifier confirmed it from the code; nothing was run end to end unless stated.
 - **Severity:** medium
 - **Root cause:** `api_gateway/routers/workspaces.py` ~145: tenant_dir_name, and the byte-identical shared/storage/base.py tenant_slug, strip every character outside [A-Za-z0-9_-] and then strip leading and trailing -/_. Different org_ids therefore collapse to the same directory: 'example.com', 'examplec.om' and 'examp.lecom' all become 'examplecom', and 'acme' and 'acme-' also collide. DB rows are scoped on the raw org_id, but uploads, chat/query schema context (build_schema_context_cached(con, tenant)), ETL sources, file listing and deletion, and processed outputs are all keyed by the slug. shared/oidc.py map_org sets org_id to the verified email domain (or an hd/tid/org claim), so two distinct companies can land on one slug.
 - **Caused by:** none -- pre-existing.
-- **Fix:** pending.
+- **Fix:** Approved by the repo owner as "fix, no data moved". `shared/storage/base.py::tenant_slug` is now the single definition (`workspaces.tenant_dir_name` delegates to it, so the two can no longer drift): an id that is already safe (only [A-Za-z0-9_-], e.g. UUID org ids, 'default') keeps EXACTLY its old directory name; an id that loses characters gets `-<first 12 hex of sha256(original id)>` appended, so 'acme.com' / 'acmec.om' and workspace folder 'orgA::x' / tenant 'orgAx' no longer share a directory; empty/None is still 'default'. Production check (read-only SSH, 2026-09-30): the uploads root holds 8 folders, all UUID org ids plus 'default' -- all already safe, so this fix changes NO production folder name and needs no migration; there were no lossy/'::' folders to orphan. Knock-on: BUG-175's `schema_source_id` uses the same slug, so for lossy ids only, schema-index entries get new ids and are rebuilt on the next upload. Tests `tests/test_tenant_slug_lossless.py` (16): the 4 collision cases fail on the old code; the 12 compatibility/safety cases (safe ids unchanged, empty -> default, hostile ids stay confined, single definition) pass on both. 1,050 tests across 93 tenant/storage/workspace files pass.
 
 ## BUG-232: Connector routes open any server-side DuckDB file path supplied by the caller, exposing other tenants' .duckdb uploads
 - **Status:** open
