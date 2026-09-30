@@ -13,7 +13,8 @@ import os
 import secrets
 import threading
 import time
-from datetime import datetime
+import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -952,8 +953,19 @@ async def stop_saved_query_scheduler() -> None:
     _scheduler_stop = None
 
 
+class QueryHistoryRecord(BaseModel):
+    """BUG-233: the body used to be an unvalidated dict and the client chose the row's
+    primary key (`id`) and timestamp -- an over-long id broke the String(64) column and a
+    reused id was a 500. Both are server-generated now; the rest is bounded."""
+    prompt: str = Field("", max_length=10_000)
+    sql: str = Field("", max_length=100_000)
+    status: str = Field("success", max_length=32)
+    rows: int = Field(0, ge=0)
+    executionTime: float = Field(0.0, ge=0)
+
+
 @router.post("/query-history")
-async def save_query_history(payload: Dict[str, Any], request: Request):
+async def save_query_history(payload: QueryHistoryRecord, request: Request):
     """Save a query execution record, stamped with the caller's own
     workspace. Sprint P-1: backed by ``gateway_query_history`` with the
     200-row cap enforced inside the persistence layer.
@@ -964,12 +976,12 @@ async def save_query_history(payload: Dict[str, Any], request: Request):
     from api_gateway import persistence
     wsid = current_workspace_id(request)
     record = {
-        "id": payload.get("id", f"q_{int(datetime.now().timestamp() * 1000)}"),
+        "id": f"q_{uuid.uuid4().hex}",
         "workspace_id": wsid,
-        "prompt": payload.get("prompt", ""), "sql": payload.get("sql", ""),
-        "status": payload.get("status", "success"), "rows": payload.get("rows", 0),
-        "executionTime": payload.get("executionTime", 0),
-        "timestamp": payload.get("timestamp", datetime.now().isoformat()),
+        "prompt": payload.prompt, "sql": payload.sql,
+        "status": payload.status, "rows": payload.rows,
+        "executionTime": payload.executionTime,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
     }
     await persistence.insert_query_history(record)
     return {"success": True, "id": record["id"]}

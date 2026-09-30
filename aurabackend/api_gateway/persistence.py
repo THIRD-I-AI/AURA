@@ -586,17 +586,24 @@ async def insert_query_history(record: Dict[str, Any]) -> None:
         )
         s.add(row)
         await s.flush()
-        # Cap eviction: delete rows beyond the 200th newest. Postgres
-        # + SQLite both support the subquery pattern.
+        # Cap eviction: keep the 200 newest rows OF THIS WORKSPACE. BUG-233: the cap
+        # was global, so one tenant saving 200 queries evicted every other tenant's
+        # history. Postgres + SQLite both support the subquery pattern.
+        wsid = record.get("workspace_id")
+        in_ws = (
+            QueryHistoryRow.workspace_id.is_(None) if wsid is None
+            else QueryHistoryRow.workspace_id == wsid
+        )
         keep_ids_q = (
             select(QueryHistoryRow.id)
+            .where(in_ws)
             .order_by(QueryHistoryRow.created_ts.desc())
             .limit(QUERY_HISTORY_CAP)
         )
         keep_ids = (await s.execute(keep_ids_q)).scalars().all()
         if keep_ids:
             await s.execute(
-                delete(QueryHistoryRow).where(
+                delete(QueryHistoryRow).where(in_ws).where(
                     QueryHistoryRow.id.notin_(keep_ids),
                 ),
             )

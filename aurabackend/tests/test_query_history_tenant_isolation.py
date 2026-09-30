@@ -93,14 +93,34 @@ async def test_save_query_history_stamps_callers_workspace_not_client_payload(
         "executionTime": 5.0,
     }
 
-    resp = await queries_mod.save_query_history(payload, _FakeRequest("orgA"))
+    resp = await queries_mod.save_query_history(
+        queries_mod.QueryHistoryRecord(**payload), _FakeRequest("orgA"),
+    )
     assert resp["success"] is True
 
     seen_by_a = await persistence.list_query_history(workspace_id="orgA")
     seen_by_b = await persistence.list_query_history(workspace_id="orgB")
 
-    assert [q["id"] for q in seen_by_a] == ["spoofed_1"]
+    # BUG-233: the id is server-generated now; the client's "spoofed_1" is ignored.
+    assert [q["id"] for q in seen_by_a] == [resp["id"]]
+    assert resp["id"] != "spoofed_1" and resp["id"].startswith("q_")
     assert seen_by_b == [], "client-supplied workspace_id won over the caller's real tenant"
+
+
+@pytest.mark.asyncio
+async def test_one_workspace_filling_its_cap_does_not_evict_another_workspaces_history(
+    gateway_db,
+) -> None:
+    """BUG-233: the 200-row cap was global -- orgB saving 200+ queries wiped orgA's."""
+    for i in range(3):
+        await persistence.insert_query_history(_history_record(i, "orgA"))
+    for i in range(persistence.QUERY_HISTORY_CAP + 5):
+        await persistence.insert_query_history(_history_record(i, "orgB"))
+
+    seen_by_a = await persistence.list_query_history(workspace_id="orgA", limit=500)
+    seen_by_b = await persistence.list_query_history(workspace_id="orgB", limit=500)
+    assert len(seen_by_a) == 3
+    assert len(seen_by_b) == persistence.QUERY_HISTORY_CAP
 
 
 @pytest.mark.asyncio
