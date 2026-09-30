@@ -3,7 +3,11 @@ and must not count a batch as ingested when UASR answers with an HTTP error."""
 import httpx
 import pytest
 
-from tests.test_connections_row_ceiling import client, duckdb_source  # noqa: F401  (fixtures)
+from tests.test_connections_row_ceiling import (  # noqa: F401  (fixtures; _isolated_uploads is autouse)
+    _isolated_uploads,
+    client,
+    duckdb_source,
+)
 
 V1 = "/api/v1"
 

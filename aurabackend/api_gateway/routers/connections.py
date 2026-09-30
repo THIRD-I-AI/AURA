@@ -44,13 +44,53 @@ router = APIRouter(tags=["Connections"])
 # password outright, so nothing stored here could ever authenticate.
 
 
-def _make_connector(conn_type: str, config: ConnectorConfig):
+# Connector types that open a file on the SERVER at a path taken from the config.
+_SERVER_FILE_CONNECTORS = frozenset({"duckdb", "duckdb_spatial", "faiss"})
+
+
+def _confine_server_file_paths(conn_type: str, config: ConnectorConfig, http_request: Request) -> None:
+    """BUG-232: a DuckDB/FAISS config names a path on the gateway's own disk, and nothing
+    confined it -- a caller could open another tenant's uploaded .duckdb by absolute path
+    (then /sync copies its tables into their own uploads), or make duckdb.connect create a
+    file anywhere the process can write. Allow ':memory:' or a path inside the caller's own
+    upload directory (created there if new); rewrite it to the resolved absolute path."""
+    if conn_type not in _SERVER_FILE_CONNECTORS:
+        return
+    from shared.storage import get_storage_backend
+    from shared.storage.local import LocalBackend
+
+    # The tenant's files live wherever the ACTIVE storage backend puts them; with a
+    # remote backend (S3) there is no local directory at all, so only ':memory:' passes.
+    backend = get_storage_backend()
+    root = (
+        os.path.realpath(backend.tenant_dir(_request_tenant(http_request)))
+        if isinstance(backend, LocalBackend) else None
+    )
+    for attr in ("connection_string", "database"):
+        raw = getattr(config, attr, None)
+        if not raw or raw == ":memory:":
+            continue
+        resolved = None
+        if root is not None:
+            candidate = raw if os.path.isabs(raw) else os.path.join(root, raw)
+            resolved = os.path.realpath(candidate)
+        if resolved is None or os.path.commonpath([resolved, root]) != root:
+            raise HTTPException(
+                status_code=400,
+                detail=f"{conn_type} path must be ':memory:' or a file in your own uploads",
+            )
+        setattr(config, attr, resolved)
+
+
+def _make_connector(conn_type: str, config: ConnectorConfig, http_request: Request):
     """Construct a connector via the central registry.
 
     DB-agnostic: any connector registered with a ``factory`` — built-in
     or a third-party ``aura.connectors`` entry-point plugin — is built
     the same way, with no hardcoded type->class switch to keep in sync.
+    Server-local file connectors are confined to the caller's uploads first.
     """
+    _confine_server_file_paths(conn_type, config, http_request)
     return build_connector(conn_type, config)
 
 
@@ -205,13 +245,13 @@ def _build_connector_config(connector_type: str, label: str, config: Dict[str, A
 
 
 @router.post("/connectors/{connector_type}/test")
-async def test_connector(connector_type: str, config: Dict[str, Any]):
+async def test_connector(connector_type: str, config: Dict[str, Any], http_request: Request):
     """Test connector configuration."""
     try:
         connector_config = _build_connector_config(
             connector_type, f"test-{connector_type}", config
         )
-        connector = _make_connector(connector_type, connector_config)
+        connector = _make_connector(connector_type, connector_config, http_request)
         if connector is None:
             raise ValueError(f"Unknown connector type: {connector_type}")
 
@@ -221,22 +261,26 @@ async def test_connector(connector_type: str, config: Dict[str, Any]):
             await connector.disconnect()
             return {"success": True, "message": f"Connected successfully. Found {len(tables)} tables.", "table_count": len(tables)}
         return {"success": False, "message": "Failed to connect", "error": "Connection failed"}
+    except HTTPException:
+        raise
     except Exception as e:
         return {"success": False, "message": "Test failed", "error": sanitize_error(e, logger=logger, context="connector test")}
 
 
 @router.post("/connectors/{connector_type}/tables")
-async def list_connector_tables(connector_type: str, config: Dict[str, Any]) -> ConnectorTableListResponse:
+async def list_connector_tables(connector_type: str, config: Dict[str, Any], http_request: Request) -> ConnectorTableListResponse:
     """List tables from a connector."""
     try:
         connector_config = _build_connector_config(connector_type, f"list-{connector_type}", config)
-        connector = _make_connector(connector_type, connector_config)
+        connector = _make_connector(connector_type, connector_config, http_request)
         if connector is None:
             raise ValueError(f"Unknown connector type: {connector_type}")
         await connector.connect()
         tables = await connector.list_tables()
         await connector.disconnect()
         return ConnectorTableListResponse(connector_id=f"test-{connector_type}", tables=tables, total_count=len(tables))
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -245,20 +289,22 @@ async def list_connector_tables(connector_type: str, config: Dict[str, Any]) -> 
 
 
 @router.post("/connectors/{connector_type}/profile")
-async def profile_table(connector_type: str, request: ProfileTableRequest) -> Dict[str, Any]:
+async def profile_table(connector_type: str, request: ProfileTableRequest, http_request: Request) -> Dict[str, Any]:
     """Profile a table from connector."""
     # BUG-198: the sibling sync/ingest routes check the table name; this one did not.
     if not _IDENT_RE.match(request.table_name):
         raise HTTPException(status_code=400, detail=f"Invalid table name: {request.table_name!r}")
     try:
         connector_config = _build_connector_config(connector_type, f"profile-{connector_type}", request.connector_config)
-        connector = _make_connector(connector_type, connector_config)
+        connector = _make_connector(connector_type, connector_config, http_request)
         if connector is None:
             raise ValueError(f"Unknown connector type: {connector_type}")
         await connector.connect()
         profile = await connector.profile_table(request.table_name)
         await connector.disconnect()
         return profile
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -323,6 +369,12 @@ async def create_connection(req: ConnectionCreateRequest, request: Request):
         )
 
     extra = _validated_extra(spec, req.extra)
+    database = req.database
+    if req.type in _SERVER_FILE_CONNECTORS:
+        # BUG-232: refuse at save time too, and store the resolved in-uploads path.
+        probe = ConnectorConfig(source_type=SourceType(req.type), name="probe", database=database)
+        _confine_server_file_paths(req.type, probe, request)
+        database = probe.database
 
     ts = datetime.now()
     now = ts.isoformat()
@@ -330,7 +382,7 @@ async def create_connection(req: ConnectionCreateRequest, request: Request):
         "id": str(_uuid.uuid4()),
         "workspace_id": current_workspace_id(request),
         "name": req.name, "type": req.type,
-        "host": req.host, "port": req.port, "database": req.database,
+        "host": req.host, "port": req.port, "database": database,
         "username": req.username, "ssl": req.ssl,
         "created_at": now, "created_ts": ts.timestamp(), "updated_at": now,
     }
@@ -359,7 +411,7 @@ async def test_connection_by_id(connection_id: str, request: Request):
         connector_config = _stored_connector_config(
             conn, password, await persistence.get_connection_extra(connection_id, wsid),
         )
-        connector = _make_connector(conn["type"], connector_config)
+        connector = _make_connector(conn["type"], connector_config, request)
         if connector is None:
             return {"success": True, "message": f"Connection type '{conn['type']}' registered (test skipped)"}
         connected = await connector.connect()
@@ -407,7 +459,7 @@ async def get_connection_schema(connection_id: str, request: Request):
         connector_config = _stored_connector_config(
             conn, password, await persistence.get_connection_extra(connection_id, wsid),
         )
-        connector = _make_connector(conn["type"], connector_config)
+        connector = _make_connector(conn["type"], connector_config, request)
         if connector is None:
             return {"success": True, "schema": {}, "message": "Schema introspection not available for this type"}
         await connector.connect()
@@ -499,7 +551,7 @@ async def ingest_connector_data(connector_type: str, req: ConnectorIngestRequest
     except (ValueError, TypeError) as e:
         raise HTTPException(status_code=400, detail=sanitize_error(e, logger=logger, context="ingest config"))
 
-    connector = _make_connector(connector_type, connector_config)
+    connector = _make_connector(connector_type, connector_config, request)
     if connector is None:
         raise HTTPException(status_code=400, detail=f"Connector type '{connector_type}' does not support ingest")
 
@@ -728,7 +780,7 @@ async def sync_connection_table(connection_id: str, req: ConnectionSyncRequest, 
     connector_config = _stored_connector_config(
         conn, password, await persistence.get_connection_extra(connection_id, wsid),
     )
-    connector = _make_connector(conn["type"], connector_config)
+    connector = _make_connector(conn["type"], connector_config, request)
     if connector is None:
         raise HTTPException(status_code=400, detail=f"Connector type '{conn['type']}' does not support sync")
 

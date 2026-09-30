@@ -56,7 +56,11 @@ def duckdb_source(tmp_path):
     pytest.importorskip("duckdb", reason="duckdb not installed")
     import duckdb
 
-    db_path = tmp_path / "source.duckdb"
+    # BUG-232: a DuckDB connection may only open a file inside the caller's own
+    # uploads (default tenant here, under the AURA_UPLOADS_ROOT set by _isolated_uploads).
+    tenant_dir = tmp_path / "uploads" / "default"
+    tenant_dir.mkdir(parents=True, exist_ok=True)
+    db_path = tenant_dir / "source.duckdb"
     con = duckdb.connect(str(db_path))
     con.execute("CREATE TABLE customers (id INTEGER, name VARCHAR, spend DOUBLE)")
     con.execute(
