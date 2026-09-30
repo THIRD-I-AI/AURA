@@ -28,7 +28,7 @@ ledger — so the gap between roles is owned by the system.
 | Scientist | No predictive ML (train/evaluate/predict, experiment tracking) |
 | Analyst | BUG-139, BUG-142, BUG-147 |
 | Cross-cutting | Tenant isolation partial (BUG-062, BUG-072); fixes since 2026-09-27 not live-verified |
-| Docs | README is stale: says DPC is off on chat and healing auto-deploys, but code defaults both safe (`agents/langgraph_orchestrator.py:206`, `uasr/service.py:117`); also says shims are lost on restart, but `hydrate_deployed_shims` reloads them |
+| Docs | ~~README stale on trust defaults and shim persistence~~ — corrected 2026-09-30 (this PR) |
 
 ## Roadmap
 
