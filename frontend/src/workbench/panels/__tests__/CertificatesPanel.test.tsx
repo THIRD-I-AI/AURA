@@ -65,4 +65,29 @@ describe('CertificatesPanel', () => {
       expect(screen.getByText(/HTTP 404: unknown record/)).toBeInTheDocument();
     });
   });
+
+  // BUG-254: Enter starts a lookup even while one is in flight; the slow first
+  // lookup used to land last and overwrite the newer hash's result.
+  it('a slower earlier lookup does not overwrite the latest one', async () => {
+    const first = 'a'.repeat(64);
+    const second = 'b'.repeat(64);
+    let resolveFirst: (v: Awaited<ReturnType<typeof auditApi.verify>>) => void = () => undefined;
+    vi.spyOn(auditApi, 'verify').mockImplementation((hash: string) =>
+      hash === first
+        ? new Promise((res) => { resolveFirst = res; })
+        : Promise.resolve({ record_hash: second, verified: true, signature_status: 'signed', signing_key_source: 'persisted_file' }));
+    vi.spyOn(auditApi, 'getArtifact').mockRejectedValue(new Error('404'));
+    renderPanel();
+    const user = userEvent.setup();
+    const input = screen.getByLabelText(/certificate record hash/i);
+    await user.type(input, `${first}{Enter}`);
+    await user.clear(input);
+    await user.type(input, `${second}{Enter}`);
+    await waitFor(() => expect(screen.getByTestId('wb-certificate-result')).toHaveTextContent(second));
+
+    resolveFirst({ record_hash: first, verified: false, signature_status: 'tampered', signing_key_source: 'persisted_file' });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(screen.getByTestId('wb-certificate-result')).toHaveTextContent(second);
+    expect(screen.getByTestId('wb-certificate-result')).not.toHaveTextContent(first);
+  });
 });

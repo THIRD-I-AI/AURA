@@ -7,7 +7,7 @@
    SchedulerPanel's inline-expand-in-place pattern (frontend.md: "row actions
    live inline ... not a modal, for anything already visible in a dense
    table") rather than opening a Sheet/dialog. */
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { RefreshCw, DatabaseZap, Plus } from 'lucide-react';
 
 import { Panel } from '@/components/ui-kit/panel';
@@ -141,7 +141,12 @@ export default function ConnectorsPanel() {
 
   useEffect(() => { load(); }, [load]);
 
+  // BUG-254: a slow schema response for a previously opened row must not fill the
+  // picker of the row opened after it (its tables would be synced from the wrong source).
+  const pickerSeq = useRef(0);
+
   const closePicker = useCallback(() => {
+    pickerSeq.current += 1;
     setPickerRowId(null);
     setTables(null);
     setSelectedTable('');
@@ -157,12 +162,15 @@ export default function ConnectorsPanel() {
     setSchemaError(null);
     setSyncError(null);
     setSyncResult(null);
+    const request = ++pickerSeq.current;
     try {
       const schema = await connectorService.getSchema(id);
+      if (request !== pickerSeq.current) return;
       const names = Object.keys(schema);
       setTables(names);
       setSelectedTable(names[0] ?? '');
     } catch {
+      if (request !== pickerSeq.current) return;
       setSchemaError(`Could not load tables for "${c.name || c.source_id || 'this connection'}".`);
       setTables([]);
     }
