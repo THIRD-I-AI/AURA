@@ -97,7 +97,7 @@ export default function LineagePanel() {
     <div className="flex flex-col gap-3.5" data-testid="wb-lineage-panel">
       <div className="flex items-center gap-3">
         <span className="font-mono text-2xs text-text-tertiary">
-          {graph === null ? 'loading…' : `${nodes.length} nodes · ${edges.length} edges · provenance graph`}
+          {graph === null ? (error ? 'unavailable' : 'loading…') : `${nodes.length} nodes · ${edges.length} edges · provenance graph`}
         </span>
         <div className="flex-1" />
         <Button variant="outline" size="sm" onClick={load}>

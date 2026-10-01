@@ -171,7 +171,7 @@ select {
   color: var(--text-primary);
   background: var(--bg-sunken);
   border: 1px solid var(--border-default);
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-none);
   outline: none;
   transition: border-color var(--dur-fast) var(--ease-out),
               box-shadow var(--dur-fast) var(--ease-out);
@@ -193,7 +193,7 @@ select {
 input::placeholder, textarea::placeholder { color: var(--text-tertiary); }
 input:focus, textarea:focus, select:focus {
   border-color: var(--border-focus);
-  box-shadow: 0 0 0 3px rgba(59,130,246,0.12);
+  box-shadow: 0 0 0 3px var(--accent-dim);
 }
 input:disabled, textarea:disabled, select:disabled {
   opacity: 0.45;

@@ -46,7 +46,7 @@ export default function StreamingPanel() {
     <div className="flex flex-col gap-3.5" data-testid="wb-streaming-panel">
       <div className="flex items-center gap-3">
         <span className="font-mono text-2xs text-text-tertiary">
-          {items === null ? 'loading…' : `${count} streaming pipeline${count === 1 ? '' : 's'} · watermark-driven, self-healing`}
+          {items === null ? (error ? 'unavailable' : 'loading…') : `${count} streaming pipeline${count === 1 ? '' : 's'} · watermark-driven, self-healing`}
         </span>
         <div className="flex-1" />
         <Button variant="outline" size="sm" onClick={load}>

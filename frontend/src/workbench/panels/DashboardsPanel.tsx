@@ -163,7 +163,7 @@ export default function DashboardsPanel() {
     <div className="flex flex-col gap-3.5" data-testid="wb-dashboards-panel">
       <div className="flex items-center gap-3">
         <span className="font-mono text-2xs text-text-tertiary">
-          {items === null ? 'loading…' : `${count} dashboard${count === 1 ? '' : 's'} · this workspace`}
+          {items === null ? (error ? 'unavailable' : 'loading…') : `${count} dashboard${count === 1 ? '' : 's'} · this workspace`}
         </span>
         <div className="flex-1" />
         <Button size="sm" onClick={() => (creating ? setCreating(false) : openCreate())} aria-expanded={creating}>

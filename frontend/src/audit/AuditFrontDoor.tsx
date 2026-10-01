@@ -31,9 +31,13 @@ export function AuditFrontDoor({ embedded = false }: { embedded?: boolean } = {}
 
   return (
     <div data-testid="audit-front-door">
-      {!embedded && <AuthNav />}
-      <h1 className="text-3xl font-extrabold tracking-[-0.03em] m-0">Cryptographically-verifiable compliance audits</h1>
-      <p className="text-text-secondary mt-2 mb-5 max-w-[60ch]">
+      <div className="flex flex-wrap items-start justify-between gap-x-8 gap-y-3">
+        <h1 className="m-0 max-w-[24ch] font-display text-[clamp(1.9rem,4.2vw,3.25rem)] leading-[1.05] font-bold tracking-[-0.035em] text-balance">
+          Cryptographically-verifiable compliance audits
+        </h1>
+        {!embedded && <AuthNav />}
+      </div>
+      <p className="text-text-secondary text-lg leading-relaxed mt-4 mb-6 max-w-[56ch]">
         Pick a regulated-decision scenario. Watch the audit run. Get a signed
         certificate anyone can verify.
       </p>

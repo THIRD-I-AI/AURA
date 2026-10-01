@@ -121,7 +121,7 @@ export default function FilesAndDataPanel() {
     <div className="flex flex-col gap-3.5" data-testid="wb-files-panel">
       <div className="flex flex-wrap items-center gap-3">
         <span className="font-mono text-2xs text-text-tertiary">
-          {files === null ? 'loading…' : `${count} dataset${count === 1 ? '' : 's'} · ${fmtSize(totalBytes)} · workspace uploads`}
+          {files === null ? (error ? 'unavailable' : 'loading…') : `${count} dataset${count === 1 ? '' : 's'} · ${fmtSize(totalBytes)} · workspace uploads`}
         </span>
         <div className="flex-1" />
         <input ref={inputRef} type="file" accept=".csv,.xlsx,.json,.parquet" onChange={onFile} className="hidden" data-testid="wb-files-input" />

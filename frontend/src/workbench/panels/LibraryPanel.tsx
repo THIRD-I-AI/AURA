@@ -172,7 +172,7 @@ export default function LibraryPanel() {
     <div className="flex flex-col gap-3.5" data-testid="wb-library-panel">
       <div className="flex items-center gap-3">
         <span className="font-mono text-2xs text-text-tertiary">
-          {items === null ? 'loading…' : `${count} saved quer${count === 1 ? 'y' : 'ies'}${starred ? ` · ${starred} starred` : ''}`}
+          {items === null ? (error ? 'unavailable' : 'loading…') : `${count} saved quer${count === 1 ? 'y' : 'ies'}${starred ? ` · ${starred} starred` : ''}`}
         </span>
         <div className="flex-1" />
         <Button size="sm" onClick={() => { setCreating((v) => !v); setFormError(null); }} aria-expanded={creating}>

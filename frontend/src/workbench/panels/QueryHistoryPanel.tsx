@@ -119,7 +119,7 @@ export default function QueryHistoryPanel() {
     <div className="flex flex-col gap-3.5" data-testid="wb-queries-panel">
       <div className="flex items-center gap-3">
         <span className="font-mono text-2xs text-text-tertiary">
-          {rows === null ? 'loading…' : `${count} quer${count === 1 ? 'y' : 'ies'} · this workspace`}
+          {rows === null ? (error ? 'unavailable' : 'loading…') : `${count} quer${count === 1 ? 'y' : 'ies'} · this workspace`}
         </span>
         <div className="flex-1" />
         <Button variant="outline" size="sm" onClick={load}>
