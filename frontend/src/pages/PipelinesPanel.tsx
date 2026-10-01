@@ -4,7 +4,7 @@ import { type PageType } from '../lib/pageTypes';
 import {
   etlService,
   pipelineService,
-  API_BASE_URL,
+  uploadService,
   type ETLColumnSchema,
   type ETLTransformStep,
   type ETLSourcePreview,
@@ -172,6 +172,7 @@ const PipelinesPanel: React.FC<PipelinesPanelProps> = () => {
   // ── State ──
   const [pipelineName, setPipelineName] = useState('');
   const [sourceFiles, setSourceFiles] = useState<string[]>([]);
+  const [sourceFilesError, setSourceFilesError] = useState(false);
   const [selectedSource, setSelectedSource] = useState('');
   const [sourcePreview, setSourcePreview] = useState<ETLSourcePreview | null>(null);
   const [transforms, setTransforms] = useState<ETLTransformStep[]>([]);
@@ -283,19 +284,20 @@ const PipelinesPanel: React.FC<PipelinesPanelProps> = () => {
   };
 
   const fetchSourceFiles = async () => {
+    // BUG-251: this was a bare fetch with no Authorization header, so the gateway
+    // never listed the signed-in user's uploads and the dropdown stayed empty.
     try {
-      const resp = await fetch(`${API_BASE_URL}/files`);
-      const data = await resp.json();
-      if (data.status === 'success' && data.files) {
-        const DATA_EXTENSIONS = ['.csv', '.json', '.parquet'];
-        const names = data.files
-          .map((f: any) => f.name || f.filename)
-          .filter((n: string) => n && DATA_EXTENSIONS.some(ext => n.toLowerCase().endsWith(ext)));
-        setSourceFiles(names);
-      }
-    } catch (err) {
-      console.error('[ETL] Failed to fetch source files:', err);
+      const DATA_EXTENSIONS = ['.csv', '.json', '.parquet'];
+      const files = await uploadService.getUploadedFiles();
+      setSourceFilesError(false);
+      setSourceFiles(
+        files
+          .map(f => f.filename)
+          .filter(n => n && DATA_EXTENSIONS.some(ext => n.toLowerCase().endsWith(ext))),
+      );
+    } catch {
       setSourceFiles([]);
+      setSourceFilesError(true);
     }
   };
 
@@ -637,6 +639,9 @@ const PipelinesPanel: React.FC<PipelinesPanelProps> = () => {
               rows={4}
             />
             <div className="flex flex-wrap items-center gap-3">
+              {sourceFilesError && (
+                <span role="alert" className="font-mono text-2xs text-danger">Could not load your uploaded files</span>
+              )}
               {sourceFiles.length > 0 && (
                 <select
                   className={cn(SELECT, 'max-w-[260px]')}
@@ -891,6 +896,9 @@ const PipelinesPanel: React.FC<PipelinesPanelProps> = () => {
           <Button type="button" variant="outline" size="icon" onClick={fetchSourceFiles} title="Refresh file list">
             <RefreshCw className="size-3.5" />
           </Button>
+          {sourceFilesError && (
+            <span role="alert" className="font-mono text-2xs text-danger">Could not load your uploaded files</span>
+          )}
         </div>
 
         {isLoading && !result && !sourcePreview && (
