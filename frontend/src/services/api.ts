@@ -989,6 +989,8 @@ export interface RenderedTile {
   columns: string[];
   rows: Array<Array<unknown>>;
   row_count: number;
+  /** The gateway returned only the first rows of a larger result (BUG-234). */
+  truncated?: boolean;
   execution_time_ms: number;
   error?: string | null;
 }
