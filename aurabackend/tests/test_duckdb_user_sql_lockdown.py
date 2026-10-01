@@ -68,15 +68,23 @@ def test_saved_query_runner_cannot_read_local_files(tenant_upload, secret_file):
 def test_dashboard_tile_cannot_read_local_files(tenant_upload, secret_file):
     from starlette.requests import Request
 
-    from api_gateway.routers.dashboards import _run_tile
+    from api_gateway.routers.dashboards import _open_locked_tenant_connection, _run_tile
 
     req = Request({"type": "http", "method": "GET", "headers": [], "query_string": b"", "path": "/x"})
     tile = {"id": "t1", "saved_query_id": "q1", "title": "x", "chart_type": "table"}
 
-    good = asyncio.run(_run_tile(tile, [{"id": "q1", "name": "n", "sql": "SELECT COUNT(*) AS c FROM orders"}], req))
+    async def _render_one(sql):
+        # the same connection setup render_dashboard uses (BUG-234 moved it out of _run_tile)
+        con = await _open_locked_tenant_connection(req)
+        try:
+            return await _run_tile(tile, [{"id": "q1", "name": "n", "sql": sql}], con)
+        finally:
+            con.close()
+
+    good = asyncio.run(_render_one("SELECT COUNT(*) AS c FROM orders"))
     assert good.get("status") != "error" and good["row_count"] == 1
 
-    bad = asyncio.run(_run_tile(tile, [{"id": "q1", "name": "n", "sql": f"SELECT * FROM read_text('{secret_file}')"}], req))
+    bad = asyncio.run(_render_one(f"SELECT * FROM read_text('{secret_file}')"))
     assert SECRET not in str(bad), "the tile returned the contents of a local file"
     assert bad.get("status") == "error"
 

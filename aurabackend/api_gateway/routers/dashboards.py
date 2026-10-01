@@ -55,16 +55,22 @@ class DashboardTileInput(BaseModel):
     )
 
 
+# BUG-234: bounded -- every tile is a stored query executed on each render.
+MAX_DASHBOARD_TILES = 50
+# Rows returned per tile (read at most one more to know whether it was truncated).
+_TILE_PREVIEW_ROWS = 500
+
+
 class DashboardCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=200)
     description: Optional[str] = None
-    tiles: List[DashboardTileInput] = Field(default_factory=list)
+    tiles: List[DashboardTileInput] = Field(default_factory=list, max_length=MAX_DASHBOARD_TILES)
 
 
 class DashboardUpdate(BaseModel):
     name: Optional[str] = None
     description: Optional[str] = None
-    tiles: Optional[List[DashboardTileInput]] = None
+    tiles: Optional[List[DashboardTileInput]] = Field(None, max_length=MAX_DASHBOARD_TILES)
 
 
 # ── Helpers ─────────────────────────────────────────────────────────
@@ -150,7 +156,23 @@ async def delete_dashboard(dashboard_id: str, request: Request):
 
 # ── Render: execute every tile ──────────────────────────────────────
 
-async def _run_tile(tile: Dict[str, Any], saved_queries: List[Dict[str, Any]], request: Request) -> Dict[str, Any]:
+async def _open_locked_tenant_connection(request: Request) -> Any:
+    """One DuckDB connection holding the caller's tables, locked down (BUG-196) before
+    any stored, unvalidated tile SQL runs on it. The caller closes it."""
+    from shared.data_utils import build_schema_context_cached
+    from shared.duckdb_factory import lock_down_connection, new_connection
+
+    con = new_connection()
+    try:
+        await build_schema_context_cached(con, _request_tenant(request), use_llm=False)
+        lock_down_connection(con)
+    except Exception:
+        con.close()
+        raise
+    return con
+
+
+async def _run_tile(tile: Dict[str, Any], saved_queries: List[Dict[str, Any]], con: Any) -> Dict[str, Any]:
     sq = next((q for q in saved_queries if q["id"] == tile["saved_query_id"]), None)
     if sq is None:
         return {
@@ -166,24 +188,18 @@ async def _run_tile(tile: Dict[str, Any], saved_queries: List[Dict[str, Any]], r
             "execution_time_ms": 0,
         }
 
-    from shared.data_utils import build_schema_context_cached
-    from shared.duckdb_factory import lock_down_connection, new_connection
-
-    tenant = _request_tenant(request)
-    con = new_connection()
     started = time.perf_counter()
     try:
-        await build_schema_context_cached(con, tenant, use_llm=False)
-        lock_down_connection(con)  # BUG-196: stored, unvalidated SQL runs next
-
         def _run() -> tuple[list[str], list[tuple]]:
             cur = con.execute(sq["sql"])
-            return [d[0] for d in cur.description], cur.fetchall()
+            return [d[0] for d in cur.description], cur.fetchmany(_TILE_PREVIEW_ROWS + 1)
 
         columns, rows = await asyncio.to_thread(_run)
         elapsed = (time.perf_counter() - started) * 1000
-        # Cap preview to 500 rows so dashboards don't push megabytes per tile
-        preview_rows = rows[:500]
+        # BUG-234: read at most one row past the preview instead of fetchall()-ing the
+        # whole result only to keep 500 of it.
+        truncated = len(rows) > _TILE_PREVIEW_ROWS
+        preview_rows = rows[:_TILE_PREVIEW_ROWS]
         return {
             "tile_id": tile["id"],
             "saved_query_id": tile["saved_query_id"],
@@ -192,7 +208,8 @@ async def _run_tile(tile: Dict[str, Any], saved_queries: List[Dict[str, Any]], r
             "status": "success",
             "columns": columns,
             "rows": [list(r) for r in preview_rows],
-            "row_count": len(rows),
+            "row_count": len(preview_rows),
+            "truncated": truncated,
             "execution_time_ms": round(elapsed, 1),
         }
     except Exception as exc:  # noqa: BLE001
@@ -208,11 +225,6 @@ async def _run_tile(tile: Dict[str, Any], saved_queries: List[Dict[str, Any]], r
             "row_count": 0,
             "execution_time_ms": round((time.perf_counter() - started) * 1000, 1),
         }
-    finally:
-        try:
-            con.close()
-        except Exception:
-            pass
 
 
 @router.post("/dashboards/{dashboard_id}/render")
@@ -229,10 +241,21 @@ async def render_dashboard(dashboard_id: str, request: Request):
     # index — no more O(n) Python filter.
     saved_queries = await persistence.list_saved_queries(wsid)
 
-    tile_results = await asyncio.gather(
-        *[_run_tile(t, saved_queries, request) for t in record.get("tiles", [])],
-        return_exceptions=False,
-    )
+    # BUG-234: every tile used to open its own connection and load ALL of the tenant's
+    # tables, all tiles at once -- N full copies of the tenant's data in memory per
+    # render. Load once into one locked-down connection and run the tiles in order.
+    # Dashboards saved before the tile cap existed are still capped here.
+    con = await _open_locked_tenant_connection(request)
+    try:
+        tile_results = [
+            await _run_tile(t, saved_queries, con)
+            for t in record.get("tiles", [])[:MAX_DASHBOARD_TILES]
+        ]
+    finally:
+        try:
+            con.close()
+        except Exception:
+            pass
     return {
         "success": True,
         "dashboard_id": dashboard_id,
