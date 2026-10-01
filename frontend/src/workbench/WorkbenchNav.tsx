@@ -35,7 +35,8 @@ export function WorkbenchNav({ navOpen, onCloseNav, navCollapsed, onToggleCollap
           <div className="flex flex-col gap-px">
             {items.map((name) => {
               const active = name === nav;
-              const badge = (name === 'Exception Queue' || name === 'Healing Queue') && pendingCount > 0 ? String(pendingCount) : null;
+              // pendingCount is the healing queue's; it used to be shown on Exception Queue too (BUG-257).
+              const badge = name === 'Healing Queue' && pendingCount > 0 ? String(pendingCount) : null;
               const goNav = () => { selectNav(name); onCloseNav(); };
               const Icon = NAV_ICONS[name];
               return (

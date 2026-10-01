@@ -14,7 +14,7 @@ export function LineageSummaryCard({ ledger }: Props) {
           Dataset-to-finding lineage renders live in the <strong>Constellation</strong> graph —
           uploaded datasets, derived metrics, and signed findings as a navigable graph.
         </div>
-        <a href="/app" className="aw-mono self-start text-[10.5px] font-semibold border border-[var(--accent-bd)] rounded-none py-1.5 px-3 no-underline" style={{ color: 'var(--accent)' }}>Open Constellation →</a>
+        <a href="/app/terminal" className="aw-mono self-start text-[10.5px] font-semibold border border-[var(--accent-bd)] rounded-none py-1.5 px-3 no-underline" style={{ color: 'var(--accent)' }}>Open Constellation →</a>
         {ledger && <div className="text-[10.5px] text-[var(--text3)] leading-[1.6]">Every signed artifact is replayable from ledger {ledger.no}.</div>}
       </div>
     </div>
