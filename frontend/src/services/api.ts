@@ -1057,13 +1057,11 @@ export const uploadService = {
     return client.uploadFile(file, uploadId);
   },
 
+  // BUG-247: errors propagate. Returning [] on failure made an outage or an expired
+  // session render as "no datasets", and left every caller's error state unreachable.
   async getUploadedFiles(): Promise<Array<{ filename: string; size: number; modified: string }>> {
-    try {
-      const resp = await client.get<{ status: string; files?: Array<{ filename: string; size: number; modified: string }> }>('/files');
-      return resp.files || [];
-    } catch {
-      return [];
-    }
+    const resp = await client.get<{ status: string; files?: Array<{ filename: string; size: number; modified: string }> }>('/files');
+    return resp.files || [];
   },
 };
 
