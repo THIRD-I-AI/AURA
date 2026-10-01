@@ -68,7 +68,21 @@ describe('SchedulerPanel', () => {
     render(<SchedulerPanel />);
     const user = userEvent.setup();
     await waitFor(() => expect(screen.getByText('Daily revenue')).toBeInTheDocument());
+    // BUG-253: the first click only arms the removal; it used to delete outright.
     await user.click(screen.getByRole('button', { name: /remove schedule/i }));
+    expect(clearSchedule).not.toHaveBeenCalled();
+    await user.click(screen.getByRole('button', { name: /confirm remove/i }));
     await waitFor(() => expect(clearSchedule).toHaveBeenCalledWith('q1'));
+  });
+
+  it('BUG-253: cancelling a removal leaves the schedule alone', async () => {
+    list.mockResolvedValue([scheduled]);
+    render(<SchedulerPanel />);
+    const user = userEvent.setup();
+    await waitFor(() => expect(screen.getByText('Daily revenue')).toBeInTheDocument());
+    await user.click(screen.getByRole('button', { name: /remove schedule/i }));
+    await user.click(screen.getByRole('button', { name: /cancel/i }));
+    expect(clearSchedule).not.toHaveBeenCalled();
+    expect(screen.getByRole('button', { name: /remove schedule/i })).toBeInTheDocument();
   });
 });

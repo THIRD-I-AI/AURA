@@ -307,14 +307,21 @@ function UasrRecoveries({ note, setNote }: { note: string; setNote: (s: string) 
     void load();
   }, [load]);
 
+  // BUG-253: a decision signs an override, so it takes a second, explicit click; and a
+  // failed decision used to be swallowed, leaving the row looking untouched.
+  const [armed, setArmed] = useState<{ id: string; kind: 'approve' | 'reject' } | null>(null);
+  const [decideError, setDecideError] = useState<string | null>(null);
+
   const decide = useCallback(async (id: string, kind: 'approve' | 'reject') => {
     setBusyId(id);
+    setArmed(null);
+    setDecideError(null);
     try {
       if (kind === 'approve') await healingService.approve(id, 'operator', note || undefined);
       else await healingService.reject(id, 'operator', note || 'rejected from cockpit');
       await load();
     } catch {
-      /* ignore — reconciled on reload */
+      setDecideError(`could not ${kind} recovery ${id}`);
     } finally {
       setBusyId(null);
     }
@@ -324,6 +331,7 @@ function UasrRecoveries({ note, setNote }: { note: string; setNote: (s: string) 
     <div className="pl-recov">
       <div className="pl-insp-sub">pending recoveries ({pending.length})</div>
       {pending.length === 0 && <div className="pl-empty">no recoveries awaiting review</div>}
+      {decideError && <div className="pl-empty" role="alert">{decideError}</div>}
       {pending.length > 0 && (
         <input
           className="pl-note"
@@ -338,10 +346,17 @@ function UasrRecoveries({ note, setNote }: { note: string; setNote: (s: string) 
             <span className="pl-recov-src">{r.source_id ?? '—'}</span>
             <span className="pl-recov-diag" title={r.diagnosis ?? ''}>{r.diagnosis ?? r.status}</span>
           </div>
-          <div className="pl-recov-btns">
-            <button className="ok" disabled={busyId === r.id} onClick={() => decide(r.id, 'approve')}>approve</button>
-            <button className="no" disabled={busyId === r.id} onClick={() => decide(r.id, 'reject')}>reject</button>
-          </div>
+          {armed?.id === r.id ? (
+            <div className="pl-recov-btns" role="group" aria-label={`confirm ${armed.kind} of ${r.source_id ?? r.id}`}>
+              <button className={armed.kind === 'approve' ? 'ok' : 'no'} disabled={busyId === r.id} onClick={() => decide(r.id, armed.kind)}>confirm {armed.kind}</button>
+              <button onClick={() => setArmed(null)}>cancel</button>
+            </div>
+          ) : (
+            <div className="pl-recov-btns">
+              <button className="ok" disabled={busyId === r.id} onClick={() => setArmed({ id: r.id, kind: 'approve' })}>approve</button>
+              <button className="no" disabled={busyId === r.id} onClick={() => setArmed({ id: r.id, kind: 'reject' })}>reject</button>
+            </div>
+          )}
         </div>
       ))}
     </div>
