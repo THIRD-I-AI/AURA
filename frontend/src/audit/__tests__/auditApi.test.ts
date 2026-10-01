@@ -69,10 +69,9 @@ describe('auditApi', () => {
   it('omits the auth header when logged out so anonymous routes still work', async () => {
     (fetch as ReturnType<typeof vi.fn>).mockReturnValue(mockJson({ scenarios: [] }));
     await auditApi.listScenarios();
-    expect(fetch).toHaveBeenCalledWith(
-      `${API_BASE_URL}/counterfactual/demo/scenarios`,
-      expect.objectContaining({ headers: {} }),
-    );
+    const [url, init] = (fetch as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect(url).toBe(`${API_BASE_URL}/counterfactual/demo/scenarios`);
+    expect(init?.headers?.Authorization).toBeUndefined();
   });
 
   it('throws on non-ok responses', async () => {

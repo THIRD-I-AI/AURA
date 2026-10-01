@@ -18,7 +18,7 @@ import { useAuth } from '../auth/AuthContext';
 import {
   API_BASE_URL,
   analyticsService,
-  getAuthToken,
+  authFetch,
   getCurrentWorkspaceId,
   healingService,
   streamingService,
@@ -111,8 +111,7 @@ function WorkbenchInner() {
     if (view !== 'app') return;
     // Ledger verify is tenant-scoped (tenant from the verified JWT), so the
     // bearer must ride along — a bare fetch 401s and looked like an outage.
-    const tok = getAuthToken();
-    fetch(`${API_BASE_URL}/counterfactual/audit/ledger/verify`, tok ? { headers: { Authorization: `Bearer ${tok}` } } : undefined)
+    authFetch(`${API_BASE_URL}/counterfactual/audit/ledger/verify`)
       .then((r) => (r.ok ? r.json() : null))
       .then((j) => {
         if (j && typeof j.count === 'number') {
@@ -257,9 +256,7 @@ function WorkbenchInner() {
       // Endpoint is currently anonymous, but send the bearer anyway: the audit it
       // signs is chained under the caller's tenant, and every sibling call here
       // already carries it. A bare fetch is how the job endpoints silently 401'd.
-      const demoTok = getAuthToken();
-      const r = await fetch(`${API_BASE_URL}/counterfactual/audit/financial/demo`,
-                            demoTok ? { headers: { Authorization: `Bearer ${demoTok}` } } : undefined);
+      const r = await authFetch(`${API_BASE_URL}/counterfactual/audit/financial/demo`);
       if (!r.ok) throw new Error(`audit service replied ${r.status}`);
       const j = await r.json();
       const hash = typeof j.record_hash === 'string' ? j.record_hash : null;

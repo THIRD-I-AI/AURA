@@ -91,6 +91,29 @@ export function subscribeSessionExpired(cb: () => void): () => void {
   return () => { _sessionExpiredListeners.delete(cb); };
 }
 
+/**
+ * fetch() for the call sites that need the raw Response (uploads, job polling)
+ * and so cannot use ApiClient.request. Carries the bearer, and -- BUG-252 --
+ * treats a 401 the same way request() does: those sites used to leave a dead
+ * token in place, so the user saw "HTTP 401" or an "offline" chip instead of
+ * being sent back to sign in.
+ */
+export async function authFetch(
+  url: string,
+  init: Omit<RequestInit, 'headers'> & { headers?: Record<string, string> } = {},
+): Promise<Response> {
+  const token = getAuthToken();
+  const resp = await fetch(
+    url,
+    token ? { ...init, headers: { ...init.headers, Authorization: `Bearer ${token}` } } : init,
+  );
+  if (resp.status === 401 && token) {
+    setAuthToken(null);
+    _sessionExpiredListeners.forEach((cb) => cb());
+  }
+  return resp;
+}
+
 // ── Authentication (SaaS Phase 2) ─────────────────────────────────────────
 // Real signup/login on top of the gateway's password-mode auth. The tenant
 // (org_id) and identity travel inside the signed JWT — we only read claims to
