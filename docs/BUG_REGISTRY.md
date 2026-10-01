@@ -2764,3 +2764,91 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Audit 2026-09-26 (upload path):** refuted -- 'glob metacharacters in an uploaded filename are interpreted by DuckDB readers'. The premise holds (`safe_object_name` only rejects separators/NUL/dot names) but the verifier could not confirm it end to end, so no entry was filed; re-check before re-flagging.
 
 - **Sweep 2026-09-26 (SQL splicing):** refuted -- 'unquoted CSV-header column name in the NL2SQL fallback alias' (`orchestration_service/agents/generator_agent.py`): the unquoted alias is real but the fallback only returns SQL text in an AgentResponse; it is not executed on that path.
+
+## BUG-247: getUploadedFiles swallows every error as [], so an outage or 403 renders as 'No datasets' and every caller's error state is dead code
+- **Status:** fixed
+- **Found by:** ultracode audit of `frontend/src` (5 lenses + adversarial verify), 2026-10-01. Verifier confirmed it from the code.
+- **Severity:** medium
+- **Root cause:** `frontend/src/services/api.ts` ~1060: `getUploadedFiles` wrapped `client.get('/files')` in try/catch returning `[]`. DatasetsPanel.tsx:17, FilesAndDataPanel.tsx:93 and the store's offline fallback (store/index.tsx:237) never ran; FilesAndDataPanel's error test mocked a rejection the real function could not produce.
+- **Caused by:** none -- pre-existing.
+- **Fix:** Removed the catch so failures propagate (same treatment as getChatHistory in BUG-107). Every caller already handles rejection (ConstellationPanel/Workbench via `.catch`). Regression: `frontend/src/services/__tests__/getUploadedFiles.test.ts` (500/403 reject; fails on old code).
+
+## BUG-248: AuditProgress ignores the polling error, and useJobPolling retries forever: 'Running audit...' spins endlessly on 401/404/500
+- **Status:** open
+- **Found by:** ultracode audit of `frontend/src` (5 lenses + adversarial verify), 2026-10-01. Verifier confirmed it from the code.
+- **Severity:** high
+- **Root cause:** `frontend/src/audit/AuditProgress.tsx:32` destructures only `snapshot` from useJobPolling; `frontend/src/audit/useJobPolling.ts:28-32` sets `error` and reschedules every 800ms with no stop on 4xx. Jobs live in an in-memory dict (counterfactual_service/main.py:297), so any restart makes every job id 404.
+- **Caused by:** none -- pre-existing.
+- **Fix:** pending.
+
+## BUG-249: Counterfactual page poll never checks statusResp.ok, so a 401/404 error body is read as progress for 2 minutes
+- **Status:** open
+- **Found by:** ultracode audit of `frontend/src` (5 lenses + adversarial verify), 2026-10-01. Verifier confirmed it from the code.
+- **Severity:** high
+- **Root cause:** `frontend/src/pages/Counterfactual.tsx:87-99` calls `.json()` and branches only on `state`; an error body has no `state`, so the UI shows 'Job X: undefined (Ns)' for 120s and then a misleading timeout. Also keeps polling after unmount (line 85).
+- **Caused by:** none -- pre-existing.
+- **Fix:** pending.
+
+## BUG-250: PipelineMonitor: an AI pipeline run that fails over SSE leaves Execute/Preview stuck on 'Running...' permanently
+- **Status:** open
+- **Found by:** ultracode audit of `frontend/src` (5 lenses + adversarial verify), 2026-10-01. Verifier confirmed it from the code.
+- **Severity:** high
+- **Root cause:** `frontend/src/components/PipelineMonitor.tsx` ~134: the SSE error path never resets the running state.
+- **Caused by:** none -- pre-existing.
+- **Fix:** pending.
+
+## BUG-251: Pipeline builder's source-file list uses an unauthenticated fetch, so the user's uploads never appear
+- **Status:** open
+- **Found by:** ultracode audit of `frontend/src` (5 lenses), 2026-10-01. NOT yet adversarially verified (the verify stage hit the subagent session limit) -- triage before fixing.
+- **Severity:** high
+- **Root cause:** `frontend/src/pages/PipelinesPanel.tsx` ~287 (reported by two lenses independently).
+- **Caused by:** none -- pre-existing.
+- **Fix:** pending.
+
+## BUG-252: Raw-fetch request paths (audit API, counterfactual) never trigger the session-expired flow on 401
+- **Status:** open
+- **Found by:** ultracode audit of `frontend/src` (5 lenses), 2026-10-01. NOT yet adversarially verified (the verify stage hit the subagent session limit) -- triage before fixing.
+- **Severity:** medium
+- **Root cause:** `frontend/src/audit/auditApi.ts:18` and other raw `fetch` callers bypass ApiClient.request's 401 handling.
+- **Caused by:** none -- pre-existing.
+- **Fix:** pending.
+
+## BUG-253: Healing Queue / Terminal recovery Approve/Reject sign an override on one click with no confirmation
+- **Status:** open
+- **Found by:** ultracode audit of `frontend/src` (5 lenses), 2026-10-01. NOT yet adversarially verified (the verify stage hit the subagent session limit) -- triage before fixing.
+- **Severity:** high
+- **Root cause:** `frontend/src/workbench/panels/HealingQueuePanel.tsx:90`, `frontend/src/terminal/panels/PipelinePanel.tsx:342`; the Cockpit variant has a confirm step. Also SchedulerPanel.tsx:146 'Remove schedule' deletes on one click.
+- **Caused by:** none -- pre-existing.
+- **Fix:** pending.
+
+## BUG-254: Stale async responses overwrite newer state (audit deck verify, certificate lookups, connector schema picker)
+- **Status:** open
+- **Found by:** ultracode audit of `frontend/src` (5 lenses), 2026-10-01. NOT yet adversarially verified (the verify stage hit the subagent session limit) -- triage before fixing.
+- **Severity:** high
+- **Root cause:** `frontend/src/terminal/audit/useAuditDeck.ts:62`, `frontend/src/workbench/panels/CertificatesPanel.tsx:80`, `frontend/src/workbench/panels/ConnectorsPanel.tsx:161`: no request-id/abort guard, so an older in-flight response lands after a newer one.
+- **Caused by:** none -- pre-existing.
+- **Fix:** pending.
+
+## BUG-255: Error states rendered as healthy/empty data across the Workbench (ledger chip, healing queue '0 - queue clear', pipelines tile skeleton forever, ETL file dropdown)
+- **Status:** open
+- **Found by:** ultracode audit of `frontend/src` (5 lenses), 2026-10-01. NOT yet adversarially verified (the verify stage hit the subagent session limit) -- triage before fixing.
+- **Severity:** medium
+- **Root cause:** `frontend/src/workbench/Workbench.tsx:116,196,206`, `frontend/src/pages/PipelinesPanel.tsx:287`, `frontend/src/audit/AuditFrontDoor.tsx:27`.
+- **Caused by:** none -- pre-existing.
+- **Fix:** pending.
+
+## BUG-256: Keyboard-inaccessible interactive UI (Datasets rows, Cmd+K palette items, topbar launcher, sortable Findings headers, forensic role toggle)
+- **Status:** open
+- **Found by:** ultracode audit of `frontend/src` (5 lenses), 2026-10-01. NOT yet adversarially verified (the verify stage hit the subagent session limit) -- triage before fixing.
+- **Severity:** medium
+- **Root cause:** `frontend/src/terminal/panels/DatasetsPanel.tsx:47`, `workbench/CommandPalette.tsx:25`, `workbench/WorkbenchTopbar.tsx:16`, `terminal/panels/FindingsPanel.tsx:133`, `workbench/cockpit/ForensicAuditPanel.tsx:27`: div onClick with no role/tabIndex/key handler.
+- **Caused by:** none -- pre-existing.
+- **Fix:** pending.
+
+## BUG-257: Product gaps: no UI to create saved queries or dashboards, manage webhooks/workspaces, or create streaming pipelines
+- **Status:** open
+- **Found by:** ultracode audit of `frontend/src` (5 lenses), 2026-10-01. NOT yet adversarially verified (the verify stage hit the subagent session limit) -- triage before fixing.
+- **Severity:** medium
+- **Root cause:** `frontend/src/workbench/panels/LibraryPanel.tsx:94`, `DashboardsPanel.tsx:49`, `WebhooksPanel.tsx:103`, `WorkbenchTopbar.tsx:18`, `cockpit/PipelinesStreamingPanel.tsx:29`: backend APIs exist with no UI entry point. Also hard-coded fake status text (Workbench.tsx:432, PipelinesStreamingPanel.tsx:21 'PII MASKING ON').
+- **Caused by:** none -- pre-existing.
+- **Fix:** pending.
