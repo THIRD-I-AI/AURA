@@ -21,6 +21,8 @@ export default function HealingQueuePanel() {
   const [pending, setPending] = useState<Recovery[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
+  // BUG-253: a decision signs a WORM override, so it takes a second, explicit click.
+  const [armed, setArmed] = useState<{ id: string; kind: 'approve' | 'reject' } | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -36,6 +38,7 @@ export default function HealingQueuePanel() {
 
   const act = useCallback(async (id: string, kind: 'approve' | 'reject') => {
     setBusy(id);
+    setArmed(null);
     try {
       const approver = 'workbench-operator';
       if (kind === 'approve') await healingService.approve(id, approver, 'approved via workbench');
@@ -86,10 +89,22 @@ export default function HealingQueuePanel() {
               {r.validation_passed != null && ` · validation ${r.validation_passed ? 'passed' : 'FAILED'}`}
               {typeof r.post_kl_divergence === 'number' && ` · post-KL ${r.post_kl_divergence.toFixed(4)}`}
             </div>
-            <div className="flex gap-2">
-              <Button size="xs" onClick={() => act(r.id, 'approve')} disabled={busy === r.id}>Approve</Button>
-              <Button variant="outline" size="xs" className="text-danger" onClick={() => act(r.id, 'reject')} disabled={busy === r.id}>Reject</Button>
-            </div>
+            {armed?.id === r.id ? (
+              <div className="flex flex-wrap items-center gap-2" role="group" aria-label={`Confirm ${armed.kind === 'approve' ? 'approval' : 'rejection'} of ${r.source_id || r.drift_event_id}`}>
+                <span className="text-xs text-text-secondary">
+                  {armed.kind === 'approve' ? 'Deploy this shim and sign the override?' : 'Reject this recovery and sign the override?'}
+                </span>
+                <Button size="xs" variant={armed.kind === 'approve' ? 'default' : 'destructive'} onClick={() => act(r.id, armed.kind)} disabled={busy === r.id}>
+                  {armed.kind === 'approve' ? 'Confirm approve' : 'Confirm reject'}
+                </Button>
+                <Button variant="ghost" size="xs" onClick={() => setArmed(null)}>Cancel</Button>
+              </div>
+            ) : (
+              <div className="flex gap-2">
+                <Button size="xs" onClick={() => setArmed({ id: r.id, kind: 'approve' })} disabled={busy === r.id}>Approve</Button>
+                <Button variant="outline" size="xs" className="text-danger" onClick={() => setArmed({ id: r.id, kind: 'reject' })} disabled={busy === r.id}>Reject</Button>
+              </div>
+            )}
           </div>
         ))}
       </Panel>

@@ -36,6 +36,8 @@ export default function SchedulerPanel() {
   const [items, setItems] = useState<SavedQuery[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
+  // BUG-253: removing a schedule is not undoable, so it takes a second, explicit click.
+  const [confirmRemove, setConfirmRemove] = useState<string | null>(null);
   const [openId, setOpenId] = useState<string | null>(null);
   const [runs, setRuns] = useState<Record<string, SavedQueryRun[]>>({});
   const [runsError, setRunsError] = useState<Record<string, string>>({});
@@ -80,6 +82,7 @@ export default function SchedulerPanel() {
 
   const removeSchedule = useCallback(async (q: SavedQuery) => {
     setBusy(q.id);
+    setConfirmRemove(null);
     try {
       await savedQueryService.clearSchedule(q.id);
       await load();
@@ -143,9 +146,18 @@ export default function SchedulerPanel() {
                 <Button size="xs" variant="outline" onClick={() => toggleEnabled(q)} disabled={busy === q.id}>
                   {enabled ? <><Pause /> Pause</> : <><Play /> Resume</>}
                 </Button>
-                <Button size="xs" variant="outline" className="text-danger" onClick={() => removeSchedule(q)} disabled={busy === q.id}>
-                  Remove schedule
-                </Button>
+                {confirmRemove === q.id ? (
+                  <>
+                    <Button size="xs" variant="destructive" onClick={() => removeSchedule(q)} disabled={busy === q.id}>
+                      Confirm remove
+                    </Button>
+                    <Button size="xs" variant="ghost" onClick={() => setConfirmRemove(null)}>Cancel</Button>
+                  </>
+                ) : (
+                  <Button size="xs" variant="outline" className="text-danger" onClick={() => setConfirmRemove(q.id)} disabled={busy === q.id}>
+                    Remove schedule
+                  </Button>
+                )}
                 <Button size="xs" variant="ghost" onClick={() => toggleOpen(q.id)}>
                   {open ? 'Hide runs' : 'Show runs'}
                 </Button>

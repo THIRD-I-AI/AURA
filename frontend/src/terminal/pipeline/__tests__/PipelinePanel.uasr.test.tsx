@@ -50,6 +50,7 @@ vi.mock('../../../services/api', async (importOriginal) => {
 });
 
 import PipelinePanel from '../../panels/PipelinePanel';
+import { healingService } from '../../../services/api';
 
 const props = { api: {}, params: {}, containerApi: {} } as unknown as React.ComponentProps<
   typeof PipelinePanel
@@ -80,5 +81,39 @@ describe('UasrRecoveries mount-only fetch (BUG-028)', () => {
       rerender(<PipelinePanel {...props} />);
     });
     expect(pendingMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+// BUG-253: approve/reject signed an override on a single click, and a failed
+// decision was swallowed.
+describe('UasrRecoveries decisions need a confirming click (BUG-253)', () => {
+  async function openWithOneRecovery() {
+    render(<PipelinePanel {...props} />);
+    fireEvent.click(screen.getByRole('button', { name: /UASR Self-Heal/i }));
+    await act(async () => {
+      getResolvePending()([{ id: 'rec-1', source_id: 'orders', diagnosis: 'schema drift', status: 'pending' }]);
+      await Promise.resolve();
+    });
+  }
+
+  it('the first click arms, the second commits', async () => {
+    vi.mocked(healingService.approve).mockClear();
+    await openWithOneRecovery();
+    fireEvent.click(screen.getByRole('button', { name: 'approve' }));
+    expect(healingService.approve).not.toHaveBeenCalled();
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'confirm approve' })); });
+    expect(healingService.approve).toHaveBeenCalledWith('rec-1', 'operator', undefined);
+  });
+
+  it('cancel disarms, and a failed decision is shown', async () => {
+    vi.mocked(healingService.reject).mockClear();
+    vi.mocked(healingService.reject).mockRejectedValueOnce(new Error('down'));
+    await openWithOneRecovery();
+    fireEvent.click(screen.getByRole('button', { name: 'reject' }));
+    fireEvent.click(screen.getByRole('button', { name: 'cancel' }));
+    expect(healingService.reject).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'reject' }));
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'confirm reject' })); });
+    expect(screen.getByRole('alert')).toHaveTextContent('could not reject recovery rec-1');
   });
 });
