@@ -1,6 +1,7 @@
 """Storage backend abstraction for uploaded datasets (S45)."""
 from __future__ import annotations
 
+import hashlib
 import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
@@ -31,14 +32,26 @@ def safe_object_name(filename: str) -> str:
 
 
 def tenant_slug(tenant: str) -> str:
-    """Filesystem/key-safe tenant component (mirrors S42 tenant_dir_name).
+    """Filesystem/key-safe tenant component -- the ONE definition (workspaces.py's
+    tenant_dir_name delegates here).
 
-    Strips anything outside [A-Za-z0-9_-] (does NOT replace with '_') so that
-    hostile org_ids cannot escape the upload hierarchy; empty/None -> 'default'.
-    Byte-for-byte compatible with api_gateway/routers/workspaces.py::tenant_dir_name.
+    Anything outside [A-Za-z0-9_-] is stripped so a hostile org_id cannot escape the
+    upload hierarchy; empty/None -> 'default'.
+
+    BUG-231: stripping alone is lossy, so distinct ids shared a directory ('acme.com'
+    and 'acmec.om' -> 'acmecom'; workspace folder 'orgA::x' -> 'orgAx', the same as a
+    tenant literally named 'orgAx'). An id that is already safe keeps EXACTLY its old
+    name (UUID org ids, 'default' -- no existing data moves); an id that loses
+    characters gets a short hash of the ORIGINAL id appended, making it unique.
     """
-    slug = _TENANT_SLUG_RE.sub("", str(tenant or "")).strip("-_")
-    return slug or "default"
+    raw = str(tenant or "")
+    slug = _TENANT_SLUG_RE.sub("", raw).strip("-_")
+    if not raw:
+        return "default"
+    if slug == raw:
+        return slug
+    digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:12]
+    return f"{slug or 'tenant'}-{digest}"
 
 
 class StorageBackend(ABC):

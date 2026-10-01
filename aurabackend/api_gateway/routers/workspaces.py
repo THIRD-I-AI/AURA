@@ -133,17 +133,12 @@ def tenant_from_workspace_id(workspace_id: Optional[str]) -> Optional[str]:
 
 # ── Tenant upload-directory helpers ─────────────────────────────────
 
-_TENANT_SLUG_RE = re.compile(r"[^A-Za-z0-9_-]")
-
-
 def tenant_dir_name(tenant) -> str:
-    """Filesystem-safe slug for a tenant id.
+    """Filesystem-safe slug for a tenant id -- delegates to the single definition in
+    shared/storage/base.py so the two can never drift (BUG-231)."""
+    from shared.storage.base import tenant_slug
 
-    Strips anything outside [A-Za-z0-9_-] so a hostile org_id cannot
-    traverse the upload hierarchy; empty or None -> 'default'.
-    """
-    slug = _TENANT_SLUG_RE.sub("", str(tenant or "")).strip("-_")
-    return slug or "default"
+    return tenant_slug(tenant)
 
 
 def _tenant_upload_dir_for(uploads_root: str, tenant) -> str:
