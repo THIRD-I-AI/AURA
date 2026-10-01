@@ -3,7 +3,7 @@
    counterfactual job, polls to completion, renders the operator card + the
    signed-artifact actions. Mounts in the workbench (viewRegistry
    'Counterfactuals') and, until it's deleted, the classic App shell. */
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { Button } from '@/components/ui-kit/button';
 import CounterfactualCard, {
@@ -57,6 +57,13 @@ export default function Counterfactual() {
     }
   }, [queryText]);
 
+  // BUG-249: the poll loop below outlived the page by up to two minutes.
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; };
+  }, []);
+
   const submit = useCallback(async () => {
     setRunning(true);
     setError(null);
@@ -84,8 +91,16 @@ export default function Counterfactual() {
 
       for (let i = 0; i < 120; i++) {
         await new Promise(res => setTimeout(res, 1000));
+        if (!mounted.current) return;
         const statusResp = await fetch(`${API_BASE_URL}/counterfactual/jobs/${job_id}`,
                                        { headers: auth });
+        // BUG-249: an error body has no `state`, so without this check a 401/404 was
+        // shown as "Job X: undefined" for two minutes and then as a timeout.
+        if (!statusResp.ok) {
+          if (statusResp.status === 401) throw new Error('Your session has expired. Sign in again and re-run the audit.');
+          if (statusResp.status === 404) throw new Error(`Job ${job_id} was not found. Jobs do not survive a server restart — run it again.`);
+          throw new Error(`HTTP ${statusResp.status}: ${await statusResp.text()}`);
+        }
         const status = await statusResp.json();
         if (status.state === 'succeeded') {
           setArtifact(status.artifact.rendered as CounterfactualOperatorView);
@@ -176,7 +191,7 @@ export default function Counterfactual() {
       </div>
 
       {error && (
-        <pre className="overflow-x-auto whitespace-pre-wrap rounded-none border border-danger bg-secondary p-3 font-mono text-xs text-danger">
+        <pre role="alert" data-testid="counterfactual-error" className="overflow-x-auto whitespace-pre-wrap rounded-none border border-danger bg-secondary p-3 font-mono text-xs text-danger">
           {error}
         </pre>
       )}
