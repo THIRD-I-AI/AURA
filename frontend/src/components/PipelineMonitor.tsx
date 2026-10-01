@@ -64,7 +64,10 @@ const StatusDot: React.FC<{ status: StageStatus }> = ({ status }) => {
 export const PipelineMonitor: React.FC<{
   runId: string;
   onComplete?: (summary: PipelineRunSummary) => void;
-}> = ({ runId, onComplete }) => {
+  /** The run reached a terminal event -- success or failure. BUG-250: a failed run
+      never told the parent, so its Execute button stayed on "Running…" for good. */
+  onSettled?: () => void;
+}> = ({ runId, onComplete, onSettled }) => {
   const [stages, setStages] = useState<StageState[]>(BASE_STAGES);
   const [steps, setSteps] = useState<PipelineStepMeta[]>([]);
   const [stepStatus, setStepStatus] = useState<Record<string, StageStatus>>({});
@@ -129,6 +132,7 @@ export const PipelineMonitor: React.FC<{
           setSummary(p.result);
           onComplete?.(p.result);
         }
+        onSettled?.();
         return;
       }
       if (ev.type === 'error') {
@@ -136,6 +140,7 @@ export const PipelineMonitor: React.FC<{
         setError(p.error || 'Pipeline failed');
         setStages((prev) => prev.map((s) =>
           s.status === 'running' ? { ...s, status: 'error' as StageStatus } : s));
+        onSettled?.();
       }
     },
   });

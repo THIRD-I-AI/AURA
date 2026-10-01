@@ -463,8 +463,8 @@ const PipelinesPanel: React.FC<PipelinesPanelProps> = () => {
 
   const handleAiRunComplete = useCallback((summary: PipelineRunSummary) => {
     setAiRun(summary as unknown as PipelineRunResult);
-    setAiExecuting(false);
   }, []);
+  const handleAiRunSettled = useCallback(() => setAiExecuting(false), []);
 
   // ── AI Pipeline: Save ──
   const handleAiSave = async () => {
@@ -832,7 +832,7 @@ const PipelinesPanel: React.FC<PipelinesPanelProps> = () => {
           {/* ── Live pipeline run (SSE) ── */}
           {aiRunId && (
             <div className="mt-4">
-              <PipelineMonitor runId={aiRunId} onComplete={handleAiRunComplete} />
+              <PipelineMonitor runId={aiRunId} onComplete={handleAiRunComplete} onSettled={handleAiRunSettled} />
             </div>
           )}
 
