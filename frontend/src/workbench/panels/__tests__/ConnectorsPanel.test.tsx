@@ -139,6 +139,30 @@ describe('ConnectorsPanel', () => {
       expect(screen.getByTestId('wb-connector-sync-result-c1')).toHaveTextContent(/ask aura can now query this table/i);
     });
 
+    // BUG-254: the slow schema response for the first row used to fill the picker of
+    // the row opened after it -- offering (and syncing) the wrong source's tables.
+    it('ignores a schema response that arrives for a previously opened row', async () => {
+      listSources.mockResolvedValue(data);
+      let resolveC1: (v: Record<string, string[]>) => void = () => undefined;
+      getSchema.mockImplementation((id: string) =>
+        id === 'c1'
+          ? new Promise((res) => { resolveC1 = res; })
+          : Promise.resolve({ legacy_orders: ['id'] }));
+
+      const user = userEvent.setup();
+      render(<ConnectorsPanel />);
+      await waitFor(() => expect(screen.getByText('Warehouse')).toBeInTheDocument());
+      await user.click(screen.getByTestId('wb-connector-sync-open-c1'));
+      await user.click(screen.getByTestId('wb-connector-sync-open-c2'));
+      const select = await screen.findByLabelText('Table to sync from Legacy MySQL');
+      expect(select).toHaveValue('legacy_orders');
+
+      resolveC1({ warehouse_secrets: ['id'] });
+      await new Promise((r) => setTimeout(r, 0));
+      expect(screen.getByLabelText('Table to sync from Legacy MySQL')).toHaveValue('legacy_orders');
+      expect(screen.queryByRole('option', { name: 'warehouse_secrets' })).not.toBeInTheDocument();
+    });
+
     it('shows a real disabled/loading state on the sync button while syncing', async () => {
       listSources.mockResolvedValue(data);
       getSchema.mockResolvedValue({ orders: ['id'] });

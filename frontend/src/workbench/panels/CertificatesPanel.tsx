@@ -6,7 +6,7 @@
    route uses, rendering the shared, presentational Certificate component
    read-only so this panel can never drift from (or duplicate) the public
    verification surface. */
-import { useCallback, useState } from 'react';
+import { useCallback, useRef, useState } from 'react';
 import { ShieldCheck } from 'lucide-react';
 
 import { Panel } from '@/components/ui-kit/panel';
@@ -27,7 +27,12 @@ export default function CertificatesPanel() {
   const [verifyResult, setVerifyResult] = useState<VerifyResult | null>(null);
   const [artifact, setArtifact] = useState<Artifact | null>(null);
 
+  // BUG-254: Enter can start a lookup while one is in flight; only the latest may
+  // write state, or one hash's verdict is shown with another hash's artifact.
+  const lookupSeq = useRef(0);
+
   const verify = useCallback(async () => {
+    const lookup = ++lookupSeq.current;
     const hash = sanitizeRecordHash(input.trim().toLowerCase());
     if (!hash) {
       setStatus('error');
@@ -40,14 +45,17 @@ export default function CertificatesPanel() {
     setError(null);
     try {
       const result = await auditApi.verify(hash);
+      if (lookup !== lookupSeq.current) return;
       setVerifyResult(result);
       // Best-effort richer detail (estimates, rendered verdict) for display —
       // the certificate still renders correctly from verifyResult alone if
       // this 404s (e.g. a financial-audit hash with no artifact-store row).
       const full = await auditApi.getArtifact(hash).catch(() => null);
+      if (lookup !== lookupSeq.current) return;
       setArtifact(full);
       setStatus('idle');
     } catch (e) {
+      if (lookup !== lookupSeq.current) return;
       setStatus('error');
       setError(e instanceof Error ? e.message : 'Could not reach the gateway to verify that hash.');
       setVerifyResult(null);

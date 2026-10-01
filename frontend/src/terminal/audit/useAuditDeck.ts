@@ -60,12 +60,17 @@ export function useAuditDeck(): AuditDeckState {
   }, []);
 
   const verify = useCallback(async () => {
-    if (!recordHash.current) return;
+    const hash = recordHash.current;
+    if (!hash) return;
     setError(null);
     try {
-      const res = await financialAuditService.verify(recordHash.current);
+      const res = await financialAuditService.verify(hash);
+      // BUG-254: a new audit may have landed while this was in flight; its verdict
+      // belongs to the old record and must not be shown against the new one.
+      if (recordHash.current !== hash) return;
       setVerification(verificationStateOf(res));
     } catch (e) {
+      if (recordHash.current !== hash) return;
       setError(e instanceof Error ? e.message : 'Verification failed');
       setVerification('broken');
     }
