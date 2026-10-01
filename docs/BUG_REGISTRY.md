@@ -2704,12 +2704,12 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Fix:** pending.
 
 ## BUG-243: Inbound hook pipeline trigger 500s on any non-object JSON body after already recording the fire
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode audit of `api_gateway/routers` (3 lenses + adversarial verify), 2026-09-29. The verifier confirmed it from the code; nothing was run end to end unless stated.
 - **Severity:** low
 - **Root cause:** `api_gateway/routers/inbound_hooks.py` ~197: fire_hook accepts any JSON (`payload = await request.json()`), so a list, string or number is allowed. It calls record_fire and publishes the 'fired' event, and only then does _fire_pipeline evaluate `payload.get('preview_only', False)`. That raises AttributeError for a JSON array, which surfaces as a 500. Common webhook senders post arrays (batched events). The hook's fire_count is incremented and a hooks:{slug} 'complete' event is broadcast, but the pipeline never runs. The background tasks also publish raw str(exc) over SSE (lines 233, 307), unlike pipelines.py, which sanitizes the same path (Sec-2 #27).
 - **Caused by:** none -- pre-existing.
-- **Fix:** pending.
+- **Fix:** `fire_hook` wraps a non-object JSON body as `{"_body": <value>}` before the fire is recorded, so the trigger helpers always receive an object. Regression: `tests/test_inbound_hook_non_object_body.py` (array / string / number bodies raise `AttributeError` on the old code).
 
 ## BUG-244: GET /stream/{topic}?replay=true loses events published between the buffer replay and the live subscribe
 - **Status:** open
