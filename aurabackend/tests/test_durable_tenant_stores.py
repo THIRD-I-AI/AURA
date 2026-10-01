@@ -125,7 +125,7 @@ async def test_chat_history_endpoint_scopes_by_tenant(gateway_db, monkeypatch) -
     req = _bare_request()
 
     seen["ws"] = "orgA"
-    await chatmod.save_chat_message("s1", {"type": "user", "content": "from A"}, req)
+    await chatmod.save_chat_message("s1", chatmod.ChatMessageSave(type="user", content="from A"), req)
 
     seen["ws"] = "orgB"
     out_b = await chatmod.get_chat_history("s1", req)
