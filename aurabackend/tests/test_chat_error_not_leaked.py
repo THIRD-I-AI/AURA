@@ -3,15 +3,21 @@ SQLAlchemy error embeds the statement and its parameters; a storage error embeds
 bucket and key paths. Only sanitize_error output may reach the response."""
 from __future__ import annotations
 
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from tests.test_commander_endpoint import _app
+import api_gateway.routers.chat as chat
 
 SECRET = "[SQL: INSERT INTO gateway_pipelines (id, workspace_id) VALUES ('p1', 'org-secret')]"
 
 
 def test_stream_error_event_does_not_carry_the_raw_exception(monkeypatch):
-    app, chat = _app(monkeypatch, enabled=True)
+    # Patch the flag on the router's own settings object. Reloading shared.config (as
+    # test_commander_endpoint's helper does) swaps the settings object under every
+    # module imported earlier and breaks whichever test file runs next.
+    monkeypatch.setattr(chat.settings, "commander_enabled", True)
+    app = FastAPI()
+    app.include_router(chat.router)
 
     async def _fake_session(http_request, req):
         import duckdb
@@ -38,8 +44,6 @@ def test_stream_error_event_does_not_carry_the_raw_exception(monkeypatch):
 def test_no_chat_path_formats_the_exception_into_a_response():
     """The pipeline- and audit-intent handlers had the same leak; guard all three."""
     import inspect
-
-    import api_gateway.routers.chat as chat
 
     src = inspect.getsource(chat)
     assert "str(exc)[:200]" not in src
