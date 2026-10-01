@@ -24,7 +24,7 @@ export function ForensicAuditPanel({ cf, runCf, selectNav }: Props) {
         <div className="flex-1" />
         <div className="aw-mono flex text-[10px] font-semibold border border-[var(--border)] rounded-none overflow-hidden">
           {(['operator', 'auditor', 'analyst'] as const).map((a) => (
-            <div key={a} onClick={() => setAudience(a)} className="cursor-pointer py-1 px-[9px]" style={{ color: a === audience ? 'var(--accent)' : 'var(--text3)', background: a === audience ? 'var(--accent-dim)' : 'transparent' }}>{a.toUpperCase()}</div>
+            <button key={a} type="button" aria-pressed={a === audience} onClick={() => setAudience(a)} className="cursor-pointer border-0 py-1 px-[9px] [font:inherit] focus-visible:outline-2 focus-visible:outline-[var(--accent)]" style={{ color: a === audience ? 'var(--accent)' : 'var(--text3)', background: a === audience ? 'var(--accent-dim)' : 'transparent' }}>{a.toUpperCase()}</button>
           ))}
         </div>
       </div>
