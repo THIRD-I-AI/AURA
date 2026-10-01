@@ -10,6 +10,8 @@ vi.mock('../services/api', () => ({
   chatService: { streamMessage: vi.fn().mockResolvedValue(undefined) },
   authService: { login: vi.fn() },
   getAuthToken: () => 'test-token',
+  authFetch: (url: string, init: RequestInit = {}) =>
+    fetch(url, { ...init, headers: { ...(init.headers as Record<string, string>), Authorization: 'Bearer test-token' } }),
   getCurrentWorkspaceId: () => 'default',
   analyticsService: {
     getQueryHistory: vi.fn().mockResolvedValue([
