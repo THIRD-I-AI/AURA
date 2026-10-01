@@ -68,4 +68,11 @@ describe('AuditProgress', () => {
     renderAt('j');
     expect(screen.getByTestId('aud-stages')).toBeInTheDocument();
   });
+
+  it('BUG-248: shows the polling error instead of spinning on "Running audit…"', () => {
+    vi.spyOn(polling, 'useJobPolling').mockReturnValue({ snapshot: null, error: 'This audit job was not found.' });
+    renderAt('j');
+    expect(screen.getByTestId('audit-poll-error')).toHaveTextContent('This audit job was not found.');
+    expect(screen.queryByTestId('audit-progress')).not.toBeInTheDocument();
+  });
 });
