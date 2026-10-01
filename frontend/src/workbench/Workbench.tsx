@@ -428,8 +428,6 @@ function WorkbenchInner() {
             <div className="flex items-center gap-3.5">
               <div className="aw-display font-semibold text-[22px]">{nav}</div>
               <div className="aw-chip flex items-center gap-1.5 tracking-[0.08em]" role="status" aria-live="polite" aria-atomic="true" aria-label={`System status: ${systemStatus.label}`} style={{ fontWeight: 600, color: statusColor, background: statusBg, border: `1px solid ${systemStatus.tone === 'ok' ? 'var(--accent-bd)' : statusColor}` }}><span aria-hidden="true" className="w-[5px] h-[5px] rounded-full animate-[awpulse_2.4s_infinite]" style={{ background: statusColor }} />{systemStatus.label}</div>
-              <div className="flex-1" />
-              <div className="text-[12px] text-[var(--text3)]">Last full audit replay 06:00 UTC · scheduler on time</div>
             </div>
           </div>
 

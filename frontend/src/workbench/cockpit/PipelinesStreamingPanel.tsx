@@ -17,8 +17,6 @@ export function PipelinesStreamingPanel({ pipelines, onDefinePipeline }: Props) 
     <div className="aw-panel" data-testid="wb-pipes">
       <div className="aw-panel-head">
         <div className="aw-panel-title">Pipelines & streaming</div>
-        <div className="flex-1" />
-        <div className="aw-mono text-[9.5px] font-medium text-[var(--accent)]">PII MASKING ON</div>
       </div>
       <div className="pt-3 px-4 pb-3.5 flex flex-col gap-2.5">
         <div className="aw-mono flex gap-2 text-[10.5px] font-medium flex-wrap">
