@@ -2640,12 +2640,12 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Fix:** `DashboardCreate`/`DashboardUpdate.tiles` capped at `MAX_DASHBOARD_TILES = 50` (422 beyond; stored dashboards also capped at render). Render opens ONE connection via `_open_locked_tenant_connection` (tables loaded once, then `lock_down_connection`) and runs tiles sequentially on it; each tile reads `fetchmany(501)` and reports `truncated` instead of `fetchall()`. `row_count` is now the returned row count. Regression: `tests/test_dashboard_render_bounds.py` (old code: 70 table loads for 70 tiles, unbounded fetch, no cap).
 
 ## BUG-235: POST /chat/history stores any JSON value as metadata, and a non-object metadata makes GET /chat/history for that session return 500 permanently
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode audit of `api_gateway/routers` (3 lenses + adversarial verify), 2026-09-29. The verifier confirmed it from the code; nothing was run end to end unless stated.
 - **Severity:** medium
 - **Root cause:** `api_gateway/routers/chat.py` ~761: save_chat_message accepts payload: Dict[str, Any] with no model and saves payload.get('metadata') as-is. insert_chat_message json.dumps any value, including a list, string or number. get_chat_history (line 746) then builds ChatHistoryEntry(**m), whose metadata is Optional[Dict[str, Any]], and pydantic v2 raises ValidationError for a list or string. The failure is uncaught, so the whole history read for that session returns 500 until the bad row is evicted, which takes 100 newer messages under the per-session cap.
 - **Caused by:** none -- pre-existing.
-- **Fix:** pending.
+- **Fix:** `POST /chat/history/{session}` now takes a `ChatMessageSave` model (`type` ≤32, `content` ≤200k, `metadata` an object or null); the id and timestamp are server-generated, so a client can no longer choose or reuse the primary key. `GET /chat/history` drops a non-object metadata value from a legacy row instead of failing the whole session. Regression: `tests/test_chat_history_validation.py` (the legacy-row test raises `ValidationError` on the old code).
 
 ## BUG-236: Execution-sandbox and orchestration proxies in queries.py drop the Authorization header and collapse upstream status to HTTP 200
 - **Status:** open

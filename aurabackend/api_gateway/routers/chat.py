@@ -157,6 +157,16 @@ class ChatHistoryEntry(BaseModel):
     metadata: Optional[Dict[str, Any]] = None
 
 
+class ChatMessageSave(BaseModel):
+    """BUG-235: the body was an unvalidated dict. Any JSON value was stored as metadata,
+    and a non-object one made every later history read for that session a 500; the
+    client also chose the row's primary key. The id and timestamp are server-generated
+    and the rest is bounded."""
+    type: str = Field("user", max_length=32)
+    content: str = Field("", max_length=200_000)
+    metadata: Optional[Dict[str, Any]] = None
+
+
 class SaveChatResponse(BaseModel):
     success: bool
     id: str
@@ -743,21 +753,24 @@ async def get_chat_history(session_id: str, http_request: Request) -> List[ChatH
     guessed session id leaked another tenant's history."""
     workspace_id = current_workspace_id(http_request)
     messages = await list_chat_messages(workspace_id, session_id)
-    return [ChatHistoryEntry(**m) for m in messages]
+    # A row saved before the body was validated can hold a non-object metadata value;
+    # one such row must not make the whole session unreadable (BUG-235).
+    return [
+        ChatHistoryEntry(**{**m, "metadata": m.get("metadata") if isinstance(m.get("metadata"), dict) else None})
+        for m in messages
+    ]
 
 
 @router.post("/chat/history/{session_id}", response_model=SaveChatResponse)
 async def save_chat_message(
-    session_id: str, payload: Dict[str, Any], http_request: Request,
+    session_id: str, payload: ChatMessageSave, http_request: Request,
 ) -> SaveChatResponse:
     """Append a tenant-scoped chat message to durable session history."""
     workspace_id = current_workspace_id(http_request)
     saved = await insert_chat_message(workspace_id, {
-        "id": payload.get("id"),
         "session_id": session_id,
-        "type": payload.get("type", "user"),
-        "content": payload.get("content", ""),
-        "timestamp": payload.get("timestamp"),
-        "metadata": payload.get("metadata"),
+        "type": payload.type,
+        "content": payload.content,
+        "metadata": payload.metadata,
     })
     return SaveChatResponse(success=True, id=saved["id"])
