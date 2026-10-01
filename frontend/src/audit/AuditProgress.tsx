@@ -29,7 +29,7 @@ function EstimatorRow({ e }: { e: Estimate }) {
 export function AuditProgress() {
   const { jobId } = useParams<{ jobId: string }>();
   const navigate = useNavigate();
-  const { snapshot } = useJobPolling(jobId, 800);
+  const { snapshot, error } = useJobPolling(jobId, 800);
 
   useEffect(() => {
     if (snapshot?.state === 'succeeded' && snapshot.artifact) {
@@ -42,6 +42,18 @@ export function AuditProgress() {
       <div data-testid="audit-failed">
         <h2>Audit could not complete</h2>
         <p className="aud-scenario__desc">{snapshot.error}</p>
+        <button className="ui-btn ui-btn--secondary ui-btn--md" onClick={() => navigate('/')}>Back to scenarios</button>
+      </div>
+    );
+  }
+
+  // BUG-248: polling gave up (expired session, unknown job, service down). Without this
+  // the page sat on "Running audit…" forever.
+  if (error) {
+    return (
+      <div data-testid="audit-poll-error" role="alert">
+        <h2>Audit status unavailable</h2>
+        <p className="aud-scenario__desc">{error}</p>
         <button className="ui-btn ui-btn--secondary ui-btn--md" onClick={() => navigate('/')}>Back to scenarios</button>
       </div>
     );
