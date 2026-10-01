@@ -19,4 +19,19 @@ describe('DatasetsPanel', () => {
     fireEvent.click(screen.getByTestId('dataset-row-sales.csv'));
     expect(setActiveDataset).toHaveBeenCalledWith('sales.csv');
   });
+
+  // BUG-256: rows were <tr onClick> only, so the keyboard could not pick the
+  // dataset the Query panel filters on.
+  it('a row can be focused and selected from the keyboard', async () => {
+    setActiveDataset.mockClear();
+    getUploadedFiles.mockResolvedValue([{ filename: 'orders.csv', size: 20, modified: 'now' }]);
+    render(<DatasetsPanel api={{} as never} params={{} as never} containerApi={{} as never} />);
+    const row = await screen.findByTestId('dataset-row-orders.csv');
+    expect(row).toHaveAttribute('tabindex', '0');
+    fireEvent.keyDown(row, { key: 'Enter' });
+    expect(setActiveDataset).toHaveBeenCalledWith('orders.csv');
+    setActiveDataset.mockClear();
+    fireEvent.keyDown(row, { key: ' ' });
+    expect(setActiveDataset).toHaveBeenCalledWith('orders.csv');
+  });
 });

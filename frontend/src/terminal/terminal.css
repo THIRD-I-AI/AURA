@@ -264,6 +264,8 @@
 
 /* datasets: row select = the cross-filter source. active row glows green. */
 .aura-terminal .datasets-table tbody tr { cursor: pointer; }
+.aura-terminal .datasets-table tbody tr:focus-visible,
+.aura-terminal .findings-table th.is-sortable:focus-visible { outline: 1px solid var(--t-live); outline-offset: -1px; }
 .aura-terminal .datasets-table tbody tr.is-active {
   background: color-mix(in srgb, var(--t-live) 12%, transparent);
   box-shadow: inset 2px 0 0 var(--t-live);

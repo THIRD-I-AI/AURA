@@ -71,6 +71,9 @@ export default function FindingsPanel(_props: IDockviewPanelProps) {
     }
   };
 
+  const ariaSort = (key: SortKey) =>
+    sortKey !== key ? 'none' as const : sortDir === 'asc' ? 'ascending' as const : 'descending' as const;
+
   const sortIcon = (key: SortKey) => {
     if (sortKey !== key) return <ArrowUpDown size={14} className="sort-icon" aria-hidden />;
     return sortDir === 'asc'
@@ -130,10 +133,10 @@ export default function FindingsPanel(_props: IDockviewPanelProps) {
         <table className="findings-table">
           <thead>
             <tr>
-              <th className="is-sortable" onClick={() => toggleSort('standard')}>
+              <th className="is-sortable" tabIndex={0} aria-sort={ariaSort('standard')} onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleSort('standard'); } }} onClick={() => toggleSort('standard')}>
                 <span className="th-inner">Standard{sortIcon('standard')}</span>
               </th>
-              <th className="is-sortable" onClick={() => toggleSort('risk')}>
+              <th className="is-sortable" tabIndex={0} aria-sort={ariaSort('risk')} onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleSort('risk'); } }} onClick={() => toggleSort('risk')}>
                 <span className="th-inner">Risk{sortIcon('risk')}</span>
               </th>
               <th>Description</th>

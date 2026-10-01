@@ -47,6 +47,9 @@ export default function DatasetsPanel(_props: IDockviewPanelProps) {
               <tr key={f.filename}
                   data-testid={`dataset-row-${f.filename}`}
                   className={f.filename === activeDataset ? 'is-active' : ''}
+                  tabIndex={0}
+                  aria-current={f.filename === activeDataset ? 'true' : undefined}
+                  onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setActiveDataset(f.filename); } }}
                   onClick={() => setActiveDataset(f.filename)}>
                 <td>{f.filename}</td><td>{f.size}</td>
               </tr>
