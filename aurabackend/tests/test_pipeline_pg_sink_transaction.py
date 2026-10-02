@@ -49,10 +49,10 @@ async def _drop(table: str):
         await conn.close()
 
 
-def _run(final_sql: str, table: str):
+def _run(final_sql: str, table: str, if_exists: str = "replace"):
     conn = duckdb.connect(":memory:")
     conn.execute(f"CREATE TABLE final_t AS {final_sql}")
-    sink = PipelineSink(type=SinkType.POSTGRESQL, table=table, if_exists="replace", connection=_sink_connection())
+    sink = PipelineSink(type=SinkType.POSTGRESQL, table=table, if_exists=if_exists, connection=_sink_connection())
     run = type("R", (), {"run_id": "r", "rows_written": 0, "output_table": None, "output_file": None})()
     return PipelineEngine()._write_pg_sink(conn, "final_t", sink, run)
 
@@ -81,5 +81,41 @@ async def test_a_successful_replace_still_replaces():
         await _run("SELECT 1 AS id", table)
         await _run("SELECT 5 AS id UNION ALL SELECT 6", table)
         assert [tuple(r) for r in await _pg_rows(table)] == [(5,), (6,)]
+    finally:
+        await _drop(table)
+
+
+@pytest.mark.asyncio
+async def test_if_exists_fail_leaves_an_existing_table_untouched():
+    """BUG-285: 'fail' appended into the existing table and reported success."""
+    table = f"aura_bug285_{uuid.uuid4().hex[:8]}"
+    try:
+        await _run("SELECT 1 AS id", table)
+
+        with pytest.raises(ValueError, match="already exists"):
+            await _run("SELECT 2 AS id", table, if_exists="fail")
+
+        assert [tuple(r) for r in await _pg_rows(table)] == [(1,)]
+    finally:
+        await _drop(table)
+
+
+@pytest.mark.asyncio
+async def test_if_exists_fail_creates_a_table_that_is_not_there():
+    table = f"aura_bug285_{uuid.uuid4().hex[:8]}"
+    try:
+        await _run("SELECT 7 AS id", table, if_exists="fail")
+        assert [tuple(r) for r in await _pg_rows(table)] == [(7,)]
+    finally:
+        await _drop(table)
+
+
+@pytest.mark.asyncio
+async def test_append_adds_rows_and_creates_a_missing_table():
+    table = f"aura_bug285_{uuid.uuid4().hex[:8]}"
+    try:
+        await _run("SELECT 1 AS id", table, if_exists="append")
+        await _run("SELECT 2 AS id", table, if_exists="append")
+        assert [tuple(r) for r in await _pg_rows(table)] == [(1,), (2,)]
     finally:
         await _drop(table)
