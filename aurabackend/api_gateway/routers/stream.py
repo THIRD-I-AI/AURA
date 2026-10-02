@@ -44,20 +44,31 @@ async def _event_generator(
     topic: str,
     last_event_id: Optional[str],
     request: Request,
+    replay_all: bool = False,
 ) -> AsyncGenerator[str, None]:
-    """Core generator: subscribes, replays missed events, then streams live."""
+    """Core generator: subscribes, replays missed events, then streams live.
+
+    The replay snapshot is always taken AFTER subscribing, with no await in between,
+    so an event published while the replay is being sent is already in this client's
+    queue. BUG-244: replay=true used to send the buffer first and subscribe afterwards;
+    anything published in that window -- e.g. the 'complete' of a short run -- was in
+    neither, and the UI spinner never stopped."""
     workspace_id = current_workspace_id(request)
     sub_id, queue = streaming_manager.subscribe(topic, workspace_id)
     logger.debug("SSE client connected to topic '%s' (sub=%s)", topic, sub_id[:8])
 
     try:
-        # ── Replay buffered events if Last-Event-ID supplied ───────────
+        # ── Replay buffered events: after Last-Event-ID, or all of them ──
         if last_event_id:
             missed = streaming_manager.get_buffered_events(
                 topic, workspace_id, after_event_id=last_event_id,
             )
-            for ev in missed:
-                yield ev.to_sse()
+        elif replay_all:
+            missed = streaming_manager.get_buffered_events(topic, workspace_id)
+        else:
+            missed = []
+        for ev in missed:
+            yield ev.to_sse()
 
         # ── Live stream ────────────────────────────────────────────────
         while True:
@@ -98,26 +109,8 @@ async def stream_topic(
         /stream/monitor:*   — all monitor events
         /stream/*           — every event on the bus
     """
-    workspace_id = current_workspace_id(request)
-
-    # For replay=true without a Last-Event-ID, send all buffered events
-    effective_last_id: Optional[str] = last_event_id
-    if replay and not last_event_id:
-        # Use a sentinel that will never match, so all buffered events are returned
-        buf = streaming_manager.get_buffered_events(topic, workspace_id)
-        if buf:
-            effective_last_id = None  # will be handled by replay=True path below
-
-    async def _gen() -> AsyncGenerator[str, None]:
-        if replay and not last_event_id:
-            # Replay ALL buffered events
-            for ev in streaming_manager.get_buffered_events(topic, workspace_id):
-                yield ev.to_sse()
-        async for chunk in _event_generator(topic, effective_last_id, request):
-            yield chunk
-
     return StreamingResponse(
-        _gen(),
+        _event_generator(topic, last_event_id, request, replay_all=replay and not last_event_id),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
