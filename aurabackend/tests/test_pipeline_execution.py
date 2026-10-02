@@ -670,15 +670,13 @@ async def test_kafka_source_insert_is_batched_not_per_row(monkeypatch):
         table_name = await engine._load_kafka_source(spy_conn, source)
 
         assert real_conn.execute(f"SELECT COUNT(*) FROM {table_name}").fetchone()[0] == 50
+        # Since BUG-280 the rows arrive as one Arrow table read by a single
+        # CREATE TABLE ... AS, so there is no insert statement at all.
         assert len(execute_calls) == 1, (
-            f"expected exactly 1 execute() call (CREATE TABLE only), got "
+            f"expected exactly 1 execute() call (CREATE TABLE AS over all rows), got "
             f"{len(execute_calls)}: {execute_calls}"
         )
-        assert len(executemany_calls) == 1, (
-            f"expected exactly 1 executemany() call carrying all 50 rows, "
-            f"got {len(executemany_calls)} calls -- inserts are not batched"
-        )
-        assert len(executemany_calls[0][1]) == 50
+        assert executemany_calls == []
     finally:
         real_conn.close()
 
@@ -735,15 +733,13 @@ async def test_db_source_insert_is_batched_not_per_row(monkeypatch):
         table_name = await engine._load_db_source(spy_conn, source)
 
         assert real_conn.execute(f"SELECT COUNT(*) FROM {table_name}").fetchone()[0] == 50
+        # Since BUG-280 the rows arrive as one Arrow table read by a single
+        # CREATE TABLE ... AS, so there is no insert statement at all.
         assert len(execute_calls) == 1, (
-            f"expected exactly 1 execute() call (CREATE TABLE only), got "
+            f"expected exactly 1 execute() call (CREATE TABLE AS over all rows), got "
             f"{len(execute_calls)}: {execute_calls}"
         )
-        assert len(executemany_calls) == 1, (
-            f"expected exactly 1 executemany() call carrying all 50 rows, "
-            f"got {len(executemany_calls)} calls -- inserts are not batched"
-        )
-        assert len(executemany_calls[0][1]) == 50
+        assert executemany_calls == []
     finally:
         real_conn.close()
 

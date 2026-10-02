@@ -51,6 +51,38 @@ def _sanitize_id(name: str) -> str:
     return cleaned or "col"
 
 
+def _typed_arrow_table(columns: List[str], rows: List[Dict[str, Any]]) -> Any:
+    """Rows from an external source as an Arrow table that keeps each column's type.
+
+    BUG-280: these rows used to be loaded as all-VARCHAR, so a filter, sort or MIN/MAX
+    on a numeric or date column compared text ('95' > '100') and returned wrong rows
+    with a SUCCESS status. A column whose values Arrow cannot give one type to (mixed
+    types, UUIDs, nested JSON) is still loaded as text, as every column was before.
+    """
+    import json
+
+    import pyarrow as pa
+
+    def _text(v: Any) -> Optional[str]:
+        if v is None:
+            return None
+        return json.dumps(v) if isinstance(v, (dict, list)) else str(v)
+
+    arrays = []
+    for c in columns:
+        values = [r.get(c) for r in rows]
+        try:
+            if any(isinstance(v, (dict, list)) for v in values):
+                raise TypeError("nested value")
+            arr = pa.array(values)
+            if pa.types.is_null(arr.type):
+                arr = arr.cast(pa.string())
+        except (pa.ArrowException, TypeError, ValueError, OverflowError):
+            arr = pa.array([_text(v) for v in values], type=pa.string())
+        arrays.append(arr)
+    return pa.Table.from_arrays(arrays, names=[_sanitize_id(c) for c in columns])
+
+
 # Aliased, not reimplemented. This file had its own _q() that doubled quotes
 # but skipped the NUL-byte rejection added to shared/sql_identifiers.py during
 # the SQL-injection hardening — so two of the three "quote an identifier"
@@ -312,20 +344,12 @@ class PipelineEngine:
                 "(add a WHERE or LIMIT) instead of loading a truncated copy"
             )
 
-        # Load into DuckDB
-        import duckdb
         columns = list(rows[0].keys())
-        col_defs = ", ".join(f'"{_sanitize_id(c)}" VARCHAR' for c in columns)
 
         def _create_and_insert() -> None:
-            conn.execute(f"CREATE TABLE {_q(table_name)} ({col_defs})")
-            placeholders = ", ".join(["?"] * len(columns))
-            insert_sql = f"INSERT INTO {_q(table_name)} VALUES ({placeholders})"
-            all_values = [
-                [str(v) if v is not None else None for v in row.values()]
-                for row in rows
-            ]
-            conn.executemany(insert_sql, all_values)
+            conn.register("external_source_rows", _typed_arrow_table(columns, rows))
+            conn.execute(f"CREATE TABLE {_q(table_name)} AS SELECT * FROM external_source_rows")
+            conn.unregister("external_source_rows")
 
         # Same reasoning as _load_source's dispatch: the per-row insert
         # loop blocks the sole uvicorn worker for its whole duration.
@@ -360,28 +384,10 @@ class PipelineEngine:
                     seen.add(k)
                     columns.append(k)
 
-        col_defs = ", ".join(f'"{_sanitize_id(c)}" VARCHAR' for c in columns)
-
         def _create_and_insert() -> None:
-            conn.execute(f"CREATE TABLE {_q(table_name)} ({col_defs})")
-            placeholders = ", ".join(["?"] * len(columns))
-            insert_sql = f"INSERT INTO {_q(table_name)} VALUES ({placeholders})"
-
-            def _row_values(r: Dict[str, Any]) -> List[Any]:
-                values = []
-                for c in columns:
-                    v = r.get(c)
-                    if v is None:
-                        values.append(None)
-                    elif isinstance(v, (dict, list)):
-                        import json as _json
-                        values.append(_json.dumps(v))
-                    else:
-                        values.append(str(v))
-                return values
-
-            all_values = [_row_values(r) for r in rows]
-            conn.executemany(insert_sql, all_values)
+            conn.register("external_source_rows", _typed_arrow_table(columns, rows))
+            conn.execute(f"CREATE TABLE {_q(table_name)} AS SELECT * FROM external_source_rows")
+            conn.unregister("external_source_rows")
 
         # Same reasoning as _load_db_source's dispatch: the per-row insert
         # loop blocks the sole uvicorn worker for its whole duration.
