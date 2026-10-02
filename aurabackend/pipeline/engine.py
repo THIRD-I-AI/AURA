@@ -14,6 +14,7 @@ import asyncio
 import logging
 import os
 import re
+import threading
 import time
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
@@ -34,6 +35,10 @@ logger = logging.getLogger("aura.pipeline.engine")
 
 OUTPUT_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "processed")
 os.makedirs(OUTPUT_DIR, exist_ok=True)
+
+# The DuckDB sink's tables live in one database file per tenant (BUG-279).
+DUCKDB_SINK_FILE = "pipeline_tables.duckdb"
+_duckdb_sink_lock = threading.Lock()
 
 _SAFE_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
@@ -789,7 +794,7 @@ class PipelineEngine:
         elif sink.type == SinkType.POSTGRESQL:
             await self._write_pg_sink(conn, final_table, sink, run)
         elif sink.type == SinkType.DUCKDB:
-            await asyncio.to_thread(self._write_duckdb_sink, conn, final_table, sink, run)
+            await asyncio.to_thread(self._write_duckdb_sink, conn, final_table, sink, run, tenant)
         elif sink.type == SinkType.PREVIEW:
             pass  # preview_data already set
         else:
@@ -909,11 +914,42 @@ class PipelineEngine:
             await pg.disconnect()
 
     def _write_duckdb_sink(
-        self, conn: Any, final_table: str, sink: PipelineSink, run: PipelineRun
+        self, conn: Any, final_table: str, sink: PipelineSink, run: PipelineRun,
+        tenant: Optional[str] = None,
     ) -> None:
+        # BUG-279: this used to CREATE TABLE on `conn` -- the run's own in-memory
+        # connection, closed as soon as execute() returns -- so the run reported
+        # success with output_table set and nothing was kept. The table now goes
+        # into the tenant's own database file, next to its file-sink outputs, where
+        # GET /pipeline/download/{output_file} serves it.
+        from shared.duckdb_factory import new_connection
+
         table_name = sink.table or "pipeline_output_saved"
-        if sink.if_exists == "replace":
-            conn.execute(f"DROP TABLE IF EXISTS {_q(table_name)}")
-        conn.execute(f"CREATE TABLE {_q(table_name)} AS SELECT * FROM {_q(final_table)}")
+        if sink.if_exists not in ("replace", "append", "fail"):
+            raise ValueError(f"Unsupported if_exists for a DuckDB sink: {sink.if_exists!r}")
+        tenant_dir = os.path.join(OUTPUT_DIR, tenant_slug(tenant))
+        os.makedirs(tenant_dir, exist_ok=True)
+        db_path = os.path.join(tenant_dir, DUCKDB_SINK_FILE)
+
+        result = conn.execute(f"SELECT * FROM {_q(final_table)}").arrow()
+        with _duckdb_sink_lock:
+            out = new_connection(db_path)
+            try:
+                out.register("pipeline_output_export", result)
+                exists = out.execute(
+                    "SELECT 1 FROM information_schema.tables "
+                    "WHERE table_schema = 'main' AND table_name = ?", [table_name],
+                ).fetchone() is not None
+                if exists and sink.if_exists == "fail":
+                    raise ValueError(f"Table {table_name!r} already exists and if_exists is 'fail'")
+                if exists and sink.if_exists == "append":
+                    out.execute(f"INSERT INTO {_q(table_name)} BY NAME SELECT * FROM pipeline_output_export")
+                else:
+                    out.execute(
+                        f"CREATE OR REPLACE TABLE {_q(table_name)} AS SELECT * FROM pipeline_output_export")
+            finally:
+                out.close()
+
         run.output_table = table_name
+        run.output_file = DUCKDB_SINK_FILE
         logger.info(f"[Pipeline] Wrote to DuckDB table: {table_name}")
