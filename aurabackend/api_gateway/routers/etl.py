@@ -391,7 +391,7 @@ async def etl_preview_source(payload: Dict[str, Any], request: Request):
 async def etl_execute(pipeline: ETLPipelineRequest, request: Request):
     """Execute an ETL pipeline: load source → apply transforms → write destination."""
     from shared.data_utils import smart_load_file
-    from shared.duckdb_factory import new_connection
+    from shared.duckdb_factory import lock_down_connection, new_connection
 
     logger.info("ETL execute: pipeline='%s' source='%s' transforms=%d preview_only=%s", pipeline.name, pipeline.source_file, len(pipeline.transforms), pipeline.preview_only)
 
@@ -438,6 +438,13 @@ async def etl_execute(pipeline: ETLPipelineRequest, request: Request):
             source_count = file_info["row_count"]
             source_columns = file_info["columns"]
 
+            # BUG-276: the source is loaded; what runs next is caller-written step SQL
+            # behind a blocklist guard that a DuckDB replacement scan got past (a
+            # double-quoted path, or a string literal after a comma, reads any local
+            # file). Cut this connection off from the filesystem; the output is
+            # written through a separate one below.
+            lock_down_connection(con)
+
             transform_sql = _build_transform_sql(table_name, pipeline.transforms, con=con)
             con.execute(f"CREATE TABLE _etl_output AS {transform_sql}")
 
@@ -459,21 +466,22 @@ async def etl_execute(pipeline: ETLPipelineRequest, request: Request):
                 raw_dest = pipeline.destination_filename or f"{table_name}_transformed"
                 dest_name = Path(raw_dest).stem
                 fmt = pipeline.destination_format.lower()
-
-                if fmt == "csv":
-                    download_filename = f"{dest_name}.csv"
-                    output_path = str(output_dir / download_filename)
-                    _copy_or_cleanup(con, f"COPY _etl_output TO {quote_literal(output_path)} (HEADER, DELIMITER ',')", output_path)
-                elif fmt == "parquet":
-                    download_filename = f"{dest_name}.parquet"
-                    output_path = str(output_dir / download_filename)
-                    _copy_or_cleanup(con, f"COPY _etl_output TO {quote_literal(output_path)} (FORMAT PARQUET)", output_path)
-                elif fmt == "json":
-                    download_filename = f"{dest_name}.json"
-                    output_path = str(output_dir / download_filename)
-                    _copy_or_cleanup(con, f"COPY _etl_output TO {quote_literal(output_path)} (FORMAT JSON, ARRAY true)", output_path)
-                else:
+                if fmt not in ("csv", "parquet", "json"):
                     raise HTTPException(status_code=400, detail=f"Unsupported destination format: {fmt}")
+
+                out = new_connection()
+                try:
+                    out.register("_etl_output", con.execute("SELECT * FROM _etl_output").arrow())
+                    download_filename = f"{dest_name}.{fmt}"
+                    output_path = str(output_dir / download_filename)
+                    options = {
+                        "csv": "(HEADER, DELIMITER ',')",
+                        "parquet": "(FORMAT PARQUET)",
+                        "json": "(FORMAT JSON, ARRAY true)",
+                    }[fmt]
+                    _copy_or_cleanup(out, f"COPY _etl_output TO {quote_literal(output_path)} {options}", output_path)
+                finally:
+                    out.close()
 
             return {
                 "source_count": source_count,
