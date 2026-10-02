@@ -2648,12 +2648,12 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Fix:** `POST /chat/history/{session}` now takes a `ChatMessageSave` model (`type` ≤32, `content` ≤200k, `metadata` an object or null); the id and timestamp are server-generated, so a client can no longer choose or reuse the primary key. `GET /chat/history` drops a non-object metadata value from a legacy row instead of failing the whole session. Regression: `tests/test_chat_history_validation.py` (the legacy-row test raises `ValidationError` on the old code).
 
 ## BUG-236: Execution-sandbox and orchestration proxies in queries.py drop the Authorization header and collapse upstream status to HTTP 200
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode audit of `api_gateway/routers` (3 lenses + adversarial verify), 2026-09-29. The verifier confirmed it from the code; nothing was run end to end unless stated.
 - **Severity:** medium
 - **Root cause:** `api_gateway/routers/queries.py` ~289: POST /execute with connection_id posts to {EXECUTION_SANDBOX_URL}/execute_sql, and POST /generate_query posts to ORCHESTRATION_SERVICE_URL (line 441). Neither forwards the caller's Authorization header. Both downstream services use create_service() and so enforce JWT when armed. Every call then gets a 401. /execute returns HTTP 200 {success:false, error:<raw upstream body>}. The error is the raw exc.response.text, because the middleware body has no 'detail' key, so unsanitized upstream text also reaches the client. /generate_query returns HTTP 200 {status:'Error'} for any upstream status. This is the exact BUG-060 class, but in these two sibling proxies that the BUG-060 fix never touched.
 - **Caused by:** none -- pre-existing.
-- **Fix:** pending.
+- **Fix:** Both proxies forward the caller's `Authorization` header (`_forwarded_auth`). An upstream 4xx is passed through with its status and its string `detail`; any other upstream error becomes a 502 with a generic message, and the upstream body is logged, not proxied (`_upstream_http_error`). No UI calls `/execute` with a connection today, so no frontend change was needed. Regression: `tests/test_query_proxy_auth_and_status.py` (all 4 fail on the old code).
 
 ## BUG-237: Chat 'audit' intent issues a signed certificate that is never appended to the tenant's tamper-evident audit ledger
 - **Status:** open

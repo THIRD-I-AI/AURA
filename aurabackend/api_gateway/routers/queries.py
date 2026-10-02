@@ -270,6 +270,33 @@ def _fetch_capped(cur) -> tuple:
     return [d[0] for d in cur.description], rows[:cap], len(rows) > cap
 
 
+def _forwarded_auth(request: Request) -> Dict[str, str]:
+    """The caller's Authorization header, for an upstream service that enforces JWT."""
+    auth = request.headers.get("authorization")
+    return {"Authorization": auth} if auth else {}
+
+
+def _upstream_http_error(exc: httpx.HTTPStatusError, service: str) -> HTTPException:
+    """BUG-236: keep the upstream status instead of collapsing it into HTTP 200.
+
+    A 4xx is the caller's to act on (401 -> sign in again, 403, 404, 422) and is passed
+    through; anything else is our dependency failing -> 502. The upstream body is logged,
+    never proxied: only a string `detail` from a JSON error body is shown.
+    """
+    status = exc.response.status_code
+    logger.error("%s returned HTTP %s: %s", service, status, exc.response.text[:500])
+    detail = f"{service} returned an error"
+    if 400 <= status < 500:
+        try:
+            upstream = exc.response.json().get("detail")
+            if isinstance(upstream, str) and upstream:
+                detail = upstream
+        except Exception:
+            pass
+        return HTTPException(status_code=status, detail=detail)
+    return HTTPException(status_code=502, detail=detail)
+
+
 @router.post("/execute")
 async def execute_for_chat(req: _ChatExecuteRequest, request: Request):
     """Execute SQL from the chat interface.
@@ -303,7 +330,8 @@ async def execute_for_chat(req: _ChatExecuteRequest, request: Request):
         breaker = get_breaker("execution_sandbox")
         await streaming_manager.publish_progress(TOPIC_QUERY, job_id, "Sending to execution sandbox", 0.2, workspace_id=workspace_id)
         try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
+            # BUG-236: the sandbox enforces JWT; without the caller's bearer every call 401s.
+            async with httpx.AsyncClient(timeout=30.0, headers=_forwarded_auth(request)) as client:
                 resp = await breaker.call(
                     client.post(f"{sandbox_url}/execute_sql", json=payload),
                     fallback=None,
@@ -324,13 +352,9 @@ async def execute_for_chat(req: _ChatExecuteRequest, request: Request):
                 "chart_spec": data.get("chart_spec"),
             }
         except httpx.HTTPStatusError as exc:
-            detail = exc.response.text
-            try:
-                detail = exc.response.json().get("detail", detail)
-            except Exception:
-                pass
-            await streaming_manager.publish_error(TOPIC_QUERY, job_id, str(detail), workspace_id=workspace_id)
-            return {"success": False, "error": str(detail), "data": [], "columns": []}
+            http_error = _upstream_http_error(exc, "Execution sandbox")
+            await streaming_manager.publish_error(TOPIC_QUERY, job_id, str(http_error.detail), workspace_id=workspace_id)
+            raise http_error
         except Exception as exc:
             safe_message = sanitize_error(exc, logger=logger, context=f"query execute job={job_id}")
             await streaming_manager.publish_error(TOPIC_QUERY, job_id, safe_message, workspace_id=workspace_id)
@@ -466,17 +490,16 @@ async def execute_query_with_insights(request: ExecuteQueryRequest):
 
 
 @router.post("/generate_query")
-async def generate_query_proxy(request: QueryRequest) -> Dict[str, Any]:
+async def generate_query_proxy(request: QueryRequest, http_request: Request) -> Dict[str, Any]:
     """Proxy query generation to orchestration service."""
     target_url = os.getenv("ORCHESTRATION_SERVICE_URL", "http://localhost:8006/v1/orchestrations/query")
     try:
-        async with httpx.AsyncClient(timeout=20.0) as client:
+        async with httpx.AsyncClient(timeout=20.0, headers=_forwarded_auth(http_request)) as client:
             response = await client.post(target_url, json=request.model_dump())
             response.raise_for_status()
             return response.json()
     except httpx.HTTPStatusError as http_exc:
-        logger.error("Orchestration HTTP error: status=%s body=%s", http_exc.response.status_code, http_exc.response.text)
-        return {"status": "Error", "error_message": "Orchestration service returned an error", "final_query": "-- Error generating query"}
+        raise _upstream_http_error(http_exc, "Orchestration service")
     except Exception as exc:
         sanitize_error(exc, logger=logger, context="generate_query proxy")
         return {"status": "Error", "error_message": "Backend error", "final_query": "-- Error generating query"}
