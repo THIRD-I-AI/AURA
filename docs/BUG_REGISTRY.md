@@ -3006,20 +3006,20 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Fix:** The blocklist is no longer the boundary. `PipelineEngine.execute` and the ETL router (`etl_execute`, which had the same hole) call `lock_down_connection` once their source tables are loaded and before any step SQL runs, and write file output from a separate connection (the result is handed over as an Arrow table). The causal service already locked its connection. Regression: `tests/test_pipeline_step_sql_locked_down.py` -- on the old code both bypass forms return another tenant's rows through the pipeline engine and through ETL (local test fixture).
 
 ## BUG-277: Streaming FileWatcherSource reads any server directory named in caller-supplied `watch_dir`/`pattern`
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode audit of `aurabackend/pipeline` (3 lenses + adversarial verify), 2026-10-02. The verifier confirmed it from the code; nothing was run end to end unless stated.
 - **Severity:** high
 - **Root cause:** `pipeline/streaming/sources/file_watcher.py` ~35: `self.watch_dir = config.get("watch_dir", "data/uploads")` and `self.pattern = config.get("pattern", "*.csv")` come straight from `StreamSource.config` in the POST /streaming/pipelines body (streaming_api.py:157-179, streaming_engine.py:65-66). `_scan_dir` (line 76-79) does `Path(self.watch_dir).glob(self.pattern)` with no tenant scoping, no `safe_object_name`, no containment check; `_parse_csv/_parse_json/_parse_parquet` (line 138-189) then turn every row into events. The default `data/uploads` is the parent of every tenant's upload directory. BUG-080 scoped pipeline ownership only, not the paths inside the config. Failure scenario: A tenant creates a streaming pipeline with source `{type: file_watcher, config: {watch_dir: "data/uploads", pattern: "**/*.csv"}}` (or an absolute path) and starts it. `start()` marks existing files as seen, so every file another tenant uploads afterwards is parsed and its rows flow through the window aggregations to the attacker's SSE stream at /streaming/pipelines/{id}/stream, or to a webhook sink they control.
 - **Caused by:** none -- pre-existing.
-- **Fix:** pending.
+- **Fix:** PR #618. The streaming engine builds the file watcher from a rewritten config (`pipeline/streaming/path_confinement.py`): `watch_dir` is always the pipeline tenant's own upload directory, whatever the request says, and the pattern must match file names only (no separators, `..` or `**`). Regression: `tests/test_streaming_path_confinement.py`.
 
 ## BUG-278: Streaming FileSink creates and writes into any directory named in caller-supplied `output_dir`
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode audit of `aurabackend/pipeline` (3 lenses + adversarial verify), 2026-10-02. The verifier confirmed it from the code; nothing was run end to end unless stated.
 - **Severity:** high
 - **Root cause:** `pipeline/streaming/sinks/file_sink.py` ~26: `self._output_dir = config.get("output_dir", "data/streaming_output")` is taken from the request's sink config. `start()` runs `os.makedirs(self._output_dir, exist_ok=True)` (line 36) and `_flush` opens `os.path.join(self._output_dir, f"batch_{stamp}.csv|json")` for writing (line 78, 87). No tenant namespace and no containment check, unlike the batch engine's `_write_file_sink`, which writes under `OUTPUT_DIR/tenant_slug(tenant)` (engine.py:805). The default directory is also shared by all tenants. Failure scenario: A tenant creates a streaming pipeline with a sink `{type: file, config: {output_dir: "/app/aurabackend/data/uploads/<victim-slug>", format: "csv", flush_every: 1}}`. Each window writes `batch_<ts>.csv` into the victim's upload directory, where it is listed as one of the victim's datasets and loaded into their schema context. Pointing `output_dir` at any other writable path (checkpoint dir, a mounted volume) creates directories and fills the disk there.
 - **Caused by:** none -- pre-existing.
-- **Fix:** pending.
+- **Fix:** PR #618. The file sink's `output_dir` is always `data/streaming_output/<tenant>/<pipeline>/` (`confine_file_sink` in `pipeline/streaming/path_confinement.py`); the request's value is ignored. Regression: `tests/test_streaming_path_confinement.py`.
 
 ## BUG-279: DuckDB sink writes into the per-run in-memory connection that is closed immediately, yet the run reports SUCCESS with output_table set
 - **Status:** open
@@ -3030,12 +3030,12 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Fix:** pending.
 
 ## BUG-280: PostgreSQL/MySQL/Kafka sources are loaded as all-VARCHAR, so filter, sort and MIN/MAX steps silently compare lexicographically
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode audit of `aurabackend/pipeline` (3 lenses + adversarial verify), 2026-10-02. The verifier confirmed it from the code; nothing was run end to end unless stated.
 - **Severity:** high
 - **Root cause:** `pipeline/engine.py` ~304: _load_db_source declares every column VARCHAR (engine.py:304) and stringifies every value with str(v) (engine.py:311); _load_kafka_source does the same (engine.py:349, 366). FILTER always emits a quoted string literal, `"col" {op} '{val}'` (engine.py:528-529), SORT emits `ORDER BY "col"` (engine.py:538), and AGGREGATE allows MIN/MAX on the same column (engine.py:675-679). No step restores the source type. Not found in BUG_REGISTRY.md (BUG-192 covers only truncation and swallowed query errors in this loader). Failure scenario: A Postgres source has integer column amount. Step filter {column: amount, operator: '>', value: '100'} evaluates VARCHAR > VARCHAR: '95' > '100' is true and '1000' > '200' is false. The run returns SUCCESS with the wrong rows. Sort orders 10 before 9, MAX(amount) returns '99' instead of '1000', and SUM/AVG fail outright on VARCHAR. The same pipeline on a CSV/Parquet source gives correct results.
 - **Caused by:** none -- pre-existing.
-- **Fix:** pending.
+- **Fix:** `_load_db_source` and `_load_kafka_source` load rows through `_typed_arrow_table`, which keeps each column's type (integers, decimals, floats, booleans, dates, timestamps); a column Arrow cannot give one type to (mixed types, UUIDs, nested JSON) is loaded as text, as every column was before. Regression: `tests/test_pipeline_external_source_types.py` (5 tests, all fail on the old loader; connector and Kafka consumer are fakes, not run against a real Postgres/Kafka).
 
 ## BUG-281: Invalid or misconfigured steps are silently rewritten or skipped and the run still reports SUCCESS
 - **Status:** open
@@ -3054,12 +3054,12 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Fix:** pending.
 
 ## BUG-283: Streaming DatabaseSink opens any DuckDB file path from caller config (`path`) and writes a table into it
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode audit of `aurabackend/pipeline` (3 lenses + adversarial verify), 2026-10-02. The verifier confirmed it from the code; nothing was run end to end unless stated.
 - **Severity:** medium
 - **Root cause:** `pipeline/streaming/sinks/database_sink.py` ~64: `db_path = self.config.get("path", ":memory:")` then `duckdb.connect(db_path)` (line 67) and `CREATE TABLE IF NOT EXISTS ...` (line 68-79), with later upserts at line 131-147. The path is request input from the POST /streaming/pipelines sink config. It is not passed through `safe_object_name` or the storage backend, although the batch engine's DuckDB source does exactly that for the same kind of input (engine.py:411-415). BUG-079 fixed only the `table` identifier; BUG-232 covers the connector routes, not this sink. Failure scenario: A tenant sets the sink to `{type: database, config: {connector: "duckdb", path: "data/uploads/<victim-slug>/warehouse.duckdb", table: "orders"}}` and starts the pipeline. The server opens the victim's uploaded database read-write and creates or inserts into a table in it (taking the file lock, so the victim's own reads fail while the pipeline runs). With a new path it creates a .duckdb file anywhere the process can write.
 - **Caused by:** none -- pre-existing.
-- **Fix:** pending.
+- **Fix:** PR #618. A DuckDB sink path keeps only its file name and is placed under `data/streaming_output/<tenant>/<pipeline>/` (`confine_database_sink`); `:memory:` is untouched. Regression: `tests/test_streaming_path_confinement.py`.
 
 ## BUG-284: Raw exception text is returned to the client through run.error on both the sync and SSE paths, bypassing sanitize_error
 - **Status:** open
