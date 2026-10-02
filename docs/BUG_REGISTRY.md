@@ -3003,7 +3003,7 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Severity:** high
 - **Root cause:** `shared/sql_expression_guard.py` ~77: `_REPLACEMENT_SCAN_PATTERN = r"\b(from|join)\s*\(*\s*'"` only rejects a single-quoted literal placed immediately after FROM/JOIN. Two forms pass: (a) `FROM "path/file.csv"` -- `_strip_quoted` (line 47-53) blanks double-quoted text before the keyword checks, and DuckDB runs a replacement scan on any table name it cannot find in the catalog, quoted or not; (b) `FROM {{prev}}, 'path/file.csv'` -- the literal follows a comma, not FROM/JOIN. pipeline/engine.py:757-759 (CUSTOM_SQL) and :571-572 (ADD_COLUMN) splice the expression into SQL that runs at engine.py:153 on a `new_connection()` (engine.py:107) that never gets `lock_down_connection`. BUG-114 deliberately left the double-quoted form unblocked as 'a normal identifier'; BUG-189 covers only `source.query`. Read from code, not executed. Failure scenario: A tenant POSTs /pipeline/execute with a CUSTOM_SQL step `SELECT * FROM "../uploads/<other-tenant-slug>/payroll.csv"` (or `SELECT b.* FROM {{prev}} a, 'data/uploads/<other>/payroll.csv' b`). `validate_sql_expression` raises nothing, DuckDB opens the file, and the rows come back in `run.preview_data` -- a cross-tenant read of any CSV/Parquet/JSON the server process can reach.
 - **Caused by:** none -- pre-existing.
-- **Fix:** The blocklist is no longer the boundary. `PipelineEngine.execute` and the ETL router (`etl_execute`, which had the same hole) call `lock_down_connection` once their source tables are loaded and before any step SQL runs, and write file output from a separate connection (the result is handed over as an Arrow table). The causal service already locked its connection. Regression: `tests/test_pipeline_step_sql_locked_down.py` -- on the old code both bypass forms return another tenant's rows through the pipeline engine and through ETL (local test fixture).
+- **Fix:** PR #617. `PipelineEngine.execute` calls `lock_down_connection(conn)` once the sources are loaded and before any step SQL runs, so step SQL has no filesystem or network access whatever the expression guard misses; the file sink exports through a separate connection. Regression: `tests/test_pipeline_step_sql_locked_down.py`.
 
 ## BUG-277: Streaming FileWatcherSource reads any server directory named in caller-supplied `watch_dir`/`pattern`
 - **Status:** open
@@ -3022,12 +3022,12 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Fix:** pending.
 
 ## BUG-279: DuckDB sink writes into the per-run in-memory connection that is closed immediately, yet the run reports SUCCESS with output_table set
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode audit of `aurabackend/pipeline` (3 lenses + adversarial verify), 2026-10-02. The verifier confirmed it from the code; nothing was run end to end unless stated.
 - **Severity:** high
 - **Root cause:** `pipeline/engine.py` ~893: _write_duckdb_sink (engine.py:893-901) runs `CREATE TABLE {table} AS SELECT * FROM {final_table}` on `conn`, the same connection execute() opened with new_connection() at engine.py:107 (described as a 'fresh empty :memory: connection' in the docstring at engine.py:386-390). execute() then sets run.status = SUCCESS (engine.py:180) and the finally block calls conn.close() (engine.py:190). sink.connection is never read for a DuckDB sink, so there is no persistent target at all. Not found in BUG_REGISTRY.md. Failure scenario: A user runs a pipeline with sink {type: 'duckdb', table: 'clean_orders'}. The response is status=success, rows_written=N, output_table='clean_orders'. The table existed only in the in-memory database that was destroyed when the connection closed, so nothing was persisted and no later query can find it. A lost write is reported as a completed one.
 - **Caused by:** none -- pre-existing.
-- **Fix:** pending.
+- **Fix:** The DuckDB sink writes the table into a per-tenant database file, `data/processed/<tenant>/pipeline_tables.duckdb`, through its own connection, and sets `run.output_file` so `GET /pipeline/download/{filename}` serves it. `if_exists` is honoured: `replace` overwrites, `append` inserts by column name, `fail` fails the run and leaves the existing table alone (it used to be ignored). Regression: `tests/test_pipeline_duckdb_sink_persists.py` (4 tests, all fail on the old sink). Residual: no in-app query surface reads these tables yet; the file is retrievable by download only.
 
 ## BUG-280: PostgreSQL/MySQL/Kafka sources are loaded as all-VARCHAR, so filter, sort and MIN/MAX steps silently compare lexicographically
 - **Status:** open
