@@ -877,7 +877,8 @@ async def sync_connection_table(connection_id: str, req: ConnectionSyncRequest, 
         from shared.storage import get_storage_backend
 
         tenant = _request_tenant(request)
-        get_storage_backend().write(tenant, file_name, parquet_bytes)
+        # BUG-239: the snapshot can be 2M rows; write() is a blocking file write / S3 put.
+        await asyncio.to_thread(get_storage_backend().write, tenant, file_name, parquet_bytes)
 
         # Same post-write step POST /upload takes (files.py) — the DuckDB
         # schema-context cache is keyed on a fingerprint of the upload dir's

@@ -348,7 +348,7 @@ async def etl_preview_source(payload: Dict[str, Any], request: Request):
         safe_name = safe_object_name(source_file)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid source filename")
-    if not backend.exists(tenant, safe_name):
+    if not await asyncio.to_thread(backend.exists, tenant, safe_name):
         raise HTTPException(status_code=404, detail=f"Source file '{source_file}' not found in uploads")
     duckdb_uri = backend.duckdb_uri(tenant, safe_name)
 
@@ -419,7 +419,7 @@ async def etl_execute(pipeline: ETLPipelineRequest, request: Request):
         safe_name = safe_object_name(pipeline.source_file)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid source filename")
-    if not backend.exists(tenant, safe_name):
+    if not await asyncio.to_thread(backend.exists, tenant, safe_name):
         raise HTTPException(status_code=404, detail="Source file not found")
     duckdb_uri = backend.duckdb_uri(tenant, safe_name)
 
@@ -579,7 +579,7 @@ async def etl_from_natural_language(req: ETLNaturalLanguageRequest, request: Req
         safe_name = safe_object_name(req.source_file)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid source filename")
-    if not backend.exists(tenant, safe_name):
+    if not await asyncio.to_thread(backend.exists, tenant, safe_name):
         raise HTTPException(status_code=404, detail="Source file not found")
     duckdb_uri = backend.duckdb_uri(tenant, safe_name)
 

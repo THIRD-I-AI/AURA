@@ -2664,20 +2664,20 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Fix:** The chat audit path now appends the signed certificate to the tenant's ledger with `audit_ledger.append_audit_with_retry` (kind `financial_audit_completed`, subject = the audited table), as `POST /audit/financial` does. A failed append is not swallowed: the handler returns an error instead of a certificate. The tenant falls back to `"default"` instead of `str(None)`, and `sign_and_persist` runs off the event loop. Regression: `tests/test_chat_audit_ledger.py` (3 tests, all fail on the old code).
 
 ## BUG-238: chat_endpoint runs blocking storage listing and certificate signing/persisting inline on the event loop
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode audit of `api_gateway/routers` (3 lenses + adversarial verify), 2026-09-29. The verifier confirmed it from the code; nothing was run end to end unless stated.
 - **Severity:** medium
 - **Root cause:** `api_gateway/routers/chat.py` ~441: In the pipeline intent branch, `get_storage_backend().list(tenant)` (line 441) is called synchronously. It is a boto3 paginator on S3, or iterdir+stat locally. pipelines.py:119 offloads the identical call with asyncio.to_thread, and BUG-177 fixed the same call in data_utils. In the audit branch, `sign_and_persist(doc)` (line 544) does ED25519 signing plus artifact file writes plus audit_event I/O, also synchronously. BUG-043 offloaded that same function in counterfactual_service/main.py:752, but this call site was missed. On the single uvicorn worker, both calls stall every tenant's requests.
 - **Caused by:** none -- pre-existing.
-- **Fix:** pending.
+- **Fix:** The pipeline-intent `get_storage_backend().list(tenant)` call runs through `asyncio.to_thread`; the `sign_and_persist` half was offloaded under BUG-237 (PR #601). Regression: `tests/test_storage_calls_off_event_loop.py` (fails on the old code).
 
 ## BUG-239: POST /connections/{id}/sync writes the parquet snapshot to storage synchronously inside the async handler
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode audit of `api_gateway/routers` (3 lenses + adversarial verify), 2026-09-29. The verifier confirmed it from the code; nothing was run end to end unless stated.
 - **Severity:** medium
 - **Root cause:** `api_gateway/routers/connections.py` ~808: `get_storage_backend().write(tenant, file_name, parquet_bytes)` is called directly, with no asyncio.to_thread. The snapshot can be up to 2,000,000 rows (_SYNC_ROW_CEILING), and the write is a blocking write_bytes locally or a boto3 put_object on S3. BUG-055 fixed this exact call in files.py upload, and BUG-042 offloaded only the DataFrame->parquet serialization on this route, not the write that follows it.
 - **Caused by:** none -- pre-existing.
-- **Fix:** pending.
+- **Fix:** The parquet snapshot `write` runs through `asyncio.to_thread`. Regression: `test_sync_writes_the_parquet_snapshot_off_the_event_loop` in `tests/test_storage_calls_off_event_loop.py` (fails on the old code).
 
 ## BUG-240: Commander chat paths return raw exception text to the client, bypassing sanitize_error
 - **Status:** fixed
@@ -2688,12 +2688,12 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Fix:** The pipeline-intent, audit-intent and `/chat/stream` worker error paths now pass the exception through `sanitize_error` (full traceback logged, generic message returned) instead of formatting `str(exc)` into the response. Regression: `tests/test_chat_error_not_leaked.py` (the stream test sees the embedded SQL on the old code).
 
 ## BUG-241: ETL routes call StorageBackend.exists() synchronously on the event loop (S3 head_object per request)
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode audit of `api_gateway/routers` (3 lenses + adversarial verify), 2026-09-29. The verifier confirmed it from the code; nothing was run end to end unless stated.
 - **Severity:** low
 - **Root cause:** `api_gateway/routers/etl.py` ~422: etl_preview_source (line 351), etl_execute (line 422) and etl_from_natural_language (line 582) all call backend.exists(tenant, safe_name) inline. S3Backend.exists is a synchronous boto3 head_object network call (shared/storage/s3.py:99-105). This is the same class BUG-177 fixed for list(). Everything else in these handlers is already offloaded with asyncio.to_thread.
 - **Caused by:** none -- pre-existing.
-- **Fix:** pending.
+- **Fix:** All three ETL handlers call `backend.exists` through `asyncio.to_thread`. Regression: the three parametrised ETL cases in `tests/test_storage_calls_off_event_loop.py` (fail on the old code); `test_preview_source_offloads_blocking_load_to_thread` now expects both offloads.
 
 ## BUG-242: Inbound-hook registry rewrites its whole JSON store synchronously on every public fire and every CRUD call
 - **Status:** open
