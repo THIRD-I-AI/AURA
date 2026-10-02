@@ -253,9 +253,21 @@ def sensitivity_headline(artifact: dict) -> str:
              if e["sensitivity"].get("e_value_point") is not None]
     if not evals:
         return "Sensitivity to unmeasured confounding was not available for this audit."
-    e = max(evals)  # most conservative (largest) E-value across methods
+    # BUG-295: this took max(), described as "most conservative". A larger E-value is
+    # a MORE robust claim, so max() quoted the estimator that flatters the result most
+    # -- and an interval that already includes zero was never mentioned. The claim is
+    # only as strong as its weakest estimator.
+    e = min(evals)
+    crossing = [x.get("method", "an estimator") for x in ok
+                if x["sensitivity"].get("null_crossed") or (x["sensitivity"].get("e_value_ci") or 2.0) <= 1.0]
+    if crossing:
+        return (
+            f"Robustness: the confidence interval of {', '.join(crossing)} already includes "
+            "zero, so no unmeasured confounder is needed to explain this effect away. "
+            f"The weakest point estimate has an E-value of about {e:.2f}."
+        )
     return (
         f"Robustness: an unmeasured confounder would need an E-value of about {e:.2f} "
         "(on the risk-ratio scale, beyond the measured associations) to fully explain "
-        "away this effect."
+        "away this effect. This is the weakest of the estimators' E-values."
     )
