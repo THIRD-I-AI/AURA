@@ -34,14 +34,20 @@ _DEFAULT_SCHEMA: Dict[str, str] = {
 }
 
 
+_MAX_KEYS = 10_000
+_MAX_EVENTS_PER_SECOND = 10_000.0
+
+
 class SimulatedSource(BaseSource):
     """Generates fake streaming events at a configurable rate."""
 
     def __init__(self, config: Dict[str, Any]):
         super().__init__(config)
         self.event_type: str = config.get("event_type", "orders")
-        self.events_per_second: float = config.get("events_per_second", 10.0)
-        self.num_keys: int = config.get("num_keys", 5)
+        # BUG-282: both come from the request body. num_keys sized a list built on the
+        # event loop with no upper bound.
+        self.events_per_second: float = min(max(float(config.get("events_per_second", 10.0)), 0.1), _MAX_EVENTS_PER_SECOND)
+        self.num_keys: int = min(max(int(config.get("num_keys", 5)), 1), _MAX_KEYS)
         self.schema: Dict[str, str] = config.get("schema", _DEFAULT_SCHEMA)
         self._keys = [f"key_{i}" for i in range(self.num_keys)]
         self._event_count = 0

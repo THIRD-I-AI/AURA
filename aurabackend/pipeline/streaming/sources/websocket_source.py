@@ -67,7 +67,7 @@ class WebSocketSource(BaseSource):
         self._ping_interval: float = float(config.get("ping_interval", 20))
         self._connect_timeout: float = float(config.get("connect_timeout", 10))
         self._reconnect: bool = bool(config.get("reconnect", True))
-        self._max_buffer: int = int(config.get("max_buffer", 10_000))
+        self._max_buffer: int = min(max(int(config.get("max_buffer", 10_000)), 1), 100_000)
 
         self._queue: asyncio.Queue[StreamEvent] = asyncio.Queue(maxsize=self._max_buffer)
         self._reader_task: Optional[asyncio.Task] = None
