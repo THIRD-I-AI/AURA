@@ -3070,12 +3070,12 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Fix:** pending.
 
 ## BUG-285: PostgreSQL sink with if_exists='fail' silently appends into an existing table
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode audit of `aurabackend/pipeline` (3 lenses + adversarial verify), 2026-10-02. The verifier confirmed it from the code; nothing was run end to end unless stated.
 - **Severity:** medium
 - **Root cause:** `pipeline/engine.py` ~876: For if_exists in ('replace', 'fail') the code runs `CREATE TABLE IF NOT EXISTS` (engine.py:876-879) and then unconditionally `INSERT INTO ... VALUES` (engine.py:882-885). There is no existence check for 'fail' (models.py:129 documents the options as 'replace, append, fail'). _write_duckdb_sink gets 'fail' right only because its plain CREATE TABLE raises (engine.py:899). Not in BUG_REGISTRY.md (BUG-191 covers only the missing transaction). Failure scenario: A user sets if_exists='fail' to protect an existing table 'orders'. The table exists, so CREATE TABLE IF NOT EXISTS is a no-op, the rows are inserted and the transaction commits. The run reports SUCCESS and the protected table now holds duplicated rows. If the column counts differ the insert fails, but when they match the corruption is silent.
 - **Caused by:** none -- pre-existing.
-- **Fix:** pending.
+- **Fix:** `_write_pg_sink` uses a plain `CREATE TABLE` for `replace` (after its DROP) and `fail`, so `fail` raises "already exists" inside the transaction before any row is written; `append` uses `CREATE TABLE IF NOT EXISTS` (it used to fail outright on a missing table); any other `if_exists` value is rejected. Regression: three Tier B tests in `tests/test_pipeline_pg_sink_transaction.py`, run by CI's Postgres lane (no local Postgres on the dev machine).
 
 ## BUG-286: Step column references go through _sanitize_id, but file sources keep their original column names, so any column with a space or punctuation fails or binds to a different column
 - **Status:** open

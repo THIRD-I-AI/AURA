@@ -845,6 +845,8 @@ class PipelineEngine:
 
         cfg = sink.connection or {}
         table_name = sink.table or "pipeline_output"
+        if sink.if_exists not in ("replace", "append", "fail"):
+            raise ValueError(f"Unsupported if_exists for a PostgreSQL sink: {sink.if_exists!r}")
 
         pg = PostgreSQLConnector(ConnectorConfig(
             source_type=CSourceType.POSTGRESQL,
@@ -891,10 +893,21 @@ class PipelineEngine:
                     pg_type = pg_type_map.get(duck_type, "TEXT")
                     col_defs.append(f'{_q(row[0])} {pg_type}')
 
-                if sink.if_exists in ("replace", "fail"):
+                # BUG-285: 'fail' used to share replace's CREATE TABLE IF NOT EXISTS and
+                # then insert, so it appended into the table it was meant to protect.
+                # A plain CREATE TABLE raises on an existing table before any row is
+                # written. 'append' creates the table only when it is missing.
+                if_not_exists = "IF NOT EXISTS " if sink.if_exists == "append" else ""
+                try:
                     await pg_conn.execute(
-                        f"CREATE TABLE IF NOT EXISTS {_q(table_name)} ({', '.join(col_defs)})"
+                        f"CREATE TABLE {if_not_exists}{_q(table_name)} ({', '.join(col_defs)})"
                     )
+                except Exception as exc:
+                    if sink.if_exists == "fail" and getattr(exc, "sqlstate", None) == "42P07":
+                        raise ValueError(
+                            f"Table {table_name!r} already exists and if_exists is 'fail'"
+                        ) from exc
+                    raise
 
                 # Insert rows in batches
                 if rows:
