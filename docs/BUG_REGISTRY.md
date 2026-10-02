@@ -3038,12 +3038,12 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Fix:** `_load_db_source` and `_load_kafka_source` load rows through `_typed_arrow_table`, which keeps each column's type (integers, decimals, floats, booleans, dates, timestamps); a column Arrow cannot give one type to (mixed types, UUIDs, nested JSON) is loaded as text, as every column was before. Regression: `tests/test_pipeline_external_source_types.py` (5 tests, all fail on the old loader; connector and Kafka consumer are fakes, not run against a real Postgres/Kafka).
 
 ## BUG-281: Invalid or misconfigured steps are silently rewritten or skipped and the run still reports SUCCESS
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode audit of `aurabackend/pipeline` (3 lenses + adversarial verify), 2026-10-02. The verifier confirmed it from the code; nothing was run end to end unless stated.
 - **Severity:** high
 - **Root cause:** `pipeline/engine.py` ~524: FILTER: an operator outside allowed_ops is replaced with '=' (engine.py:524-525). CAST_TYPE: a type outside the 9-name allowlist returns None (engine.py:580-581). JOIN: missing join_source or keys returns None (engine.py:695-697). AGGREGATE: a disallowed function is dropped with `continue` (engine.py:676-677). Every None is only counted as skipped (engine.py:492-494) and execute() sets SUCCESS (engine.py:180). BUG-010 item 1 fixed only the unimplemented-step-type fall-through (engine.py:766), not these branches. Failure scenario: (a) A filter with operator '<>' or 'BETWEEN' (LLM- or API-supplied) is executed as `col = 'value'`, the opposite of '<>', and the run returns SUCCESS with the wrong rows. (b) A JOIN step with config.right_table but no join_source is dropped; the output is the unjoined left table, reported SUCCESS. (c) cast_type to DECIMAL or INT is skipped, so later steps run on the uncast column. (d) An aggregate with function COUNT_DISTINCT loses that measure while the others succeed. The only signal is steps_skipped, which the async SSE path does not turn into an error.
 - **Caused by:** none -- pre-existing.
-- **Fix:** pending.
+- **Fix:** `_step_to_sql` raises `ValueError("Pipeline step '<type>' is misconfigured: <reason>")` for a step missing a required setting or naming an operator, direction, type, function or join type outside its allowlist, so the run fails with the reason instead of skipping the step (or running a filter as `=`). `<>` is accepted as a filter operator. The only remaining skip is a fill-all with no NULLs to fill. Regression: `tests/test_pipeline_invalid_steps_fail.py` (11 tests; 10 fail on the old engine).
 
 ## BUG-282: No bounds on streaming pipeline config: `num_keys` allocates an arbitrary list on the event loop, and pipeline count and buffers are uncapped
 - **Status:** open
