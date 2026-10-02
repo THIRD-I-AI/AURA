@@ -86,7 +86,10 @@ async def list_hooks(request: Request) -> Dict[str, Any]:
 async def create_hook(req: HookCreateRequest, request: Request) -> Dict[str, Any]:
     await _require_owned_pipeline(req.kind, req.target, current_workspace_id(request))
     try:
-        hook = inbound_hooks.register(
+        # BUG-242: every registry mutator rewrites the whole JSON store with a blocking
+        # open()+json.dump(); run them on a worker thread, as webhooks.py does.
+        hook = await asyncio.to_thread(
+            inbound_hooks.register,
             workspace_id=current_workspace_id(request),
             slug=req.slug,
             kind=req.kind,
@@ -117,7 +120,8 @@ async def update_hook(hook_id: str, req: HookUpdateRequest, request: Request) ->
             raise HTTPException(status_code=404, detail="Hook not found")
         await _require_owned_pipeline(req.kind or current.kind, req.target or current.target, wsid)
     try:
-        h = inbound_hooks.update(
+        h = await asyncio.to_thread(
+            inbound_hooks.update,
             hook_id, current_workspace_id(request), **req.model_dump(exclude_none=True),
         )
     except ValueError as exc:
@@ -129,7 +133,7 @@ async def update_hook(hook_id: str, req: HookUpdateRequest, request: Request) ->
 
 @router.delete("/hooks/{hook_id}")
 async def delete_hook(hook_id: str, request: Request) -> Dict[str, Any]:
-    if not inbound_hooks.delete(hook_id, current_workspace_id(request)):
+    if not await asyncio.to_thread(inbound_hooks.delete, hook_id, current_workspace_id(request)):
         raise HTTPException(status_code=404, detail="Hook not found")
     return {"status": "success", "deleted": hook_id}
 
@@ -171,7 +175,7 @@ async def fire_hook(slug: str, request: Request) -> Dict[str, Any]:
     if not isinstance(payload, dict):
         payload = {"_body": payload}
 
-    inbound_hooks.record_fire(hook)
+    await asyncio.to_thread(inbound_hooks.record_fire, hook)
 
     # Announce on the streaming bus so audits / outbound webhooks see the trigger.
     try:
