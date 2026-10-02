@@ -46,6 +46,7 @@ from .models import (
     RecoveryStatus,
 )
 from .recovery_loop import RecoveryLoop, RecoveryLoopConfig
+from .recovery_persistence import mark_shim_rolled_back
 from .runtime_config import (
     approval_timeout_seconds,
     build_redis_client,
@@ -1121,6 +1122,8 @@ async def gate_check(req: GateCheckRequest):
 @app.post("/uasr/rollback")
 async def rollback_shim(req: RollbackRequest, db: AsyncSession = Depends(get_db)):
     """Rollback the most recently deployed shim for a source."""
+    deployed = _loop.get_deployed_shims(req.source_id)
+    removed_code = deployed[-1] if deployed else None
     success = _loop.rollback_last_shim(req.source_id)
     if not success:
         raise HTTPException(
@@ -1128,23 +1131,10 @@ async def rollback_shim(req: RollbackRequest, db: AsyncSession = Depends(get_db)
             detail=f"No deployed shims found for source '{req.source_id}'",
         )
 
-    # Mark the latest recovery record as rolled back
-    result = await db.execute(
-        select(RecoveryRecord)
-        .where(RecoveryRecord.id.in_(
-            select(RecoveryRecord.id)
-            .join(DriftEvent, RecoveryRecord.drift_event_id == DriftEvent.id)
-            .where(DriftEvent.source_id == req.source_id)
-            .order_by(RecoveryRecord.created_at.desc())
-            .limit(1)
-        ))
-    )
-    rec = result.scalar_one_or_none()
-    if rec:
-        rec.status = RecoveryStatus.ROLLED_BACK.value
-        await db.commit()
+    # Mark the record of the shim that was actually removed (BUG-266).
+    recovery_id = await mark_shim_rolled_back(req.source_id, removed_code)
 
-    return {"status": "rolled_back", "source_id": req.source_id}
+    return {"status": "rolled_back", "source_id": req.source_id, "recovery_id": recovery_id}
 
 
 @app.get("/uasr/shims/{source_id}")
