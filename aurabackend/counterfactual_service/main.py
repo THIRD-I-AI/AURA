@@ -165,43 +165,59 @@ def register_dataset(source_id: str, df: pd.DataFrame) -> None:
     _datasets[source_id] = df
 
 
-async def _resolve_dataset(source_id: str) -> pd.DataFrame:
+def _upload_exists(name: str, tenant: Optional[str]) -> bool:
+    """Whether ``tenant`` has an upload called ``name``.
+
+    BUG-290: uploads are stored per tenant through the storage backend
+    (``<root>/<tenant>/<name>``, or S3), but this module looked for the bare name in
+    flat ``data/uploads``-style directories relative to the working directory. Every
+    tenant's own upload was "not found", and a file that did sit in a flat directory
+    had no owner at all.
+    """
+    if not _safe_upload_name(name):
+        return False
+    from shared.storage import get_storage_backend
+
+    return get_storage_backend().exists(tenant, name)
+
+
+def _read_upload(name: str, tenant: Optional[str], nrows: Optional[int] = None) -> Optional[pd.DataFrame]:
+    """``tenant``'s upload as a DataFrame, read the way the chat upload pipeline reads
+    it so column names match. None if it is missing or not a tabular type. Blocking."""
+    import io
+
+    from shared.data_utils import _READ_FN_BY_EXT  # type: ignore
+    from shared.storage import get_storage_backend
+
+    read_fn = _READ_FN_BY_EXT.get(pathlib.Path(name).suffix.lower())
+    if not _upload_exists(name, tenant) or read_fn is None:
+        return None
+    data = io.BytesIO(get_storage_backend().read(tenant, name))
+    if read_fn == "read_csv_auto":
+        return pd.read_csv(data, nrows=nrows)
+    if read_fn == "read_parquet":
+        return pd.read_parquet(data)
+    if read_fn == "read_json_auto":
+        return pd.read_json(data)
+    return None
+
+
+async def _resolve_dataset(source_id: str, tenant: Optional[str] = None) -> pd.DataFrame:
     if source_id in _datasets:
         return _datasets[source_id].copy()
 
     if source_id.startswith("uploaded_file:"):
-        from shared.data_utils import _READ_FN_BY_EXT  # type: ignore
         name = source_id.split(":", 1)[1]
         # Defense-in-depth: the worker reaches this directly, so re-validate the
         # name against path traversal here too (not only at the HTTP boundary).
         if not _safe_upload_name(name):
             raise HTTPException(404, f"invalid uploaded file name: {name!r}")
-        for d in (
-            pathlib.Path("data/uploads"),
-            pathlib.Path("api_gateway/uploads"),
-            pathlib.Path("uploads"),
-        ):
-            base = d.resolve()
-            p = (base / name).resolve()
-            try:
-                p.relative_to(base)
-            except ValueError:
-                continue
-            if p.is_file() and p.suffix.lower() in _READ_FN_BY_EXT:
-                # Use the same read function the chat upload pipeline does
-                # so column names come back identical. Offloaded to a thread:
-                # this runs on the shared single-worker event loop (called from
-                # _run_async/_run_demo_async), and parsing a tenant's own
-                # audit-sized CSV/Parquet/JSON is a genuine multi-ms-to-second
-                # blocking call with no async-native reader available.
-                read_fn = _READ_FN_BY_EXT[p.suffix.lower()]
-                if read_fn == "read_csv_auto":
-                    return await asyncio.to_thread(pd.read_csv, p)
-                if read_fn == "read_parquet":
-                    return await asyncio.to_thread(pd.read_parquet, p)
-                if read_fn == "read_json_auto":
-                    return await asyncio.to_thread(pd.read_json, p)
-        raise HTTPException(404, f"file not found in any uploads dir: {name}")
+        # Offloaded: this runs on the shared single-worker event loop, and parsing
+        # an audit-sized file blocks for long enough to matter.
+        df = await asyncio.to_thread(_read_upload, name, tenant)
+        if df is None:
+            raise HTTPException(404, f"uploaded file not found: {name}")
+        return df
 
     raise HTTPException(404, f"unknown dataset source_id: {source_id!r}")
 
@@ -211,7 +227,7 @@ async def _resolve_dataset(source_id: str) -> pd.DataFrame:
 async def _run_async(job_id: str, query: CounterfactualQuery) -> None:
     _jobs[job_id]["state"] = "running"
     try:
-        df = await _resolve_dataset(query.dataset.source_id)
+        df = await _resolve_dataset(query.dataset.source_id, _jobs[job_id].get("tenant"))
         artifact = await run_job(query, df=df, tenant=_jobs[job_id].get("tenant"))
         artifact.rendered = render(artifact, query.audience)
         _jobs[job_id].update(
@@ -236,7 +252,7 @@ async def _run_demo_async(job_id: str, scenario_id: str, query: CounterfactualQu
     good artifact (degraded) so the demo never shows a broken state."""
     _jobs[job_id]["state"] = "running"
     try:
-        df = await _resolve_dataset(query.dataset.source_id)
+        df = await _resolve_dataset(query.dataset.source_id, _jobs[job_id].get("tenant"))
         artifact = await run_job(query, df=df, methods=_DEMO_METHODS, tenant=_jobs[job_id].get("tenant"))
         artifact.rendered = render(artifact, query.audience)
         art_dict = artifact.model_dump(mode="json")
@@ -409,24 +425,10 @@ def _safe_upload_name(name: str) -> bool:
     return bool(name) and name not in (".", "..") and bool(_SAFE_UPLOAD_NAME.match(name))
 
 
-def _find_upload(name: str) -> Optional[pathlib.Path]:
-    if not _safe_upload_name(name):
-        return None
-    for d in (pathlib.Path("data/uploads"), pathlib.Path("api_gateway/uploads"),
-              pathlib.Path("uploads")):
-        base = d.resolve()
-        p = (base / name).resolve()
-        try:
-            p.relative_to(base)
-        except ValueError:
-            continue  # escaped the base — refuse
-        if p.is_file():
-            return p
-    return None
-
-
-def _csv_header_columns(path: pathlib.Path) -> list:
-    return list(pd.read_csv(path, nrows=0).columns)
+def _csv_header_columns(name: str, tenant: Optional[str]) -> Optional[list]:
+    """The CSV's column names, or None if the tenant has no such upload."""
+    df = _read_upload(name, tenant, nrows=0)
+    return None if df is None else list(df.columns)
 
 
 def _result_field(result: Any, key: str, default: Any = None) -> Any:
@@ -510,21 +512,20 @@ async def run_audit(req: AuditRequest,
                     user: Dict[str, Any] = Depends(require_user)) -> Dict[str, Any]:
     """Audit the user's own uploaded data. Cheap pre-validation here; the heavy,
     GIL-bound fan-out runs out-of-process so the gateway never blocks."""
-    path = _find_upload(req.uploaded_file)
-    if path is None:
+    # The tenant comes from the VERIFIED token, never the body: it selects whose
+    # upload is read, it overwrites the request's tenant_id before the ledger
+    # append, and it scopes the job record so only this org can poll the result.
+    tenant = _ledger_tenant(user)
+    if not await asyncio.to_thread(_upload_exists, req.uploaded_file, tenant):
         raise HTTPException(404, f"uploaded file not found: {req.uploaded_file!r}")
-    if path.suffix.lower() == ".csv":
-        header = await asyncio.to_thread(_csv_header_columns, path)
+    if pathlib.Path(req.uploaded_file).suffix.lower() == ".csv":
+        header = await asyncio.to_thread(_csv_header_columns, req.uploaded_file, tenant) or []
         needed = [req.treatment, req.outcome, *req.confounders] + (
             [req.instrument] if req.instrument else [])
         missing = [c for c in needed if c not in header]
         if missing:
             raise HTTPException(400, f"columns not in file {req.uploaded_file!r}: {missing}")
 
-    # Ledger tenant comes from the VERIFIED token, never the body — overwrite
-    # the request's tenant_id before it reaches the ledger append, and scope the
-    # job record to the same tenant so only this org can poll the result.
-    tenant = _ledger_tenant(user)
     job_id = _new_job("audit", tenant)
     payload = {**req.model_dump(), "tenant_id": tenant}
     _jobs[job_id]["_task"] = asyncio.create_task(

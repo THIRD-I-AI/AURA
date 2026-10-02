@@ -7,6 +7,29 @@ import pytest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
+@pytest.fixture(autouse=True)
+def _forget_storage_backend():
+    yield
+    from shared.storage import reset_storage_backend
+
+    reset_storage_backend()
+
+
+def _uploads(tmp_path, monkeypatch, tenant="org-audit"):
+    """The directory ``tenant``'s uploads live in, with the storage backend pointed at
+    tmp_path. Uploads are stored per tenant (BUG-290: these fixtures used to write to a
+    flat data/uploads/, a layout the upload route never produces)."""
+    from shared.storage import reset_storage_backend
+    from shared.storage.base import tenant_slug
+
+    monkeypatch.setenv("AURA_UPLOADS_ROOT", str(tmp_path / "data" / "uploads"))
+    monkeypatch.delenv("AURA_STORAGE_BACKEND", raising=False)
+    reset_storage_backend()
+    d = tmp_path / "data" / "uploads" / tenant_slug(tenant)
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
 def _write_demo_like_csv(path):
     import numpy as np
     import pandas as pd
@@ -23,9 +46,7 @@ def _write_demo_like_csv(path):
 def test_run_audit_subprocess_produces_signed_artifact_with_honesty(tmp_path, monkeypatch):
     pytest.importorskip("econml")
     monkeypatch.chdir(tmp_path)
-    up = tmp_path / "data" / "uploads"
-    up.mkdir(parents=True)
-    _write_demo_like_csv(up / "decisions.csv")
+    _write_demo_like_csv(_uploads(tmp_path, monkeypatch, "default") / "decisions.csv")
 
     from counterfactual_service.audit_worker import run_audit_subprocess
     result = run_audit_subprocess({
@@ -70,7 +91,7 @@ def _auth() -> dict:
 
 def _client(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    (tmp_path / "data" / "uploads").mkdir(parents=True, exist_ok=True)
+    _uploads(tmp_path, monkeypatch)
     from counterfactual_service.main import app
     return TestClient(app, headers=_auth())
 
@@ -86,7 +107,7 @@ def test_audit_400_when_column_missing(tmp_path, monkeypatch):
     import pandas as pd
     c = _client(tmp_path, monkeypatch)
     pd.DataFrame({"flag": [0, 1], "approved": [1, 0]}).to_csv(
-        tmp_path / "data" / "uploads" / "d.csv", index=False)
+_uploads(tmp_path, monkeypatch) / "d.csv", index=False)
     r = c.post("/counterfactual/audit", json={
         "uploaded_file": "d.csv", "treatment": "flag", "outcome": "approved",
         "confounders": ["does_not_exist"]})
@@ -126,9 +147,8 @@ def test_audit_wiring_creates_job_and_stores_result(tmp_path, monkeypatch):
     from counterfactual_service import main as m
 
     monkeypatch.chdir(tmp_path)
-    (tmp_path / "data" / "uploads").mkdir(parents=True, exist_ok=True)
     pd.DataFrame({"flag": [0, 1] * 80, "approved": [1, 0] * 80, "score": [0.1] * 160}).to_csv(
-        tmp_path / "data" / "uploads" / "d.csv", index=False)
+_uploads(tmp_path, monkeypatch) / "d.csv", index=False)
 
     def _fast_audit(payload):
         return {
@@ -172,7 +192,7 @@ def test_audit_csv_header_read_offloaded_to_thread(tmp_path, monkeypatch):
     from counterfactual_service import main as m
     c = _client(tmp_path, monkeypatch)
     pd.DataFrame({"flag": [0, 1] * 80, "approved": [1, 0] * 80, "score": [0.1] * 160}).to_csv(
-        tmp_path / "data" / "uploads" / "d.csv", index=False)
+_uploads(tmp_path, monkeypatch) / "d.csv", index=False)
 
     calls = []
     real_to_thread = asyncio.to_thread
@@ -205,7 +225,7 @@ def test_audit_csv_header_read_offloaded_to_thread(tmp_path, monkeypatch):
 
 def test_audit_reachable_through_gateway(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    (tmp_path / "data" / "uploads").mkdir(parents=True, exist_ok=True)
+    _uploads(tmp_path, monkeypatch)
     from api_gateway.main import app as gw
     gc = TestClient(gw, headers=_auth())
     r = gc.post("/api/v1/counterfactual/audit", json={
@@ -228,9 +248,8 @@ def test_audit_worker_passes_the_tenant_into_the_critic_cache_key(tmp_path, monk
     and two tenants auditing identical data shared a critic-cache key."""
     pytest.importorskip("econml")
     monkeypatch.chdir(tmp_path)
-    up = tmp_path / "data" / "uploads"
-    up.mkdir(parents=True)
-    _write_demo_like_csv(up / "decisions.csv")
+    for org in ("org-a", "org-b"):
+        _write_demo_like_csv(_uploads(tmp_path, monkeypatch, org) / "decisions.csv")
 
     import counterfactual_service.engine as engine
     seen = []
@@ -247,3 +266,77 @@ def test_audit_worker_passes_the_tenant_into_the_critic_cache_key(tmp_path, monk
     run_audit_subprocess({**payload, "tenant_id": "org-a"})
     run_audit_subprocess({**payload, "tenant_id": "org-b"})
     assert seen == ["org-a", "org-b"], f"the worker must forward the payload's tenant, got {seen}"
+
+
+# ── BUG-290: the audit reads the caller's own upload, and only theirs ─
+
+def _token(org: str) -> dict:
+    return {"Authorization": f"Bearer {create_access_token({'sub': 'u-' + org, 'org_id': org})}"}
+
+
+def test_audit_finds_a_file_stored_the_way_the_upload_route_stores_it(tmp_path, monkeypatch):
+    import pandas as pd
+
+    from counterfactual_service import main as m
+    from shared.storage import get_storage_backend
+
+    _uploads(tmp_path, monkeypatch)
+    csv = pd.DataFrame({"flag": [0, 1] * 80, "approved": [1, 0] * 80}).to_csv(index=False).encode()
+    get_storage_backend().write("org-audit", "mine.csv", csv)
+    monkeypatch.setattr(m, "run_audit_subprocess", lambda payload: {"audit_record_hash": "stub"})
+
+    r = TestClient(m.app, headers=_token("org-audit")).post("/counterfactual/audit", json={
+        "uploaded_file": "mine.csv", "treatment": "flag", "outcome": "approved", "confounders": []})
+
+    assert r.status_code == 200, r.text
+
+
+def test_audit_cannot_read_or_probe_another_tenants_upload(tmp_path, monkeypatch):
+    import pandas as pd
+
+    from counterfactual_service import main as m
+    from shared.storage import get_storage_backend
+
+    _uploads(tmp_path, monkeypatch)
+    csv = pd.DataFrame({"salary": [1, 2], "ssn": [3, 4]}).to_csv(index=False).encode()
+    get_storage_backend().write("org-victim", "payroll.csv", csv)
+
+    r = TestClient(m.app, headers=_token("org-attacker")).post("/counterfactual/audit", json={
+        "uploaded_file": "payroll.csv", "treatment": "salary", "outcome": "ssn",
+        "confounders": ["guess"]})
+
+    assert r.status_code == 404
+    assert "guess" not in r.text, "a 400 naming the missing columns would confirm the file and probe its header"
+
+
+def test_a_file_in_the_flat_uploads_root_belongs_to_nobody(tmp_path, monkeypatch):
+    import pandas as pd
+
+    from counterfactual_service import main as m
+
+    _uploads(tmp_path, monkeypatch)
+    monkeypatch.chdir(tmp_path)
+    pd.DataFrame({"a": [1], "b": [2]}).to_csv(tmp_path / "data" / "uploads" / "legacy.csv", index=False)
+
+    r = TestClient(m.app, headers=_token("org-audit")).post("/counterfactual/audit", json={
+        "uploaded_file": "legacy.csv", "treatment": "a", "outcome": "b", "confounders": []})
+
+    assert r.status_code == 404
+
+
+def test_the_worker_reads_the_payload_tenants_file(tmp_path, monkeypatch):
+    import asyncio
+
+    import pandas as pd
+
+    from counterfactual_service import main as m
+    from shared.storage import get_storage_backend
+
+    _uploads(tmp_path, monkeypatch)
+    get_storage_backend().write("org-a", "d.csv", pd.DataFrame({"x": [1]}).to_csv(index=False).encode())
+    get_storage_backend().write("org-b", "d.csv", pd.DataFrame({"x": [2]}).to_csv(index=False).encode())
+
+    assert asyncio.run(m._resolve_dataset("uploaded_file:d.csv", "org-a"))["x"].tolist() == [1]
+    assert asyncio.run(m._resolve_dataset("uploaded_file:d.csv", "org-b"))["x"].tolist() == [2]
+    with pytest.raises(Exception):
+        asyncio.run(m._resolve_dataset("uploaded_file:d.csv", "org-c"))
