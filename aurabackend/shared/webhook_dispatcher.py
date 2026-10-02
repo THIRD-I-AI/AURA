@@ -150,6 +150,13 @@ def _classify(event: StreamEvent) -> Optional[str]:
 
 # ── Dispatcher ─────────────────────────────────────────────────────
 
+MAX_RETRIES = 10
+
+
+def _clamp_retries(retries: int) -> int:
+    return max(0, min(int(retries), MAX_RETRIES))
+
+
 class WebhookDispatcher:
     _MAX_LOG = 200
 
@@ -212,7 +219,7 @@ class WebhookDispatcher:
             events=list(events) or ["*"],
             secret=secret,
             headers=headers or {},
-            retries=max(0, min(retries, 10)),
+            retries=_clamp_retries(retries),
             description=description,
             workspace_id=workspace_id,
         )
@@ -227,6 +234,11 @@ class WebhookDispatcher:
         for k, v in fields.items():
             if k == "workspace_id":
                 continue
+            if k == "retries" and v is not None:
+                # BUG-316: register() clamped retries but update() did not, so a PATCH
+                # could set a million retries (a delivery task alive for hours per
+                # event) or a negative count (delivery silently never attempted).
+                v = _clamp_retries(v)
             if hasattr(sub, k) and v is not None:
                 setattr(sub, k, v)
         self._save()
