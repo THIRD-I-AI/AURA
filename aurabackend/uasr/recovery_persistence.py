@@ -25,6 +25,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Optional, Tuple
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .db import get_session, get_session_factory
@@ -142,3 +143,36 @@ def _build_rows(
         ),
     )
     return drift_event, recovery_rec
+
+
+async def mark_shim_rolled_back(source_id: str, shim_code: Optional[str]) -> Optional[str]:
+    """Persist that ``shim_code`` was removed from ``source_id``; returns the record id.
+
+    BUG-266: startup re-deploys every record still marked DEPLOYED, so the record
+    that changes status must be the one whose shim was actually removed. The old
+    code marked the newest record of ANY status (often a later FAILED or
+    PENDING_APPROVAL attempt), leaving the removed shim DEPLOYED -- it came back
+    on the next restart -- and the automatic post-heal rollback persisted nothing.
+
+    Picks the newest DEPLOYED record for the source carrying exactly this code,
+    falling back to the newest DEPLOYED record when the code is not found.
+    """
+    # A plain `async with` on the factory, not `async for db in get_session()`: leaving
+    # that generator while a read transaction is still open (the nothing-to-mark case)
+    # runs its cleanup at garbage collection, where it cannot await.
+    async with get_session_factory()() as db:
+        rows = (await db.execute(
+            select(RecoveryRecord)
+            .join(DriftEvent, RecoveryRecord.drift_event_id == DriftEvent.id)
+            .where(
+                DriftEvent.source_id == source_id,
+                RecoveryRecord.status == RecoveryStatus.DEPLOYED.value,
+            )
+            .order_by(RecoveryRecord.created_at.desc())
+        )).scalars().all()
+        if not rows:
+            return None
+        rec = next((r for r in rows if shim_code is not None and r.shim_code == shim_code), rows[0])
+        rec.status = RecoveryStatus.ROLLED_BACK.value
+        await db.commit()
+        return rec.id

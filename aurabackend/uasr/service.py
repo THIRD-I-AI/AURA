@@ -24,9 +24,9 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Any, AsyncGenerator, Dict, List, Optional
 
-from fastapi import Depends, HTTPException
+from fastapi import Depends, HTTPException, Request
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from shared.logging_config import get_logger
@@ -46,6 +46,7 @@ from .models import (
     RecoveryStatus,
 )
 from .recovery_loop import RecoveryLoop, RecoveryLoopConfig
+from .recovery_persistence import mark_shim_rolled_back
 from .runtime_config import (
     approval_timeout_seconds,
     build_redis_client,
@@ -966,58 +967,86 @@ async def list_recoveries_for_event(drift_event_id: str, db: AsyncSession = Depe
     return {"recoveries": [_serialize_recovery(r) for r in records], "count": len(records)}
 
 
-@app.post("/uasr/recovery/{recovery_id}/approve")
-async def approve_recovery(
-    recovery_id: str, req: ApprovalRequest, db: AsyncSession = Depends(get_db),
-):
-    """Approve a held recovery: deploy its shim and record the decision."""
-    result = await db.execute(
-        select(RecoveryRecord).where(RecoveryRecord.id == recovery_id)
+def _decision_maker(request: Request, claimed: str) -> str:
+    """Who is recorded as having made an approve/reject decision.
+
+    BUG-262: this came straight from the request body, so any caller could sign a
+    decision as someone else and the audit trail would say so. The authenticated
+    principal wins; the body value is used only when the request carries none
+    (auth disabled: local development)."""
+    user = getattr(request.state, "user", None)
+    if isinstance(user, dict):
+        identity = user.get("email") or user.get("sub")
+        if identity:
+            return str(identity)
+    return claimed
+
+
+async def _claim_pending_recovery(
+    db: AsyncSession, recovery_id: str, values: Dict[str, Any],
+) -> RecoveryRecord:
+    """Move a recovery out of PENDING_APPROVAL exactly once, or raise 404 / 409.
+
+    BUG-272: approve and reject read the row, checked its status and wrote it back
+    across awaits, so two concurrent approvals (or an approval racing the stale-
+    approval reaper) both passed the check and the shim was deployed twice. The
+    status test is now part of the UPDATE itself, so only one caller can win."""
+    claimed = await db.execute(
+        update(RecoveryRecord)
+        .where(
+            RecoveryRecord.id == recovery_id,
+            RecoveryRecord.status == RecoveryStatus.PENDING_APPROVAL.value,
+        )
+        .values(**values)
     )
-    rec = result.scalar_one_or_none()
+    await db.commit()
+    rec = (await db.execute(
+        select(RecoveryRecord).where(RecoveryRecord.id == recovery_id)
+    )).scalar_one_or_none()
     if rec is None:
         raise HTTPException(status_code=404, detail=f"Recovery '{recovery_id}' not found")
-    if rec.status != RecoveryStatus.PENDING_APPROVAL.value:
+    if claimed.rowcount != 1:
         raise HTTPException(
             status_code=409,
             detail=f"Recovery '{recovery_id}' is '{rec.status}', not pending approval",
         )
+    await db.refresh(rec)
+    return rec
+
+
+@app.post("/uasr/recovery/{recovery_id}/approve")
+async def approve_recovery(
+    recovery_id: str, req: ApprovalRequest, request: Request, db: AsyncSession = Depends(get_db),
+):
+    """Approve a held recovery: deploy its shim and record the decision."""
+    now = datetime.now(timezone.utc)
+    rec = await _claim_pending_recovery(db, recovery_id, {
+        "status": RecoveryStatus.DEPLOYED.value,
+        "decided_by": _decision_maker(request, req.approver),
+        "decision_note": req.note,
+        "decided_at": now,
+        "completed_at": now,
+    })
 
     # Deploy the human-approved shim back to its source (fail-closed until now).
+    # After the claim: the row is already DEPLOYED, so a crash here is repaired by
+    # startup hydration, and a second caller can never reach this line.
     if rec.source_id and rec.shim_code:
         _loop.deploy_approved_shim(rec.source_id, rec.shim_code, recovery_id)
-
-    rec.status = RecoveryStatus.DEPLOYED.value
-    rec.decided_by = req.approver
-    rec.decision_note = req.note
-    rec.decided_at = datetime.now(timezone.utc)
-    rec.completed_at = rec.decided_at
-    await db.commit()
     return {"status": "approved", "recovery": _serialize_recovery(rec)}
 
 
 @app.post("/uasr/recovery/{recovery_id}/reject")
 async def reject_recovery(
-    recovery_id: str, req: RejectionRequest, db: AsyncSession = Depends(get_db),
+    recovery_id: str, req: RejectionRequest, request: Request, db: AsyncSession = Depends(get_db),
 ):
     """Reject a held recovery: escalate it for human intervention, no deploy."""
-    result = await db.execute(
-        select(RecoveryRecord).where(RecoveryRecord.id == recovery_id)
-    )
-    rec = result.scalar_one_or_none()
-    if rec is None:
-        raise HTTPException(status_code=404, detail=f"Recovery '{recovery_id}' not found")
-    if rec.status != RecoveryStatus.PENDING_APPROVAL.value:
-        raise HTTPException(
-            status_code=409,
-            detail=f"Recovery '{recovery_id}' is '{rec.status}', not pending approval",
-        )
-
-    rec.status = RecoveryStatus.ESCALATED.value
-    rec.decided_by = req.approver
-    rec.decision_note = req.reason
-    rec.decided_at = datetime.now(timezone.utc)
-    await db.commit()
+    rec = await _claim_pending_recovery(db, recovery_id, {
+        "status": RecoveryStatus.ESCALATED.value,
+        "decided_by": _decision_maker(request, req.approver),
+        "decision_note": req.reason,
+        "decided_at": datetime.now(timezone.utc),
+    })
     return {"status": "escalated", "recovery": _serialize_recovery(rec)}
 
 
@@ -1121,6 +1150,8 @@ async def gate_check(req: GateCheckRequest):
 @app.post("/uasr/rollback")
 async def rollback_shim(req: RollbackRequest, db: AsyncSession = Depends(get_db)):
     """Rollback the most recently deployed shim for a source."""
+    deployed = _loop.get_deployed_shims(req.source_id)
+    removed_code = deployed[-1] if deployed else None
     success = _loop.rollback_last_shim(req.source_id)
     if not success:
         raise HTTPException(
@@ -1128,23 +1159,10 @@ async def rollback_shim(req: RollbackRequest, db: AsyncSession = Depends(get_db)
             detail=f"No deployed shims found for source '{req.source_id}'",
         )
 
-    # Mark the latest recovery record as rolled back
-    result = await db.execute(
-        select(RecoveryRecord)
-        .where(RecoveryRecord.id.in_(
-            select(RecoveryRecord.id)
-            .join(DriftEvent, RecoveryRecord.drift_event_id == DriftEvent.id)
-            .where(DriftEvent.source_id == req.source_id)
-            .order_by(RecoveryRecord.created_at.desc())
-            .limit(1)
-        ))
-    )
-    rec = result.scalar_one_or_none()
-    if rec:
-        rec.status = RecoveryStatus.ROLLED_BACK.value
-        await db.commit()
+    # Mark the record of the shim that was actually removed (BUG-266).
+    recovery_id = await mark_shim_rolled_back(req.source_id, removed_code)
 
-    return {"status": "rolled_back", "source_id": req.source_id}
+    return {"status": "rolled_back", "source_id": req.source_id, "recovery_id": recovery_id}
 
 
 @app.get("/uasr/shims/{source_id}")
@@ -1205,6 +1223,8 @@ async def mapek_status() -> Dict[str, Any]:
     return {
         "running": _mapek_worker._running,
         "paused": _mapek_worker.is_paused,
+        # Set when the loop paused itself on an unexpected error (BUG-268).
+        "last_error": _mapek_worker._last_error,
         "config": {
             "topic": cfg.topic,
             "group_id": cfg.group_id,
