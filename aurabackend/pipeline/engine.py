@@ -14,6 +14,7 @@ import asyncio
 import logging
 import os
 import re
+import threading
 import time
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
@@ -34,6 +35,10 @@ logger = logging.getLogger("aura.pipeline.engine")
 
 OUTPUT_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "processed")
 os.makedirs(OUTPUT_DIR, exist_ok=True)
+
+# The DuckDB sink's tables live in one database file per tenant (BUG-279).
+DUCKDB_SINK_FILE = "pipeline_tables.duckdb"
+_duckdb_sink_lock = threading.Lock()
 
 _SAFE_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
@@ -68,6 +73,38 @@ def _client_error(exc: BaseException) -> str:
     if isinstance(exc, duckdb.Error):
         return _SERVER_PATH.sub("<path>", str(exc))[:1000]
     return "Pipeline execution failed; the details are in the server log"
+
+
+def _typed_arrow_table(columns: List[str], rows: List[Dict[str, Any]]) -> Any:
+    """Rows from an external source as an Arrow table that keeps each column's type.
+
+    BUG-280: these rows used to be loaded as all-VARCHAR, so a filter, sort or MIN/MAX
+    on a numeric or date column compared text ('95' > '100') and returned wrong rows
+    with a SUCCESS status. A column whose values Arrow cannot give one type to (mixed
+    types, UUIDs, nested JSON) is still loaded as text, as every column was before.
+    """
+    import json
+
+    import pyarrow as pa
+
+    def _text(v: Any) -> Optional[str]:
+        if v is None:
+            return None
+        return json.dumps(v) if isinstance(v, (dict, list)) else str(v)
+
+    arrays = []
+    for c in columns:
+        values = [r.get(c) for r in rows]
+        try:
+            if any(isinstance(v, (dict, list)) for v in values):
+                raise TypeError("nested value")
+            arr = pa.array(values)
+            if pa.types.is_null(arr.type):
+                arr = arr.cast(pa.string())
+        except (pa.ArrowException, TypeError, ValueError, OverflowError):
+            arr = pa.array([_text(v) for v in values], type=pa.string())
+        arrays.append(arr)
+    return pa.Table.from_arrays(arrays, names=[_sanitize_id(c) for c in columns])
 
 
 # Aliased, not reimplemented. This file had its own _q() that doubled quotes
@@ -331,20 +368,12 @@ class PipelineEngine:
                 "(add a WHERE or LIMIT) instead of loading a truncated copy"
             )
 
-        # Load into DuckDB
-        import duckdb
         columns = list(rows[0].keys())
-        col_defs = ", ".join(f'"{_sanitize_id(c)}" VARCHAR' for c in columns)
 
         def _create_and_insert() -> None:
-            conn.execute(f"CREATE TABLE {_q(table_name)} ({col_defs})")
-            placeholders = ", ".join(["?"] * len(columns))
-            insert_sql = f"INSERT INTO {_q(table_name)} VALUES ({placeholders})"
-            all_values = [
-                [str(v) if v is not None else None for v in row.values()]
-                for row in rows
-            ]
-            conn.executemany(insert_sql, all_values)
+            conn.register("external_source_rows", _typed_arrow_table(columns, rows))
+            conn.execute(f"CREATE TABLE {_q(table_name)} AS SELECT * FROM external_source_rows")
+            conn.unregister("external_source_rows")
 
         # Same reasoning as _load_source's dispatch: the per-row insert
         # loop blocks the sole uvicorn worker for its whole duration.
@@ -379,28 +408,10 @@ class PipelineEngine:
                     seen.add(k)
                     columns.append(k)
 
-        col_defs = ", ".join(f'"{_sanitize_id(c)}" VARCHAR' for c in columns)
-
         def _create_and_insert() -> None:
-            conn.execute(f"CREATE TABLE {_q(table_name)} ({col_defs})")
-            placeholders = ", ".join(["?"] * len(columns))
-            insert_sql = f"INSERT INTO {_q(table_name)} VALUES ({placeholders})"
-
-            def _row_values(r: Dict[str, Any]) -> List[Any]:
-                values = []
-                for c in columns:
-                    v = r.get(c)
-                    if v is None:
-                        values.append(None)
-                    elif isinstance(v, (dict, list)):
-                        import json as _json
-                        values.append(_json.dumps(v))
-                    else:
-                        values.append(str(v))
-                return values
-
-            all_values = [_row_values(r) for r in rows]
-            conn.executemany(insert_sql, all_values)
+            conn.register("external_source_rows", _typed_arrow_table(columns, rows))
+            conn.execute(f"CREATE TABLE {_q(table_name)} AS SELECT * FROM external_source_rows")
+            conn.unregister("external_source_rows")
 
         # Same reasoning as _load_db_source's dispatch: the per-row insert
         # loop blocks the sole uvicorn worker for its whole duration.
@@ -543,19 +554,29 @@ class PipelineEngine:
     def _step_to_sql(
         self, conn: Any, step: ProcessingStep, prev: str, join_tables: Optional[Dict[str, str]] = None,
     ) -> Optional[str]:
-        """Convert a processing step to a SQL SELECT clause. Returns None to skip."""
+        """Convert a processing step to a SQL SELECT clause.
+
+        Returns None only when the step has genuinely nothing to do (a fill-all with no
+        NULLs to fill). A step that is missing a required setting, or names an operator,
+        type or function outside its allowlist, raises: it used to be skipped -- or, for
+        a filter operator, rewritten to '=' -- and the run still reported SUCCESS on
+        rows the step never touched (BUG-281).
+        """
         cfg = step.config
         t = step.type
+
+        def _bad(reason: str) -> ValueError:
+            return ValueError(f"Pipeline step {t.value!r} is misconfigured: {reason}")
 
         if t == StepType.FILTER:
             col = cfg.get("column", "")
             op = cfg.get("operator", "=")
             val = cfg.get("value", "")
             if not col:
-                return None
-            allowed_ops = {"=", "!=", ">", "<", ">=", "<=", "LIKE", "NOT LIKE", "IN", "NOT IN", "IS NULL", "IS NOT NULL"}
-            if op.upper() not in allowed_ops:
-                op = "="
+                raise _bad("no column")
+            allowed_ops = {"=", "!=", "<>", ">", "<", ">=", "<=", "LIKE", "NOT LIKE", "IN", "NOT IN", "IS NULL", "IS NOT NULL"}
+            if str(op).upper() not in allowed_ops:
+                raise _bad(f"unsupported operator {op!r}")
             if op.upper() in ("IS NULL", "IS NOT NULL"):
                 return f'SELECT * FROM {_q(prev)} WHERE "{_sanitize_id(col)}" {op}'
             safe_val = str(val).replace("'", "''")
@@ -565,37 +586,33 @@ class PipelineEngine:
             col = cfg.get("column", "")
             direction = cfg.get("direction", "ASC").upper()
             if not col:
-                return None
+                raise _bad("no column")
             if direction not in ("ASC", "DESC"):
-                direction = "ASC"
+                raise _bad(f"unsupported direction {direction!r}")
             return f'SELECT * FROM {_q(prev)} ORDER BY "{_sanitize_id(col)}" {direction}'
 
         elif t == StepType.DROP_COLUMNS:
             columns = cfg.get("columns", [])
-            if not columns:
-                return None
             excludes = ", ".join(f'"{_sanitize_id(c)}"' for c in columns if c)
             if not excludes:
-                return None
+                raise _bad("no columns")
             return f"SELECT * EXCLUDE ({excludes}) FROM {_q(prev)}"
 
         elif t == StepType.RENAME_COLUMNS:
             mapping = cfg.get("mapping", {})
-            if not mapping:
-                return None
             renames = ", ".join(
                 f'"{_sanitize_id(old)}" AS "{_sanitize_id(new)}"'
                 for old, new in mapping.items() if old and new
             )
             if not renames:
-                return None
+                raise _bad("no column mapping")
             return f"SELECT {renames}, * EXCLUDE ({', '.join(chr(34) + _sanitize_id(old) + chr(34) for old in mapping if old)}) FROM {_q(prev)}"
 
         elif t == StepType.ADD_COLUMN:
             name = cfg.get("name", "")
             expression = cfg.get("expression", "")
             if not name or not expression:
-                return None
+                raise _bad("name and expression are both required")
             # BUG-082/083: only the output column name was sanitized; the
             # expression itself (free text, reachable via the LLM generator
             # AND the local rule-based parser's own regex) was spliced
@@ -608,10 +625,10 @@ class PipelineEngine:
             col = cfg.get("column", "")
             new_type = cfg.get("new_type", "")
             if not col or not new_type:
-                return None
+                raise _bad("column and new_type are both required")
             allowed_types = {"INTEGER", "VARCHAR", "DOUBLE", "BOOLEAN", "DATE", "TIMESTAMP", "BIGINT", "FLOAT", "TEXT"}
-            if new_type.upper() not in allowed_types:
-                return None
+            if str(new_type).upper() not in allowed_types:
+                raise _bad(f"unsupported type {new_type!r} (allowed: {', '.join(sorted(allowed_types))})")
             return f'SELECT *, CAST("{_sanitize_id(col)}" AS {new_type.upper()}) AS "{_sanitize_id(col)}_cast" FROM {_q(prev)}'
 
         elif t == StepType.FILL_MISSING:
@@ -619,7 +636,7 @@ class PipelineEngine:
             value = cfg.get("fill_value", "")
             strategy = cfg.get("strategy", "value")
             if not col:
-                return None
+                raise _bad("no column")
 
             # ── Fill ALL columns when column is "*" ──
             if col == "*":
@@ -698,7 +715,7 @@ class PipelineEngine:
             group_by = cfg.get("group_by", [])
             aggregations = cfg.get("aggregations", [])
             if not group_by or not aggregations:
-                return None
+                raise _bad("group_by and aggregations are both required")
             gb_cols = ", ".join(f'"{_sanitize_id(c)}"' for c in group_by if c)
             agg_parts = []
             for agg in aggregations:
@@ -707,11 +724,9 @@ class PipelineEngine:
                 alias = agg.get("alias", f"{func}_{col}")
                 allowed_funcs = {"COUNT", "SUM", "AVG", "MIN", "MAX", "MEDIAN", "STDDEV"}
                 if func not in allowed_funcs:
-                    continue
+                    raise _bad(f"unsupported aggregate function {func!r}")
                 col_ref = f'"{_sanitize_id(col)}"' if col != "*" else "*"
                 agg_parts.append(f'{func}({col_ref}) AS "{_sanitize_id(alias)}"')
-            if not agg_parts:
-                return None
             return f"SELECT {gb_cols}, {', '.join(agg_parts)} FROM {_q(prev)} GROUP BY {gb_cols}"
 
         elif t == StepType.JOIN:
@@ -726,11 +741,13 @@ class PipelineEngine:
             # descriptor; execute() loads it before this runs and passes
             # the resulting table name here keyed by step.id.
             right_table = (join_tables or {}).get(step.id)
-            if not left_key or not right_key or not right_table:
-                return None
+            if not right_table:
+                raise _bad("no join_source to join against")
+            if not left_key or not right_key:
+                raise _bad("left_key and right_key are both required")
             allowed_joins = {"INNER", "LEFT", "RIGHT", "FULL", "CROSS"}
             if join_type not in allowed_joins:
-                join_type = "INNER"
+                raise _bad(f"unsupported join type {join_type!r}")
             return (
                 f"SELECT * FROM {_q(prev)} "
                 f'{join_type} JOIN {_q(right_table)} '
@@ -743,10 +760,10 @@ class PipelineEngine:
             order_by = cfg.get("order_by", "")
             alias = cfg.get("alias", "window_result")
             if not order_by:
-                return None
+                raise _bad("no order_by")
             allowed_win = {"ROW_NUMBER", "RANK", "DENSE_RANK", "LAG", "LEAD", "SUM", "AVG", "COUNT", "MIN", "MAX", "NTILE"}
             if function not in allowed_win:
-                return None
+                raise _bad(f"unsupported window function {function!r}")
             partition_clause = ""
             if partition_by:
                 pb = ", ".join(f'"{_sanitize_id(c)}"' for c in partition_by if c)
@@ -762,9 +779,9 @@ class PipelineEngine:
             agg_func = str(cfg.get("agg_function", "SUM")).strip().upper()
             # BUG-184: this used to be spliced raw into `USING <agg>(...)`.
             if agg_func not in _PIVOT_AGG_FUNCTIONS:
-                return None
+                raise _bad(f"unsupported aggregate function {agg_func!r}")
             if not values_col or not pivot_col:
-                return None
+                raise _bad("values_column and pivot_column are both required")
             return (
                 f'PIVOT {_q(prev)} ON "{_sanitize_id(pivot_col)}" '
                 f'USING {agg_func}("{_sanitize_id(values_col)}")'
@@ -772,9 +789,9 @@ class PipelineEngine:
 
         elif t == StepType.UNPIVOT:
             columns = cfg.get("columns", [])
-            if not columns:
-                return None
             cols = ", ".join(f'"{_sanitize_id(c)}"' for c in columns if c)
+            if not cols:
+                raise _bad("no columns")
             return f"UNPIVOT {_q(prev)} ON {cols} INTO NAME variable VALUE value"
 
         elif t == StepType.LIMIT:
@@ -784,7 +801,7 @@ class PipelineEngine:
         elif t == StepType.CUSTOM_SQL:
             expression = cfg.get("expression", "").strip()
             if not expression:
-                return None
+                raise _bad("no expression")
             # BUG-082: mirrors etl.py's custom_sql guard (BUG-053) -- this
             # step's expression was never validated at all.
             _validate_expression(expression)
@@ -813,7 +830,7 @@ class PipelineEngine:
         elif sink.type == SinkType.POSTGRESQL:
             await self._write_pg_sink(conn, final_table, sink, run)
         elif sink.type == SinkType.DUCKDB:
-            await asyncio.to_thread(self._write_duckdb_sink, conn, final_table, sink, run)
+            await asyncio.to_thread(self._write_duckdb_sink, conn, final_table, sink, run, tenant)
         elif sink.type == SinkType.PREVIEW:
             pass  # preview_data already set
         else:
@@ -869,6 +886,8 @@ class PipelineEngine:
 
         cfg = sink.connection or {}
         table_name = sink.table or "pipeline_output"
+        if sink.if_exists not in ("replace", "append", "fail"):
+            raise ValueError(f"Unsupported if_exists for a PostgreSQL sink: {sink.if_exists!r}")
 
         pg = PostgreSQLConnector(ConnectorConfig(
             source_type=CSourceType.POSTGRESQL,
@@ -915,10 +934,21 @@ class PipelineEngine:
                     pg_type = pg_type_map.get(duck_type, "TEXT")
                     col_defs.append(f'{_q(row[0])} {pg_type}')
 
-                if sink.if_exists in ("replace", "fail"):
+                # BUG-285: 'fail' used to share replace's CREATE TABLE IF NOT EXISTS and
+                # then insert, so it appended into the table it was meant to protect.
+                # A plain CREATE TABLE raises on an existing table before any row is
+                # written. 'append' creates the table only when it is missing.
+                if_not_exists = "IF NOT EXISTS " if sink.if_exists == "append" else ""
+                try:
                     await pg_conn.execute(
-                        f"CREATE TABLE IF NOT EXISTS {_q(table_name)} ({', '.join(col_defs)})"
+                        f"CREATE TABLE {if_not_exists}{_q(table_name)} ({', '.join(col_defs)})"
                     )
+                except Exception as exc:
+                    if sink.if_exists == "fail" and getattr(exc, "sqlstate", None) == "42P07":
+                        raise ValueError(
+                            f"Table {table_name!r} already exists and if_exists is 'fail'"
+                        ) from exc
+                    raise
 
                 # Insert rows in batches
                 if rows:
@@ -933,11 +963,42 @@ class PipelineEngine:
             await pg.disconnect()
 
     def _write_duckdb_sink(
-        self, conn: Any, final_table: str, sink: PipelineSink, run: PipelineRun
+        self, conn: Any, final_table: str, sink: PipelineSink, run: PipelineRun,
+        tenant: Optional[str] = None,
     ) -> None:
+        # BUG-279: this used to CREATE TABLE on `conn` -- the run's own in-memory
+        # connection, closed as soon as execute() returns -- so the run reported
+        # success with output_table set and nothing was kept. The table now goes
+        # into the tenant's own database file, next to its file-sink outputs, where
+        # GET /pipeline/download/{output_file} serves it.
+        from shared.duckdb_factory import new_connection
+
         table_name = sink.table or "pipeline_output_saved"
-        if sink.if_exists == "replace":
-            conn.execute(f"DROP TABLE IF EXISTS {_q(table_name)}")
-        conn.execute(f"CREATE TABLE {_q(table_name)} AS SELECT * FROM {_q(final_table)}")
+        if sink.if_exists not in ("replace", "append", "fail"):
+            raise ValueError(f"Unsupported if_exists for a DuckDB sink: {sink.if_exists!r}")
+        tenant_dir = os.path.join(OUTPUT_DIR, tenant_slug(tenant))
+        os.makedirs(tenant_dir, exist_ok=True)
+        db_path = os.path.join(tenant_dir, DUCKDB_SINK_FILE)
+
+        result = conn.execute(f"SELECT * FROM {_q(final_table)}").arrow()
+        with _duckdb_sink_lock:
+            out = new_connection(db_path)
+            try:
+                out.register("pipeline_output_export", result)
+                exists = out.execute(
+                    "SELECT 1 FROM information_schema.tables "
+                    "WHERE table_schema = 'main' AND table_name = ?", [table_name],
+                ).fetchone() is not None
+                if exists and sink.if_exists == "fail":
+                    raise ValueError(f"Table {table_name!r} already exists and if_exists is 'fail'")
+                if exists and sink.if_exists == "append":
+                    out.execute(f"INSERT INTO {_q(table_name)} BY NAME SELECT * FROM pipeline_output_export")
+                else:
+                    out.execute(
+                        f"CREATE OR REPLACE TABLE {_q(table_name)} AS SELECT * FROM pipeline_output_export")
+            finally:
+                out.close()
+
         run.output_table = table_name
+        run.output_file = DUCKDB_SINK_FILE
         logger.info(f"[Pipeline] Wrote to DuckDB table: {table_name}")
