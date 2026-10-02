@@ -79,3 +79,79 @@ def test_run_job_without_timeout_runs_critic_normally(monkeypatch):
     assert called["n"] == 1
     assert art.regenerated_critic is True
     assert not any("critic" in w.lower() and "skip" in w.lower() for w in art.warnings)
+
+
+# ── BUG-294: a FAILED critic run is not "the critic had no objections" ─
+
+class _FailingCritic:
+    """Stands in for AdversarialCriticAgent: BaseAgent.execute reports an LLM error,
+    non-JSON output or an exhausted budget as a FAILED result, without raising."""
+    calls = 0
+
+    class llm:
+        model = "m"
+        model_version = "v1"
+
+    async def execute(self, ctx):
+        from agents.base import AgentResult, AgentStatus
+
+        type(self).calls += 1
+        return AgentResult(status=AgentStatus.FAILED, error="provider returned 429")
+
+
+def _use_failing_critic(monkeypatch, tmp_path):
+    import agents.specialists.adversarial_critic_agent as critic_module
+    from counterfactual_service import critic_cache
+
+    stored = {}
+    monkeypatch.setattr(critic_cache, "get", lambda k: stored.get(k))
+    monkeypatch.setattr(critic_cache, "put", lambda k, v: stored.__setitem__(k, v))
+    _FailingCritic.calls = 0
+    monkeypatch.setattr(critic_module, "AdversarialCriticAgent", _FailingCritic)
+    return stored
+
+
+@pytest.mark.parametrize("critic_timeout", [None, 30.0])
+def test_a_failed_critic_is_surfaced_and_never_cached(monkeypatch, tmp_path, critic_timeout):
+    pytest.importorskip("dowhy")
+    from counterfactual_service import engine
+
+    stored = _use_failing_critic(monkeypatch, tmp_path)
+
+    art = asyncio.run(engine.run_job(_small_query(), df=_small_df(), methods=["tmle"],
+                                     critic_timeout=critic_timeout))
+
+    assert any(w.startswith(engine.CRITIC_SKIPPED_PREFIX) for w in art.warnings), art.warnings
+    assert art.regenerated_critic is False
+    assert stored == {}, "a failed run must not be written to the critic cache"
+
+    # The provider recovers: the next run must reach the critic again, not replay [].
+    asyncio.run(engine.run_job(_small_query(), df=_small_df(), methods=["tmle"],
+                               critic_timeout=critic_timeout))
+    assert _FailingCritic.calls == 2
+
+
+def test_the_operator_card_and_pdf_do_not_claim_no_objections(monkeypatch, tmp_path):
+    pytest.importorskip("dowhy")
+    from counterfactual_service import engine
+    from counterfactual_service.renderers import render
+
+    _use_failing_critic(monkeypatch, tmp_path)
+    art = asyncio.run(engine.run_job(_small_query(), df=_small_df(), methods=["tmle"]))
+
+    assert render(art, "operator").get("critic_skipped") is True
+
+
+def test_a_critic_that_ran_and_found_nothing_is_not_marked_skipped(monkeypatch):
+    pytest.importorskip("dowhy")
+    from counterfactual_service import engine
+    from counterfactual_service.renderers import render
+
+    async def _quiet_critic(*a, **k):
+        return [], True
+
+    monkeypatch.setattr(engine, "_run_critic", _quiet_critic)
+    art = asyncio.run(engine.run_job(_small_query(), df=_small_df(), methods=["tmle"]))
+
+    assert not any(w.startswith(engine.CRITIC_SKIPPED_PREFIX) for w in art.warnings)
+    assert "critic_skipped" not in render(art, "operator")

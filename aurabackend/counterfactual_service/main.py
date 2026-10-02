@@ -17,6 +17,7 @@ import os
 import pathlib
 import re
 import uuid
+from concurrent.futures import BrokenExecutor
 from typing import Any, Dict, List, Literal, Optional
 
 import pandas as pd
@@ -36,11 +37,24 @@ def _ledger_tenant(user: Optional[Dict[str, Any]]) -> str:
     if not user:
         return "default"
     return str(user.get("org_id") or user.get("sub") or "default")
+def _preparer(user: Optional[Dict[str, Any]], requested: str) -> str:
+    """The AS 1215 preparer recorded in the signed document and the ledger.
+
+    BUG-291: this was whatever ``preparer_id`` the request body carried, so a caller
+    could have an audit signed as prepared by anyone. An authenticated caller is the
+    preparer -- the token's ``sub``, the same binding the reviewer already has. Only a
+    request with no identity at all (dev/open mode) keeps the body's value.
+    """
+    if user and user.get("sub"):
+        return str(user["sub"])
+    return requested or "system"
+
+
 from shared.exceptions import ForbiddenError
 from shared.service_factory import create_service
 
 from . import cryptography, pdf_renderer, persistence, signing
-from .audit_worker import get_audit_pool, run_audit_subprocess
+from .audit_worker import discard_audit_pool, get_audit_pool, run_audit_subprocess
 from .demo_scenarios import get_scenario, list_scenarios
 from .engine import dowhy_available, econml_available, run_job
 from .renderers import render
@@ -284,9 +298,29 @@ def _new_job(prefix: str, tenant: str) -> str:
     sitting behind the tenant check. 48 bits is cheap to grind for something as
     valuable as a fair-lending audit result.
     """
+    _evict_finished_jobs()
     job_id = f"{prefix}_{uuid.uuid4().hex}"
     _jobs[job_id] = {"state": "queued", "artifact": None, "error": None, "tenant": tenant}
     return job_id
+
+
+# BUG-302: every job -- each demo click included -- stayed in ``_jobs`` with its full
+# artifact and Task for the life of the process.
+MAX_RETAINED_JOBS = 500
+
+
+def _evict_finished_jobs() -> None:
+    """Make room for one more job by dropping the oldest finished ones.
+
+    A queued or running job is never dropped: its worker still writes to its entry.
+    A dropped job's poller gets the same 404 as for an id that never existed; a signed
+    audit remains retrievable from the ledger by its record hash.
+    """
+    excess = len(_jobs) - MAX_RETAINED_JOBS + 1
+    if excess <= 0:
+        return
+    for job_id in [j for j, rec in _jobs.items() if rec.get("state") in ("succeeded", "failed")][:excess]:
+        del _jobs[job_id]
 
 
 # ── Endpoints ─────────────────────────────────────────────────────────
@@ -496,9 +530,17 @@ async def _run_audit_job_async(job_id: str, payload: Dict[str, Any]) -> None:
     _jobs[job_id]["state"] = "running"
     loop = asyncio.get_event_loop()
     try:
-        result = await loop.run_in_executor(get_audit_pool(), run_audit_subprocess, payload)
-        _jobs[job_id].update(state="succeeded", artifact=result)
+        pool = get_audit_pool()
+        try:
+            result = await loop.run_in_executor(pool, run_audit_subprocess, payload)
+        except BrokenExecutor:
+            discard_audit_pool(pool)
+            raise
+        # BUG-299: the ledger append comes first. The job used to be marked succeeded
+        # before it, so a poller could read a success that a failed append then
+        # flipped to failed.
         await _append_fairness_audit_to_ledger(result, payload)
+        _jobs[job_id].update(state="succeeded", artifact=result)
     except Exception as exc:
         logger.exception("Audit job %s failed", job_id)
         _jobs[job_id].update(
@@ -527,7 +569,8 @@ async def run_audit(req: AuditRequest,
             raise HTTPException(400, f"columns not in file {req.uploaded_file!r}: {missing}")
 
     job_id = _new_job("audit", tenant)
-    payload = {**req.model_dump(), "tenant_id": tenant}
+    payload = {**req.model_dump(), "tenant_id": tenant,
+               "preparer_id": _preparer(user, req.preparer_id)}
     _jobs[job_id]["_task"] = asyncio.create_task(
         _run_audit_job_async(job_id, payload)
     )
@@ -700,16 +743,21 @@ async def revoke_key(kid: str) -> Dict[str, str]:
 
 # ── S34a — Signed Financial Audit ─────────────────────────────────────
 
+# BUG-301: the audit runs on the gateway's one worker and writes an audit-log record
+# per finding, so the input lists are bounded.
+MAX_AUDIT_ROWS = 50_000
+
+
 class FinancialAuditRequest(BaseModel):
     tenant_id: str
-    ledger: List[Dict[str, Any]] = Field(default_factory=list)
-    purchase_orders: List[Dict[str, Any]] = Field(default_factory=list)
-    invoices: List[Dict[str, Any]] = Field(default_factory=list)
-    journal_entries: List[Dict[str, Any]] = Field(default_factory=list)
-    historical_reports: List[Dict[str, Any]] = Field(default_factory=list)
+    ledger: List[Dict[str, Any]] = Field(default_factory=list, max_length=MAX_AUDIT_ROWS)
+    purchase_orders: List[Dict[str, Any]] = Field(default_factory=list, max_length=MAX_AUDIT_ROWS)
+    invoices: List[Dict[str, Any]] = Field(default_factory=list, max_length=MAX_AUDIT_ROWS)
+    journal_entries: List[Dict[str, Any]] = Field(default_factory=list, max_length=MAX_AUDIT_ROWS)
+    historical_reports: List[Dict[str, Any]] = Field(default_factory=list, max_length=MAX_AUDIT_ROWS)
     # S39 — optional forensic inputs. Goods receipts enable the AS-2201
     # three-way match; period_end enables AS-2401 cutoff testing.
-    goods_receipts: List[Dict[str, Any]] = Field(default_factory=list)
+    goods_receipts: List[Dict[str, Any]] = Field(default_factory=list, max_length=MAX_AUDIT_ROWS)
     period_end: Optional[str] = None
     # Subsystem C — audit-grade identity. subject_id is the caller-supplied
     # stable id of what's audited (a model / decision cohort / applicant) so
@@ -737,19 +785,23 @@ async def financial_audit(req: FinancialAuditRequest,
     # Tenant comes from the VERIFIED token, never req.tenant_id (a token holder
     # could otherwise forge it to write into another org's audit chain).
     tenant = _ledger_tenant(user)
+    preparer = _preparer(user, req.preparer_id)
     agent = FinancialAuditorAgent(tenant_id=tenant)
     result = await agent.run_full_audit(
         req.ledger, req.purchase_orders, req.invoices, req.journal_entries, req.historical_reports,
         goods_receipts=req.goods_receipts or None, period_end=req.period_end)
     # Bind EVERY audited input in the signed fingerprint (the three-way-match,
     # expectation, and cutoff inputs drive findings — they must be attested).
-    fingerprint = dataset_fingerprint(
+    # Canonical serialisation and per-finding hashing of the whole payload: blocking.
+    fingerprint = await asyncio.to_thread(
+        dataset_fingerprint,
         req.ledger, req.purchase_orders, req.invoices, req.journal_entries,
         goods_receipts=req.goods_receipts, historical_reports=req.historical_reports,
         period_end=req.period_end)
-    doc = build_completion_document(
+    doc = await asyncio.to_thread(
+        build_completion_document,
         tenant, result["findings"], fingerprint, result["materiality_threshold"],
-        subject_id=req.subject_id, subject_type=req.subject_type, preparer_id=req.preparer_id)
+        subject_id=req.subject_id, subject_type=req.subject_type, preparer_id=preparer)
     stored = await asyncio.to_thread(sign_and_persist, doc)
 
     # Always-on durable ledger: chain this signed audit into the tenant's
@@ -764,7 +816,7 @@ async def financial_audit(req: FinancialAuditRequest,
     try:
         await audit_ledger.append_audit_with_retry(
             tenant_id=tenant, kind="financial_audit_completed",
-            subject_id=req.subject_id, subject_type=req.subject_type, preparer_id=req.preparer_id,
+            subject_id=req.subject_id, subject_type=req.subject_type, preparer_id=preparer,
             cert_hash=stored["record_hash"], input_fingerprint=fingerprint,
             payload={"n_findings": stored.get("n_findings"),
                      "signature_status": stored.get("signature_status"),
@@ -1140,7 +1192,11 @@ async def get_sth(day: Optional[str] = None) -> STHResponse:
     from shared.audit_log import daily_merkle_root
 
     target_day = day or _dt.datetime.now(_dt.timezone.utc).strftime("%Y%m%d")
-    merkle_info = daily_merkle_root(target_day)
+    if not _AUDIT_DAY.match(target_day):
+        raise HTTPException(status_code=400, detail="day must be YYYYMMDD")
+    # BUG-300: parsing a day's audit log and building its Merkle tree is blocking
+    # work, and this endpoint is unauthenticated -- off the event loop.
+    merkle_info = await asyncio.to_thread(daily_merkle_root, target_day)
     if merkle_info is None:
         raise HTTPException(
             status_code=404,
@@ -1173,6 +1229,10 @@ async def get_sth(day: Optional[str] = None) -> STHResponse:
     )
 
 
+_RECORD_HASH = re.compile(r"^[0-9a-fA-F]{64}$")
+_AUDIT_DAY = re.compile(r"^\d{8}$")
+
+
 class InclusionProofResponse(BaseModel):
     record_hash: str
     day: str
@@ -1200,7 +1260,14 @@ async def get_inclusion_proof(
     older than 30 days require an explicit ``day=YYYYMMDD`` query."""
     from shared.audit_log import inclusion_proof_for_record
 
-    proof_info = inclusion_proof_for_record(record_hash, day=day)
+    # BUG-300: with no ``day`` this parses up to 30 days of audit log. A value that is
+    # not a record hash cannot be in the log, so it is refused before any file is
+    # read, and the search itself runs off the event loop.
+    if not _RECORD_HASH.match(record_hash):
+        raise HTTPException(status_code=400, detail="record_hash must be 64 hex characters")
+    if day is not None and not _AUDIT_DAY.match(day):
+        raise HTTPException(status_code=400, detail="day must be YYYYMMDD")
+    proof_info = await asyncio.to_thread(inclusion_proof_for_record, record_hash, day=day)
     if proof_info is None:
         raise HTTPException(
             status_code=404,

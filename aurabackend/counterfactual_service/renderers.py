@@ -175,6 +175,9 @@ def _operator(art: CounterfactualArtifact) -> Dict[str, Any]:
         "top_challenges": top_challenges,
         "audit_record_hash": art.audit_record_hash,
     }
+    # BUG-294: an empty challenge list means "no objections" only if the critic ran.
+    if any(str(w).startswith("Adversarial LLM critic skipped") for w in art.warnings):
+        out["critic_skipped"] = True
     # DSR-008 / BUG-153: an estimator that silently ran as a weaker fallback
     # (double_ml -> DoWhy linear regression when econml is missing) still
     # feeds the point/CI above, so the operator must be told. Only estimates

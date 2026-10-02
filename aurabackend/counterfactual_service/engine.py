@@ -20,6 +20,7 @@ import hashlib
 import logging
 import math
 import os
+import re
 import threading
 import time
 import uuid
@@ -559,7 +560,7 @@ def _run_one_econml_dr_learner(
             point=0.0, ci_lower=0.0, ci_upper=0.0,
             n_samples=len(df),
             elapsed_ms=(time.perf_counter() - t0) * 1000,
-            error=f"{type(exc).__name__}: {exc}",
+            error=_estimator_error(exc),
         )
 
 
@@ -757,7 +758,7 @@ def _run_one_econml_forest_dr_learner(
             point=0.0, ci_lower=0.0, ci_upper=0.0,
             n_samples=len(df),
             elapsed_ms=(time.perf_counter() - t0) * 1000,
-            error=f"{type(exc).__name__}: {exc}",
+            error=_estimator_error(exc),
         )
 
 
@@ -785,6 +786,24 @@ def _seed_for(request_hash: str, name: str) -> int:
 # seed-then-compute section below holds this lock, making it atomic across jobs.
 # Re-entrant so a nested call on the same thread cannot deadlock.
 _ENGINE_RNG_LOCK = threading.RLock()
+
+
+_ERROR_PATH = re.compile(r"""(?:[A-Za-z]:[\\/]|/(?=[\w.\-]+/))[^\s'"]*""")
+
+
+def _estimator_error(exc: BaseException, prefix: str = "") -> str:
+    """The ``error`` text of a failed estimate or refutation.
+
+    BUG-292: this was the raw ``str(exc)`` of whatever econml, dowhy or numpy raised.
+    The field is returned by the job endpoints and sealed into the signed artifact, so
+    it bypassed sanitize_error. A numeric failure ("Singular matrix") is what the
+    analyst needs, so the first line is kept -- with server paths removed and a length
+    cap -- rather than replaced by a generic message.
+    """
+    first = (str(exc).strip().splitlines() or [""])[0]
+    text = _ERROR_PATH.sub("<path>", first)[:200]
+    label = type(exc).__name__ if not prefix else f"{prefix}: {type(exc).__name__}"
+    return f"{label}: {text}" if text else label
 
 
 def _rng_serialized(fn):
@@ -930,7 +949,7 @@ def _run_one_tmle(
             point=0.0, ci_lower=0.0, ci_upper=0.0,
             n_samples=len(df),
             elapsed_ms=(time.perf_counter() - t0) * 1000,
-            error=f"{type(exc).__name__}: {exc}",
+            error=_estimator_error(exc),
         )
 
 
@@ -976,6 +995,30 @@ def _dowhy_confidence_interval(est: Any, point: float) -> Optional[Tuple[float, 
     return None
 
 
+# BUG-293: every estimator answers the same question -- the outcome under
+# treatment.actual minus the outcome under treatment.counterfactual. The two estimator
+# families used to disagree unless actual == 1 on a 0/1 column: the DR-class ones
+# (double_ml, forest_dr, tmle) compared "rows equal to actual" with ALL other rows, the
+# DoWhy ones and IV returned the effect of a +1 change in the column, and
+# treatment.counterfactual was never read. With actual=0, counterfactual=1 they had
+# opposite signs and the headline averaged them.
+
+def _contrast_rows(df: pd.DataFrame, treatment: InterventionSpec) -> pd.DataFrame:
+    """The rows the DR-class estimators compare: treatment at ``actual`` or at
+    ``counterfactual``. On a column holding only those two values this is ``df``."""
+    keep = df[treatment.column].isin([treatment.actual, treatment.counterfactual])
+    return df if bool(keep.all()) else df[keep]
+
+
+def _per_unit_to_contrast(
+    point: float, lo: float, hi: float, treatment: InterventionSpec,
+) -> Tuple[float, float, float]:
+    """Scale a per-unit effect (DoWhy, IV) to the actual-vs-counterfactual contrast."""
+    scale = float(treatment.actual) - float(treatment.counterfactual)
+    lo, hi = sorted((lo * scale, hi * scale))
+    return point * scale, lo, hi
+
+
 @_rng_serialized
 def _run_one_estimator(
     method_key: EstimatorMethod,
@@ -992,9 +1035,10 @@ def _run_one_estimator(
     # but still doubly-robust in the linear-DGP case the eval-gate hits).
     # Sprint 16: conformal_calibration threads through to the DR path
     # only — the DoWhy stub still ships an asymptotic CI.
+    dr_df = _contrast_rows(df, treatment)
     if method_key == "double_ml" and _ECONML_AVAILABLE:
         return _run_one_econml_dr_learner(
-            df, treatment, outcome, dag, seed,
+            dr_df, treatment, outcome, dag, seed,
             conformal_calibration=conformal_calibration,
         )
     # Sprint 15 dispatch: ``forest_dr`` is opt-in (callers must include
@@ -1003,7 +1047,7 @@ def _run_one_estimator(
     if method_key == "forest_dr":
         if _ECONML_AVAILABLE:
             return _run_one_econml_forest_dr_learner(
-                df, treatment, outcome, dag, seed,
+                dr_df, treatment, outcome, dag, seed,
                 conformal_calibration=conformal_calibration,
             )
         return CounterfactualEstimate(
@@ -1018,7 +1062,7 @@ def _run_one_estimator(
     # path depends on it). Achieves the semi-parametric efficiency
     # bound that DR-Learner falls short of in finite samples.
     if method_key == "tmle":
-        return _run_one_tmle(df, treatment, outcome, dag, seed)
+        return _run_one_tmle(dr_df, treatment, outcome, dag, seed)
 
     # S31b dispatch: ``iv`` is opt-in. Pure-NumPy 2SLS, no dowhy/econml —
     # the instrument is read from the DAG (a node -> treatment, not ->
@@ -1042,6 +1086,7 @@ def _run_one_estimator(
                 df, treatment.column, outcome.column, instruments, sorted(set(confounders)),
                 min_first_stage_f=WEAK_INSTRUMENT_F,
             )
+            point, lo, hi = _per_unit_to_contrast(point, lo, hi, treatment)
             return CounterfactualEstimate(
                 method="iv", point=point, ci_lower=lo, ci_upper=hi,
                 n_samples=len(df), elapsed_ms=(time.perf_counter() - iv_t0) * 1000,
@@ -1050,7 +1095,7 @@ def _run_one_estimator(
             return CounterfactualEstimate(
                 method="iv", point=0.0, ci_lower=0.0, ci_upper=0.0,
                 n_samples=len(df), elapsed_ms=(time.perf_counter() - iv_t0) * 1000,
-                error=f"IV (2SLS) failed: {exc}",
+                error=_estimator_error(exc, "IV (2SLS) failed"),
             )
 
     t0 = time.perf_counter()
@@ -1081,8 +1126,7 @@ def _run_one_estimator(
                 "DoWhy returned neither a confidence interval nor a usable standard error"
             )
         lo, hi = interval
-        if hi < lo:
-            lo, hi = hi, lo
+        point, lo, hi = _per_unit_to_contrast(point, lo, hi, treatment)
         return CounterfactualEstimate(
             method=method_key,
             point=point,
@@ -1102,7 +1146,7 @@ def _run_one_estimator(
             point=0.0, ci_lower=0.0, ci_upper=0.0,
             n_samples=len(df),
             elapsed_ms=(time.perf_counter() - t0) * 1000,
-            error=f"{type(exc).__name__}: {exc}",
+            error=_estimator_error(exc),
             degraded=(method_key == "double_ml"),
         )
 
@@ -1333,7 +1377,7 @@ def _run_one_refuter(
             estimate_after=None, p_value=None,
             passed=False,
             elapsed_ms=(time.perf_counter() - t0) * 1000,
-            error=f"{type(exc).__name__}: {exc}",
+            error=_estimator_error(exc),
         )
 
 
@@ -1401,7 +1445,7 @@ async def run_refuters(
         return sorted(
             [
                 RefutationResult(refuter=r, passed=False,
-                                 error=f"baseline failed: {type(exc).__name__}: {exc}")
+                                 error=_estimator_error(exc, "baseline failed"))
                 for r in chosen
             ],
             key=lambda r: r.refuter,
@@ -1643,6 +1687,15 @@ def _dataset_fingerprint(df: pd.DataFrame) -> str:
     return h.hexdigest()
 
 
+# Renderers look for this prefix in the artifact's warnings to tell "the critic had no
+# objections" from "the critic did not run".
+CRITIC_SKIPPED_PREFIX = "Adversarial LLM critic skipped"
+
+
+class CriticUnavailable(RuntimeError):
+    """The adversarial critic ran but produced no usable result."""
+
+
 async def _run_critic(
     estimates: List[CounterfactualEstimate],
     refutations: List[RefutationResult],
@@ -1688,7 +1741,13 @@ async def _run_critic(
         },
     )
     res = await agent.execute(ctx)
-    raw = res.output.get("challenges", []) if res.succeeded else []
+    if not res.succeeded:
+        # BUG-294: the agent reports an LLM error, non-JSON output, its own timeout or
+        # an exhausted budget as a FAILED result, not an exception. That used to be
+        # collapsed to [] and cached -- indistinguishable from "the critic ran and
+        # found nothing", and replayed from the cache on every later run.
+        raise CriticUnavailable(str(getattr(res, "error", "") or "critic run failed"))
+    raw = res.output.get("challenges", [])
 
     # Persist into the cache so future replays hit it. This is a
     # best-effort write; a cache miss next time is recoverable as long
@@ -1818,28 +1877,24 @@ async def run_job(
     # skip in the signed artifact's warnings. The demo path passes no timeout,
     # so its behaviour (and byte-stable replay) is unchanged.
     critic_warnings: List[str] = []
-    if critic_timeout is not None:
-        try:
-            challenges_unsorted, regenerated = await asyncio.wait_for(
-                _run_critic(
-                    estimates, refutations, query.dag.model_dump(),
-                    query.treatment, query.outcome, request_hash=req_hash,
-                ),
-                timeout=critic_timeout,
-            )
-        except Exception as exc:  # deliberate: critic is best-effort, never fatal
-            logger.warning("adversarial critic skipped (%s): %s", type(exc).__name__, exc)
-            challenges_unsorted, regenerated = [], False
-            critic_warnings.append(
-                f"Adversarial LLM critic skipped (exceeded {critic_timeout:g}s or "
-                "errored); deterministic checks (propensity, estimator-disagreement) "
-                "still applied."
-            )
-    else:
-        challenges_unsorted, regenerated = await _run_critic(
+    try:
+        critic_run = _run_critic(
             estimates, refutations, query.dag.model_dump(),
-            query.treatment, query.outcome,
-            request_hash=req_hash,
+            query.treatment, query.outcome, request_hash=req_hash,
+        )
+        if critic_timeout is not None:
+            critic_run = asyncio.wait_for(critic_run, timeout=critic_timeout)
+        challenges_unsorted, regenerated = await critic_run
+    except Exception as exc:  # deliberate: critic is best-effort, never fatal
+        logger.warning("adversarial critic skipped (%s): %s", type(exc).__name__, exc)
+        challenges_unsorted, regenerated = [], False
+        reason = (
+            f"exceeded {critic_timeout:g}s" if isinstance(exc, asyncio.TimeoutError)
+            else "it did not return a usable result"
+        )
+        critic_warnings.append(
+            f"{CRITIC_SKIPPED_PREFIX} ({reason}); deterministic checks "
+            "(propensity, estimator-disagreement) still applied."
         )
     # Sprint 14: deterministic propensity check. If any estimator surfaced
     # cross-fitted propensity diagnostics that look IPW-fragile, append a

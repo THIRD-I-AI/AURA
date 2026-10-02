@@ -65,6 +65,9 @@ export interface CounterfactualOperatorView {
   ci_method?: 'asymptotic' | 'conformal' | 'mixed';
   confidence: 'low' | 'medium' | 'high';
   top_challenges: CounterfactualChallenge[];
+  // BUG-294 — set when the adversarial critic did not run, so an empty
+  // challenge list is not presented as "the critic had no objections".
+  critic_skipped?: boolean;
   audit_record_hash: string;
   // DSR-008 / BUG-153 — estimators that ran as a weaker fallback (double_ml
   // -> linear regression when econml is missing) yet still fed the headline
@@ -458,7 +461,13 @@ const CounterfactualCard: React.FC<Props> = ({ artifact }) => {
 
       {showDebate && (
         <ul className="mt-2 flex list-none flex-col gap-1.5 pl-0">
-          {artifact.top_challenges.length === 0 && (
+          {artifact.top_challenges.length === 0 && artifact.critic_skipped && (
+            <li className="text-[13px] italic text-text-secondary">
+              The adversarial critic did not run for this audit, so no challenges are listed.
+              This is not a finding of no objections.
+            </li>
+          )}
+          {artifact.top_challenges.length === 0 && !artifact.critic_skipped && (
             <li className="text-[13px] italic text-text-secondary">
               No challenges raised — refutation tests passed and the critic had no objections.
             </li>
