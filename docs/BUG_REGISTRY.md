@@ -3046,12 +3046,12 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Fix:** `_step_to_sql` raises `ValueError("Pipeline step '<type>' is misconfigured: <reason>")` for a step missing a required setting or naming an operator, direction, type, function or join type outside its allowlist, so the run fails with the reason instead of skipping the step (or running a filter as `=`). `<>` is accepted as a filter operator. The only remaining skip is a fill-all with no NULLs to fill. Regression: `tests/test_pipeline_invalid_steps_fail.py` (11 tests; 10 fail on the old engine).
 
 ## BUG-282: No bounds on streaming pipeline config: `num_keys` allocates an arbitrary list on the event loop, and pipeline count and buffers are uncapped
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode audit of `aurabackend/pipeline` (3 lenses + adversarial verify), 2026-10-02. The verifier confirmed it from the code; nothing was run end to end unless stated.
 - **Severity:** high
 - **Root cause:** `pipeline/streaming/sources/simulated.py` ~46: simulated.py:44-46 runs `self.num_keys = config.get('num_keys', 5)` then `self._keys = [f"key_{i}" for i in range(self.num_keys)]` with no upper bound. This executes synchronously inside `engine.start()` (streaming_engine.py:263) on the single uvicorn worker's event loop. `StreamSource.config` is an unvalidated `Dict[str, Any]` (streaming/models.py:182). `RuntimeConfig.backpressure_buffer` (models.py:144) and the websocket `max_buffer` (websocket_source.py:70-72) are likewise unbounded ints. The process-global `_pipelines`/`_engines` dicts (streaming_api.py:49-50, 179, 242) have no per-tenant cap on created or running pipelines, and each running engine holds two permanent tasks (streaming_engine.py:328-329). Failure scenario: An authenticated user POSTs a simulated-source pipeline with `num_keys: 2000000000` and calls /start. The list comprehension builds billions of strings on the event loop, so every tenant's requests freeze and the gateway is then OOM-killed. Separately, a script that creates and starts thousands of pipelines accumulates engines, tasks, buffers of up to `backpressure_buffer` events each, and a checkpoint directory per pipeline, with no limit.
 - **Caused by:** none -- pre-existing.
-- **Fix:** pending.
+- **Fix:** Simulated source `num_keys` is clamped to 1..10,000 and `events_per_second` to 0.1..10,000; websocket `max_buffer` to 1..100,000; `RuntimeConfig.backpressure_buffer` is validated to 1..1,000,000. A tenant may hold at most 50 streaming pipelines (`MAX_PIPELINES_PER_TENANT`) and run at most 10 at once (`MAX_RUNNING_PER_TENANT`); create and start return 409 past the limit, counting pipelines mid-start. Regression: `tests/test_streaming_config_bounds.py` (9 tests; 7 fail on the old code, the 2-billion-key case was not run against it). Residual: no global cap across tenants.
 
 ## BUG-283: Streaming DatabaseSink opens any DuckDB file path from caller config (`path`) and writes a table into it
 - **Status:** fixed
@@ -3102,12 +3102,12 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Fix:** pending.
 
 ## BUG-289: Pipeline output files and streaming checkpoint directories are never deleted
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode audit of `aurabackend/pipeline` (3 lenses + adversarial verify), 2026-10-02. The verifier confirmed it from the code; nothing was run end to end unless stated.
 - **Severity:** low
 - **Root cause:** `pipeline/engine.py` ~794: `_write_file_sink` (engine.py:793-816) writes `data/processed/<tenant_slug>/<stem><ext>` on every non-preview run, defaulting to a fresh `pipeline_output_{run.run_id}` name (794). pipelines.py has only a download route (340-368); there is no delete route, retention job or per-tenant quota, and `DELETE /pipeline/{id}` (320-326) removes only the DB row. On the streaming side, `StateManager.__init__` creates `data/checkpoints/<pipeline_id>/` (state_manager.py:56-61) and writes checkpoints every interval. `clear_checkpoints()` (147) has no caller anywhere in aurabackend, and `delete_pipeline` (streaming_api.py:196-218) only pops the in-memory dicts. Failure scenario: A tenant, or a schedule or inbound hook, runs a file-sink pipeline repeatedly with no `file_name`. Each run leaves a new full-size CSV or Parquet file, and the shared volume fills until uploads, SQLite writes and checkpoints fail for every tenant. Likewise, each streaming pipeline that is created, started and deleted leaves a directory of up to 5 checkpoint files behind permanently, since pipeline ids are random and never reused.
 - **Caused by:** none -- pre-existing.
-- **Fix:** pending.
+- **Fix:** `_write_file_sink` keeps only the newest 50 auto-named outputs (`pipeline_output_run_*`) per tenant (`MAX_AUTO_NAMED_OUTPUTS`); files the caller named are never pruned. `DELETE /streaming/pipelines/{id}` removes the pipeline's checkpoint directory (`remove_pipeline_checkpoints`). Regression: `tests/test_pipeline_output_retention.py` (4 tests; the two retention cases fail on the old code). Residual: no size quota per tenant, no delete route for a named output, and a streaming pipeline's own output directory is kept on delete.
 
 ## BUG-290: Audit-your-own-data resolves uploads from flat, tenant-less directories, while uploads are stored per tenant
 - **Status:** fixed

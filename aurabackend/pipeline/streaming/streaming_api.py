@@ -35,6 +35,7 @@ from pipeline.streaming.models import (
     WindowConfig,
     WindowType,
 )
+from pipeline.streaming.state_manager import remove_pipeline_checkpoints
 from pipeline.streaming.streaming_engine import StreamingEngine
 from shared.auth import get_current_user
 
@@ -48,6 +49,24 @@ router = APIRouter(prefix="/streaming", tags=["Streaming Pipelines"])
 
 _pipelines: Dict[str, StreamPipeline] = {}
 _engines: Dict[str, StreamingEngine] = {}
+
+# BUG-282: both stores are process-global and were uncapped, and every running engine
+# holds two permanent tasks plus its buffers on the one worker all tenants share.
+MAX_PIPELINES_PER_TENANT = 50
+MAX_RUNNING_PER_TENANT = 10
+_starting: set = set()
+
+
+def _tenant_pipeline_count(tenant: Optional[str]) -> int:
+    return sum(1 for p in _pipelines.values() if p.tenant_id == tenant)
+
+
+def _tenant_running_count(tenant: Optional[str], excluding: str) -> int:
+    return sum(
+        1 for pid, p in _pipelines.items()
+        if p.tenant_id == tenant and pid != excluding
+        and (p.status == StreamPipelineStatus.RUNNING or pid in _starting)
+    )
 
 # BUG-089: start_pipeline's status check, engine construction, and
 # _engines[pipeline_id] assignment span an `await` (engine.start()) with no
@@ -156,6 +175,11 @@ async def get_pipeline(pipeline_id: str, user: Optional[Dict[str, Any]] = Depend
 
 @router.post("/pipelines", summary="Create a new streaming pipeline", status_code=201)
 async def create_pipeline(req: CreateStreamPipelineRequest, user: Optional[Dict[str, Any]] = Depends(get_current_user)):
+    if _tenant_pipeline_count(_tenant_of(user)) >= MAX_PIPELINES_PER_TENANT:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Limit of {MAX_PIPELINES_PER_TENANT} streaming pipelines reached; delete one first",
+        )
     # Ensure at least one SSE sink for frontend connectivity
     has_sse = any(s.type == StreamSinkType.SSE for s in req.sinks)
     sinks = list(req.sinks)
@@ -215,6 +239,7 @@ async def delete_pipeline(pipeline_id: str, user: Optional[Dict[str, Any]] = Dep
     # completes normally; only a later _start_lock_for() call for this
     # (now-deleted) pipeline_id gets a fresh Lock instead.
     _start_locks.pop(pipeline_id, None)
+    await asyncio.to_thread(remove_pipeline_checkpoints, pipeline_id)
     return {"deleted": pipeline_id}
 
 
@@ -238,9 +263,18 @@ async def start_pipeline(pipeline_id: str, user: Optional[Dict[str, Any]] = Depe
         # exactly, so the opt-in trigger/watermark/barrier-alignment/backpressure
         # primitives set via the API actually reach the engine -- previously
         # this was a bare StreamingEngine(pipe), so runtime was never reachable.
+        if _tenant_running_count(pipe.tenant_id, excluding=pipeline_id) >= MAX_RUNNING_PER_TENANT:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Limit of {MAX_RUNNING_PER_TENANT} running streaming pipelines reached; stop one first",
+            )
         engine = StreamingEngine(pipe, **pipe.runtime.model_dump())
         _engines[pipeline_id] = engine
-        await engine.start()
+        _starting.add(pipeline_id)
+        try:
+            await engine.start()
+        finally:
+            _starting.discard(pipeline_id)
     return {"status": pipe.status.value, "pipeline_id": pipeline_id}
 
 
