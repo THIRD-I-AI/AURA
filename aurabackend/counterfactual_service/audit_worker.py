@@ -22,6 +22,21 @@ def get_audit_pool() -> Optional[ProcessPoolExecutor]:
     return _POOL
 
 
+def discard_audit_pool(pool: Optional[ProcessPoolExecutor]) -> None:
+    """Drop ``pool`` so the next audit gets a fresh one.
+
+    BUG-298: a ProcessPoolExecutor whose child died (OOM-killed mid-audit on the small
+    box) is permanently broken -- every later submit raises BrokenProcessPool -- and
+    the pool was cached for the life of the process, so one dead child failed every
+    tenant's audits until a restart. Only the pool that actually broke is dropped: a
+    concurrent failure may already have replaced it.
+    """
+    global _POOL
+    if pool is not None and _POOL is pool:
+        _POOL = None
+        pool.shutdown(wait=False, cancel_futures=True)
+
+
 def run_audit_subprocess(payload: Dict[str, Any]) -> Dict[str, Any]:
     """resolve → clean → build query → run_job → attach honesty layer. Returns the
     signed artifact dict plus identification / sensitivity_headline / data_quality."""
