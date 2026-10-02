@@ -37,11 +37,23 @@ def is_public_url(url: str, schemes: Sequence[str] = ("http", "https")) -> bool:
             return False
         candidates = [ipaddress.ip_address(info[4][0]) for info in infos]
 
-    return not any(
-        ip.is_private or ip.is_loopback or ip.is_link_local
-        or ip.is_reserved or ip.is_multicast or ip.is_unspecified
-        for ip in candidates
-    )
+    return all(_is_public_address(ip) for ip in candidates)
+
+
+def _is_public_address(ip) -> bool:
+    """True only for a globally routable unicast address.
+
+    BUG-310: the check used to be a list of things an address must not be (private,
+    loopback, link-local, reserved, multicast, unspecified). Whatever that list did
+    not name counted as public: carrier-grade NAT space 100.64.0.0/10 (pod networks,
+    VPN peers, one cloud's metadata address) and IPv6 site-local fec0::/10. Asking
+    whether the address is global turns it into an allow-rule.
+    """
+    mapped = getattr(ip, "ipv4_mapped", None)
+    if mapped is not None:  # ::ffff:a.b.c.d reaches the IPv4 address
+        ip = mapped
+    # Python still reports the deprecated IPv6 site-local range as global.
+    return ip.is_global and not ip.is_multicast and not getattr(ip, "is_site_local", False)
 
 
 async def is_public_url_async(url: str, schemes: Sequence[str] = ("http", "https")) -> bool:
