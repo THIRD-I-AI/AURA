@@ -9,6 +9,7 @@ import { Button } from '@/components/ui-kit/button';
 import { DataTable, type ColumnDef } from '@/components/ui-kit/data-table';
 import { cn } from '@/lib/cn';
 import { webhookService } from '../../services/api';
+import InboundHooksSection from './InboundHooksSection';
 
 type Webhook = { id: string; url: string; events: string[]; active: boolean; retries: number; description?: string };
 
@@ -267,6 +268,8 @@ export default function WebhooksPanel() {
         filterPlaceholder="Filter webhooks…"
         getRowKey={(h) => h.id}
       />
+
+      <InboundHooksSection />
     </div>
   );
 }

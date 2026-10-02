@@ -2,6 +2,8 @@ import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+// The inbound-hooks section has its own suite (InboundHooksSection.test.tsx).
+vi.mock('../InboundHooksSection', () => ({ default: () => null }));
 vi.mock('../../../services/api', () => ({
   webhookService: {
     list: vi.fn(), create: vi.fn(), update: vi.fn(), remove: vi.fn(), test: vi.fn(), events: vi.fn(),
