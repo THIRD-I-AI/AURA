@@ -1286,11 +1286,16 @@ def _refuter_passed(refuter: RefuterName, baseline: float, refuted: float) -> bo
 
     Threshold is 20% of |baseline| or 0.1 absolute, whichever is larger
     — matches DoWhy convention and avoids divide-by-near-zero blow-ups.
+
+    BUG-296: the 0.1 floor is in raw outcome units, so on a rate or binary outcome
+    (effects well under 0.5) it alone let a refuter pass when the placebo effect was
+    larger than the real one, or when the refuted estimate had the opposite sign.
+    Neither can be a pass whatever the scale, so both are ruled out explicitly.
     """
     threshold = max(abs(baseline) * 0.2, 0.1)
     if refuter == "placebo":
-        return abs(refuted) < threshold
-    return abs(refuted - baseline) < threshold
+        return abs(refuted) < threshold and abs(refuted) < abs(baseline)
+    return abs(refuted - baseline) < threshold and refuted * baseline >= 0
 
 
 @_rng_serialized
