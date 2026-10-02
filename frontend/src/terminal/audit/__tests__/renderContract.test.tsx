@@ -67,4 +67,41 @@ describe('AuditPanel render contract', () => {
     fireEvent.click(screen.getByText(/Verify signature/));
     await waitFor(() => expect(container.querySelector('.aud-verify-verified')).not.toBeNull());
   });
+
+  // A signed override is irreversible: one mis-click on the adjacent button used to
+  // sign the opposite decision with no rationale.
+  async function openCriticalFinding() {
+    runAudit.mockResolvedValue(REPORT);
+    decide.mockReset().mockResolvedValue({ auditor_id: 'aud-1' });
+    render(<AuditPanel {...props} />);
+    fireEvent.click(screen.getByText(/Run audit/));
+    await waitFor(() => expect(screen.getByText(/unrecorded liability/)).toBeInTheDocument());
+    fireEvent.click(screen.getByText(/unrecorded liability/));
+  }
+
+  it('will not decide without a written rationale', async () => {
+    await openCriticalFinding();
+
+    expect(screen.getByTestId('aud-rationale-required')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Reject' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Approve' })).toBeDisabled();
+  });
+
+  it('a first click only arms the decision; nothing is signed until it is confirmed', async () => {
+    await openCriticalFinding();
+    fireEvent.change(screen.getByPlaceholderText(/Rationale/), { target: { value: 'supported by the bank letter' } });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Reject' }));
+    expect(decide).not.toHaveBeenCalled();
+    expect(screen.getByTestId('aud-confirm-decision')).toHaveTextContent(/Confirm reject/);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(decide).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Approve' }));
+    fireEvent.click(screen.getByTestId('aud-confirm-decision'));
+    await waitFor(() => expect(decide).toHaveBeenCalledTimes(1));
+    expect(decide.mock.calls[0][2]).toBe('supported by the bank letter');
+    expect(decide.mock.calls[0][3]).toBe(true);
+  });
 });

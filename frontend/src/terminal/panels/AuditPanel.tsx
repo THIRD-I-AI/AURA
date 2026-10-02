@@ -33,6 +33,10 @@ export default function AuditPanel(_props: IDockviewPanelProps) {
   const a = useAuditDeck();
   const [selected, setSelected] = useState<string | null>(null);
   const [note, setNote] = useState<string>('');
+  // An override is a signed, irreversible AS 1215 record. A decision takes two
+  // clicks -- arm, then confirm -- and a written rationale; a single mis-click on
+  // the adjacent button used to sign the opposite decision.
+  const [armed, setArmed] = useState<'approve' | 'reject' | null>(null);
 
   // Risk-sorted triage order is a pure function of the live findings.
   const sorted = useMemo(() => sortFindingsByRisk(a.findings), [a.findings]);
@@ -54,6 +58,7 @@ export default function AuditPanel(_props: IDockviewPanelProps) {
     async (finding: AuditFinding, approved: boolean) => {
       await a.decide(finding, approved, note.trim());
       setNote('');
+      setArmed(null);
       setSelected(null);
     },
     [a, note],
@@ -132,7 +137,7 @@ export default function AuditPanel(_props: IDockviewPanelProps) {
             <button
               key={f.finding_id}
               className={findingCls(f)}
-              onClick={() => setSelected(f.finding_id)}
+              onClick={() => { setSelected(f.finding_id); setArmed(null); }}
             >
               <span className="aud-finding-glyph">
                 {RISK_GLYPH[riskLevelOf(f.risk_level)]}
@@ -180,21 +185,44 @@ export default function AuditPanel(_props: IDockviewPanelProps) {
                     value={note}
                     onChange={(e) => setNote(e.target.value)}
                   />
+                  {!note.trim() && (
+                    <div className="aud-insp-label" data-testid="aud-rationale-required">
+                      A rationale is required — it is signed into the override record.
+                    </div>
+                  )}
                   <div className="aud-decide-btns">
-                    <button
-                      className="aud-btn aud-btn-approve"
-                      disabled={a.busy}
-                      onClick={() => void decide(selectedFinding, true)}
-                    >
-                      Approve
-                    </button>
-                    <button
-                      className="aud-btn aud-btn-reject"
-                      disabled={a.busy}
-                      onClick={() => void decide(selectedFinding, false)}
-                    >
-                      Reject
-                    </button>
+                    {armed === null ? (
+                      <>
+                        <button
+                          className="aud-btn aud-btn-approve"
+                          disabled={a.busy || !note.trim()}
+                          onClick={() => setArmed('approve')}
+                        >
+                          Approve
+                        </button>
+                        <button
+                          className="aud-btn aud-btn-reject"
+                          disabled={a.busy || !note.trim()}
+                          onClick={() => setArmed('reject')}
+                        >
+                          Reject
+                        </button>
+                      </>
+                    ) : (
+                      <>
+                        <button
+                          className={`aud-btn ${armed === 'approve' ? 'aud-btn-approve' : 'aud-btn-reject'}`}
+                          disabled={a.busy || !note.trim()}
+                          data-testid="aud-confirm-decision"
+                          onClick={() => void decide(selectedFinding, armed === 'approve')}
+                        >
+                          {armed === 'approve' ? 'Confirm approve — sign record' : 'Confirm reject — sign record'}
+                        </button>
+                        <button className="aud-btn" disabled={a.busy} onClick={() => setArmed(null)}>
+                          Cancel
+                        </button>
+                      </>
+                    )}
                   </div>
                 </div>
               ) : (
