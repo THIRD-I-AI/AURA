@@ -102,12 +102,26 @@ def test_effective_mapping_flows_into_dag():
     assert any("one-hot" in w for w in dq.warnings)
 
 
-def test_string_race_and_categorical_confounder_audit_end_to_end(tmp_path, monkeypatch):
+@pytest.fixture
+def _forget_storage_backend():
+    yield
+    from shared.storage import reset_storage_backend
+
+    reset_storage_backend()
+
+
+def test_string_race_and_categorical_confounder_audit_end_to_end(tmp_path, monkeypatch, _forget_storage_backend):
     """Tier B: a raw CSV with string `race` + string `sex` confounder audits to a
     SIGNED artifact with no manual pre-encoding (the #49 headline)."""
     pytest.importorskip("econml")
     monkeypatch.chdir(tmp_path)
-    up = tmp_path / "data" / "uploads"
+    # Uploads are stored per tenant (BUG-290); a payload with no tenant is 'default'.
+    from shared.storage import reset_storage_backend
+
+    monkeypatch.setenv("AURA_UPLOADS_ROOT", str(tmp_path / "data" / "uploads"))
+    monkeypatch.delenv("AURA_STORAGE_BACKEND", raising=False)
+    reset_storage_backend()
+    up = tmp_path / "data" / "uploads" / "default"
     up.mkdir(parents=True)
     rng = np.random.default_rng(3)
     n = 400
