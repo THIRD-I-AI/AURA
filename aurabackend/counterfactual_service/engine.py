@@ -20,6 +20,7 @@ import hashlib
 import logging
 import math
 import os
+import re
 import threading
 import time
 import uuid
@@ -559,7 +560,7 @@ def _run_one_econml_dr_learner(
             point=0.0, ci_lower=0.0, ci_upper=0.0,
             n_samples=len(df),
             elapsed_ms=(time.perf_counter() - t0) * 1000,
-            error=f"{type(exc).__name__}: {exc}",
+            error=_estimator_error(exc),
         )
 
 
@@ -757,7 +758,7 @@ def _run_one_econml_forest_dr_learner(
             point=0.0, ci_lower=0.0, ci_upper=0.0,
             n_samples=len(df),
             elapsed_ms=(time.perf_counter() - t0) * 1000,
-            error=f"{type(exc).__name__}: {exc}",
+            error=_estimator_error(exc),
         )
 
 
@@ -785,6 +786,24 @@ def _seed_for(request_hash: str, name: str) -> int:
 # seed-then-compute section below holds this lock, making it atomic across jobs.
 # Re-entrant so a nested call on the same thread cannot deadlock.
 _ENGINE_RNG_LOCK = threading.RLock()
+
+
+_ERROR_PATH = re.compile(r"""(?:[A-Za-z]:[\\/]|/(?=[\w.\-]+/))[^\s'"]*""")
+
+
+def _estimator_error(exc: BaseException, prefix: str = "") -> str:
+    """The ``error`` text of a failed estimate or refutation.
+
+    BUG-292: this was the raw ``str(exc)`` of whatever econml, dowhy or numpy raised.
+    The field is returned by the job endpoints and sealed into the signed artifact, so
+    it bypassed sanitize_error. A numeric failure ("Singular matrix") is what the
+    analyst needs, so the first line is kept -- with server paths removed and a length
+    cap -- rather than replaced by a generic message.
+    """
+    first = (str(exc).strip().splitlines() or [""])[0]
+    text = _ERROR_PATH.sub("<path>", first)[:200]
+    label = type(exc).__name__ if not prefix else f"{prefix}: {type(exc).__name__}"
+    return f"{label}: {text}" if text else label
 
 
 def _rng_serialized(fn):
@@ -930,7 +949,7 @@ def _run_one_tmle(
             point=0.0, ci_lower=0.0, ci_upper=0.0,
             n_samples=len(df),
             elapsed_ms=(time.perf_counter() - t0) * 1000,
-            error=f"{type(exc).__name__}: {exc}",
+            error=_estimator_error(exc),
         )
 
 
@@ -1050,7 +1069,7 @@ def _run_one_estimator(
             return CounterfactualEstimate(
                 method="iv", point=0.0, ci_lower=0.0, ci_upper=0.0,
                 n_samples=len(df), elapsed_ms=(time.perf_counter() - iv_t0) * 1000,
-                error=f"IV (2SLS) failed: {exc}",
+                error=_estimator_error(exc, "IV (2SLS) failed"),
             )
 
     t0 = time.perf_counter()
@@ -1102,7 +1121,7 @@ def _run_one_estimator(
             point=0.0, ci_lower=0.0, ci_upper=0.0,
             n_samples=len(df),
             elapsed_ms=(time.perf_counter() - t0) * 1000,
-            error=f"{type(exc).__name__}: {exc}",
+            error=_estimator_error(exc),
             degraded=(method_key == "double_ml"),
         )
 
@@ -1333,7 +1352,7 @@ def _run_one_refuter(
             estimate_after=None, p_value=None,
             passed=False,
             elapsed_ms=(time.perf_counter() - t0) * 1000,
-            error=f"{type(exc).__name__}: {exc}",
+            error=_estimator_error(exc),
         )
 
 
@@ -1401,7 +1420,7 @@ async def run_refuters(
         return sorted(
             [
                 RefutationResult(refuter=r, passed=False,
-                                 error=f"baseline failed: {type(exc).__name__}: {exc}")
+                                 error=_estimator_error(exc, "baseline failed"))
                 for r in chosen
             ],
             key=lambda r: r.refuter,
