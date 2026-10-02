@@ -275,7 +275,7 @@ class TestWebSocketConnectTimeout:
 
         with patch("websockets.connect", side_effect=_hanging_connect):
             source = WebSocketSource({
-                "url": "ws://127.0.0.1:19999/unreachable",
+                "url": "ws://93.184.216.34:19999/unreachable",
                 "connect_timeout": 0.5,
                 "reconnect": False,  # don't loop endlessly in tests
             })

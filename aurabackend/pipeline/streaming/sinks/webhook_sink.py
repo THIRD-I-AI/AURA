@@ -25,8 +25,12 @@ import httpx
 
 from pipeline.streaming.models import StreamEvent, WindowState
 from pipeline.streaming.sinks.base import BaseSink
+from shared import ssrf
 
 logger = logging.getLogger("aura.streaming.sink.webhook")
+
+
+_MAX_RETRIES = 5
 
 
 class WebhookSink(BaseSink):
@@ -38,7 +42,7 @@ class WebhookSink(BaseSink):
         self._secret: Optional[str] = config.get("secret") or None
         self._headers: Dict[str, str] = dict(config.get("headers") or {})
         self._timeout: float = float(config.get("timeout_s", 10))
-        self._retries: int = int(config.get("retries", 2))
+        self._retries: int = max(0, min(int(config.get("retries", 2)), _MAX_RETRIES))
         raw_late = config.get("include_late", False)
         self._include_late: bool = (
             raw_late if isinstance(raw_late, bool)
@@ -47,6 +51,10 @@ class WebhookSink(BaseSink):
         self._client: Optional[httpx.AsyncClient] = None
 
     async def start(self) -> None:
+        # BUG-287: the URL comes from the pipeline definition. Without this the gateway
+        # POSTs, with caller-chosen headers, to its own loopback and metadata addresses.
+        if not await ssrf.is_public_url_async(self._url):
+            raise ValueError("webhook sink url must be a public http(s) address")
         self._client = httpx.AsyncClient(timeout=self._timeout)
         self._running = True
         logger.info("Webhook sink started -> %s", self._url)
@@ -82,6 +90,10 @@ class WebhookSink(BaseSink):
 
     async def _post(self, payload: Dict[str, Any]) -> None:
         if self._client is None:
+            return
+        # Re-checked per delivery: the name can be re-pointed after start().
+        if not await ssrf.is_public_url_async(self._url):
+            logger.warning("Webhook sink url no longer resolves to a public address; delivery dropped")
             return
         body = json.dumps(payload, default=str).encode("utf-8")
         headers = {
