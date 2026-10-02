@@ -109,8 +109,10 @@ def _step(conn, step_type, **cfg):
 
 def test_pivot_rejects_an_aggregate_that_is_not_allowlisted():
     conn = duckdb.connect(":memory:")
-    assert _step(conn, StepType.PIVOT, values_column="v", pivot_column="p",
-                 agg_function="MAX((SELECT 1337 FROM prev_t LIMIT 1))") is None
+    # BUG-281: rejected by failing the run, not by silently skipping the step.
+    with pytest.raises(ValueError, match="unsupported aggregate function"):
+        _step(conn, StepType.PIVOT, values_column="v", pivot_column="p",
+              agg_function="MAX((SELECT 1337 FROM prev_t LIMIT 1))")
 
 
 def test_pivot_still_accepts_an_allowlisted_aggregate_case_insensitively():
