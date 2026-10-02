@@ -20,7 +20,7 @@ export function AuthNav() {
   return (
     <div
       data-testid="auth-nav"
-      style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 'var(--space-4)', marginBottom: 'var(--space-6)' }}
+      style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 'var(--space-4)', paddingTop: 'var(--space-2)' }}
     >
       {user ? (
         <>

@@ -1,7 +1,9 @@
 /* AURA Workbench — Terminal-authority (Phase 6).
    Ported originally from the Claude Design prototype, then migrated to the
    Terminal-authority design language: dark-first (no light toggle),
-   mono-first (JetBrains Mono), sharp corners (radius 0), green signal only.
+   sharp corners (radius 0), green signal only. Type follows tokens.css:
+   --font-ui for interface text, --font-display for headings, and mono
+   (.aw-mono) for data, labels and identifiers -- not for everything.
    All styling is scoped under .aw so the classic app is untouched.
    Fonts are self-hosted via @fontsource in main.tsx — a remote @import here
    was blocked by CSP (style-src 'self') and crashed the whole /workbench
@@ -35,11 +37,12 @@
 
 .aw {
   min-height: 100vh; background: var(--bg); color: var(--text);
-  font-family: 'JetBrains Mono', ui-monospace, 'SFMono-Regular', monospace;
+  font-family: var(--font-ui);
+  -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility;
   display: flex; flex-direction: column;
 }
-.aw .aw-mono { font-family: 'JetBrains Mono', ui-monospace, monospace; }
-.aw .aw-display { font-family: 'JetBrains Mono', ui-monospace, monospace; letter-spacing: -.01em; }
+.aw .aw-mono { font-family: var(--font-mono); }
+.aw .aw-display { font-family: var(--font-display); letter-spacing: -.015em; }
 
 .aw .aw-panel {
   background: var(--surface); border: 1px solid var(--border);
@@ -58,12 +61,12 @@
 .aw .aw-btn-accent {
   cursor: pointer; font-weight: 600; color: var(--on-accent);
   background: var(--accent); border-radius: 0; border: none;
-  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-family: var(--font-ui);
 }
 .aw .aw-input {
   background: var(--sunken); border: 1px solid var(--border); border-radius: 0;
   color: var(--text); outline: none;
-  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-family: var(--font-ui);
 }
 .aw .aw-input:focus { border-color: var(--accent-bd); }
 .aw .aw-hover-raise:hover { background: var(--raised); }

@@ -220,6 +220,15 @@
     margin: 0;
     padding: 0;
   }
+  /* Tailwind's preflight is deliberately not imported (tailwind.css), so a <button>
+     kept the browser's 2px bevelled `outset` border, grey face and own font -- visible on
+     every button without a border / background utility. In `base`, so any class still wins. */
+  button {
+    border: 0 solid currentColor;
+    background-color: transparent;
+    font: inherit;
+    color: inherit;
+  }
 }
 
 html {

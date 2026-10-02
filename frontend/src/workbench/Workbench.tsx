@@ -9,7 +9,7 @@
    it boots straight in with one shared session; the classic /app shell is gone.
 
    Composition root: state and side effects (fetch/poll loops, boot sequence,
-   ⌘K keybind) live here; shell chrome (WorkbenchBoot/Topbar/Nav, CommandPalette,
+   ⌘K keybind) live here; shell chrome (Topbar/Nav, CommandPalette,
    Toast) and each cockpit board card live in their own files under
    ./cockpit/ — see BUG-029 item 7 for why this split happened. */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -30,8 +30,6 @@ import { VIEW_REGISTRY } from './viewRegistry';
 import { ViewHost } from './views';
 import type { SystemRadarModel, Severity } from '../components/radar';
 import { NAV_GROUPS } from './navConfig';
-import { WorkbenchBoot } from './WorkbenchBoot';
-import { BOOT_STAGES } from './bootStages';
 import { WorkbenchTopbar } from './WorkbenchTopbar';
 import { WorkbenchNav } from './WorkbenchNav';
 import { CommandPalette, type Command } from './CommandPalette';
@@ -70,13 +68,11 @@ function WorkbenchInner() {
   const { logout } = useAuth();
   const navigate = useNavigate();
   const toast = useToast();
-  const [view, setView] = useState<'boot' | 'app'>('boot');
   const [nav, setNav] = useState('Cockpit');
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [navOpen, setNavOpen] = useState(false); // mobile nav drawer (<860px)
   const [navCollapsed, setNavCollapsed] = useState(false); // desktop icon-only rail
   const [paletteQ, setPaletteQ] = useState('');
-  const [bootIdx, setBootIdx] = useState(0);
   /* NO seeded/dummy data: every panel below starts empty and fills from the
      platform's real APIs (or shows an honest empty/offline state). */
   const [healing, setHealing] = useState<Heal[]>([]);
@@ -108,7 +104,6 @@ function WorkbenchInner() {
   /* Real data, fetched once the app view mounts. Every failure degrades to an
      honest empty/offline state — nothing is fabricated. */
   useEffect(() => {
-    if (view !== 'app') return;
     // Ledger verify is tenant-scoped (tenant from the verified JWT), so the
     // bearer must ride along — a bare fetch 401s and looked like an outage.
     authFetch(`${API_BASE_URL}/counterfactual/audit/ledger/verify`)
@@ -138,7 +133,7 @@ function WorkbenchInner() {
         })));
       })
       .catch(() => undefined);
-  }, [view, pushFeed]);
+  }, [pushFeed]);
 
   /* ── Reactive pulse ──────────────────────────────────────────────────
      Health, pipelines, and pending recoveries are POLLED, not fetched once,
@@ -148,7 +143,6 @@ function WorkbenchInner() {
      an honest state (offline gateway, empty pipelines) instead of throwing.
      A single in-flight guard prevents overlap on a slow network. */
   useEffect(() => {
-    if (view !== 'app') return;
     const root = API_BASE_URL.replace(/\/api\/v1$/, '');
     let alive = true;
     let inFlight = false;
@@ -215,19 +209,8 @@ function WorkbenchInner() {
     const onVis = () => { if (document.visibilityState === 'visible') pulse(); };
     document.addEventListener('visibilitychange', onVis);
     return () => { alive = false; clearInterval(id); document.removeEventListener('visibilitychange', onVis); };
-  }, [view]);
+  }, []);
 
-  /* Boot sequence. */
-  useEffect(() => {
-    if (view !== 'boot') return;
-    const t = setInterval(() => {
-      setBootIdx((i) => {
-        if (i + 1 >= BOOT_STAGES.length + 1) { clearInterval(t); setView('app'); return i; }
-        return i + 1;
-      });
-    }, 420);
-    return () => clearInterval(t);
-  }, [view]);
 
   /* ⌘K palette. */
   useEffect(() => {
@@ -384,11 +367,6 @@ function WorkbenchInner() {
     return all.filter((c) => c.title.toLowerCase().includes(q)).slice(0, 9);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [paletteQ]);
-
-  /* ── boot ── */
-  if (view === 'boot') {
-    return <WorkbenchBoot bootIdx={bootIdx} />;
-  }
 
   /* ── app ── */
   return (

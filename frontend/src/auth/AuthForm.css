@@ -3,15 +3,22 @@
    (the brand pane is not rendered). */
 .auth-pane {
   width: 100%;
+  min-height: calc(100vh - 240px);
+  display: grid;
+  align-items: center;
 }
 
 .auth-pane--split {
   display: grid;
   grid-template-columns: 1.05fr 1fr;
-  gap: var(--space-8);
-  align-items: center;
+  gap: 0;
+  align-items: stretch;
+  align-self: center;
   max-width: 940px;
-  margin: 0 auto;
+  min-height: 480px;
+  margin: clamp(0px, calc(50vh - 380px), 160px) auto 0;
+  border: 1px solid var(--border-default);
+  background: var(--bg-surface);
 }
 
 .auth-pane__brand {
@@ -19,18 +26,18 @@
   align-items: center;
   justify-content: center;
   padding: var(--space-10) var(--space-8);
-  min-height: 48vh;
   border-radius: 0;
-  border: 1px solid var(--border-subtle);
+  border-right: 1px solid var(--border-default);
   background:
-    radial-gradient(130% 130% at 0% 0%, rgba(34, 197, 94, 0.12), transparent 58%),
-    var(--bg-surface);
+    radial-gradient(130% 130% at 0% 0%, var(--accent-dim), transparent 58%),
+    var(--bg-sunken);
 }
 .auth-pane__brand-inner {
   max-width: 30ch;
 }
 .auth-pane__brandmark {
   margin: 0 0 var(--space-3);
+  font-family: var(--font-display);
   font-size: var(--font-4xl);
   font-weight: var(--weight-bold);
   letter-spacing: var(--tracking-widest);
@@ -47,6 +54,7 @@
   display: flex;
   align-items: center;
   justify-content: center;
+  padding: var(--space-10) var(--space-8);
 }
 
 /* ── Form fields: Terminal-authority — sharp corners, mono labels/inputs ── */
@@ -56,14 +64,15 @@
   margin: 0 auto;
 }
 .auth-form__title {
+  font-family: var(--font-display);
   font-size: var(--font-2xl);
   font-weight: var(--weight-bold);
   letter-spacing: -0.02em;
-  text-align: center;
+  text-align: left;
   margin: 0 0 var(--space-2);
 }
 .auth-form__sub {
-  text-align: center;
+  text-align: left;
   color: var(--text-secondary);
   margin: 0 0 var(--space-6);
   font-size: var(--font-sm);
@@ -104,7 +113,7 @@
   margin-top: var(--space-2);
 }
 .auth-form__switch {
-  text-align: center;
+  text-align: left;
   margin-top: var(--space-5);
   font-size: var(--font-sm);
   color: var(--text-tertiary);

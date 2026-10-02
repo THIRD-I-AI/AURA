@@ -50,12 +50,11 @@ export function UserMenu({ onSettingsClick }: { onSettingsClick?: () => void }) 
     <div ref={ref} style={{ position: 'relative' }}>
       <button
         data-testid="user-menu-trigger"
-        className="app-header__avatar"
+        className="grid size-8 cursor-pointer place-items-center rounded-none border border-border-strong bg-raised font-mono text-2xs font-semibold text-text-primary transition-colors outline-none hover:border-signal focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50"
         title={user ? (user.name || user.email || 'Account') : 'Sign in'}
         aria-haspopup="menu"
         aria-expanded={open}
         onClick={() => setOpen((v) => !v)}
-        style={{ cursor: 'pointer', border: 'none' }}
       >
         {initials(user?.name, user?.email)}
       </button>
