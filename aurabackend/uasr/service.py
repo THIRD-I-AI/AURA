@@ -22,9 +22,9 @@ import os
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
-from typing import Any, AsyncGenerator, Dict, List, Optional
+from typing import Annotated, Any, AsyncGenerator, Dict, List, Optional
 
-from fastapi import Depends, HTTPException, Request
+from fastapi import Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -899,11 +899,15 @@ async def declare_schema_intent(req: SchemaIntentRequest, request: Request):
     }
 
 
+# Upper bound for caller-supplied `limit` on the list endpoints (BUG-274).
+_MAX_LIST_LIMIT = 500
+
+
 @app.get("/uasr/drift/status")
 async def drift_status(
     request: Request,
     source_id: Optional[str] = None,
-    limit: int = 50,
+    limit: Annotated[int, Query(ge=1, le=_MAX_LIST_LIMIT)] = 50,
     db: AsyncSession = Depends(get_db),
 ):
     """List recent drift events from the persistent database."""
@@ -919,7 +923,8 @@ async def drift_status(
 
     # Also include in-memory state for sources without DB events yet
     in_memory = []
-    for sid in _detector._baselines.keys():
+    baselines = await asyncio.to_thread(lambda: _detector._baselines)
+    for sid in baselines.keys():
         if not owns_source(tenant, sid):
             continue
         if not any(e.source_id == sid for e in events):
@@ -945,7 +950,9 @@ async def drift_status(
 # answered 404 "Recovery record 'pending' not found". The whole supervised
 # self-healing approval queue was unreachable for that reason alone.
 @app.get("/uasr/recovery/pending")
-async def pending_approvals(request: Request, limit: int = 50, db: AsyncSession = Depends(get_db)):
+async def pending_approvals(
+    request: Request, limit: Annotated[int, Query(ge=1, le=_MAX_LIST_LIMIT)] = 50, db: AsyncSession = Depends(get_db),
+):
     """List recoveries held in PENDING_APPROVAL, awaiting a human decision."""
     stmt = select(RecoveryRecord).where(RecoveryRecord.status == RecoveryStatus.PENDING_APPROVAL.value)
     owned = _owned(request, RecoveryRecord.source_id)
@@ -970,13 +977,15 @@ async def recovery_detail(recovery_id: str, request: Request, db: AsyncSession =
 
 
 @app.get("/uasr/drift/{drift_event_id}/recovery")
-async def list_recoveries_for_event(drift_event_id: str, request: Request, db: AsyncSession = Depends(get_db)):
+async def list_recoveries_for_event(
+    drift_event_id: str, request: Request, limit: Annotated[int, Query(ge=1, le=_MAX_LIST_LIMIT)] = 100, db: AsyncSession = Depends(get_db),
+):
     """List all recovery attempts for a specific drift event."""
     stmt = select(RecoveryRecord).where(RecoveryRecord.drift_event_id == drift_event_id)
     owned = _owned(request, RecoveryRecord.source_id)
     if owned is not None:
         stmt = stmt.where(owned)
-    result = await db.execute(stmt.order_by(RecoveryRecord.created_at.desc()))
+    result = await db.execute(stmt.order_by(RecoveryRecord.created_at.desc()).limit(limit))
     records = result.scalars().all()
     return {"recoveries": [_serialize_recovery(r) for r in records], "count": len(records)}
 
@@ -1113,7 +1122,7 @@ async def get_metrics(window_seconds: Optional[float] = None):
 
 
 @app.get("/uasr/metrics/history")
-async def get_metrics_history(limit: int = 50, db: AsyncSession = Depends(get_db)):
+async def get_metrics_history(limit: Annotated[int, Query(ge=1, le=_MAX_LIST_LIMIT)] = 50, db: AsyncSession = Depends(get_db)):
     """Return persisted Hᵤ history for trend analysis."""
     result = await db.execute(
         select(HealingMetric).order_by(HealingMetric.created_at.desc()).limit(limit)
@@ -1236,13 +1245,14 @@ async def list_sources(request: Request, db: AsyncSession = Depends(get_db)):
         select(DriftEvent.source_id).distinct()
     )
     db_sources = [row[0] for row in result.all()]
-    memory_sources = list(_detector._baselines.keys())
+    baselines = await asyncio.to_thread(lambda: _detector._baselines)
+    memory_sources = list(baselines.keys())
     all_sources = [sid for sid in set(db_sources + memory_sources) if owns_source(tenant, sid)]
     return {
         "sources": [
             {
                 "source_id": sid,
-                "has_active_baseline": sid in _detector._baselines,
+                "has_active_baseline": sid in baselines,
                 "deployed_shims": len(_loop.get_deployed_shims(sid)),
             }
             for sid in all_sources
