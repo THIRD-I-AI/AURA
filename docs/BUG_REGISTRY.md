@@ -2712,12 +2712,12 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Fix:** `fire_hook` wraps a non-object JSON body as `{"_body": <value>}` before the fire is recorded, so the trigger helpers always receive an object. Regression: `tests/test_inbound_hook_non_object_body.py` (array / string / number bodies raise `AttributeError` on the old code).
 
 ## BUG-244: GET /stream/{topic}?replay=true loses events published between the buffer replay and the live subscribe
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode audit of `api_gateway/routers` (3 lenses + adversarial verify), 2026-09-29. The verifier confirmed it from the code; nothing was run end to end unless stated.
 - **Severity:** low
 - **Root cause:** `api_gateway/routers/stream.py` ~114: In _gen, for replay=true with no Last-Event-ID, the code first yields every buffered event and only then enters _event_generator, which is where streaming_manager.subscribe() runs. Each yield suspends while bytes go to the client. Any event published during that window lands only in the ring buffer, never in a queue this client holds, and is never replayed. The Last-Event-ID path does it the right way round: subscribe first, then replay. A 'complete'/'error' event for a short ETL, pipeline or upload run can be lost, leaving the UI spinner hanging.
 - **Caused by:** none -- pre-existing.
-- **Fix:** pending.
+- **Fix:** The replay now happens inside `_event_generator`, after `subscribe()` and with no await between subscribing and taking the buffer snapshot, for both `replay=true` and `Last-Event-ID`. An event published while the replay is being sent is already in the client's queue. Regression: `tests/test_stream_replay_no_gap.py` (on the old code the client receives a heartbeat where the `complete` event should be).
 
 ## BUG-245: Any tenant can rename or re-describe the shared 'default' workspace for every other tenant
 - **Status:** open
