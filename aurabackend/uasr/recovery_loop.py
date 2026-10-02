@@ -13,8 +13,10 @@ The loop supports configurable max iterations and automatic rollback.
 """
 from __future__ import annotations
 
+import ast
 import logging
 import time
+import types
 import uuid
 from typing import Any, Callable, Dict, List, Optional
 
@@ -73,6 +75,73 @@ class RecoveryLoopConfig:
         self.risk_tiered = risk_tiered
         self.mode = mode
         self.post_heal_validation_batches = post_heal_validation_batches
+
+
+# ── Shim execution guard (BUG-258) ──────────────────────────────────────────
+# Shim code is LLM-generated (or template-generated from LLM/column text) and is
+# exec()'d inside this process, before any human has approved it. A restricted
+# __builtins__ dict alone is not a boundary: the namespace used to hold the real
+# `logging` module (logging.os / logging.sys -> files, env, processes), and any
+# object's dunder attributes or a frame's f_globals lead back to full builtins.
+# So the source is checked statically before it runs, and `logging` is replaced
+# by a stand-in that can only log. This is defence in depth, not process
+# isolation -- a shim still runs in-process.
+_FORBIDDEN_ATTR_PREFIXES = ("f_", "gi_", "cr_", "ag_", "tb_", "co_")
+
+
+def _forbidden_name(name: str) -> bool:
+    return name.startswith("__") or name.startswith(_FORBIDDEN_ATTR_PREFIXES)
+
+
+def _validate_shim_source(shim_code: str) -> None:
+    """Raise ValueError if the shim uses anything that can reach outside its namespace."""
+    try:
+        tree = ast.parse(shim_code)
+    except SyntaxError as exc:
+        raise ValueError(f"Shim rejected: not valid Python ({exc.msg})") from exc
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            if any(alias.name != "logging" for alias in node.names):
+                raise ValueError("Shim rejected: only `import logging` is allowed")
+        elif isinstance(node, ast.ImportFrom):
+            raise ValueError("Shim rejected: `from ... import` is not allowed")
+        elif isinstance(node, ast.Attribute) and _forbidden_name(node.attr):
+            raise ValueError(f"Shim rejected: attribute `{node.attr}` is not allowed")
+        elif isinstance(node, ast.Name) and _forbidden_name(node.id):
+            raise ValueError(f"Shim rejected: name `{node.id}` is not allowed")
+        elif isinstance(node, ast.Constant) and isinstance(node.value, str) and "__" in node.value \
+                and not _is_docstring(tree, node):
+            # "{0.__class__...}".format(x) reads dunder attributes without an Attribute node.
+            raise ValueError("Shim rejected: string literals may not contain `__`")
+        elif isinstance(node, (ast.Global, ast.Nonlocal)):
+            raise ValueError("Shim rejected: global/nonlocal is not allowed")
+
+
+def _is_docstring(tree: ast.AST, node: ast.Constant) -> bool:
+    for owner in ast.walk(tree):
+        if isinstance(owner, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            body = owner.body
+            if body and isinstance(body[0], ast.Expr) and body[0].value is node:
+                return True
+    return False
+
+
+def _shim_logging() -> Any:
+    """A `logging` stand-in for shims: getLogger(name) -> an object that can only log."""
+    def get_logger(name: str = "uasr.shim") -> Any:
+        real = logging.getLogger(str(name))
+
+        def _emit(level: int) -> Callable[..., None]:
+            def emit(msg: Any, *args: Any, **_ignored: Any) -> None:
+                real.log(level, msg, *args)
+            return emit
+
+        return types.SimpleNamespace(
+            debug=_emit(logging.DEBUG), info=_emit(logging.INFO), warning=_emit(logging.WARNING),
+            error=_emit(logging.ERROR), exception=_emit(logging.ERROR), critical=_emit(logging.CRITICAL),
+        )
+
+    return types.SimpleNamespace(getLogger=get_logger)
 
 
 class RecoveryLoop:
@@ -464,8 +533,16 @@ class RecoveryLoop:
     def _sandbox_execute(shim_code: str, rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
         Execute a shim's transform() function in a restricted namespace.
-        Only standard library modules are available.
+        The source is statically checked first (see _validate_shim_source).
         """
+        _validate_shim_source(shim_code)
+        shim_logging = _shim_logging()
+
+        def _import(name: str, *args: Any, **kwargs: Any) -> Any:
+            if name == "logging":
+                return shim_logging
+            raise ImportError(f"import of '{name}' is not allowed in a shim")
+
         allowed_globals = {
             "__builtins__": {
                 "len": len, "min": min, "max": max, "abs": abs, "sum": sum,
@@ -476,12 +553,11 @@ class RecoveryLoop:
                 "None": None, "True": True, "False": False,
                 "ValueError": ValueError, "TypeError": TypeError,
                 "KeyError": KeyError, "Exception": Exception,
+                "__import__": _import,
             },
+            # Never the real module: logging.os / logging.sys were a way out (BUG-258).
+            "logging": shim_logging,
         }
-
-        # Allow logging import
-        import logging as _logging
-        allowed_globals["logging"] = _logging
 
         # Single namespace: module-level shim constants (e.g. _CLIP_MAX) must
         # live in the same dict that is transform().__globals__, otherwise names
