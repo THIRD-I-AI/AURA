@@ -44,13 +44,44 @@ _BLOCKED_PATTERN = re.compile(
 # runs semicolon-separated statements and returns the last one's result, so the
 # stacked statement really does run. A semicolon can legitimately appear only
 # inside a quoted string literal or identifier, so strip those first.
-_STRING_OR_IDENTIFIER = re.compile(r"'(?:[^']|'')*'|\"(?:[^\"]|\"\")*\"")
-
+#
+# BUG-311: the quoted spans used to be removed with one regex, which knows nothing
+# about comments. A quote inside a block comment -- ``/*'*/ ; DROP TABLE t; -- /*'*/``
+# -- opened a "string" that swallowed everything up to the next quote, so the very
+# text the checks below inspect was blanked out. The expression is now scanned once,
+# left to right, and a comment outside a quoted span is refused: a single expression
+# has no use for one.
 
 def _strip_quoted(expr: str) -> str:
     """``expr`` with every quoted string literal / quoted identifier blanked out,
-    so a semicolon or keyword inside one is not mistaken for SQL structure."""
-    return _STRING_OR_IDENTIFIER.sub(" ", expr)
+    so a semicolon or keyword inside one is not mistaken for SQL structure.
+
+    Raises ``ValueError`` on a SQL comment or an unterminated quote."""
+    out = []
+    i, n = 0, len(expr)
+    while i < n:
+        ch = expr[i]
+        if ch in ("'", '"'):
+            j = i + 1
+            while True:
+                j = expr.find(ch, j)
+                if j == -1:
+                    raise ValueError("expression has an unterminated quote")
+                if expr[j:j + 2] == ch * 2:   # doubled quote = escaped quote
+                    j += 2
+                    continue
+                break
+            out.append(" ")
+            i = j + 1
+            continue
+        if expr.startswith("/*", i) or expr.startswith("--", i):
+            # Everything before the comment is still checked first, so a stacked
+            # statement keeps its own, more specific error.
+            _reject_structure("".join(out))
+            raise ValueError("expression may not contain SQL comments")
+        out.append(ch)
+        i += 1
+    return "".join(out)
 
 # BUG-207: the named list above missed most of DuckDB's file-reading table functions
 # (parquet_scan, read_json_objects -- the trailing word boundary defeats the read_json match --
@@ -77,15 +108,19 @@ _BLOCKED_CALL_PATTERN = re.compile(
 _REPLACEMENT_SCAN_PATTERN = re.compile(r"\b(from|join)\s*\(*\s*'", re.IGNORECASE)
 
 
-def validate_sql_expression(expr: str) -> None:
-    """Raise ``ValueError`` if ``expr`` references a blocked file/network
-    access function or table, contains a second statement, or a bare URI."""
-    bare = _strip_quoted(expr)
+def _reject_structure(bare: str) -> None:
     if ";" in bare:
         raise ValueError(
             "expression may not contain a second statement "
             "(a bare ';' outside a string literal)"
         )
+
+
+def validate_sql_expression(expr: str) -> None:
+    """Raise ``ValueError`` if ``expr`` references a blocked file/network
+    access function or table, contains a second statement, or a bare URI."""
+    bare = _strip_quoted(expr)
+    _reject_structure(bare)
     if _BLOCKED_PATTERN.search(bare):
         raise ValueError(
             "expression may not reference file/network access functions "
