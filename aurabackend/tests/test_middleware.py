@@ -155,6 +155,29 @@ class TestAPIKeyMiddleware:
         resp = client.get("/health")
         assert resp.status_code == 200
 
+    @pytest.mark.parametrize("key", [bytes([0xE9]), b"test-secret-key" + bytes([0xFF]), "clé".encode("utf-8")])
+    def test_non_ascii_key_is_a_401_not_a_500(self, key, caplog):
+        """BUG-308: compare_digest raised TypeError on a non-ASCII str, so the caller
+        got a 500 and the rejection was never logged."""
+        import logging
+
+        app = _make_app()
+        app.add_middleware(APIKeyMiddleware, api_key="test-secret-key")
+        client = TestClient(app, raise_server_exceptions=False)
+
+        with caplog.at_level(logging.WARNING):
+            resp = client.get("/test", headers={b"X-API-Key": key})
+
+        assert resp.status_code == 401
+        assert "API key rejected" in caplog.text
+
+    def test_a_non_ascii_configured_key_still_matches_itself(self):
+        app = _make_app()
+        app.add_middleware(APIKeyMiddleware, api_key="clé-secret")
+        client = TestClient(app)
+
+        assert client.get("/test", headers={b"X-API-Key": "clé-secret".encode("utf-8")}).status_code == 200
+
     def test_options_exempt(self, client):
         resp = client.options("/test")
         # OPTIONS might return 405 but shouldn't be 401
