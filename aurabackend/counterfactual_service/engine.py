@@ -1674,11 +1674,16 @@ def _estimator_disagreement_challenges(
 # ── End-to-end orchestration ──────────────────────────────────────────
 
 def _dataset_fingerprint(df: pd.DataFrame) -> str:
-    """Stable sha256 over (sorted columns, dtypes, head/tail rows, length).
+    """Stable sha256 over (sorted columns, dtypes, every value, length).
 
-    Two structurally-identical dataframes from different file paths will
-    fingerprint identically; any column rename or dtype change produces a
-    new fingerprint. Sufficient for replay's "did the dataset move?" check.
+    Two identical dataframes from different file paths fingerprint identically; any
+    column rename, dtype change or changed value produces a new fingerprint.
+
+    BUG-297: only the first and last three rows used to be hashed. Editing any other
+    row left the fingerprint unchanged, so the request hash -- and with it the critic
+    cache key -- did not move: a corrected dataset was served the previous run's
+    challenges, and the fingerprint signed into the artifact and written to the
+    ledger did not identify the data that was audited.
     """
     cols = sorted(df.columns.tolist())
     h = hashlib.sha256()
@@ -1686,8 +1691,11 @@ def _dataset_fingerprint(df: pd.DataFrame) -> str:
     for c in cols:
         h.update(str(df[c].dtype).encode("utf-8"))
     if len(df):
-        h.update(canonical_dumps(df.head(3).to_dict(orient="records")).encode("utf-8"))
-        h.update(canonical_dumps(df.tail(3).to_dict(orient="records")).encode("utf-8"))
+        try:
+            h.update(pd.util.hash_pandas_object(df[cols], index=False).to_numpy().tobytes())
+        except TypeError:
+            # A column holding unhashable values (lists, dicts): serialise it instead.
+            h.update(canonical_dumps(df[cols].to_dict(orient="records")).encode("utf-8"))
     h.update(str(len(df)).encode("utf-8"))
     return h.hexdigest()
 
