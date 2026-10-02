@@ -3094,12 +3094,12 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Fix:** pending.
 
 ## BUG-288: Batch pipeline run has no memory, row, step or concurrency bound; the Postgres sink fetches the whole result into Python
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode audit of `aurabackend/pipeline` (3 lenses + adversarial verify), 2026-10-02. The verifier confirmed it from the code; nothing was run end to end unless stated.
 - **Severity:** medium
 - **Root cause:** `pipeline/engine.py` ~847: `_MAX_SOURCE_ROWS` (engine.py:59) is enforced only in `_load_db_source` (295). FILE sources (256) and DUCKDB sources (437-445) load with no row cap. The transform chain is materialised as `CREATE TABLE pipeline_output AS ...` (507, executed at 153) on a connection from `new_connection()`, which sets no `memory_limit`, thread limit or timeout (shared/duckdb_factory.py:16-19). The LIMIT step takes any `int(n)` (749), `Pipeline.steps` has no max length (models.py:142), and each JOIN step loads another full source (132-138). `_write_pg_sink` then runs `SELECT *` and `result.fetchall()` on the whole output (847-849) and passes all rows to one `executemany` (885). /pipeline/execute/async starts each run with `fire_and_forget` and no per-tenant or global concurrency limit (pipelines.py:274-275), and `execute()` has no overall timeout. Failure scenario: A tenant uploads a multi-GB parquet file and submits a pipeline with a JOIN step back onto the same file on a low-cardinality key, or a `custom_sql` step that self-joins `{{prev}}`, with a postgresql sink. DuckDB materialises the blown-up output in-process, then `fetchall()` copies every row into Python tuples and the single gateway worker is OOM-killed for all tenants. Posting the same pipeline to /pipeline/execute/async 50 times runs 50 such jobs at once, because nothing queues or rejects them.
 - **Caused by:** none -- pre-existing.
-- **Fix:** pending.
+- **Fix:** `PipelineEngine.execute` now bounds a run: at most 50 steps; the transform is stopped with `conn.interrupt()` after 300 s; the run connection has `memory_limit=512MB` (DuckDB spills to disk past it instead of taking 80% of RAM); at most 3 concurrent runs per tenant across the sync, async and scheduled paths; and the PostgreSQL sink reads and inserts in 10,000-row batches instead of `fetchall()`. Regression: `tests/test_pipeline_run_bounds.py` (5 tests; they depend on the new constants, so they were not run against the old engine). Residual: FILE and DUCKDB sources still have no row cap, and source loading and the sink write are not covered by the timeout.
 
 ## BUG-289: Pipeline output files and streaming checkpoint directories are never deleted
 - **Status:** open

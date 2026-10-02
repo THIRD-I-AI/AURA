@@ -446,8 +446,8 @@ async def test_pg_sink_quotes_table_name_containing_double_quote(monkeypatch):
         f"_write_pg_sink's DuckDB SELECT/DESCRIBE must run via asyncio.to_thread, "
         f"not inline on the event loop. Offloaded calls seen: {offloaded_funcs}"
     )
-    assert "fetchall" in offloaded_funcs, (
-        f"_write_pg_sink's DuckDB fetchall() must run via asyncio.to_thread, "
+    assert "fetchmany" in offloaded_funcs, (
+        f"_write_pg_sink's DuckDB fetchmany() must run via asyncio.to_thread, "
         f"not inline on the event loop. Offloaded calls seen: {offloaded_funcs}"
     )
 

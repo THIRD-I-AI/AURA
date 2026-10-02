@@ -51,6 +51,17 @@ def _sanitize_id(name: str) -> str:
     return cleaned or "col"
 
 
+# BUG-288: a run had no bound at all, on the one worker every tenant shares.
+MAX_PIPELINE_STEPS = 50
+MAX_CONCURRENT_RUNS_PER_TENANT = 3
+TRANSFORM_TIMEOUT_SECONDS = 300.0
+# DuckDB's default is 80% of system RAM; past this it spills to disk instead.
+RUN_MEMORY_LIMIT = "512MB"
+_PG_SINK_BATCH_ROWS = 10_000
+
+_active_runs: Dict[Optional[str], int] = {}
+
+
 def _typed_arrow_table(columns: List[str], rows: List[Dict[str, Any]]) -> Any:
     """Rows from an external source as an Arrow table that keeps each column's type.
 
@@ -141,9 +152,26 @@ class PipelineEngine:
         # backend gets to configure_duckdb() this connection — S3 mode needs
         # httpfs installed + its secret registered before a FILE/DUCKDB
         # source's s3:// URI can be read at all.
+        if _active_runs.get(tenant, 0) >= MAX_CONCURRENT_RUNS_PER_TENANT:
+            from datetime import datetime, timezone
+            run.status = PipelineStatus.FAILED
+            run.error = (
+                f"{MAX_CONCURRENT_RUNS_PER_TENANT} pipeline runs are already in progress; "
+                "try again when one finishes"
+            )
+            run.finished_at = datetime.now(timezone.utc).isoformat()
+            return run
+        _active_runs[tenant] = _active_runs.get(tenant, 0) + 1
+
         conn = new_connection()
 
         try:
+            if len(pipeline.steps) > MAX_PIPELINE_STEPS:
+                raise ValueError(
+                    f"A pipeline may have at most {MAX_PIPELINE_STEPS} steps; this one has {len(pipeline.steps)}"
+                )
+            conn.execute(f"SET memory_limit='{RUN_MEMORY_LIMIT}'")
+
             # ── 1. LOAD SOURCE ────────────────────────────────────────
             source_table = await self._load_source(conn, pipeline.source, source_progress_cb, tenant)
             logger.info(f"[Pipeline:{pipeline.id}] Source loaded as '{source_table}'")
@@ -196,7 +224,15 @@ class PipelineEngine:
             # Execute the transform chain (CPU-bound DuckDB work — the
             # deployment runs one uvicorn worker, so running this inline
             # would freeze every concurrent request for its duration).
-            await asyncio.to_thread(conn.execute, sql)
+            # wait_for alone would only abandon the worker thread; interrupt() is what
+            # actually stops the query.
+            try:
+                await asyncio.wait_for(asyncio.to_thread(conn.execute, sql), TRANSFORM_TIMEOUT_SECONDS)
+            except asyncio.TimeoutError:
+                conn.interrupt()
+                raise ValueError(
+                    f"The pipeline's steps ran for more than {TRANSFORM_TIMEOUT_SECONDS:.0f} seconds and were stopped"
+                ) from None
 
             # Get output metadata
             out_count = (await asyncio.to_thread(
@@ -234,6 +270,10 @@ class PipelineEngine:
             from datetime import datetime, timezone
             run.finished_at = datetime.now(timezone.utc).isoformat()
             conn.close()
+            if _active_runs.get(tenant, 0) <= 1:
+                _active_runs.pop(tenant, None)
+            else:
+                _active_runs[tenant] -= 1
 
         return run
 
@@ -881,9 +921,10 @@ class PipelineEngine:
 
         try:
             # Get data from DuckDB (blocking; offload so the event loop stays free)
-            result = await asyncio.to_thread(conn.execute, f"SELECT * FROM {_q(final_table)}")
+            # Its own cursor: the DESCRIBE below runs on `conn` and would otherwise
+            # replace this pending result before the batches are read.
+            result = await asyncio.to_thread(conn.cursor().execute, f"SELECT * FROM {_q(final_table)}")
             col_names = [desc[0] for desc in result.description]
-            rows = await asyncio.to_thread(result.fetchall)
 
             if not pg.pool:
                 raise ConnectionError("PostgreSQL pool not available")
@@ -926,14 +967,19 @@ class PipelineEngine:
                         ) from exc
                     raise
 
-                # Insert rows in batches
-                if rows:
-                    placeholders = ", ".join(f"${i+1}" for i in range(len(col_names)))
-                    insert_sql = f"INSERT INTO {_q(table_name)} VALUES ({placeholders})"
+                # In batches: fetchall() copied the whole result into Python at once.
+                placeholders = ", ".join(f"${i+1}" for i in range(len(col_names)))
+                insert_sql = f"INSERT INTO {_q(table_name)} VALUES ({placeholders})"
+                written = 0
+                while True:
+                    rows = await asyncio.to_thread(result.fetchmany, _PG_SINK_BATCH_ROWS)
+                    if not rows:
+                        break
                     await pg_conn.executemany(insert_sql, rows)
+                    written += len(rows)
 
             run.output_table = table_name
-            logger.info(f"[Pipeline] Wrote {len(rows)} rows to PostgreSQL: {table_name}")
+            logger.info(f"[Pipeline] Wrote {written} rows to PostgreSQL: {table_name}")
 
         finally:
             await pg.disconnect()
