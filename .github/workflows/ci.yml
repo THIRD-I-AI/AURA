@@ -157,7 +157,6 @@ jobs:
             tests/test_demo_endpoints.py tests/test_demo_scenarios.py tests/test_iv_estimator.py \
             --tb=short \
             -q \
-            -x \
             --cov=counterfactual_service \
             --cov-report=term-missing \
             --cov-fail-under=60
