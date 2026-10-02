@@ -104,7 +104,8 @@ def _typed_arrow_table(columns: List[str], rows: List[Dict[str, Any]]) -> Any:
         except (pa.ArrowException, TypeError, ValueError, OverflowError):
             arr = pa.array([_text(v) for v in values], type=pa.string())
         arrays.append(arr)
-    return pa.Table.from_arrays(arrays, names=[_sanitize_id(c) for c in columns])
+    # Source column names are kept as they are, like a file source's (BUG-286).
+    return pa.Table.from_arrays(arrays, names=[str(c) for c in columns])
 
 
 MAX_AUTO_NAMED_OUTPUTS = 50
@@ -585,6 +586,11 @@ class PipelineEngine:
         a filter operator, rewritten to '=' -- and the run still reported SUCCESS on
         rows the step never touched (BUG-281).
         """
+        # BUG-286: a column a step refers to is quoted exactly as named. These references
+        # used to go through _sanitize_id, which rewrites every character outside
+        # [A-Za-z0-9_] -- so "Order Date" became "Order_Date", a column that does not
+        # exist (or, worse, a different column that does). _sanitize_id is now only for
+        # names this method invents: aliases and the _cast / _filled columns.
         cfg = step.config
         t = step.type
 
@@ -601,9 +607,9 @@ class PipelineEngine:
             if str(op).upper() not in allowed_ops:
                 raise _bad(f"unsupported operator {op!r}")
             if op.upper() in ("IS NULL", "IS NOT NULL"):
-                return f'SELECT * FROM {_q(prev)} WHERE "{_sanitize_id(col)}" {op}'
+                return f'SELECT * FROM {_q(prev)} WHERE {_q(col)} {op}'
             safe_val = str(val).replace("'", "''")
-            return f"SELECT * FROM {_q(prev)} WHERE \"{_sanitize_id(col)}\" {op} '{safe_val}'"
+            return f"SELECT * FROM {_q(prev)} WHERE {_q(col)} {op} '{safe_val}'"
 
         elif t == StepType.SORT:
             col = cfg.get("column", "")
@@ -612,11 +618,11 @@ class PipelineEngine:
                 raise _bad("no column")
             if direction not in ("ASC", "DESC"):
                 raise _bad(f"unsupported direction {direction!r}")
-            return f'SELECT * FROM {_q(prev)} ORDER BY "{_sanitize_id(col)}" {direction}'
+            return f'SELECT * FROM {_q(prev)} ORDER BY {_q(col)} {direction}'
 
         elif t == StepType.DROP_COLUMNS:
             columns = cfg.get("columns", [])
-            excludes = ", ".join(f'"{_sanitize_id(c)}"' for c in columns if c)
+            excludes = ", ".join(f'{_q(c)}' for c in columns if c)
             if not excludes:
                 raise _bad("no columns")
             return f"SELECT * EXCLUDE ({excludes}) FROM {_q(prev)}"
@@ -624,12 +630,12 @@ class PipelineEngine:
         elif t == StepType.RENAME_COLUMNS:
             mapping = cfg.get("mapping", {})
             renames = ", ".join(
-                f'"{_sanitize_id(old)}" AS "{_sanitize_id(new)}"'
+                f'{_q(old)} AS "{_sanitize_id(new)}"'
                 for old, new in mapping.items() if old and new
             )
             if not renames:
                 raise _bad("no column mapping")
-            return f"SELECT {renames}, * EXCLUDE ({', '.join(chr(34) + _sanitize_id(old) + chr(34) for old in mapping if old)}) FROM {_q(prev)}"
+            return f"SELECT {renames}, * EXCLUDE ({', '.join(_q(old) for old in mapping if old)}) FROM {_q(prev)}"
 
         elif t == StepType.ADD_COLUMN:
             name = cfg.get("name", "")
@@ -652,7 +658,7 @@ class PipelineEngine:
             allowed_types = {"INTEGER", "VARCHAR", "DOUBLE", "BOOLEAN", "DATE", "TIMESTAMP", "BIGINT", "FLOAT", "TEXT"}
             if str(new_type).upper() not in allowed_types:
                 raise _bad(f"unsupported type {new_type!r} (allowed: {', '.join(sorted(allowed_types))})")
-            return f'SELECT *, CAST("{_sanitize_id(col)}" AS {new_type.upper()}) AS "{_sanitize_id(col)}_cast" FROM {_q(prev)}'
+            return f'SELECT *, CAST({_q(col)} AS {new_type.upper()}) AS "{_sanitize_id(col)}_cast" FROM {_q(prev)}'
 
         elif t == StepType.FILL_MISSING:
             col = cfg.get("column", "")
@@ -720,17 +726,17 @@ class PipelineEngine:
                 return f'SELECT * REPLACE ({", ".join(replaces)}) FROM {_q(prev)}'
 
             if strategy == "mean":
-                return f'SELECT *, COALESCE("{_sanitize_id(col)}", AVG("{_sanitize_id(col)}") OVER ()) AS "{_sanitize_id(col)}_filled" FROM {_q(prev)}'
+                return f'SELECT *, COALESCE({_q(col)}, AVG({_q(col)}) OVER ()) AS "{_sanitize_id(col)}_filled" FROM {_q(prev)}'
             elif strategy == "median":
-                return f'SELECT *, COALESCE("{_sanitize_id(col)}", MEDIAN("{_sanitize_id(col)}") OVER ()) AS "{_sanitize_id(col)}_filled" FROM {_q(prev)}'
+                return f'SELECT *, COALESCE({_q(col)}, MEDIAN({_q(col)}) OVER ()) AS "{_sanitize_id(col)}_filled" FROM {_q(prev)}'
             else:
                 safe_val = str(value).replace("'", "''")
-                return f"SELECT *, COALESCE(\"{_sanitize_id(col)}\", '{safe_val}') AS \"{_sanitize_id(col)}_filled\" FROM {_q(prev)}"
+                return f"SELECT *, COALESCE({_q(col)}, '{safe_val}') AS \"{_sanitize_id(col)}_filled\" FROM {_q(prev)}"
 
         elif t == StepType.DEDUPLICATE:
             columns = cfg.get("columns", [])
             if columns:
-                cols = ", ".join(f'"{_sanitize_id(c)}"' for c in columns if c)
+                cols = ", ".join(f'{_q(c)}' for c in columns if c)
                 return f"SELECT DISTINCT ON ({cols}) * FROM {_q(prev)}"
             return f"SELECT DISTINCT * FROM {_q(prev)}"
 
@@ -739,7 +745,7 @@ class PipelineEngine:
             aggregations = cfg.get("aggregations", [])
             if not group_by or not aggregations:
                 raise _bad("group_by and aggregations are both required")
-            gb_cols = ", ".join(f'"{_sanitize_id(c)}"' for c in group_by if c)
+            gb_cols = ", ".join(f'{_q(c)}' for c in group_by if c)
             agg_parts = []
             for agg in aggregations:
                 func = agg.get("function", "COUNT").upper()
@@ -748,7 +754,7 @@ class PipelineEngine:
                 allowed_funcs = {"COUNT", "SUM", "AVG", "MIN", "MAX", "MEDIAN", "STDDEV"}
                 if func not in allowed_funcs:
                     raise _bad(f"unsupported aggregate function {func!r}")
-                col_ref = f'"{_sanitize_id(col)}"' if col != "*" else "*"
+                col_ref = f'{_q(col)}' if col != "*" else "*"
                 agg_parts.append(f'{func}({col_ref}) AS "{_sanitize_id(alias)}"')
             return f"SELECT {gb_cols}, {', '.join(agg_parts)} FROM {_q(prev)} GROUP BY {gb_cols}"
 
@@ -774,7 +780,7 @@ class PipelineEngine:
             return (
                 f"SELECT * FROM {_q(prev)} "
                 f'{join_type} JOIN {_q(right_table)} '
-                f'ON {_q(prev)}."{_sanitize_id(left_key)}" = {_q(right_table)}."{_sanitize_id(right_key)}"'
+                f'ON {_q(prev)}.{_q(left_key)} = {_q(right_table)}.{_q(right_key)}'
             )
 
         elif t == StepType.WINDOW:
@@ -789,10 +795,10 @@ class PipelineEngine:
                 raise _bad(f"unsupported window function {function!r}")
             partition_clause = ""
             if partition_by:
-                pb = ", ".join(f'"{_sanitize_id(c)}"' for c in partition_by if c)
+                pb = ", ".join(f'{_q(c)}' for c in partition_by if c)
                 partition_clause = f"PARTITION BY {pb} " if pb else ""
             return (
-                f'SELECT *, {function}() OVER ({partition_clause}ORDER BY "{_sanitize_id(order_by)}") '
+                f'SELECT *, {function}() OVER ({partition_clause}ORDER BY {_q(order_by)}) '
                 f'AS "{_sanitize_id(alias)}" FROM {_q(prev)}'
             )
 
@@ -806,13 +812,13 @@ class PipelineEngine:
             if not values_col or not pivot_col:
                 raise _bad("values_column and pivot_column are both required")
             return (
-                f'PIVOT {_q(prev)} ON "{_sanitize_id(pivot_col)}" '
-                f'USING {agg_func}("{_sanitize_id(values_col)}")'
+                f'PIVOT {_q(prev)} ON {_q(pivot_col)} '
+                f'USING {agg_func}({_q(values_col)})'
             )
 
         elif t == StepType.UNPIVOT:
             columns = cfg.get("columns", [])
-            cols = ", ".join(f'"{_sanitize_id(c)}"' for c in columns if c)
+            cols = ", ".join(f'{_q(c)}' for c in columns if c)
             if not cols:
                 raise _bad("no columns")
             return f"UNPIVOT {_q(prev)} ON {cols} INTO NAME variable VALUE value"

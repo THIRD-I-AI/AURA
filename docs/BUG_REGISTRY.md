@@ -3078,12 +3078,12 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Fix:** `_write_pg_sink` uses a plain `CREATE TABLE` for `replace` (after its DROP) and `fail`, so `fail` raises "already exists" inside the transaction before any row is written; `append` uses `CREATE TABLE IF NOT EXISTS` (it used to fail outright on a missing table); any other `if_exists` value is rejected. Regression: three Tier B tests in `tests/test_pipeline_pg_sink_transaction.py`, run by CI's Postgres lane (no local Postgres on the dev machine).
 
 ## BUG-286: Step column references go through _sanitize_id, but file sources keep their original column names, so any column with a space or punctuation fails or binds to a different column
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode audit of `aurabackend/pipeline` (3 lenses + adversarial verify), 2026-10-02. The verifier confirmed it from the code; nothing was run end to end unless stated.
 - **Severity:** medium
 - **Root cause:** `pipeline/engine.py` ~527: _sanitize_id replaces every non [A-Za-z0-9_] character with '_' (engine.py:41-46) and is applied to column references in FILTER (527-529), SORT (538), DROP_COLUMNS (544), RENAME (554, 559), CAST (582), FILL_MISSING (650-655), DEDUPLICATE (660), AGGREGATE (669, 678), JOIN keys (704), WINDOW (719, 722) and PIVOT/UNPIVOT (736-737, 744). File sources are loaded by smart_load_file, whose Parquet/JSON branch is a plain `CREATE TABLE AS SELECT * FROM read_parquet(...)` that keeps the original names (shared/data_utils.py:433-436). The FILL_MISSING '*' branch uses _q() on the real names (engine.py:610-643), which shows the inconsistency. Not in BUG_REGISTRY.md. Failure scenario: A Parquet file has a column "Order Date" or "unit-price". The schema endpoint shows that name, and a sort/filter/aggregate step on it generates `"Order_Date"`, which fails with a binder error, so the column cannot be used in any step. If the table has both "unit-price" and "unit_price", the step silently operates on the wrong column and reports SUCCESS.
 - **Caused by:** none -- pre-existing.
-- **Fix:** pending.
+- **Fix:** `_step_to_sql` quotes a referenced column exactly as named, with the shared quoter (`_q`), in every step type; `_sanitize_id` is now used only for names the engine invents (aliases, `_cast` / `_filled` columns). PostgreSQL/MySQL/Kafka sources keep their original column names, like file sources. Regression: `tests/test_pipeline_real_column_names.py` (5 tests; 4 fail on the old engine, including the case where `unit-price` silently bound to `unit_price`). Behaviour change: a step that named a column by its sanitized form (`Order_Date` for `Order Date`) no longer matches.
 
 ## BUG-287: Streaming webhook sink and websocket source connect to any caller-supplied URL with no SSRF filter
 - **Status:** fixed
