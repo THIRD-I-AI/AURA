@@ -16,9 +16,11 @@ FastAPI / engine imports.
 """
 from __future__ import annotations
 
+import functools
 import json
 import logging
 import os
+import threading
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -66,10 +68,23 @@ class InboundHook:
         return d
 
 
+def _locked(method):
+    """Run a mutating registry method under the registry lock."""
+    @functools.wraps(method)
+    def wrapper(self, *args, **kwargs):
+        with self._lock:
+            return method(self, *args, **kwargs)
+    return wrapper
+
+
 class InboundHookRegistry:
     def __init__(self) -> None:
         self._hooks: Dict[str, InboundHook] = {}      # by id
         self._by_slug: Dict[str, InboundHook] = {}    # by slug
+        # The gateway runs the mutators on worker threads so their blocking file
+        # rewrite stays off the event loop (BUG-242); the lock keeps two of them from
+        # changing the maps while a third is serialising them.
+        self._lock = threading.RLock()
         self._load()
 
     # ── Persistence ────────────────────────────────────────────────
@@ -113,6 +128,7 @@ class InboundHookRegistry:
         # caller's tenant — see the class docstring.
         return self._by_slug.get(slug)
 
+    @_locked
     def register(
         self,
         workspace_id: str,
@@ -142,6 +158,7 @@ class InboundHookRegistry:
         self._save()
         return hook
 
+    @_locked
     def update(self, hook_id: str, workspace_id: str, **fields) -> Optional[InboundHook]:
         h = self.get(hook_id, workspace_id)
         if not h:
@@ -161,6 +178,7 @@ class InboundHookRegistry:
         self._save()
         return h
 
+    @_locked
     def delete(self, hook_id: str, workspace_id: str) -> bool:
         h = self.get(hook_id, workspace_id)
         if h is None:
@@ -170,6 +188,7 @@ class InboundHookRegistry:
         self._save()
         return True
 
+    @_locked
     def record_fire(self, hook: InboundHook) -> None:
         hook.fire_count += 1
         hook.last_fired_at = datetime.now(timezone.utc).isoformat()

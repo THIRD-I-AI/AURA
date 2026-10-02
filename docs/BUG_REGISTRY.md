@@ -2696,12 +2696,12 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Fix:** All three ETL handlers call `backend.exists` through `asyncio.to_thread`. Regression: the three parametrised ETL cases in `tests/test_storage_calls_off_event_loop.py` (fail on the old code); `test_preview_source_offloads_blocking_load_to_thread` now expects both offloads.
 
 ## BUG-242: Inbound-hook registry rewrites its whole JSON store synchronously on every public fire and every CRUD call
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode audit of `api_gateway/routers` (3 lenses + adversarial verify), 2026-09-29. The verifier confirmed it from the code; nothing was run end to end unless stated.
 - **Severity:** low
 - **Root cause:** `api_gateway/routers/inbound_hooks.py` ~149: fire_hook calls inbound_hooks.record_fire(hook), and create/update/delete call register/update/delete (lines 75, 100, 112). Each of these ends in InboundHookRegistry._save(), which does open(_STORE_PATH,'w') and json.dump of every hook (shared/inbound_hooks.py:91-95), directly on the event loop. The sibling webhooks.py offloads the identical dispatcher disk writes with asyncio.to_thread (BUG-042, test_webhooks_router_bug_async_save). /hooks/fire/{slug} is public (BUG-017 allowlist), so an external caller can drive blocking disk writes at the rate limit.
 - **Caused by:** none -- pre-existing.
-- **Fix:** pending.
+- **Fix:** The router runs `register` / `update` / `delete` / `record_fire` through `asyncio.to_thread`, as `webhooks.py` does. Because the mutators now run on worker threads, the registry takes an `RLock` around them so two cannot change the maps while a third serialises them. Regression: `tests/test_inbound_hooks_offload_save.py` (the two thread-identity tests fail on the old code; the concurrent-mutation test is a safety net that also passed on the old code in this run).
 
 ## BUG-243: Inbound hook pipeline trigger 500s on any non-object JSON body after already recording the fire
 - **Status:** fixed
