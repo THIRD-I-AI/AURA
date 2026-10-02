@@ -17,6 +17,7 @@ import os
 import pathlib
 import re
 import uuid
+from concurrent.futures import BrokenExecutor
 from typing import Any, Dict, List, Literal, Optional
 
 import pandas as pd
@@ -40,7 +41,7 @@ from shared.exceptions import ForbiddenError
 from shared.service_factory import create_service
 
 from . import cryptography, pdf_renderer, persistence, signing
-from .audit_worker import get_audit_pool, run_audit_subprocess
+from .audit_worker import discard_audit_pool, get_audit_pool, run_audit_subprocess
 from .demo_scenarios import get_scenario, list_scenarios
 from .engine import dowhy_available, econml_available, run_job
 from .renderers import render
@@ -496,9 +497,17 @@ async def _run_audit_job_async(job_id: str, payload: Dict[str, Any]) -> None:
     _jobs[job_id]["state"] = "running"
     loop = asyncio.get_event_loop()
     try:
-        result = await loop.run_in_executor(get_audit_pool(), run_audit_subprocess, payload)
-        _jobs[job_id].update(state="succeeded", artifact=result)
+        pool = get_audit_pool()
+        try:
+            result = await loop.run_in_executor(pool, run_audit_subprocess, payload)
+        except BrokenExecutor:
+            discard_audit_pool(pool)
+            raise
+        # BUG-299: the ledger append comes first. The job used to be marked succeeded
+        # before it, so a poller could read a success that a failed append then
+        # flipped to failed.
         await _append_fairness_audit_to_ledger(result, payload)
+        _jobs[job_id].update(state="succeeded", artifact=result)
     except Exception as exc:
         logger.exception("Audit job %s failed", job_id)
         _jobs[job_id].update(
