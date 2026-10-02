@@ -3086,12 +3086,12 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Fix:** pending.
 
 ## BUG-287: Streaming webhook sink and websocket source connect to any caller-supplied URL with no SSRF filter
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode audit of `aurabackend/pipeline` (3 lenses + adversarial verify), 2026-10-02. The verifier confirmed it from the code; nothing was run end to end unless stated.
 - **Severity:** medium
 - **Root cause:** `pipeline/streaming/sinks/webhook_sink.py` ~100: webhook_sink.py:37 takes `self._url = config["url"]` and line 100 calls `self._client.post(self._url, content=body, headers=headers)` with caller-controlled `headers` (line 39) and an uncapped caller-controlled `retries` (line 41). websocket_source.py:63 and 133 do `websockets.connect(self._url, ...)` and turn inbound messages into events that flow to the caller's SSE stream. The only SSRF guard in the backend, `_is_ssrf_safe_url`, is defined and used solely in api_gateway/routers/webhooks.py:76/124/170 (the BUG-054 fix); nothing under pipeline/streaming calls it. Failure scenario: A tenant creates a pipeline with a webhook sink at `http://169.254.169.254/...` or `http://localhost:8009/uasr/...` plus custom headers, and the gateway issues POSTs to internal-only services on every closed window. With a websocket source pointed at an internal `ws://` endpoint, the internal service's messages are aggregated and returned to the tenant over SSE, giving a read channel into the internal network. This is the BUG-054 exposure reopened through the streaming path.
 - **Caused by:** none -- pre-existing.
-- **Fix:** pending.
+- **Fix:** The SSRF check moved to `shared/ssrf.py` (`is_public_url`, same rules as BUG-054; `webhooks.py` delegates to it). `WebhookSink.start()` and `WebSocketSource.start()` raise if the URL is not a public http(s) / ws(s) address, and both re-check before every delivery / connection so a name re-pointed after start is not followed. Webhook sink `retries` is capped at 5. Regression: `tests/test_streaming_ssrf_guard.py` (18 tests; the 11 refusal cases fail on the old code). Residual: the check and the connection resolve the name separately, so a resolver that answers differently within that window is not covered (same limit as BUG-054).
 
 ## BUG-288: Batch pipeline run has no memory, row, step or concurrency bound; the Postgres sink fetches the whole result into Python
 - **Status:** open
