@@ -2974,20 +2974,20 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Fix:** PR #608. Leaving PENDING_APPROVAL is a single conditional UPDATE (`_claim_pending_recovery`); the shim is deployed only after the claim. Not reproduced: a probe of the old handlers on local SQLite let only 1 of 5 concurrent approvals through, so this is a hardening that is not proven against the old code here.
 
 ## BUG-273: drift_status and list_sources read _detector._baselines on the event loop: blocking Redis SCAN plus GET per source, repeated per source in list_sources
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode audit of `aurabackend/uasr` (3 lenses + adversarial verify), 2026-10-01. The verifier confirmed it from the code; nothing was run end to end unless stated.
 - **Severity:** medium
 - **Root cause:** `uasr/service.py` ~1181: `_detector._baselines` is a property that rebuilds a dict on every access by iterating `self._store.source_ids()` and calling `self._store.peek(sid)` for each (drift_detector.py:137-140). Under RedisStateStore, source_ids() is a synchronous `self._r.scan_iter(...)` (state_store.py:266-271) and each state read is a synchronous `self._r.get` (state_store.py:246). The async handlers call it inline: drift_status at service.py:909, list_sources at service.py:1175, and again inside the per-source comprehension `sid in _detector._baselines` at service.py:1181, so it is rebuilt once per listed source. The sibling handlers were offloaded for exactly this reason (service.py:596, 717, 819, 877; BUG-021), but these two were not. Failure scenario: With UASR_STATE_BACKEND=redis and N monitored sources, GET /uasr/sources performs about N+1 full keyspace scans and N*(N+1) GETs synchronously on the single uvicorn worker (about 40,000 round-trips for 200 sources). Every concurrent /uasr/ingest, /uasr/heal and /health request stalls for the duration, and a slow or hung Redis freezes the service because the dashboard polls these endpoints.
 - **Caused by:** none -- pre-existing.
-- **Fix:** pending.
+- **Fix:** `drift_status` and `list_sources` take one snapshot of the baseline map with `asyncio.to_thread` and reuse it, instead of rebuilding it inline (once per listed source in `list_sources`). Regression: `tests/test_uasr_list_endpoint_bounds_and_snapshot.py`.
 
 ## BUG-274: Unbounded caller-controlled `limit` (and one unlimited query) on recovery/drift list endpoints that return full shim_code and drift vectors
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode audit of `aurabackend/uasr` (3 lenses + adversarial verify), 2026-10-01. The verifier confirmed it from the code; nothing was run end to end unless stated.
 - **Severity:** low
 - **Root cause:** `uasr/service.py` ~897: `limit: int = 50` is passed straight to `.limit(limit)` with no upper/lower bound in drift_status (service.py:897, 901), pending_approvals (933, 939) and get_metrics_history (1054, 1057); list_recoveries_for_event (958-966) has no limit at all. _serialize_recovery (532-550) includes the full `shim_code` Text column per row. No Query(ge=, le=) validation anywhere in the file. On SQLite (the dev and free-tier box DB per CLAUDE.md) a negative LIMIT means no limit; on Postgres a negative LIMIT raises and surfaces as a 500. Failure scenario: A caller sends GET /uasr/drift/status?limit=-1 (or limit=10000000) against a box that has accumulated drift events from a noisy source: the single worker loads and JSON-serializes the entire uasr_drift_events / uasr_recovery_records table (including every shim's source) in one response, stalling all other tenants and risking OOM on the free-tier box.
 - **Caused by:** none -- pre-existing.
-- **Fix:** pending.
+- **Fix:** `limit` is `Query(ge=1, le=500)` on drift status, pending approvals and metrics history, and recoveries-for-event gained the same bounded limit (default 100). Regression: 16 parametrised cases in `tests/test_uasr_list_endpoint_bounds_and_snapshot.py` (the old code answers 200 to -1, 0, 501 and 100000).
 
 ## BUG-275: ConformalMartingaleRegistry is mutated from two threads with no lock: /uasr/baseline's register_baseline races the worker's update()
 - **Status:** open
