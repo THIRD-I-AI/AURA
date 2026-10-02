@@ -108,3 +108,22 @@ async def test_owner_can_update_and_delete_their_own_workspace():
 
     deleted = await delete_workspace(ws_id, _request("bug057-tenant-a"))
     assert deleted["success"] is True
+
+
+@pytest.mark.asyncio
+async def test_no_tenant_can_rename_the_shared_default_workspace():
+    """BUG-245: the default workspace is one record every tenant sees, so an edit by
+    any caller renamed it for all of them. Delete was already refused; update was not."""
+    from fastapi import HTTPException
+
+    before = (await list_workspaces(_request("orgB")))["workspaces"][0]
+    assert before["id"] == DEFAULT_WORKSPACE_ID
+    original = (before["name"], before.get("description"))
+
+    with pytest.raises(HTTPException) as exc:
+        await update_workspace(
+            DEFAULT_WORKSPACE_ID, WorkspaceUpdate(name="pwned by orgA", description="x"), _request("orgA"))
+    assert exc.value.status_code == 400
+
+    after = (await list_workspaces(_request("orgB")))["workspaces"][0]
+    assert (after["name"], after.get("description")) == original

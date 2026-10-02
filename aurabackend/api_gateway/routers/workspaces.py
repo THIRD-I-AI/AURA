@@ -236,6 +236,10 @@ async def create_workspace(payload: WorkspaceCreate, request: Request):
 
 @router.patch("/workspaces/{workspace_id}")
 async def update_workspace(workspace_id: str, payload: WorkspaceUpdate, request: Request):
+    # BUG-245: the default workspace is ONE record shared by every tenant, so an edit by
+    # any caller changed its name and description for all of them. Same guard as delete.
+    if workspace_id == DEFAULT_WORKSPACE_ID:
+        raise HTTPException(status_code=400, detail="Cannot modify the default workspace")
     tenant = _request_tenant(request)
     with _workspaces_lock:
         record = next(
