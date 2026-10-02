@@ -1223,6 +1223,8 @@ async def mapek_status() -> Dict[str, Any]:
     return {
         "running": _mapek_worker._running,
         "paused": _mapek_worker.is_paused,
+        # Set when the loop paused itself on an unexpected error (BUG-268).
+        "last_error": _mapek_worker._last_error,
         "config": {
             "topic": cfg.topic,
             "group_id": cfg.group_id,

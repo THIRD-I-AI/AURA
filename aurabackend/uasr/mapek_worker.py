@@ -294,6 +294,11 @@ class MAPEKWorker:
         self._paused = asyncio.Event()
         self._paused.set()  # set = NOT paused (consumer may run)
         self._stop_signal = asyncio.Event()
+        # Set when the loop parked itself with a batch read but not committed (failed
+        # recovery, loop error): the consumer must go back to the last committed
+        # offsets on resume, or that batch is silently skipped.
+        self._needs_rewind = False
+        self._last_error: Optional[str] = None
 
         self._task: Optional[asyncio.Task] = None
 
@@ -357,7 +362,14 @@ class MAPEKWorker:
         self._running = False
         self._stop_signal.set()
         if self._task:
-            await asyncio.wait_for(self._task, timeout=15.0)
+            # BUG-268: a loop task that ended with an exception (or did not finish in
+            # time) used to re-raise here, skipping the consumer / DuckDB cleanup below.
+            try:
+                await asyncio.wait_for(self._task, timeout=15.0)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.warning("MAPE-K loop did not end cleanly on stop: %r", exc)
         if self._consumer:
             await self._consumer.stop()
         if self._duckdb_con is not None:
@@ -374,6 +386,7 @@ class MAPEKWorker:
 
     def resume(self) -> None:
         if not self._paused.is_set():
+            self._last_error = None
             self._paused.set()
             logger.info("MAPE-K worker resumed")
 
@@ -383,11 +396,56 @@ class MAPEKWorker:
 
     # ── Main loop ─────────────────────────────────────────────────────
 
+    async def _wait_until_runnable(self) -> bool:
+        """Block while paused. False means the worker was stopped while waiting."""
+        if not self._paused.is_set():
+            resumed = asyncio.ensure_future(self._paused.wait())
+            stopped = asyncio.ensure_future(self._stop_signal.wait())
+            try:
+                await asyncio.wait({resumed, stopped}, return_when=asyncio.FIRST_COMPLETED)
+            finally:
+                resumed.cancel()
+                stopped.cancel()
+        return not self._stop_signal.is_set()
+
+    async def _rewind_to_committed(self) -> None:
+        """Re-read from the last committed offsets (the parked batch was never committed)."""
+        try:
+            await self._consumer.seek_to_committed()
+        except Exception as exc:
+            logger.warning("Kafka seek_to_committed failed on resume: %s", exc)
+
     async def _run_forever(self) -> None:
+        """Supervise the loop. BUG-268: an unexpected exception used to end the task
+        silently -- the worker still reported 'running', consumed nothing, and was
+        never restarted. Now it pauses (visible in /uasr/mapek/status), records the
+        error, and waits for an operator to resume, like a failed recovery does."""
+        while not self._stop_signal.is_set():
+            try:
+                await self._run_loop()
+                return
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.exception("MAPE-K loop error; pausing until an operator resumes")
+                self._last_error = type(exc).__name__  # the traceback is in the log above
+                self._needs_rewind = True
+                self.pause(reason="loop error")
+                try:
+                    await self._emit("worker_error", "MAPE-K loop error; consumer paused", {"error": type(exc).__name__})
+                except Exception:
+                    logger.debug("could not emit worker_error", exc_info=True)
+
+    async def _run_loop(self) -> None:
         try:
             while not self._stop_signal.is_set():
-                # Pause-gate: blocks here while a recovery is in flight
-                await self._paused.wait()
+                # Pause-gate: blocks here while a recovery is in flight, or until an
+                # operator resumes after a failed recovery / loop error.
+                if not await self._wait_until_runnable():
+                    break
+                if self._needs_rewind:
+                    self._needs_rewind = False
+                    await self._rewind_to_committed()
 
                 # ── Monitor ────────────────────────────────────────────
                 batch = await self._monitor_pull_batch()
@@ -597,8 +655,13 @@ class MAPEKWorker:
                                     f"consumer remains paused{detail}",
                                     {"recovery_id": recovery.recovery_id, "drift_event_id": drift.batch_id},
                                 )
-                                await self._stop_signal.wait()
-                                break
+                                # BUG-267: this parked on _stop_signal, so POST
+                                # /uasr/mapek/resume set _paused, reported success, and
+                                # nothing consumed again until a restart. Stay paused and
+                                # go back to the pause-gate; on resume the uncommitted
+                                # batch is re-read (through whatever was fixed meanwhile).
+                                self._needs_rewind = True
+                                continue
                 else:
                     # ── Execute (happy path) ───────────────────────────
                     await self._execute_persist(batch)
