@@ -129,6 +129,14 @@ describe('CounterfactualCard', () => {
     expect(screen.getByText(/No challenges raised/i)).toBeInTheDocument();
   });
 
+  it('says the critic did not run instead of claiming it had no objections', async () => {
+    const user = userEvent.setup();
+    render(<CounterfactualCard artifact={{ ...baseFixture, top_challenges: [], critic_skipped: true }} />);
+    await user.click(screen.getByText(/See the debate/i));
+    expect(screen.getByText(/critic did not run/i)).toBeInTheDocument();
+    expect(screen.queryByText(/had no objections/i)).not.toBeInTheDocument();
+  });
+
   it('renders the truncated audit_record_hash', () => {
     const { container } = render(<CounterfactualCard artifact={baseFixture} />);
     // The Card slices the first 16 chars and appends an ellipsis. The
