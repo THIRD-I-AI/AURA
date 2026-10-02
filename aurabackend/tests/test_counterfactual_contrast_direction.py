@@ -64,6 +64,7 @@ def test_double_ml_agrees_with_the_dowhy_estimators_when_actual_is_zero():
 def test_dr_class_compares_actual_with_counterfactual_not_with_every_other_row():
     """A third treatment level with a very different outcome must not be pooled into
     the comparison group."""
+    pytest.importorskip("sklearn")  # tmle; the base CI lane has no causal dependencies
     df = _df()
     rng = np.random.default_rng(5)
     other = pd.DataFrame({"x": rng.normal(0, 1, 1500), "t": 2.0, "y": rng.normal(50, 1, 1500)})
