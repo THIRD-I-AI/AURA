@@ -709,16 +709,21 @@ async def revoke_key(kid: str) -> Dict[str, str]:
 
 # ── S34a — Signed Financial Audit ─────────────────────────────────────
 
+# BUG-301: the audit runs on the gateway's one worker and writes an audit-log record
+# per finding, so the input lists are bounded.
+MAX_AUDIT_ROWS = 50_000
+
+
 class FinancialAuditRequest(BaseModel):
     tenant_id: str
-    ledger: List[Dict[str, Any]] = Field(default_factory=list)
-    purchase_orders: List[Dict[str, Any]] = Field(default_factory=list)
-    invoices: List[Dict[str, Any]] = Field(default_factory=list)
-    journal_entries: List[Dict[str, Any]] = Field(default_factory=list)
-    historical_reports: List[Dict[str, Any]] = Field(default_factory=list)
+    ledger: List[Dict[str, Any]] = Field(default_factory=list, max_length=MAX_AUDIT_ROWS)
+    purchase_orders: List[Dict[str, Any]] = Field(default_factory=list, max_length=MAX_AUDIT_ROWS)
+    invoices: List[Dict[str, Any]] = Field(default_factory=list, max_length=MAX_AUDIT_ROWS)
+    journal_entries: List[Dict[str, Any]] = Field(default_factory=list, max_length=MAX_AUDIT_ROWS)
+    historical_reports: List[Dict[str, Any]] = Field(default_factory=list, max_length=MAX_AUDIT_ROWS)
     # S39 — optional forensic inputs. Goods receipts enable the AS-2201
     # three-way match; period_end enables AS-2401 cutoff testing.
-    goods_receipts: List[Dict[str, Any]] = Field(default_factory=list)
+    goods_receipts: List[Dict[str, Any]] = Field(default_factory=list, max_length=MAX_AUDIT_ROWS)
     period_end: Optional[str] = None
     # Subsystem C — audit-grade identity. subject_id is the caller-supplied
     # stable id of what's audited (a model / decision cohort / applicant) so
@@ -752,11 +757,14 @@ async def financial_audit(req: FinancialAuditRequest,
         goods_receipts=req.goods_receipts or None, period_end=req.period_end)
     # Bind EVERY audited input in the signed fingerprint (the three-way-match,
     # expectation, and cutoff inputs drive findings — they must be attested).
-    fingerprint = dataset_fingerprint(
+    # Canonical serialisation and per-finding hashing of the whole payload: blocking.
+    fingerprint = await asyncio.to_thread(
+        dataset_fingerprint,
         req.ledger, req.purchase_orders, req.invoices, req.journal_entries,
         goods_receipts=req.goods_receipts, historical_reports=req.historical_reports,
         period_end=req.period_end)
-    doc = build_completion_document(
+    doc = await asyncio.to_thread(
+        build_completion_document,
         tenant, result["findings"], fingerprint, result["materiality_threshold"],
         subject_id=req.subject_id, subject_type=req.subject_type, preparer_id=req.preparer_id)
     stored = await asyncio.to_thread(sign_and_persist, doc)
@@ -1149,7 +1157,11 @@ async def get_sth(day: Optional[str] = None) -> STHResponse:
     from shared.audit_log import daily_merkle_root
 
     target_day = day or _dt.datetime.now(_dt.timezone.utc).strftime("%Y%m%d")
-    merkle_info = daily_merkle_root(target_day)
+    if not _AUDIT_DAY.match(target_day):
+        raise HTTPException(status_code=400, detail="day must be YYYYMMDD")
+    # BUG-300: parsing a day's audit log and building its Merkle tree is blocking
+    # work, and this endpoint is unauthenticated -- off the event loop.
+    merkle_info = await asyncio.to_thread(daily_merkle_root, target_day)
     if merkle_info is None:
         raise HTTPException(
             status_code=404,
@@ -1182,6 +1194,10 @@ async def get_sth(day: Optional[str] = None) -> STHResponse:
     )
 
 
+_RECORD_HASH = re.compile(r"^[0-9a-fA-F]{64}$")
+_AUDIT_DAY = re.compile(r"^\d{8}$")
+
+
 class InclusionProofResponse(BaseModel):
     record_hash: str
     day: str
@@ -1209,7 +1225,14 @@ async def get_inclusion_proof(
     older than 30 days require an explicit ``day=YYYYMMDD`` query."""
     from shared.audit_log import inclusion_proof_for_record
 
-    proof_info = inclusion_proof_for_record(record_hash, day=day)
+    # BUG-300: with no ``day`` this parses up to 30 days of audit log. A value that is
+    # not a record hash cannot be in the log, so it is refused before any file is
+    # read, and the search itself runs off the event loop.
+    if not _RECORD_HASH.match(record_hash):
+        raise HTTPException(status_code=400, detail="record_hash must be 64 hex characters")
+    if day is not None and not _AUDIT_DAY.match(day):
+        raise HTTPException(status_code=400, detail="day must be YYYYMMDD")
+    proof_info = await asyncio.to_thread(inclusion_proof_for_record, record_hash, day=day)
     if proof_info is None:
         raise HTTPException(
             status_code=404,
