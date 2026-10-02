@@ -449,7 +449,9 @@ async def chat_endpoint(request: ChatRequest, http_request: Request) -> ChatResp
             # works under both AURA_STORAGE_BACKEND=local and =s3 — mirrors
             # api_gateway/routers/pipelines.py::pipeline_generate.
             tenant = _request_tenant(http_request)
-            available_files = [obj.name for obj in get_storage_backend().list(tenant)]
+            # BUG-238: list() is a blocking S3 paginator / directory scan.
+            listed = await asyncio.to_thread(get_storage_backend().list, tenant)
+            available_files = [obj.name for obj in listed]
             pipeline = await gen.generate(
                 prompt=message, available_files=available_files, schema_context=None, tenant=tenant,
             )
