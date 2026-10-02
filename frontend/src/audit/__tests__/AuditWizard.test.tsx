@@ -91,6 +91,51 @@ describe('AuditWizard (audit your own data)', () => {
     await waitFor(() => expect(navigate).toHaveBeenCalledWith('/audit/audit_42'));
   });
 
+  it('an earlier upload finishing late does not replace the file the user picked since', async () => {
+    // The first (wrong) file's upload is slow; the user replaces it and the second
+    // upload finishes first. The audit must run on the second file.
+    let finishFirst!: (v: { filename: string }) => void;
+    vi.spyOn(auditApi, 'uploadDataset')
+      .mockImplementationOnce(() => new Promise((resolve) => { finishFirst = resolve; }))
+      .mockResolvedValueOnce({ filename: 'loans.csv' });
+    const run = vi.spyOn(auditApi, 'runDataAudit').mockResolvedValue({ job_id: 'audit_7' });
+    const user = userEvent.setup();
+    render(<MemoryRouter><AuditWizard /></MemoryRouter>);
+
+    const wrong = new File([['protected_class,approved,income,officer', '1,0,1,A', ''].join('\n')], 'big_wrong.csv', { type: 'text/csv' });
+    await user.upload(screen.getByTestId('wizard-file-input'), wrong);
+    await user.upload(screen.getByTestId('wizard-file-input'), csvFile());
+    await waitFor(() => expect(screen.getByTestId('wizard-next')).toBeEnabled());
+
+    finishFirst({ filename: 'big_wrong.csv' });   // the stale upload lands last
+
+    await user.click(screen.getByTestId('wizard-next'));
+    await user.selectOptions(screen.getByTestId('map-treatment'), 'protected_class');
+    await user.selectOptions(screen.getByTestId('map-outcome'), 'approved');
+    await user.click(screen.getByTestId('confounder-income'));
+    await user.click(screen.getByTestId('wizard-next'));
+    await user.click(screen.getByTestId('wizard-run'));
+
+    await waitFor(() => expect(run).toHaveBeenCalledWith(expect.objectContaining({ uploaded_file: 'loans.csv' })));
+  });
+
+  it('cannot advance while the newly picked file is still uploading', async () => {
+    let finish!: (v: { filename: string }) => void;
+    vi.spyOn(auditApi, 'uploadDataset')
+      .mockResolvedValueOnce({ filename: 'first.csv' })
+      .mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+    const user = userEvent.setup();
+    render(<MemoryRouter><AuditWizard /></MemoryRouter>);
+
+    await user.upload(screen.getByTestId('wizard-file-input'), csvFile());
+    await waitFor(() => expect(screen.getByTestId('wizard-next')).toBeEnabled());
+    await user.upload(screen.getByTestId('wizard-file-input'), csvFile());
+
+    expect(screen.getByTestId('wizard-next')).toBeDisabled();
+    finish({ filename: 'second.csv' });
+    await waitFor(() => expect(screen.getByTestId('wizard-next')).toBeEnabled());
+  });
+
   it('blocks advancing past mapping until the mapping is valid', async () => {
     vi.spyOn(auditApi, 'uploadDataset').mockResolvedValue({ filename: 'loans.csv' });
     const user = userEvent.setup();
