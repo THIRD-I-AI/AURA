@@ -170,6 +170,32 @@ async def validate_id_token(id_token: str) -> Dict[str, Any]:
         ))
 
 
+# BUG-306: the verified-email domain is a tenant only when one organisation owns the
+# domain. On a consumer mailbox provider it is shared by unrelated people, and mapping
+# it to a tenant put every gmail.com user of a social-login IdP into the same one.
+# This list cannot be complete; an IdP that serves the public should send an org claim
+# (AURA_OIDC_ORG_CLAIM), which always takes precedence.
+_PUBLIC_EMAIL_DOMAINS = frozenset({
+    "gmail.com", "googlemail.com", "outlook.com", "hotmail.com", "live.com", "msn.com",
+    "yahoo.com", "yahoo.co.uk", "ymail.com", "icloud.com", "me.com", "mac.com", "aol.com",
+    "proton.me", "protonmail.com", "pm.me", "gmx.com", "gmx.de", "gmx.net", "mail.com",
+    "yandex.com", "yandex.ru", "zoho.com", "qq.com", "163.com", "126.com", "web.de",
+    "fastmail.com", "hey.com", "tutanota.com",
+})
+
+
+def _personal_tenant(claims: Dict[str, Any]) -> str:
+    """A tenant of one, for a user whose email domain is not an organisation."""
+    import hashlib
+
+    from shared.exceptions import AuthenticationError
+    subject = claims.get("sub")
+    if not subject:
+        raise AuthenticationError("IdP returned no subject for a personal account")
+    digest = hashlib.sha256(f"{claims.get('iss', '')}|{subject}".encode("utf-8")).hexdigest()
+    return f"personal-{digest[:24]}"
+
+
 def map_org(claims: Dict[str, Any]) -> str:
     """Tenant mapping: configured claim → tid/hd → VERIFIED-email domain.
 
@@ -187,6 +213,9 @@ def map_org(claims: Dict[str, Any]) -> str:
     if claims.get("email_verified") is True:
         email = claims.get("email") or ""
         if "@" in email:
-            return email.split("@", 1)[1].lower()
+            domain = email.split("@", 1)[1].lower()
+            if domain in _PUBLIC_EMAIL_DOMAINS:
+                return _personal_tenant(claims)
+            return domain
     raise AuthenticationError(
         "IdP returned no tenant identifier — an org claim or a verified email domain is required")
