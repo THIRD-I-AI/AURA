@@ -67,7 +67,7 @@ from .numeric_semantics import (
     numeric_columns_from_rows,
 )
 from .recovery_loop import RecoveryLoop
-from .recovery_persistence import persist_recovery_row
+from .recovery_persistence import mark_shim_rolled_back, persist_recovery_row
 
 logger = logging.getLogger("uasr.mapek_worker")
 
@@ -472,7 +472,14 @@ class MAPEKWorker:
                 # Post-heal validation: `drift` above already reflects data
                 # AFTER apply_shims (line ~309), so this is the earliest point
                 # that can tell "the last deploy healed it" from "it didn't."
+                _deployed = self._loop.get_deployed_shims(batch.source_id)
+                _last_shim = _deployed[-1] if _deployed else None
                 if self._loop.check_post_deploy(batch.source_id, drift):
+                    # BUG-266: persist the revert, or startup re-deploys the shim.
+                    try:
+                        await mark_shim_rolled_back(batch.source_id, _last_shim)
+                    except Exception as exc:
+                        logger.error("could not persist auto-rollback for %s: %s", batch.source_id, exc)
                     await self._emit(
                         "auto_rollback",
                         f"post-heal validation failed for {batch.source_id}; shim auto-reverted",
