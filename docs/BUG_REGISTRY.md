@@ -2774,60 +2774,60 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Fix:** Removed the catch so failures propagate (same treatment as getChatHistory in BUG-107). Every caller already handles rejection (ConstellationPanel/Workbench via `.catch`). Regression: `frontend/src/services/__tests__/getUploadedFiles.test.ts` (500/403 reject; fails on old code).
 
 ## BUG-248: AuditProgress ignores the polling error, and useJobPolling retries forever: 'Running audit...' spins endlessly on 401/404/500
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode audit of `frontend/src` (5 lenses + adversarial verify), 2026-10-01. Verifier confirmed it from the code.
 - **Severity:** high
 - **Root cause:** `frontend/src/audit/AuditProgress.tsx:32` destructures only `snapshot` from useJobPolling; `frontend/src/audit/useJobPolling.ts:28-32` sets `error` and reschedules every 800ms with no stop on 4xx. Jobs live in an in-memory dict (counterfactual_service/main.py:297), so any restart makes every job id 404.
 - **Caused by:** none -- pre-existing.
-- **Fix:** pending.
+- **Fix:** PR #582. `useJobPolling` stops on a 4xx, gives up after 5 consecutive other failures and only then reports `error`; `stopped` is per effect run; `AuditProgress` renders an error state. Regression: 4 tests in `frontend/src/audit/__tests__/`.
 
 ## BUG-249: Counterfactual page poll never checks statusResp.ok, so a 401/404 error body is read as progress for 2 minutes
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode audit of `frontend/src` (5 lenses + adversarial verify), 2026-10-01. Verifier confirmed it from the code.
 - **Severity:** high
 - **Root cause:** `frontend/src/pages/Counterfactual.tsx:87-99` calls `.json()` and branches only on `state`; an error body has no `state`, so the UI shows 'Job X: undefined (Ns)' for 120s and then a misleading timeout. Also keeps polling after unmount (line 85).
 - **Caused by:** none -- pre-existing.
-- **Fix:** pending.
+- **Fix:** PR #583. The poll checks `resp.ok` (401 and 404 get their own message) and stops when the page unmounts. Regression: 2 tests in `Counterfactual.test.tsx`. Follow-up: the submit call still needs the BUG-252 `authFetch` sign-out handling.
 
 ## BUG-250: PipelineMonitor: an AI pipeline run that fails over SSE leaves Execute/Preview stuck on 'Running...' permanently
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode audit of `frontend/src` (5 lenses + adversarial verify), 2026-10-01. Verifier confirmed it from the code.
 - **Severity:** high
 - **Root cause:** `frontend/src/components/PipelineMonitor.tsx` ~134: the SSE error path never resets the running state.
 - **Caused by:** none -- pre-existing.
-- **Fix:** pending.
+- **Fix:** PR #584. `PipelineMonitor` calls `onSettled` on every terminal event and `PipelinesPanel` resets its executing state there. Regression: `PipelineMonitor.settled.test.tsx`.
 
 ## BUG-251: Pipeline builder's source-file list uses an unauthenticated fetch, so the user's uploads never appear
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode audit of `frontend/src` (5 lenses), 2026-10-01. NOT yet adversarially verified (the verify stage hit the subagent session limit) -- triage before fixing.
 - **Severity:** high
 - **Root cause:** `frontend/src/pages/PipelinesPanel.tsx` ~287 (reported by two lenses independently).
 - **Caused by:** none -- pre-existing.
-- **Fix:** pending.
+- **Fix:** PR #585. Triage: confirmed from the code (bare `fetch` with no Authorization). The list now goes through `uploadService`, and a failed load shows an inline error. Regression: 2 tests in `PipelinesPanel.test.tsx`.
 
 ## BUG-252: Raw-fetch request paths (audit API, counterfactual) never trigger the session-expired flow on 401
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode audit of `frontend/src` (5 lenses), 2026-10-01. NOT yet adversarially verified (the verify stage hit the subagent session limit) -- triage before fixing.
 - **Severity:** medium
 - **Root cause:** `frontend/src/audit/auditApi.ts:18` and other raw `fetch` callers bypass ApiClient.request's 401 handling.
 - **Caused by:** none -- pre-existing.
-- **Fix:** pending.
+- **Fix:** PR #586. Triage: confirmed. New `authFetch` in `services/api.ts` carries the bearer and applies the same 401 handling as `ApiClient.request`; the audit API and the Workbench ledger / demo-audit calls use it. Regression: `authFetch.test.ts`. Follow-up: `Counterfactual.tsx`.
 
 ## BUG-253: Healing Queue / Terminal recovery Approve/Reject sign an override on one click with no confirmation
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode audit of `frontend/src` (5 lenses), 2026-10-01. NOT yet adversarially verified (the verify stage hit the subagent session limit) -- triage before fixing.
 - **Severity:** high
 - **Root cause:** `frontend/src/workbench/panels/HealingQueuePanel.tsx:90`, `frontend/src/terminal/panels/PipelinePanel.tsx:342`; the Cockpit variant has a confirm step. Also SchedulerPanel.tsx:146 'Remove schedule' deletes on one click.
 - **Caused by:** none -- pre-existing.
-- **Fix:** pending.
+- **Fix:** PR #587. Triage: confirmed. Healing Queue panel and Terminal recoveries arm then confirm; the Terminal no longer swallows a failed decision; `Remove schedule` needs a confirming click. Regression: 6 tests.
 
 ## BUG-254: Stale async responses overwrite newer state (audit deck verify, certificate lookups, connector schema picker)
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode audit of `frontend/src` (5 lenses), 2026-10-01. NOT yet adversarially verified (the verify stage hit the subagent session limit) -- triage before fixing.
 - **Severity:** high
 - **Root cause:** `frontend/src/terminal/audit/useAuditDeck.ts:62`, `frontend/src/workbench/panels/CertificatesPanel.tsx:80`, `frontend/src/workbench/panels/ConnectorsPanel.tsx:161`: no request-id/abort guard, so an older in-flight response lands after a newer one.
 - **Caused by:** none -- pre-existing.
-- **Fix:** pending.
+- **Fix:** PR #588. Triage: confirmed in all three places. Each request is tagged and a response that is no longer current is dropped. Regression: 3 tests.
 
 ## BUG-255: Error states rendered as healthy/empty data across the Workbench (ledger chip, healing queue '0 - queue clear', pipelines tile skeleton forever, ETL file dropdown)
 - **Status:** open
@@ -2838,12 +2838,12 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Fix:** pending.
 
 ## BUG-256: Keyboard-inaccessible interactive UI (Datasets rows, Cmd+K palette items, topbar launcher, sortable Findings headers, forensic role toggle)
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode audit of `frontend/src` (5 lenses), 2026-10-01. NOT yet adversarially verified (the verify stage hit the subagent session limit) -- triage before fixing.
 - **Severity:** medium
 - **Root cause:** `frontend/src/terminal/panels/DatasetsPanel.tsx:47`, `workbench/CommandPalette.tsx:25`, `workbench/WorkbenchTopbar.tsx:16`, `terminal/panels/FindingsPanel.tsx:133`, `workbench/cockpit/ForensicAuditPanel.tsx:27`: div onClick with no role/tabIndex/key handler.
 - **Caused by:** none -- pre-existing.
-- **Fix:** pending.
+- **Fix:** PR #589. Triage: confirmed. Palette arrow-key navigation with listbox semantics; topbar controls, dataset rows and sortable headers are focusable with Enter/Space; the role toggle is real buttons. Regression: `keyboardAccess.test.tsx`, `DatasetsPanel.test.tsx`.
 
 ## BUG-257: Product gaps: no UI to create saved queries or dashboards, manage webhooks/workspaces, or create streaming pipelines
 - **Status:** open
@@ -2851,4 +2851,4 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Severity:** medium
 - **Root cause:** `frontend/src/workbench/panels/LibraryPanel.tsx:94`, `DashboardsPanel.tsx:49`, `WebhooksPanel.tsx:103`, `WorkbenchTopbar.tsx:18`, `cockpit/PipelinesStreamingPanel.tsx:29`: backend APIs exist with no UI entry point. Also hard-coded fake status text (Workbench.tsx:432, PipelinesStreamingPanel.tsx:21 'PII MASKING ON').
 - **Caused by:** none -- pre-existing.
-- **Fix:** pending.
+- **Fix:** partial. Done: saved-query create / star / delete (PR #590); dashboard create / open / delete (PR #591); hard-coded status text removed, healing badge and Constellation link corrected (PR #592); webhook register / test / pause / delete (PR #593). Still open: workspace switcher and workspace CRUD UI, streaming-pipeline creation, inbound-hook UI, synthetic-data and approval-chain UI.
