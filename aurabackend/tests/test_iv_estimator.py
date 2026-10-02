@@ -100,9 +100,14 @@ def test_engine_dispatch_iv_via_run_one_estimator():
     assert est.ci_lower < est.point < est.ci_upper
 
 
-def test_run_job_honours_methods_list():
+def test_run_job_honours_methods_list(tmp_path, monkeypatch):
     dowhy = pytest.importorskip("dowhy")  # noqa: F841
     import asyncio
+
+    # BUG-303: run_job writes its audit log and critic cache; left at the /var/log/aura
+    # defaults this only worked on a developer machine.
+    monkeypatch.setenv("AURA_AUDIT_DIR", str(tmp_path / "audit"))
+    monkeypatch.setenv("AURA_CRITIC_CACHE_DIR", str(tmp_path / "critic-cache"))
 
     from counterfactual_service.engine import run_job
     from counterfactual_service.schemas import (

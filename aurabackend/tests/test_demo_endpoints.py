@@ -230,10 +230,16 @@ def test_pdf_renders_from_persisted_string_numbers():
     assert len(pdf) > 1500
 
 
-def test_full_audit_is_hashed_and_signed():
+def test_full_audit_is_hashed_and_signed(tmp_path, monkeypatch):
     pytest.importorskip("econml")
     pytest.importorskip("dowhy")
     import asyncio
+
+    # BUG-303: this test had only ever run on a developer machine. With no directory
+    # configured the engine writes its audit log and critic cache under /var/log/aura,
+    # which a CI runner cannot create.
+    monkeypatch.setenv("AURA_AUDIT_DIR", str(tmp_path / "audit"))
+    monkeypatch.setenv("AURA_CRITIC_CACHE_DIR", str(tmp_path / "critic-cache"))
 
     from counterfactual_service.demo_scenarios import get_scenario
     from counterfactual_service.engine import run_job

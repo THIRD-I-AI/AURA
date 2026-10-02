@@ -150,10 +150,13 @@ jobs:
 
       - name: Run tests with coverage
         run: |
+          # BUG-303: every file gated on dowhy/econml must be listed here -- this is the
+          # only lane that installs them, so anything left out is skipped in all of CI.
           python -m pytest tests/test_counterfactual_*.py tests/test_uasr_canary_causal_estimator.py \
+            tests/test_audit_encode.py tests/test_audit_endpoint.py tests/test_critic_timeout.py \
+            tests/test_demo_endpoints.py tests/test_demo_scenarios.py tests/test_iv_estimator.py \
             --tb=short \
             -q \
-            -x \
             --cov=counterfactual_service \
             --cov-report=term-missing \
             --cov-fail-under=60
