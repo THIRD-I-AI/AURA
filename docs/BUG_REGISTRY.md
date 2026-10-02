@@ -2891,7 +2891,7 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Severity:** high
 - **Root cause:** `uasr/service.py` ~969: approve_recovery (service.py:969-996) and reject_recovery (999-1021) depend only on get_db. The record is fetched by id alone (`select(RecoveryRecord).where(RecoveryRecord.id == recovery_id)`, 974-976) with no tenant/workspace predicate and no role check. `rec.decided_by = req.approver` (991, 1017) comes from ApprovalRequest.approver / RejectionRequest.approver (496-505), a free-form body string; request.state.user, which JWTAuthMiddleware sets (shared/middleware.py:272), is never read. The gateway proxy forwards the raw body unchanged (api_gateway/routers/pipelines.py:641-648). Approval immediately calls `_loop.deploy_approved_shim(rec.source_id, rec.shim_code, recovery_id)` (988). Not in BUG_REGISTRY as fixed; the service.py:856 KNOWN GAP note names only baseline/rollback/schema-intent. Failure scenario: Any bearer-authenticated user of tenant B calls GET /uasr/recovery/pending (returns every tenant's held recoveries with ids), then POST /uasr/recovery/{id}/approve with body {"approver":"ciso@tenant-a.com"}. The LLM-generated or high-severity shim that the S41 risk gate deliberately held is deployed onto tenant A's source and rewrites every subsequent batch, and the audit trail records a human at tenant A as the approver. The same call to /reject escalates and kills another tenant's pending fix.
 - **Caused by:** none -- pre-existing.
-- **Fix:** pending.
+- **Fix:** partial (PR #608). The decision is now recorded under the authenticated principal (email, else sub), not a name from the request body. Still open: approve/reject have no tenant or role check -- part of the UASR tenant-scoping gap (BUG-072) that awaits a product decision, together with BUG-263, BUG-264 and BUG-270.
 
 ## BUG-263: /uasr/ingest and /uasr/heal accept any source_id: one tenant can auto-deploy a shim onto another tenant's source and read its standing shims' effect
 - **Status:** open
@@ -2918,36 +2918,36 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Fix:** pending.
 
 ## BUG-266: /uasr/rollback marks the newest recovery record of ANY status as ROLLED_BACK (not the shim actually removed), and auto-rollback persists nothing, so a rolled-back shim is resurrected on restart
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode audit of `aurabackend/uasr` (3 lenses + adversarial verify), 2026-10-01. The verifier confirmed it from the code; nothing was run end to end unless stated.
 - **Severity:** high
 - **Root cause:** `uasr/service.py` ~1132: service.py:1124 pops the last in-memory shim, then lines 1132-1145 select the source's most recent RecoveryRecord by created_at with no status filter (`.order_by(RecoveryRecord.created_at.desc()).limit(1)`) and set it ROLLED_BACK. FAILED and PENDING_APPROVAL attempts also create RecoveryRecords for the same source (service.py:625-640, 749-764), so the newest record is frequently not the DEPLOYED one whose shim was popped. Startup hydration (service.py:302-310) re-loads every record with status == DEPLOYED, with a comment at 297-298 asserting rolled-back shims stay rolled back. Separately, the post-heal auto-rollback path (recovery_loop.py:805-806 via mapek_worker.py:475-480) only calls rollback_last_shim and emits an event; grep shows ROLLED_BACK is written nowhere except service.py:1144, so the auto-reverted shim's record stays DEPLOYED. Failure scenario: Source S has DEPLOYED recovery A (bad shim). A later batch drifts again and produces recovery B with status FAILED or PENDING_APPROVAL. The operator calls POST /uasr/rollback: A's shim is removed from memory, but B is the record flipped to ROLLED_BACK (a PENDING_APPROVAL B silently disappears from the approval queue and can no longer be approved, 409 at service.py:980), while A stays DEPLOYED. On the next container restart or second replica, hydration re-deploys A's shim and it resumes rewriting production rows that a human explicitly reverted. Same resurrection happens for every shim auto-reverted by check_post_deploy.
 - **Caused by:** none -- pre-existing.
-- **Fix:** pending.
+- **Fix:** PR #609. `recovery_persistence.mark_shim_rolled_back` marks the newest DEPLOYED record for the source that carries the removed shim (newest DEPLOYED otherwise); `/uasr/rollback` and the MAPE-K automatic rollback both use it. Regression: `tests/test_uasr_rollback_marks_right_record.py` (the endpoint test fails on the old endpoint).
 
 ## BUG-267: POST /uasr/mapek/resume reports success but the worker never consumes again (loop is parked on _stop_signal, not _paused)
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode audit of `aurabackend/uasr` (3 lenses + adversarial verify), 2026-10-01. The verifier confirmed it from the code; nothing was run end to end unless stated.
 - **Severity:** high
 - **Root cause:** `uasr/mapek_worker.py` ~593: On a failed recovery in the pause/resume path, _run_forever does `await self._stop_signal.wait()` then `break` (mapek_worker.py:593-594). The only thing that sets _stop_signal is stop() (line 358). The operator endpoint mapek_resume() (service.py:1247-1252) calls `_mapek_worker.resume()`, which only sets `self._paused` (mapek_worker.py:375-378), an event the parked loop is not waiting on. The emitted message at line 590 says 'consumer remains paused' and the endpoint docstring (service.py:1241-1245) promises a manual unpause. Failure scenario: UASR_MAPEK_ENABLED=true, shim router off (default path). A drift at or above pause_on_severity gets a FAILED or PENDING_APPROVAL recovery. The operator triages and calls POST /uasr/mapek/resume: the response is {"resumed": true}, and /uasr/mapek/status then shows running=true, paused=false. The task is still blocked at line 593, so no Kafka batch is ever pulled again until the process restarts. If stop() is later called, the loop breaks without processing anything.
 - **Caused by:** none -- pre-existing.
-- **Fix:** pending.
+- **Fix:** PR #610. After a failed recovery the loop stays paused and returns to the pause-gate instead of parking on the stop signal; on resume it seeks back to the last committed offsets so the unread batch is re-read. Regression: `tests/test_mapek_worker_resume_and_crash.py` (one test drives the real failed-recovery branch; all fail on the old worker).
 
 ## BUG-268: A crash of the MAPE-K loop task is never observed: worker stays 'running', is never restarted, and stop() then skips consumer/DuckDB cleanup
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode audit of `aurabackend/uasr` (3 lenses + adversarial verify), 2026-10-01. The verifier confirmed it from the code; nothing was run end to end unless stated.
 - **Severity:** high
 - **Root cause:** `uasr/mapek_worker.py` ~603: _run_forever is launched with asyncio.create_task (line 351) and nothing awaits it or attaches a done callback. Its only handler is `except Exception: logger.exception(...); raise` (lines 603-605), so any exception ends the task while `self._running` stays True; /uasr/mapek/status reports `_mapek_worker._running` (service.py:1206). _mapek_worker_bootstrap returns after the first successful start() (service.py:208-213), so nothing restarts it. Unguarded raisers inside the loop include _execute_persist (lines 504, 525, 556, 569, 597): pa.Table.from_pylist (line 841) raises on mixed-type columns, and _write_duckdb_atomic re-raises every non-'conflict'/'does not exist' error (lines 913-919), e.g. INSERT BY NAME with a column the table lacks. In stop(), `await asyncio.wait_for(self._task, timeout=15.0)` (line 360) re-raises the stored exception (or TimeoutError if a recovery runs longer than 15s), so `self._consumer.stop()` (362) and `self._duckdb_con.close()` (365) are never reached; the lifespan only logs a warning (service.py:384-385). Failure scenario: A low-severity type or schema drift (below pause_on_severity) reaches the happy path at line 597: the batch has a column holding both ints and strings, or a new column not in the DuckDB table. _execute_persist raises, the task dies with one log line, and healing stops permanently for the Kafka path while /uasr/mapek/status still shows running=true, paused=false. On shutdown the AIOKafkaConsumer is left unclosed (no group leave) and the DuckDB connection is not closed.
 - **Caused by:** none -- pre-existing.
-- **Fix:** pending.
+- **Fix:** PR #610. A loop error now pauses the worker (reported as `paused` and `last_error` by `/uasr/mapek/status`) instead of ending the task silently, and `stop()` always runs its cleanup. Regression: `tests/test_mapek_worker_resume_and_crash.py`.
 
 ## BUG-269: /uasr/rollback is unscoped and marks the newest recovery row for the source ROLLED_BACK regardless of status, destroying a pending approval and leaving the rolled-back shim DEPLOYED
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode audit of `aurabackend/uasr` (3 lenses + adversarial verify), 2026-10-01. The verifier confirmed it from the code; nothing was run end to end unless stated.
 - **Severity:** medium
 - **Root cause:** `uasr/service.py` ~1132: rollback_shim (1121-1147) takes only `req.source_id`, with no caller check (acknowledged as a gap in the comment at 856-864 but not fixed). `_loop.rollback_last_shim` pops the last in-memory shim (recovery_loop.py:757-764). The DB update then selects the most recent RecoveryRecord for that source ordered by created_at desc limit 1 (1132-1141) with no `status == DEPLOYED` filter and sets it to ROLLED_BACK (1144). Startup hydration re-installs every record still in DEPLOYED (299-316). Failure scenario: Source S has recovery R1 DEPLOYED; a later drift creates R2 in PENDING_APPROVAL (or FAILED). Any authenticated caller, from any tenant, posts /uasr/rollback {source_id: S}. R1's shim is removed from memory, but the row flipped to ROLLED_BACK is R2: the held approval silently disappears from the queue (approve now returns 409) while R1 stays DEPLOYED in the DB, so on the next restart or on another replica the shim a human rolled back is hydrated and applied again.
 - **Caused by:** none -- pre-existing.
-- **Fix:** pending.
+- **Fix:** Same defect as BUG-266 (the marking half); fixed by PR #609. The missing tenant scope on this endpoint remains part of the open tenant-scoping gap (BUG-072 / BUG-263).
 
 ## BUG-270: POST /uasr/mapek/resume lets any authenticated caller lift the safety pause on the shared MAPE-K worker
 - **Status:** open
@@ -2966,12 +2966,12 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Fix:** pending.
 
 ## BUG-272: approve_recovery is check-then-act across awaits: concurrent approvals deploy the same shim twice, and it can race the approval reaper
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode audit of `aurabackend/uasr` (3 lenses + adversarial verify), 2026-10-01. The verifier confirmed it from the code; nothing was run end to end unless stated.
 - **Severity:** medium
 - **Root cause:** `uasr/service.py` ~988: approve_recovery reads the row (`await db.execute`, service.py:974-976), checks `rec.status != PENDING_APPROVAL` (980), calls `_loop.deploy_approved_shim` (988), which unconditionally appends to the process-wide `_deployed_shims[source_id]` list (recovery_loop.py:571), and only then commits (995). There is no lock, no SELECT ... FOR UPDATE and no conditional UPDATE, so two requests on separate sessions both see PENDING_APPROVAL. _reap_stale_approvals (service.py:239-257) has the same unguarded read-modify-write on the same rows. apply_shims runs every list entry in order (recovery_loop.py:815-818). Failure scenario: An operator double-clicks Approve (or two operators approve the same recovery). Both requests pass the status check while the other is suspended in an await, and both append the shim. Every later batch for that source has the transform applied twice (a unit-rescale shim multiplies values twice), silently corrupting healed data; /uasr/rollback pops only one copy. Separately, the reaper can read a row as PENDING, the approve handler deploys and commits DEPLOYED, then the reaper's commit overwrites the status to ESCALATED while the shim stays live in memory, and it is not restored after a restart because hydration selects only DEPLOYED rows (service.py:306).
 - **Caused by:** none -- pre-existing.
-- **Fix:** pending.
+- **Fix:** PR #608. Leaving PENDING_APPROVAL is a single conditional UPDATE (`_claim_pending_recovery`); the shim is deployed only after the claim. Not reproduced: a probe of the old handlers on local SQLite let only 1 of 5 concurrent approvals through, so this is a hardening that is not proven against the old code here.
 
 ## BUG-273: drift_status and list_sources read _detector._baselines on the event loop: blocking Redis SCAN plus GET per source, repeated per source in list_sources
 - **Status:** open
