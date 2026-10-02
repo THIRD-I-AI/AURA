@@ -447,3 +447,50 @@ class TestDeliveryRecord:
         assert rec.http_status == 200
         assert rec.error is None
         assert rec.timestamp  # auto-generated
+
+
+# ── BUG-309: an event is delivered only inside its own workspace ──────
+
+class TestFanOutTenantScope:
+    def _event(self, workspace_id):
+        from shared.streaming_manager import StreamEvent
+
+        return StreamEvent(topic="pipeline:run1", event_type="complete",
+                           payload={"rows": [{"salary": 1}]}, workspace_id=workspace_id)
+
+    def test_another_tenants_event_is_not_delivered(self):
+        d = _make_dispatcher()
+        with patch.object(d, "_save"):
+            mine = d.register("tenant-a", "http://a.example/hook", ["*"])
+            theirs = d.register("tenant-b", "http://b.example/hook", ["*"])
+
+        targets = d._targets("pipeline.complete", self._event("tenant-a"))
+
+        assert [s.id for s in targets] == [mine.id]
+        assert theirs.id not in [s.id for s in targets]
+
+    def test_a_folder_workspace_does_not_leak_into_its_tenants_other_folders(self):
+        d = _make_dispatcher()
+        with patch.object(d, "_save"):
+            root = d.register("tenant-a", "http://a.example/root", ["*"])
+            folder = d.register("tenant-a::finance", "http://a.example/finance", ["*"])
+
+        assert [s.id for s in d._targets("pipeline.complete", self._event("tenant-a::finance"))] == [folder.id]
+        assert [s.id for s in d._targets("pipeline.complete", self._event("tenant-a"))] == [root.id]
+
+    def test_an_untenanted_event_reaches_no_tenants_subscription(self):
+        d = _make_dispatcher()
+        with patch.object(d, "_save"):
+            d.register("tenant-a", "http://a.example/hook", ["*"])
+
+        assert d._targets("pipeline.complete", self._event(None)) == []
+
+    def test_type_and_active_filters_still_apply(self):
+        d = _make_dispatcher()
+        with patch.object(d, "_save"):
+            wanted = d.register("tenant-a", "http://a.example/1", ["pipeline.complete"])
+            d.register("tenant-a", "http://a.example/2", ["agent.*"])
+            paused = d.register("tenant-a", "http://a.example/3", ["*"])
+            paused.active = False
+
+        assert [s.id for s in d._targets("pipeline.complete", self._event("tenant-a"))] == [wanted.id]

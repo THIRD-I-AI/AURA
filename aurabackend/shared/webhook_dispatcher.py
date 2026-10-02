@@ -288,7 +288,7 @@ class WebhookDispatcher:
             if event_type is None:
                 continue
 
-            matched = [s for s in self._subs.values() if s.active and s.matches(event_type)]
+            matched = self._targets(event_type, event)
             if not matched:
                 continue
 
@@ -300,6 +300,24 @@ class WebhookDispatcher:
                     self._deliver(sub, event_type, payload),
                     name=f"webhook-{sub.id}",
                 )
+
+    def _targets(self, event_type: str, event: StreamEvent) -> List[WebhookSubscription]:
+        """The subscriptions an event is delivered to: active, matching its type, and
+        registered in the workspace the event belongs to.
+
+        BUG-309: the workspace was never compared. The dispatcher subscribes to the
+        bus with no workspace (so it receives every tenant's events) and delivered
+        each one to every matching subscription -- any tenant with a "*" webhook
+        received every other tenant's pipeline results and agent output.
+
+        An event with no workspace (open/dev mode, or a global broadcast) goes only to
+        subscriptions that have none either.
+        """
+        event_workspace = event.workspace_id or ""
+        return [
+            s for s in self._subs.values()
+            if s.active and s.matches(event_type) and (s.workspace_id or "") == event_workspace
+        ]
 
     # ── Delivery ───────────────────────────────────────────────────
 
