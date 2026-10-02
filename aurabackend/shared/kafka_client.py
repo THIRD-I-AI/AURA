@@ -27,6 +27,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger("aura.kafka")
@@ -89,21 +90,31 @@ async def consume_batch(
     consumer = AIOKafkaConsumer(topic, **consumer_kwargs)
     rows: List[Dict[str, Any]] = []
 
+    # BUG-312: the idle stop used to be asyncio.wait_for(getmany(timeout_ms=1000), idle).
+    # getmany returns an empty batch by itself after one second, so with any idle
+    # timeout of a second or more wait_for never fired and an idle or drained topic
+    # was polled forever. Idle time is now measured across polls.
+    poll_ms = int(max(1.0, min(1000.0, idle_timeout_s * 1000)))
+
     await consumer.start()
     try:
+        last_message_at = time.monotonic()
         while len(rows) < max_messages:
             try:
                 batch = await asyncio.wait_for(
-                    consumer.getmany(timeout_ms=1000, max_records=500),
-                    timeout=idle_timeout_s,
+                    consumer.getmany(timeout_ms=poll_ms, max_records=500),
+                    timeout=idle_timeout_s + 5.0,
                 )
             except asyncio.TimeoutError:
-                logger.info("Kafka idle timeout hit (%ss) — stopping consume", idle_timeout_s)
+                logger.info("Kafka poll did not return (%ss) — stopping consume", idle_timeout_s + 5.0)
                 break
 
             if not batch:
-                # getmany returned empty this tick; keep looping until idle timeout
+                if time.monotonic() - last_message_at >= idle_timeout_s:
+                    logger.info("Kafka idle timeout hit (%ss) — stopping consume", idle_timeout_s)
+                    break
                 continue
+            last_message_at = time.monotonic()
 
             for _tp, messages in batch.items():
                 for msg in messages:
