@@ -38,3 +38,33 @@ def test_unauthenticated_request_is_audited_with_no_user(monkeypatch):
     resp = TestClient(app).get("/api/v1/things")
     assert resp.status_code == 401
     assert [c["user"] for c in calls] == [""]
+
+
+def test_the_audit_write_does_not_run_on_the_event_loop(monkeypatch):
+    """BUG-315: the append (lock + write + fsync) ran inline in dispatch, stalling the
+    one event loop for every request."""
+    import asyncio
+    import threading
+
+    import shared.audit_log as audit_log
+    from shared.middleware import AuditLogMiddleware
+
+    seen = {}
+    monkeypatch.setattr(audit_log, "AUDIT_ENABLED", True)
+    monkeypatch.setattr(audit_log, "audit_request",
+                        lambda **kw: seen.update(thread=threading.get_ident(), **kw))
+
+    app = FastAPI()
+
+    @app.get("/api/v1/things")
+    async def things():
+        seen["loop_thread"] = threading.get_ident()
+        seen["loop"] = asyncio.get_running_loop()
+        return {"ok": True}
+
+    app.add_middleware(AuditLogMiddleware)
+    resp = TestClient(app).get("/api/v1/things")
+
+    assert resp.status_code == 200
+    assert seen["path"] == "/api/v1/things" and seen["status"] == 200
+    assert seen["thread"] != seen["loop_thread"]

@@ -100,7 +100,14 @@ class AuditLogMiddleware(BaseHTTPMiddleware):
                 principal = getattr(request.state, "user", None)
                 if isinstance(principal, dict):
                     user = principal.get("sub", "") or principal.get("email", "")
-                audit_request(
+                # BUG-315: the append takes a lock, writes and fsyncs. Done inline it
+                # stalled the one event loop -- every other request, SSE stream and
+                # background task -- for the length of each fsync. It is still awaited,
+                # so the record is on disk before the response is returned.
+                import asyncio
+
+                await asyncio.to_thread(
+                    audit_request,
                     method=request.method,
                     path=request.url.path,
                     status=response.status_code,
