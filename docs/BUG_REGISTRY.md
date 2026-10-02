@@ -3190,20 +3190,20 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Fix:** pending.
 
 ## BUG-300: Unauthenticated /audit/sth and /audit/inclusion parse whole audit-log files and build Merkle trees synchronously on the event loop
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode audit of `aurabackend/counterfactual_service` (3 lenses + adversarial verify), 2026-10-02. The verifier confirmed it from the code; nothing was run end to end unless stated.
 - **Severity:** high
 - **Root cause:** `counterfactual_service/main.py` ~1142: `get_sth` calls `daily_merkle_root(target_day)` (line 1142) and `get_inclusion_proof` calls `inclusion_proof_for_record(record_hash, day=day)` (line 1202) directly inside `async def` handlers with no asyncio.to_thread. shared/audit_log.py:287-314 reads the day's JSONL line by line with json.loads per line, then hashes every leaf and builds the tree; inclusion_proof_for_record with no `day` repeats the file read for up to 30 daily files (audit_log.py:373-379) and does a linear `record_hash not in hashes` list scan per day. BUG-043 offloaded 8 other sites in this file but not these two. Both routes are on the gateway's public (no-JWT) path list (shared/middleware.py:131,155). Failure scenario: The daily audit JSONL holds a record per audited request/finding (tens of thousands of lines on a busy day). An anonymous client calls GET /api/v1/counterfactual/audit/inclusion/<any 64-hex not in the log> with no `day`: the handler parses 30 days of JSONL on the single uvicorn worker's loop and returns 404. For the duration (seconds), every other tenant's request, health check and SSE stream is frozen; a handful of such requests in a loop keeps the gateway unresponsive without any credentials.
 - **Caused by:** none -- pre-existing.
-- **Fix:** pending.
+- **Fix:** `GET /counterfactual/audit/sth` and `/audit/inclusion/{record_hash}` run `daily_merkle_root` / `inclusion_proof_for_record` through `asyncio.to_thread`; a `record_hash` that is not 64 hex characters or a `day` that is not `YYYYMMDD` gets a 400 before any log file is read. Regression: `tests/test_audit_event_loop_bounds.py`. Residual: the endpoints stay unauthenticated by design (public verification) and have no rate limit of their own; a well-formed unknown hash still costs a 30-day scan, now off the event loop.
 
 ## BUG-301: POST /audit/financial runs the whole PCAOB audit, per-finding audit-log writes and fingerprinting on the event loop over unbounded input lists
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode audit of `aurabackend/counterfactual_service` (3 lenses + adversarial verify), 2026-10-02. The verifier confirmed it from the code; nothing was run end to end unless stated.
 - **Severity:** high
 - **Root cause:** `counterfactual_service/main.py` ~740: FinancialAuditRequest (main.py:702-712) declares ledger/purchase_orders/invoices/journal_entries/historical_reports/goods_receipts as List[Dict] with no max_length. `agent.run_full_audit` (line 740) is `async` but contains no real await: agents/specialists/financial_auditor.py:374-385 runs four pure-Python passes over every row and calls the synchronous `audit_event(...)` file append once per finding. `dataset_fingerprint` (line 745, canonical_dumps + sha256 of all inputs) and `build_completion_document` (line 749, one canonical_dumps + sha256 per finding) also run inline. Only `sign_and_persist` (line 752) is offloaded. The only body cap in the gateway, UploadBodyLimitMiddleware, applies to paths ending in /upload. Failure scenario: A tenant POSTs /api/v1/counterfactual/audit/financial with 300k journal_entries whose amounts are multiples of 1000. The round-dollar test emits 300k findings, each doing a synchronous audit-log append on the loop, followed by canonical JSON serialization of the whole payload and 300k per-finding hashes. The single worker is blocked for many seconds to minutes: all other tenants' requests time out, and asyncio.wait_for timers elsewhere cannot fire. Expected: the audit runs off-loop and the lists are capped.
 - **Caused by:** none -- pre-existing.
-- **Fix:** pending.
+- **Fix:** Each `FinancialAuditRequest` input list is capped at 50,000 rows (`MAX_AUDIT_ROWS`, 422 past it), and `dataset_fingerprint` and `build_completion_document` run through `asyncio.to_thread`. Regression: `test_financial_audit_input_lists_are_bounded` in `tests/test_audit_event_loop_bounds.py`. Residual: `FinancialAuditorAgent.run_full_audit` itself still runs on the event loop, including its per-finding audit-log writes; it is bounded by the row cap but not offloaded.
 
 ## BUG-302: _jobs registry is never evicted: every job, including each cached demo click, stays in memory with its full artifact and Task for the process lifetime
 - **Status:** open
