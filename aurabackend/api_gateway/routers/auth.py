@@ -22,7 +22,13 @@ from sqlalchemy import select
 
 from shared.auth import create_access_token, require_user
 from shared.config import settings
-from shared.exceptions import AuthenticationError, ConflictError, ForbiddenError, ValidationError
+from shared.exceptions import (
+    AuthenticationError,
+    ConflictError,
+    ForbiddenError,
+    ServiceUnavailableError,
+    ValidationError,
+)
 from shared.logging_config import get_logger
 from shared.password import hash_password
 
@@ -98,6 +104,10 @@ async def issue_token(body: TokenRequest):
     """
     if settings.auth_mode == "password":
         return await _issue_token_password(body)
+    # Fail closed (BUG-304): open-mode minting only for the explicit "open" value,
+    # never as the fallback for a mode this endpoint does not recognise.
+    if settings.auth_mode != "open":
+        raise ServiceUnavailableError("Authentication (unsupported AURA_AUTH_MODE)")
     return await _issue_token_open(body)
 
 
