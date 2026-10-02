@@ -76,6 +76,9 @@ function WorkbenchInner() {
   /* NO seeded/dummy data: every panel below starts empty and fills from the
      platform's real APIs (or shows an honest empty/offline state). */
   const [healing, setHealing] = useState<Heal[]>([]);
+  // BUG-255: 'loading' until the first answer; 'error' when the queue cannot be read.
+  // Without it a failed fetch showed "Pending approvals 0 · queue clear" in green.
+  const [healingState, setHealingState] = useState<'loading' | 'ok' | 'error'>('loading');
   const [cf, setCf] = useState<CfState>({ status: 'idle' });
   const [feed, setFeed] = useState<FeedEv[]>([]);
   const [history, setHistory] = useState<HistoryEntry[]>([]);
@@ -86,6 +89,9 @@ function WorkbenchInner() {
   const [pipelines, setPipelines] = useState<Array<{ name: string; status: string }> | null>(null);
   const [gatewayUp, setGatewayUp] = useState<boolean | null>(null);
   const [ledgerDown, setLedgerDown] = useState(false);
+  // BUG-255: why the ledger could not be verified -- an HTTP error is not an outage.
+  const [ledgerNote, setLedgerNote] = useState('ledger service offline');
+  const [pipelinesError, setPipelinesError] = useState(false);
 
   const paletteInput = useRef<HTMLInputElement>(null);
   const cfBusy = useRef(false);
@@ -107,7 +113,11 @@ function WorkbenchInner() {
     // Ledger verify is tenant-scoped (tenant from the verified JWT), so the
     // bearer must ride along — a bare fetch 401s and looked like an outage.
     authFetch(`${API_BASE_URL}/counterfactual/audit/ledger/verify`)
-      .then((r) => (r.ok ? r.json() : null))
+      .then((r) => {
+        if (r.ok) return r.json();
+        setLedgerNote(r.status === 403 ? 'no access to the ledger' : `ledger check failed (HTTP ${r.status})`);
+        return null;
+      })
       .then((j) => {
         if (j && typeof j.count === 'number') {
           const mr = String(j.merkle_root || '');
@@ -186,7 +196,11 @@ function WorkbenchInner() {
             sub: p.diagnosis || 'data-contract drift · awaiting reviewer',
             state: 'pending' as const,
           })));
-        } catch { /* keep last-known healing; honest empty on first miss */ }
+          if (alive) setHealingState('ok');
+        } catch {
+          // keep last-known healing rows, but say the queue could not be read
+          if (alive) setHealingState('error');
+        }
 
         // Streaming pipelines → new pipelines appear on their own.
         try {
@@ -195,8 +209,10 @@ function WorkbenchInner() {
             name: (p as { name?: string; pipeline_id?: string }).name ?? (p as { pipeline_id?: string }).pipeline_id ?? 'pipeline',
             status: String((p as { state?: string; status?: string }).state ?? (p as { status?: string }).status ?? 'unknown'),
           })));
+          if (alive) setPipelinesError(false);
         } catch {
-          if (alive) setPipelines((prev) => prev ?? null);
+          // BUG-255: a first poll that failed left `pipelines` null -> skeleton forever.
+          if (alive) setPipelinesError(true);
         }
       } finally {
         clearTimeout(timer);
@@ -283,10 +299,10 @@ function WorkbenchInner() {
   const stats: Stat[] = [
     { label: 'Services healthy', value: health ? `${health.up}/${health.total}` : gatewayUp ? '✓' : dash.value, sub: gatewayUp === false ? 'gateway offline' : gatewayUp ? 'gateway up' : 'checking…', subColor: gatewayUp === false ? 'var(--danger)' : gatewayUp ? 'var(--accent)' : 'var(--text3)', loading: gatewayUp === null && health === null },
     { label: 'Datasets loaded', value: files != null ? String(files) : dash.value, sub: 'workspace uploads', subColor: 'var(--text3)', loading: files == null },
-    { label: 'Ledger records', value: ledger ? ledger.no.replace('#', '') : dash.value, sub: ledger ? `chain ${ledger.intact ? 'intact' : 'BROKEN'}` : ledgerDown ? 'ledger service offline' : 'verifying…', subColor: ledger?.intact === false ? 'var(--danger)' : ledgerDown ? 'var(--warn)' : 'var(--accent)', loading: !ledger && !ledgerDown },
+    { label: 'Ledger records', value: ledger ? ledger.no.replace('#', '') : dash.value, sub: ledger ? `chain ${ledger.intact ? 'intact' : 'BROKEN'}` : ledgerDown ? ledgerNote : 'verifying…', subColor: ledger?.intact === false ? 'var(--danger)' : ledgerDown ? 'var(--warn)' : 'var(--accent)', loading: !ledger && !ledgerDown },
     { label: 'Recent queries', value: String(history.length), sub: 'this workspace', subColor: 'var(--text3)', loading: false },
-    { label: 'Pending approvals', value: String(pendingCount), sub: pendingCount > 0 ? 'healing queue' : 'queue clear', subColor: pendingCount > 0 ? 'var(--warn)' : 'var(--accent)', loading: false },
-    { label: 'Pipelines', value: pipelines ? String(pipelines.length) : dash.value, sub: pipelines?.length ? 'streaming' : 'none defined', subColor: 'var(--text3)', loading: pipelines == null },
+    { label: 'Pending approvals', value: healingState === 'error' ? dash.value : String(pendingCount), sub: healingState === 'error' ? 'queue unavailable' : pendingCount > 0 ? 'healing queue' : 'queue clear', subColor: healingState === 'error' || pendingCount > 0 ? 'var(--warn)' : 'var(--accent)', loading: healingState === 'loading' },
+    { label: 'Pipelines', value: pipelines && !pipelinesError ? String(pipelines.length) : dash.value, sub: pipelinesError ? 'unavailable' : pipelines?.length ? 'streaming' : 'none defined', subColor: pipelinesError ? 'var(--warn)' : 'var(--text3)', loading: pipelines == null && !pipelinesError },
   ];
   /* Header status is DERIVED from live health, never asserted. Claiming
      "verified" while the gateway or ledger is down would be an audit-trust

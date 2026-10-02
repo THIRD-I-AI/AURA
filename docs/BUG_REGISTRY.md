@@ -2830,12 +2830,12 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Fix:** PR #588. Triage: confirmed in all three places. Each request is tagged and a response that is no longer current is dropped. Regression: 3 tests.
 
 ## BUG-255: Error states rendered as healthy/empty data across the Workbench (ledger chip, healing queue '0 - queue clear', pipelines tile skeleton forever, ETL file dropdown)
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode audit of `frontend/src` (5 lenses), 2026-10-01. NOT yet adversarially verified (the verify stage hit the subagent session limit) -- triage before fixing.
 - **Severity:** medium
 - **Root cause:** `frontend/src/workbench/Workbench.tsx:116,196,206`, `frontend/src/pages/PipelinesPanel.tsx:287`, `frontend/src/audit/AuditFrontDoor.tsx:27`.
 - **Caused by:** none -- pre-existing.
-- **Fix:** pending.
+- **Fix:** Triage: confirmed from the code. The Workbench stat tiles now distinguish a failed read from good news: an unreadable healing queue shows "queue unavailable" (was "0 · queue clear"), a failed first pipelines poll shows "unavailable" (was a skeleton forever), and an HTTP error from the ledger check names the status (was "ledger service offline"). On the landing page a failed "Run audit" shows its own message and keeps the scenario list (was "Couldn't load scenarios"). The ETL file dropdown part was fixed under BUG-251. Regression: 3 tests in `Workbench.test.tsx`, 1 in `AuditFrontDoor.test.tsx`.
 
 ## BUG-256: Keyboard-inaccessible interactive UI (Datasets rows, Cmd+K palette items, topbar launcher, sortable Findings headers, forensic role toggle)
 - **Status:** fixed
