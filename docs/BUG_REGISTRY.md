@@ -2990,9 +2990,9 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Fix:** pending.
 
 ## BUG-275: ConformalMartingaleRegistry is mutated from two threads with no lock: /uasr/baseline's register_baseline races the worker's update()
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode audit of `aurabackend/uasr` (3 lenses + adversarial verify), 2026-10-01. The verifier confirmed it from the code; nothing was run end to end unless stated.
 - **Severity:** low
 - **Root cause:** `uasr/conformal_martingale.py` ~302: service.py:834-836 runs `_mapek_worker._martingale.register_baseline` in a worker thread via asyncio.to_thread. The MAPE-K loop runs `_analyze_detect_drift` in another thread (mapek_worker.py:429), which calls `self._martingale.update` (694), `diagnostics` (698) and `baseline_stats` (720). register_baseline is not atomic: it resets `_baselines[source_id]`, `_detectors[source_id]` and `_last_distance[source_id]` to empty dicts (conformal_martingale.py:302-304) and refills them column by column (305-313). update() reads `_detectors` (328) and then indexes `self._baselines[source_id][column]` (331). The class has no lock, unlike DriftDetector's per-source threading.Lock (drift_detector.py:116-123). Failure scenario: With UASR_S18 martingale detection on, an operator POSTs /uasr/baseline for the Kafka source while a batch is being analysed. update() gets the old detector at line 328, then hits KeyError at line 331 because the baselines dict was just emptied (swallowed as a warning at mapek_worker.py:695-697), or it feeds the batch into a detector object that is being discarded and sees no detector for columns not yet refilled. The drifted batch's martingale evidence is dropped for those columns, and the alarm for that batch is missed or delayed.
 - **Caused by:** none -- pre-existing.
-- **Fix:** pending.
+- **Fix:** `ConformalMartingaleRegistry` takes an `RLock` in `register_baseline`, `reset_source`, `update`, `diagnostics` and `baseline_stats`. Not reproduced: a concurrent re-baseline/read stress test also passes on the old code, so this is a hardening that is not proven against the old behaviour; the regression test only proves the methods now take the lock (`tests/test_uasr_martingale_registry_threadsafe.py`).
