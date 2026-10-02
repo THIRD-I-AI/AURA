@@ -141,7 +141,7 @@ class RuntimeConfig(BaseModel):
     this is additive API surface, not a behavior change for existing
     pipelines.
     """
-    backpressure_buffer: int = 10_000
+    backpressure_buffer: int = Field(default=10_000, ge=1, le=1_000_000)
     backpressure_strategy: Literal["block", "drop_tail", "sample"] = "block"
 
     use_pid_backpressure: bool = False
