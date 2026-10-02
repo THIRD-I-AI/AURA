@@ -96,7 +96,7 @@ class PipelineEngine:
         tenant bucket, matching an unauthenticated request's upload target.
         Callers with no request context (CLI, tests) may omit it.
         """
-        from shared.duckdb_factory import new_connection
+        from shared.duckdb_factory import lock_down_connection, new_connection
 
         t0 = time.perf_counter()
         run = PipelineRun(pipeline_id=pipeline.id)
@@ -136,6 +136,15 @@ class PipelineEngine:
                     join_tables[step.id] = await self._load_source(
                         conn, join_source, tenant=tenant, table_name=join_table_name,
                     )
+
+            # BUG-276: every table the run needs is now materialised in `conn`, and what
+            # runs next is step SQL written by the caller or an LLM. The expression
+            # guard in front of it is a blocklist and was bypassable (a double-quoted
+            # path, or a string literal after a comma, is a DuckDB replacement scan
+            # that reads any local file -- including another tenant's uploads). Cut
+            # the connection off from the filesystem and network instead; the sink
+            # writes through a separate connection.
+            await asyncio.to_thread(lock_down_connection, conn)
 
             # ── 3. BUILD PROCESSING SQL ───────────────────────────────
             final_table, sql, steps_run, steps_skip = self._build_processing_sql(
@@ -806,14 +815,23 @@ class PipelineEngine:
         os.makedirs(tenant_dir, exist_ok=True)
         out_path = os.path.join(tenant_dir, out_name)
 
-        if fmt == "csv":
-            conn.execute(f"COPY {_q(final_table)} TO {quote_literal(out_path)} (HEADER, DELIMITER ',')")
-        elif fmt == "parquet":
-            conn.execute(f"COPY {_q(final_table)} TO {quote_literal(out_path)} (FORMAT PARQUET)")
-        elif fmt == "json":
-            conn.execute(f"COPY {_q(final_table)} TO {quote_literal(out_path)} (FORMAT JSON, ARRAY true)")
-        else:
-            conn.execute(f"COPY {_q(final_table)} TO {quote_literal(out_path)} (HEADER, DELIMITER ',')")
+        # The run's connection is locked down (BUG-276) and cannot COPY to disk, so
+        # the result is handed to a fresh connection that runs nothing but this COPY.
+        from shared.duckdb_factory import new_connection
+
+        result = conn.execute(f"SELECT * FROM {_q(final_table)}").arrow()
+        out = new_connection()
+        try:
+            out.register("pipeline_output_export", result)
+            if fmt == "parquet":
+                options = "(FORMAT PARQUET)"
+            elif fmt == "json":
+                options = "(FORMAT JSON, ARRAY true)"
+            else:
+                options = "(HEADER, DELIMITER ',')"
+            out.execute(f"COPY pipeline_output_export TO {quote_literal(out_path)} {options}")
+        finally:
+            out.close()
 
         run.output_file = out_name
         logger.info(f"[Pipeline] Wrote {out_name} ({run.rows_written} rows)")
