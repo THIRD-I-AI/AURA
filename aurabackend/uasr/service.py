@@ -59,6 +59,7 @@ from .runtime_config import (
     s18_1_flags,
 )
 from .semantic_gateway import ReferenceContextMatrix, SemanticGateway
+from .tenancy import SEPARATOR, caller_tenant, owns_source, scoped_source
 
 logger = get_logger("uasr.service")
 
@@ -575,12 +576,14 @@ async def _attempt_cross_source_heal(
 
 
 @app.post("/uasr/ingest")
-async def ingest_batch(req: IngestRequest, db: AsyncSession = Depends(get_db)):
+async def ingest_batch(req: IngestRequest, request: Request, db: AsyncSession = Depends(get_db)):
     """
     Submit a micro-batch for drift detection.
     If drift is detected, the recovery loop runs automatically and
     the event + recovery record are persisted to the database.
     """
+    # BUG-263: the id is placed inside the caller's tenant, never trusted as sent.
+    req.source_id = scoped_source(caller_tenant(request), req.source_id)
     batch = BatchPayload(
         source_id=req.source_id,
         batch_id=req.batch_id or f"batch_{req.source_id}_{uuid.uuid4().hex[:8]}",
@@ -668,7 +671,7 @@ async def ingest_batch(req: IngestRequest, db: AsyncSession = Depends(get_db)):
 
 
 @app.post("/uasr/heal")
-async def heal_batch(req: IngestRequest, db: AsyncSession = Depends(get_db)):
+async def heal_batch(req: IngestRequest, request: Request, db: AsyncSession = Depends(get_db)):
     """Heal a batch and RETURN THE ROWS. The endpoint any pipeline can attach to.
 
     This is the difference between a monitor and a self-healing layer.
@@ -696,6 +699,8 @@ async def heal_batch(req: IngestRequest, db: AsyncSession = Depends(get_db)):
     the one to read carefully: quietly returning unhealed data as though it were
     fixed is precisely the failure this layer exists to prevent.
     """
+    # BUG-263: the id is placed inside the caller's tenant, never trusted as sent.
+    req.source_id = scoped_source(caller_tenant(request), req.source_id)
     batch = BatchPayload(
         source_id=req.source_id,
         batch_id=req.batch_id or f"heal_{req.source_id}_{uuid.uuid4().hex[:8]}",
@@ -805,8 +810,9 @@ async def heal_batch(req: IngestRequest, db: AsyncSession = Depends(get_db)):
 
 
 @app.post("/uasr/baseline")
-async def register_baseline(req: BaselineRequest):
+async def register_baseline(req: BaselineRequest, request: Request):
     """Register a reference baseline for a data source."""
+    req.source_id = scoped_source(caller_tenant(request), req.source_id)
     batch = BatchPayload(
         source_id=req.source_id,
         batch_id=f"baseline_{req.source_id}",
@@ -846,7 +852,7 @@ async def register_baseline(req: BaselineRequest):
 
 
 @app.post("/uasr/schema-intent")
-async def declare_schema_intent(req: SchemaIntentRequest):
+async def declare_schema_intent(req: SchemaIntentRequest, request: Request):
     """Declare a sanctioned upcoming schema change for a source.
 
     Gated on UASR_SCHEMA_INTENT_ENABLED -- fails closed (400) like the
@@ -869,6 +875,7 @@ async def declare_schema_intent(req: SchemaIntentRequest):
             status_code=400,
             detail="UASR_SCHEMA_INTENT_ENABLED is not set; schema intent is disabled",
         )
+    req.source_id = scoped_source(caller_tenant(request), req.source_id)
 
     ttl_seconds = (
         req.ttl_seconds if req.ttl_seconds is not None else _SCHEMA_INTENT_DEFAULT_TTL_SECONDS
@@ -894,20 +901,27 @@ async def declare_schema_intent(req: SchemaIntentRequest):
 
 @app.get("/uasr/drift/status")
 async def drift_status(
+    request: Request,
     source_id: Optional[str] = None,
     limit: int = 50,
     db: AsyncSession = Depends(get_db),
 ):
     """List recent drift events from the persistent database."""
+    tenant = caller_tenant(request)
     stmt = select(DriftEvent).order_by(DriftEvent.created_at.desc()).limit(limit)
+    owned = _owned(request, DriftEvent.source_id)
+    if owned is not None:
+        stmt = stmt.where(owned)
     if source_id:
-        stmt = stmt.where(DriftEvent.source_id == source_id)
+        stmt = stmt.where(DriftEvent.source_id == scoped_source(tenant, source_id))
     result = await db.execute(stmt)
     events = result.scalars().all()
 
     # Also include in-memory state for sources without DB events yet
     in_memory = []
     for sid in _detector._baselines.keys():
+        if not owns_source(tenant, sid):
+            continue
         if not any(e.source_id == sid for e in events):
             in_memory.append({
                 "source_id": sid,
@@ -931,40 +945,57 @@ async def drift_status(
 # answered 404 "Recovery record 'pending' not found". The whole supervised
 # self-healing approval queue was unreachable for that reason alone.
 @app.get("/uasr/recovery/pending")
-async def pending_approvals(limit: int = 50, db: AsyncSession = Depends(get_db)):
+async def pending_approvals(request: Request, limit: int = 50, db: AsyncSession = Depends(get_db)):
     """List recoveries held in PENDING_APPROVAL, awaiting a human decision."""
-    result = await db.execute(
-        select(RecoveryRecord)
-        .where(RecoveryRecord.status == RecoveryStatus.PENDING_APPROVAL.value)
-        .order_by(RecoveryRecord.created_at.desc())
-        .limit(limit)
-    )
+    stmt = select(RecoveryRecord).where(RecoveryRecord.status == RecoveryStatus.PENDING_APPROVAL.value)
+    owned = _owned(request, RecoveryRecord.source_id)
+    if owned is not None:
+        stmt = stmt.where(owned)
+    result = await db.execute(stmt.order_by(RecoveryRecord.created_at.desc()).limit(limit))
     records = result.scalars().all()
     return {"pending": [_serialize_recovery(r) for r in records], "count": len(records)}
 
 
 @app.get("/uasr/recovery/{recovery_id}")
-async def recovery_detail(recovery_id: str, db: AsyncSession = Depends(get_db)):
+async def recovery_detail(recovery_id: str, request: Request, db: AsyncSession = Depends(get_db)):
     """Get details of a specific recovery attempt from the database."""
     result = await db.execute(
         select(RecoveryRecord).where(RecoveryRecord.id == recovery_id)
     )
     rec = result.scalar_one_or_none()
-    if rec is None:
+    # Another tenant's record answers exactly like a missing one.
+    if rec is None or not owns_source(caller_tenant(request), rec.source_id):
         raise HTTPException(status_code=404, detail=f"Recovery record '{recovery_id}' not found")
     return {"recovery": _serialize_recovery(rec)}
 
 
 @app.get("/uasr/drift/{drift_event_id}/recovery")
-async def list_recoveries_for_event(drift_event_id: str, db: AsyncSession = Depends(get_db)):
+async def list_recoveries_for_event(drift_event_id: str, request: Request, db: AsyncSession = Depends(get_db)):
     """List all recovery attempts for a specific drift event."""
-    result = await db.execute(
-        select(RecoveryRecord)
-        .where(RecoveryRecord.drift_event_id == drift_event_id)
-        .order_by(RecoveryRecord.created_at.desc())
-    )
+    stmt = select(RecoveryRecord).where(RecoveryRecord.drift_event_id == drift_event_id)
+    owned = _owned(request, RecoveryRecord.source_id)
+    if owned is not None:
+        stmt = stmt.where(owned)
+    result = await db.execute(stmt.order_by(RecoveryRecord.created_at.desc()))
     records = result.scalars().all()
     return {"recoveries": [_serialize_recovery(r) for r in records], "count": len(records)}
+
+
+def _owned(request: Request, column: Any) -> Any:
+    """SQL condition limiting ``column`` (a source_id) to the caller's tenant, or None
+    when the request carries no identity (see uasr/tenancy.py)."""
+    tenant = caller_tenant(request)
+    if tenant is None:
+        return None
+    return column.startswith(tenant + SEPARATOR, autoescape=True)
+
+
+def _require_admin(request: Request) -> None:
+    """Platform-wide operations (the shared Kafka worker) need the admin role once
+    the request is authenticated; an unauthenticated one is local development."""
+    user = getattr(request.state, "user", None)
+    if isinstance(user, dict) and user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="This operation requires the admin role")
 
 
 def _decision_maker(request: Request, claimed: str) -> str:
@@ -983,7 +1014,7 @@ def _decision_maker(request: Request, claimed: str) -> str:
 
 
 async def _claim_pending_recovery(
-    db: AsyncSession, recovery_id: str, values: Dict[str, Any],
+    db: AsyncSession, recovery_id: str, values: Dict[str, Any], request: Request,
 ) -> RecoveryRecord:
     """Move a recovery out of PENDING_APPROVAL exactly once, or raise 404 / 409.
 
@@ -991,19 +1022,21 @@ async def _claim_pending_recovery(
     across awaits, so two concurrent approvals (or an approval racing the stale-
     approval reaper) both passed the check and the shim was deployed twice. The
     status test is now part of the UPDATE itself, so only one caller can win."""
-    claimed = await db.execute(
-        update(RecoveryRecord)
-        .where(
-            RecoveryRecord.id == recovery_id,
-            RecoveryRecord.status == RecoveryStatus.PENDING_APPROVAL.value,
-        )
-        .values(**values)
+    claim = update(RecoveryRecord).where(
+        RecoveryRecord.id == recovery_id,
+        RecoveryRecord.status == RecoveryStatus.PENDING_APPROVAL.value,
     )
+    # Only the tenant that owns the source may decide on its recovery (BUG-262);
+    # the condition is part of the UPDATE, so another tenant's call changes nothing.
+    owned = _owned(request, RecoveryRecord.source_id)
+    if owned is not None:
+        claim = claim.where(owned)
+    claimed = await db.execute(claim.values(**values))
     await db.commit()
     rec = (await db.execute(
         select(RecoveryRecord).where(RecoveryRecord.id == recovery_id)
     )).scalar_one_or_none()
-    if rec is None:
+    if rec is None or not owns_source(caller_tenant(request), rec.source_id):
         raise HTTPException(status_code=404, detail=f"Recovery '{recovery_id}' not found")
     if claimed.rowcount != 1:
         raise HTTPException(
@@ -1026,7 +1059,7 @@ async def approve_recovery(
         "decision_note": req.note,
         "decided_at": now,
         "completed_at": now,
-    })
+    }, request)
 
     # Deploy the human-approved shim back to its source (fail-closed until now).
     # After the claim: the row is already DEPLOYED, so a crash here is repaired by
@@ -1046,7 +1079,7 @@ async def reject_recovery(
         "decided_by": _decision_maker(request, req.approver),
         "decision_note": req.reason,
         "decided_at": datetime.now(timezone.utc),
-    })
+    }, request)
     return {"status": "escalated", "recovery": _serialize_recovery(rec)}
 
 
@@ -1113,7 +1146,9 @@ async def get_alerts(hu_floor: float = 0.3, resolution_floor: float = 0.5):
 
 
 @app.get("/uasr/correlation")
-async def get_correlation(window_seconds: Optional[float] = None, min_sources: Optional[int] = None):
+async def get_correlation(
+    request: Request, window_seconds: Optional[float] = None, min_sources: Optional[int] = None,
+):
     """Cross-source drift correlation (candidate #5): are N+ distinct
     sources currently drifting within the same window? Report-only -- a
     time-window heuristic, not causal inference; see
@@ -1124,9 +1159,15 @@ async def get_correlation(window_seconds: Optional[float] = None, min_sources: O
     incident = _tracker.detect_correlation(window_seconds, min_sources)
     if incident is None:
         return {"correlated": False}
+    # A tenant sees only its own sources in an incident; with fewer than two of
+    # them there is nothing cross-source to report to that tenant.
+    tenant = caller_tenant(request)
+    visible = [sid for sid in incident.source_ids if owns_source(tenant, sid)]
+    if tenant is not None and len(visible) < 2:
+        return {"correlated": False}
     return {
         "correlated": True,
-        "source_ids": incident.source_ids,
+        "source_ids": visible,
         "drift_types": incident.drift_types,
         "window_seconds": incident.window_seconds,
         "earliest_event_at": incident.earliest_event_at,
@@ -1135,8 +1176,9 @@ async def get_correlation(window_seconds: Optional[float] = None, min_sources: O
 
 
 @app.post("/uasr/gate/check")
-async def gate_check(req: GateCheckRequest):
+async def gate_check(req: GateCheckRequest, request: Request):
     """Run the semantic gate on a batch without triggering recovery."""
+    req.source_id = scoped_source(caller_tenant(request), req.source_id)
     batch = BatchPayload(
         source_id=req.source_id,
         batch_id=req.batch_id or f"gate_{req.source_id}",
@@ -1148,8 +1190,9 @@ async def gate_check(req: GateCheckRequest):
 
 
 @app.post("/uasr/rollback")
-async def rollback_shim(req: RollbackRequest, db: AsyncSession = Depends(get_db)):
+async def rollback_shim(req: RollbackRequest, request: Request, db: AsyncSession = Depends(get_db)):
     """Rollback the most recently deployed shim for a source."""
+    req.source_id = scoped_source(caller_tenant(request), req.source_id)
     deployed = _loop.get_deployed_shims(req.source_id)
     removed_code = deployed[-1] if deployed else None
     success = _loop.rollback_last_shim(req.source_id)
@@ -1166,8 +1209,9 @@ async def rollback_shim(req: RollbackRequest, db: AsyncSession = Depends(get_db)
 
 
 @app.get("/uasr/shims/{source_id}")
-async def list_shims(source_id: str):
+async def list_shims(source_id: str, request: Request):
     """List all currently deployed shims for a source."""
+    source_id = scoped_source(caller_tenant(request), source_id)
     shims = _loop.get_deployed_shims(source_id)
     return {
         "source_id": source_id,
@@ -1177,21 +1221,23 @@ async def list_shims(source_id: str):
 
 
 @app.get("/uasr/references/{source_id}")
-async def list_references(source_id: str):
+async def list_references(source_id: str, request: Request):
     """List all reference embedding versions for a source."""
+    source_id = scoped_source(caller_tenant(request), source_id)
     versions = _gateway.reference_versions(source_id)
     return {"source_id": source_id, "versions": versions}
 
 
 @app.get("/uasr/sources")
-async def list_sources(db: AsyncSession = Depends(get_db)):
+async def list_sources(request: Request, db: AsyncSession = Depends(get_db)):
     """List all sources that have ever been monitored."""
+    tenant = caller_tenant(request)
     result = await db.execute(
         select(DriftEvent.source_id).distinct()
     )
     db_sources = [row[0] for row in result.all()]
     memory_sources = list(_detector._baselines.keys())
-    all_sources = list(set(db_sources + memory_sources))
+    all_sources = [sid for sid in set(db_sources + memory_sources) if owns_source(tenant, sid)]
     return {
         "sources": [
             {
@@ -1257,13 +1303,16 @@ async def uasr_deployment() -> Dict[str, Any]:
 
 
 @app.post("/uasr/mapek/resume")
-async def mapek_resume() -> Dict[str, Any]:
+async def mapek_resume(request: Request) -> Dict[str, Any]:
     """Manual unpause after operator-triaged drift recovery.
 
     When a recovery loop fails (e.g. shim validation never converges) the
     worker stays paused — offsets preserved — so a human can inspect
     the drift event and explicitly resume.
     """
+    # BUG-270: the worker is shared by the whole deployment; any caller could lift
+    # its safety pause.
+    _require_admin(request)
     if _mapek_worker is None:
         raise HTTPException(status_code=409, detail="MAPE-K worker is not running")
     if not _mapek_worker.is_paused:

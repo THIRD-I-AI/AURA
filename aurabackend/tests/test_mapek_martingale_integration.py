@@ -429,9 +429,16 @@ def test_manual_baseline_endpoint_registers_martingale(monkeypatch) -> None:
         source_id="test_src",
         rows=[{"metric": float(i)} for i in range(30)],
     )
-    _asyncio.run(service_module.register_baseline(req))
+    _asyncio.run(service_module.register_baseline(req, _anonymous_request()))
 
     mean, std = w._martingale.baseline_stats("test_src", "metric")
     assert mean is not None, (
         "POST /uasr/baseline did not reach the martingale channel"
     )
+
+
+def _anonymous_request():
+    """A request with no authenticated principal: UASR applies no tenant scoping to it."""
+    from starlette.requests import Request
+
+    return Request({"type": "http", "headers": []})
