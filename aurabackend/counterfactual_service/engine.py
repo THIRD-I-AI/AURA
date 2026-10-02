@@ -976,6 +976,30 @@ def _dowhy_confidence_interval(est: Any, point: float) -> Optional[Tuple[float, 
     return None
 
 
+# BUG-293: every estimator answers the same question -- the outcome under
+# treatment.actual minus the outcome under treatment.counterfactual. The two estimator
+# families used to disagree unless actual == 1 on a 0/1 column: the DR-class ones
+# (double_ml, forest_dr, tmle) compared "rows equal to actual" with ALL other rows, the
+# DoWhy ones and IV returned the effect of a +1 change in the column, and
+# treatment.counterfactual was never read. With actual=0, counterfactual=1 they had
+# opposite signs and the headline averaged them.
+
+def _contrast_rows(df: pd.DataFrame, treatment: InterventionSpec) -> pd.DataFrame:
+    """The rows the DR-class estimators compare: treatment at ``actual`` or at
+    ``counterfactual``. On a column holding only those two values this is ``df``."""
+    keep = df[treatment.column].isin([treatment.actual, treatment.counterfactual])
+    return df if bool(keep.all()) else df[keep]
+
+
+def _per_unit_to_contrast(
+    point: float, lo: float, hi: float, treatment: InterventionSpec,
+) -> Tuple[float, float, float]:
+    """Scale a per-unit effect (DoWhy, IV) to the actual-vs-counterfactual contrast."""
+    scale = float(treatment.actual) - float(treatment.counterfactual)
+    lo, hi = sorted((lo * scale, hi * scale))
+    return point * scale, lo, hi
+
+
 @_rng_serialized
 def _run_one_estimator(
     method_key: EstimatorMethod,
@@ -992,9 +1016,10 @@ def _run_one_estimator(
     # but still doubly-robust in the linear-DGP case the eval-gate hits).
     # Sprint 16: conformal_calibration threads through to the DR path
     # only — the DoWhy stub still ships an asymptotic CI.
+    dr_df = _contrast_rows(df, treatment)
     if method_key == "double_ml" and _ECONML_AVAILABLE:
         return _run_one_econml_dr_learner(
-            df, treatment, outcome, dag, seed,
+            dr_df, treatment, outcome, dag, seed,
             conformal_calibration=conformal_calibration,
         )
     # Sprint 15 dispatch: ``forest_dr`` is opt-in (callers must include
@@ -1003,7 +1028,7 @@ def _run_one_estimator(
     if method_key == "forest_dr":
         if _ECONML_AVAILABLE:
             return _run_one_econml_forest_dr_learner(
-                df, treatment, outcome, dag, seed,
+                dr_df, treatment, outcome, dag, seed,
                 conformal_calibration=conformal_calibration,
             )
         return CounterfactualEstimate(
@@ -1018,7 +1043,7 @@ def _run_one_estimator(
     # path depends on it). Achieves the semi-parametric efficiency
     # bound that DR-Learner falls short of in finite samples.
     if method_key == "tmle":
-        return _run_one_tmle(df, treatment, outcome, dag, seed)
+        return _run_one_tmle(dr_df, treatment, outcome, dag, seed)
 
     # S31b dispatch: ``iv`` is opt-in. Pure-NumPy 2SLS, no dowhy/econml —
     # the instrument is read from the DAG (a node -> treatment, not ->
@@ -1042,6 +1067,7 @@ def _run_one_estimator(
                 df, treatment.column, outcome.column, instruments, sorted(set(confounders)),
                 min_first_stage_f=WEAK_INSTRUMENT_F,
             )
+            point, lo, hi = _per_unit_to_contrast(point, lo, hi, treatment)
             return CounterfactualEstimate(
                 method="iv", point=point, ci_lower=lo, ci_upper=hi,
                 n_samples=len(df), elapsed_ms=(time.perf_counter() - iv_t0) * 1000,
@@ -1081,8 +1107,7 @@ def _run_one_estimator(
                 "DoWhy returned neither a confidence interval nor a usable standard error"
             )
         lo, hi = interval
-        if hi < lo:
-            lo, hi = hi, lo
+        point, lo, hi = _per_unit_to_contrast(point, lo, hi, treatment)
         return CounterfactualEstimate(
             method=method_key,
             point=point,
