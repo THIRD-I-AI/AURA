@@ -83,28 +83,9 @@ def _is_ssrf_safe_url(url: str) -> bool:
     (shared/webhook_dispatcher.py) and POST /webhooks/{id}/test fire real
     outbound requests from the trusted backend's network position.
     """
-    parsed = urlparse(url)
-    if parsed.scheme not in ("http", "https"):
-        return False
-    host = parsed.hostname
-    if not host:
-        return False
+    from shared.ssrf import is_public_url
 
-    try:
-        ip = ipaddress.ip_address(host)
-        candidates = [ip]
-    except ValueError:
-        try:
-            infos = socket.getaddrinfo(host, None)
-        except socket.gaierror:
-            return False
-        candidates = [ipaddress.ip_address(info[4][0]) for info in infos]
-
-    return not any(
-        ip.is_private or ip.is_loopback or ip.is_link_local
-        or ip.is_reserved or ip.is_multicast or ip.is_unspecified
-        for ip in candidates
-    )
+    return is_public_url(url)
 
 
 def _serialize(sub: WebhookSubscription) -> Dict[str, Any]:

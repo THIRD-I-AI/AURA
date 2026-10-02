@@ -3046,12 +3046,12 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Fix:** `_step_to_sql` raises `ValueError("Pipeline step '<type>' is misconfigured: <reason>")` for a step missing a required setting or naming an operator, direction, type, function or join type outside its allowlist, so the run fails with the reason instead of skipping the step (or running a filter as `=`). `<>` is accepted as a filter operator. The only remaining skip is a fill-all with no NULLs to fill. Regression: `tests/test_pipeline_invalid_steps_fail.py` (11 tests; 10 fail on the old engine).
 
 ## BUG-282: No bounds on streaming pipeline config: `num_keys` allocates an arbitrary list on the event loop, and pipeline count and buffers are uncapped
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode audit of `aurabackend/pipeline` (3 lenses + adversarial verify), 2026-10-02. The verifier confirmed it from the code; nothing was run end to end unless stated.
 - **Severity:** high
 - **Root cause:** `pipeline/streaming/sources/simulated.py` ~46: simulated.py:44-46 runs `self.num_keys = config.get('num_keys', 5)` then `self._keys = [f"key_{i}" for i in range(self.num_keys)]` with no upper bound. This executes synchronously inside `engine.start()` (streaming_engine.py:263) on the single uvicorn worker's event loop. `StreamSource.config` is an unvalidated `Dict[str, Any]` (streaming/models.py:182). `RuntimeConfig.backpressure_buffer` (models.py:144) and the websocket `max_buffer` (websocket_source.py:70-72) are likewise unbounded ints. The process-global `_pipelines`/`_engines` dicts (streaming_api.py:49-50, 179, 242) have no per-tenant cap on created or running pipelines, and each running engine holds two permanent tasks (streaming_engine.py:328-329). Failure scenario: An authenticated user POSTs a simulated-source pipeline with `num_keys: 2000000000` and calls /start. The list comprehension builds billions of strings on the event loop, so every tenant's requests freeze and the gateway is then OOM-killed. Separately, a script that creates and starts thousands of pipelines accumulates engines, tasks, buffers of up to `backpressure_buffer` events each, and a checkpoint directory per pipeline, with no limit.
 - **Caused by:** none -- pre-existing.
-- **Fix:** pending.
+- **Fix:** Simulated source `num_keys` is clamped to 1..10,000 and `events_per_second` to 0.1..10,000; websocket `max_buffer` to 1..100,000; `RuntimeConfig.backpressure_buffer` is validated to 1..1,000,000. A tenant may hold at most 50 streaming pipelines (`MAX_PIPELINES_PER_TENANT`) and run at most 10 at once (`MAX_RUNNING_PER_TENANT`); create and start return 409 past the limit, counting pipelines mid-start. Regression: `tests/test_streaming_config_bounds.py` (9 tests; 7 fail on the old code, the 2-billion-key case was not run against it). Residual: no global cap across tenants.
 
 ## BUG-283: Streaming DatabaseSink opens any DuckDB file path from caller config (`path`) and writes a table into it
 - **Status:** fixed
@@ -3062,12 +3062,12 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Fix:** PR #618. A DuckDB sink path keeps only its file name and is placed under `data/streaming_output/<tenant>/<pipeline>/` (`confine_database_sink`); `:memory:` is untouched. Regression: `tests/test_streaming_path_confinement.py`.
 
 ## BUG-284: Raw exception text is returned to the client through run.error on both the sync and SSE paths, bypassing sanitize_error
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode audit of `aurabackend/pipeline` (3 lenses + adversarial verify), 2026-10-02. The verifier confirmed it from the code; nothing was run end to end unless stated.
 - **Severity:** medium
 - **Root cause:** `pipeline/engine.py` ~185: execute() catches every exception and stores `run.error = str(exc)` (engine.py:185) instead of raising. pipelines.py:158 then returns `{"status": "success", "run": run.model_dump()}`, so the sanitize_error branch at pipelines.py:159-160 is unreachable for engine failures. The async path publishes `run.error or "Pipeline failed"` over SSE (pipelines.py:254-257), contradicting the 'don't echo raw exception text' comment at pipelines.py:265-267. The registry has no entry for this path (BUG-240 covers Commander chat, BUG-221 JWT decoding). Failure scenario: A pipeline with a Postgres source/sink pointing at an unreachable or misconfigured host, or a bad column name, fails. The client receives the raw asyncpg/DuckDB message in run.error: internal hostnames and ports, DuckDB binder errors listing candidate table and column names, and absolute server paths from the COPY at engine.py:810. On the sync endpoint the envelope also says status 'success', so a client that checks only the top-level status treats the failed run as successful.
 - **Caused by:** none -- pre-existing.
-- **Fix:** pending.
+- **Fix:** `run.error` is built by `_client_error` in `pipeline/engine.py`: the engine's own messages (plain `ValueError`, `FileNotFoundError`, `ConnectionError`) pass through; a DuckDB error is kept, since the caller needs it to fix their own SQL, with server paths replaced by `<path>` and capped at 1000 characters; anything else (driver errors, `ValueError` subclasses from libraries) is logged in full and reported as a generic message. Regression: `tests/test_pipeline_run_error_sanitized.py` (6 tests; 4 fail on the old behaviour). Residual: the sync endpoint's envelope still says `status: "success"` for a failed run -- the run's own `status` carries the failure and the frontend reads that.
 
 ## BUG-285: PostgreSQL sink with if_exists='fail' silently appends into an existing table
 - **Status:** fixed
@@ -3086,12 +3086,12 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Fix:** pending.
 
 ## BUG-287: Streaming webhook sink and websocket source connect to any caller-supplied URL with no SSRF filter
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode audit of `aurabackend/pipeline` (3 lenses + adversarial verify), 2026-10-02. The verifier confirmed it from the code; nothing was run end to end unless stated.
 - **Severity:** medium
 - **Root cause:** `pipeline/streaming/sinks/webhook_sink.py` ~100: webhook_sink.py:37 takes `self._url = config["url"]` and line 100 calls `self._client.post(self._url, content=body, headers=headers)` with caller-controlled `headers` (line 39) and an uncapped caller-controlled `retries` (line 41). websocket_source.py:63 and 133 do `websockets.connect(self._url, ...)` and turn inbound messages into events that flow to the caller's SSE stream. The only SSRF guard in the backend, `_is_ssrf_safe_url`, is defined and used solely in api_gateway/routers/webhooks.py:76/124/170 (the BUG-054 fix); nothing under pipeline/streaming calls it. Failure scenario: A tenant creates a pipeline with a webhook sink at `http://169.254.169.254/...` or `http://localhost:8009/uasr/...` plus custom headers, and the gateway issues POSTs to internal-only services on every closed window. With a websocket source pointed at an internal `ws://` endpoint, the internal service's messages are aggregated and returned to the tenant over SSE, giving a read channel into the internal network. This is the BUG-054 exposure reopened through the streaming path.
 - **Caused by:** none -- pre-existing.
-- **Fix:** pending.
+- **Fix:** The SSRF check moved to `shared/ssrf.py` (`is_public_url`, same rules as BUG-054; `webhooks.py` delegates to it). `WebhookSink.start()` and `WebSocketSource.start()` raise if the URL is not a public http(s) / ws(s) address, and both re-check before every delivery / connection so a name re-pointed after start is not followed. Webhook sink `retries` is capped at 5. Regression: `tests/test_streaming_ssrf_guard.py` (18 tests; the 11 refusal cases fail on the old code). Residual: the check and the connection resolve the name separately, so a resolver that answers differently within that window is not covered (same limit as BUG-054).
 
 ## BUG-288: Batch pipeline run has no memory, row, step or concurrency bound; the Postgres sink fetches the whole result into Python
 - **Status:** fixed
@@ -3102,9 +3102,9 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Fix:** `PipelineEngine.execute` now bounds a run: at most 50 steps; the transform is stopped with `conn.interrupt()` after 300 s; the run connection has `memory_limit=512MB` (DuckDB spills to disk past it instead of taking 80% of RAM); at most 3 concurrent runs per tenant across the sync, async and scheduled paths; and the PostgreSQL sink reads and inserts in 10,000-row batches instead of `fetchall()`. Regression: `tests/test_pipeline_run_bounds.py` (5 tests; they depend on the new constants, so they were not run against the old engine). Residual: FILE and DUCKDB sources still have no row cap, and source loading and the sink write are not covered by the timeout.
 
 ## BUG-289: Pipeline output files and streaming checkpoint directories are never deleted
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode audit of `aurabackend/pipeline` (3 lenses + adversarial verify), 2026-10-02. The verifier confirmed it from the code; nothing was run end to end unless stated.
 - **Severity:** low
 - **Root cause:** `pipeline/engine.py` ~794: `_write_file_sink` (engine.py:793-816) writes `data/processed/<tenant_slug>/<stem><ext>` on every non-preview run, defaulting to a fresh `pipeline_output_{run.run_id}` name (794). pipelines.py has only a download route (340-368); there is no delete route, retention job or per-tenant quota, and `DELETE /pipeline/{id}` (320-326) removes only the DB row. On the streaming side, `StateManager.__init__` creates `data/checkpoints/<pipeline_id>/` (state_manager.py:56-61) and writes checkpoints every interval. `clear_checkpoints()` (147) has no caller anywhere in aurabackend, and `delete_pipeline` (streaming_api.py:196-218) only pops the in-memory dicts. Failure scenario: A tenant, or a schedule or inbound hook, runs a file-sink pipeline repeatedly with no `file_name`. Each run leaves a new full-size CSV or Parquet file, and the shared volume fills until uploads, SQLite writes and checkpoints fail for every tenant. Likewise, each streaming pipeline that is created, started and deleted leaves a directory of up to 5 checkpoint files behind permanently, since pipeline ids are random and never reused.
 - **Caused by:** none -- pre-existing.
-- **Fix:** pending.
+- **Fix:** `_write_file_sink` keeps only the newest 50 auto-named outputs (`pipeline_output_run_*`) per tenant (`MAX_AUTO_NAMED_OUTPUTS`); files the caller named are never pruned. `DELETE /streaming/pipelines/{id}` removes the pipeline's checkpoint directory (`remove_pipeline_checkpoints`). Regression: `tests/test_pipeline_output_retention.py` (4 tests; the two retention cases fail on the old code). Residual: no size quota per tenant, no delete route for a named output, and a streaming pipeline's own output directory is kept on delete.

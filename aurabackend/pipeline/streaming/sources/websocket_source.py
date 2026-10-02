@@ -26,8 +26,11 @@ from typing import Any, Dict, List, Optional
 
 from pipeline.streaming.models import StreamEvent
 from pipeline.streaming.sources.base import BaseSource
+from shared import ssrf
 
 logger = logging.getLogger("aura.streaming.source.websocket")
+
+_SCHEMES = ("ws", "wss")
 
 
 def _parse_headers(raw: Any) -> Dict[str, str]:
@@ -67,7 +70,7 @@ class WebSocketSource(BaseSource):
         self._ping_interval: float = float(config.get("ping_interval", 20))
         self._connect_timeout: float = float(config.get("connect_timeout", 10))
         self._reconnect: bool = bool(config.get("reconnect", True))
-        self._max_buffer: int = int(config.get("max_buffer", 10_000))
+        self._max_buffer: int = min(max(int(config.get("max_buffer", 10_000)), 1), 100_000)
 
         self._queue: asyncio.Queue[StreamEvent] = asyncio.Queue(maxsize=self._max_buffer)
         self._reader_task: Optional[asyncio.Task] = None
@@ -83,6 +86,11 @@ class WebSocketSource(BaseSource):
                 "websockets is required for WebSocketSource. "
                 "Install it with: pip install websockets"
             ) from exc
+
+        # BUG-287: the URL comes from the pipeline definition, and what this source
+        # reads is returned to the caller -- a read channel into the internal network.
+        if not await ssrf.is_public_url_async(self._url, _SCHEMES):
+            raise ValueError("websocket source url must be a public ws(s) address")
 
         self._stop.clear()
         self._running = True
@@ -123,6 +131,10 @@ class WebSocketSource(BaseSource):
         backoff = 1.0
         while not self._stop.is_set():
             try:
+                # Re-checked per connection: the name can be re-pointed after start().
+                if not await ssrf.is_public_url_async(self._url, _SCHEMES):
+                    logger.error("WebSocket source url no longer resolves to a public address; stopping")
+                    break
                 connect_kwargs: Dict[str, Any] = {"ping_interval": self._ping_interval}
                 if self._headers:
                     connect_kwargs["additional_headers"] = list(self._headers.items())

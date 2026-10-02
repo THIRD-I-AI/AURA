@@ -61,6 +61,29 @@ _PG_SINK_BATCH_ROWS = 10_000
 
 _active_runs: Dict[Optional[str], int] = {}
 
+_SERVER_PATH = re.compile(r"""(?:[A-Za-z]:[\\/]|/(?=[\w.\-]+/))[^\s'"]*""")
+
+
+def _client_error(exc: BaseException) -> str:
+    """What a failed run tells the caller in ``run.error`` (BUG-284).
+
+    ``run.error`` used to be ``str(exc)`` for every exception, and both the sync
+    response and the SSE stream return it: asyncpg/driver text with internal hosts
+    and ports, and absolute server paths from a failed read or COPY.
+
+    The engine's own errors are written for the caller and pass through. A DuckDB
+    error is about the caller's own SQL and columns -- they cannot fix a step without
+    it -- so it is kept with server paths removed. Anything else is logged in full
+    and reported generically.
+    """
+    import duckdb
+
+    if type(exc) is ValueError or isinstance(exc, (FileNotFoundError, ConnectionError)):
+        return str(exc)
+    if isinstance(exc, duckdb.Error):
+        return _SERVER_PATH.sub("<path>", str(exc))[:1000]
+    return "Pipeline execution failed; the details are in the server log"
+
 
 def _typed_arrow_table(columns: List[str], rows: List[Dict[str, Any]]) -> Any:
     """Rows from an external source as an Arrow table that keeps each column's type.
@@ -92,6 +115,29 @@ def _typed_arrow_table(columns: List[str], rows: List[Dict[str, Any]]) -> Any:
             arr = pa.array([_text(v) for v in values], type=pa.string())
         arrays.append(arr)
     return pa.Table.from_arrays(arrays, names=[_sanitize_id(c) for c in columns])
+
+
+MAX_AUTO_NAMED_OUTPUTS = 50
+
+
+def _prune_auto_named_outputs(tenant_dir: str) -> None:
+    """Keep only the newest auto-named outputs in a tenant's output directory.
+
+    BUG-289: a run with no ``file_name`` writes a fresh ``pipeline_output_<run_id>``
+    file and nothing ever deleted one, so a scheduled or repeated pipeline filled the
+    volume every tenant shares. Files the caller named are left alone -- a re-run
+    overwrites those in place.
+    """
+    try:
+        auto = [
+            os.path.join(tenant_dir, name) for name in os.listdir(tenant_dir)
+            if name.startswith("pipeline_output_run_")
+        ]
+        auto.sort(key=os.path.getmtime, reverse=True)
+        for path in auto[MAX_AUTO_NAMED_OUTPUTS:]:
+            os.remove(path)
+    except OSError as exc:
+        logger.warning("[Pipeline] Could not prune old outputs in %s: %s", tenant_dir, exc)
 
 
 # Aliased, not reimplemented. This file had its own _q() that doubled quotes
@@ -264,7 +310,7 @@ class PipelineEngine:
         except Exception as exc:
             logger.error(f"[Pipeline:{pipeline.id}] Execution failed: {exc}", exc_info=True)
             run.status = PipelineStatus.FAILED
-            run.error = str(exc)
+            run.error = _client_error(exc)
         finally:
             run.duration_ms = (time.perf_counter() - t0) * 1000
             from datetime import datetime, timezone
@@ -892,6 +938,8 @@ class PipelineEngine:
 
         run.output_file = out_name
         logger.info(f"[Pipeline] Wrote {out_name} ({run.rows_written} rows)")
+        if not sink.file_name:
+            _prune_auto_named_outputs(tenant_dir)
 
     async def _write_pg_sink(
         self, conn: Any, final_table: str, sink: PipelineSink, run: PipelineRun

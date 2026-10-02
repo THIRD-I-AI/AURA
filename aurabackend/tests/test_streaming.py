@@ -919,7 +919,7 @@ class TestWebhookSink:
             captured.append(json.loads(request.content))
             return httpx.Response(200)
 
-        sink = WebhookSink(config={"url": "https://example.test/hook", "include_late": True})
+        sink = WebhookSink(config={"url": "https://93.184.216.34/hook", "include_late": True})
 
         async def run():
             await sink.start()
@@ -945,7 +945,7 @@ class TestWebhookSink:
             captured.append(request)
             return httpx.Response(200)
 
-        sink = WebhookSink(config={"url": "https://example.test/hook"})
+        sink = WebhookSink(config={"url": "https://93.184.216.34/hook"})
 
         async def run():
             await sink.start()
@@ -1690,7 +1690,7 @@ class TestStreamingEngine:
 
         pipeline = self._make_engine_pipeline(
             sinks=[
-                StreamSink(type=StreamSinkType.WEBHOOK, config={"url": "http://example.invalid/hook"}),
+                StreamSink(type=StreamSinkType.WEBHOOK, config={"url": "http://93.184.216.34/hook"}),
                 StreamSink(type=StreamSinkType.CONSOLE),
             ],
         )

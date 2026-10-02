@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import shutil
 import time
 from datetime import datetime
 from pathlib import Path
@@ -33,6 +34,12 @@ _DEFAULT_CHECKPOINT_DIR = os.path.join(
     "data", "checkpoints",
 )
 CHECKPOINT_DIR = os.environ.get("AURA_CHECKPOINT_DIR", _DEFAULT_CHECKPOINT_DIR)
+
+
+def remove_pipeline_checkpoints(pipeline_id: str) -> None:
+    """Delete a pipeline's checkpoint directory (BUG-289: deleting a pipeline left it
+    behind for good, since pipeline ids are random and never reused)."""
+    shutil.rmtree(os.path.join(CHECKPOINT_DIR, pipeline_id), ignore_errors=True)
 
 
 class StateManager:
