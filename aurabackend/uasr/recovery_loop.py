@@ -905,11 +905,23 @@ class RecoveryLoop:
 
     def apply_shims(self, source_id: str, rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Apply all deployed shims for a source in order."""
+        return self.apply_shims_counted(source_id, rows)[0]
+
+    def apply_shims_counted(
+        self, source_id: str, rows: List[Dict[str, Any]],
+    ) -> tuple[List[Dict[str, Any]], int, int]:
+        """Apply the deployed shims in order; returns (rows, applied, total).
+
+        A shim that raises stops the chain, as before, and the rows transformed so
+        far are returned -- but ``applied < total`` now tells the caller, which used
+        to have no way to know and reported the batch as healed (BUG-271)."""
         shims = self._deployed_shims.get(source_id, [])
+        applied = 0
         for shim_code in shims:
             try:
                 rows = self._sandbox_execute(shim_code, rows)
             except Exception as exc:
                 logger.error("Shim application failed for source=%s: %s", source_id, exc)
                 break
-        return rows
+            applied += 1
+        return rows, applied, len(shims)

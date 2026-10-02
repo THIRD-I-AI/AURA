@@ -713,9 +713,13 @@ async def heal_batch(req: IngestRequest, request: Request, db: AsyncSession = De
     # 1. Apply shims already deployed for this source, so drift that was
     #    resolved earlier does not re-fire on every batch.
     standing = len(_loop.get_deployed_shims(batch.source_id))
+    standing_applied = 0
     if standing:
-        batch.rows = await asyncio.to_thread(_loop.apply_shims, batch.source_id, batch.rows)
+        batch.rows, standing_applied, _ = await asyncio.to_thread(
+            _loop.apply_shims_counted, batch.source_id, batch.rows)
         batch.columns = list(batch.rows[0].keys()) if batch.rows else batch.columns
+    # BUG-271: a standing shim that raised used to be invisible here.
+    standing_failed = standing_applied < standing
 
     gate_decision = _gateway.check(batch)
     # See ingest_batch's identical comment: offload the potentially
@@ -725,8 +729,10 @@ async def heal_batch(req: IngestRequest, request: Request, db: AsyncSession = De
     if not drift_result.drift_detected:
         return {
             "status": "clean",
-            "healed": bool(standing),
-            "shims_applied": standing,
+            "healed": bool(standing) and not standing_failed,
+            "shims_applied": standing_applied,
+            "reason": "a deployed shim failed to apply; rows may be only partly transformed"
+            if standing_failed else None,
             "drift_detected": False,
             "rows": batch.rows,
             "batch_id": batch.batch_id,
@@ -783,14 +789,23 @@ async def heal_batch(req: IngestRequest, request: Request, db: AsyncSession = De
     #    (failed, or held for human approval) returns the rows untransformed
     #    and says so -- see the docstring.
     deployed = loop_result.status == RecoveryStatus.DEPLOYED
+    applied, total = standing_applied, standing
     if deployed:
-        batch.rows = await asyncio.to_thread(_loop.apply_shims, batch.source_id, batch.rows)
+        batch.rows, applied, total = await asyncio.to_thread(
+            _loop.apply_shims_counted, batch.source_id, batch.rows)
         batch.columns = list(batch.rows[0].keys()) if batch.rows else batch.columns
+    apply_failed = applied < total
 
+    # BUG-271: this was `deployed or bool(standing)`, so a source with ANY earlier shim
+    # reported healed even when the new drift's recovery failed or was held for
+    # approval -- contradicting the docstring above. Only a recovery that deployed, and
+    # whose shims all applied, healed these rows.
+    healed = deployed and not apply_failed
     return {
         "status": loop_result.status.value,
-        "healed": deployed or bool(standing),
-        "shims_applied": len(_loop.get_deployed_shims(batch.source_id)),
+        "healed": healed,
+        "shims_applied": applied,
+        "standing_shims": standing,
         "drift_detected": True,
         "drift_type": drift_result.drift_type.value if drift_result.drift_type else None,
         "severity": drift_result.severity.value if drift_result.severity else None,
@@ -798,8 +813,10 @@ async def heal_batch(req: IngestRequest, request: Request, db: AsyncSession = De
         "recovery_id": loop_result.recovery_id,
         "shim_deployed": deployed,
         "post_kl": loop_result.shim.post_kl_divergence if loop_result.shim else None,
-        "reason": None if deployed else (
-            loop_result.diagnosis.hypothesis if loop_result.diagnosis
+        "reason": (
+            None if healed
+            else "a deployed shim failed to apply; rows may be only partly transformed" if deployed
+            else loop_result.diagnosis.hypothesis if loop_result.diagnosis
             else "recovery did not deploy a shim; rows returned unchanged"
         ),
         "rows": batch.rows,
