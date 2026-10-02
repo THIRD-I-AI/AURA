@@ -114,6 +114,41 @@ export async function authFetch(
   return resp;
 }
 
+/**
+ * Fetch a file from a JWT-protected endpoint and hand it to the browser.
+ *
+ * Opening such a URL directly (window.open, `<a target="_blank">`) is a
+ * navigation, which cannot carry the bearer token, so it returns 401. This
+ * fetches with the token, then either saves the body under `downloadAs` or
+ * opens it in a new tab.
+ */
+export async function fetchProtectedFile(
+  url: string,
+  opts: { downloadAs?: string } = {},
+): Promise<void> {
+  const resp = await authFetch(url);
+  if (!resp.ok) {
+    throw new Error(
+      resp.status === 401 ? 'Your session has expired. Sign in again.'
+        : resp.status === 404 ? 'The file was not found.'
+          : `Could not fetch the file (HTTP ${resp.status}).`,
+    );
+  }
+  const objectUrl = URL.createObjectURL(await resp.blob());
+  if (opts.downloadAs) {
+    const a = document.createElement('a');
+    a.href = objectUrl;
+    a.download = opts.downloadAs;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  } else {
+    window.open(objectUrl, '_blank', 'noopener');
+  }
+  // Long enough for the new tab or the save dialog to have taken the blob.
+  setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000);
+}
+
 // ── Authentication (SaaS Phase 2) ─────────────────────────────────────────
 // Real signup/login on top of the gateway's password-mode auth. The tenant
 // (org_id) and identity travel inside the signed JWT — we only read claims to

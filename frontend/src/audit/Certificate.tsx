@@ -1,4 +1,5 @@
 import { Link } from 'react-router-dom';
+import { AuthenticatedLink } from '@/components/AuthenticatedLink';
 import { auditApi } from './auditApi';
 import { LedgerProof } from './LedgerProof';
 import { CertificateTheme } from '../ui/CertificateTheme';
@@ -100,7 +101,7 @@ export function Certificate({ artifact, verifyResult, readOnly = false }: {
 
         {!readOnly && (
           <div className="aud-cert__actions">
-            <a data-testid="cert-download-pdf" href={auditApi.pdfUrl(artifact.audit_record_hash)} target="_blank" rel="noreferrer" className="aud-cert__pdf">Download PDF</a>
+            <AuthenticatedLink data-testid="cert-download-pdf" href={auditApi.pdfUrl(artifact.audit_record_hash)} downloadAs={`audit-${artifact.audit_record_hash.slice(0, 12)}.pdf`} className="aud-cert__pdf">Download PDF</AuthenticatedLink>
             <Link data-testid="cert-verify-link" to={`/verify/${artifact.audit_record_hash}`} className="ui-btn ui-btn--secondary ui-btn--md aud-cert__verify-link">Verify independently</Link>
           </div>
         )}
