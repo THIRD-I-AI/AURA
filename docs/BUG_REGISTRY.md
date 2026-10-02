@@ -2720,12 +2720,12 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Fix:** pending.
 
 ## BUG-245: Any tenant can rename or re-describe the shared 'default' workspace for every other tenant
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode audit of `api_gateway/routers` (3 lenses + adversarial verify), 2026-09-29. The verifier confirmed it from the code; nothing was run end to end unless stated.
 - **Severity:** low
 - **Root cause:** `api_gateway/routers/workspaces.py` ~247: _visible_to() returns True for DEFAULT_WORKSPACE_ID for every caller, and update_workspace applies the PATCH to that one global record in the module-level _workspaces_store. delete_workspace explicitly protects the default record (line 265), but update does not. Any authenticated org's edit therefore shows up in every other org's GET /workspaces.
 - **Caused by:** none -- pre-existing.
-- **Fix:** pending.
+- **Fix:** `update_workspace` refuses the default workspace with a 400, the same guard `delete_workspace` already had. Regression: `test_no_tenant_can_rename_the_shared_default_workspace` in `tests/test_workspaces_crud_tenant_isolation.py` (does not raise on the old code).
 
 ## BUG-246: overlapping counterfactual jobs trample each other's seeded numpy RNG, so 'byte-identical' replays differ
 - **Status:** fixed
