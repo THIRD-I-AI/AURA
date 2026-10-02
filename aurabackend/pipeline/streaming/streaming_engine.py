@@ -33,6 +33,11 @@ from pipeline.streaming.models import (
     TransformType,
     WindowConfig,
 )
+from pipeline.streaming.path_confinement import (
+    confine_database_sink,
+    confine_file_sink,
+    confine_file_watcher,
+)
 from pipeline.streaming.sinks.alert_sink import AlertSink
 from pipeline.streaming.sinks.base import BaseSink
 from pipeline.streaming.sinks.console_sink import ConsoleSink
@@ -63,7 +68,8 @@ def _create_source(pipeline: StreamPipeline) -> BaseSource:
     if src.type.value == "simulated":
         return SimulatedSource(cfg)
     if src.type.value == "file_watcher":
-        return FileWatcherSource(cfg)
+        # BUG-277: never the directory the request names -- see path_confinement.py.
+        return FileWatcherSource(confine_file_watcher(cfg, pipeline.tenant_id))
     if src.type.value == "kafka":
         return KafkaSource(cfg)
     if src.type.value == "websocket":
@@ -71,17 +77,19 @@ def _create_source(pipeline: StreamPipeline) -> BaseSource:
     raise ValueError(f"Unsupported source type: {src.type}")
 
 
-def _create_sink(sink_def) -> BaseSink:
+def _create_sink(sink_def, pipeline: StreamPipeline) -> BaseSink:
     t = sink_def.type.value
     cfg = sink_def.config
     if t == "sse":
         return SSESink(cfg)
     if t == "console":
         return ConsoleSink(cfg)
+    # BUG-278 / BUG-283: output paths are confined to the pipeline tenant's own
+    # streaming-output directory -- see path_confinement.py.
     if t == "database":
-        return DatabaseSink(cfg)
+        return DatabaseSink(confine_database_sink(cfg, pipeline.tenant_id, pipeline.id))
     if t == "file":
-        return FileSink(cfg)
+        return FileSink(confine_file_sink(cfg, pipeline.tenant_id, pipeline.id))
     if t == "alert":
         return AlertSink(cfg)
     if t == "kafka":
@@ -264,7 +272,7 @@ class StreamingEngine:
             await self._source.start()
 
             # Create sink adapters
-            self._sinks = [_create_sink(s) for s in self.pipeline.sinks]
+            self._sinks = [_create_sink(s, self.pipeline) for s in self.pipeline.sinks]
             for sink in self._sinks:
                 await sink.start()
 
