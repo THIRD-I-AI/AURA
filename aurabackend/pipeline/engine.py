@@ -51,6 +51,30 @@ def _sanitize_id(name: str) -> str:
     return cleaned or "col"
 
 
+_SERVER_PATH = re.compile(r"""(?:[A-Za-z]:[\\/]|/(?=[\w.\-]+/))[^\s'"]*""")
+
+
+def _client_error(exc: BaseException) -> str:
+    """What a failed run tells the caller in ``run.error`` (BUG-284).
+
+    ``run.error`` used to be ``str(exc)`` for every exception, and both the sync
+    response and the SSE stream return it: asyncpg/driver text with internal hosts
+    and ports, and absolute server paths from a failed read or COPY.
+
+    The engine's own errors are written for the caller and pass through. A DuckDB
+    error is about the caller's own SQL and columns -- they cannot fix a step without
+    it -- so it is kept with server paths removed. Anything else is logged in full
+    and reported generically.
+    """
+    import duckdb
+
+    if type(exc) is ValueError or isinstance(exc, (FileNotFoundError, ConnectionError)):
+        return str(exc)
+    if isinstance(exc, duckdb.Error):
+        return _SERVER_PATH.sub("<path>", str(exc))[:1000]
+    return "Pipeline execution failed; the details are in the server log"
+
+
 def _typed_arrow_table(columns: List[str], rows: List[Dict[str, Any]]) -> Any:
     """Rows from an external source as an Arrow table that keeps each column's type.
 
@@ -228,7 +252,7 @@ class PipelineEngine:
         except Exception as exc:
             logger.error(f"[Pipeline:{pipeline.id}] Execution failed: {exc}", exc_info=True)
             run.status = PipelineStatus.FAILED
-            run.error = str(exc)
+            run.error = _client_error(exc)
         finally:
             run.duration_ms = (time.perf_counter() - t0) * 1000
             from datetime import datetime, timezone

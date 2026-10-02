@@ -3062,12 +3062,12 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Fix:** PR #618. A DuckDB sink path keeps only its file name and is placed under `data/streaming_output/<tenant>/<pipeline>/` (`confine_database_sink`); `:memory:` is untouched. Regression: `tests/test_streaming_path_confinement.py`.
 
 ## BUG-284: Raw exception text is returned to the client through run.error on both the sync and SSE paths, bypassing sanitize_error
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode audit of `aurabackend/pipeline` (3 lenses + adversarial verify), 2026-10-02. The verifier confirmed it from the code; nothing was run end to end unless stated.
 - **Severity:** medium
 - **Root cause:** `pipeline/engine.py` ~185: execute() catches every exception and stores `run.error = str(exc)` (engine.py:185) instead of raising. pipelines.py:158 then returns `{"status": "success", "run": run.model_dump()}`, so the sanitize_error branch at pipelines.py:159-160 is unreachable for engine failures. The async path publishes `run.error or "Pipeline failed"` over SSE (pipelines.py:254-257), contradicting the 'don't echo raw exception text' comment at pipelines.py:265-267. The registry has no entry for this path (BUG-240 covers Commander chat, BUG-221 JWT decoding). Failure scenario: A pipeline with a Postgres source/sink pointing at an unreachable or misconfigured host, or a bad column name, fails. The client receives the raw asyncpg/DuckDB message in run.error: internal hostnames and ports, DuckDB binder errors listing candidate table and column names, and absolute server paths from the COPY at engine.py:810. On the sync endpoint the envelope also says status 'success', so a client that checks only the top-level status treats the failed run as successful.
 - **Caused by:** none -- pre-existing.
-- **Fix:** pending.
+- **Fix:** `run.error` is built by `_client_error` in `pipeline/engine.py`: the engine's own messages (plain `ValueError`, `FileNotFoundError`, `ConnectionError`) pass through; a DuckDB error is kept, since the caller needs it to fix their own SQL, with server paths replaced by `<path>` and capped at 1000 characters; anything else (driver errors, `ValueError` subclasses from libraries) is logged in full and reported as a generic message. Regression: `tests/test_pipeline_run_error_sanitized.py` (6 tests; 4 fail on the old behaviour). Residual: the sync endpoint's envelope still says `status: "success"` for a failed run -- the run's own `status` carries the failure and the frontend reads that.
 
 ## BUG-285: PostgreSQL sink with if_exists='fail' silently appends into an existing table
 - **Status:** fixed
