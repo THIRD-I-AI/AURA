@@ -178,7 +178,7 @@ class SynthesisActuatorAgent(BaseAgent):
             return (
                 '"""UASR Shim - Type Cast Recovery\n'
                 'Converts changed column types back to expected types.\n'
-                f'Generated for drift: {diagnosis.root_cause}\n'
+                f'Generated for drift: {_doc_safe(diagnosis.root_cause)}\n'
                 '"""\n\n'
                 'def transform(rows: list[dict]) -> list[dict]:\n'
                 '    """Apply type-cast recovery to each row."""\n'
@@ -200,7 +200,7 @@ class SynthesisActuatorAgent(BaseAgent):
             return (
                 '"""UASR Shim - Missing Column Recovery\n'
                 'Adds default values for columns removed from upstream.\n'
-                f'Generated for drift: {diagnosis.root_cause}\n'
+                f'Generated for drift: {_doc_safe(diagnosis.root_cause)}\n'
                 '"""\n\n'
                 'def transform(rows: list[dict]) -> list[dict]:\n'
                 '    """Restore missing columns with NULL defaults."""\n'
@@ -216,7 +216,7 @@ class SynthesisActuatorAgent(BaseAgent):
             return (
                 '"""UASR Shim - Column Filter\n'
                 'Strips unexpected new columns to maintain schema compatibility.\n'
-                f'Generated for drift: {diagnosis.root_cause}\n'
+                f'Generated for drift: {_doc_safe(diagnosis.root_cause)}\n'
                 '"""\n\n'
                 f'_NEW_COLUMNS = [{keep_cols_str}]\n\n'
                 'def transform(rows: list[dict]) -> list[dict]:\n'
@@ -235,7 +235,7 @@ class SynthesisActuatorAgent(BaseAgent):
             return (
                 '"""UASR Shim - Column Rename Mapping\n'
                 'Maps renamed columns back to their original names.\n'
-                f'Generated for drift: {diagnosis.root_cause}\n'
+                f'Generated for drift: {_doc_safe(diagnosis.root_cause)}\n'
                 '"""\n\n'
                 f'_RENAME_MAP = {{{map_str}}}\n\n'
                 'def transform(rows: list[dict]) -> list[dict]:\n'
@@ -295,8 +295,8 @@ class SynthesisActuatorAgent(BaseAgent):
             factors_repr = ", ".join(f"{c}:x{f:g}" for c, f in rescale_ops.items())
             return (
                 '"""UASR Shim - Unit Rescale (value-level heal)\n'
-                f'Corrects systematic unit-scale error ({factors_repr}).\n'
-                f'Generated for drift: {diagnosis.root_cause}\n'
+                f'Corrects systematic unit-scale error ({_doc_safe(factors_repr)}).\n'
+                f'Generated for drift: {_doc_safe(diagnosis.root_cause)}\n'
                 '"""\n\n'
                 'def transform(rows: list[dict]) -> list[dict]:\n'
                 '    """Divide mis-scaled columns back to baseline units."""\n'
@@ -334,7 +334,7 @@ class SynthesisActuatorAgent(BaseAgent):
             return (
                 '"""UASR Shim - Outlier Clipping\n'
                 'Clips extreme values to baseline mean +/- 3*std, per column.\n'
-                f'Generated for drift: {diagnosis.root_cause}\n'
+                f'Generated for drift: {_doc_safe(diagnosis.root_cause)}\n'
                 '"""\n\n'
                 f'_CLIP_BOUNDS = {{{bounds_repr}}}\n\n'
                 'def transform(rows: list[dict]) -> list[dict]:\n'
@@ -361,7 +361,7 @@ class SynthesisActuatorAgent(BaseAgent):
             return (
                 '"""UASR Shim - Drift Monitor (pass-through)\n'
                 'Logs statistical drift metrics without modifying data.\n'
-                f'Generated for drift: {diagnosis.root_cause}\n'
+                f'Generated for drift: {_doc_safe(diagnosis.root_cause)}\n'
                 '"""\n\n'
                 '_logger = logging.getLogger("uasr.shim.monitor")\n'
                 f'_DRIFT_COLUMNS = [{cols_str}]\n\n'
@@ -410,8 +410,8 @@ class SynthesisActuatorAgent(BaseAgent):
         """
         return (
             '"""UASR Shim - Escalated (no auto-transform)\n'
-            f'Reason: {reason}\n'
-            f'Generated for drift: {diagnosis.root_cause}\n'
+            f'Reason: {_doc_safe(reason)}\n'
+            f'Generated for drift: {_doc_safe(diagnosis.root_cause)}\n'
             'Held for human approval -- see GET /uasr/recovery/pending.\n'
             '"""\n\n'
             '_logger = logging.getLogger("uasr.shim.escalated")\n\n'
@@ -479,7 +479,7 @@ class SynthesisActuatorAgent(BaseAgent):
         """Last-resort: generate a pass-through shim that logs the issue."""
         return textwrap.dedent(f'''\
             """UASR Shim — Fallback (pass-through with logging)
-            Could not generate a specific fix for: {diagnosis.root_cause}
+            Could not generate a specific fix for: {_doc_safe(diagnosis.root_cause)}
             Manual intervention may be required.
             """
 
@@ -490,8 +490,8 @@ class SynthesisActuatorAgent(BaseAgent):
                 """Pass data through and log the unresolved drift."""
                 _logger.warning(
                     "UASR fallback shim active — drift_type=%s, cause=%s",
-                    "{drift_type}",
-                    """{diagnosis.root_cause[:200]}""",
+                    {str(drift_type)!r},
+                    {diagnosis.root_cause[:200]!r},
                 )
                 return rows
         ''')
@@ -500,6 +500,17 @@ class SynthesisActuatorAgent(BaseAgent):
 # ────────────────────────────────────────────────────────────────────
 # Helpers
 # ────────────────────────────────────────────────────────────────────
+
+def _doc_safe(text: Any) -> str:
+    """Make untrusted text safe to place inside a generated shim's docstring.
+
+    BUG-265 (residual of BUG-073): column names and the LLM-supplied root cause were
+    spliced raw between the triple quotes of the generated module docstring, so a
+    value containing three double quotes closed the docstring and the rest of it
+    became shim code. Quotes and backslashes are replaced and the text is put on one
+    line; anywhere the value is used as DATA it is emitted with ``!r`` instead."""
+    return " ".join(str(text).replace("\\", "/").replace('"', "'").split())
+
 
 def _python_cast(dtype: str) -> str:
     """Map a dtype string to a Python type constructor name."""
