@@ -2664,20 +2664,20 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Fix:** The chat audit path now appends the signed certificate to the tenant's ledger with `audit_ledger.append_audit_with_retry` (kind `financial_audit_completed`, subject = the audited table), as `POST /audit/financial` does. A failed append is not swallowed: the handler returns an error instead of a certificate. The tenant falls back to `"default"` instead of `str(None)`, and `sign_and_persist` runs off the event loop. Regression: `tests/test_chat_audit_ledger.py` (3 tests, all fail on the old code).
 
 ## BUG-238: chat_endpoint runs blocking storage listing and certificate signing/persisting inline on the event loop
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode audit of `api_gateway/routers` (3 lenses + adversarial verify), 2026-09-29. The verifier confirmed it from the code; nothing was run end to end unless stated.
 - **Severity:** medium
 - **Root cause:** `api_gateway/routers/chat.py` ~441: In the pipeline intent branch, `get_storage_backend().list(tenant)` (line 441) is called synchronously. It is a boto3 paginator on S3, or iterdir+stat locally. pipelines.py:119 offloads the identical call with asyncio.to_thread, and BUG-177 fixed the same call in data_utils. In the audit branch, `sign_and_persist(doc)` (line 544) does ED25519 signing plus artifact file writes plus audit_event I/O, also synchronously. BUG-043 offloaded that same function in counterfactual_service/main.py:752, but this call site was missed. On the single uvicorn worker, both calls stall every tenant's requests.
 - **Caused by:** none -- pre-existing.
-- **Fix:** pending.
+- **Fix:** The pipeline-intent `get_storage_backend().list(tenant)` call runs through `asyncio.to_thread`; the `sign_and_persist` half was offloaded under BUG-237 (PR #601). Regression: `tests/test_storage_calls_off_event_loop.py` (fails on the old code).
 
 ## BUG-239: POST /connections/{id}/sync writes the parquet snapshot to storage synchronously inside the async handler
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode audit of `api_gateway/routers` (3 lenses + adversarial verify), 2026-09-29. The verifier confirmed it from the code; nothing was run end to end unless stated.
 - **Severity:** medium
 - **Root cause:** `api_gateway/routers/connections.py` ~808: `get_storage_backend().write(tenant, file_name, parquet_bytes)` is called directly, with no asyncio.to_thread. The snapshot can be up to 2,000,000 rows (_SYNC_ROW_CEILING), and the write is a blocking write_bytes locally or a boto3 put_object on S3. BUG-055 fixed this exact call in files.py upload, and BUG-042 offloaded only the DataFrame->parquet serialization on this route, not the write that follows it.
 - **Caused by:** none -- pre-existing.
-- **Fix:** pending.
+- **Fix:** The parquet snapshot `write` runs through `asyncio.to_thread`. Regression: `test_sync_writes_the_parquet_snapshot_off_the_event_loop` in `tests/test_storage_calls_off_event_loop.py` (fails on the old code).
 
 ## BUG-240: Commander chat paths return raw exception text to the client, bypassing sanitize_error
 - **Status:** fixed
@@ -2688,20 +2688,20 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Fix:** The pipeline-intent, audit-intent and `/chat/stream` worker error paths now pass the exception through `sanitize_error` (full traceback logged, generic message returned) instead of formatting `str(exc)` into the response. Regression: `tests/test_chat_error_not_leaked.py` (the stream test sees the embedded SQL on the old code).
 
 ## BUG-241: ETL routes call StorageBackend.exists() synchronously on the event loop (S3 head_object per request)
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode audit of `api_gateway/routers` (3 lenses + adversarial verify), 2026-09-29. The verifier confirmed it from the code; nothing was run end to end unless stated.
 - **Severity:** low
 - **Root cause:** `api_gateway/routers/etl.py` ~422: etl_preview_source (line 351), etl_execute (line 422) and etl_from_natural_language (line 582) all call backend.exists(tenant, safe_name) inline. S3Backend.exists is a synchronous boto3 head_object network call (shared/storage/s3.py:99-105). This is the same class BUG-177 fixed for list(). Everything else in these handlers is already offloaded with asyncio.to_thread.
 - **Caused by:** none -- pre-existing.
-- **Fix:** pending.
+- **Fix:** All three ETL handlers call `backend.exists` through `asyncio.to_thread`. Regression: the three parametrised ETL cases in `tests/test_storage_calls_off_event_loop.py` (fail on the old code); `test_preview_source_offloads_blocking_load_to_thread` now expects both offloads.
 
 ## BUG-242: Inbound-hook registry rewrites its whole JSON store synchronously on every public fire and every CRUD call
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode audit of `api_gateway/routers` (3 lenses + adversarial verify), 2026-09-29. The verifier confirmed it from the code; nothing was run end to end unless stated.
 - **Severity:** low
 - **Root cause:** `api_gateway/routers/inbound_hooks.py` ~149: fire_hook calls inbound_hooks.record_fire(hook), and create/update/delete call register/update/delete (lines 75, 100, 112). Each of these ends in InboundHookRegistry._save(), which does open(_STORE_PATH,'w') and json.dump of every hook (shared/inbound_hooks.py:91-95), directly on the event loop. The sibling webhooks.py offloads the identical dispatcher disk writes with asyncio.to_thread (BUG-042, test_webhooks_router_bug_async_save). /hooks/fire/{slug} is public (BUG-017 allowlist), so an external caller can drive blocking disk writes at the rate limit.
 - **Caused by:** none -- pre-existing.
-- **Fix:** pending.
+- **Fix:** The router runs `register` / `update` / `delete` / `record_fire` through `asyncio.to_thread`, as `webhooks.py` does. Because the mutators now run on worker threads, the registry takes an `RLock` around them so two cannot change the maps while a third serialises them. Regression: `tests/test_inbound_hooks_offload_save.py` (the two thread-identity tests fail on the old code; the concurrent-mutation test is a safety net that also passed on the old code in this run).
 
 ## BUG-243: Inbound hook pipeline trigger 500s on any non-object JSON body after already recording the fire
 - **Status:** fixed
@@ -2712,20 +2712,20 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Fix:** `fire_hook` wraps a non-object JSON body as `{"_body": <value>}` before the fire is recorded, so the trigger helpers always receive an object. Regression: `tests/test_inbound_hook_non_object_body.py` (array / string / number bodies raise `AttributeError` on the old code).
 
 ## BUG-244: GET /stream/{topic}?replay=true loses events published between the buffer replay and the live subscribe
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode audit of `api_gateway/routers` (3 lenses + adversarial verify), 2026-09-29. The verifier confirmed it from the code; nothing was run end to end unless stated.
 - **Severity:** low
 - **Root cause:** `api_gateway/routers/stream.py` ~114: In _gen, for replay=true with no Last-Event-ID, the code first yields every buffered event and only then enters _event_generator, which is where streaming_manager.subscribe() runs. Each yield suspends while bytes go to the client. Any event published during that window lands only in the ring buffer, never in a queue this client holds, and is never replayed. The Last-Event-ID path does it the right way round: subscribe first, then replay. A 'complete'/'error' event for a short ETL, pipeline or upload run can be lost, leaving the UI spinner hanging.
 - **Caused by:** none -- pre-existing.
-- **Fix:** pending.
+- **Fix:** The replay now happens inside `_event_generator`, after `subscribe()` and with no await between subscribing and taking the buffer snapshot, for both `replay=true` and `Last-Event-ID`. An event published while the replay is being sent is already in the client's queue. Regression: `tests/test_stream_replay_no_gap.py` (on the old code the client receives a heartbeat where the `complete` event should be).
 
 ## BUG-245: Any tenant can rename or re-describe the shared 'default' workspace for every other tenant
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode audit of `api_gateway/routers` (3 lenses + adversarial verify), 2026-09-29. The verifier confirmed it from the code; nothing was run end to end unless stated.
 - **Severity:** low
 - **Root cause:** `api_gateway/routers/workspaces.py` ~247: _visible_to() returns True for DEFAULT_WORKSPACE_ID for every caller, and update_workspace applies the PATCH to that one global record in the module-level _workspaces_store. delete_workspace explicitly protects the default record (line 265), but update does not. Any authenticated org's edit therefore shows up in every other org's GET /workspaces.
 - **Caused by:** none -- pre-existing.
-- **Fix:** pending.
+- **Fix:** `update_workspace` refuses the default workspace with a 400, the same guard `delete_workspace` already had. Regression: `test_no_tenant_can_rename_the_shared_default_workspace` in `tests/test_workspaces_crud_tenant_isolation.py` (does not raise on the old code).
 
 ## BUG-246: overlapping counterfactual jobs trample each other's seeded numpy RNG, so 'byte-identical' replays differ
 - **Status:** fixed
@@ -2851,7 +2851,7 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Severity:** medium
 - **Root cause:** `frontend/src/workbench/panels/LibraryPanel.tsx:94`, `DashboardsPanel.tsx:49`, `WebhooksPanel.tsx:103`, `WorkbenchTopbar.tsx:18`, `cockpit/PipelinesStreamingPanel.tsx:29`: backend APIs exist with no UI entry point. Also hard-coded fake status text (Workbench.tsx:432, PipelinesStreamingPanel.tsx:21 'PII MASKING ON').
 - **Caused by:** none -- pre-existing.
-- **Fix:** partial. Done: saved-query create / star / delete (PR #590); dashboard create / open / delete (PR #591); hard-coded status text removed, healing badge and Constellation link corrected (PR #592); webhook register / test / pause / delete (PR #593). Still open: workspace switcher and workspace CRUD UI, streaming-pipeline creation, inbound-hook UI, synthetic-data and approval-chain UI.
+- **Fix:** partial. Done: saved-query create / star / delete (PR #590); dashboard create / open / delete (PR #591); hard-coded status text removed, healing badge and Constellation link corrected (PR #592); webhook register / test / pause / delete (PR #593). Inbound hooks: list / create / pause / delete with the fire URL, as a section of the Webhooks panel (`InboundHooksSection.tsx`). Still open: workspace switcher and workspace CRUD UI, streaming-pipeline creation, synthetic-data and approval-chain UI.
 
 ## BUG-258: Shim "sandbox" is trivially escapable: the real logging module (and type) are injected into the exec namespace, so LLM-generated shim code gets os/sys before any human approval
 - **Status:** fixed

@@ -93,5 +93,6 @@ def test_preview_source_offloads_blocking_load_to_thread(tmp_path, monkeypatch):
     assert r.status_code == 200, r.text
     assert r.json()["status"] == "success"
     # The blocking load+preview must have been dispatched through to_thread,
-    # not called directly on the event loop.
-    assert len(calls) == 1
+    # not called directly on the event loop -- and so must the storage
+    # backend's exists() check that precedes it (BUG-241).
+    assert len(calls) == 2
