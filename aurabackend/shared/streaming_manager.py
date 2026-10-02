@@ -102,6 +102,7 @@ class StreamingManager:
 
     _MAX_QUEUE  = 200
     _BUFFER_LEN = 50
+    _MAX_TOPICS = 500
 
     def __init__(self) -> None:
         # sub_id → (pattern, workspace_id, queue)
@@ -142,10 +143,17 @@ class StreamingManager:
     async def publish(self, event: StreamEvent) -> None:
         """Fanout event to all matching, tenant-authorized subscriber queues."""
         # Buffer event for replay
-        buf = self._buffers.setdefault(event.topic, [])
+        # BUG-314: every job publishes on its own topic, and a topic's buffer was kept
+        # for the life of the process -- up to 50 payloads (result sets, agent output)
+        # per job ever run. Only the most recently active topics are kept; re-inserting
+        # on publish keeps the dict in least-recently-published order.
+        buf = self._buffers.pop(event.topic, [])
         buf.append(event)
         if len(buf) > self._BUFFER_LEN:
             buf.pop(0)
+        self._buffers[event.topic] = buf
+        while len(self._buffers) > self._MAX_TOPICS:
+            del self._buffers[next(iter(self._buffers))]
 
         # Fanout to subscribers
         for sub_id, (pattern, sub_workspace_id, queue) in list(self._subscribers.items()):
