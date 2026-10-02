@@ -3102,9 +3102,9 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Fix:** pending.
 
 ## BUG-289: Pipeline output files and streaming checkpoint directories are never deleted
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode audit of `aurabackend/pipeline` (3 lenses + adversarial verify), 2026-10-02. The verifier confirmed it from the code; nothing was run end to end unless stated.
 - **Severity:** low
 - **Root cause:** `pipeline/engine.py` ~794: `_write_file_sink` (engine.py:793-816) writes `data/processed/<tenant_slug>/<stem><ext>` on every non-preview run, defaulting to a fresh `pipeline_output_{run.run_id}` name (794). pipelines.py has only a download route (340-368); there is no delete route, retention job or per-tenant quota, and `DELETE /pipeline/{id}` (320-326) removes only the DB row. On the streaming side, `StateManager.__init__` creates `data/checkpoints/<pipeline_id>/` (state_manager.py:56-61) and writes checkpoints every interval. `clear_checkpoints()` (147) has no caller anywhere in aurabackend, and `delete_pipeline` (streaming_api.py:196-218) only pops the in-memory dicts. Failure scenario: A tenant, or a schedule or inbound hook, runs a file-sink pipeline repeatedly with no `file_name`. Each run leaves a new full-size CSV or Parquet file, and the shared volume fills until uploads, SQLite writes and checkpoints fail for every tenant. Likewise, each streaming pipeline that is created, started and deleted leaves a directory of up to 5 checkpoint files behind permanently, since pipeline ids are random and never reused.
 - **Caused by:** none -- pre-existing.
-- **Fix:** pending.
+- **Fix:** `_write_file_sink` keeps only the newest 50 auto-named outputs (`pipeline_output_run_*`) per tenant (`MAX_AUTO_NAMED_OUTPUTS`); files the caller named are never pruned. `DELETE /streaming/pipelines/{id}` removes the pipeline's checkpoint directory (`remove_pipeline_checkpoints`). Regression: `tests/test_pipeline_output_retention.py` (4 tests; the two retention cases fail on the old code). Residual: no size quota per tenant, no delete route for a named output, and a streaming pipeline's own output directory is kept on delete.

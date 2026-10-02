@@ -35,6 +35,7 @@ from pipeline.streaming.models import (
     WindowConfig,
     WindowType,
 )
+from pipeline.streaming.state_manager import remove_pipeline_checkpoints
 from pipeline.streaming.streaming_engine import StreamingEngine
 from shared.auth import get_current_user
 
@@ -238,6 +239,7 @@ async def delete_pipeline(pipeline_id: str, user: Optional[Dict[str, Any]] = Dep
     # completes normally; only a later _start_lock_for() call for this
     # (now-deleted) pipeline_id gets a fresh Lock instead.
     _start_locks.pop(pipeline_id, None)
+    await asyncio.to_thread(remove_pipeline_checkpoints, pipeline_id)
     return {"deleted": pipeline_id}
 
 

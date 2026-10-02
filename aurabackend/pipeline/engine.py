@@ -107,6 +107,29 @@ def _typed_arrow_table(columns: List[str], rows: List[Dict[str, Any]]) -> Any:
     return pa.Table.from_arrays(arrays, names=[_sanitize_id(c) for c in columns])
 
 
+MAX_AUTO_NAMED_OUTPUTS = 50
+
+
+def _prune_auto_named_outputs(tenant_dir: str) -> None:
+    """Keep only the newest auto-named outputs in a tenant's output directory.
+
+    BUG-289: a run with no ``file_name`` writes a fresh ``pipeline_output_<run_id>``
+    file and nothing ever deleted one, so a scheduled or repeated pipeline filled the
+    volume every tenant shares. Files the caller named are left alone -- a re-run
+    overwrites those in place.
+    """
+    try:
+        auto = [
+            os.path.join(tenant_dir, name) for name in os.listdir(tenant_dir)
+            if name.startswith("pipeline_output_run_")
+        ]
+        auto.sort(key=os.path.getmtime, reverse=True)
+        for path in auto[MAX_AUTO_NAMED_OUTPUTS:]:
+            os.remove(path)
+    except OSError as exc:
+        logger.warning("[Pipeline] Could not prune old outputs in %s: %s", tenant_dir, exc)
+
+
 # Aliased, not reimplemented. This file had its own _q() that doubled quotes
 # but skipped the NUL-byte rejection added to shared/sql_identifiers.py during
 # the SQL-injection hardening — so two of the three "quote an identifier"
@@ -876,6 +899,8 @@ class PipelineEngine:
 
         run.output_file = out_name
         logger.info(f"[Pipeline] Wrote {out_name} ({run.rows_written} rows)")
+        if not sink.file_name:
+            _prune_auto_named_outputs(tenant_dir)
 
     async def _write_pg_sink(
         self, conn: Any, final_table: str, sink: PipelineSink, run: PipelineRun
