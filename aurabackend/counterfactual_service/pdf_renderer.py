@@ -240,7 +240,17 @@ def render_pdf(artifact_dict: Dict[str, Any]) -> Optional[bytes]:
     # ── Challenges ────────────────────────────────────────────────
     story.append(Paragraph("Adversarial challenges", s["subtitle"]))
     challenges = artifact_dict.get("challenges", [])
-    if not challenges:
+    critic_skipped = any(
+        str(w).startswith("Adversarial LLM critic skipped")
+        for w in artifact_dict.get("warnings", [])
+    )
+    if not challenges and critic_skipped:
+        story.append(Paragraph(
+            "<i>No challenges are listed because the adversarial critic did not run "
+            "for this audit — this is not a finding of no objections.</i>",
+            s["body"],
+        ))
+    elif not challenges:
         story.append(Paragraph(
             "<i>No challenges raised — the critic had no objections.</i>",
             s["body"],

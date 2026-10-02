@@ -1643,6 +1643,15 @@ def _dataset_fingerprint(df: pd.DataFrame) -> str:
     return h.hexdigest()
 
 
+# Renderers look for this prefix in the artifact's warnings to tell "the critic had no
+# objections" from "the critic did not run".
+CRITIC_SKIPPED_PREFIX = "Adversarial LLM critic skipped"
+
+
+class CriticUnavailable(RuntimeError):
+    """The adversarial critic ran but produced no usable result."""
+
+
 async def _run_critic(
     estimates: List[CounterfactualEstimate],
     refutations: List[RefutationResult],
@@ -1688,7 +1697,13 @@ async def _run_critic(
         },
     )
     res = await agent.execute(ctx)
-    raw = res.output.get("challenges", []) if res.succeeded else []
+    if not res.succeeded:
+        # BUG-294: the agent reports an LLM error, non-JSON output, its own timeout or
+        # an exhausted budget as a FAILED result, not an exception. That used to be
+        # collapsed to [] and cached -- indistinguishable from "the critic ran and
+        # found nothing", and replayed from the cache on every later run.
+        raise CriticUnavailable(str(getattr(res, "error", "") or "critic run failed"))
+    raw = res.output.get("challenges", [])
 
     # Persist into the cache so future replays hit it. This is a
     # best-effort write; a cache miss next time is recoverable as long
@@ -1818,28 +1833,24 @@ async def run_job(
     # skip in the signed artifact's warnings. The demo path passes no timeout,
     # so its behaviour (and byte-stable replay) is unchanged.
     critic_warnings: List[str] = []
-    if critic_timeout is not None:
-        try:
-            challenges_unsorted, regenerated = await asyncio.wait_for(
-                _run_critic(
-                    estimates, refutations, query.dag.model_dump(),
-                    query.treatment, query.outcome, request_hash=req_hash,
-                ),
-                timeout=critic_timeout,
-            )
-        except Exception as exc:  # deliberate: critic is best-effort, never fatal
-            logger.warning("adversarial critic skipped (%s): %s", type(exc).__name__, exc)
-            challenges_unsorted, regenerated = [], False
-            critic_warnings.append(
-                f"Adversarial LLM critic skipped (exceeded {critic_timeout:g}s or "
-                "errored); deterministic checks (propensity, estimator-disagreement) "
-                "still applied."
-            )
-    else:
-        challenges_unsorted, regenerated = await _run_critic(
+    try:
+        critic_run = _run_critic(
             estimates, refutations, query.dag.model_dump(),
-            query.treatment, query.outcome,
-            request_hash=req_hash,
+            query.treatment, query.outcome, request_hash=req_hash,
+        )
+        if critic_timeout is not None:
+            critic_run = asyncio.wait_for(critic_run, timeout=critic_timeout)
+        challenges_unsorted, regenerated = await critic_run
+    except Exception as exc:  # deliberate: critic is best-effort, never fatal
+        logger.warning("adversarial critic skipped (%s): %s", type(exc).__name__, exc)
+        challenges_unsorted, regenerated = [], False
+        reason = (
+            f"exceeded {critic_timeout:g}s" if isinstance(exc, asyncio.TimeoutError)
+            else "it did not return a usable result"
+        )
+        critic_warnings.append(
+            f"{CRITIC_SKIPPED_PREFIX} ({reason}); deterministic checks "
+            "(propensity, estimator-disagreement) still applied."
         )
     # Sprint 14: deterministic propensity check. If any estimator surfaced
     # cross-fitted propensity diagnostics that look IPW-fragile, append a
