@@ -36,6 +36,19 @@ def _ledger_tenant(user: Optional[Dict[str, Any]]) -> str:
     if not user:
         return "default"
     return str(user.get("org_id") or user.get("sub") or "default")
+def _preparer(user: Optional[Dict[str, Any]], requested: str) -> str:
+    """The AS 1215 preparer recorded in the signed document and the ledger.
+
+    BUG-291: this was whatever ``preparer_id`` the request body carried, so a caller
+    could have an audit signed as prepared by anyone. An authenticated caller is the
+    preparer -- the token's ``sub``, the same binding the reviewer already has. Only a
+    request with no identity at all (dev/open mode) keeps the body's value.
+    """
+    if user and user.get("sub"):
+        return str(user["sub"])
+    return requested or "system"
+
+
 from shared.exceptions import ForbiddenError
 from shared.service_factory import create_service
 
@@ -527,7 +540,8 @@ async def run_audit(req: AuditRequest,
             raise HTTPException(400, f"columns not in file {req.uploaded_file!r}: {missing}")
 
     job_id = _new_job("audit", tenant)
-    payload = {**req.model_dump(), "tenant_id": tenant}
+    payload = {**req.model_dump(), "tenant_id": tenant,
+               "preparer_id": _preparer(user, req.preparer_id)}
     _jobs[job_id]["_task"] = asyncio.create_task(
         _run_audit_job_async(job_id, payload)
     )
@@ -737,6 +751,7 @@ async def financial_audit(req: FinancialAuditRequest,
     # Tenant comes from the VERIFIED token, never req.tenant_id (a token holder
     # could otherwise forge it to write into another org's audit chain).
     tenant = _ledger_tenant(user)
+    preparer = _preparer(user, req.preparer_id)
     agent = FinancialAuditorAgent(tenant_id=tenant)
     result = await agent.run_full_audit(
         req.ledger, req.purchase_orders, req.invoices, req.journal_entries, req.historical_reports,
@@ -749,7 +764,7 @@ async def financial_audit(req: FinancialAuditRequest,
         period_end=req.period_end)
     doc = build_completion_document(
         tenant, result["findings"], fingerprint, result["materiality_threshold"],
-        subject_id=req.subject_id, subject_type=req.subject_type, preparer_id=req.preparer_id)
+        subject_id=req.subject_id, subject_type=req.subject_type, preparer_id=preparer)
     stored = await asyncio.to_thread(sign_and_persist, doc)
 
     # Always-on durable ledger: chain this signed audit into the tenant's
@@ -764,7 +779,7 @@ async def financial_audit(req: FinancialAuditRequest,
     try:
         await audit_ledger.append_audit_with_retry(
             tenant_id=tenant, kind="financial_audit_completed",
-            subject_id=req.subject_id, subject_type=req.subject_type, preparer_id=req.preparer_id,
+            subject_id=req.subject_id, subject_type=req.subject_type, preparer_id=preparer,
             cert_hash=stored["record_hash"], input_fingerprint=fingerprint,
             payload={"n_findings": stored.get("n_findings"),
                      "signature_status": stored.get("signature_status"),
