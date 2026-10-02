@@ -77,8 +77,10 @@ with a genuine anytime-valid guarantee.
 from __future__ import annotations
 
 import bisect
+import functools
 import logging
 import math
+import threading
 from typing import Dict, List, Optional
 
 logger = logging.getLogger("uasr.conformal_martingale")
@@ -260,6 +262,15 @@ class ConformalDriftMartingale:
         return self._n_updates
 
 
+def _locked(method):
+    """Run a registry method under the registry lock."""
+    @functools.wraps(method)
+    def wrapper(self, *args, **kwargs):
+        with self._lock:
+            return method(self, *args, **kwargs)
+    return wrapper
+
+
 class ConformalMartingaleRegistry:
     """Per-(source_id, column) registry of :class:`ConformalDriftMartingale`
     detectors, exposing the same public surface as
@@ -285,7 +296,13 @@ class ConformalMartingaleRegistry:
         self._baselines: Dict[str, Dict[str, List[float]]] = {}
         self._detectors: Dict[str, Dict[str, ConformalDriftMartingale]] = {}
         self._last_distance: Dict[str, Dict[str, float]] = {}
+        # BUG-275: /uasr/baseline re-registers a source on one worker thread while the
+        # MAPE-K loop's detect step reads it on another. register_baseline empties the
+        # per-source dicts and refills them column by column, so without this a reader
+        # saw a half-built source (missing detectors, or a KeyError on the baseline).
+        self._lock = threading.RLock()
 
+    @_locked
     def register_baseline(
         self,
         source_id: str,
@@ -312,12 +329,14 @@ class ConformalMartingaleRegistry:
             )
             self._last_distance[source_id][col] = -1.0
 
+    @_locked
     def reset_source(self, source_id: str) -> None:
         """Drop all state for a source — mirrors
         ``WassersteinMartingaleDetector.reset_source``."""
         for d in (self._baselines, self._detectors, self._last_distance):
             d.pop(source_id, None)
 
+    @_locked
     def update(self, source_id: str, column: str, batch_samples: List[float]) -> bool:
         """Feed one batch's worth of samples for one column.
 
@@ -337,6 +356,7 @@ class ConformalMartingaleRegistry:
             pass
         return det.update(batch_samples)
 
+    @_locked
     def diagnostics(self, source_id: str, column: str) -> Dict[str, float]:
         """Snapshot of the per-column detector state for observability.
 
@@ -366,6 +386,7 @@ class ConformalMartingaleRegistry:
             "alpha": det.alpha,
         }
 
+    @_locked
     def baseline_stats(
         self, source_id: str, column: str,
     ) -> "tuple[Optional[float], Optional[float]]":
