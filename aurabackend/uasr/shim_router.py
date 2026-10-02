@@ -278,9 +278,14 @@ class ShimRouter:
         # may itself be async and we don't want to block other apply()
         # calls on the same source.
         try:
-            result = chosen.transform(source_id, rows)
-            if asyncio.iscoroutine(result):
-                result = await result
+            # A sync transform runs generated shim code: keep it off the event loop
+            # (BUG-260). An async one is awaited as before.
+            if asyncio.iscoroutinefunction(chosen.transform):
+                result = await chosen.transform(source_id, rows)
+            else:
+                result = await asyncio.to_thread(chosen.transform, source_id, rows)
+                if asyncio.iscoroutine(result):
+                    result = await result
         finally:
             async with self._lock:
                 chosen.in_flight = max(0, chosen.in_flight - 1)
