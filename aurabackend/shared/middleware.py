@@ -214,7 +214,13 @@ class APIKeyMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
 
         supplied = request.headers.get("X-API-Key", "")
-        if not hmac.compare_digest(supplied, self._api_key):
+        # Compared as bytes (BUG-308): compare_digest raises TypeError on a str with a
+        # non-ASCII character, which turned a bad key into a 500 and skipped the
+        # rejection log line. Starlette decodes headers as latin-1, so encoding back
+        # the same way recovers exactly the bytes the client sent.
+        if not hmac.compare_digest(
+            supplied.encode("latin-1", "replace"), self._api_key.encode("utf-8"),
+        ):
             logger.warning(
                 "API key rejected for %s %s (from %s)",
                 request.method,
