@@ -549,12 +549,31 @@ async def chat_endpoint(request: ChatRequest, http_request: Request) -> ChatResp
                 sign_and_persist,
             )
             findings = await asyncio.to_thread(_forensic_findings, amounts)
+            # An unauthenticated caller has tenant None; str(None) stamped the
+            # certificate with the literal tenant "None" (BUG-237).
+            audit_tenant = tenant or "default"
+            fingerprint = dataset_fingerprint(entries, [], [], entries)
             doc = build_completion_document(
-                str(tenant), findings,
-                dataset_fingerprint(entries, [], [], entries),
-                0.0,
+                audit_tenant, findings, fingerprint, 0.0,
+                subject_id=target, subject_type="dataset", preparer_id="system",
             )
-            view = client_view(sign_and_persist(doc))
+            stored = await asyncio.to_thread(sign_and_persist, doc)
+            # BUG-237: chain the signed certificate into the tenant's tamper-evident
+            # ledger, exactly as POST /audit/financial does. Without this every
+            # certificate issued from chat was an orphan: no ledger proof, not covered
+            # by ledger verification. A failed append is NOT swallowed -- it reaches the
+            # handler below, which reports an error instead of a certificate that only
+            # looks chained.
+            from shared import audit_ledger
+            await audit_ledger.append_audit_with_retry(
+                tenant_id=audit_tenant, kind="financial_audit_completed",
+                subject_id=target, subject_type="dataset", preparer_id="system",
+                cert_hash=stored["record_hash"], input_fingerprint=fingerprint,
+                payload={"n_findings": stored.get("n_findings"),
+                         "signature_status": stored.get("signature_status"),
+                         "materiality_threshold": 0.0, "source": "chat"},
+            )
+            view = client_view(stored)
             rhash = view.get("record_hash", "")
             n = view.get("n_findings", len(findings))
             sig = view.get("signature_status", "unsigned")

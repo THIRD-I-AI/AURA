@@ -2656,12 +2656,12 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Fix:** Both proxies forward the caller's `Authorization` header (`_forwarded_auth`). An upstream 4xx is passed through with its status and its string `detail`; any other upstream error becomes a 502 with a generic message, and the upstream body is logged, not proxied (`_upstream_http_error`). No UI calls `/execute` with a connection today, so no frontend change was needed. Regression: `tests/test_query_proxy_auth_and_status.py` (all 4 fail on the old code).
 
 ## BUG-237: Chat 'audit' intent issues a signed certificate that is never appended to the tenant's tamper-evident audit ledger
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode audit of `api_gateway/routers` (3 lenses + adversarial verify), 2026-09-29. The verifier confirmed it from the code; nothing was run end to end unless stated.
 - **Severity:** medium
 - **Root cause:** `api_gateway/routers/chat.py` ~544: The chat audit path calls sign_and_persist(doc) and returns action {type:'audit_created', record_hash}, but it never calls audit_ledger.append_audit_with_retry. The canonical path, counterfactual_service/main.py:754-780, does make that call, and its comment says returning a cert that has no ledger entry is 'an orphan that defeats the whole tamper-evident-chain guarantee' (it returns 500 rather than doing that). Every certificate created from chat is exactly that orphan. /counterfactual/audit/ledger/proof/{cert_hash} and the subject history never contain it, and ledger verification never covers it. The doc is also built with str(tenant), so an unauthenticated tenant is stamped as the literal string 'None'.
 - **Caused by:** none -- pre-existing.
-- **Fix:** pending.
+- **Fix:** The chat audit path now appends the signed certificate to the tenant's ledger with `audit_ledger.append_audit_with_retry` (kind `financial_audit_completed`, subject = the audited table), as `POST /audit/financial` does. A failed append is not swallowed: the handler returns an error instead of a certificate. The tenant falls back to `"default"` instead of `str(None)`, and `sign_and_persist` runs off the event loop. Regression: `tests/test_chat_audit_ledger.py` (3 tests, all fail on the old code).
 
 ## BUG-238: chat_endpoint runs blocking storage listing and certificate signing/persisting inline on the event loop
 - **Status:** open
