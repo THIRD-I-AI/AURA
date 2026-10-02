@@ -284,9 +284,29 @@ def _new_job(prefix: str, tenant: str) -> str:
     sitting behind the tenant check. 48 bits is cheap to grind for something as
     valuable as a fair-lending audit result.
     """
+    _evict_finished_jobs()
     job_id = f"{prefix}_{uuid.uuid4().hex}"
     _jobs[job_id] = {"state": "queued", "artifact": None, "error": None, "tenant": tenant}
     return job_id
+
+
+# BUG-302: every job -- each demo click included -- stayed in ``_jobs`` with its full
+# artifact and Task for the life of the process.
+MAX_RETAINED_JOBS = 500
+
+
+def _evict_finished_jobs() -> None:
+    """Make room for one more job by dropping the oldest finished ones.
+
+    A queued or running job is never dropped: its worker still writes to its entry.
+    A dropped job's poller gets the same 404 as for an id that never existed; a signed
+    audit remains retrievable from the ledger by its record hash.
+    """
+    excess = len(_jobs) - MAX_RETAINED_JOBS + 1
+    if excess <= 0:
+        return
+    for job_id in [j for j, rec in _jobs.items() if rec.get("state") in ("succeeded", "failed")][:excess]:
+        del _jobs[job_id]
 
 
 # ── Endpoints ─────────────────────────────────────────────────────────
