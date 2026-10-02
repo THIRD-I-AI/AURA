@@ -45,7 +45,23 @@ from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger("aura.shared.audit_log")
 
-AUDIT_ENABLED = os.getenv("AURA_AUDIT_ENABLED", "false").lower() == "true"
+
+
+def _audit_enabled() -> bool:
+    """Whether the audit trail is on -- the same value the production guard checks.
+
+    BUG-305: this module parsed AURA_AUDIT_ENABLED itself (exactly "true", process
+    environment only) while shared.config's production validator checked pydantic's
+    ``settings.audit_enabled`` (1/yes/on/true, and the .env files). A deployment with
+    AURA_AUDIT_ENABLED=1, or with the value only in a .env file, passed the guard and
+    then recorded nothing. There is now one parser.
+    """
+    from shared.config import settings
+
+    return bool(settings.audit_enabled)
+
+
+AUDIT_ENABLED = _audit_enabled()
 AUDIT_DIR = Path(os.getenv("AURA_AUDIT_DIR", "/var/log/aura/audit"))
 AUDIT_SERVICE_TAG = os.getenv("AURA_SERVICE_TAG", "aura")
 # Truncation guard — prompts can be huge; the audit log isn't a
