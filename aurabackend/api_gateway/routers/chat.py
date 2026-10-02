@@ -27,6 +27,7 @@ from api_gateway.persistence import insert_chat_message, list_chat_messages
 from shared.config import settings
 from shared.data_utils import build_schema_context_cached
 from shared.duckdb_factory import lock_down_connection, new_connection
+from shared.error_handler import sanitize_error
 from shared.llm_provider import get_llm
 from shared.logging_config import get_logger
 from shared.observability import CHAT_REQUESTS
@@ -482,11 +483,13 @@ async def chat_endpoint(request: ChatRequest, http_request: Request) -> ChatResp
             )
         except Exception as exc:
             CHAT_REQUESTS.labels(status="pipeline_error").inc()
-            logger.warning("chat: pipeline creation failed: %s", exc)
+            # BUG-240: never str(exc) to the client -- a SQLAlchemy error embeds the
+            # statement and its parameters, a storage error embeds bucket/key paths.
+            detail = sanitize_error(exc, logger=logger, context="chat pipeline intent")
             return ChatResponse(
                 status="Error",
                 job_id=f"job_{session_id}",
-                message=f"I couldn't build that pipeline: {str(exc)[:200]}",
+                message=f"I couldn't build that pipeline: {detail}",
                 execution_time_ms=round((time.perf_counter() - t0) * 1000, 1),
                 available_tables=list(table_schemas.keys()),
             )
@@ -581,10 +584,10 @@ async def chat_endpoint(request: ChatRequest, http_request: Request) -> ChatResp
             except Exception:
                 pass
             CHAT_REQUESTS.labels(status="audit_error").inc()
-            logger.warning("chat: audit failed: %s", exc)
+            detail = sanitize_error(exc, logger=logger, context="chat audit intent")
             return ChatResponse(
                 status="Error", job_id=f"job_{session_id}",
-                message=f"I couldn't run that audit: {str(exc)[:200]}",
+                message=f"I couldn't run that audit: {detail}",
                 execution_time_ms=round((time.perf_counter() - t0) * 1000, 1),
                 available_tables=list(table_schemas.keys()),
             )
@@ -716,7 +719,8 @@ async def chat_stream(req: ChatStreamRequest, http_request: Request) -> Streamin
             ):
                 loop.call_soon_threadsafe(queue.put_nowait, ev)
         except Exception as exc:  # never lose the stream on an unexpected error
-            loop.call_soon_threadsafe(queue.put_nowait, ErrorEvent(kind="internal", message=str(exc)))
+            safe = sanitize_error(exc, logger=logger, context="chat stream")
+            loop.call_soon_threadsafe(queue.put_nowait, ErrorEvent(kind="internal", message=safe))
         finally:
             loop.call_soon_threadsafe(queue.put_nowait, _STREAM_SENTINEL)
             try:

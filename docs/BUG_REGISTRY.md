@@ -2680,12 +2680,12 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Fix:** pending.
 
 ## BUG-240: Commander chat paths return raw exception text to the client, bypassing sanitize_error
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode audit of `api_gateway/routers` (3 lenses + adversarial verify), 2026-09-29. The verifier confirmed it from the code; nothing was run end to end unless stated.
 - **Severity:** low
 - **Root cause:** `api_gateway/routers/chat.py` ~479: The pipeline-intent handler returns message=f"I couldn't build that pipeline: {str(exc)[:200]}" (line 479). The audit-intent handler returns f"I couldn't run that audit: {str(exc)[:200]}" (line 577). The /chat/stream worker sends ErrorEvent(kind='internal', message=str(exc)) to the SSE client (line 709). The wrapped calls include save_pipeline (SQLAlchemy errors embed '[SQL: INSERT INTO gateway_pipelines ...]' and parameters), get_storage_backend().list (botocore errors name the bucket and key), LLM client errors, and DuckDB errors. security.md requires sanitize_error, and the rest of chat.py already uses it. This is the same class as BUG-024 and BUG-221 but at different call sites.
 - **Caused by:** none -- pre-existing.
-- **Fix:** pending.
+- **Fix:** The pipeline-intent, audit-intent and `/chat/stream` worker error paths now pass the exception through `sanitize_error` (full traceback logged, generic message returned) instead of formatting `str(exc)` into the response. Regression: `tests/test_chat_error_not_leaked.py` (the stream test sees the embedded SQL on the old code).
 
 ## BUG-241: ETL routes call StorageBackend.exists() synchronously on the event loop (S3 head_object per request)
 - **Status:** open
