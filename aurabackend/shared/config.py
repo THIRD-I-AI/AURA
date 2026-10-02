@@ -250,12 +250,22 @@ class AuraSettings(BaseSettings):
         # authentication bypass if it ever reaches a public surface.
         # An accidental ENVIRONMENT=production deployment with the
         # default config must fail loud, not silently mint tokens.
+        #
+        # BUG-304: this used to reject only the exact string "open", while the
+        # token endpoint treated every value except the exact string "password"
+        # as open mode -- so "Password", "password " or "oidc" booted in
+        # production and minted tokens with no credential check. The value is
+        # normalised and must be one of the two modes that exist.
+        v = str(v).strip().lower()
+        if v not in ("open", "password"):
+            raise ValueError(
+                f"AURA_AUTH_MODE must be 'open' or 'password', got {v!r}."
+            )
         env = info.data.get("environment", "development")
         if _is_production_env(env) and v == "open":
             raise ValueError(
                 "auth_mode='open' is not allowed in production. "
-                "Set AURA_AUTH_MODE=password (or another credential-"
-                "validating mode) for production deployments."
+                "Set AURA_AUTH_MODE=password for production deployments."
             )
         return v
 
