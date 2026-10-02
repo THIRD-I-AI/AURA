@@ -165,6 +165,11 @@ async def fire_hook(slug: str, request: Request) -> Dict[str, Any]:
         payload = await request.json() if body else {}
     except Exception:
         payload = {"_raw": body.decode("utf-8", errors="replace")}
+    # BUG-243: valid JSON need not be an object -- senders batch events as an array.
+    # The trigger helpers read keys off the payload, so a list was an AttributeError
+    # (a 500) raised only AFTER the fire had been recorded and announced.
+    if not isinstance(payload, dict):
+        payload = {"_body": payload}
 
     inbound_hooks.record_fire(hook)
 
