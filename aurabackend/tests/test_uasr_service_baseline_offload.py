@@ -50,7 +50,7 @@ async def test_baseline_endpoint_offloads_martingale_rebaseline(monkeypatch):
             source_id="src_offload_test",
             rows=[{"metric": float(i)} for i in range(30)],
         )
-        result = await register_baseline(req)
+        result = await register_baseline(req, _anonymous_request())
     finally:
         stop_heartbeat.set()
         await hb_task
@@ -63,3 +63,10 @@ async def test_baseline_endpoint_offloads_martingale_rebaseline(monkeypatch):
         "martingale.register_baseline() call -- it is blocking the event "
         "loop instead of running in a thread"
     )
+
+
+def _anonymous_request():
+    """A request with no authenticated principal: UASR applies no tenant scoping to it."""
+    from starlette.requests import Request
+
+    return Request({"type": "http", "headers": []})

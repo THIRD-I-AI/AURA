@@ -63,8 +63,10 @@ def _request(user: dict | None) -> Request:
     return req
 
 
-async def _pending() -> tuple[str, str]:
-    rec_id, source = f"ap_{uuid.uuid4().hex[:8]}", f"src_{uuid.uuid4().hex[:6]}"
+async def _pending(tenant: str | None = "acme") -> tuple[str, str]:
+    """A held recovery on a source inside ``tenant``'s namespace (bare when None)."""
+    name = f"src_{uuid.uuid4().hex[:6]}"
+    rec_id, source = f"ap_{uuid.uuid4().hex[:8]}", (f"{tenant}::{name}" if tenant else name)
     async with get_session_factory()() as db:
         db.add(DriftEvent(id=rec_id + "_drift", source_id=source, drift_type="schema"))
         db.add(RecoveryRecord(id=rec_id, drift_event_id=rec_id + "_drift", source_id=source,
@@ -85,7 +87,7 @@ async def test_the_decision_is_recorded_under_the_authenticated_caller_not_the_b
     out = await _approve(rec_id, {"sub": "u-42", "email": "ops@acme.test", "org_id": "acme"})
     assert out["recovery"]["decided_by"] == "ops@acme.test"
 
-    rejected_id, _ = await _pending()
+    rejected_id, _ = await _pending("u-42")  # no org_id: the tenant is the subject
     async with get_session_factory()() as db:
         out = await service.reject_recovery(
             rejected_id, service.RejectionRequest(approver="ceo@victim.test", reason="no"),
@@ -95,7 +97,7 @@ async def test_the_decision_is_recorded_under_the_authenticated_caller_not_the_b
 
 @pytest.mark.asyncio
 async def test_without_authentication_the_body_value_is_still_used():
-    rec_id, _ = await _pending()
+    rec_id, _ = await _pending(None)
     out = await _approve(rec_id, None, approver="local-dev")
     assert out["recovery"]["decided_by"] == "local-dev"
 
@@ -106,7 +108,7 @@ async def test_concurrent_approvals_deploy_the_shim_once():
     before = len(service._loop.get_deployed_shims(source))
 
     results = await asyncio.gather(
-        *[_approve(rec_id, {"sub": f"u{i}"}) for i in range(5)], return_exceptions=True)
+        *[_approve(rec_id, {"sub": f"u{i}", "org_id": "acme"}) for i in range(5)], return_exceptions=True)
 
     wins = [r for r in results if isinstance(r, dict)]
     conflicts = [r for r in results if isinstance(r, HTTPException) and r.status_code == 409]
@@ -117,11 +119,11 @@ async def test_concurrent_approvals_deploy_the_shim_once():
 @pytest.mark.asyncio
 async def test_unknown_id_is_404_and_an_already_decided_one_is_409():
     with pytest.raises(HTTPException) as exc:
-        await _approve("does-not-exist", {"sub": "u1"})
+        await _approve("does-not-exist", {"sub": "u1", "org_id": "acme"})
     assert exc.value.status_code == 404
 
     rec_id, _ = await _pending()
-    await _approve(rec_id, {"sub": "u1"})
+    await _approve(rec_id, {"sub": "u1", "org_id": "acme"})
     with pytest.raises(HTTPException) as exc:
-        await _approve(rec_id, {"sub": "u2"})
+        await _approve(rec_id, {"sub": "u2", "org_id": "acme"})
     assert exc.value.status_code == 409

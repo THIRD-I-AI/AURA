@@ -123,8 +123,15 @@ async def test_the_rollback_endpoint_uses_it(monkeypatch):
     service._loop.hydrate_deployed_shims({source: [GOOD_SHIM]})
 
     async with get_session_factory()() as db:
-        await service.rollback_shim(service.RollbackRequest(source_id=source), db=db)
+        await service.rollback_shim(service.RollbackRequest(source_id=source), _anonymous_request(), db=db)
 
     assert service._loop.get_deployed_shims(source) == []
     assert await _status(deployed) == RecoveryStatus.ROLLED_BACK.value
     assert await _status(newest_failed) == RecoveryStatus.FAILED.value
+
+
+def _anonymous_request():
+    """A request with no authenticated principal: UASR applies no tenant scoping to it."""
+    from starlette.requests import Request
+
+    return Request({"type": "http", "headers": []})

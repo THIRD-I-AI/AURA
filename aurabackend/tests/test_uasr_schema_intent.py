@@ -434,7 +434,7 @@ class TestSchemaIntentEndpoint:
             from fastapi import HTTPException
 
             with pytest.raises(HTTPException) as exc_info:
-                asyncio.run(service_module.declare_schema_intent(req))
+                asyncio.run(service_module.declare_schema_intent(req, _anonymous_request()))
             assert exc_info.value.status_code == 400
         finally:
             self._restore(monkeypatch)
@@ -452,7 +452,7 @@ class TestSchemaIntentEndpoint:
                 note="migration-1",
                 actor="ci",
             )
-            result = asyncio.run(service_module.declare_schema_intent(req))
+            result = asyncio.run(service_module.declare_schema_intent(req, _anonymous_request()))
             assert result["status"] == "declared"
             assert result["source_id"] == "src_ep"
             assert result["expires_in_seconds"] == service_module._SCHEMA_INTENT_DEFAULT_TTL_SECONDS
@@ -488,7 +488,7 @@ class TestSchemaIntentEndpoint:
             req = service_module.SchemaIntentRequest(
                 source_id="src_ttl", added_columns={"c": "int"}, ttl_seconds=120
             )
-            result = asyncio.run(service_module.declare_schema_intent(req))
+            result = asyncio.run(service_module.declare_schema_intent(req, _anonymous_request()))
             assert result["expires_in_seconds"] == 120
         finally:
             self._restore(monkeypatch)
@@ -541,3 +541,10 @@ class TestDeploymentSummaryReportsSchemaIntent:
             assert result["schema_intent_enabled"] is False
         finally:
             self._restore(monkeypatch)
+
+
+def _anonymous_request():
+    """A request with no authenticated principal: UASR applies no tenant scoping to it."""
+    from starlette.requests import Request
+
+    return Request({"type": "http", "headers": []})

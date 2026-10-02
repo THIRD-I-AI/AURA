@@ -42,6 +42,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from .models import DriftSeverity, DriftType, RecoveryStatus
+from .tenancy import same_tenant
 
 logger = logging.getLogger("uasr.metrics")
 
@@ -311,6 +312,8 @@ class HealingMetricTracker:
             e for e in self._events
             if (
                 e.source_id != exclude_source_id
+                # BUG-072: never borrow a shim built from another tenant's data.
+                and same_tenant(e.source_id, exclude_source_id)
                 and e.drift_type == drift_type
                 and e.status == RecoveryStatus.DEPLOYED
                 and e.shim_code
