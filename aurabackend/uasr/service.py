@@ -714,7 +714,7 @@ async def heal_batch(req: IngestRequest, request: Request, db: AsyncSession = De
     #    resolved earlier does not re-fire on every batch.
     standing = len(_loop.get_deployed_shims(batch.source_id))
     if standing:
-        batch.rows = _loop.apply_shims(batch.source_id, batch.rows)
+        batch.rows = await asyncio.to_thread(_loop.apply_shims, batch.source_id, batch.rows)
         batch.columns = list(batch.rows[0].keys()) if batch.rows else batch.columns
 
     gate_decision = _gateway.check(batch)
@@ -784,7 +784,7 @@ async def heal_batch(req: IngestRequest, request: Request, db: AsyncSession = De
     #    and says so -- see the docstring.
     deployed = loop_result.status == RecoveryStatus.DEPLOYED
     if deployed:
-        batch.rows = _loop.apply_shims(batch.source_id, batch.rows)
+        batch.rows = await asyncio.to_thread(_loop.apply_shims, batch.source_id, batch.rows)
         batch.columns = list(batch.rows[0].keys()) if batch.rows else batch.columns
 
     return {

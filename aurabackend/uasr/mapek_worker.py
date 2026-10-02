@@ -476,7 +476,7 @@ class MAPEKWorker:
                             {"batch_id": batch.batch_id, "source_id": batch.source_id},
                         )
                 else:
-                    healed_rows = self._loop.apply_shims(batch.source_id, batch.rows)
+                    healed_rows = await asyncio.to_thread(self._loop.apply_shims, batch.source_id, batch.rows)
                     batch.rows = healed_rows
                 batch.columns = list(batch.rows[0].keys()) if batch.rows else batch.columns
 
@@ -615,7 +615,7 @@ class MAPEKWorker:
                         recovery = await self._plan_recovery(drift, batch)
 
                         if recovery.status == RecoveryStatus.DEPLOYED:
-                            healed = self._loop.apply_shims(batch.source_id, batch.rows)
+                            healed = await asyncio.to_thread(self._loop.apply_shims, batch.source_id, batch.rows)
                             batch.rows = healed
                             batch.columns = list(healed[0].keys()) if healed else batch.columns
                             await self._execute_persist(batch)
@@ -628,7 +628,7 @@ class MAPEKWorker:
                             await self._knowledge_update(batch, drift, recovery)
                             healed = await self._persist_and_maybe_cross_heal(batch, drift, recovery)
                             if healed is not None and healed.status == RecoveryStatus.DEPLOYED and healed.shim:
-                                applied = self._loop.apply_shims(batch.source_id, batch.rows)
+                                applied = await asyncio.to_thread(self._loop.apply_shims, batch.source_id, batch.rows)
                                 batch.rows = applied
                                 batch.columns = list(applied[0].keys()) if applied else batch.columns
                                 await self._execute_persist(batch)

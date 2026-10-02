@@ -14,6 +14,7 @@ The loop supports configurable max iterations and automatic rollback.
 from __future__ import annotations
 
 import ast
+import asyncio
 import logging
 import time
 import types
@@ -448,8 +449,22 @@ class RecoveryLoop:
             return {"passed": False, "reason": "Empty shim or batch"}
 
         try:
-            # Execute shim in restricted namespace
-            transformed_rows = self._sandbox_execute(shim.shim_code, original_batch.rows)
+            # Execute shim in restricted namespace. BUG-259/260: off the event loop
+            # (exec of generated code plus a deep copy of the batch), and bounded by
+            # sandbox_timeout_seconds, which was configured but never applied. A
+            # thread cannot be killed, so a runaway shim still occupies one worker
+            # thread -- but the service keeps answering and the shim is rejected.
+            try:
+                transformed_rows = await asyncio.wait_for(
+                    asyncio.to_thread(self._sandbox_execute, shim.shim_code, original_batch.rows),
+                    timeout=self._config.sandbox_timeout_seconds,
+                )
+            except asyncio.TimeoutError:
+                logger.error("Shim validation timed out after %ss", self._config.sandbox_timeout_seconds)
+                return {
+                    "passed": False,
+                    "reason": f"Shim did not finish within {self._config.sandbox_timeout_seconds:g}s",
+                }
 
             if not transformed_rows:
                 return {"passed": False, "reason": "Shim produced empty output"}
@@ -467,7 +482,9 @@ class RecoveryLoop:
             # this is a probe on a candidate shim, not a live observation —
             # it must not feed kl_history / the adaptive zeta the Monitor
             # loop uses, or a failed validation poisons every later event.
-            post_drift = self._detector.detect(transformed_batch, record_state=False)
+            # detect() can do a blocking Redis round-trip under the redis state backend.
+            post_drift = await asyncio.to_thread(
+                self._detector.detect, transformed_batch, record_state=False)
 
             if not post_drift.drift_detected:
                 return {
