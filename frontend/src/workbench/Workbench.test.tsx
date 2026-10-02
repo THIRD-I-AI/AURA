@@ -40,7 +40,7 @@ vi.mock('./views', () => ({
   ViewHost: ({ nav }: { nav: string }) => <div data-testid="wb-view">mounted:{nav}</div>,
 }));
 
-import { chatService, healingService } from '../services/api';
+import { chatService, healingService, streamingService } from '../services/api';
 import { MemoryRouter, Routes, Route } from 'react-router-dom';
 import Workbench from './Workbench';
 
@@ -209,6 +209,46 @@ describe('Workbench', () => {
       const offlineMsg = (await screen.findByText(/Commander offline/i)).textContent;
 
       expect(authMsg).not.toEqual(offlineMsg);
+      vi.useRealTimers();
+    });
+  });
+
+  // BUG-255: a failed read used to render as healthy or empty data.
+  describe('stat tiles do not present a failed read as good news (BUG-255)', () => {
+    it('an unreadable healing queue is "queue unavailable", not "0 · queue clear"', async () => {
+      vi.useFakeTimers();
+      vi.mocked(healingService.pending).mockRejectedValue(new Error('503'));
+      await boot();
+      const stats = screen.getByTestId('wb-stats');
+      expect(stats).toHaveTextContent('queue unavailable');
+      expect(stats).not.toHaveTextContent('queue clear');
+      vi.mocked(healingService.pending).mockResolvedValue([]);
+      vi.useRealTimers();
+    });
+
+    it('a failed first pipelines poll is "unavailable", not an endless skeleton or "none defined"', async () => {
+      vi.useFakeTimers();
+      vi.mocked(streamingService.list).mockRejectedValue(new Error('503'));
+      await boot();
+      const stats = screen.getByTestId('wb-stats');
+      expect(stats).toHaveTextContent('unavailable');
+      expect(stats).not.toHaveTextContent('none defined');
+      vi.mocked(streamingService.list).mockResolvedValue({ pipelines: [], total: 0 } as never);
+      vi.useRealTimers();
+    });
+
+    it('an HTTP error from the ledger check is not reported as the service being offline', async () => {
+      vi.useFakeTimers();
+      vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+        const u = String(url);
+        if (u.includes('/audit/ledger/verify')) return { ok: false, status: 500, json: async () => ({}) } as Response;
+        if (u.endsWith('/health')) return { ok: true, json: async () => ({ services: { gw: { status: 'healthy' } } }) } as Response;
+        return { ok: false, status: 404, json: async () => ({}) } as Response;
+      }));
+      await boot();
+      const stats = screen.getByTestId('wb-stats');
+      expect(stats).toHaveTextContent('ledger check failed (HTTP 500)');
+      expect(stats).not.toHaveTextContent('ledger service offline');
       vi.useRealTimers();
     });
   });

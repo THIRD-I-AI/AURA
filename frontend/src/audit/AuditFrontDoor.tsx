@@ -11,6 +11,9 @@ export function AuditFrontDoor({ embedded = false }: { embedded?: boolean } = {}
   const [scenarios, setScenarios] = useState<Scenario[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [launching, setLaunching] = useState<string | null>(null);
+  // BUG-255: a failed run used to set `error`, which renders as "Couldn't load
+  // scenarios" and hides the list -- the wrong cause, and no way to try again.
+  const [runError, setRunError] = useState<string | null>(null);
 
   const load = () => {
     setError(null);
@@ -20,11 +23,17 @@ export function AuditFrontDoor({ embedded = false }: { embedded?: boolean } = {}
 
   const run = async (id: string) => {
     setLaunching(id);
+    setRunError(null);
     try {
       const { job_id } = await auditApi.runScenario(id);
       navigate(`/audit/${job_id}`);
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      const message = e instanceof Error ? e.message : String(e);
+      setRunError(/^HTTP 401/.test(message)
+        ? 'Sign in to run an audit.'
+        : /^HTTP 429/.test(message)
+          ? 'Too many audits are running. Try again in a moment.'
+          : 'The audit could not be started. Try again.');
       setLaunching(null);
     }
   };
@@ -69,6 +78,12 @@ export function AuditFrontDoor({ embedded = false }: { embedded?: boolean } = {}
           description="Fetching the available regulated-decision scenarios…"
           className="my-6 min-h-[160px]"
         />
+      )}
+
+      {runError && (
+        <div role="alert" data-testid="scenario-run-error" className="mb-4 border border-danger/40 bg-danger/10 px-4 py-2.5 font-mono text-xs text-danger">
+          {runError}
+        </div>
       )}
 
       <div className="grid grid-cols-[repeat(auto-fill,minmax(264px,1fr))] gap-5">
