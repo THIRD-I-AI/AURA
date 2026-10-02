@@ -118,5 +118,32 @@ def test_sensitivity_headline_reads_evalue():
         {"method": "double_ml", "error": None, "sensitivity": {"e_value_point": 1.6}},
     ]}
     h = sensitivity_headline(art)
-    assert "1.8" in h
+    # BUG-295: this asserted "1.8" -- the larger, more flattering E-value.
+    assert "1.60" in h and "1.8" not in h
     assert "confounder" in h.lower()
+
+
+# ── BUG-295: the headline is only as strong as the weakest estimator ──
+
+def _est(method, e_point, e_ci, crossed):
+    return {"method": method, "error": None,
+            "sensitivity": {"e_value_point": e_point, "e_value_ci": e_ci, "null_crossed": crossed}}
+
+
+def test_sensitivity_headline_quotes_the_weakest_e_value_not_the_strongest():
+    h = sensitivity_headline({"estimates": [_est("double_ml", 1.30, 1.10, False),
+                                            _est("tmle", 3.56, 2.40, False)]})
+    assert "1.30" in h and "3.56" not in h
+
+
+def test_sensitivity_headline_says_so_when_an_interval_includes_zero():
+    h = sensitivity_headline({"estimates": [_est("double_ml", 1.30, 1.10, False),
+                                            _est("iv", 3.56, 1.0, True)]})
+    assert "includes zero" in h and "iv" in h
+    assert "3.56" not in h
+
+
+def test_sensitivity_headline_ignores_errored_estimators():
+    broken = {"method": "psm", "error": "boom", "sensitivity": {"e_value_point": 9.0}}
+    h = sensitivity_headline({"estimates": [broken, _est("tmle", 2.0, 1.5, False)]})
+    assert "2.00" in h and "9.00" not in h

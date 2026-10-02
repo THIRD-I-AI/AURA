@@ -3150,12 +3150,12 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Fix:** PR #631. `_run_critic` raises `CriticUnavailable` on a FAILED agent result and writes nothing to the cache; `run_job` records a warning starting "Adversarial LLM critic skipped" on both the timeout and no-timeout paths; the PDF and the operator card (`critic_skipped`) say the critic did not run. Regression: 4 tests in `tests/test_critic_timeout.py` (3 fail on the old engine), 1 in `CounterfactualCard.test.tsx`. Residual: `score_confidence` does not lower the badge when the critic was skipped.
 
 ## BUG-295: sensitivity_headline reports the largest point E-value across estimators and ignores a CI that crosses zero
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode audit of `aurabackend/counterfactual_service` (3 lenses + adversarial verify), 2026-10-02. The verifier confirmed it from the code; nothing was run end to end unless stated.
 - **Severity:** medium
 - **Root cause:** `counterfactual_service/audit_mapping.py` ~256: `e = max(evals) # most conservative (largest) E-value across methods` is backwards: a larger E-value means a more robust claim, so max() picks the least conservative estimator. The list is built from `e_value_point` only (line 252); `e_value_ci` and `null_crossed`, which sensitivity.py sets to 1.0 / True when the interval includes zero, are never consulted. Failure scenario: /counterfactual/audit with an instrument, outcome SD 0.5: double_ml point 0.03 (E-value about 1.30), iv point 0.40 with CI [-0.1, 0.9] (point E-value about 3.56, e_value_ci 1.0, null_crossed True). The result's headline reads 'an unmeasured confounder would need an E-value of about 3.56 ... to fully explain away this effect', although the more precise estimator needs only 1.30 and the 3.56 estimate is not distinguishable from zero.
 - **Caused by:** none -- pre-existing.
-- **Fix:** pending.
+- **Fix:** `sensitivity_headline` quotes the smallest point E-value across the estimators (the weakest claim) and, when any estimator's interval includes zero (`null_crossed`, or `e_value_ci <= 1`), says so and names it instead of quoting a robustness figure. Regression: 3 new tests in `tests/test_audit_mapping.py`; the existing `test_sensitivity_headline_reads_evalue` asserted the larger value and was corrected.
 
 ## BUG-296: Refuter pass threshold has an absolute floor of 0.1, so refuters cannot fail on small-scale (binary/rate) outcomes
 - **Status:** open
