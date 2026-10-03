@@ -109,6 +109,29 @@ async def test_pipeline_upsert_updates_in_place(gateway_db) -> None:
     assert rows[0]["name"] == "v2"
 
 
+@pytest.mark.asyncio
+async def test_saving_an_id_another_workspace_holds_gets_a_fresh_id(gateway_db) -> None:
+    """BUG-331: the client-supplied id is the whole primary key, so a copied or imported
+    pipeline whose id another workspace already holds raised a constraint error (an
+    HTTP 500 that also confirmed the id exists elsewhere)."""
+    await p.save_pipeline(_pipe("pipe_shared", "orgA", "A-original"))
+
+    saved = await p.save_pipeline(_pipe("pipe_shared", "orgB", "B-copy"))
+
+    assert saved["id"] != "pipe_shared"
+    b_rows = await p.list_pipelines("orgB")
+    assert [x["name"] for x in b_rows] == ["B-copy"]
+    assert (await p.get_pipeline(saved["id"], workspace_id="orgB"))["id"] == saved["id"]
+    # A's pipeline is untouched
+    a_full = await p.get_pipeline("pipe_shared", workspace_id="orgA")
+    assert a_full is not None and a_full["name"] == "A-original"
+
+    # B saving its copy again updates it in place under the fresh id
+    again = await p.save_pipeline(_pipe(saved["id"], "orgB", "B-copy-v2"))
+    assert again["id"] == saved["id"]
+    assert [x["name"] for x in await p.list_pipelines("orgB")] == ["B-copy-v2"]
+
+
 # ── Endpoint scoping ─────────────────────────────────────────────────
 
 
