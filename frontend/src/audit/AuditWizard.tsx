@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { auditApi } from './auditApi';
 import { useCsvPreview } from './useCsvPreview';
@@ -41,18 +41,25 @@ export function AuditWizard() {
   };
   const mappingOk = validation.valid && Object.keys(guard.errors).length === 0;
 
+  // Only the latest pick may set the uploaded name. Two picks in a row used to race:
+  // whichever upload finished last set `filename`, so the audit could run on the
+  // file the user had replaced while the preview and mapping showed the new one.
+  const uploadSeq = useRef(0);
+
   const pickFile = async (f: File) => {
+    const seq = ++uploadSeq.current;
     setFile(f);
+    setFilename(null);
     setMapping(EMPTY_MAPPING);
     setUploadError(null);
     setUploading(true);
     try {
       const { filename: name } = await auditApi.uploadDataset(f);
-      setFilename(name);
+      if (seq === uploadSeq.current) setFilename(name);
     } catch (e) {
-      setUploadError(e instanceof Error ? e.message : String(e));
+      if (seq === uploadSeq.current) setUploadError(e instanceof Error ? e.message : String(e));
     } finally {
-      setUploading(false);
+      if (seq === uploadSeq.current) setUploading(false);
     }
   };
 
