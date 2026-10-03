@@ -26,6 +26,7 @@ from api_gateway.routers.workspaces import (
     DEFAULT_WORKSPACE_ID,
     _request_tenant,
     current_workspace_id,
+    tenant_from_workspace_id,
     tenant_upload_dir,
 )
 from connectors import ConnectorConfig, SourceType, build_connector
@@ -751,7 +752,9 @@ def _compute_next_run(schedule: Dict[str, Any], *, now: Optional[datetime] = Non
             nxt += timedelta(days=1)
         return nxt.isoformat()
     if interval == "weekly":
-        target_dow = int(schedule.get("day_of_week", 0))  # 0 = Mon
+        # `or 0`: a weekly schedule saved without a day (allowed by the model and the
+        # frontend type) carries day_of_week=None, and int(None) raised -- a 500.
+        target_dow = int(schedule.get("day_of_week") or 0)  # 0 = Mon
         nxt = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
         delta_days = (target_dow - nxt.weekday()) % 7
         if delta_days == 0 and nxt <= now:
@@ -816,6 +819,9 @@ async def list_saved_query_runs(query_id: str, request: Request, limit: int = 20
     return {"success": True, "runs": runs[:max(1, min(limit, 200))]}
 
 
+SCHEDULED_QUERY_TIMEOUT_SECONDS = 120.0
+
+
 async def _execute_saved_query_sql(sql: str, workspace_id: Optional[str] = None) -> Dict[str, Any]:
     """Run SQL against uploaded-file DuckDB. Mirrors the /execute/for-chat path.
 
@@ -833,16 +839,27 @@ async def _execute_saved_query_sql(sql: str, workspace_id: Optional[str] = None)
 
     con = new_connection()
     try:
-        # None still slugs to "default", correct only for records that really
-        # do belong to the default workspace.
-        await build_schema_context_cached(con, workspace_id, use_llm=False)
+        # The storage tenant, not the workspace key: a query saved in a folder has
+        # workspace_id "<tenant>::<folder>", whose slug is a bucket nothing was ever
+        # uploaded to -- every run of it failed on a missing table.
+        await build_schema_context_cached(con, tenant_from_workspace_id(workspace_id), use_llm=False)
         lock_down_connection(con)  # BUG-196: stored, unvalidated SQL runs next
 
         def _run() -> tuple:
             return _fetch_capped(con.execute(sql))
 
         start = time.perf_counter()
-        columns, rows, truncated = await asyncio.to_thread(_run)
+        # The scheduler awaits each due query in turn, so one that never finishes
+        # stalled every tenant's schedules. wait_for alone would only abandon the
+        # worker thread; interrupt() stops the query.
+        try:
+            columns, rows, truncated = await asyncio.wait_for(
+                asyncio.to_thread(_run), SCHEDULED_QUERY_TIMEOUT_SECONDS)
+        except asyncio.TimeoutError:
+            con.interrupt()
+            raise TimeoutError(
+                f"scheduled query ran for more than {SCHEDULED_QUERY_TIMEOUT_SECONDS:.0f} seconds and was stopped"
+            ) from None
         elapsed = (time.perf_counter() - start) * 1000
         return {
             "success": True,
