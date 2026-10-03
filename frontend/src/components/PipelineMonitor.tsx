@@ -82,6 +82,13 @@ export const PipelineMonitor: React.FC<{
   useSSE({
     topic: `pipeline:${runId}`,
     enabled: !!runId,
+    replay: true,
+    // The stream could not be opened or was lost for good. Without this the
+    // parent never heard back and its Execute button stayed on "Running…".
+    onError: () => {
+      setError((prev) => prev ?? 'Live progress is unavailable. The run may still have completed — check the run history.');
+      onSettled?.();
+    },
     onEvent: (ev: SSEEvent) => {
       if (ev.type === 'data') {
         const p = ev.payload as { kind?: string; steps?: PipelineStepMeta[] };

@@ -14,7 +14,8 @@
  *   const { lastEvent } = useSSE({ topic: `query:${jobId}`, enabled: !!jobId });
  */
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { API_BASE_URL } from '../services/api';
+import { API_BASE_URL, getAuthToken } from '../services/api';
+import { FetchEventSource, type StreamMessage } from './fetchEventSource';
 
 // Centralized base (same-origin in prod, localStorage('apiUrl') override wins).
 const API_BASE = API_BASE_URL;
@@ -42,6 +43,10 @@ export interface UseSSEOptions {
   initialBackoff?: number;
   maxBackoff?: number;
   maxRetries?: number;
+  /** Ask for the topic's buffered events on the first connect. For a job topic
+   *  (one run, one topic): a fast run can finish before the browser has
+   *  connected, and without this its plan and completion events are never seen. */
+  replay?: boolean;
 }
 
 export interface UseSSEReturn {
@@ -68,7 +73,7 @@ interface PoolSubscriber {
 }
 
 interface PoolEntry {
-  es: EventSource | null;
+  es: FetchEventSource | null;
   subscribers: Set<PoolSubscriber>;
   lastEventId: string | null;
   backoff: number;
@@ -77,6 +82,7 @@ interface PoolEntry {
   initialBackoff: number;
   maxBackoff: number;
   maxRetries: number;
+  replay: boolean;
   connected: boolean;
 }
 
@@ -98,9 +104,16 @@ function openConnection(topic: string, entry: PoolEntry) {
     `${API_BASE}/stream/${encodeURIComponent(topic)}`,
     typeof window !== 'undefined' ? window.location.origin : 'http://localhost',
   );
-  if (entry.lastEventId) url.searchParams.set('last_event_id', entry.lastEventId);
+  // The gateway reads the resume point from the Last-Event-ID header only (a
+  // query parameter was sent before and ignored, so a reconnect never replayed
+  // what it missed). `replay` asks for the buffered history on a first connect.
+  const headers: Record<string, string> = {};
+  if (entry.lastEventId) headers['Last-Event-ID'] = entry.lastEventId;
+  else if (entry.replay) url.searchParams.set('replay', 'true');
+  const token = getAuthToken();
+  if (token) headers.Authorization = `Bearer ${token}`;
 
-  const es = new EventSource(url.toString());
+  const es = new FetchEventSource(url.toString(), headers);
   entry.es = es;
 
   es.onopen = () => {
@@ -125,7 +138,7 @@ function openConnection(topic: string, entry: PoolEntry) {
 
   const eventTypes = ['progress', 'complete', 'error', 'data', 'heartbeat'];
   eventTypes.forEach((evType) => {
-    es.addEventListener(evType, (e: MessageEvent) => {
+    es.addEventListener(evType, (e: StreamMessage) => {
       try {
         const raw = JSON.parse(e.data);
         dispatch({
@@ -141,7 +154,7 @@ function openConnection(topic: string, entry: PoolEntry) {
     });
   });
 
-  es.onmessage = (e: MessageEvent) => {
+  es.onmessage = (e: StreamMessage) => {
     try {
       const raw = JSON.parse(e.data);
       dispatch({
@@ -185,6 +198,7 @@ function subscribe(topic: string, sub: PoolSubscriber, opts: {
   initialBackoff: number;
   maxBackoff: number;
   maxRetries: number;
+  replay: boolean;
 }): () => void {
   let entry = pool.get(topic);
   if (!entry) {
@@ -198,6 +212,7 @@ function subscribe(topic: string, sub: PoolSubscriber, opts: {
       initialBackoff: opts.initialBackoff,
       maxBackoff: opts.maxBackoff,
       maxRetries: opts.maxRetries,
+      replay: opts.replay,
       connected: false,
     };
     pool.set(topic, entry);
@@ -258,6 +273,7 @@ export function useSSE({
   initialBackoff = 1000,
   maxBackoff = 30000,
   maxRetries = 10,
+  replay = false,
 }: UseSSEOptions): UseSSEReturn {
   const [lastEvent, setLastEvent] = useState<SSEEvent | null>(null);
   const [connected, setConnected] = useState(false);
@@ -285,8 +301,8 @@ export function useSSE({
       setRetryCount,
       setLastEvent,
     };
-    unsubscribeRef.current = subscribe(topic, sub, { initialBackoff, maxBackoff, maxRetries });
-  }, [topic, initialBackoff, maxBackoff, maxRetries]);
+    unsubscribeRef.current = subscribe(topic, sub, { initialBackoff, maxBackoff, maxRetries, replay });
+  }, [topic, initialBackoff, maxBackoff, maxRetries, replay]);
 
   useEffect(() => {
     if (!enabled) {
