@@ -17,7 +17,18 @@ import { cn } from '@/lib/cn';
 import { connectorService } from '../../services/api';
 import { AddConnectionForm } from './AddConnectionForm';
 
-type Connection = { id?: string; name?: string; type?: string; source_id?: string; status?: string };
+type Connection = {
+  id?: string; name?: string; type?: string; source_id?: string;
+  is_active?: boolean; last_tested?: string | null;
+};
+
+/** The connection's state as GET /connections reports it. BUG-322: the table read a
+ *  `status` field the endpoint never sends, so every row showed UNKNOWN -- even one
+ *  the form had just reported as connected. */
+function connectionStatus(c: Connection): 'connected' | 'failed' | 'untested' {
+  if (c.is_active) return 'connected';
+  return c.last_tested ? 'failed' : 'untested';
+}
 type SourcesResp = { connections?: Connection[]; count?: number; file_sources?: number };
 
 function rowKey(c: Connection, i: number): string {
@@ -214,14 +225,14 @@ export default function ConnectorsPanel() {
       header: 'Status',
       accessor: (c) => (
         <span className="inline-flex items-center gap-2">
-          <span className={cn('size-1.5 shrink-0', c.status === 'connected' ? 'bg-signal' : 'bg-warn')} />
-          <span className={cn('font-mono text-2xs font-bold tracking-wider', c.status === 'connected' ? 'text-signal' : 'text-warn')}>
-            {(c.status || 'unknown').toUpperCase()}
+          <span className={cn('size-1.5 shrink-0', connectionStatus(c) === 'connected' ? 'bg-signal' : connectionStatus(c) === 'failed' ? 'bg-danger' : 'bg-warn')} />
+          <span className={cn('font-mono text-2xs font-bold tracking-wider', connectionStatus(c) === 'connected' ? 'text-signal' : connectionStatus(c) === 'failed' ? 'text-danger' : 'text-warn')}>
+            {connectionStatus(c).toUpperCase()}
           </span>
         </span>
       ),
       sortable: true,
-      sortValue: (c) => c.status ?? '',
+      sortValue: (c) => connectionStatus(c),
       className: 'w-32',
     },
     {

@@ -48,10 +48,13 @@ const specs = [
 
 const data = {
   connections: [
-    { id: 'c1', name: 'Warehouse', type: 'postgres', status: 'connected' },
-    { id: 'c2', name: 'Legacy MySQL', type: 'mysql', status: 'disconnected' },
+    // The shape GET /connections actually returns (BUG-322: these fixtures used a
+    // `status` field the endpoint never sends, which is how the bug went unseen).
+    { id: 'c1', name: 'Warehouse', type: 'postgres', is_active: true, last_tested: '2026-10-02T10:00:00Z' },
+    { id: 'c2', name: 'Legacy MySQL', type: 'mysql', is_active: false, last_tested: '2026-10-01T09:00:00Z' },
+    { id: 'c3', name: 'New Snowflake', type: 'snowflake', is_active: false, last_tested: null },
   ],
-  count: 2,
+  count: 3,
   file_sources: 3,
 };
 
@@ -63,7 +66,18 @@ describe('ConnectorsPanel', () => {
     render(<ConnectorsPanel />);
     await waitFor(() => expect(screen.getByText('Warehouse')).toBeInTheDocument());
     expect(screen.getByText('Legacy MySQL')).toBeInTheDocument();
-    expect(screen.getByText('2 database connections · 3 file sources')).toBeInTheDocument();
+    expect(screen.getByText('3 database connections · 3 file sources')).toBeInTheDocument();
+  });
+
+  it('BUG-322: shows each connection state from is_active / last_tested', async () => {
+    listSources.mockResolvedValue(data);
+    render(<ConnectorsPanel />);
+    await waitFor(() => expect(screen.getByText('Warehouse')).toBeInTheDocument());
+
+    expect(screen.getByText('CONNECTED')).toBeInTheDocument();
+    expect(screen.getByText('FAILED')).toBeInTheDocument();
+    expect(screen.getByText('UNTESTED')).toBeInTheDocument();
+    expect(screen.queryByText('UNKNOWN')).not.toBeInTheDocument();
   });
 
   it('renders an honest empty state when there are no connections', async () => {
