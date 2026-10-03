@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import type { IDockviewPanelProps } from 'dockview-react';
 import { chatService, type QueryResponse } from '../../services/api';
 import RechartsVisualization, { type ChartSpec } from '../../components/RechartsVisualization';
@@ -11,20 +11,30 @@ export default function QueryPanel(_props: IDockviewPanelProps) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // BUG-326: Enter was not guarded by `busy` (only the Run button was), so a second
+  // Enter sent a second query, and a slower earlier answer overwrote the newer one.
+  const inFlight = useRef(false);
+  const requestSeq = useRef(0);
+
   const run = async () => {
-    if (!prompt.trim()) return;
+    if (!prompt.trim() || inFlight.current) return;
     if (!activeDataset) {
       setError('Select a dataset in the Datasets panel first.');
       return;
     }
+    const seq = ++requestSeq.current;
+    inFlight.current = true;
     setBusy(true); setError(null);
     try {
       const res = await chatService.sendMessage(prompt, { uploadedFile: activeDataset });
-      setResult(res);
+      if (seq === requestSeq.current) setResult(res);
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Query failed');
+      if (seq === requestSeq.current) setError(e instanceof Error ? e.message : 'Query failed');
     } finally {
-      setBusy(false);
+      if (seq === requestSeq.current) {
+        inFlight.current = false;
+        setBusy(false);
+      }
     }
   };
 

@@ -86,4 +86,22 @@ describe('QueryPanel', () => {
     expect(sendMessage).not.toHaveBeenCalled();
     expect(screen.getByText(/Select a dataset/i)).toBeInTheDocument();
   });
+
+  it('BUG-326: a second Enter while a query runs does not send it again', async () => {
+    let finish!: (v: unknown) => void;
+    sendMessage.mockImplementation(() => new Promise((resolve) => { finish = resolve; }));
+    render(<QueryPanel api={{} as never} params={{} as never} containerApi={{} as never} />);
+    const input = screen.getByTestId('query-input');
+    fireEvent.change(input, { target: { value: 'total revenue' } });
+
+    fireEvent.keyDown(input, { key: 'Enter' });
+    fireEvent.keyDown(input, { key: 'Enter' });
+
+    expect(sendMessage).toHaveBeenCalledTimes(1);
+    finish({ job_id: 'j1', status: 'Success', final_query: 'SELECT 1', execution_result: { success: true, columns: ['n'], rows: [[1]] } });
+    expect(await screen.findByText('SELECT 1')).toBeInTheDocument();
+
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(sendMessage).toHaveBeenCalledTimes(2);
+  });
 });
