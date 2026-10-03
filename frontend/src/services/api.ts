@@ -207,6 +207,41 @@ export interface ApiError {
   details?: unknown;
 }
 
+/** The error ApiClient throws. A real Error, so the many callers written as
+ *  `e instanceof Error ? e.message : String(e)` show the message instead of
+ *  "[object Object]" -- the client used to throw a plain object literal. */
+export class ApiRequestError extends Error implements ApiError {
+  status: number;
+  code?: string;
+  details?: unknown;
+
+  constructor(message: string, status: number, code?: string, details?: unknown) {
+    super(message);
+    this.name = 'ApiRequestError';
+    this.status = status;
+    this.code = code;
+    this.details = details;
+  }
+}
+
+/** The human-readable reason in an error body. The gateway's own errors carry
+ *  `message`; FastAPI's HTTPException carries `detail` -- a string, or for a
+ *  422 a list of `{loc, msg}` -- which used to be dropped for the status text. */
+export function errorBodyMessage(body: unknown): string | null {
+  if (!body || typeof body !== 'object') return null;
+  const b = body as { message?: unknown; detail?: unknown };
+  if (typeof b.message === 'string' && b.message) return b.message;
+  if (typeof b.detail === 'string' && b.detail) return b.detail;
+  if (Array.isArray(b.detail)) {
+    const msgs = b.detail
+      .map((d) => (d && typeof d === 'object' && typeof (d as { msg?: unknown }).msg === 'string'
+        ? (d as { msg: string }).msg : null))
+      .filter((m): m is string => !!m);
+    if (msgs.length) return msgs.join('; ');
+  }
+  return null;
+}
+
 export interface HealthStatus {
   status: 'healthy' | 'degraded' | 'down';
   services?: {
@@ -379,7 +414,7 @@ class ApiClient {
           _sessionExpiredListeners.forEach((cb) => cb());
         }
         throw this.createError(
-          errorData.message || response.statusText,
+          errorBodyMessage(errorData) || response.statusText || `HTTP ${response.status}`,
           response.status,
           errorData
         );
@@ -427,12 +462,7 @@ class ApiClient {
     status: number,
     details?: unknown
   ): ApiError {
-    return {
-      message,
-      status,
-      code: status === 0 ? 'NETWORK_ERROR' : `HTTP_${status}`,
-      details,
-    };
+    return new ApiRequestError(message, status, status === 0 ? 'NETWORK_ERROR' : `HTTP_${status}`, details);
   }
 
   private isApiError(error: unknown): error is ApiError {
