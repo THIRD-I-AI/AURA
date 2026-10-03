@@ -1368,6 +1368,19 @@ async def save_pipeline(record: Dict[str, Any]) -> Dict[str, Any]:
             .where(PipelineRow.id == record["id"])
             .where(PipelineRow.workspace_id == workspace_id)
         )).scalar_one_or_none()
+        if existing is None:
+            # BUG-331: the id comes from the client and is the table's whole primary
+            # key. An id another workspace already holds (an imported or copied
+            # pipeline JSON) hit the primary-key constraint -- an HTTP 500, which also
+            # told the caller that id exists elsewhere. This workspace's copy gets a
+            # fresh id instead; the response carries it.
+            taken = (await s.execute(
+                select(PipelineRow.id).where(PipelineRow.id == record["id"])
+            )).scalar_one_or_none()
+            if taken is not None:
+                fresh = f"pipe_{secrets.token_hex(4)}"
+                record = {**record, "id": fresh,
+                          "definition": {**record["definition"], "id": fresh}}
         fields = dict(
             name=record.get("name", "") or "",
             description=record.get("description"),
