@@ -50,7 +50,10 @@ router = APIRouter(tags=["Queries"])
 # stay in-process for now and will be migrated in a follow-up sprint.
 
 _dashboard_counters_lock = threading.Lock()
-_dashboard_counters: Dict[str, int] = {"total_rows": 0, "queries_run": 0}
+# Per workspace (BUG-329): this was one pair of numbers for the whole process, and
+# GET /dashboard/stats returned it as the caller's own -- every tenant saw the sum of
+# all tenants' chat queries and returned rows.
+_dashboard_counters: Dict[str, Dict[str, int]] = {}
 
 
 # Cross-router shims: dashboards.py and lineage.py used to import
@@ -199,9 +202,10 @@ async def track_query(prompt: str, sql: str, q_status: str, rows: int, execution
         # because the history table is briefly unavailable.
         logger.warning("track_query persist failed (non-fatal): %s", exc)
     with _dashboard_counters_lock:
-        _dashboard_counters["queries_run"] += 1
+        counters = _dashboard_counters.setdefault(workspace_id, {"total_rows": 0, "queries_run": 0})
+        counters["queries_run"] += 1
         if q_status == "success":
-            _dashboard_counters["total_rows"] += rows
+            counters["total_rows"] += rows
 
 
 # ── Models ───────────────────────────────────────────────────────────
@@ -1090,8 +1094,9 @@ async def get_dashboard_stats(request: Request):
     active_conns = sum(1 for c in _conns if c.get("is_active"))
     total_conns = len(_conns)
     with _dashboard_counters_lock:
-        queries_run = _dashboard_counters["queries_run"]
-        tracked_rows = _dashboard_counters["total_rows"]
+        counters = _dashboard_counters.get(workspace, {})
+        queries_run = counters.get("queries_run", 0)
+        tracked_rows = counters.get("total_rows", 0)
 
     result = {
         "total_rows": total_file_rows + tracked_rows,
