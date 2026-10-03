@@ -235,12 +235,16 @@ class ExecuteQueryRequest(BaseModel):
 
 
 class ExecuteQueryResponse(BaseModel):
+    # Optional fields need a default: in pydantic v2 `Optional[...]` alone is still
+    # required, and the success path never sets `error` -- so building the success
+    # response raised, the handler's broad except caught it, and every successful
+    # query was reported as success=False.
     success: bool
-    data: Optional[List[Dict[str, Any]]]
+    data: Optional[List[Dict[str, Any]]] = None
     rows: int
     columns: List[str]
-    insights: Optional[Dict[str, Any]]
-    error: Optional[str]
+    insights: Optional[Dict[str, Any]] = None
+    error: Optional[str] = None
     execution_time_ms: float
 
 

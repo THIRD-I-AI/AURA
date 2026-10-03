@@ -37,3 +37,36 @@ def test_query_validation_failure_is_now_a_real_400_not_a_200(client):
     resp = client.post(URL, json={"query": "DROP TABLE t", "connector_type": "postgresql",
                                   "connector_config": {"host": "localhost"}})
     assert resp.status_code == 400, resp.text
+
+
+def test_a_successful_query_is_reported_as_successful(client, monkeypatch):
+    """The success-path response left out `error`, which the model required, so the
+    handler's except turned every successful query into success=False."""
+    from agents.base import AgentResult, AgentStatus
+    from agents.specialists import analysis_agent
+    from api_gateway.routers import queries
+
+    class FakeConnector:  # an external database; none is available to the test lane
+        async def connect(self):
+            return True
+
+        async def disconnect(self):
+            return True
+
+        async def execute_query(self, sql):
+            return [{"region": "EU", "total": 10}, {"region": "US", "total": 7}]
+
+    async def _no_llm(self, ctx):
+        return AgentResult(status=AgentStatus.FAILED, error="no provider in tests")
+
+    monkeypatch.setattr(queries, "build_connector", lambda ctype, cfg: FakeConnector())
+    monkeypatch.setattr(analysis_agent.AnalysisAgent, "execute", _no_llm)
+
+    resp = client.post(URL, json={"query": "SELECT region, total FROM sales", "connector_type": "mysql",
+                                  "connector_config": {"host": "db.example", "database": "shop"}})
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["success"] is True
+    assert body["rows"] == 2 and body["columns"] == ["region", "total"]
+    assert body["error"] is None
