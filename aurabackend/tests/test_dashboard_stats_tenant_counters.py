@@ -27,19 +27,26 @@ def test_a_tenants_queries_count_only_against_its_own_workspace():
     assert queries._dashboard_counters["tenant-b"] == {"queries_run": 1, "total_rows": 7}
 
 
-def test_the_stats_endpoint_reports_only_the_callers_workspace(tmp_path, monkeypatch):
+def test_the_stats_endpoint_reports_only_the_callers_workspace():
     from fastapi.testclient import TestClient
 
     from api_gateway.main import app
     from shared.cache import dashboard_cache
 
-    monkeypatch.setenv("AURA_UPLOADS_ROOT", str(tmp_path / "uploads"))
-    asyncio.run(dashboard_cache.clear())
-    queries._dashboard_counters["someone-else"] = {"queries_run": 500, "total_rows": 2_000_000}
+    client = TestClient(app)
+    headers = {"X-Workspace-Id": "fresh-workspace"}
 
-    resp = TestClient(app).get("/api/v1/dashboard/stats", headers={"X-Workspace-Id": "fresh-workspace"})
+    # total_rows also counts rows in the workspace's uploaded files, which other tests
+    # may have left in the shared upload root -- so compare against this workspace's
+    # own baseline rather than against zero.
+    asyncio.run(dashboard_cache.clear())
+    before = client.get("/api/v1/dashboard/stats", headers=headers).json()
+
+    queries._dashboard_counters["someone-else"] = {"queries_run": 500, "total_rows": 2_000_000}
+    asyncio.run(dashboard_cache.clear())
+    resp = client.get("/api/v1/dashboard/stats", headers=headers)
 
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert body["queries_run"] == 0
-    assert body["total_rows"] == 0
+    assert body["total_rows"] == before["total_rows"]
