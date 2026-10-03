@@ -54,18 +54,29 @@ export default function SchedulerPanel() {
 
   useEffect(() => { load(); }, [load]);
 
+  // BUG-327: a job's run history (or a failed load) used to be cached for the life
+  // of the panel -- re-opening it after the next scheduled run, or clicking Refresh,
+  // still showed the old list. It is now fetched every time it is opened.
+  const loadRuns = useCallback(async (id: string) => {
+    setRunsError((prev) => { const next = { ...prev }; delete next[id]; return next; });
+    try {
+      const r = await savedQueryService.listRuns(id);
+      setRuns((prev) => ({ ...prev, [id]: r }));
+    } catch {
+      setRunsError((prev) => ({ ...prev, [id]: 'Could not load run history for this job.' }));
+    }
+  }, []);
+
   const toggleOpen = useCallback(async (id: string) => {
     if (openId === id) { setOpenId(null); return; }
     setOpenId(id);
-    if (!runs[id] && !runsError[id]) {
-      try {
-        const r = await savedQueryService.listRuns(id);
-        setRuns((prev) => ({ ...prev, [id]: r }));
-      } catch {
-        setRunsError((prev) => ({ ...prev, [id]: 'Could not load run history for this job.' }));
-      }
-    }
-  }, [openId, runs, runsError]);
+    await loadRuns(id);
+  }, [openId, loadRuns]);
+
+  const refresh = useCallback(async () => {
+    await load();
+    if (openId) await loadRuns(openId);
+  }, [load, loadRuns, openId]);
 
   const toggleEnabled = useCallback(async (q: SavedQuery) => {
     if (!q.schedule) return;
@@ -102,7 +113,7 @@ export default function SchedulerPanel() {
           {items === null ? (error ? 'unavailable' : 'loading…') : `${count} scheduled job${count === 1 ? '' : 's'} · saved-query scheduler`}
         </span>
         <div className="flex-1" />
-        <Button variant="outline" size="sm" onClick={load}>
+        <Button variant="outline" size="sm" onClick={refresh}>
           <RefreshCw /> Refresh
         </Button>
       </div>

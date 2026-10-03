@@ -62,6 +62,46 @@ describe('SchedulerPanel', () => {
     expect(await screen.findByText(/12 rows · 45ms/)).toBeInTheDocument();
   });
 
+  it('BUG-327: re-opening a job and clicking Refresh fetch fresh run history', async () => {
+    list.mockResolvedValue([scheduled]);
+    listRuns
+      .mockResolvedValueOnce([{ id: 'r1', started_at: '2026-07-30T09:00:00Z', completed_at: '2026-07-30T09:00:01Z', status: 'success', row_count: 12, execution_time_ms: 45 }])
+      .mockResolvedValueOnce([{ id: 'r2', started_at: '2026-07-31T09:00:00Z', completed_at: '2026-07-31T09:00:01Z', status: 'success', row_count: 30, execution_time_ms: 50 }])
+      .mockResolvedValueOnce([{ id: 'r3', started_at: '2026-08-01T09:00:00Z', completed_at: '2026-08-01T09:00:01Z', status: 'success', row_count: 41, execution_time_ms: 60 }]);
+    render(<SchedulerPanel />);
+    const user = userEvent.setup();
+    await waitFor(() => expect(screen.getByText('Daily revenue')).toBeInTheDocument());
+
+    await user.click(screen.getByRole('button', { name: /show runs/i }));
+    expect(await screen.findByText(/12 rows · 45ms/)).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: /hide runs/i }));
+    await user.click(screen.getByRole('button', { name: /show runs/i }));
+    expect(await screen.findByText(/30 rows · 50ms/)).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: /refresh/i }));
+    expect(await screen.findByText(/41 rows · 60ms/)).toBeInTheDocument();
+    expect(listRuns).toHaveBeenCalledTimes(3);
+  });
+
+  it('BUG-327: a failed run-history load can be retried by re-opening', async () => {
+    list.mockResolvedValue([scheduled]);
+    listRuns
+      .mockRejectedValueOnce(new Error('timeout'))
+      .mockResolvedValueOnce([{ id: 'r1', started_at: '2026-07-30T09:00:00Z', completed_at: '2026-07-30T09:00:01Z', status: 'success', row_count: 12, execution_time_ms: 45 }]);
+    render(<SchedulerPanel />);
+    const user = userEvent.setup();
+    await waitFor(() => expect(screen.getByText('Daily revenue')).toBeInTheDocument());
+
+    await user.click(screen.getByRole('button', { name: /show runs/i }));
+    expect(await screen.findByText(/could not load run history/i)).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: /hide runs/i }));
+    await user.click(screen.getByRole('button', { name: /show runs/i }));
+
+    expect(await screen.findByText(/12 rows · 45ms/)).toBeInTheDocument();
+    expect(screen.queryByText(/could not load run history/i)).not.toBeInTheDocument();
+  });
+
   it('removes a schedule via the verified DELETE endpoint, not a fabricated toggle', async () => {
     list.mockResolvedValue([scheduled]);
     clearSchedule.mockResolvedValue({ ...scheduled, schedule: null });
