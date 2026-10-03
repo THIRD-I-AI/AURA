@@ -5,6 +5,7 @@
    'Counterfactuals') and, until it's deleted, the classic App shell. */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
+import { AuthenticatedLink } from '@/components/AuthenticatedLink';
 import { Button } from '@/components/ui-kit/button';
 import CounterfactualCard, {
   type CounterfactualOperatorView,
@@ -204,37 +205,32 @@ export default function Counterfactual() {
           className="flex flex-wrap gap-4 rounded-none border border-border bg-card p-3 text-xs"
         >
           {pdfUrl && (
-            <a
+            <AuthenticatedLink
               href={pdfUrl}
-              target="_blank"
-              rel="noopener noreferrer"
+              downloadAs={`counterfactual-${recordHash.slice(0, 12)}.pdf`}
               data-testid="download-pdf"
               className="text-info underline underline-offset-2 hover:text-signal"
             >
               ↓ Download PDF report
-            </a>
+            </AuthenticatedLink>
           )}
           {replayUrl && (
-            <a
+            <AuthenticatedLink
               href={replayUrl}
-              target="_blank"
-              rel="noopener noreferrer"
               data-testid="open-replay-json"
               className="text-info underline underline-offset-2 hover:text-signal"
             >
               ⤴ Open persisted artifact (JSON)
-            </a>
+            </AuthenticatedLink>
           )}
           {verifyUrl && (
-            <a
+            <AuthenticatedLink
               href={verifyUrl}
-              target="_blank"
-              rel="noopener noreferrer"
               data-testid="verify-signature"
               className="text-info underline underline-offset-2 hover:text-signal"
             >
               ✓ Verify ED25519 signature
-            </a>
+            </AuthenticatedLink>
           )}
         </div>
       )}

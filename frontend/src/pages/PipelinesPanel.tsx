@@ -3,6 +3,7 @@ import { RefreshCw, Settings } from 'lucide-react';
 import { type PageType } from '../lib/pageTypes';
 import {
   etlService,
+  fetchProtectedFile,
   pipelineService,
   uploadService,
   type ETLColumnSchema,
@@ -391,8 +392,9 @@ const PipelinesPanel: React.FC<PipelinesPanelProps> = () => {
   // ── Download result ──
   const handleDownload = () => {
     if (!result?.output?.file) return;
-    const url = etlService.getDownloadUrl(result.output.file);
-    window.open(url, '_blank');
+    const file = result.output.file;
+    fetchProtectedFile(etlService.getDownloadUrl(file), { downloadAs: file })
+      .catch((e: Error) => setError(e.message));
   };
 
   // ── AI Pipeline: Generate ──
@@ -519,8 +521,9 @@ const PipelinesPanel: React.FC<PipelinesPanelProps> = () => {
   // ── AI Pipeline: Download output ──
   const handleAiDownload = () => {
     if (!aiRun?.output_file) return;
-    const url = pipelineService.getDownloadUrl(aiRun.output_file);
-    window.open(url, '_blank');
+    const file = aiRun.output_file;
+    fetchProtectedFile(pipelineService.getDownloadUrl(file), { downloadAs: file })
+      .catch((e: Error) => setAiError(e.message));
   };
 
   // ── AI Pipeline: Edit steps in Visual Builder ──
