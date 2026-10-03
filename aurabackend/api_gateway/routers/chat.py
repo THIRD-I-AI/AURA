@@ -680,9 +680,14 @@ async def chat_endpoint(request: ChatRequest, http_request: Request) -> ChatResp
             elapsed_ms, current_workspace_id(http_request),
         )
 
-    CHAT_REQUESTS.labels(status="ok" if error_message is None else "error").inc()
+    # BUG-334: a failure AFTER the SQL ran (the chart or narrative step -- e.g. a
+    # provider 429 on the analysis call) used to make the whole answer "Error", and
+    # both chat panels then hid the rows the query had returned. The query worked;
+    # error_message still says which step did not.
+    answered = error_message is None or execution_result.success
+    CHAT_REQUESTS.labels(status="ok" if answered else "error").inc()
     return ChatResponse(
-        status="Success" if error_message is None else "Error",
+        status="Success" if answered else "Error",
         job_id=f"job_{session_id}",
         final_query=generated_sql,
         execution_time_ms=round(elapsed_ms, 1),
