@@ -13,7 +13,7 @@ describe('files behind the JWT gate', () => {
 
   beforeEach(() => {
     setAuthToken('tok-abc');
-    fetchMock = vi.fn(() => Promise.resolve(new Response(new Blob(['%PDF-1.4']), { status: 200 })));
+    fetchMock = vi.fn(() => Promise.resolve(new Response('%PDF-1.4', { status: 200 })));
     openMock = vi.fn();
     vi.stubGlobal('fetch', fetchMock);
     vi.stubGlobal('open', openMock);
