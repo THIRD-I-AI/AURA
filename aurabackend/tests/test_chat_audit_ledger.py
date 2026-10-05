@@ -89,3 +89,24 @@ async def test_a_failed_ledger_append_is_an_error_not_a_certificate(chat_audit_e
     assert resp.status == "Error"
     assert resp.action is None
     assert "10.0.0.5" not in resp.message
+
+
+@pytest.mark.asyncio
+async def test_a_chat_audit_reads_at_most_the_row_cap_and_says_so(chat_audit_env, monkeypatch):
+    """BUG-336: the whole column was fetched with no cap and fingerprinted on the
+    event loop. The audit covers the first CHAT_AUDIT_MAX_ROWS values and says so."""
+    monkeypatch.setattr(chatmod, "CHAT_AUDIT_MAX_ROWS", 25)
+
+    resp = await chatmod.chat_endpoint(
+        chatmod.ChatRequest(message="audit the ledger table"), _request({"org_id": "orgX", "sub": "u1"}))
+
+    assert resp.status == "AuditCompleted", resp.message
+    assert "(25 values, the first 25 of a larger table)" in resp.message
+
+
+@pytest.mark.asyncio
+async def test_a_chat_audit_under_the_cap_reads_every_row(chat_audit_env):
+    resp = await chatmod.chat_endpoint(
+        chatmod.ChatRequest(message="audit the ledger table"), _request({"org_id": "orgX", "sub": "u1"}))
+
+    assert "(60 values)" in resp.message
