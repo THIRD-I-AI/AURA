@@ -27,8 +27,26 @@
 set -euo pipefail
 
 REF="${1:-origin/main}"
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+REPO_ROOT="${AURA_REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
 COMPOSE_DIR="$REPO_ROOT/deploy/aws-free-tier"
+
+# BUG-341: `git checkout` below rewrites THIS file while bash is still reading it
+# (bash reads a script incrementally, by byte offset), so a deploy that changed
+# redeploy.sh ran a splice of the old and new versions. Run from a private copy.
+if [ -z "${AURA_REDEPLOY_COPY:-}" ]; then
+    copy="$(mktemp /tmp/aura-redeploy.XXXXXX.sh)"
+    cp "${BASH_SOURCE[0]}" "$copy"
+    AURA_REDEPLOY_COPY="$copy" AURA_REPO_ROOT="$REPO_ROOT" exec bash "$copy" "$@"
+fi
+trap 'rm -f "$AURA_REDEPLOY_COPY"' EXIT
+
+# BUG-341: no step here had a time limit. The cron entry runs this under
+# `flock -n`, so one run that hung (a stalled fetch or image pull) kept the lock
+# and every later run skipped silently -- the box froze on one build while CI kept
+# publishing images. Every network step now gives up instead.
+FETCH_TIMEOUT=120
+PULL_TIMEOUT=1200
+UP_TIMEOUT=300
 
 # Running via `sudo` (interactively or from cron) hits git's dubious-ownership
 # check whenever $REPO_ROOT isn't owned by root -- idempotent, so safe to run
@@ -38,18 +56,26 @@ sudo git config --global --add safe.directory "$REPO_ROOT"
 
 echo "==> Fetching..."
 cd "$REPO_ROOT"
-sudo git fetch origin
+sudo timeout "$FETCH_TIMEOUT" git fetch origin
 
 echo "==> Checking out $REF..."
 sudo git checkout "$REF"
 DEPLOYED_SHA="$(sudo git rev-parse HEAD)"
 
-echo "==> Pulling images..."
 cd "$COMPOSE_DIR"
-sudo docker compose pull
+
+# BUG-341: nothing ever removed superseded images, so each deploy left another
+# full set (the causal image alone is GBs) until a pull failed for lack of disk
+# and the box stayed on the old build. Images no container uses, older than a
+# day, are removed before pulling; the running ones are kept.
+echo "==> Disk before pull: $(df -h / | awk 'NR==2 {print $4 " free of " $2}')"
+sudo docker image prune -af --filter "until=24h" >/dev/null || true
+
+echo "==> Pulling images..."
+sudo timeout "$PULL_TIMEOUT" docker compose pull
 
 echo "==> Recreating containers..."
-sudo docker compose up -d
+sudo timeout "$UP_TIMEOUT" docker compose up -d
 
 echo "==> Waiting for the gateway to report healthy..."
 for _ in $(seq 1 30); do

@@ -3516,3 +3516,20 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Root cause:** unconfirmed. The box redeploys by a 15-minute cron running `deploy/aws-free-tier/redeploy.sh` (git checkout + `docker compose pull` + `up -d`); that has stopped taking effect. Not diagnosed: SSH to the box timed out on port 22 and the local AWS CLI session had expired, so the redeploy log, crontab and disk could not be read. Candidates: cron/crond not running, a failing `git fetch`/`checkout`, a failing image pull (disk or registry auth), or the health wait timing out.
 - **Caused by:** unknown.
 - **Fix:** pending -- needs access to the box (user to re-authenticate the AWS CLI or check it directly); redeploying is a production action that needs the user's go-ahead.
+
+## BUG-341: redeploy.sh has no time limits, never prunes images, and runs a splice of itself when a deploy changes it
+- **Status:** fixed
+- **Found by:** investigating BUG-340 (production frozen on 982b679), 2026-10-05.
+- **Severity:** high -- each one can stop production from taking new builds while CI keeps publishing them.
+- **Root cause:** `deploy/aws-free-tier/redeploy.sh`. (1) `git fetch`, `docker compose pull` and `docker compose up -d` had no timeout, and the cron entry runs the script under `flock -n`: one run that hangs keeps the lock and every later run skips silently. (2) Nothing removed superseded images, so every deploy left another full set (the causal image alone is GBs) until a pull fails for lack of disk and `set -e` stops before `up -d`. (3) `git checkout` rewrites the running script; bash reads a script by byte offset, so a deploy that changes `redeploy.sh` executes a splice of old and new text. Reproduced with shimmed git/docker: the old script printed `ODE-RAN: command not found` after the checkout and exited before pulling.
+- **Caused by:** none -- pre-existing. (1) and (2) are the leading candidates for BUG-340; (3) only fires on a deploy that changes the script itself.
+- **Fix:** the script re-executes from a private copy, every network step runs under `timeout` (fetch 120 s, pull 1200 s, up 300 s), and images no container uses (older than a day) are pruned before each pull, with free disk logged. Verified with a shim run: the copy survived the checkout rewriting the original, and the timed steps and prune ran in order. Takes effect on the box only once a redeploy runs this version.
+
+## BUG-342: index.html is served with no Cache-Control and un-hashed static files are cached as immutable for 30 days
+- **Status:** fixed
+- **Found by:** checking whether old frontend code can outlive a deploy, 2026-10-05. Live: `GET /` returns an ETag and `Last-Modified: Fri, 02 Oct 2026 02:44:23 GMT` and no `Cache-Control`.
+- **Severity:** medium
+- **Root cause:** `frontend/nginx.conf` set no caching policy for `index.html`, so browsers apply heuristic freshness and can keep an old page -- which references the previous build's bundle -- for hours or days after a deploy. Its static-asset rule marked every `.js/.css/.png/.svg/...` `public, immutable` for 30 days, including un-hashed files from `public/` (favicon, logos), which then never update.
+- **Caused by:** none -- pre-existing.
+- **Fix:** `index.html` is served `Cache-Control: no-cache` (revalidated each load); only Vite's content-hashed `/assets/` are immutable (1 year, `^~` so the regex rule cannot take them); other static files get `max-age=3600`. Not exercised against a running nginx (no Docker on the dev machine); CI's frontend image build and the live probe after deploy confirm it.
+
