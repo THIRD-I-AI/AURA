@@ -60,6 +60,10 @@ _COMMANDER_EXECUTOR = ThreadPoolExecutor(
 
 logger = get_logger("aura.api_gateway.chat")
 
+
+# Values a chat-triggered forensic audit reads (BUG-336).
+CHAT_AUDIT_MAX_ROWS = 100_000
+
 router = APIRouter(tags=["Chat"])
 
 
@@ -515,9 +519,14 @@ async def chat_endpoint(request: ChatRequest, http_request: Request) -> ChatResp
                 available_tables=list(table_schemas.keys()),
             )
         try:
+            # BUG-336: the whole column was fetched with no cap, then turned into 2xN
+            # dicts and hashed on the event loop -- a multi-million-row table froze the
+            # gateway for every tenant. The audit now covers the first
+            # CHAT_AUDIT_MAX_ROWS values and says so.
             def _read_amounts() -> List[float]:
                 cur = con.execute(
-                    f"SELECT {quote_identifier(amount_col)} FROM {quote_identifier(target)}"
+                    f"SELECT {quote_identifier(amount_col)} FROM {quote_identifier(target)} "
+                    f"LIMIT {CHAT_AUDIT_MAX_ROWS + 1}"
                 )
                 out: List[float] = []
                 for (v,) in cur.fetchall():
@@ -531,6 +540,8 @@ async def chat_endpoint(request: ChatRequest, http_request: Request) -> ChatResp
 
             amounts = await asyncio.to_thread(_read_amounts)
             con.close()
+            truncated = len(amounts) > CHAT_AUDIT_MAX_ROWS
+            amounts = amounts[:CHAT_AUDIT_MAX_ROWS]
             if not amounts:
                 CHAT_REQUESTS.labels(status="audit_error").inc()
                 return ChatResponse(
@@ -554,8 +565,9 @@ async def chat_endpoint(request: ChatRequest, http_request: Request) -> ChatResp
             # An unauthenticated caller has tenant None; str(None) stamped the
             # certificate with the literal tenant "None" (BUG-237).
             audit_tenant = tenant or "default"
-            fingerprint = dataset_fingerprint(entries, [], [], entries)
-            doc = build_completion_document(
+            fingerprint = await asyncio.to_thread(dataset_fingerprint, entries, [], [], entries)
+            doc = await asyncio.to_thread(
+                build_completion_document,
                 audit_tenant, findings, fingerprint, 0.0,
                 subject_id=target, subject_type="dataset", preparer_id="system",
             )
@@ -591,7 +603,9 @@ async def chat_endpoint(request: ChatRequest, http_request: Request) -> ChatResp
                 status="AuditCompleted",
                 job_id=f"job_{session_id}",
                 message=(
-                    f'Forensic audit of "{target}" on "{amount_col}" ({len(amounts)} values): '
+                    f'Forensic audit of "{target}" on "{amount_col}" ({len(amounts)} values'
+                    + (f", the first {CHAT_AUDIT_MAX_ROWS:,} of a larger table" if truncated else "")
+                    + "): "
                     f"{n} finding(s) — {highs} high, {meds} medium, {lows} low risk. "
                     f"Certificate {sig}. Open the signed certificate to review the evidence."
                 ),
