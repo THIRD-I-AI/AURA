@@ -20,6 +20,7 @@ import os
 import threading
 import time
 import uuid as _uuid
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
@@ -89,6 +90,14 @@ def _confine_output_uri(output_uri: str, tenant: Optional[str], job_id: str) -> 
     return confined
 
 logger = get_logger("aura.api_gateway.synthetic")
+
+# BUG-338: jobs used to run on the event loop's DEFAULT executor -- the same small
+# pool (min(32, cpus + 4) threads) that every asyncio.to_thread call in the gateway
+# shares. A handful of multi-minute 1 GB jobs occupied all of it, and every
+# offloaded DuckDB query, file read and storage call queued behind them. Generation
+# gets its own bounded pool; extra jobs wait in it instead.
+_GENERATION_POOL = ThreadPoolExecutor(max_workers=2, thread_name_prefix="synthetic-gen")
+
 router = APIRouter(tags=["Synthetic Data"])
 
 # ── In-memory job store ─────────────────────────────────────────────
@@ -238,8 +247,8 @@ async def synthetic_generate(req: GenerateRequest, request: Request):
             "result": None,
             "error": None,
         }
-    # Run CPU-bound generation off the event loop.
-    asyncio.get_event_loop().run_in_executor(None, _run_job, job_id, req)
+    # Run CPU-bound generation off the event loop, on this router's own pool.
+    asyncio.get_running_loop().run_in_executor(_GENERATION_POOL, _run_job, job_id, req)
     return {"success": True, "job_id": job_id, "status": "queued"}
 
 
