@@ -3486,12 +3486,12 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Fix:** pending.
 
 ## BUG-337: /files list, info, profile and delete routes call the storage backend's blocking list()/delete() on the event loop
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode audit of `aurabackend/api_gateway/routers` (3 lenses, 2 adversarial verifiers per finding, both had to confirm), 2026-10-03.
 - **Severity:** medium
 - **Root cause:** `api_gateway/routers/files.py` ~319: list_files (line 319), get_file_info (line 334), get_file_profile (line 364) and delete_file (line 396) call file_service.list_files/get_file_info/delete_file synchronously inside async handlers. Each of these (shared/file_service.py:96, 134, 149-151) calls get_storage_backend().list(tenant), and delete_file also calls backend.delete(...). Under AURA_STORAGE_BACKEND=s3 those are blocking boto3 paginator and DeleteObject network round trips; locally they are iterdir+stat. BUG-238 (chat.py), BUG-177 (data_utils) and pipelines.py:119 already wrap this same backend.list call in asyncio.to_thread, but these four routes were missed. Failure scenario: On an S3-backed deployment, a tenant with a few thousand uploads opens the Files panel, which sends GET /files, or GET /files/{id}/profile, which lists all objects only to check ownership. Each request runs a multi-page ListObjectsV2 loop on the event loop, and S3 latency or a slow endpoint adds seconds per call. While it runs, the single worker serves nothing else: other tenants' requests queue and SSE streams miss heartbeats. DELETE /files/{id} adds a blocking DeleteObject on top. Verifiers' notes: Root cause as claimed. One refinement: get_file_info returns as soon as it finds a match, but the backend.list() paginator is still synchronous and may fetch several pages first, so every one of the four routes can block the event loop.
 - **Caused by:** none -- pre-existing.
-- **Fix:** pending.
+- **Fix:** GET /files, GET /files/{id}, the ownership check in GET /files/{id}/profile and DELETE /files/{id} call `file_service` through `asyncio.to_thread`. Regression: `tests/test_files_routes_off_event_loop.py` (asserts no event loop is running in the calling thread; fails on the old routes).
 
 ## BUG-338: /synthetic/generate runs the long job on the process's shared default executor, which can starve every asyncio.to_thread call
 - **Status:** open
