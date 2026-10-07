@@ -3544,13 +3544,13 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Fix:** the gate now also forbids the attribute names `format` and `format_map`, the only builtin path that walks attributes named in a runtime string, so `"...".format(...)`, `str.format(...)` and `.format_map(...)` are rejected before the shim runs whatever literal pieces they are built from. No shipped shim template uses `.format`. Regression test `test_a_format_string_assembled_at_runtime_cannot_reach_the_environment` (3 cases) read the environment through the stand-in logger's `__globals__` on the old gate and is rejected now.
 
 ## BUG-344: Standing shims are applied twice to a batch whenever a new shim deploys (/uasr/heal and the MAPE-K pause path)
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode UASR audit (run wf_6234d56e-d9c, correctness lens; confirmed by 2 adversarial verifiers), 2026-10-07. `aurabackend/uasr/service.py:794`.
 - **Severity:** high
 - **Root cause:** heal_batch first replaces batch.rows with the output of every standing shim (service.py:718, `batch.rows, standing_applied, _ = _loop.apply_shims_counted(...)`). After a new shim deploys it calls apply_shims_counted again on those same rows (service.py:794), and that call runs the WHOLE chain, standing shims included. The Kafka worker does the same thing: it applies shims at mapek_worker.py:479, then runs `self._loop.apply_shims(batch.source_id, batch.rows)` on the already-shimmed rows at mapek_worker.py:618 (and at 631 on the cross-source path). The new shim was validated against the already-shimmed rows (recovery_loop.py:265/459), so only the new shim should run at that point. The actuator's rescale template is `row[col] = row[col] / factor` (actuator_agent.py:292), which is not idempotent.
 - **Failure scenario:** Source S has a deployed rescale shim A (price / 100, cents to dollars). A later batch shows new drift on qty (x1000). Standing A is applied, the drift is detected, and shim B is validated and auto-deployed. Line 794 (or mapek 618) then applies [A, B] to rows that A already transformed, so price is divided by 100 twice. /uasr/heal returns these rows with healed:true. On Kafka, the corrupted batch is written to DuckDB and, because batch_healed=True, re-registered as the detector baseline (mapek_worker.py:622-623). Correct later batches then drift against a baseline that is 100x too small.
 - **Caused by:** none -- pre-existing.
-- **Fix:** pending.
+- **Fix:** `RecoveryLoop.apply_new_shim` applies only the just-deployed shim (validated against the already-shimmed rows) and is what `/uasr/heal` and both MAPE-K pause-path branches (own recovery and cross-source borrow) now call, instead of re-running the whole chain. Regression tests `test_a_newly_deployed_shim_does_not_re_run_the_standing_ones` (heal) and `test_mapek_new_shim_applied_once.py` (worker) produced 101 instead of 11 on the old code.
 
 ## BUG-345: With UASR_USE_SHIM_ROUTER on, the Kafka path ignores every shim restored at startup or approved by a human
 - **Status:** open

@@ -615,7 +615,12 @@ class MAPEKWorker:
                         recovery = await self._plan_recovery(drift, batch)
 
                         if recovery.status == RecoveryStatus.DEPLOYED:
-                            healed = await asyncio.to_thread(self._loop.apply_shims, batch.source_id, batch.rows)
+                            # BUG-344: batch.rows already went through the standing shims
+                            # above; only the new one is owed.
+                            healed = batch.rows
+                            if recovery.shim is not None:
+                                healed, _ = await asyncio.to_thread(
+                                    self._loop.apply_new_shim, batch.source_id, recovery.shim.shim_code, batch.rows)
                             batch.rows = healed
                             batch.columns = list(healed[0].keys()) if healed else batch.columns
                             await self._execute_persist(batch)
@@ -628,7 +633,8 @@ class MAPEKWorker:
                             await self._knowledge_update(batch, drift, recovery)
                             healed = await self._persist_and_maybe_cross_heal(batch, drift, recovery)
                             if healed is not None and healed.status == RecoveryStatus.DEPLOYED and healed.shim:
-                                applied = await asyncio.to_thread(self._loop.apply_shims, batch.source_id, batch.rows)
+                                applied, _ = await asyncio.to_thread(
+                                    self._loop.apply_new_shim, batch.source_id, healed.shim.shim_code, batch.rows)
                                 batch.rows = applied
                                 batch.columns = list(applied[0].keys()) if applied else batch.columns
                                 await self._execute_persist(batch)

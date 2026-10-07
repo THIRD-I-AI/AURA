@@ -132,3 +132,29 @@ async def test_new_drift_that_was_not_deployed_is_not_healed_even_with_a_standin
     assert out["status"] == status.value and out["shim_deployed"] is False
     assert out["healed"] is False, "an earlier shim made an un-recovered batch report healed"
     assert out["standing_shims"] == 1 and out["reason"]
+
+
+@pytest.mark.asyncio
+async def test_a_newly_deployed_shim_does_not_re_run_the_standing_ones(monkeypatch):
+    # BUG-344: after a new shim deployed, the whole chain ran again on rows the standing
+    # shims had already transformed, so a rescale shim scaled twice (1 -> 10 -> 100 -> 101).
+    source = f"src_{uuid.uuid4().hex[:6]}"
+    rescale = "def transform(rows):\n    return [{**r, 'v': r['v'] * 10} for r in rows]\n"
+    service._loop.hydrate_deployed_shims({source: [rescale]})
+    _stub_detection(monkeypatch, drift_detected=True)
+
+    async def _recovery_deployed(drift, batch):
+        service._loop._deployed_shims[source].append(GOOD_SHIM)
+        return types.SimpleNamespace(
+            status=RecoveryStatus.DEPLOYED, recovery_id=f"r_{uuid.uuid4().hex[:8]}", diagnosis=None,
+            shim=types.SimpleNamespace(shim_code=GOOD_SHIM, generation_method="template",
+                                       validation_passed=True, post_kl_divergence=0.0),
+            total_latency_seconds=0.01)
+
+    monkeypatch.setattr(service._loop, "run", _recovery_deployed)
+    monkeypatch.setattr(service._tracker, "record_from_loop_result", lambda *a, **k: None)
+
+    out = await _heal(source)
+
+    assert out["rows"] == [{"v": 11}]
+    assert out["healed"] is True
