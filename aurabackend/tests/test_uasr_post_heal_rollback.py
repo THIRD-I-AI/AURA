@@ -136,5 +136,18 @@ class TestDeployStartsTheWatchOnlyWhenOptedIn:
     async def test_flag_on_starts_a_watch_for_the_deployed_drift_type(self) -> None:
         loop = await self._run_deploy(RecoveryLoopConfig(post_heal_validation_batches=3))
         assert loop._post_deploy_watch["test_src"] == {
-            "drift_type": DriftType.SCHEMA, "batches_seen": 0,
+            "drift_type": DriftType.SCHEMA, "batches_seen": 0, "shim_code": _shim().shim_code,
         }
+
+
+def test_auto_rollback_reverts_the_watched_shim_not_a_later_approved_one() -> None:
+    # BUG-351: an operator approved shim B while auto-deployed shim A was being watched.
+    # A's drift kept firing, and the rollback popped B (the newest) and left bad A deployed.
+    loop = _loop(post_heal_validation_batches=1)
+    loop._deployed_shims["test_src"] = ["shim_A"]
+    loop._post_deploy_watch["test_src"] = {"drift_type": DriftType.SCHEMA, "batches_seen": 0, "shim_code": "shim_A"}
+    loop.deploy_approved_shim("test_src", "shim_B", "rec_B")
+
+    assert loop.watched_shim("test_src") == "shim_A"
+    assert loop.check_post_deploy("test_src", _drift(True)) is True
+    assert loop._deployed_shims["test_src"] == ["shim_B"]

@@ -709,6 +709,7 @@ class RecoveryLoop:
             self._post_deploy_watch[drift_result.source_id] = {
                 "drift_type": drift_result.drift_type,
                 "batches_seen": 0,
+                "shim_code": shim.shim_code,
             }
 
         if self._on_shim_deployed:
@@ -859,6 +860,14 @@ class RecoveryLoop:
             return True
         return False
 
+    def watched_shim(self, source_id: str) -> Optional[str]:
+        """The shim post-heal validation would revert for ``source_id``."""
+        watch = self._post_deploy_watch.get(source_id)
+        if watch is not None and watch.get("shim_code") is not None:
+            return watch["shim_code"]
+        shims = self._deployed_shims.get(source_id)
+        return shims[-1] if shims else None
+
     def check_post_deploy(
         self, source_id: str, drift_result: Optional[DriftDetectionResult],
     ) -> bool:
@@ -899,7 +908,14 @@ class RecoveryLoop:
             return False
 
         del self._post_deploy_watch[source_id]
-        self.rollback_last_shim(source_id)
+        # BUG-351: revert the shim this watch was started for. pop() took whatever was
+        # newest -- e.g. a human-approved shim appended meanwhile -- and left the bad one.
+        watched = watch.get("shim_code")
+        shims = self._deployed_shims.get(source_id, [])
+        if watched is not None and watched in shims:
+            del shims[len(shims) - 1 - shims[::-1].index(watched)]
+        else:
+            self.rollback_last_shim(source_id)
         logger.warning(
             "Auto-rollback: source=%s drift_type=%s still detected after %d post-heal batches",
             source_id, watch["drift_type"], watch["batches_seen"],
