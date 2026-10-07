@@ -416,3 +416,32 @@ def test_a_dead_nodes_queued_token_is_reclaimed():
         return await asyncio.wait_for(live.submit("live_src", S.MEDIUM, rep), timeout=2)
 
     assert asyncio.run(run()) == "ok"
+def test_a_failed_heartbeat_neither_loses_the_result_nor_the_slot():
+    # BUG-353: one Redis error in a heartbeat ended the heartbeat task; `await hb` then
+    # re-raised it over the repair's result and skipped releasing the slot.
+    async def run():
+        r = _redis()
+        node = _coord(r, "N", cap=1, lease_ms=200, heartbeat_ms=10)
+        real = node._heartbeat
+        calls = 0
+
+        async def flaky(token):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise ConnectionError("redis blip")
+            await real(token)
+
+        node._heartbeat = flaky
+
+        async def repair():
+            await asyncio.sleep(0.06)
+            return "done"
+
+        result = await node.submit("s", S.MEDIUM, repair)
+        return result, calls, await node.active_count()
+
+    result, calls, active = asyncio.run(run())
+    assert result == "done"
+    assert calls >= 2, "heartbeats stopped after one failure"
+    assert active == 0, "the slot was never released"
