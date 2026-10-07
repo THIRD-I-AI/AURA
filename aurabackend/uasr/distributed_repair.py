@@ -45,12 +45,15 @@ negligible; the lock's PX TTL is a crash backstop.
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 import uuid
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 from .models import DriftSeverity
+
+logger = logging.getLogger(__name__)
 
 # Severity → numeric rank (higher = more urgent → admitted first).
 _SEVERITY_RANK: Dict[DriftSeverity, int] = {
@@ -136,6 +139,11 @@ class DistributedRepairCoordinator:
         return f"{self._ns}:active"
 
     @property
+    def _waitalive(self) -> str:
+        # token -> expiry (ms) for queued waiters; refreshed on every admission poll.
+        return f"{self._ns}:waitalive"
+
+    @property
     def _seqkey(self) -> str:
         return f"{self._ns}:seq"
 
@@ -216,6 +224,17 @@ class DistributedRepairCoordinator:
         self.stats.reclaimed_leases += removed
         return removed
 
+    async def _prune_dead_waiters_locked(self) -> None:
+        """BUG-346: drop queued tokens whose waiter stopped polling (a SIGKILLed node).
+
+        A dead token at the head of the queue made every later _try_admit of equal or
+        lower priority return False forever, so healing stopped across the fleet."""
+        now = self._now_ms()
+        dead = await asyncio.to_thread(self._r.zrangebyscore, self._waitalive, 0, now)
+        if dead:
+            await asyncio.to_thread(self._r.zrem, self._waitq, *dead)
+            await asyncio.to_thread(self._r.zrem, self._waitalive, *dead)
+
     def _score(self, severity: DriftSeverity, seq: int) -> float:
         rank = _SEVERITY_RANK.get(severity, 0)
         # lower score = admitted first: invert rank, then add arrival seq
@@ -224,15 +243,35 @@ class DistributedRepairCoordinator:
     async def _enqueue(self, source_id: str, severity: DriftSeverity) -> str:
         seq = int(await asyncio.to_thread(self._r.incr, self._seqkey))
         token = f"{self._node}:{seq}:{source_id}"
+        await asyncio.to_thread(self._r.zadd, self._waitalive, {token: self._now_ms() + self._lease_ms})
         await asyncio.to_thread(self._r.zadd, self._waitq, {token: self._score(severity, seq)})
         return token
 
+    async def _abandon(self, token: str) -> None:
+        await asyncio.to_thread(self._r.zrem, self._waitq, token)
+        await asyncio.to_thread(self._r.zrem, self._waitalive, token)
+
     async def _acquire_lock(self) -> Optional[str]:
         val = uuid.uuid4().hex
-        ok = await asyncio.to_thread(self._r.set, self._lockkey, val, nx=True, px=2000)
+        # BUG-346: a cancel can land while the SET runs in its thread; the SET still
+        # happens, and the lock then blocked every node's admission until its PX ran out.
+        attempt = asyncio.ensure_future(
+            asyncio.to_thread(self._r.set, self._lockkey, val, nx=True, px=2000))
+        try:
+            ok = await asyncio.shield(attempt)
+        except asyncio.CancelledError:
+            if await attempt:
+                await self._release_lock(val)
+            raise
         return val if ok else None
 
     async def _release_lock(self, val: str) -> None:
+        # BUG-346: shielded, so a cancel that lands mid-release (a waiter cancelled
+        # inside _try_admit's finally) still deletes the lock instead of leaving every
+        # node's admission blocked until the PX runs out.
+        await asyncio.shield(self._release_lock_now(val))
+
+    async def _release_lock_now(self, val: str) -> None:
         # Best-effort compare-and-delete; the PX TTL is the crash backstop.
         cur = await asyncio.to_thread(self._r.get, self._lockkey)
         if cur is not None:
@@ -253,11 +292,13 @@ class DistributedRepairCoordinator:
         (uasr/repair_scheduler.py) -- so a saturated source can't also
         block a different, uncapped source's turn.
         """
+        await asyncio.to_thread(self._r.zadd, self._waitalive, {token: self._now_ms() + self._lease_ms})
         lock = await self._acquire_lock()
         if lock is None:
             return False
         try:
             await self._prune_expired_locked()
+            await self._prune_dead_waiters_locked()
             if int(await asyncio.to_thread(self._r.zcard, self._active)) >= self._max:
                 return False
             my_source = self._source_of(token)
@@ -285,6 +326,7 @@ class DistributedRepairCoordinator:
                     return False
                 # Claim: move token from wait queue into active leases.
                 await asyncio.to_thread(self._r.zrem, self._waitq, token)
+                await asyncio.to_thread(self._r.zrem, self._waitalive, token)
                 await asyncio.to_thread(
                     self._r.zadd, self._active, {token: self._now_ms() + self._lease_ms}
                 )
@@ -323,9 +365,18 @@ class DistributedRepairCoordinator:
         enqueued_at = time.perf_counter()
         token = await self._enqueue(source_id, severity)
 
-        # Cooperative wait until admitted.
-        while not await self._try_admit(token):
-            await asyncio.sleep(self._poll)
+        # Cooperative wait until admitted. BUG-346: a wait that ends any other way
+        # (cancelled at shutdown, a Redis error) must take its token out of the queue,
+        # or it blocks every later repair of equal or lower priority fleet-wide.
+        try:
+            while not await self._try_admit(token):
+                await asyncio.sleep(self._poll)
+        except BaseException:
+            try:
+                await self._abandon(token)
+            except Exception as exc:
+                logger.warning("could not withdraw repair token %s: %s", token, exc)
+            raise
 
         wait_ms = (time.perf_counter() - enqueued_at) * 1000.0
         sev = severity.value
