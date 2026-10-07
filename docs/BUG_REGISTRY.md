@@ -3533,3 +3533,120 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Caused by:** none -- pre-existing.
 - **Fix:** `index.html` is served `Cache-Control: no-cache` (revalidated each load); only Vite's content-hashed `/assets/` are immutable (1 year, `^~` so the regex rule cannot take them); other static files get `max-age=3600`. Not exercised against a running nginx (no Docker on the dev machine); CI's frontend image build and the live probe after deploy confirm it.
 
+
+## BUG-343: Shim AST gate bypass: dunder string built by concatenation and fed to str.format reads the real logging/os/sys modules, leaking service secrets and other tenants' state
+- **Status:** fixed
+- **Found by:** ultracode UASR audit (run wf_6234d56e-d9c, isolation-sandbox lens; confirmed by 2 adversarial verifiers), 2026-10-07. `aurabackend/uasr/recovery_loop.py:114`.
+- **Severity:** high
+- **Root cause:** _validate_shim_source (recovery_loop.py:97-118) rejects `__` only inside each individual string Constant (lines 114-117) and dunder Attribute/Name nodes. A format string assembled at runtime from pieces that individually contain no `__` ("{0._" + "_globals_" + "_[logging].os.environ}") passes every check, and `.format` is not a forbidden attribute. str.format then does the dunder attribute walk itself. The stand-in `logging.getLogger` that the sandbox hands every shim (_shim_logging, lines 130-147; injected at line 576) is `get_logger`, a function defined in recovery_loop.py, so its __globals__ is that module's namespace, which holds the real `logging` module (imported at line 18). From there `.os.environ` and `.sys.modules[...]` are reachable as attribute/index lookups inside the format field. The exec at line 583 and every apply_shims_counted call (line 919) run this code. BUG-258 added the AST gate; this bypass of it is not registered.
+- **Failure scenario:** An authenticated tenant user posts /uasr/heal with column names that prompt-inject the LLM shim path (actuator_agent._llm_shim only checks for `"def transform" in code`). The LLM returns `def transform(rows): s = ("{0._" + "_globals_" + "_[logging].os.environ}").format(logging.getLogger); rows[0]["note"] = s; return rows`. _validate_shim_source accepts it. With the default risk_tiered=False the shim auto-deploys, or under risk_tiered the same tenant approves its own held shim. The next /uasr/heal response returns rows containing str(os.environ): the JWT signing secret, LLM API keys and DB DSN. The same route with `[logging].sys.modules[uasr.service]._loop._deployed_shims` returns every tenant's deployed shim code as a string, which bypasses the BUG-262..264 tenant scoping.
+- **Caused by:** none -- pre-existing.
+- **Fix:** the gate now also forbids the attribute names `format` and `format_map`, the only builtin path that walks attributes named in a runtime string, so `"...".format(...)`, `str.format(...)` and `.format_map(...)` are rejected before the shim runs whatever literal pieces they are built from. No shipped shim template uses `.format`. Regression test `test_a_format_string_assembled_at_runtime_cannot_reach_the_environment` (3 cases) read the environment through the stand-in logger's `__globals__` on the old gate and is rejected now.
+
+## BUG-344: Standing shims are applied twice to a batch whenever a new shim deploys (/uasr/heal and the MAPE-K pause path)
+- **Status:** open
+- **Found by:** ultracode UASR audit (run wf_6234d56e-d9c, correctness lens; confirmed by 2 adversarial verifiers), 2026-10-07. `aurabackend/uasr/service.py:794`.
+- **Severity:** high
+- **Root cause:** heal_batch first replaces batch.rows with the output of every standing shim (service.py:718, `batch.rows, standing_applied, _ = _loop.apply_shims_counted(...)`). After a new shim deploys it calls apply_shims_counted again on those same rows (service.py:794), and that call runs the WHOLE chain, standing shims included. The Kafka worker does the same thing: it applies shims at mapek_worker.py:479, then runs `self._loop.apply_shims(batch.source_id, batch.rows)` on the already-shimmed rows at mapek_worker.py:618 (and at 631 on the cross-source path). The new shim was validated against the already-shimmed rows (recovery_loop.py:265/459), so only the new shim should run at that point. The actuator's rescale template is `row[col] = row[col] / factor` (actuator_agent.py:292), which is not idempotent.
+- **Failure scenario:** Source S has a deployed rescale shim A (price / 100, cents to dollars). A later batch shows new drift on qty (x1000). Standing A is applied, the drift is detected, and shim B is validated and auto-deployed. Line 794 (or mapek 618) then applies [A, B] to rows that A already transformed, so price is divided by 100 twice. /uasr/heal returns these rows with healed:true. On Kafka, the corrupted batch is written to DuckDB and, because batch_healed=True, re-registered as the detector baseline (mapek_worker.py:622-623). Correct later batches then drift against a baseline that is 100x too small.
+- **Caused by:** none -- pre-existing.
+- **Fix:** pending.
+
+## BUG-345: With UASR_USE_SHIM_ROUTER on, the Kafka path ignores every shim restored at startup or approved by a human
+- **Status:** open
+- **Found by:** ultracode UASR audit (run wf_6234d56e-d9c, correctness lens; confirmed by 2 adversarial verifiers), 2026-10-07. `aurabackend/uasr/mapek_worker.py:460`.
+- **Severity:** high
+- **Root cause:** When _shim_router is set, the MAPE-K loop transforms batches only through ShimRouter.apply (mapek_worker.py:460-477) and never calls _loop.apply_shims. ShimRouter is a fresh in-memory object per worker (mapek_worker.py:261). Its routes are added only at mapek_worker.py:563/584, from recoveries this worker deployed itself in this process. Startup hydration (service.py:318, hydrate_deployed_shims) and /approve (service.py:1094, deploy_approved_shim) both write only to RecoveryLoop._deployed_shims, which the router branch never reads.
+- **Failure scenario:** In router mode a canary shim heals source S, and its RecoveryRecord is DEPLOYED. After the container restarts, the lifespan logs 'UASR restored 1 deployed shim(s)', but ShimRouter is empty. apply() returns '_passthrough' (shim_router.py:237-239), so raw drifted rows flow through, drift re-fires, and a new recovery runs on every drifted batch. In the same way, a PENDING_APPROVAL recovery that an operator approves is marked DEPLOYED in the DB, yet Kafka batches for that source are never transformed by it.
+- **Caused by:** none -- pre-existing.
+- **Fix:** pending.
+
+## BUG-346: Distributed repair: a waiter that is cancelled, errors, or whose node dies leaves its token in the Redis wait queue forever, so later repairs across the fleet stop being admitted
+- **Status:** open
+- **Found by:** ultracode UASR audit (run wf_6234d56e-d9c, reliability lens; confirmed by 2 adversarial verifiers), 2026-10-07. `aurabackend/uasr/distributed_repair.py:324`.
+- **Severity:** high
+- **Root cause:** submit() calls _enqueue(), which ZADDs the token to `{ns}:waitq`, then loops `while not await self._try_admit(token): await asyncio.sleep(self._poll)` (lines 324-328). Nothing removes the token if the wait ends without admission: there is no try/finally ZREM, and no task cancellation or Redis error is handled. Wait-queue entries also have no TTL and are never pruned; only active leases expire (_prune_expired_locked only scans `{ns}:active`). _try_admit (lines 274-285) walks the queue in priority order and returns False as soon as the first eligible entry is not its own token. A dead token at the head therefore makes every later _try_admit with equal or lower priority return False, forever.
+- **Failure scenario:** docker-compose.yml and docker-compose.prod.yml both run UASR_REPAIR_BACKEND=distributed against a shared Redis. (1) Kafka drift fires while all 8 global slots are busy, so a MEDIUM repair waits in submit(). (2) The service is restarted (a deploy, or uvicorn --reload in dev). The lifespan's MAPEKWorker.stop() runs wait_for(task, 15s), which cancels _run_loop while it is still inside submit's wait loop, so the token stays in waitq. A SIGKILLed node, or one Redis ConnectionError raised out of _try_admit, has the same effect. (3) The other repairs finish and the slots free up. Every later HIGH/MEDIUM/LOW repair on every node still sees the orphan as the head candidate, so `cand != token` returns False on every 25 ms poll. (4) MAPE-K workers sit in _plan_recovery with the consumer paused (pause path, mapek_worker.py:614-615). /uasr/mapek/status shows running+paused with last_error=None, and healing stops across the fleet until someone deletes the Redis key by hand.
+- **Caused by:** none -- pre-existing.
+- **Fix:** pending.
+
+## BUG-347: /uasr/ingest and /uasr/heal keep a DB write transaction open for the whole recovery loop (LLM calls plus sandbox), so on the deployed SQLite DB every other writer hits 'database is locked'
+- **Status:** open
+- **Found by:** ultracode UASR audit (run wf_6234d56e-d9c, reliability lens; confirmed by 2 adversarial verifiers), 2026-10-07. `aurabackend/uasr/service.py:623`.
+- **Severity:** high
+- **Root cause:** ingest_batch runs `db.add(drift_event); await db.flush()` (line 622-623), which issues the INSERT and so opens a SQLite write transaction holding the RESERVED lock. It then awaits `_loop.run(drift_result, batch)` (line 626) and commits only at line 644. heal_batch does the same at lines 757/759/776. The loop can take minutes: up to 3 iterations, each with a reflector LLM call and an actuator LLM call (each up to AURA_LLM_TIMEOUT=120 s) plus a sandbox validation of up to 30 s. The HTTP path also does not go through the repair scheduler. The deployed profile (deploy/aws-free-tier/docker-compose.yml:137) uses METADATA_DATABASE_URL=sqlite+aiosqlite:////data/state/uasr.db with busy_timeout=5000 (metadata_store/db.py:58).
+- **Failure scenario:** A tenant posts a drifted batch to /uasr/heal and the reflector falls through to the LLM, so the loop runs for about 60-240 s while the RESERVED lock is held. In that window: an operator's POST /uasr/recovery/{id}/approve (the _claim_pending_recovery UPDATE) waits 5 s and then fails with a 500 'database is locked'. The approval reaper's tick fails. The Kafka MAPE-K worker's persist_recovery_row hits the same error and is skipped as 'best-effort', so that recovery's DriftEvent and RecoveryRecord are lost for good. Any other tenant's /uasr/ingest that sees drift fails at its own flush. Meanwhile the gateway proxy gives up after 60 s (api_gateway/routers/pipelines.py `_uasr(..., 60, ...)`) and returns 503, so the caller retries and starts another lock-holding recovery for the same batch.
+- **Caused by:** none -- pre-existing.
+- **Fix:** pending.
+
+## BUG-348: Standing (already-deployed) shims run with no timeout on every batch: a shim that loops on new data hangs the MAPE-K worker forever and permanently ties up default-executor threads, eventually stalling every to_thread call in the service
+- **Status:** open
+- **Found by:** ultracode UASR audit (run wf_6234d56e-d9c, reliability lens; confirmed by 2 adversarial verifiers), 2026-10-07. `aurabackend/uasr/mapek_worker.py:479`.
+- **Severity:** high
+- **Root cause:** The BUG-259 fix put a time limit (wait_for with sandbox_timeout_seconds) only on validation, in RecoveryLoop._validate_shim. Deployed shims run through `await asyncio.to_thread(self._loop.apply_shims, ...)` with no wait_for in the MAPE-K loop (mapek_worker.py:479, 618, 631) and in /uasr/heal (service.py:718-719 and 794-795, `apply_shims_counted`). _sandbox_execute (recovery_loop.py:550-598) allows `while` loops, and a shim's runtime depends on the data, so passing validation on one batch says nothing about the next. A thread stuck in a shim never returns, and each one permanently holds a slot in the event loop's default ThreadPoolExecutor (min(32, cpu+4) workers, which is 6 on the 2-vCPU free-tier box).
+- **Failure scenario:** An LLM-generated unit-normalising shim contains `while v >= 1000: v = v / 1000`. It validates on the drifted batch, which has finite values, and is approved or auto-deployed. A later payload carries the JSON literal Infinity, which Python's json.loads accepts in both the Kafka value_deserializer and FastAPI body parsing. inf/1000 is still inf, so transform() never returns. The MAPE-K loop hangs at line 479 with status running, not paused, and last_error=None, so nothing alerts. Each retried /uasr/heal call for that source permanently takes another default-executor thread. After about 6 of them, every asyncio.to_thread in the service queues behind the stuck threads: _detector.detect for all tenants, Redis state I/O, the coordinator's admission calls. The whole UASR service stops answering drift requests until the process is restarted.
+- **Caused by:** none -- pre-existing.
+- **Fix:** pending.
+
+## BUG-349: Kafka MAPE-K recoveries are stored under the un-namespaced source 'default', so with auth on no user (admin included) can approve, reject or roll them back
+- **Status:** open
+- **Found by:** ultracode UASR audit (run wf_6234d56e-d9c, isolation-sandbox lens; confirmed by 2 adversarial verifiers), 2026-10-07. `aurabackend/uasr/service.py:1065`.
+- **Severity:** medium
+- **Root cause:** The worker builds every batch with source_id=self._cfg.source_id (mapek_worker.py:705). That value is MAPEKConfig.source_id = "default" (mapek_worker.py:96), which _mapek_config() (service.py:125-142) never overrides, and persist_recovery_row writes that id (recovery_persistence.py:121,132). The BUG-262/264 tenant fix limits decisions and reads to ids that start with `<tenant>::`: _owned (service.py:1010-1016) adds that predicate to the claiming UPDATE, line 1065 returns 404 when owns_source fails, and pending_approvals, recovery_detail and rollback (scoped_source turns 'default' into '<tenant>::default') do the same. An authenticated caller always has a tenant, and nothing exempts admins, so no authenticated principal owns 'default'.
+- **Failure scenario:** In production (AURA_JWT_ENABLED=true, UASR_MAPEK_ENABLED=true, UASR_RISK_TIERED=true) a Kafka batch drifts and the worker files a PENDING_APPROVAL recovery for source 'default', then pauses. An admin opens /uasr/recovery/pending and the record is not listed. POST /uasr/recovery/{id}/approve returns 404, and /uasr/rollback for 'default' reaches '<tenant>::default' and returns 404. The only available action is /uasr/mapek/resume (admin), which lifts the pause without deploying the held fix, so un-healed batches flow to the sink until the reaper escalates the record. The human-approval flow for the Kafka path is unreachable.
+- **Caused by:** none -- pre-existing.
+- **Fix:** pending.
+
+## BUG-350: Post-heal auto-rollback reports a shim as reverted while ShimRouter keeps applying it (router mode)
+- **Status:** open
+- **Found by:** ultracode UASR audit (run wf_6234d56e-d9c, correctness lens; confirmed by 2 adversarial verifiers), 2026-10-07. `aurabackend/uasr/recovery_loop.py:899`.
+- **Severity:** medium
+- **Root cause:** check_post_deploy reverts by calling rollback_last_shim, which only pops RecoveryLoop._deployed_shims (recovery_loop.py:850-857). mapek_worker.py:535-545 then marks the DB record ROLLED_BACK and emits 'shim auto-reverted'. In router mode, though, the shim was also installed as a canary route (mapek_worker.py:563), and nothing calls revert_canary or remove_route. A repo-wide grep finds no caller of revert_canary or promote_canary.
+- **Failure scenario:** UASR_USE_SHIM_ROUTER=true and UASR_POST_HEAL_VALIDATION_BATCHES=3. A no-op or wrong shim deploys as a canary. The same drift_type keeps firing for 3 batches, so the worker marks the record ROLLED_BACK and emits auto_rollback. ShimRouter.apply still routes every batch through the bad shim indefinitely. The DB, the dashboard and the event stream all say it was reverted, and /uasr/rollback cannot remove it either, because it also acts only on _loop.
+- **Caused by:** none -- pre-existing.
+- **Fix:** pending.
+
+## BUG-351: Post-heal validation rolls back the newest shim, not the one it was watching
+- **Status:** open
+- **Found by:** ultracode UASR audit (run wf_6234d56e-d9c, correctness lens; confirmed by 2 adversarial verifiers), 2026-10-07. `aurabackend/uasr/recovery_loop.py:899`.
+- **Severity:** medium
+- **Root cause:** _post_deploy_watch records only {drift_type, batches_seen} per source (recovery_loop.py:705-709), not which shim it is watching. When validation fails, it pops whatever shim is last (rollback_last_shim). deploy_approved_shim appends to the same list (recovery_loop.py:664) without touching the watch. mapek_worker.py:533-538 then persists ROLLED_BACK for that last shim's code via mark_shim_rolled_back.
+- **Failure scenario:** Shim A auto-deploys for STATISTICAL drift on source S, and a watch starts. Before the watch expires, an operator approves an older held recovery B for S (appended after A). A is a no-op, so STATISTICAL drift keeps firing. After N batches, check_post_deploy pops B, the human-approved and working shim, and its record is marked ROLLED_BACK, so it stays removed after a restart. Bad shim A remains deployed and is never re-validated, because the watch was deleted.
+- **Caused by:** none -- pre-existing.
+- **Fix:** pending.
+
+## BUG-352: Cross-source heal returns a recovery_id that was never persisted, so the returned id 404s on detail and approve
+- **Status:** open
+- **Found by:** ultracode UASR audit (run wf_6234d56e-d9c, correctness lens; confirmed by 2 adversarial verifiers), 2026-10-07. `aurabackend/uasr/cross_source_heal.py:85`.
+- **Severity:** medium
+- **Root cause:** run_with_candidate_shim mints a new recovery_id (recovery_loop.py:355). attempt_cross_source_heal copies status and shim fields onto the existing row (cross_source_heal.py:85-94), which keeps the ORIGINAL id, and returns `healed` with the new id. ingest_batch and heal_batch replace loop_result with healed (service.py:655/785) and respond with `loop_result.recovery_id` (service.py:664/813). The tracker (cross_source_heal.py:101) and the MAPE-K events and canary version (mapek_worker.py:583/596) also use the unpersisted id.
+- **Failure scenario:** With UASR_CORRELATION_AUTO_HEAL on and risk_tiered on, source S's own recovery fails, and a borrowed sibling shim validates and is held in PENDING_APPROVAL. /uasr/ingest responds with recovery_id=X_new, but the DB row is X_orig. A pipeline or operator that calls POST /uasr/recovery/X_new/approve or GET /uasr/recovery/X_new gets 404, so the held heal can only be found through the pending-queue listing. Metrics and event-stream ids do not match any DB record.
+- **Caused by:** none -- pre-existing.
+- **Fix:** pending.
+
+## BUG-353: Distributed repair: one Redis error during a heartbeat kills the heartbeat task, then `await hb` re-raises it, which throws away the finished repair's result and skips releasing the slot
+- **Status:** open
+- **Found by:** ultracode UASR audit (run wf_6234d56e-d9c, reliability lens; confirmed by 2 adversarial verifiers), 2026-10-07. `aurabackend/uasr/distributed_repair.py:347`.
+- **Severity:** medium
+- **Root cause:** _heartbeat_loop (lines 304-310) only re-raises CancelledError. Any other exception from _heartbeat (a redis-py ConnectionError or TimeoutError) ends the task with no log. After that the lease stops being renewed and expires 30 s later, while the repair is still running, so prune reclaims the slot and the global cap is exceeded. When the repair finishes, the finally block (lines 347-353) calls hb.cancel(), which does nothing on a finished task, then `await hb`. That re-raises the stored ConnectionError, which `except asyncio.CancelledError` does not catch. The new exception replaces the `return result` of the completed repair and skips `await self._release(token)`.
+- **Failure scenario:** A drift recovery goes through the LLM reflector and actuator (to_thread LLM calls of up to 120 s each, up to 3 iterations), so it runs for minutes and heartbeats every 5 s. A brief Redis blip (a failover, or a moment of network loss) makes one ZADD raise. The repair keeps going, and 30 s later its lease is pruned, so another node gets admitted above UASR_REPAIR_MAX_GLOBAL_CONCURRENT. When RecoveryLoop.run returns, often after _deploy_shim has already put the shim in the in-memory registry, submit() raises ConnectionError instead of returning. _plan_recovery propagates it, _run_forever records last_error and pauses the MAPE-K consumer, and persist_recovery_row never runs. The result: a shim that is live in memory with no RecoveryRecord, plus a worker that stays paused until an operator resumes it.
+- **Caused by:** none -- pre-existing.
+- **Fix:** pending.
+
+## BUG-354: /uasr/correlation computes the incident over every tenant's sources, so a tenant learns other tenants' drift types, timestamps and drifting-source counts
+- **Status:** open
+- **Found by:** ultracode UASR audit (run wf_6234d56e-d9c, isolation-sandbox lens; confirmed by 2 adversarial verifiers), 2026-10-07. `aurabackend/uasr/service.py:1186`.
+- **Severity:** low
+- **Root cause:** get_correlation calls _tracker.detect_correlation(window_seconds, min_sources) (service.py:1186). That function counts distinct sources across all tenants against the threshold and builds drift_types and earliest_event_at from all tenants' recent events (metrics.py:263-275). The handler then filters only source_ids to the caller's tenant (lines 1190-1193) and returns drift_types, earliest_event_at and window_seconds unfiltered (lines 1194-1201). min_sources is caller-controlled.
+- **Failure scenario:** Tenant A has 2 drifting sources. A calls GET /uasr/correlation?min_sources=3, then 4, 5 and so on. The response flips from correlated:true to false exactly when the threshold passes the total number of drifting sources across all tenants, which gives A a count of other tenants' drifting sources. Each true response also lists drift_types such as 'semantic' that only another tenant's sources produced, and an earliest_event_at taken from another tenant's event. A's own correlation alert can also fire only because a third source owned by tenant B drifted, which is cross-tenant influence on the signal.
+- **Caused by:** none -- pre-existing.
+- **Fix:** pending.
+
+## BUG-355: ShimRouter canaries are never promoted, reverted or removed by any production code, so every canary-path recovery adds another permanent route and auto-rollback never takes the shim out of the router
+- **Status:** open
+- **Found by:** ultracode UASR audit (run wf_6234d56e-d9c, reliability lens; confirmed by 2 adversarial verifiers), 2026-10-07. `aurabackend/uasr/mapek_worker.py:563`.
+- **Severity:** low
+- **Root cause:** With UASR_USE_SHIM_ROUTER=true, each DEPLOYED recovery calls `self._shim_router.add_canary(source_id, f"v_{recovery_id}", ...)` (lines 563-568 and 584-589). Outside tests, nothing under aurabackend calls promote_canary, revert_canary, record_canary_score, drain_to_quiescence or remove_route (git grep finds only docstrings). ShimRouter._routes[source_id] therefore only grows, and add_canary rescales every existing route on each call. Post-heal auto-rollback (check_post_deploy at line 535, then rollback_last_shim) pops only RecoveryLoop._deployed_shims and marks the DB row ROLLED_BACK. The router route that actually transforms batches in this mode stays live.
+- **Failure scenario:** With the router enabled, a source whose drift recurs (for example a flapping upstream schema) gets a new v_<id> route on every drifted batch. None of them is ever retired, so the route table and the per-route transform closures grow for the life of the process, and traffic spreads across stale shims, each run in its own thread. When post-heal validation decides a canary did not fix the drift, it logs 'shim auto-reverted' and persists ROLLED_BACK, yet ShimRouter.apply keeps sending that shim its share of every later batch.
+- **Caused by:** none -- pre-existing.
+- **Fix:** pending.
