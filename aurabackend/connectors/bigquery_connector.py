@@ -2,6 +2,7 @@
 BigQuery connector for AURA
 """
 
+import asyncio
 import json
 import logging
 import re
@@ -33,7 +34,17 @@ def build_table_ref(project: Optional[str], dataset: Optional[str], table: str) 
 
 
 class BigQueryConnector(BaseConnector):
-    """Connect to and profile Google BigQuery"""
+    """Connect to and profile Google BigQuery
+
+    BUG-339: the google-cloud-bigquery client is synchronous (HTTP round trips, and
+    ``.result()`` blocks until the job finishes). Every call to it runs through
+    ``asyncio.to_thread``: called directly, a schema load over a 50-table dataset --
+    one list call plus a get_table, a sample query and a COUNT per table -- held the
+    gateway's only event loop for the whole time.
+    """
+
+    def _query_rows(self, sql: str) -> List[Dict[str, Any]]:
+        return [dict(row.items()) for row in self.client.query(sql).result()]
 
     def __init__(self, config: ConnectorConfig):
         super().__init__(config)
@@ -84,7 +95,7 @@ class BigQueryConnector(BaseConnector):
 
         try:
             dataset_ref = self.client.dataset(self.config.database or "")
-            tables = list(self.client.list_tables(dataset_ref))
+            tables = await asyncio.to_thread(lambda: list(self.client.list_tables(dataset_ref)))
             table_list = [table.table_id for table in tables]
             self.metadata.table_count = len(table_list)
             return table_list
@@ -99,7 +110,7 @@ class BigQueryConnector(BaseConnector):
 
         try:
             table_id = build_table_ref(self.project_id, self.config.database, table_name)
-            table = self.client.get_table(table_id)
+            table = await asyncio.to_thread(self.client.get_table, table_id)
 
             schema = {
                 "table_name": table_name,
@@ -130,12 +141,7 @@ class BigQueryConnector(BaseConnector):
             table_id = build_table_ref(self.project_id, self.config.database, table_name)
 
             query = f"SELECT * FROM `{table_id}` LIMIT {int(limit)}"
-            results = self.client.query(query).result()
-
-            rows = []
-            for row in results:
-                rows.append(dict(row.items()))
-            return rows
+            return await asyncio.to_thread(self._query_rows, query)
         except Exception as e:
             logger.warning("BigQuery sample_rows failed: %s", e)
             return []
@@ -150,12 +156,7 @@ class BigQueryConnector(BaseConnector):
             if "LIMIT" not in query.upper():
                 query = f"{query} LIMIT {limit}"
 
-            results = self.client.query(query).result()
-
-            rows = []
-            for row in results:
-                rows.append(dict(row.items()))
-            return rows
+            return await asyncio.to_thread(self._query_rows, query)
         except Exception as e:
             logger.warning("BigQuery query failed: %s", e)
             return []
@@ -173,8 +174,8 @@ class BigQueryConnector(BaseConnector):
             table_id = build_table_ref(self.project_id, self.config.database, table_name)
 
             count_query = f"SELECT COUNT(*) as cnt FROM `{table_id}`"
-            count_result = self.client.query(count_query).result()
-            row_count = next(count_result)[0]
+            count_rows = await asyncio.to_thread(self._query_rows, count_query)
+            row_count = next(iter(count_rows[0].values())) if count_rows else 0
 
             # Profile each column
             columns_profile = {}
