@@ -3616,13 +3616,13 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Fix:** pending.
 
 ## BUG-352: Cross-source heal returns a recovery_id that was never persisted, so the returned id 404s on detail and approve
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode UASR audit (run wf_6234d56e-d9c, correctness lens; confirmed by 2 adversarial verifiers), 2026-10-07. `aurabackend/uasr/cross_source_heal.py:85`.
 - **Severity:** medium
 - **Root cause:** run_with_candidate_shim mints a new recovery_id (recovery_loop.py:355). attempt_cross_source_heal copies status and shim fields onto the existing row (cross_source_heal.py:85-94), which keeps the ORIGINAL id, and returns `healed` with the new id. ingest_batch and heal_batch replace loop_result with healed (service.py:655/785) and respond with `loop_result.recovery_id` (service.py:664/813). The tracker (cross_source_heal.py:101) and the MAPE-K events and canary version (mapek_worker.py:583/596) also use the unpersisted id.
 - **Failure scenario:** With UASR_CORRELATION_AUTO_HEAL on and risk_tiered on, source S's own recovery fails, and a borrowed sibling shim validates and is held in PENDING_APPROVAL. /uasr/ingest responds with recovery_id=X_new, but the DB row is X_orig. A pipeline or operator that calls POST /uasr/recovery/X_new/approve or GET /uasr/recovery/X_new gets 404, so the held heal can only be found through the pending-queue listing. Metrics and event-stream ids do not match any DB record.
 - **Caused by:** none -- pre-existing.
-- **Fix:** pending.
+- **Fix:** `run_with_candidate_shim` takes the id of the recovery row the caller will update, and `attempt_cross_source_heal` passes `recovery_rec.id`, so the returned id, the tracker event and the deploy callback all use the persisted id. Regression test `test_the_returned_recovery_id_is_the_persisted_one` failed on the old code.
 
 ## BUG-353: Distributed repair: one Redis error during a heartbeat kills the heartbeat task, then `await hb` re-raises it, which throws away the finished repair's result and skips releasing the slot
 - **Status:** open

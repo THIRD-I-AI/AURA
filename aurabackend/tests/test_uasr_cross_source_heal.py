@@ -317,3 +317,39 @@ class TestAttemptCrossSourceHeal:
             break
 
         await _cleanup(rec_id)
+
+
+@pytest.mark.asyncio
+async def test_the_returned_recovery_id_is_the_persisted_one():
+    # BUG-352: run_with_candidate_shim minted a fresh id, so /uasr/ingest and /uasr/heal
+    # answered with an id no RecoveryRecord had, and approve/detail on it 404'd.
+    from unittest.mock import patch
+
+    from uasr.recovery_loop import RecoveryLoop, RecoveryLoopConfig
+
+    rec_id = _rec_id()
+    tracker = MagicMock()
+    tracker.find_recent_deployed_shim.return_value = ("s_sibling", "def transform(rows):\n    return rows\n")
+    loop = RecoveryLoop(detector=MagicMock(), config=RecoveryLoopConfig(auto_deploy=True, risk_tiered=True))
+
+    async for session in get_session():
+        session.add(DriftEvent(id=rec_id + "_drift", source_id="s_failing", drift_type="schema"))
+        rec = RecoveryRecord(
+            id=rec_id, drift_event_id=rec_id + "_drift", source_id="s_failing",
+            status=RecoveryStatus.FAILED.value, generation_method="template",
+            completed_at=datetime.now(timezone.utc),
+        )
+        session.add(rec)
+        await session.commit()
+        with patch.object(loop, "_validate_shim", new_callable=AsyncMock) as mock_val:
+            mock_val.return_value = {"passed": True, "post_kl": 0.01}
+            result = await attempt_cross_source_heal(_drift(), _batch(), rec, session, tracker, loop, 60.0)
+        break
+
+    try:
+        assert result is not None and result.status == RecoveryStatus.PENDING_APPROVAL
+        assert result.recovery_id == rec_id
+        assert tracker.record.call_args[0][0].recovery_id == rec_id
+        assert (await _fetch(rec_id)).status == RecoveryStatus.PENDING_APPROVAL.value
+    finally:
+        await _cleanup(rec_id)

@@ -339,6 +339,7 @@ class RecoveryLoop:
         original_batch: BatchPayload,
         candidate_shim_code: str,
         sibling_source_id: str,
+        recovery_id: Optional[str] = None,
     ) -> RecoveryLoopResult:
         """Try a sibling source's already-DEPLOYED shim against this
         source's own drifted batch, skipping diagnose+generate (no LLM
@@ -355,7 +356,9 @@ class RecoveryLoop:
         supervised deployments exactly like an LLM-generated one would.
         """
         start_time = time.perf_counter()
-        recovery_id = uuid.uuid4().hex[:16]
+        # BUG-352: the caller passes the id of the recovery row it will update, so the
+        # id this returns (and deploys under) is one that exists in the database.
+        recovery_id = recovery_id or uuid.uuid4().hex[:16]
         loop_result = RecoveryLoopResult(
             drift_event_id=drift_result.batch_id,
             recovery_id=recovery_id,
