@@ -88,10 +88,13 @@ class RecoveryLoopConfig:
 # by a stand-in that can only log. This is defence in depth, not process
 # isolation -- a shim still runs in-process.
 _FORBIDDEN_ATTR_PREFIXES = ("f_", "gi_", "cr_", "ag_", "tb_", "co_")
+# BUG-343: str.format walks attributes named in a string built at runtime
+# ("{0._" + "_globals_" + "_...}"), which the per-literal `__` check cannot see.
+_FORBIDDEN_ATTRS = frozenset({"format", "format_map"})
 
 
 def _forbidden_name(name: str) -> bool:
-    return name.startswith("__") or name.startswith(_FORBIDDEN_ATTR_PREFIXES)
+    return name.startswith("__") or name.startswith(_FORBIDDEN_ATTR_PREFIXES) or name in _FORBIDDEN_ATTRS
 
 
 def _validate_shim_source(shim_code: str) -> None:

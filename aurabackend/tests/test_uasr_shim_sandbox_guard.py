@@ -84,3 +84,20 @@ def test_input_rows_are_not_mutated():
     rows = [{"v": 1}]
     RecoveryLoop._sandbox_execute("def transform(rows):\n    rows[0]['v'] = 99\n    return rows\n", rows)
     assert rows == [{"v": 1}]
+
+
+@pytest.mark.parametrize("body", [
+    # BUG-343: no single literal holds `__`, so the per-Constant check let these through,
+    # and str.format then walked get_logger.__globals__ to the real logging/os modules.
+    "    rows[0]['leak'] = ('{0._' + '_globals_' + '_[logging].os.environ[SECRET]}').format(logging.getLogger)",
+    "    rows[0]['leak'] = str.format('{0._' + '_globals_' + '_[logging].os.environ[SECRET]}', logging.getLogger)",
+    "    rows[0]['leak'] = ('{f._' + '_globals_' + '_[logging].os.environ[SECRET]}').format_map({'f': logging.getLogger})",
+], ids=["format", "str.format", "format_map"])
+def test_a_format_string_assembled_at_runtime_cannot_reach_the_environment(body, monkeypatch):
+    monkeypatch.setenv("SECRET", "do-not-leak")
+    try:
+        result = RecoveryLoop._sandbox_execute(_shim(body), ROWS)
+    except (ValueError, ImportError, AttributeError):
+        return
+    assert "do-not-leak" not in repr(result)
+    pytest.fail(f"shim ran: {result!r}")
