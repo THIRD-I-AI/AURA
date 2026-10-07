@@ -221,3 +221,35 @@ def test_a_shim_is_never_borrowed_from_another_tenant():
 
     tracker._events = [_event("evil::orders"), _event("acme::invoices")]
     assert tracker.find_recent_deployed_shim(DriftType.SCHEMA, "acme::orders", 3600) == ("acme::invoices", SHIM)
+
+
+# ── BUG-349: the platform Kafka worker's recoveries ─────────────────────────
+
+@pytest.mark.asyncio
+async def test_an_admin_can_see_and_decide_on_the_kafka_workers_recoveries():
+    # The shared MAPE-K worker files under an un-namespaced source no tenant owns, so
+    # with auth on these held recoveries were invisible and undecidable for everyone.
+    source = f"kafka_{uuid.uuid4().hex[:6]}"
+    held = await _recovery(source)
+
+    async with get_session_factory()() as db:
+        pending = await service.pending_approvals(_as("ops", role="admin"), db=db)
+        assert held in {r["id"] for r in pending["pending"]}
+        assert (await service.recovery_detail(held, _as("ops", role="admin"), db=db))["recovery"]["id"] == held
+        out = await service.approve_recovery(
+            held, service.ApprovalRequest(approver="ops"), _as("ops", role="admin"), db=db)
+    assert out["status"] == "approved" and out["recovery"]["status"] == RecoveryStatus.DEPLOYED.value
+    service._loop.rollback_last_shim(source)
+
+
+@pytest.mark.asyncio
+async def test_a_member_still_cannot_reach_platform_recoveries():
+    held = await _recovery(f"kafka_{uuid.uuid4().hex[:6]}")
+
+    async with get_session_factory()() as db:
+        pending = await service.pending_approvals(_as("acme"), db=db)
+        assert held not in {r["id"] for r in pending["pending"]}
+        with pytest.raises(HTTPException) as exc:
+            await service.approve_recovery(held, service.ApprovalRequest(approver="x"), _as("acme"), db=db)
+    assert exc.value.status_code == 404
+    assert await _status(held) == RecoveryStatus.PENDING_APPROVAL.value
