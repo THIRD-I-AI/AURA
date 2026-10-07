@@ -3571,13 +3571,13 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Fix:** pending.
 
 ## BUG-347: /uasr/ingest and /uasr/heal keep a DB write transaction open for the whole recovery loop (LLM calls plus sandbox), so on the deployed SQLite DB every other writer hits 'database is locked'
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode UASR audit (run wf_6234d56e-d9c, reliability lens; confirmed by 2 adversarial verifiers), 2026-10-07. `aurabackend/uasr/service.py:623`.
 - **Severity:** high
 - **Root cause:** ingest_batch runs `db.add(drift_event); await db.flush()` (line 622-623), which issues the INSERT and so opens a SQLite write transaction holding the RESERVED lock. It then awaits `_loop.run(drift_result, batch)` (line 626) and commits only at line 644. heal_batch does the same at lines 757/759/776. The loop can take minutes: up to 3 iterations, each with a reflector LLM call and an actuator LLM call (each up to AURA_LLM_TIMEOUT=120 s) plus a sandbox validation of up to 30 s. The HTTP path also does not go through the repair scheduler. The deployed profile (deploy/aws-free-tier/docker-compose.yml:137) uses METADATA_DATABASE_URL=sqlite+aiosqlite:////data/state/uasr.db with busy_timeout=5000 (metadata_store/db.py:58).
 - **Failure scenario:** A tenant posts a drifted batch to /uasr/heal and the reflector falls through to the LLM, so the loop runs for about 60-240 s while the RESERVED lock is held. In that window: an operator's POST /uasr/recovery/{id}/approve (the _claim_pending_recovery UPDATE) waits 5 s and then fails with a 500 'database is locked'. The approval reaper's tick fails. The Kafka MAPE-K worker's persist_recovery_row hits the same error and is skipped as 'best-effort', so that recovery's DriftEvent and RecoveryRecord are lost for good. Any other tenant's /uasr/ingest that sees drift fails at its own flush. Meanwhile the gateway proxy gives up after 60 s (api_gateway/routers/pipelines.py `_uasr(..., 60, ...)`) and returns 503, so the caller retries and starts another lock-holding recovery for the same batch.
 - **Caused by:** none -- pre-existing.
-- **Fix:** pending.
+- **Fix:** `ingest_batch` and `heal_batch` commit the DriftEvent before the recovery loop instead of flushing it, so no write transaction (and no SQLite write lock) is held across LLM calls and sandbox validation; the RecoveryRecord is written in its own transaction afterwards. Regression test `test_uasr_recovery_does_not_hold_db_lock.py` (heal and ingest) failed with 'database is locked' on the old code.
 
 ## BUG-348: Standing (already-deployed) shims run with no timeout on every batch: a shim that loops on new data hangs the MAPE-K worker forever and permanently ties up default-executor threads, eventually stalling every to_thread call in the service
 - **Status:** open
