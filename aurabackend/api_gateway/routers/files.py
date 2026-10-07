@@ -316,7 +316,10 @@ async def list_files(request: Request) -> Dict[str, Any]:
         return {"status": "error", "error": "File service not available"}
     try:
         sub = tenant_dir_name(_request_tenant(request))
-        return {"status": "success", "files": file_service.list_files(subdir=sub)}
+        # BUG-337: list/info/delete go through the storage backend -- blocking boto3
+        # paginator and DeleteObject round trips on S3 -- so they run off the loop.
+        files = await asyncio.to_thread(file_service.list_files, subdir=sub)
+        return {"status": "success", "files": files}
     except Exception as e:
         return {"status": "error", "error": sanitize_error(e, logger=logger, context="list files")}
 
@@ -331,7 +334,7 @@ async def get_file_info(file_id: str, request: Request) -> Dict[str, Any]:
         # does. Without it the lookup ran against the shared 'default' tenant,
         # so one org could resolve another org's upload by id.
         sub = tenant_dir_name(_request_tenant(request))
-        file_info = file_service.get_file_info(file_id, subdir=sub)
+        file_info = await asyncio.to_thread(file_service.get_file_info, file_id, subdir=sub)
         if file_info:
             return {"status": "success", "file_info": file_info}
         else:
@@ -361,7 +364,7 @@ async def get_file_profile(file_id: str, request: Request) -> Dict[str, Any]:
         tenant = _request_tenant(request)
         if file_service is not None:
             sub = tenant_dir_name(tenant)
-            if not file_service.get_file_info(file_id, subdir=sub):
+            if not await asyncio.to_thread(file_service.get_file_info, file_id, subdir=sub):
                 # 404, not 403 — a 403 would confirm the file exists under some
                 # other tenant, which is the existence oracle the rest of the
                 # gateway's routes deliberately avoid.
@@ -393,7 +396,7 @@ async def delete_file(file_id: str, request: Request) -> Dict[str, Any]:
         return {"status": "error", "error": "File service not available"}
     try:
         sub = tenant_dir_name(_request_tenant(request))
-        success = file_service.delete_file(file_id, subdir=sub)
+        success = await asyncio.to_thread(file_service.delete_file, file_id, subdir=sub)
         if success:
             await invalidate_schema_cache()
             return {"status": "success", "message": "File deleted successfully"}
