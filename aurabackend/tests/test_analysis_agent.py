@@ -120,3 +120,32 @@ def test_analysis_agent_produces_conclusion_via_generate():
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+@pytest.mark.parametrize("module", ["analysis_agent", "visualization_agent"])
+def test_column_profiling_runs_off_the_event_loop(monkeypatch, module):
+    # BUG-364: profile_columns (and the stats summary) ran over every result row inline on
+    # the event loop -- only the LLM call was offloaded -- so a large chat result blocked
+    # the single worker for every tenant.
+    import importlib
+    import threading
+
+    mod = importlib.import_module(f"agents.specialists.{module}")
+    real, seen = mod.profile_columns, []
+
+    def _spy(*args, **kwargs):
+        seen.append(threading.current_thread())
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(mod, "profile_columns", _spy)
+    ctx = _make_ctx()
+    if module == "visualization_agent":
+        agent = mod.VisualizationAgent()
+    else:
+        agent = AnalysisAgent()
+    agent._llm = agent.llm = _SlowSyncLLM(delay=0)
+
+    asyncio.run(agent.execute(ctx))
+
+    assert seen, "profile_columns was not called"
+    assert all(t is not threading.main_thread() for t in seen)

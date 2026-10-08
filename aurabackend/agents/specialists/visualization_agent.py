@@ -78,7 +78,9 @@ class VisualizationAgent(BaseAgent):
         records: List[Dict[str, Any]] = upstream_data["records"]
         columns: List[str] = upstream_data.get("columns") or list(records[0].keys())
 
-        profiles = profile_columns(records, columns)
+        # BUG-364: full-column stats (sorted, statistics.stdev) over every result row;
+        # inline, this blocked the single worker for every tenant on a large result.
+        profiles = await asyncio.to_thread(profile_columns, records, columns)
 
         # 1. LLM attempt
         # _llm_chart_spec calls the sync LLM SDK (self._llm.generate_json).
