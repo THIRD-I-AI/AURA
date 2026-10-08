@@ -928,3 +928,17 @@ class RecoveryLoop:
                 break
             applied += 1
         return rows, applied, len(shims)
+
+    def apply_new_shim(
+        self, source_id: str, shim_code: str, rows: List[Dict[str, Any]],
+    ) -> tuple[List[Dict[str, Any]], bool]:
+        """Apply only a just-deployed shim to rows the standing chain already transformed.
+
+        BUG-344: callers used to re-run the whole chain here, so every standing shim
+        ran twice (a non-idempotent rescale divided by its factor twice). The new shim
+        was validated against the already-shimmed rows, so it alone is what is owed."""
+        try:
+            return self._sandbox_execute(shim_code, rows), True
+        except Exception as exc:
+            logger.error("Shim application failed for source=%s: %s", source_id, exc)
+            return rows, False

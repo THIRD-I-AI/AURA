@@ -790,9 +790,10 @@ async def heal_batch(req: IngestRequest, request: Request, db: AsyncSession = De
     #    and says so -- see the docstring.
     deployed = loop_result.status == RecoveryStatus.DEPLOYED
     applied, total = standing_applied, standing
-    if deployed:
-        batch.rows, applied, total = await asyncio.to_thread(
-            _loop.apply_shims_counted, batch.source_id, batch.rows)
+    if deployed and loop_result.shim is not None:
+        batch.rows, ok = await asyncio.to_thread(
+            _loop.apply_new_shim, batch.source_id, loop_result.shim.shim_code, batch.rows)
+        applied, total = standing_applied + ok, standing + 1
         batch.columns = list(batch.rows[0].keys()) if batch.rows else batch.columns
     apply_failed = applied < total
 
