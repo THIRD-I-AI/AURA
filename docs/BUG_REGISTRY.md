@@ -3697,13 +3697,13 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Fix:** `materialize_table` puts the bound in the query (`SELECT * FROM "<table>" LIMIT max_rows + 1`), so the DuckDB fetch returns at most one row past `AURA_DPC_MAX_ROWS` and the existing size check then skips the cross-check without having read the table. Regression test `test_materialize_table_reads_at_most_one_row_past_the_bound` (through the real `_dpc_registry` tool) read all 100,000 rows on the old code and 51 now.
 
 ## BUG-361: Retry recursion resets retry_count to 0 on every attempt, so a failing job retries forever and wedges the scheduler loop
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode audit of agents/, connectors/ and scheduler_service/ (run wf_42467807-a81, scheduler scope; confirmed by 2 adversarial verifiers), 2026-10-08. `aurabackend/scheduler_service/executor.py:253`.
 - **Severity:** high
 - **Root cause:** execute_job creates a new JobExecution row with `retry_count: 0` on each call (executor.py:157-162). On failure it reads that row (retry_count=0), checks `execution.retry_count < job.max_retries` (line 232), sets that row's retry_count to 1 and status PENDING, sleeps, then calls `return await self.execute_job(job, triggered_by)` (line 253). The recursive call creates another new row with retry_count=0, so the check is always 0 < max_retries and the FAILED branch is never reached for any job with max_retries >= 1 (the default is 3).
 - **Failure scenario:** Entry point: the SchedulerWorker started in scheduler_service/main.py's lifespan, and the gateway's /api/v1/scheduler/jobs/{id}/execute and /run. A job's query starts failing permanently (bad SQL, a deleted connection_id, or the connector returning 4xx/5xx). The executor then retries every retry_delay_seconds with no end. Each attempt leaves an execution row stuck in PENDING plus new log rows, so history grows without limit. No FAILED status is recorded and no failure notification is ever sent. The worker awaits `asyncio.gather` for that wave (worker.py:281), so `_evaluate_and_execute` never returns and no other job in any later tick ever runs. On Postgres the worker also keeps holding the cron-evaluator advisory lock (worker.py:217-229), so every other replica skips every tick. Scheduling stops cluster-wide and nothing logs an error. Each attempt also adds one more coroutine frame to the recursion.
 - **Caused by:** none -- pre-existing.
-- **Fix:** pending.
+- **Fix:** `execute_job` retries inside one execution (a `while True` loop around the attempt) instead of recursing into itself, so the stored `retry_count` actually reaches `max_retries` and the job then fails for good; each retry still waits `retry_delay_seconds`. Regression tests in `test_scheduler_retry_bounds.py` retried without bound and created one execution per attempt on the old code.
 
 ## BUG-362: A job that exhausts its retries never has next_execution_time advanced, so it fires again on every worker tick
 - **Status:** open
