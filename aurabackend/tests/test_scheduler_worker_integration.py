@@ -37,7 +37,7 @@ from typing import Any
 import pytest
 import pytest_asyncio
 
-from scheduler_service.models import ScheduleType
+from scheduler_service.models import JobStatus, ScheduleType
 from scheduler_service.repository import SchedulerRepository
 from scheduler_service.worker import (
     CRON_EVALUATOR_LOCK_ID,
@@ -304,3 +304,57 @@ async def test_notify_jobs_changed_emits_on_postgres(pg_repository) -> None:
         pg_repository, kind="test_emit", job_id="some_id",
     )
     # If we got here without raising, the NOTIFY went through.
+
+
+# ── BUG-356: aware datetimes on the real write paths ────────────────
+
+async def _run_real_failing_job(repo) -> Any:
+    """Create, update and run a job through the real repository + executor paths that
+    write datetime.now(timezone.utc); the query itself fails, so the retry/failure
+    path (which subtracts a stored started_at) runs too."""
+    from scheduler_service.executor import JobExecutor
+
+    job = await repo.create_job({
+        "id": f"utc_{uuid.uuid4().hex[:8]}", "name": "utc", "connection_id": "c1",
+        "query": "SELECT 1", "schedule_type": ScheduleType.DAILY,
+        "schedule_config": {"hour": 0, "minute": 0}, "max_retries": 0,
+        "next_execution_time": datetime.now(timezone.utc) + timedelta(hours=1),
+        "is_active": True,
+    })
+    job = await repo.update_job(job.id, {"description": "touched"})
+
+    executor = JobExecutor(repo)
+
+    async def _fails(**kwargs):
+        raise RuntimeError("database down")
+
+    executor._execute_query = _fails
+
+    async def _no_notify(**kwargs):
+        return None
+
+    executor.notifications.notify_job_failure = _no_notify
+    try:
+        return await executor.execute_job(job)
+    finally:
+        await executor.http_client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_real_write_paths_handle_aware_datetimes_on_sqlite(sqlite_repository) -> None:
+    # On SQLite the stored started_at came back naive, so the failure path's
+    # `now(timezone.utc) - started_at` raised and execute_job crashed.
+    execution = await _run_real_failing_job(sqlite_repository)
+
+    assert execution.status == JobStatus.FAILED
+    assert execution.started_at.tzinfo is not None
+
+
+@postgres_required
+@pytest.mark.asyncio
+async def test_real_write_paths_handle_aware_datetimes_on_postgres(pg_repository) -> None:
+    # asyncpg rejected every aware datetime written into these naive TIMESTAMP columns,
+    # so creating, updating and running jobs all failed on the Postgres stack.
+    execution = await _run_real_failing_job(pg_repository)
+
+    assert execution.status == JobStatus.FAILED
