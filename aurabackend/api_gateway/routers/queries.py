@@ -548,9 +548,16 @@ async def lint_query(query: str):
 @router.post("/analyze/results")
 async def analyze_results(query: str, results: List[Dict[str, Any]], column_profiles: Optional[Dict[str, Any]] = None):
     """Generate insights from query results."""
+    # BUG-375: the engine's statistics (exact-fraction stdev/median, sorts, pairwise
+    # correlation) ran over every posted row inline on the single worker, and nothing
+    # bounded the row count. Bounded like a query result, and run in a thread.
+    if len(results) > _max_result_rows():
+        raise HTTPException(
+            status_code=413,
+            detail=f"At most {_max_result_rows():,} result rows can be analyzed at once",
+        )
     engine = InsightsEngine()
-    analysis = engine.analyze(query, results, column_profiles)
-    return analysis
+    return await asyncio.to_thread(engine.analyze, query, results, column_profiles)
 
 
 # ── Query History ────────────────────────────────────────────────────
