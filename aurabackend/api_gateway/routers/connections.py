@@ -66,20 +66,27 @@ def _confine_server_file_paths(conn_type: str, config: ConnectorConfig, http_req
         os.path.realpath(backend.tenant_dir(_request_tenant(http_request)))
         if isinstance(backend, LocalBackend) else None
     )
-    for attr in ("connection_string", "database"):
-        raw = getattr(config, attr, None)
+    def confined(raw: Any) -> Any:
         if not raw or raw == ":memory:":
-            continue
+            return raw
         resolved = None
         if root is not None:
-            candidate = raw if os.path.isabs(raw) else os.path.join(root, raw)
+            candidate = raw if os.path.isabs(str(raw)) else os.path.join(root, str(raw))
             resolved = os.path.realpath(candidate)
         if resolved is None or os.path.commonpath([resolved, root]) != root:
             raise HTTPException(
                 status_code=400,
                 detail=f"{conn_type} path must be ':memory:' or a file in your own uploads",
             )
-        setattr(config, attr, resolved)
+        return resolved
+
+    for attr in ("connection_string", "database"):
+        setattr(config, attr, confined(getattr(config, attr, None)))
+    # BUG-357: DuckDBConnector also opens extra_params["db_path"] (ahead of `database`),
+    # which the ad-hoc /connectors/{type}/* routes pass straight through.
+    extra = getattr(config, "extra_params", None)
+    if isinstance(extra, dict) and "db_path" in extra:
+        extra["db_path"] = confined(extra["db_path"])
 
 
 def _make_connector(conn_type: str, config: ConnectorConfig, http_request: Request):
