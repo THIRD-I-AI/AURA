@@ -3733,13 +3733,13 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Fix:** pending.
 
 ## BUG-365: DuckDB connector runs synchronous DuckDB calls on the event loop and freezes the single-worker gateway
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode audit of agents/, connectors/ and scheduler_service/ (run wf_42467807-a81, connectors scope; confirmed by 2 adversarial verifiers), 2026-10-08. `aurabackend/connectors/duckdb_connector.py:149`.
 - **Severity:** medium
 - **Root cause:** Every async method of DuckDBConnector calls the blocking duckdb API directly, with no asyncio.to_thread: connect (duckdb.connect at line 59), list_tables (112), get_table_schema (124), execute_query (149) and profile_table's COUNT(*) (161). BUG-339 moved the same pattern off the loop for BigQuery only.
 - **Failure scenario:** Entry points: POST /connections/{id}/sync, GET /connections/{id}/schema and POST /connectors/duckdb/profile, all of which await these methods directly. Take a saved duckdb connection to an uploaded file holding a heavy view, for example `CREATE VIEW slow AS SELECT count(*) FROM range(1000000000000)`, or a large table synced in 5000-row OFFSET pages. profile_table's COUNT(*) or each page query then runs on the event loop thread. The uvicorn worker serves no other request, for any tenant, until DuckDB returns. That includes health checks and logins.
 - **Caused by:** none -- pre-existing.
-- **Fix:** pending.
+- **Fix:** every blocking call in `DuckDBConnector` (connect, spatial load, lockdown, SHOW TABLES, DESCRIBE, queries, COUNT(*), file registration) runs through `asyncio.to_thread`, as BUG-339 did for BigQuery. Regression test `test_duckdb_connector_calls_run_off_the_event_loop` saw them on the event-loop thread on the old code.
 
 ## BUG-366: GET /connections/{id}/schema always returns empty column lists
 - **Status:** open

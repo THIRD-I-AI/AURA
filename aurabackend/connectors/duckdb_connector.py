@@ -4,6 +4,7 @@ Queries CSV, Parquet, JSON, Excel files directly via SQL.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from typing import Any, Dict, List, Optional
@@ -56,7 +57,9 @@ class DuckDBConnector(BaseConnector):
                 or self.config.database
                 or ":memory:"
             )
-            self._conn = duckdb.connect(str(path))
+            # BUG-365: every DuckDB call here is blocking; on the single uvicorn worker
+            # one slow COUNT(*) or view froze every tenant's requests. They run in threads.
+            self._conn = await asyncio.to_thread(duckdb.connect, str(path))
             self._is_connected = True
             self.metadata.connected = True
             # Sprint 17: opt-in spatial extension. Triggered either by
@@ -70,7 +73,7 @@ class DuckDBConnector(BaseConnector):
                 or bool(extra.get("enable_spatial", False))
             )
             if wants_spatial:
-                self._spatial_loaded = self._try_load_spatial()
+                self._spatial_loaded = await asyncio.to_thread(self._try_load_spatial)
                 if not self._spatial_loaded:
                     logger.warning(
                         "DuckDBConnector: spatial extension requested but "
@@ -85,7 +88,7 @@ class DuckDBConnector(BaseConnector):
             # tables stay queryable.
             from shared.duckdb_factory import lock_down_connection
 
-            lock_down_connection(self._conn)
+            await asyncio.to_thread(lock_down_connection, self._conn)
             return True
         except Exception as exc:
             logger.warning("DuckDB connection failed: %s", exc)
@@ -118,8 +121,8 @@ class DuckDBConnector(BaseConnector):
         if not self._conn:
             return []
         try:
-            result = self._conn.execute("SHOW TABLES")
-            tables = [row[0] for row in result.fetchall()]
+            rows = await asyncio.to_thread(lambda: self._conn.execute("SHOW TABLES").fetchall())
+            tables = [row[0] for row in rows]
             self.metadata.table_count = len(tables)
             return tables
         except Exception as exc:
@@ -130,9 +133,11 @@ class DuckDBConnector(BaseConnector):
         if not self._conn:
             return {}
         try:
-            result = self._conn.execute(f"DESCRIBE {quote_identifier(table_name)}")
-            cols = [desc[0] for desc in result.description]
-            rows = result.fetchall()
+            def _describe() -> tuple:
+                result = self._conn.execute(f"DESCRIBE {quote_identifier(table_name)}")
+                return [desc[0] for desc in result.description], result.fetchall()
+
+            cols, rows = await asyncio.to_thread(_describe)
             return {
                 "table_name": table_name,
                 "columns": [
@@ -155,9 +160,12 @@ class DuckDBConnector(BaseConnector):
         if not self._conn:
             return []
         try:
-            result = self._conn.execute(query)
-            cols = [desc[0] for desc in result.description]
-            return [dict(zip(cols, row)) for row in result.fetchmany(limit)]
+            def _run() -> List[Dict[str, Any]]:
+                result = self._conn.execute(query)
+                cols = [desc[0] for desc in result.description]
+                return [dict(zip(cols, row)) for row in result.fetchmany(limit)]
+
+            return await asyncio.to_thread(_run)
         except Exception as exc:
             logger.warning("DuckDB query failed: %s", exc)
             return []
@@ -167,8 +175,9 @@ class DuckDBConnector(BaseConnector):
             return {}
         try:
             schema = await self.get_table_schema(table_name)
-            count_result = self._conn.execute(f"SELECT COUNT(*) FROM {quote_identifier(table_name)}")
-            row_count = count_result.fetchone()[0]
+            row_count = (await asyncio.to_thread(
+                lambda: self._conn.execute(f"SELECT COUNT(*) FROM {quote_identifier(table_name)}").fetchone()
+            ))[0]
             return {
                 "table_name": table_name,
                 "rows": row_count,
@@ -198,7 +207,7 @@ class DuckDBConnector(BaseConnector):
             return False
         try:
             from shared.data_utils import smart_load_file
-            smart_load_file(self._conn, file_path, table_name, use_llm=True)
+            await asyncio.to_thread(smart_load_file, self._conn, file_path, table_name, use_llm=True)
             return True
         except Exception as exc:
             logger.warning("DuckDB register_file failed: %s", exc)

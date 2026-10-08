@@ -216,3 +216,32 @@ class TestDuckDBFileQuery:
         _run(conn.disconnect())
 
         assert rows == [] and custom == []
+
+
+def test_duckdb_connector_calls_run_off_the_event_loop():
+    # BUG-365: every DuckDB call ran on the event loop, so one slow COUNT(*) or view
+    # froze the single gateway worker for every tenant.
+    import threading
+
+    conn = DuckDBConnector(_duckdb_config())
+    _run(conn.connect())
+    conn._conn.execute("CREATE TABLE t AS SELECT 1 AS v")
+    real, threads = conn._conn, []
+
+    class _Spy:
+        def execute(self, *a, **k):
+            threads.append(threading.current_thread())
+            return real.execute(*a, **k)
+
+        def close(self):
+            real.close()
+
+    conn._conn = _Spy()
+    _run(conn.list_tables())
+    _run(conn.get_table_schema("t"))
+    _run(conn.execute_query("SELECT * FROM t"))
+    _run(conn.profile_table("t"))
+    _run(conn.disconnect())
+
+    assert len(threads) >= 4
+    assert all(t is not threading.main_thread() for t in threads)
