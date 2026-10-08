@@ -78,3 +78,26 @@ def test_generation_runs_on_its_own_pool_not_the_shared_default_executor(monkeyp
     while not ran_on and time.time() < deadline:
         time.sleep(0.05)
     assert ran_on and ran_on[0].startswith("synthetic-gen"), ran_on
+
+
+def test_a_wide_schema_is_generated_in_chunks_that_fit_in_memory(tmp_path, monkeypatch):
+    # BUG-370: chunk_rows (<= 1M) alone did not bound memory: a 100-column float schema
+    # built a 1M x 800-byte chunk (~800 MB) before writing anything.
+    from synthetic import writer as w
+    from synthetic.schema import TableSchema
+
+    schema = TableSchema.from_dict({"name": "wide", "columns": [
+        {"name": f"c{i}", "dtype": "float"} for i in range(100)]})
+    writer = w.SyntheticDatasetWriter(schema, chunk_rows=1_000_000)
+
+    assert writer.chunk_rows * w._in_memory_bytes_per_row(schema) <= 64 << 20
+    assert writer.chunk_rows >= 1
+
+
+@pytest.mark.parametrize("over", [
+    {"schema": {"name": "t", "columns": [{"name": f"c{i}", "dtype": "float"} for i in range(300)]}},
+    {"schema": {"name": "t", "columns": [{"name": "s", "dtype": "string", "prefix": "x" * 100_000}]}},
+])
+def test_unbounded_row_widths_are_refused(client, over):
+    assert _gen(client, **over).status_code == 422
+    assert client.started == []

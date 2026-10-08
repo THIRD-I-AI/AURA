@@ -118,7 +118,7 @@ class ColumnSpecModel(BaseModel):
     zipf_a: float = 2.0
     categories: Optional[List[str]] = None
     weights: Optional[List[float]] = None
-    prefix: str = "val_"
+    prefix: str = Field("val_", max_length=64)  # BUG-370: bounds the row width
     str_cardinality: int = 1000
     start_ts: float = 1_700_000_000.0
     end_ts: float = 1_800_000_000.0
@@ -128,7 +128,7 @@ class ColumnSpecModel(BaseModel):
 
 class SchemaModel(BaseModel):
     name: str = "synthetic"
-    columns: List[ColumnSpecModel]
+    columns: List[ColumnSpecModel] = Field(..., min_length=1, max_length=256)  # BUG-370
 
 
 class PlanRequest(BaseModel):
