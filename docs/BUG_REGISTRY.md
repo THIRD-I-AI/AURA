@@ -3679,13 +3679,13 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Fix:** `DuckDBConnector.connect` runs `shared.duckdb_factory.lock_down_connection` (external access off, configuration locked) once the database file and the optional spatial extension are open, so a view stored in a tenant-uploaded .duckdb can no longer read server files or URLs when it is queried; the file's own tables stay queryable. The connector's `query_file` helper (read a file by path; no production caller) is refused by the same lockdown, and its tests now assert that. Regression test `test_a_view_in_an_uploaded_database_cannot_read_server_files` read another tenant's CSV through the view on the old code.
 
 ## BUG-359: POST /chat runs LLM-generated SQL with unbounded fetchall() and returns every row twice (records + rows)
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode audit of agents/, connectors/ and scheduler_service/ (run wf_42467807-a81, agents scope; confirmed by 2 adversarial verifiers), 2026-10-08. `aurabackend/agents/specialists/execution_agent.py:49`.
 - **Severity:** high
 - **Root cause:** Entry point: POST /chat (api_gateway/routers/chat.py:634 run_orchestrator -> langgraph_orchestrator.execution_node:158 -> ExecutionAgent._run). _run_sql does `cur = con.execute(sql); cur.fetchall()` with no row cap. Lines 54-60 then build a dict per row (`records`) and a second serialized copy (`rows`), and chat.py:672-674 puts both into the JSON response. The only bound is the prompt line 'Include a LIMIT clause unless the user asked for all rows' (sql_generator_agent.py:51), which is advice to the model, not enforcement. BUG-228 added the AURA_QUERY_MAX_ROWS fetchmany cap (_fetch_capped) to /execute and the saved-query runner only. The chat path does not pass through SQLSafetyValidator or _fetch_capped, and the commander's run_sql uses fetchmany(1000).
 - **Failure scenario:** A tenant uploads a 3M-row parquet file (the 25MB upload cap does not bound row count) and asks in chat 'show me all transactions'. The model follows its rule and omits LIMIT, producing SELECT * FROM "transactions". fetchall copies 3M tuples into Python, then two more full copies are built (dicts plus serialized lists) and JSON-encoded into one response. The single gateway worker uses several GB of RAM and can be OOM-killed, which drops every tenant's in-flight requests. The same records also go to the visualization and analysis agents (see the related finding).
 - **Caused by:** none -- pre-existing.
-- **Fix:** pending.
+- **Fix:** `ExecutionAgent` reads at most `AURA_QUERY_MAX_ROWS` (default 10,000; the cap `/execute` and saved queries already use, BUG-228) via `fetchmany(cap + 1)` and sets `truncated`, which `execution_node` already plumbed through and `/chat`'s `execution_result.truncated` now reports. Regression tests in `test_chat_sql_row_cap.py` failed on the old code.
 
 ## BUG-360: DPC verify_node runs SELECT * on the whole table with fetchall before checking AURA_DPC_MAX_ROWS, on every single-table chat query
 - **Status:** open

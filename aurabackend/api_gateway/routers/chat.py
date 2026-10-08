@@ -123,6 +123,8 @@ class ExecutionResult(BaseModel):
     columns: List[str] = Field(default_factory=list)
     rows: List[List[Any]] = Field(default_factory=list)
     row_count: int = 0
+    # BUG-359: True when the result hit AURA_QUERY_MAX_ROWS and was cut off there.
+    truncated: bool = False
     chart_spec: Optional[Dict[str, Any]] = None
     conclusion: Optional[str] = None
     sql_explanation: Optional[str] = None
@@ -673,6 +675,7 @@ async def chat_endpoint(request: ChatRequest, http_request: Request) -> ChatResp
         execution_result.columns = state.execution.columns
         execution_result.rows = state.execution.rows
         execution_result.row_count = state.execution.row_count
+        execution_result.truncated = state.execution.truncated
 
     if state.visualization and state.visualization.chart:
         execution_result.chart_spec = state.visualization.chart.model_dump()
