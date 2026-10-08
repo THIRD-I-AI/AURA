@@ -261,3 +261,17 @@ async def test_failed_source_query_does_not_overwrite_the_previous_snapshot(clie
 
     written = os.path.join(str(tmp_path / "uploads"), "default", first.json()["file_name"])
     assert len(pd.read_parquet(written)) == 3, "the good snapshot must survive a failed re-sync"
+
+
+@pytest.mark.asyncio
+async def test_schema_lists_each_tables_columns(client, duckdb_source):
+    # BUG-366: the route read profile_table()["columns"], which is a column COUNT, as a
+    # dict of names, so every table came back with an empty column list.
+    conn = await _register_connection("default", duckdb_source)
+
+    r = client.get(f"{V1}/connections/{conn['id']}/schema")
+
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["success"] is True
+    assert body["schema"] == {"customers": ["id", "name", "spend"]}
