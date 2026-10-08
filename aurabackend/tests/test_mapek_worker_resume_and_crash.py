@@ -173,8 +173,12 @@ async def test_resume_after_a_real_failed_recovery_consumes_again(tmp_path):
     worker._plan_recovery = _failed_recovery
     worker._knowledge_update = _noop
     worker._persist_and_maybe_cross_heal = _noop
+    async def _no_shims(source_id, rows):
+        return rows, 0, 0
+
     worker._loop = types.SimpleNamespace(
         apply_shims=lambda source_id, rows: rows,
+        apply_shims_counted_async=_no_shims,
         get_deployed_shims=lambda source_id: [],
         watched_shim=lambda source_id: None,
         check_post_deploy=lambda source_id, d: False,

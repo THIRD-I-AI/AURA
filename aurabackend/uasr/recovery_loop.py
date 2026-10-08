@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import concurrent.futures
 import logging
 import time
 import types
@@ -87,6 +88,11 @@ class RecoveryLoopConfig:
 # So the source is checked statically before it runs, and `logging` is replaced
 # by a stand-in that can only log. This is defence in depth, not process
 # isolation -- a shim still runs in-process.
+# BUG-348: shims run on their own small pool. A thread stuck in a shim cannot be
+# killed, and on the default executor each one permanently took a slot from every
+# asyncio.to_thread call in the service (drift detection, Redis state, admission).
+_SHIM_EXECUTOR = concurrent.futures.ThreadPoolExecutor(max_workers=4, thread_name_prefix="uasr-shim")
+
 _FORBIDDEN_ATTR_PREFIXES = ("f_", "gi_", "cr_", "ag_", "tb_", "co_")
 # BUG-343: str.format walks attributes named in a string built at runtime
 # ("{0._" + "_globals_" + "_...}"), which the per-literal `__` check cannot see.
@@ -171,6 +177,7 @@ class RecoveryLoop:
 
         # Shim registry: source_id → [deployed shim codes]
         self._deployed_shims: Dict[str, List[str]] = {}
+        self._hung_shims: set[str] = set()  # BUG-348: timed out on a live batch
 
         # Post-heal validation watch: source_id → {"drift_type", "batches_seen"}.
         # Populated by _deploy_shim when post_heal_validation_batches > 0;
@@ -461,10 +468,7 @@ class RecoveryLoop:
             # thread cannot be killed, so a runaway shim still occupies one worker
             # thread -- but the service keeps answering and the shim is rejected.
             try:
-                transformed_rows = await asyncio.wait_for(
-                    asyncio.to_thread(self._sandbox_execute, shim.shim_code, original_batch.rows),
-                    timeout=self._config.sandbox_timeout_seconds,
-                )
+                transformed_rows = await self._run_shim_bounded(shim.shim_code, original_batch.rows)
             except asyncio.TimeoutError:
                 logger.error("Shim validation timed out after %ss", self._config.sandbox_timeout_seconds)
                 return {
@@ -947,6 +951,58 @@ class RecoveryLoop:
                 break
             applied += 1
         return rows, applied, len(shims)
+
+    async def _run_shim_bounded(self, shim_code: str, rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        loop = asyncio.get_running_loop()
+        return await asyncio.wait_for(
+            loop.run_in_executor(_SHIM_EXECUTOR, self._sandbox_execute, shim_code, rows),
+            timeout=self._config.sandbox_timeout_seconds,
+        )
+
+    async def _apply_one_bounded(
+        self, source_id: str, shim_code: str, rows: List[Dict[str, Any]],
+    ) -> tuple[List[Dict[str, Any]], bool]:
+        """Run one deployed shim with the sandbox time limit (BUG-348).
+
+        Validation was bounded (BUG-259) but every later batch ran the shim with no
+        limit, and a shim's runtime depends on its data: one that finished on the
+        drifted batch can loop forever on the next (e.g. on Infinity). A shim that
+        times out is suspended for this process -- it fails at once on later batches
+        instead of tying up another thread each time."""
+        if shim_code in self._hung_shims:
+            logger.error("Skipping shim for source=%s: it timed out on an earlier batch", source_id)
+            return rows, False
+        try:
+            return await self._run_shim_bounded(shim_code, rows), True
+        except asyncio.TimeoutError:
+            self._hung_shims.add(shim_code)
+            logger.error(
+                "Shim for source=%s did not finish within %ss; suspended until restart",
+                source_id, self._config.sandbox_timeout_seconds,
+            )
+            return rows, False
+        except Exception as exc:
+            logger.error("Shim application failed for source=%s: %s", source_id, exc)
+            return rows, False
+
+    async def apply_shims_counted_async(
+        self, source_id: str, rows: List[Dict[str, Any]],
+    ) -> tuple[List[Dict[str, Any]], int, int]:
+        """``apply_shims_counted`` for the live paths: each shim time-limited."""
+        shims = list(self._deployed_shims.get(source_id, []))
+        applied = 0
+        for shim_code in shims:
+            rows, ok = await self._apply_one_bounded(source_id, shim_code, rows)
+            if not ok:
+                break
+            applied += 1
+        return rows, applied, len(shims)
+
+    async def apply_new_shim_async(
+        self, source_id: str, shim_code: str, rows: List[Dict[str, Any]],
+    ) -> tuple[List[Dict[str, Any]], bool]:
+        """``apply_new_shim`` for the live paths, time-limited."""
+        return await self._apply_one_bounded(source_id, shim_code, rows)
 
     def apply_new_shim(
         self, source_id: str, shim_code: str, rows: List[Dict[str, Any]],

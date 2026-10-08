@@ -718,8 +718,7 @@ async def heal_batch(req: IngestRequest, request: Request, db: AsyncSession = De
     standing = len(_loop.get_deployed_shims(batch.source_id))
     standing_applied = 0
     if standing:
-        batch.rows, standing_applied, _ = await asyncio.to_thread(
-            _loop.apply_shims_counted, batch.source_id, batch.rows)
+        batch.rows, standing_applied, _ = await _loop.apply_shims_counted_async(batch.source_id, batch.rows)
         batch.columns = list(batch.rows[0].keys()) if batch.rows else batch.columns
     # BUG-271: a standing shim that raised used to be invisible here.
     standing_failed = standing_applied < standing
@@ -794,8 +793,8 @@ async def heal_batch(req: IngestRequest, request: Request, db: AsyncSession = De
     deployed = loop_result.status == RecoveryStatus.DEPLOYED
     applied, total = standing_applied, standing
     if deployed and loop_result.shim is not None:
-        batch.rows, ok = await asyncio.to_thread(
-            _loop.apply_new_shim, batch.source_id, loop_result.shim.shim_code, batch.rows)
+        batch.rows, ok = await _loop.apply_new_shim_async(
+            batch.source_id, loop_result.shim.shim_code, batch.rows)
         applied, total = standing_applied + ok, standing + 1
         batch.columns = list(batch.rows[0].keys()) if batch.rows else batch.columns
     apply_failed = applied < total
