@@ -52,3 +52,29 @@ def test_nonexistent_outside_path_is_not_created(client, tmp_path):  # noqa: F81
     r = client.post(f"{V1}/connectors/duckdb/test", json={"database": str(target)})
     assert r.status_code == 400
     assert not target.exists()
+
+
+@pytest.mark.parametrize("route", ["tables", "test", "profile"])
+def test_extra_params_db_path_is_confined_too(client, tmp_path, route):  # noqa: F811
+    # BUG-357: DuckDBConnector opens extra_params["db_path"] ahead of `database`, and only
+    # connection_string/database were confined, so this opened another tenant's file.
+    other = _make_db(tmp_path / "uploads" / "other-tenant" / "warehouse.duckdb")
+    body = {"extra_params": {"db_path": other}}
+    if route == "profile":
+        body = {"connector_type": "duckdb", "connector_config": body, "table_name": "secrets"}
+    r = client.post(f"{V1}/connectors/duckdb/{route}", json=body)
+    assert r.status_code == 400, r.text
+    assert "secrets" not in r.text
+
+
+def test_extra_params_db_path_outside_uploads_is_not_created(client, tmp_path):  # noqa: F811
+    target = tmp_path / "elsewhere" / "new.duckdb"
+    r = client.post(f"{V1}/connectors/duckdb/test", json={"extra_params": {"db_path": str(target)}})
+    assert r.status_code == 400
+    assert not target.exists()
+
+
+def test_own_database_via_extra_params_still_works(client, tmp_path):  # noqa: F811
+    _make_db(tmp_path / "uploads" / "default" / "mine.duckdb")
+    r = client.post(f"{V1}/connectors/duckdb/tables", json={"extra_params": {"db_path": "mine.duckdb"}})
+    assert r.status_code == 200, r.text
