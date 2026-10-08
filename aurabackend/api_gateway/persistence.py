@@ -708,6 +708,20 @@ async def get_saved_query(
         return _row_to_saved_query_dict(row) if row is not None else None
 
 
+async def claim_saved_query_run(query_id: str, due_next_run_at: str, new_next_run_at: Optional[str]) -> bool:
+    """Atomically move a due saved query's next_run_at on, True only for the one caller
+    that did (BUG-368). Every gateway worker runs the scheduler tick against the same
+    database; the run belongs to whichever worker's compare-and-set lands first."""
+    async with session_scope() as s:
+        result = await s.execute(
+            update(SavedQueryRow)
+            .where(SavedQueryRow.id == query_id)
+            .where(SavedQueryRow.next_run_at == due_next_run_at)
+            .values(next_run_at=new_next_run_at)
+        )
+        return result.rowcount == 1
+
+
 async def update_saved_query(
     query_id: str, workspace_id: str, fields: Dict[str, Any],
 ) -> Optional[Dict[str, Any]]:
