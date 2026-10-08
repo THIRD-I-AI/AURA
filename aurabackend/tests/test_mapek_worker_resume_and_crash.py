@@ -176,6 +176,7 @@ async def test_resume_after_a_real_failed_recovery_consumes_again(tmp_path):
     worker._loop = types.SimpleNamespace(
         apply_shims=lambda source_id, rows: rows,
         get_deployed_shims=lambda source_id: [],
+        watched_shim=lambda source_id: None,
         check_post_deploy=lambda source_id, d: False,
     )
     worker._running = True

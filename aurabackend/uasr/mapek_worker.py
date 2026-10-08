@@ -530,8 +530,7 @@ class MAPEKWorker:
                 # Post-heal validation: `drift` above already reflects data
                 # AFTER apply_shims (line ~309), so this is the earliest point
                 # that can tell "the last deploy healed it" from "it didn't."
-                _deployed = self._loop.get_deployed_shims(batch.source_id)
-                _last_shim = _deployed[-1] if _deployed else None
+                _last_shim = self._loop.watched_shim(batch.source_id)
                 if self._loop.check_post_deploy(batch.source_id, drift):
                     # BUG-266: persist the revert, or startup re-deploys the shim.
                     try:

@@ -3607,13 +3607,13 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Fix:** pending.
 
 ## BUG-351: Post-heal validation rolls back the newest shim, not the one it was watching
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode UASR audit (run wf_6234d56e-d9c, correctness lens; confirmed by 2 adversarial verifiers), 2026-10-07. `aurabackend/uasr/recovery_loop.py:899`.
 - **Severity:** medium
 - **Root cause:** _post_deploy_watch records only {drift_type, batches_seen} per source (recovery_loop.py:705-709), not which shim it is watching. When validation fails, it pops whatever shim is last (rollback_last_shim). deploy_approved_shim appends to the same list (recovery_loop.py:664) without touching the watch. mapek_worker.py:533-538 then persists ROLLED_BACK for that last shim's code via mark_shim_rolled_back.
 - **Failure scenario:** Shim A auto-deploys for STATISTICAL drift on source S, and a watch starts. Before the watch expires, an operator approves an older held recovery B for S (appended after A). A is a no-op, so STATISTICAL drift keeps firing. After N batches, check_post_deploy pops B, the human-approved and working shim, and its record is marked ROLLED_BACK, so it stays removed after a restart. Bad shim A remains deployed and is never re-validated, because the watch was deleted.
 - **Caused by:** none -- pre-existing.
-- **Fix:** pending.
+- **Fix:** The post-deploy watch records the shim it was started for, `check_post_deploy` removes that exact entry (falling back to the newest only for a watch without one), and the MAPE-K worker persists ROLLED_BACK for `RecoveryLoop.watched_shim()` rather than the list's last entry. Regression test `test_auto_rollback_reverts_the_watched_shim_not_a_later_approved_one` failed on the old code.
 
 ## BUG-352: Cross-source heal returns a recovery_id that was never persisted, so the returned id 404s on detail and approve
 - **Status:** open
