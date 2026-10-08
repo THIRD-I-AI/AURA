@@ -3706,13 +3706,13 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Fix:** `execute_job` retries inside one execution (a `while True` loop around the attempt) instead of recursing into itself, so the stored `retry_count` actually reaches `max_retries` and the job then fails for good; each retry still waits `retry_delay_seconds`. Regression tests in `test_scheduler_retry_bounds.py` retried without bound and created one execution per attempt on the old code.
 
 ## BUG-362: A job that exhausts its retries never has next_execution_time advanced, so it fires again on every worker tick
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode audit of agents/, connectors/ and scheduler_service/ (run wf_42467807-a81, scheduler scope; confirmed by 2 adversarial verifiers), 2026-10-08. `aurabackend/scheduler_service/executor.py:254`.
 - **Severity:** high
 - **Root cause:** next_execution_time is advanced only in the success branch (executor.py:207-214). The max-retries-exceeded branch (lines 254-280) marks the execution FAILED and sends notifications but never calls update_job, so the old past-due next_execution_time stays. get_jobs_to_execute selects every active job with `next_execution_time <= now` (repository.py:129-137), so the same job is due again on the next tick.
 - **Failure scenario:** Entry point: the SchedulerWorker loop started in the scheduler_service lifespan (tick every SCHEDULER_CHECK_INTERVAL, default 60s). An admin creates a daily 02:00 job with max_retries=0, which the API allows (main.py:111, ge=0), and its query fails. At every tick from then on the worker picks it up again, runs the failing query, writes another FAILED execution plus logs, and sends another failure email/Slack/webhook alert (executor.py:270-278). That is about 1,440 runs and alerts a day instead of one, until someone pauses the job. Execution history grows without limit. With max_retries >= 1 the previous finding's endless retry hides this, but fixing that bug alone would expose this one.
 - **Caused by:** none -- pre-existing.
-- **Fix:** pending.
+- **Fix:** when a job uses up its retries, `execute_job` now also records `last_execution_time` and advances `next_execution_time` to its next scheduled slot (None for a 'once' job), as the success path already did, so the worker no longer re-runs it on every tick. Regression test `test_a_job_that_used_up_its_retries_moves_to_its_next_slot` failed on the old code.
 
 ## BUG-363: Chat SQL execution is never interrupted on timeout: the 120s agent timeout leaves runaway LLM SQL running on a default-executor thread
 - **Status:** open

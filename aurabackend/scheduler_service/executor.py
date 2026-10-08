@@ -271,6 +271,17 @@ class JobExecutor:
                         }
                     )
 
+                    # BUG-362: only the success path advanced next_execution_time, so a
+                    # job that used up its retries stayed due and the worker ran it again
+                    # (and again) on every tick instead of at its next scheduled slot.
+                    await self.repository.update_job(
+                        job.id,
+                        {
+                            "last_execution_time": datetime.now(timezone.utc),
+                            "next_execution_time": self._calculate_next_execution(job)
+                        }
+                    )
+
                     # Send failure notifications (email, Slack, webhook)
                     try:
                         await self.notifications.notify_job_failure(

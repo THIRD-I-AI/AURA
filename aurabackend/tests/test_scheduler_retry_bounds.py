@@ -87,3 +87,20 @@ def test_a_retry_that_succeeds_completes_the_same_execution():
 
     assert calls == 2 and len(repo.executions) == 1
     assert result.status == JobStatus.SUCCESS and result.retry_count == 1
+
+
+def test_a_job_that_used_up_its_retries_moves_to_its_next_slot():
+    # BUG-362: only success advanced next_execution_time, so a job that kept failing
+    # stayed due and fired again on every worker tick.
+    repo = _Repo()
+    executor = JobExecutor(repo)
+
+    async def _fails(**kwargs):
+        raise RuntimeError("database down")
+
+    executor._execute_query = _fails
+    executor.notifications.notify_job_failure = lambda **kw: asyncio.sleep(0)
+
+    asyncio.run(executor.execute_job(_job(max_retries=0)))
+
+    assert repo.job_updates and repo.job_updates[-1].get("next_execution_time") is not None
