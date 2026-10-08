@@ -3715,13 +3715,13 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Fix:** when a job uses up its retries, `execute_job` now also records `last_execution_time` and advances `next_execution_time` to its next scheduled slot (None for a 'once' job), as the success path already did, so the worker no longer re-runs it on every tick. Regression test `test_a_job_that_used_up_its_retries_moves_to_its_next_slot` failed on the old code.
 
 ## BUG-363: Chat SQL execution is never interrupted on timeout: the 120s agent timeout leaves runaway LLM SQL running on a default-executor thread
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode audit of agents/, connectors/ and scheduler_service/ (run wf_42467807-a81, agents scope; confirmed by 2 adversarial verifiers), 2026-10-08. `aurabackend/agents/specialists/execution_agent.py:53`.
 - **Severity:** medium
 - **Root cause:** Entry point: POST /chat -> execution_node -> ExecutionAgent. The query runs via asyncio.to_thread(_run_sql), and the only time bound is BaseAgent.execute's asyncio.wait_for(timeout=ctx.timeout_seconds, default 120; agents/base.py:254). wait_for only stops awaiting. Nothing calls con.interrupt(), so the DuckDB query keeps running on the shared default ThreadPoolExecutor that every asyncio.to_thread in the gateway uses. The connection gets no memory_limit or timeout either: new_connection and lock_down_connection set only enable_external_access and lock_configuration. BUG-335 (scheduler, queries.py:858-863) and BUG-289-class fixes (pipeline/engine.py:274-279) added interrupt() for exactly this case, but the chat agent path was not covered. chat.py:686 then calls con.close() while the abandoned thread is still executing on that connection.
 - **Failure scenario:** A user asks a question that leads the model to write an accidental cartesian join, e.g. SELECT ... FROM "orders", "customers" with no join condition on two 100k-row tables, or a self-join on a low-cardinality key. After 120s the user gets 'Execution failed: ExecutionAgent exceeded its 120s timeout', but the query keeps running and pins a CPU core and a default-executor thread. Retries and other users hitting the same thing fill the default pool (min(32, cpu+4) threads), and then every other to_thread call in the gateway stalls for all tenants: storage list, schema loads, bcrypt, DuckDB queries.
 - **Caused by:** none -- pre-existing.
-- **Fix:** pending.
+- **Fix:** `ExecutionAgent` interrupts the DuckDB connection (`con.interrupt()`) when its await is cancelled, which is what BaseAgent's `AURA_AGENT_TIMEOUT` wait_for does, so a runaway LLM query stops instead of running on in its thread. Regression test `test_a_query_that_outlives_the_agent_timeout_is_interrupted` kept the connection busy for minutes on the old code.
 
 ## BUG-364: Visualization and Analysis agents profile and compute stats over every result row inline on the event loop
 - **Status:** open

@@ -65,7 +65,14 @@ class ExecutionAgent(BaseAgent):
                 cols = [desc[0] for desc in cur.description]
                 return cols, cur.fetchmany(cap + 1)
 
-            columns, rows = await asyncio.to_thread(_run_sql)
+            try:
+                columns, rows = await asyncio.to_thread(_run_sql)
+            except asyncio.CancelledError:
+                # BUG-363: the agent timeout (BaseAgent's wait_for) cancels this await,
+                # but the query kept running in its thread for as long as it liked,
+                # holding a default-executor thread and the connection. Stop it.
+                con.interrupt()
+                raise
             truncated = len(rows) > cap
             rows = rows[:cap]
             records = [{col: self._serialize_value(val) for col, val in zip(columns, row)} for row in rows]
