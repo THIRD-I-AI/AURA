@@ -10,7 +10,7 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api_gateway.routers.workspaces import current_workspace_id
@@ -27,6 +27,22 @@ from .models import (
     SystemEvolutionLog,
 )
 from .pattern_library import PatternLibrary
+
+
+def _platform_operator(request: Request) -> bool:
+    """An admin, or a deployment running without auth (one operator)."""
+    user = getattr(request.state, "user", None)
+    return not isinstance(user, dict) or user.get("role") == "admin"
+
+
+def _visible(column: Any, request: Request) -> Any:
+    """BUG-373: the evolution engine analyses every tenant's feedback together and
+    writes its proposals and log entries with no workspace (they are about the
+    platform's own agents). The BUG-019 workspace filter made all of them invisible
+    to everyone, so no proposal could be reviewed, validated or deployed. Platform
+    rows are visible to -- and decidable by -- the platform operator only."""
+    own = column == current_workspace_id(request)
+    return or_(own, column.is_(None)) if _platform_operator(request) else own
 
 router = APIRouter(prefix="/evolution", tags=["Evolution Engine"])
 
@@ -147,7 +163,7 @@ async def list_proposals(
     """List improvement proposals."""
     stmt = (
         select(ImprovementProposal)
-        .where(ImprovementProposal.workspace_id == current_workspace_id(request))
+        .where(_visible(ImprovementProposal.workspace_id, request))
         .order_by(ImprovementProposal.created_at.desc())
         .limit(limit)
     )
@@ -179,7 +195,7 @@ async def get_proposal(proposal_id: str, request: Request, db: AsyncSession = De
     result = await db.execute(
         select(ImprovementProposal)
         .where(ImprovementProposal.id == proposal_id)
-        .where(ImprovementProposal.workspace_id == current_workspace_id(request))
+        .where(_visible(ImprovementProposal.workspace_id, request))
     )
     p = result.scalar_one_or_none()
     if not p:
@@ -210,7 +226,7 @@ async def update_proposal(
     result = await db.execute(
         select(ImprovementProposal)
         .where(ImprovementProposal.id == proposal_id)
-        .where(ImprovementProposal.workspace_id == current_workspace_id(request))
+        .where(_visible(ImprovementProposal.workspace_id, request))
     )
     p = result.scalar_one_or_none()
     if not p:
@@ -233,7 +249,7 @@ async def get_evolution_log(
     """Return the system evolution audit log."""
     result = await db.execute(
         select(SystemEvolutionLog)
-        .where(SystemEvolutionLog.workspace_id == current_workspace_id(request))
+        .where(_visible(SystemEvolutionLog.workspace_id, request))
         .order_by(SystemEvolutionLog.created_at.desc())
         .limit(limit)
     )

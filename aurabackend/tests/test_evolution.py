@@ -471,3 +471,37 @@ class TestFeedbackRequestRatingBounds:
                 session_id="s", agent_name="a", task_type="t", user_prompt="p",
                 user_rating=rating,
             )
+
+
+# ── BUG-373: the engine's platform-wide proposals were invisible to everyone ──
+
+def _request(user):
+    from starlette.requests import Request
+
+    req = Request({"type": "http", "method": "GET", "headers": [], "query_string": b"", "path": "/x"})
+    if user is not None:
+        req.state.user = user
+    return req
+
+
+@pytest.mark.asyncio
+async def test_platform_proposals_are_visible_and_decidable_by_an_admin_only(db_session):
+    from evolution import api
+    from evolution.models import ImprovementProposal
+
+    proposal = ImprovementProposal(target="SQLAgent", improvement_type="prompt", description="d", workspace_id=None)
+    db_session.add(proposal)
+    await db_session.commit()
+
+    admin = _request({"sub": "ops@x", "org_id": "ops", "role": "admin"})
+    member = _request({"sub": "u@acme", "org_id": "acme", "role": "member"})
+
+    assert (await api.list_proposals(admin, db=db_session))["count"] == 1
+    assert (await api.get_proposal(proposal.id, admin, db=db_session))["id"] == proposal.id
+    updated = await api.update_proposal(
+        proposal.id, api.ProposalUpdateRequest(status="validated"), admin, db=db_session)
+    assert updated["status"] == "updated"
+
+    assert (await api.list_proposals(member, db=db_session))["count"] == 0
+    with pytest.raises(Exception):
+        await api.get_proposal(proposal.id, member, db=db_session)
