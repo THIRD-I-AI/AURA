@@ -26,7 +26,7 @@ from typing import Annotated, Any, AsyncGenerator, Dict, List, Optional
 
 from fastapi import Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
-from sqlalchemy import select, update
+from sqlalchemy import or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from shared.logging_config import get_logger
@@ -59,7 +59,7 @@ from .runtime_config import (
     s18_1_flags,
 )
 from .semantic_gateway import ReferenceContextMatrix, SemanticGateway
-from .tenancy import SEPARATOR, caller_tenant, owns_source, scoped_source
+from .tenancy import SEPARATOR, caller_tenant, owns_source, scoped_source, source_tenant
 
 logger = get_logger("uasr.service")
 
@@ -992,7 +992,7 @@ async def recovery_detail(recovery_id: str, request: Request, db: AsyncSession =
     )
     rec = result.scalar_one_or_none()
     # Another tenant's record answers exactly like a missing one.
-    if rec is None or not owns_source(caller_tenant(request), rec.source_id):
+    if rec is None or not _visible(request, rec.source_id):
         raise HTTPException(status_code=404, detail=f"Recovery record '{recovery_id}' not found")
     return {"recovery": _serialize_recovery(rec)}
 
@@ -1017,7 +1017,26 @@ def _owned(request: Request, column: Any) -> Any:
     tenant = caller_tenant(request)
     if tenant is None:
         return None
-    return column.startswith(tenant + SEPARATOR, autoescape=True)
+    own = column.startswith(tenant + SEPARATOR, autoescape=True)
+    if _is_admin(request):
+        return or_(own, ~column.contains(SEPARATOR, autoescape=True))
+    return own
+
+
+def _is_admin(request: Request) -> bool:
+    user = getattr(request.state, "user", None)
+    return isinstance(user, dict) and user.get("role") == "admin"
+
+
+def _visible(request: Request, source_id: Optional[str]) -> bool:
+    """Whether the caller may see or decide on a recovery for ``source_id``.
+
+    BUG-349: the shared Kafka MAPE-K worker files its recoveries under an
+    un-namespaced source id (no tenant owns it), so once auth was on nobody --
+    admins included -- could list, approve, reject or inspect them. Admins, who
+    already run that worker (_require_admin), now own those platform sources."""
+    return owns_source(caller_tenant(request), source_id) or (
+        _is_admin(request) and source_tenant(source_id) is None)
 
 
 def _require_admin(request: Request) -> None:
@@ -1066,7 +1085,7 @@ async def _claim_pending_recovery(
     rec = (await db.execute(
         select(RecoveryRecord).where(RecoveryRecord.id == recovery_id)
     )).scalar_one_or_none()
-    if rec is None or not owns_source(caller_tenant(request), rec.source_id):
+    if rec is None or not _visible(request, rec.source_id):
         raise HTTPException(status_code=404, detail=f"Recovery '{recovery_id}' not found")
     if claimed.rowcount != 1:
         raise HTTPException(

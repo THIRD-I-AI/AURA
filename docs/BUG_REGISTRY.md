@@ -3589,13 +3589,13 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Fix:** pending.
 
 ## BUG-349: Kafka MAPE-K recoveries are stored under the un-namespaced source 'default', so with auth on no user (admin included) can approve, reject or roll them back
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode UASR audit (run wf_6234d56e-d9c, isolation-sandbox lens; confirmed by 2 adversarial verifiers), 2026-10-07. `aurabackend/uasr/service.py:1065`.
 - **Severity:** medium
 - **Root cause:** The worker builds every batch with source_id=self._cfg.source_id (mapek_worker.py:705). That value is MAPEKConfig.source_id = "default" (mapek_worker.py:96), which _mapek_config() (service.py:125-142) never overrides, and persist_recovery_row writes that id (recovery_persistence.py:121,132). The BUG-262/264 tenant fix limits decisions and reads to ids that start with `<tenant>::`: _owned (service.py:1010-1016) adds that predicate to the claiming UPDATE, line 1065 returns 404 when owns_source fails, and pending_approvals, recovery_detail and rollback (scoped_source turns 'default' into '<tenant>::default') do the same. An authenticated caller always has a tenant, and nothing exempts admins, so no authenticated principal owns 'default'.
 - **Failure scenario:** In production (AURA_JWT_ENABLED=true, UASR_MAPEK_ENABLED=true, UASR_RISK_TIERED=true) a Kafka batch drifts and the worker files a PENDING_APPROVAL recovery for source 'default', then pauses. An admin opens /uasr/recovery/pending and the record is not listed. POST /uasr/recovery/{id}/approve returns 404, and /uasr/rollback for 'default' reaches '<tenant>::default' and returns 404. The only available action is /uasr/mapek/resume (admin), which lifts the pause without deploying the held fix, so un-healed batches flow to the sink until the reaper escalates the record. The human-approval flow for the Kafka path is unreachable.
 - **Caused by:** none -- pre-existing.
-- **Fix:** pending.
+- **Fix:** Admins (the role `_require_admin` already requires to run the shared worker) now own un-namespaced platform sources for listing, detail, approve and reject (`_owned` and the new `_visible` in uasr/service.py); members still cannot see them. Not covered: `/uasr/rollback` by source name still scopes to the caller's tenant, so a platform shim is reverted by rejecting/approving through the queue, not by name. Regression test `test_an_admin_can_see_and_decide_on_the_kafka_workers_recoveries` failed on the old code; `test_a_member_still_cannot_reach_platform_recoveries` guards the boundary.
 
 ## BUG-350: Post-heal auto-rollback reports a shim as reverted while ShimRouter keeps applying it (router mode)
 - **Status:** open
