@@ -101,3 +101,34 @@ def test_a_format_string_assembled_at_runtime_cannot_reach_the_environment(body,
         return
     assert "do-not-leak" not in repr(result)
     pytest.fail(f"shim ran: {result!r}")
+
+
+@pytest.mark.asyncio
+async def test_a_deployed_shim_that_runs_long_on_a_later_batch_is_time_limited_and_suspended():
+    # BUG-348: only validation was time-limited. A deployed shim whose runtime depends
+    # on the data (here: it loops `n` times) ran unbounded on every later batch.
+    # (Bounded here so the stray thread finishes; a real runaway would never return.)
+    import asyncio
+
+    from uasr.recovery_loop import RecoveryLoopConfig
+
+    loop = RecoveryLoop(detector=None, config=RecoveryLoopConfig(sandbox_timeout_seconds=0.2))
+    shim = (
+        "def transform(rows):\n"
+        "    for r in rows:\n"
+        "        for _ in range(r['n']):\n"
+        "            pass\n"
+        "    return rows\n"
+    )
+    loop.hydrate_deployed_shims({"s": [shim]})
+    assert (await loop.apply_shims_counted_async("s", [{"n": 10}]))[1] == 1
+
+    started = asyncio.get_running_loop().time()
+    rows, applied, total = await loop.apply_shims_counted_async("s", [{"n": 30_000_000}])
+    assert (applied, total) == (0, 1) and rows == [{"n": 30_000_000}]
+    assert asyncio.get_running_loop().time() - started < 1.0
+
+    # suspended: the next batch fails at once instead of tying up another thread
+    started = asyncio.get_running_loop().time()
+    _, applied, _ = await loop.apply_shims_counted_async("s", [{"n": 1}])
+    assert applied == 0 and asyncio.get_running_loop().time() - started < 0.1
