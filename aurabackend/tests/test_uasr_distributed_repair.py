@@ -370,3 +370,49 @@ def test_concurrent_prune_does_not_double_decrement_per_source_counter():
 
     remaining = asyncio.run(run())
     assert remaining == 0, f"per-source counter double-decremented: {remaining}"
+
+
+def test_a_cancelled_waiter_withdraws_its_token():
+    # BUG-346: a waiter cancelled while queued (a service restart) left its token in the
+    # wait queue forever; every later repair of equal or lower priority then sat behind it.
+    async def run():
+        r = _redis()
+        a, b = _coord(r, "A", cap=1), _coord(r, "B", cap=1)
+        gate = asyncio.Event()
+
+        async def hold():
+            await gate.wait()
+            return "held"
+
+        holder = asyncio.create_task(a.submit("s0", S.HIGH, hold))
+        await asyncio.sleep(0.05)
+        waiter = asyncio.create_task(b.submit("s1", S.MEDIUM, hold))
+        await asyncio.sleep(0.05)
+        waiter.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await waiter
+        gate.set()
+        await holder
+
+        async def later():
+            return "ran"
+
+        return await asyncio.wait_for(a.submit("s2", S.MEDIUM, later), timeout=2)
+
+    assert asyncio.run(run()) == "ran"
+
+
+def test_a_dead_nodes_queued_token_is_reclaimed():
+    # BUG-346: a SIGKILLed node's queued token never polls again and must not block the queue.
+    async def run():
+        r = _redis()
+        dead = _coord(r, "DEAD", cap=1, lease_ms=80, heartbeat_ms=40)
+        live = _coord(r, "LIVE", cap=1, lease_ms=80, heartbeat_ms=40)
+        await dead._enqueue("crashed_src", S.HIGH)  # queued, then the node dies
+
+        async def rep():
+            return "ok"
+
+        return await asyncio.wait_for(live.submit("live_src", S.MEDIUM, rep), timeout=2)
+
+    assert asyncio.run(run()) == "ok"
