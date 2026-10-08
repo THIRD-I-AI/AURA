@@ -3724,13 +3724,13 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Fix:** `ExecutionAgent` interrupts the DuckDB connection (`con.interrupt()`) when its await is cancelled, which is what BaseAgent's `AURA_AGENT_TIMEOUT` wait_for does, so a runaway LLM query stops instead of running on in its thread. Regression test `test_a_query_that_outlives_the_agent_timeout_is_interrupted` kept the connection busy for minutes on the old code.
 
 ## BUG-364: Visualization and Analysis agents profile and compute stats over every result row inline on the event loop
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode audit of agents/, connectors/ and scheduler_service/ (run wf_42467807-a81, agents scope; confirmed by 2 adversarial verifiers), 2026-10-08. `aurabackend/agents/specialists/analysis_agent.py:179`.
 - **Severity:** medium
 - **Root cause:** Entry point: POST /chat -> visualization_node / analysis_node (langgraph_orchestrator.py:300, 367). VisualizationAgent._run (visualization_agent.py:81) and AnalysisAgent._run (analysis_agent.py:179-180) call profile_columns(records, ...) and _build_stats_summary(records, ...) directly in the async coroutine. Only the LLM call is offloaded; BUG-042 moved only llm.generate to to_thread. profile_columns samples 200 rows for dtype, but for every numeric column it runs describe_column(numeric_values(records, col)) over ALL records (data_profile.py:154), which does sorted() plus statistics.stdev/median. statistics.stdev is exact Fraction-based arithmetic and very slow per element. _build_stats_summary then repeats this for up to 6 numeric columns, plus IQR sorts and pairwise Pearson over up to 4 columns. On /chat the records are uncapped (see the fetchall finding), so the work grows with the full result size.
 - **Failure scenario:** A chat query returns 1M rows with 5 numeric columns (e.g. 'list all sales with price, qty, discount, tax, total'). VisualizationAgent profiles 5 columns over 1M rows on the event loop, then AnalysisAgent profiles them again and runs a second stats pass, so about 10+ full-column statistics.stdev computations happen inline. That blocks the single uvicorn worker for tens of seconds. Every other tenant's requests, SSE heartbeats and /health stall for that time, even though the LLM calls themselves are correctly offloaded.
 - **Caused by:** none -- pre-existing.
-- **Fix:** pending.
+- **Fix:** `VisualizationAgent` and `AnalysisAgent` run `profile_columns` (and the analysis stats summary) through `asyncio.to_thread`; only their LLM calls were offloaded before. Regression test `test_column_profiling_runs_off_the_event_loop` (both agents) saw profiling on the event-loop thread on the old code.
 
 ## BUG-365: DuckDB connector runs synchronous DuckDB calls on the event loop and freezes the single-worker gateway
 - **Status:** fixed

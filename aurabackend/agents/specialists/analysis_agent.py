@@ -176,8 +176,12 @@ class AnalysisAgent(BaseAgent):
                 input_summary=f"Computing stats for {len(records)} rows.",
             )
 
-            profiles = profile_columns(records, upstream["columns"] or list(records[0].keys()))
-            stats = _build_stats_summary(records, profiles)
+            # BUG-364: CPU-heavy over every row (see visualization_agent); off the loop.
+            def _profile_and_summarise():
+                profiles = profile_columns(records, upstream["columns"] or list(records[0].keys()))
+                return profiles, _build_stats_summary(records, profiles)
+
+            profiles, stats = await asyncio.to_thread(_profile_and_summarise)
             result.output["stats"] = stats
 
             result.add_step(
