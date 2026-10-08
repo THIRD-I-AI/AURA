@@ -1,10 +1,19 @@
 import asyncio
 import datetime
 import decimal
+import os
 from typing import Any, cast
 
 from agents.base import AgentContext, AgentResult, AgentStatus, BaseAgent
 from agents.params import ExecutionAgentParams
+
+
+def _max_result_rows() -> int:
+    """Row cap for chat SQL, the same AURA_QUERY_MAX_ROWS that /execute applies (BUG-228)."""
+    try:
+        return max(1, int(os.getenv("AURA_QUERY_MAX_ROWS", "10000")))
+    except ValueError:
+        return 10000
 
 
 class ExecutionAgent(BaseAgent):
@@ -45,12 +54,20 @@ class ExecutionAgent(BaseAgent):
         try:
             result.add_step(action="execute_sql", input_summary=f"Executing Query: {sql[:150]}...")
 
+            # BUG-359: this was fetchall(). LLM SQL has no enforced LIMIT (the prompt
+            # tells the model to omit it when the user asks for all rows), so one chat
+            # question over a large upload pulled every row into the single worker's
+            # memory -- three copies, counting records and rows -- and into one response.
+            cap = _max_result_rows()
+
             def _run_sql() -> tuple[list[str], list[tuple]]:
                 cur = con.execute(sql)
                 cols = [desc[0] for desc in cur.description]
-                return cols, cur.fetchall()
+                return cols, cur.fetchmany(cap + 1)
 
             columns, rows = await asyncio.to_thread(_run_sql)
+            truncated = len(rows) > cap
+            rows = rows[:cap]
             records = [{col: self._serialize_value(val) for col, val in zip(columns, row)} for row in rows]
 
             result.status = AgentStatus.SUCCESS
@@ -58,7 +75,8 @@ class ExecutionAgent(BaseAgent):
                 "records": records,
                 "columns": columns,
                 "rows": [[self._serialize_value(cell) for cell in row] for row in rows],
-                "sql": sql
+                "sql": sql,
+                "truncated": truncated,
             }
             result.add_step(action="sql_success", output_summary=f"Successfully returned {len(records)} rows.")
         except Exception as e:
