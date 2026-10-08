@@ -67,7 +67,7 @@ async def attempt_cross_source_heal(
     sibling_source_id, shim_code = sibling
 
     healed = await loop.run_with_candidate_shim(
-        drift_result, batch, shim_code, sibling_source_id,
+        drift_result, batch, shim_code, sibling_source_id, recovery_id=recovery_rec.id,
     )
     if healed.status not in (RecoveryStatus.DEPLOYED, RecoveryStatus.PENDING_APPROVAL):
         logger.info(
