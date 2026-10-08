@@ -3751,13 +3751,13 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Fix:** `GET /connections/{id}/schema` lists each table's column names from `get_table_schema` (which every connector implements and returns as `[{"name": ...}]`) instead of misreading `profile_table()["columns"]`, a count; it also no longer runs a full profile per table. Regression test `test_schema_lists_each_tables_columns` got empty lists on the old code.
 
 ## BUG-367: Postgres/MySQL connector hosts are not SSRF-filtered, and an empty host defaults to the gateway's own localhost
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode audit of agents/, connectors/ and scheduler_service/ (run wf_42467807-a81, connectors scope; confirmed by 2 adversarial verifiers), 2026-10-08. `aurabackend/connectors/postgresql_connector.py:43`.
 - **Severity:** medium
 - **Root cause:** No connector route checks the host. POST /connections stores req.host as given (connections.py:385), and the ad-hoc /connectors/{type}/test|tables|profile|ingest routes splat the body host into ConnectorConfig. Nothing calls shared/ssrf.is_public_url, which BUG-054/287 apply to webhooks and streaming. PostgreSQLConnector.connect also falls back to host='localhost' (line 43), and MySQL does the same (mysql_connector.py:30), so the gateway opens connections from its own network position to loopback and internal addresses.
 - **Failure scenario:** Entry points: POST /connectors/postgresql/test and POST /connections followed by /connections/{id}/sync. A caller sends {"host": "10.0.0.12", "port": 5432, ...}, or omits host to hit the gateway container's localhost. The gateway connects to private infrastructure that is unreachable from the internet. With working credentials, for example a co-located Postgres with default or trust auth, /sync copies its tables into the caller's uploads. Without credentials, the route works as an internal port scanner: refused connections fail fast, filtered ones hang for asyncpg's 60s timeout.
 - **Caused by:** none -- pre-existing.
-- **Fix:** pending.
+- **Fix:** `_check_network_host` refuses a Postgres/MySQL host that is empty or is, or resolves to, a non-public address (the shared `shared/ssrf` rule webhooks and streaming use), on every connector construction (`_make_connector`, now async so DNS runs off the loop) and when a connection is saved. Deployments whose databases live on a private network opt in with `AURA_CONNECTORS_ALLOW_PRIVATE_HOSTS=true`. Regression tests in `test_connector_host_ssrf.py` (loopback, localhost, RFC1918, link-local metadata, CGNAT, ::1, empty; both drivers) connected to those hosts on the old code.
 
 ## BUG-368: Saved-query scheduler starts in every gateway worker process with no claim or lock, so due queries fire multiple times and run history depends on which worker answers
 - **Status:** open

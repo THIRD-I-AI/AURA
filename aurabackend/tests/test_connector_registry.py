@@ -334,10 +334,12 @@ def test_create_connection_rejects_credentials_that_are_not_a_json_object(connec
     assert "not json" not in resp.text
 
 
-def test_create_connection_still_accepts_empty_extra_and_stays_lenient_about_required_fields(connections_client):
+def test_create_connection_still_accepts_empty_extra_and_stays_lenient_about_required_fields(connections_client, monkeypatch):
     """The guard must not become a validator: this endpoint has never enforced
     the registry's `required` flags (a postgresql connection without a password
     is accepted), and an empty `extra` is not data loss."""
+    # A local database host is refused unless the operator allows it (BUG-367).
+    monkeypatch.setenv("AURA_CONNECTORS_ALLOW_PRIVATE_HOSTS", "true")
     resp = connections_client.post("/api/v1/connections", json={
         "name": "pg", "type": "postgresql", "host": "localhost", "port": 5432,
         "database": "d", "username": "u", "extra": {},

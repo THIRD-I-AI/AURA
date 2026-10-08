@@ -101,8 +101,10 @@ def test_list_connections(client):
     assert isinstance(data["connections"], list)
 
 
-def test_create_and_delete_connection(client):
+def test_create_and_delete_connection(client, monkeypatch):
     """POST /connections creates, DELETE removes."""
+    # A local database host is refused unless the operator allows it (BUG-367).
+    monkeypatch.setenv("AURA_CONNECTORS_ALLOW_PRIVATE_HOSTS", "true")
     # Create
     resp = client.post(f"{V1}/connections", json={
         "name": "test-pg",
