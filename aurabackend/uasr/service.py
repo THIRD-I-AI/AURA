@@ -620,7 +620,10 @@ async def ingest_batch(req: IngestRequest, request: Request, db: AsyncSession = 
         details={"description": drift_result.details, "affected_columns": drift_result.affected_columns},
     )
     db.add(drift_event)
-    await db.flush()
+    # BUG-347: commit, not flush. A flush opened the write transaction, and on the
+    # deployed SQLite DB it held the write lock through the whole recovery loop
+    # (LLM calls, sandbox), so every other writer failed with 'database is locked'.
+    await db.commit()
 
     # Run recovery loop
     loop_result = await _loop.run(drift_result, batch)
@@ -754,7 +757,7 @@ async def heal_batch(req: IngestRequest, request: Request, db: AsyncSession = De
             "affected_columns": drift_result.affected_columns,
         },
     ))
-    await db.flush()
+    await db.commit()  # BUG-347: see ingest_batch
 
     loop_result = await _loop.run(drift_result, batch)
 
