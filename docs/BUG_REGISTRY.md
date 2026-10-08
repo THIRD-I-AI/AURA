@@ -3688,13 +3688,13 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Fix:** `ExecutionAgent` reads at most `AURA_QUERY_MAX_ROWS` (default 10,000; the cap `/execute` and saved queries already use, BUG-228) via `fetchmany(cap + 1)` and sets `truncated`, which `execution_node` already plumbed through and `/chat`'s `execution_result.truncated` now reports. Regression tests in `test_chat_sql_row_cap.py` failed on the old code.
 
 ## BUG-360: DPC verify_node runs SELECT * on the whole table with fetchall before checking AURA_DPC_MAX_ROWS, on every single-table chat query
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode audit of agents/, connectors/ and scheduler_service/ (run wf_42467807-a81, agents scope; confirmed by 2 adversarial verifiers), 2026-10-08. `aurabackend/agents/dpc_verifier.py:214`.
 - **Severity:** high
 - **Root cause:** Entry point: POST /chat -> run_orchestrator -> verify_node (langgraph_orchestrator.py:240). It is on by default (AURA_DPC_ENABLED and AURA_DPC_CHAT_ENABLED both default to 1). materialize_table issues `SELECT * FROM "{table}"` through the _dpc_registry execute_sql tool. That tool (langgraph_orchestrator.py:225-230) does `cur.fetchall()` and then `[list(r) for r in rows]` with no LIMIT. Only after that does dpc_verifier.py:220 check `if len(rows) > max_rows: return None`. The intended 200,000-row bound therefore discards the data only after the whole table is already in memory. The 10s asyncio.wait_for in verify_sql_result does not stop the to_thread worker either, so the full fetch keeps running after the timeout.
 - **Failure scenario:** A tenant with a 5M-row table asks 'how many orders are there?'. The generated SQL is a cheap SELECT COUNT(*) FROM "orders" over one table, so extract_single_table returns 'orders' and verify_node materializes all 5M rows into Python lists, twice over, only to skip the check as 'too large'. Each such query takes multi-GB transient memory and a default-executor thread for the whole scan. A few concurrent chat users on large tables can OOM the single worker, even though the user's own query returned one row.
 - **Caused by:** none -- pre-existing.
-- **Fix:** pending.
+- **Fix:** `materialize_table` puts the bound in the query (`SELECT * FROM "<table>" LIMIT max_rows + 1`), so the DuckDB fetch returns at most one row past `AURA_DPC_MAX_ROWS` and the existing size check then skips the cross-check without having read the table. Regression test `test_materialize_table_reads_at_most_one_row_past_the_bound` (through the real `_dpc_registry` tool) read all 100,000 rows on the old code and 51 now.
 
 ## BUG-361: Retry recursion resets retry_count to 0 on every attempt, so a failing job retries forever and wedges the scheduler loop
 - **Status:** open
