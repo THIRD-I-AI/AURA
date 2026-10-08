@@ -3769,10 +3769,10 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Fix:** pending.
 
 ## BUG-369: Executions in progress when scheduler_service restarts stay RUNNING or PENDING forever; nothing reconciles them
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode audit of agents/, connectors/ and scheduler_service/ (run wf_42467807-a81, scheduler scope; confirmed by 2 adversarial verifiers), 2026-10-08. `aurabackend/scheduler_service/main.py:36`.
 - **Severity:** medium
 - **Root cause:** execute_job persists the status as PENDING (executor.py:157-162) and then RUNNING (168-174) before the long query call (up to timeout_seconds, default 300s), and as PENDING again during the retry sleep (235-252). It only writes a terminal status afterwards. The lifespan (main.py:29-46) runs init_db and starts the worker, but never sweeps non-terminal job_executions. No other code in scheduler_service queries RUNNING or PENDING rows, so a process restart orphans them permanently.
 - **Failure scenario:** Entry point: the scheduler_service lifespan and SchedulerWorker, read through the gateway's GET /api/v1/scheduler/executions?status=running and /executions/{id}. A deploy or container restart happens while a 5-minute job is running, or while a job sits in its 60s retry sleep. After the restart the job's next_execution_time is still in the past, so the worker runs it again as a new execution. The original row keeps status running or pending with no completed_at indefinitely, until /admin/cleanup deletes it by age 30 days later. Admins and the executions API see a job that has been running for days, and anything that filters on running or pending executions counts phantom in-flight work.
 - **Caused by:** none -- pre-existing.
-- **Fix:** pending.
+- **Fix:** scheduler startup marks PENDING/RUNNING executions as FAILED ("Interrupted: the scheduler stopped before this execution finished") via `SchedulerRepository.fail_orphaned_executions`. A single scheduler owns every row, so all of them are swept; with distributed (Postgres) replicas only rows older than `AURA_SCHEDULER_ORPHAN_SECONDS` (default 7200) are, so another replica's live execution is left alone. Regression test `test_orphaned_executions_are_marked_failed` failed on the old code.

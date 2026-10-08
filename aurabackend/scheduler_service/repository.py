@@ -236,6 +236,33 @@ class SchedulerRepository:
 
     # ===== Cleanup =====
 
+    async def fail_orphaned_executions(self, older_than_seconds: float = 0) -> int:
+        """Mark PENDING/RUNNING executions created more than ``older_than_seconds`` ago
+        as FAILED (BUG-369).
+
+        An execution's terminal status is only written by the process running it, so
+        one that was mid-query or in its retry sleep when the service stopped stayed
+        RUNNING/PENDING forever. Called at startup: with 0 every non-terminal row is an
+        orphan (one scheduler process); with several replicas only rows older than any
+        live run could be are, so another replica's in-flight execution is left alone.
+        """
+        cutoff = datetime.now(timezone.utc) - timedelta(seconds=older_than_seconds)
+        async with self.async_session() as session:
+            result = await session.execute(
+                update(JobExecution)
+                .where(
+                    JobExecution.status.in_([JobStatus.PENDING, JobStatus.RUNNING]),
+                    JobExecution.created_at <= cutoff,
+                )
+                .values(
+                    status=JobStatus.FAILED,
+                    completed_at=datetime.now(timezone.utc),
+                    error_message="Interrupted: the scheduler stopped before this execution finished",
+                )
+            )
+            await session.commit()
+            return result.rowcount
+
     async def cleanup_old_executions(self, retention_days: int = 30) -> int:
         """Delete old execution records"""
         cutoff_date = datetime.now(timezone.utc) - timedelta(days=retention_days)
