@@ -91,6 +91,27 @@ def _resolve_fs(output_uri: str):
     return fs, path
 
 
+def _chunk_byte_budget() -> int:
+    try:
+        return max(1 << 20, int(os.getenv("AURA_SYNTHETIC_CHUNK_BYTES", str(64 << 20))))
+    except ValueError:
+        return 64 << 20
+
+
+# A generated string/uuid/category value is a Python object: its characters plus
+# roughly this much interpreter overhead per value.
+_PY_OBJECT_OVERHEAD = 56
+
+
+def _in_memory_bytes_per_row(schema: TableSchema) -> float:
+    total = 0.0
+    for col in schema.columns:
+        total += col.approx_width_bytes()
+        if col.dtype in ("string", "uuid", "category"):
+            total += _PY_OBJECT_OVERHEAD
+    return max(total, 1.0)
+
+
 class SyntheticDatasetWriter:
     """Chunked, calibrated, cloud-agnostic Parquet generator."""
 
@@ -106,7 +127,11 @@ class SyntheticDatasetWriter:
         self.schema = schema
         self.seed = seed
         self.compression = compression
-        self.chunk_rows = chunk_rows
+        # BUG-370: chunk_rows alone did not bound memory -- a chunk is chunk_rows x the
+        # row width, and the width (column count, string prefix length) was unbounded,
+        # so one wide schema allocated GBs in its first chunk and OOM-killed the gateway.
+        # Rows per chunk are now also capped by an in-memory byte budget.
+        self.chunk_rows = max(1, min(chunk_rows, int(_chunk_byte_budget() // _in_memory_bytes_per_row(schema))))
         self.file_target_bytes = file_target_bytes
         self._root_seed = np.random.SeedSequence(seed)
 
