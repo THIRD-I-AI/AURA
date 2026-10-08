@@ -97,7 +97,7 @@ services:
   # ── Production overrides for backend services ─────────────────────────
   api_gateway:
     <<: *prod-common
-    command: uvicorn api_gateway.main:app --host 0.0.0.0 --port 8000 --workers 4
+    command: uvicorn api_gateway.main:app --host 0.0.0.0 --port 8000 --workers 4 --ws-max-size 1048576 --ws-max-queue 8
     depends_on:
       db:
         condition: service_healthy

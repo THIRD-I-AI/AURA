@@ -175,3 +175,54 @@ def test_collab_rooms_lists_only_the_callers_tenant(jwt_client):
             # and not the internal "<tenant>:<room_id>" storage key.
             assert resp_a.json() == {"rooms": {"room-1": 1}, "total": 1}
             assert resp_b.json() == {"rooms": {"room-1": 1}, "total": 1}
+
+
+def test_an_oversized_frame_closes_the_sender_instead_of_being_relayed(client, monkeypatch):
+    # BUG-372: frames had no size limit; combined with an unbounded wait on slow peers,
+    # one sender could make uvicorn queue hundreds of MiB on the single gateway worker.
+    from starlette.websockets import WebSocketDisconnect
+
+    monkeypatch.setenv("AURA_COLLAB_MAX_MESSAGE_BYTES", "1024")
+    with client.websocket_connect("/ws/collab/room-big") as a:
+        with client.websocket_connect("/ws/collab/room-big"):
+            a.send_bytes(b"x" * 2048)
+            with pytest.raises(WebSocketDisconnect) as exc:
+                a.receive_bytes()
+            assert exc.value.code == 1009
+            a2_ok = b"small"
+    with client.websocket_connect("/ws/collab/room-big") as c:
+        with client.websocket_connect("/ws/collab/room-big") as d:
+            c.send_bytes(a2_ok)
+            assert d.receive_bytes() == a2_ok
+
+
+def test_a_peer_that_does_not_take_a_frame_in_time_is_dropped(monkeypatch):
+    # BUG-372: the sender's loop waited on the slowest peer with no time limit.
+    import asyncio
+
+    from api_gateway.routers import collab
+
+    monkeypatch.setenv("AURA_COLLAB_SEND_TIMEOUT", "0.2")
+
+    class _Peer:
+        def __init__(self, stall: bool):
+            self.stall, self.got, self.closed = stall, [], False
+
+        async def send_bytes(self, data):
+            if self.stall:
+                await asyncio.sleep(30)
+            self.got.append(data)
+
+        async def close(self, code: int = 1000):
+            self.closed = True
+
+    async def _scenario():
+        room = collab._Room()
+        sender, slow, fast = _Peer(False), _Peer(True), _Peer(False)
+        room.clients.update({sender, slow, fast})
+        await asyncio.wait_for(collab._broadcast(room, sender, b"hi"), timeout=5)
+        return slow, fast
+
+    slow, fast = asyncio.run(_scenario())
+    assert fast.got == [b"hi"]
+    assert slow.closed and slow.got == []
