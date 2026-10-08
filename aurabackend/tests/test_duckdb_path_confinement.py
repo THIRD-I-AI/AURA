@@ -78,3 +78,26 @@ def test_own_database_via_extra_params_still_works(client, tmp_path):  # noqa: F
     _make_db(tmp_path / "uploads" / "default" / "mine.duckdb")
     r = client.post(f"{V1}/connectors/duckdb/tables", json={"extra_params": {"db_path": "mine.duckdb"}})
     assert r.status_code == 200, r.text
+
+
+def test_a_view_in_an_uploaded_database_cannot_read_server_files(client, tmp_path):  # noqa: F811
+    # BUG-358: connector connections were never locked down, so a view stored in a
+    # tenant-uploaded .duckdb read any file the gateway can read when it was queried.
+    secret = tmp_path / "uploads" / "other-tenant" / "sales.csv"
+    secret.parent.mkdir(parents=True, exist_ok=True)
+    secret.write_text("card\n4111-1111\n")
+    evil = tmp_path / "uploads" / "default" / "evil.duckdb"
+    evil.parent.mkdir(parents=True, exist_ok=True)
+    con = duckdb.connect(str(evil))
+    con.execute(f"CREATE VIEW leak AS SELECT * FROM read_csv('{secret.as_posix()}')")
+    con.execute("CREATE TABLE ok AS SELECT 1 AS v")
+    con.close()
+
+    r = client.post(f"{V1}/connectors/duckdb/profile", json={
+        "connector_type": "duckdb", "connector_config": {"database": "evil.duckdb"}, "table_name": "leak"})
+    assert "4111" not in r.text
+    assert (r.json() or {}).get("rows") is None, "the view read the other tenant's file"
+
+    r = client.post(f"{V1}/connectors/duckdb/profile", json={
+        "connector_type": "duckdb", "connector_config": {"database": "evil.duckdb"}, "table_name": "ok"})
+    assert r.status_code == 200, r.text  # the file's own tables still work

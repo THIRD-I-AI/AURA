@@ -77,6 +77,15 @@ class DuckDBConnector(BaseConnector):
                         "could not be loaded (offline install? missing "
                         "extension server?). SQL surface still works."
                     )
+            # BUG-358: the database file is caller-supplied (a tenant can upload a
+            # .duckdb), and a view stored in it is bound at query time with the
+            # connection's own access -- read_csv of another tenant's upload,
+            # read_text('/proc/self/environ'), a URL. Cut the connection off from the
+            # filesystem and network once the file (and spatial) is open; its own
+            # tables stay queryable.
+            from shared.duckdb_factory import lock_down_connection
+
+            lock_down_connection(self._conn)
             return True
         except Exception as exc:
             logger.warning("DuckDB connection failed: %s", exc)
