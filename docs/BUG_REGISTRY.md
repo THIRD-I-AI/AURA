@@ -3742,13 +3742,13 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Fix:** every blocking call in `DuckDBConnector` (connect, spatial load, lockdown, SHOW TABLES, DESCRIBE, queries, COUNT(*), file registration) runs through `asyncio.to_thread`, as BUG-339 did for BigQuery. Regression test `test_duckdb_connector_calls_run_off_the_event_loop` saw them on the event-loop thread on the old code.
 
 ## BUG-366: GET /connections/{id}/schema always returns empty column lists
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode audit of agents/, connectors/ and scheduler_service/ (run wf_42467807-a81, connectors scope; confirmed by 2 adversarial verifiers), 2026-10-08. `aurabackend/api_gateway/routers/connections.py:471`.
 - **Severity:** medium
 - **Root cause:** The handler reads columns as `list(profile.get('columns', {}).keys()) if isinstance(profile.get('columns'), dict) else []`. Every connector's profile_table returns 'columns' as an int, len(schema['columns']): postgresql_connector.py:207, mysql_connector.py:195, duckdb_connector.py:166, bigquery_connector.py:211. Per-column data is under 'columns_profile' instead. The isinstance check is therefore always False.
 - **Failure scenario:** Entry point: GET /connections/{id}/schema. A tenant with a working saved Postgres connection to a database of 10 populated tables calls the route. It returns success:true with schema = {"orders": [], "customers": [], ...} for every table. It also runs up to 50 full profile_table passes (a 1000-row sample plus COUNT(*) each) whose results are thrown away. Every consumer of the schema sees tables with no columns.
 - **Caused by:** none -- pre-existing.
-- **Fix:** pending.
+- **Fix:** `GET /connections/{id}/schema` lists each table's column names from `get_table_schema` (which every connector implements and returns as `[{"name": ...}]`) instead of misreading `profile_table()["columns"]`, a count; it also no longer runs a full profile per table. Regression test `test_schema_lists_each_tables_columns` got empty lists on the old code.
 
 ## BUG-367: Postgres/MySQL connector hosts are not SSRF-filtered, and an empty host defaults to the gateway's own localhost
 - **Status:** open

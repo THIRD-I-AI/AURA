@@ -474,8 +474,12 @@ async def get_connection_schema(connection_id: str, request: Request):
         schema: Dict[str, List[str]] = {}
         for t in tables[:50]:
             try:
-                profile = await connector.profile_table(t)
-                schema[t] = list(profile.get("columns", {}).keys()) if isinstance(profile.get("columns"), dict) else []
+                # BUG-366: this read profile_table()["columns"] as a dict of names, but
+                # every connector returns a column COUNT there, so each table came back
+                # with no columns -- after a full profile (sample + COUNT(*)) per table.
+                # get_table_schema is the cheap call that actually lists them.
+                described = await connector.get_table_schema(t)
+                schema[t] = [c["name"] for c in described.get("columns", []) if isinstance(c, dict) and "name" in c]
             except Exception:
                 schema[t] = []
         await connector.disconnect()
