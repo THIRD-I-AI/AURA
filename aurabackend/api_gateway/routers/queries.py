@@ -929,6 +929,12 @@ async def _fire_due_saved_queries() -> None:
     for record in due:
         query_id = record["id"]
         sql = record.get("sql", "")
+        # BUG-368: every uvicorn worker runs this tick (--workers 4 in prod), and
+        # next_run_at only moved after the run finished, so a due query ran once per
+        # worker. Claim it first; a worker that loses the race skips it.
+        new_next = _compute_next_run(record.get("schedule") or {})
+        if not await persistence.claim_saved_query_run(query_id, record["next_run_at"], new_next):
+            continue
         started = datetime.now().isoformat()
         try:
             result = await _execute_saved_query_sql(sql, record.get("workspace_id"))
@@ -954,8 +960,7 @@ async def _fire_due_saved_queries() -> None:
             }
         await _record_run(query_id, entry)
 
-        # Advance next_run_at via the persistence layer.
-        new_next = _compute_next_run(record.get("schedule") or {})
+        # next_run_at was already advanced by the claim above.
         await persistence.update_saved_query(
             query_id, record.get("workspace_id") or DEFAULT_WORKSPACE_ID,
             {

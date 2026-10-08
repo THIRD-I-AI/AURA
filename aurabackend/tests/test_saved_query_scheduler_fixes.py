@@ -59,3 +59,44 @@ def test_a_scheduled_query_that_runs_too_long_is_stopped(uploads, monkeypatch):
         asyncio.run(asyncio.wait_for(queries._execute_saved_query_sql(runaway, "acme"), timeout=30))
 
     assert time.perf_counter() - started < 15
+
+
+def test_a_due_query_runs_once_however_many_workers_tick(monkeypatch):
+    # BUG-368: every uvicorn worker runs this tick against the same database, and
+    # next_run_at only moved after the run finished, so a due query ran once per worker.
+    import uuid
+    from datetime import datetime, timedelta, timezone
+
+    from api_gateway import persistence
+
+    persistence._engine = None
+    persistence._session_factory = None
+    persistence._schema_initialized = False
+    runs = []
+
+    async def _slow_run(sql, workspace_id):
+        runs.append(sql)
+        await asyncio.sleep(0.2)
+        return {"success": True, "row_count": 0, "execution_time_ms": 1}
+
+    monkeypatch.setattr(queries, "_execute_saved_query_sql", _slow_run)
+    qid = f"sq_{uuid.uuid4().hex[:10]}"
+    now = datetime.now(timezone.utc)
+
+    async def _scenario():
+        await persistence.insert_saved_query({
+            "id": qid, "workspace_id": "ws-bug368", "name": "n", "sql": f"SELECT '{qid}'",
+            "created_at": now.isoformat(), "created_ts": now.timestamp(), "updated_at": now.isoformat(),
+            "schedule": {"interval": "daily", "hour": 9, "minute": 0, "enabled": True},
+            "next_run_at": (now - timedelta(minutes=1)).isoformat(),
+        })
+        try:
+            await asyncio.gather(*(queries._fire_due_saved_queries() for _ in range(4)))
+        finally:
+            await persistence.delete_saved_query(qid, "ws-bug368")
+            if persistence._engine is not None:
+                await persistence._engine.dispose()
+
+    asyncio.run(_scenario())
+
+    assert runs.count(f"SELECT '{qid}'") == 1
