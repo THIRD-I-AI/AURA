@@ -39,7 +39,7 @@ import time
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from .models import DriftSeverity, DriftType, RecoveryStatus
 from .tenancy import same_tenant
@@ -244,6 +244,7 @@ class HealingMetricTracker:
         self,
         window_seconds: Optional[float] = None,
         min_sources: Optional[int] = None,
+        source_filter: Optional[Callable[[str], bool]] = None,
     ) -> Optional[CorrelatedIncident]:
         """N+ distinct sources with a recovery attempt in the last
         ``window_seconds``. Report-only -- a time-window heuristic, not
@@ -261,6 +262,10 @@ class HealingMetricTracker:
 
         cutoff = time.time() - window
         recent = [e for e in self._events if e.timestamp.timestamp() >= cutoff]
+        if source_filter is not None:
+            # BUG-354: filter BEFORE counting, so the threshold, drift types and
+            # earliest timestamp describe only the sources the caller may see.
+            recent = [e for e in recent if source_filter(e.source_id)]
         sources = {e.source_id for e in recent}
         if len(sources) < threshold:
             return None

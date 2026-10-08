@@ -1205,18 +1205,20 @@ async def get_correlation(
     configured ``UASR_CORRELATION_*`` defaults for a one-off check; omit
     them to use the deployment's own settings.
     """
-    incident = _tracker.detect_correlation(window_seconds, min_sources)
-    if incident is None:
-        return {"correlated": False}
-    # A tenant sees only its own sources in an incident; with fewer than two of
-    # them there is nothing cross-source to report to that tenant.
+    # BUG-354: the incident is computed over the caller's own sources only. Filtering
+    # just source_ids afterwards still leaked other tenants' drift types, timestamps
+    # and (by probing min_sources) how many of their sources were drifting.
     tenant = caller_tenant(request)
-    visible = [sid for sid in incident.source_ids if owns_source(tenant, sid)]
-    if tenant is not None and len(visible) < 2:
+    incident = _tracker.detect_correlation(
+        window_seconds, min_sources,
+        source_filter=None if tenant is None else (lambda sid: owns_source(tenant, sid)),
+    )
+    # A tenant with fewer than two drifting sources has nothing cross-source to see.
+    if incident is None or (tenant is not None and len(incident.source_ids) < 2):
         return {"correlated": False}
     return {
         "correlated": True,
-        "source_ids": visible,
+        "source_ids": incident.source_ids,
         "drift_types": incident.drift_types,
         "window_seconds": incident.window_seconds,
         "earliest_event_at": incident.earliest_event_at,

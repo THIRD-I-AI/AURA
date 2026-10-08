@@ -3634,13 +3634,13 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Fix:** pending.
 
 ## BUG-354: /uasr/correlation computes the incident over every tenant's sources, so a tenant learns other tenants' drift types, timestamps and drifting-source counts
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode UASR audit (run wf_6234d56e-d9c, isolation-sandbox lens; confirmed by 2 adversarial verifiers), 2026-10-07. `aurabackend/uasr/service.py:1186`.
 - **Severity:** low
 - **Root cause:** get_correlation calls _tracker.detect_correlation(window_seconds, min_sources) (service.py:1186). That function counts distinct sources across all tenants against the threshold and builds drift_types and earliest_event_at from all tenants' recent events (metrics.py:263-275). The handler then filters only source_ids to the caller's tenant (lines 1190-1193) and returns drift_types, earliest_event_at and window_seconds unfiltered (lines 1194-1201). min_sources is caller-controlled.
 - **Failure scenario:** Tenant A has 2 drifting sources. A calls GET /uasr/correlation?min_sources=3, then 4, 5 and so on. The response flips from correlated:true to false exactly when the threshold passes the total number of drifting sources across all tenants, which gives A a count of other tenants' drifting sources. Each true response also lists drift_types such as 'semantic' that only another tenant's sources produced, and an earliest_event_at taken from another tenant's event. A's own correlation alert can also fire only because a third source owned by tenant B drifted, which is cross-tenant influence on the signal.
 - **Caused by:** none -- pre-existing.
-- **Fix:** pending.
+- **Fix:** `detect_correlation` takes a `source_filter`, and `/uasr/correlation` passes the caller's tenant ownership, so the threshold count, drift types and earliest timestamp are computed over the caller's own sources only. Regression tests in `test_uasr_correlation_tenant_scope.py` failed on the old code.
 
 ## BUG-355: ShimRouter canaries are never promoted, reverted or removed by any production code, so every canary-path recovery adds another permanent route and auto-rollback never takes the shim out of the router
 - **Status:** open
