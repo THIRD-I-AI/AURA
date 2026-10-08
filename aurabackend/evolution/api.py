@@ -6,6 +6,7 @@ Mounted by the API gateway at /evolution/...
 """
 from __future__ import annotations
 
+import asyncio
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -93,12 +94,21 @@ async def evolution_status():
     }
 
 
+# BUG-374: one LLM call per failing (agent, task) group on the shared server key, and
+# any user could trigger it as often and as concurrently as they liked.
+_cycle_lock = asyncio.Lock()
+
+
 @router.post("/cycle")
-async def trigger_cycle():
-    """Manually trigger an evolution analysis cycle."""
-    engine = get_evolution_engine()
-    result = await engine.trigger_cycle()
-    return result
+async def trigger_cycle(request: Request):
+    """Manually trigger an evolution analysis cycle (platform operator only)."""
+    if not _platform_operator(request):
+        raise HTTPException(status_code=403, detail="Only an admin can run an evolution cycle")
+    if _cycle_lock.locked():
+        raise HTTPException(status_code=409, detail="An evolution cycle is already running")
+    async with _cycle_lock:
+        engine = get_evolution_engine()
+        return await engine.trigger_cycle()
 
 
 @router.post("/feedback")

@@ -3814,13 +3814,13 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Fix:** the evolution routes (list/get/PATCH proposals, log) show the engine's platform-wide rows (workspace_id NULL -- it analyses every tenant's feedback together) to the platform operator, i.e. an admin or a deployment running without auth, alongside their own workspace's rows; members still see only their workspace. Regression test `test_platform_proposals_are_visible_and_decidable_by_an_admin_only` failed on the old code.
 
 ## BUG-374: Any authenticated user can trigger unbounded, unthrottled LLM spend through POST /evolution/feedback + POST /evolution/cycle (one LLM call per attacker-chosen agent/task group, every call)
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode audit of collab/MCP, safety/evolution/synthetic and dar/insights/causal/semantic (run wf_d4e82922-262, safety-evolution-synthetic scope; confirmed by 2 adversarial verifiers), 2026-10-08. `aurabackend/evolution/api.py:80`.
 - **Severity:** medium
 - **Root cause:** POST /evolution/cycle (api.py:80-85) has no admin or role check and no concurrency guard. It runs engine.trigger_cycle inline. _analyse_failures groups AgentFeedback by (agent_name, task_type) with no LIMIT (engine.py:117-138). For every group with >=5 rows and a failure rate >=30% it makes one sequential llm.generate_json call (engine.py:165, 316) on the shared server LLM key. POST /evolution/feedback (api.py:88-110) accepts arbitrary agent_name/task_type strings with no rate or count limit. Nothing de-duplicates against earlier cycles, so the same 24h of feedback produces a new LLM call and a new proposal row on every cycle, manual or hourly.
 - **Failure scenario:** An authenticated tenant user posts 5 feedback rows with success=false for each of 1,000 distinct task_type values (5,000 small POSTs). Each POST /api/v1/evolution/cycle then makes 1,000 sequential LLM calls and inserts 1,000 proposal rows and 1,000 log rows. Several concurrent /cycle requests multiply this, and the hourly lifespan loop repeats it for 24 hours. This burns the shared provider quota and rate limit that every tenant's chat/NL-to-SQL path depends on, so other tenants' LLM calls start failing or getting throttled. The proposal and log tables also grow without bound.
 - **Caused by:** none -- pre-existing.
-- **Fix:** pending.
+- **Fix:** `POST /evolution/cycle` is limited to the platform operator (403 otherwise) and runs one cycle at a time (409 while one runs), and `_analyse_failures` analyses at most `AURA_EVOLUTION_MAX_GROUPS` (default 20) failing groups per cycle, worst first, so caller-chosen group names can no longer drive one LLM call each. Regression test `test_only_the_platform_operator_can_run_a_cycle_and_only_one_at_a_time` failed on the old code.
 
 ## BUG-375: POST /analyze/results runs InsightsEngine CPU-bound statistics over an unbounded request body directly on the single-worker event loop
 - **Status:** fixed
