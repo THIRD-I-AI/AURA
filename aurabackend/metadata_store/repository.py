@@ -195,7 +195,10 @@ class MetadataRepository:
                     expression=f.get("expression"),
                     description=f.get("description"),
                     aggregation=f.get("aggregation"),
-                    metadata=f.get("metadata", {}),
+                    # BUG-371: the mapped attribute is field_metadata (`metadata` is
+                    # reserved on DeclarativeBase); metadata= set an unmapped instance
+                    # attribute and the column was always saved as {}.
+                    field_metadata=f.get("metadata", {}),
                 )
                 for f in specs
             ]

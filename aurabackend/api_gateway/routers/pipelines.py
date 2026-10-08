@@ -376,7 +376,8 @@ def _serialize_semantic_model(model: Any) -> Dict[str, Any]:
         "source": model.source, "tags": model.tags,
         "created_at": model.created_at, "updated_at": model.updated_at,
         "fields": [
-            {"id": field.id, "name": field.name, "field_type": field.field_type, "data_type": field.data_type, "expression": field.expression, "description": field.description, "aggregation": field.aggregation, "metadata": field.metadata, "created_at": field.created_at, "updated_at": field.updated_at}
+            {"id": field.id, "name": field.name, "field_type": field.field_type, "data_type": field.data_type, "expression": field.expression, "description": field.description, "aggregation": field.aggregation, "metadata": field.field_metadata,  # BUG-371: field.metadata is Base.metadata (sqlalchemy MetaData)
+            "created_at": field.created_at, "updated_at": field.updated_at}
             for field in getattr(model, "fields", [])
         ],
     }
