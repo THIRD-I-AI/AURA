@@ -358,3 +358,23 @@ async def test_real_write_paths_handle_aware_datetimes_on_postgres(pg_repository
     execution = await _run_real_failing_job(pg_repository)
 
     assert execution.status == JobStatus.FAILED
+
+
+# ── BUG-369: executions orphaned by a restart ───────────────────────
+
+@pytest.mark.asyncio
+async def test_orphaned_executions_are_marked_failed(sqlite_repository) -> None:
+    repo = sqlite_repository
+    running = await repo.create_execution({"job_id": "j1", "status": JobStatus.RUNNING, "triggered_by": "scheduler"})
+    pending = await repo.create_execution({"job_id": "j1", "status": JobStatus.PENDING, "triggered_by": "scheduler"})
+    done = await repo.create_execution({"job_id": "j1", "status": JobStatus.SUCCESS, "triggered_by": "scheduler"})
+
+    # several replicas: rows younger than any live run are left alone
+    assert await repo.fail_orphaned_executions(older_than_seconds=3600) == 0
+    assert (await repo.get_execution(running.id)).status == JobStatus.RUNNING
+
+    assert await repo.fail_orphaned_executions(older_than_seconds=0) == 2
+    for ex_id in (running.id, pending.id):
+        ex = await repo.get_execution(ex_id)
+        assert ex.status == JobStatus.FAILED and ex.completed_at is not None and "Interrupted" in ex.error_message
+    assert (await repo.get_execution(done.id)).status == JobStatus.SUCCESS

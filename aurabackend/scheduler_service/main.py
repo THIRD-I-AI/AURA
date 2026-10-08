@@ -42,6 +42,16 @@ async def _scheduler_lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     _state["worker"] = SchedulerWorker(
         _state["repository"], _state["executor"], settings.scheduler_check_interval,
     )
+    # BUG-369: executions this service was running when it last stopped never got a
+    # terminal status. A single scheduler owns every row; with several replicas
+    # (Postgres) only rows older than any live run can be orphans.
+    orphan_age = (
+        float(os.getenv("AURA_SCHEDULER_ORPHAN_SECONDS", "7200"))
+        if _state["worker"]._distributed else 0.0
+    )
+    orphaned = await _state["repository"].fail_orphaned_executions(orphan_age)
+    if orphaned:
+        logger.warning("Marked %d interrupted execution(s) as failed", orphaned)
     await _state["worker"].start()
     logger.info("Scheduler Service started successfully")
 
