@@ -203,31 +203,16 @@ class TestDuckDBConnectorIdentifierQuoting:
 # ── DuckDBConnector — file queries ────────────────────────────────────────────
 
 class TestDuckDBFileQuery:
-    def test_query_file_csv(self, tmp_path):
-        """query_file should read a CSV written to disk."""
+    # BUG-358: connector connections are locked down (no filesystem or network access),
+    # so a file named by path -- the caller's or anyone else's -- is not readable.
+    def test_query_file_is_refused_on_a_locked_down_connection(self, tmp_path):
         csv_file = tmp_path / "data.csv"
         csv_file.write_text("name,score\nalice,90\nbob,80\n")
 
         conn = DuckDBConnector(_duckdb_config())
         _run(conn.connect())
         rows = _run(conn.query_file(str(csv_file)))
+        custom = _run(conn.query_file(str(csv_file), query=f"SELECT * FROM '{csv_file}'"))
         _run(conn.disconnect())
 
-        assert len(rows) == 2
-        names = {r["name"] for r in rows}
-        assert names == {"alice", "bob"}
-
-    def test_query_file_with_custom_sql(self, tmp_path):
-        csv_file = tmp_path / "scores.csv"
-        csv_file.write_text("name,score\nalice,90\nbob,80\ncharlie,95\n")
-
-        conn = DuckDBConnector(_duckdb_config())
-        _run(conn.connect())
-        rows = _run(conn.query_file(
-            str(csv_file),
-            query=f"SELECT * FROM '{csv_file}' WHERE score > 85 ORDER BY score DESC",
-        ))
-        _run(conn.disconnect())
-
-        assert len(rows) == 2
-        assert rows[0]["name"] == "charlie"
+        assert rows == [] and custom == []

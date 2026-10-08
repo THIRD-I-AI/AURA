@@ -3670,13 +3670,13 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Fix:** `_confine_server_file_paths` now applies the same confinement (':memory:' or a path inside the caller's own uploads, rewritten to its resolved path) to `extra_params["db_path"]`, which DuckDBConnector opens ahead of `database`. Every connector construction path goes through `_make_connector`, so the ad-hoc `/connectors/{type}/tables|test|profile|ingest` routes are covered. Regression tests `test_extra_params_db_path_is_confined_too` (tables, test, profile) and `test_extra_params_db_path_outside_uploads_is_not_created` failed on the old code.
 
 ## BUG-358: Connector DuckDB connections are never locked down, so a tenant-uploaded .duckdb with a view reads any server file
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode audit of agents/, connectors/ and scheduler_service/ (run wf_42467807-a81, connectors scope; confirmed by 2 adversarial verifiers), 2026-10-08. `aurabackend/connectors/duckdb_connector.py:59`.
 - **Severity:** high
 - **Root cause:** DuckDBConnector.connect calls a plain duckdb.connect(path) with external access left on. shared.duckdb_factory.lock_down_connection (the BUG-196 fix) is never called anywhere in connectors/ or in connections.py. POST /upload (files.py:126-178) accepts any file extension, so a tenant can upload a .duckdb they built themselves. Views stored in that file are bound at query time with full filesystem and network access.
 - **Failure scenario:** Entry points: POST /upload, then POST /connections, then POST /connections/{id}/sync. The attacker builds evil.duckdb locally with `CREATE VIEW leak AS SELECT * FROM read_csv('/data/uploads/<victim>/sales.csv')` or `SELECT * FROM read_text('/proc/self/environ')`. They upload it, which lands in their own uploads. They create a duckdb connection with database='evil.duckdb', which passes BUG-232 confinement because the file is in their own uploads. They then sync table_name='leak'. The route runs `SELECT * FROM leak LIMIT ... OFFSET ...` (connections.py:824), DuckDB runs the view's file reader, and the results are written as a parquet snapshot into the attacker's uploads, where chat can query them. Through this path the attacker can read other tenants' files or the gateway's environment secrets.
 - **Caused by:** none -- pre-existing.
-- **Fix:** pending.
+- **Fix:** `DuckDBConnector.connect` runs `shared.duckdb_factory.lock_down_connection` (external access off, configuration locked) once the database file and the optional spatial extension are open, so a view stored in a tenant-uploaded .duckdb can no longer read server files or URLs when it is queried; the file's own tables stay queryable. The connector's `query_file` helper (read a file by path; no production caller) is refused by the same lockdown, and its tests now assert that. Regression test `test_a_view_in_an_uploaded_database_cannot_read_server_files` read another tenant's CSV through the view on the old code.
 
 ## BUG-359: POST /chat runs LLM-generated SQL with unbounded fetchall() and returns every row twice (records + rows)
 - **Status:** open
