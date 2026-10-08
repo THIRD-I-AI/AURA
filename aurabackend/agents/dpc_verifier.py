@@ -211,7 +211,10 @@ async def materialize_table(table: str, tools: Any, max_rows: int) -> Optional[p
     if tools is None:
         return None
     try:
-        res = await tools.call("execute_sql", query=f'SELECT * FROM "{table}"')
+        # BUG-360: bounded in the query. The size check below used to run only after
+        # the whole table had been fetched (twice over, as tuples and lists), so a
+        # one-row COUNT(*) over a 5M-row table materialised all 5M rows to skip itself.
+        res = await tools.call("execute_sql", query=f'SELECT * FROM "{table}" LIMIT {int(max_rows) + 1}')
     except Exception:
         return None
     cols, rows = extract_columns_rows(res)

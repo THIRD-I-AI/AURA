@@ -238,3 +238,27 @@ def test_config_readers_defaults(monkeypatch):
     assert dpc_enabled() is True
     assert dpc_timeout() == 10.0
     assert dpc_max_rows() == 200000
+
+
+def test_materialize_table_reads_at_most_one_row_past_the_bound():
+    # BUG-360: the table was fetched whole (SELECT * with no LIMIT) and only then checked
+    # against max_rows, so verifying a one-row answer over a huge table read every row.
+    import duckdb
+
+    from agents.langgraph_orchestrator import _dpc_registry
+
+    con = duckdb.connect(":memory:")
+    con.execute("CREATE TABLE big AS SELECT range AS v FROM range(100000)")
+    seen: list = []
+    reg = _dpc_registry(con)
+    real = reg.get("execute_sql").fn
+
+    async def _spy(*, query, **kw):
+        out = await real(query=query, **kw)
+        seen.append(len(out["rows"]))
+        return out
+
+    reg.get("execute_sql").fn = _spy
+    assert asyncio.run(materialize_table("big", reg, max_rows=50)) is None
+    assert seen == [51]
+    assert len(asyncio.run(materialize_table("big", reg, max_rows=200000))) == 100000
