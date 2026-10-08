@@ -163,121 +163,127 @@ class JobExecutor:
 
         await self._log(execution.id, "INFO", f"Starting execution of job '{job.name}'")
 
-        try:
-            # Update status to running
-            await self.repository.update_execution(
-                execution.id,
-                {
-                    "status": JobStatus.RUNNING,
-                    "started_at": datetime.now(timezone.utc)
-                }
-            )
-
-            # Execute query via database service
-            result = await self._execute_query(
-                connection_id=job.connection_id,
-                query=job.query,
-                timeout=job.timeout_seconds
-            )
-
-            # Calculate duration
-            duration = (datetime.now(timezone.utc) - execution.started_at).total_seconds() if execution.started_at else 0
-
-            # Update execution with results
-            await self.repository.update_execution(
-                execution.id,
-                {
-                    "status": JobStatus.SUCCESS,
-                    "completed_at": datetime.now(timezone.utc),
-                    "duration_seconds": int(duration),
-                    "rows_affected": result.get("row_count", 0),
-                    "result_summary": {
-                        "columns": result.get("columns", []),
-                        "sample_rows": result.get("rows", [])[:5]  # Store first 5 rows
-                    }
-                }
-            )
-
-            await self._log(
-                execution.id,
-                "INFO",
-                f"Job completed successfully. Rows: {result.get('row_count', 0)}, Duration: {duration:.2f}s"
-            )
-
-            # Update job's last execution time
-            await self.repository.update_job(
-                job.id,
-                {
-                    "last_execution_time": datetime.now(timezone.utc),
-                    "next_execution_time": self._calculate_next_execution(job)
-                }
-            )
-
-        except Exception as e:
-            error_message = str(e)
-            error_details = {
-                "type": type(e).__name__,
-                "traceback": traceback.format_exc()
-            }
-
-            await self._log(
-                execution.id,
-                "ERROR",
-                f"Job execution failed: {error_message}",
-                error_details
-            )
-
-            # Check if we should retry
-            execution = await self.repository.get_execution(execution.id)
-            if execution and execution.retry_count < job.max_retries:
-                # Schedule retry
-                retry_count = execution.retry_count + 1
+        while True:
+            try:
+                # Update status to running
                 await self.repository.update_execution(
                     execution.id,
                     {
-                        "status": JobStatus.PENDING,
-                        "retry_count": retry_count,
-                        "error_message": error_message,
-                        "error_details": error_details
+                        "status": JobStatus.RUNNING,
+                        "started_at": datetime.now(timezone.utc)
+                    }
+                )
+
+                # Execute query via database service
+                result = await self._execute_query(
+                    connection_id=job.connection_id,
+                    query=job.query,
+                    timeout=job.timeout_seconds
+                )
+
+                # Calculate duration
+                duration = (datetime.now(timezone.utc) - execution.started_at).total_seconds() if execution.started_at else 0
+
+                # Update execution with results
+                await self.repository.update_execution(
+                    execution.id,
+                    {
+                        "status": JobStatus.SUCCESS,
+                        "completed_at": datetime.now(timezone.utc),
+                        "duration_seconds": int(duration),
+                        "rows_affected": result.get("row_count", 0),
+                        "result_summary": {
+                            "columns": result.get("columns", []),
+                            "sample_rows": result.get("rows", [])[:5]  # Store first 5 rows
+                        }
                     }
                 )
 
                 await self._log(
                     execution.id,
                     "INFO",
-                    f"Scheduling retry {retry_count}/{job.max_retries} in {job.retry_delay_seconds}s"
+                    f"Job completed successfully. Rows: {result.get('row_count', 0)}, Duration: {duration:.2f}s"
                 )
 
-                # Retry after delay
-                await asyncio.sleep(job.retry_delay_seconds)
-                return await self.execute_job(job, triggered_by)
-            else:
-                # Max retries exceeded
-                duration = (datetime.now(timezone.utc) - execution.started_at).total_seconds() if execution.started_at else 0
-
-                await self.repository.update_execution(
-                    execution.id,
+                # Update job's last execution time
+                await self.repository.update_job(
+                    job.id,
                     {
-                        "status": JobStatus.FAILED,
-                        "completed_at": datetime.now(timezone.utc),
-                        "duration_seconds": int(duration),
-                        "error_message": error_message,
-                        "error_details": error_details
+                        "last_execution_time": datetime.now(timezone.utc),
+                        "next_execution_time": self._calculate_next_execution(job)
                     }
                 )
+                break
 
-                # Send failure notifications (email, Slack, webhook)
-                try:
-                    await self.notifications.notify_job_failure(
-                        job_name=job.name,
-                        job_id=job.id,
-                        execution_id=execution.id,
-                        error_message=error_message,
-                        retry_count=execution.retry_count,
-                        max_retries=job.max_retries,
+            except Exception as e:
+                error_message = str(e)
+                error_details = {
+                    "type": type(e).__name__,
+                    "traceback": traceback.format_exc()
+                }
+
+                await self._log(
+                    execution.id,
+                    "ERROR",
+                    f"Job execution failed: {error_message}",
+                    error_details
+                )
+
+                # Check if we should retry
+                execution = await self.repository.get_execution(execution.id)
+                if execution and execution.retry_count < job.max_retries:
+                    # Schedule retry
+                    retry_count = execution.retry_count + 1
+                    await self.repository.update_execution(
+                        execution.id,
+                        {
+                            "status": JobStatus.PENDING,
+                            "retry_count": retry_count,
+                            "error_message": error_message,
+                            "error_details": error_details
+                        }
                     )
-                except Exception as notify_err:
-                    await self._log(execution.id, "WARNING", f"Notification failed: {notify_err}")
+
+                    await self._log(
+                        execution.id,
+                        "INFO",
+                        f"Scheduling retry {retry_count}/{job.max_retries} in {job.retry_delay_seconds}s"
+                    )
+
+                    # Retry after delay, in this same execution. BUG-361: this recursed into
+                    # execute_job, which created a NEW execution with retry_count=0 every
+                    # time, so the max_retries check never tripped and a failing job retried
+                    # forever, holding the worker loop (and recursion depth) the whole time.
+                    await asyncio.sleep(job.retry_delay_seconds)
+                    continue
+                else:
+                    # Max retries exceeded
+                    duration = (datetime.now(timezone.utc) - execution.started_at).total_seconds() if execution.started_at else 0
+
+                    await self.repository.update_execution(
+                        execution.id,
+                        {
+                            "status": JobStatus.FAILED,
+                            "completed_at": datetime.now(timezone.utc),
+                            "duration_seconds": int(duration),
+                            "error_message": error_message,
+                            "error_details": error_details
+                        }
+                    )
+
+                    # Send failure notifications (email, Slack, webhook)
+                    try:
+                        await self.notifications.notify_job_failure(
+                            job_name=job.name,
+                            job_id=job.id,
+                            execution_id=execution.id,
+                            error_message=error_message,
+                            retry_count=execution.retry_count,
+                            max_retries=job.max_retries,
+                        )
+                    except Exception as notify_err:
+                        await self._log(execution.id, "WARNING", f"Notification failed: {notify_err}")
+                    break
 
         # Fetch and return final execution state
         return await self.repository.get_execution(execution.id)
