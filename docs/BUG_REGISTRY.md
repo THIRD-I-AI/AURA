@@ -3625,13 +3625,13 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Fix:** `run_with_candidate_shim` takes the id of the recovery row the caller will update, and `attempt_cross_source_heal` passes `recovery_rec.id`, so the returned id, the tracker event and the deploy callback all use the persisted id. Regression test `test_the_returned_recovery_id_is_the_persisted_one` failed on the old code.
 
 ## BUG-353: Distributed repair: one Redis error during a heartbeat kills the heartbeat task, then `await hb` re-raises it, which throws away the finished repair's result and skips releasing the slot
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode UASR audit (run wf_6234d56e-d9c, reliability lens; confirmed by 2 adversarial verifiers), 2026-10-07. `aurabackend/uasr/distributed_repair.py:347`.
 - **Severity:** medium
 - **Root cause:** _heartbeat_loop (lines 304-310) only re-raises CancelledError. Any other exception from _heartbeat (a redis-py ConnectionError or TimeoutError) ends the task with no log. After that the lease stops being renewed and expires 30 s later, while the repair is still running, so prune reclaims the slot and the global cap is exceeded. When the repair finishes, the finally block (lines 347-353) calls hb.cancel(), which does nothing on a finished task, then `await hb`. That re-raises the stored ConnectionError, which `except asyncio.CancelledError` does not catch. The new exception replaces the `return result` of the completed repair and skips `await self._release(token)`.
 - **Failure scenario:** A drift recovery goes through the LLM reflector and actuator (to_thread LLM calls of up to 120 s each, up to 3 iterations), so it runs for minutes and heartbeats every 5 s. A brief Redis blip (a failover, or a moment of network loss) makes one ZADD raise. The repair keeps going, and 30 s later its lease is pruned, so another node gets admitted above UASR_REPAIR_MAX_GLOBAL_CONCURRENT. When RecoveryLoop.run returns, often after _deploy_shim has already put the shim in the in-memory registry, submit() raises ConnectionError instead of returning. _plan_recovery propagates it, _run_forever records last_error and pauses the MAPE-K consumer, and persist_recovery_row never runs. The result: a shim that is live in memory with no RecoveryRecord, plus a worker that stays paused until an operator resumes it.
 - **Caused by:** none -- pre-existing.
-- **Fix:** pending.
+- **Fix:** `_heartbeat_loop` logs a failed renewal and retries on the next interval instead of ending, so the lease keeps being renewed and `await hb` in `submit()` can no longer re-raise over the repair's result or skip `_release()`. Regression test `test_a_failed_heartbeat_neither_loses_the_result_nor_the_slot` failed on the old code.
 
 ## BUG-354: /uasr/correlation computes the incident over every tenant's sources, so a tenant learns other tenants' drift types, timestamps and drifting-source counts
 - **Status:** fixed

@@ -344,12 +344,16 @@ class DistributedRepairCoordinator:
         await asyncio.to_thread(self._r.hincrby, self._active_by_source_key, self._source_of(token), -1)
 
     async def _heartbeat_loop(self, token: str) -> None:
-        try:
-            while True:
-                await asyncio.sleep(self._heartbeat_ms / 1000.0)
+        # BUG-353: one failed renewal (a Redis blip) used to end this task, so the
+        # lease lapsed under a live repair, and `await hb` in submit() then re-raised
+        # the error over the finished repair's result and skipped _release(). A failed
+        # beat is retried on the next interval; the lease outlives several of them.
+        while True:
+            await asyncio.sleep(self._heartbeat_ms / 1000.0)
+            try:
                 await self._heartbeat(token)
-        except asyncio.CancelledError:
-            raise
+            except Exception as exc:
+                logger.warning("repair lease heartbeat failed for %s: %s", token, exc)
 
     # ---- public API -------------------------------------------------
     async def submit(
