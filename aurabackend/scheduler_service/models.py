@@ -9,8 +9,35 @@ from enum import Enum
 from sqlalchemy import JSON, Boolean, Column, DateTime, Integer, String, Text
 from sqlalchemy import Enum as SQLEnum
 from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.types import TypeDecorator
 
 Base = declarative_base()
+
+
+class UTCDateTime(TypeDecorator):
+    """A naive-UTC TIMESTAMP column that accepts and returns aware UTC datetimes.
+
+    BUG-356: the columns are TIMESTAMP WITHOUT TIME ZONE, but the repository and
+    executor write ``datetime.now(timezone.utc)`` (updated_at, started_at,
+    completed_at, last/next_execution_time). asyncpg refuses an aware value for a
+    naive column, so on the Postgres stack creating, updating, pausing, resuming and
+    running jobs all failed; and on SQLite a value read back came out naive, so
+    ``now(timezone.utc) - started_at`` raised. Normalising here covers every write
+    path; the stored representation (naive UTC) is unchanged, so no migration.
+    """
+
+    impl = DateTime
+    cache_ok = True
+
+    def process_bind_param(self, value, dialect):
+        if value is not None and value.tzinfo is not None:
+            value = value.astimezone(timezone.utc).replace(tzinfo=None)
+        return value
+
+    def process_result_value(self, value, dialect):
+        if value is not None and value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
+        return value
 
 
 class JobStatus(str, Enum):
@@ -65,13 +92,13 @@ class ScheduledJob(Base):
 
     # Status
     is_active = Column(Boolean, default=True)
-    last_execution_time = Column(DateTime, nullable=True)
-    next_execution_time = Column(DateTime, nullable=True)
+    last_execution_time = Column(UTCDateTime, nullable=True)
+    next_execution_time = Column(UTCDateTime, nullable=True)
 
     # Metadata
     created_by = Column(String(100), nullable=True)
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
-    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None), onupdate=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
+    created_at = Column(UTCDateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
+    updated_at = Column(UTCDateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None), onupdate=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
 
 
 class JobExecution(Base):
@@ -83,8 +110,8 @@ class JobExecution(Base):
 
     # Execution info
     status = Column(SQLEnum(JobStatus), nullable=False, default=JobStatus.PENDING)
-    started_at = Column(DateTime, nullable=True)
-    completed_at = Column(DateTime, nullable=True)
+    started_at = Column(UTCDateTime, nullable=True)
+    completed_at = Column(UTCDateTime, nullable=True)
     duration_seconds = Column(Integer, nullable=True)
 
     # Results
@@ -100,7 +127,7 @@ class JobExecution(Base):
     # Metadata
     triggered_by = Column(String(50), default="scheduler")  # scheduler, manual, api
     execution_metadata = Column(JSON, nullable=True)
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
+    created_at = Column(UTCDateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
 
 
 class ExecutionLog(Base):
@@ -111,7 +138,7 @@ class ExecutionLog(Base):
     execution_id = Column(String(36), nullable=False, index=True)
 
     # Log entry
-    timestamp = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
+    timestamp = Column(UTCDateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
     level = Column(String(20), nullable=False)  # INFO, WARNING, ERROR
     message = Column(Text, nullable=False)
     details = Column(JSON, nullable=True)
