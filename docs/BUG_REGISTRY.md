@@ -3823,13 +3823,13 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Fix:** pending.
 
 ## BUG-375: POST /analyze/results runs InsightsEngine CPU-bound statistics over an unbounded request body directly on the single-worker event loop
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode audit of collab/MCP, safety/evolution/synthetic and dar/insights/causal/semantic (run wf_d4e82922-262, dar-insights-causal scope; confirmed by 2 adversarial verifiers), 2026-10-08. `aurabackend/api_gateway/routers/queries.py:549`.
 - **Severity:** medium
 - **Root cause:** analyze_results is `async def` and calls InsightsEngine().analyze(query, results, column_profiles) inline (queries.py:551-552), with no asyncio.to_thread and no cap on len(results). The engine (insights_service/engine.py:132-348) scans every row for every column. It then does statistics.mean/stdev/median (exact-fraction arithmetic in the stdlib), sorts for IQR outliers, computes trend half-means for up to 6 numeric columns, and pure-Python pairwise Pearson correlation for up to 4 columns. It also echoes the whole `results` list back as chart `data` (engine.py:177/190/203/216/229, 398). The gateway has no JSON body-size limit: UploadBodyLimitMiddleware only covers paths ending in /upload, and the Caddyfile sets no request_body max. The deploy runs uvicorn with --workers 1. This site is not in the BUG-042 offload list.
 - **Failure scenario:** Any authenticated user POSTs /api/v1/analyze/results?query=x with a body of {"results": [ ~1,000,000 rows of {a:1.0,b:2.0,c:3.0,d:4.0,e:5.0,f:6.0} ]} (about 60 MB). JSON parsing, then 6 column scans, 6 statistics.stdev/median runs, 6 sorts and 6 pairwise correlation sums all run on the event loop for many seconds. During that time every other tenant's requests, including /health, stall. The parsed body plus the per-column float lists plus the echoed chart data hold several hundred MB, which is near the gateway's 520m container ceiling on the 1 GB box (402 MiB measured peak), so a couple of concurrent calls can OOM-kill the only gateway.
 - **Caused by:** none -- pre-existing.
-- **Fix:** pending.
+- **Fix:** `POST /analyze/results` refuses more rows than `AURA_QUERY_MAX_ROWS` (413, the same cap query results use) and runs `InsightsEngine.analyze` through `asyncio.to_thread`. Regression tests in `test_analyze_results_bounds.py` failed on the old code (the engine ran on the event loop; 50 rows over a cap of 10 were accepted).
 
 ## BUG-376: InsightsEngine infers a column's type from its first non-null value, then float()s every row, so a mixed-type column crashes /analyze/results with an unhandled 500
 - **Status:** open
