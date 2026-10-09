@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from collections import defaultdict
 from itertools import count
 from typing import Dict, Set
@@ -54,6 +55,26 @@ from shared.exceptions import AuthenticationError
 from .workspaces import _request_tenant
 
 logger = logging.getLogger(__name__)
+
+
+def _env_number(name: str, default: float) -> float:
+    try:
+        return float(os.getenv(name, str(default)))
+    except ValueError:
+        return default
+
+
+# BUG-372: a relayed frame had no size limit and a send to a peer had no time limit.
+# One sender of 16 MiB frames plus one peer that reads slowly kept the sender's loop
+# waiting on that peer while uvicorn queued the sender's frames -- enough to OOM the
+# single 520m gateway worker. A frame over the cap closes the sender; a peer that does
+# not take a frame in time is dropped from the room.
+def _max_message_bytes() -> int:
+    return int(_env_number("AURA_COLLAB_MAX_MESSAGE_BYTES", 1 << 20))
+
+
+def _send_timeout_seconds() -> float:
+    return _env_number("AURA_COLLAB_SEND_TIMEOUT", 5.0)
 
 router = APIRouter(tags=["collab"])
 
@@ -112,8 +133,10 @@ async def _broadcast(room: _Room, sender: WebSocket, payload: bytes | str) -> No
     if not peers:
         return
     is_text = isinstance(payload, str)
+    timeout = _send_timeout_seconds()
     results = await asyncio.gather(
-        *(c.send_text(payload) if is_text else c.send_bytes(payload) for c in peers),
+        *(asyncio.wait_for(c.send_text(payload) if is_text else c.send_bytes(payload), timeout)
+          for c in peers),
         return_exceptions=True,
     )
     for peer, result in zip(peers, results):
@@ -180,6 +203,10 @@ async def collab_socket(websocket: WebSocket, room_id: str) -> None:
                 payload = msg.get("text")
             if payload is None:
                 continue
+            size = len(payload.encode("utf-8")) if isinstance(payload, str) else len(payload)
+            if size > _max_message_bytes():
+                await websocket.close(code=status.WS_1009_MESSAGE_TOO_BIG)
+                break
             await _broadcast(room, websocket, payload)
     except WebSocketDisconnect:
         pass

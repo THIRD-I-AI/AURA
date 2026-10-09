@@ -63,7 +63,7 @@ services:
     restart: unless-stopped
     # One worker. See note 1 above — this is the difference between booting
     # and OOM-looping on a t3.micro.
-    command: uvicorn api_gateway.main:app --host 0.0.0.0 --port 8000 --workers 1
+    command: uvicorn api_gateway.main:app --host 0.0.0.0 --port 8000 --workers 1 --ws-max-size 1048576 --ws-max-queue 8
     env_file: [.env]
     environment:
       # SQLite lives on the mounted volume so it survives container replacement.
