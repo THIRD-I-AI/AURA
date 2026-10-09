@@ -137,10 +137,18 @@ class InsightsEngine:
 
             first_val = values[0]
 
-            if isinstance(first_val, (int, float)):
-                types[col] = "numeric"
-            elif isinstance(first_val, bool):
+            # BUG-376: bool first (it is an int subclass, so the boolean branch was
+            # unreachable), and "numeric" only when EVERY value is a number -- the type
+            # came from the first value alone, then float() ran on every row and a later
+            # string crashed the request with a 500.
+            if isinstance(first_val, bool):
                 types[col] = "boolean"
+            elif isinstance(first_val, (int, float)):
+                types[col] = (
+                    "numeric"
+                    if all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in values)
+                    else "object"
+                )
             elif isinstance(first_val, str):
                 # Check if it looks like a date
                 if any(d in str(first_val) for d in ["-", "/"]) and len(str(first_val)) < 20:

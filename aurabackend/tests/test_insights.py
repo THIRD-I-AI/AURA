@@ -68,10 +68,10 @@ class TestColumnTypeDetection:
         assert t["label"] == "string"
 
     def test_boolean_detection(self):
-        # Python bool is a subclass of int, so isinstance(True, (int, float)) is True.
-        # The engine checks numeric before boolean, so booleans resolve to "numeric".
+        # BUG-376: bool is an int subclass and used to be checked after numeric, so this
+        # asserted "numeric"; booleans are now detected as booleans.
         t = self._types([{"flag": True}, {"flag": False}])
-        assert t["flag"] == "numeric"
+        assert t["flag"] == "boolean"
 
     def test_date_like_detection(self):
         t = self._types([{"dt": "2024-01-15"}, {"dt": "2024-02-20"}])
@@ -304,3 +304,21 @@ class TestAlertGenerator:
         rules = [{"metric": "v", "operator": ">", "threshold": 0}]
         alerts = AlertGenerator.generate_alerts(rows, rules)
         assert "timestamp" in alerts[0]
+
+
+def test_a_column_that_turns_non_numeric_later_does_not_crash():
+    # BUG-376: the column type came from the first non-null value, then float() ran on
+    # every row, so a later string raised and /analyze/results answered 500.
+    from insights_service.engine import InsightsEngine
+
+    rows = [{"amount": 10}, {"amount": 20}, {"amount": "n/a"}, {"amount": 30}]
+    out = InsightsEngine().analyze("q", rows)
+
+    assert isinstance(out, dict)
+
+
+def test_a_boolean_column_is_not_treated_as_numeric():
+    from insights_service.engine import InsightsEngine
+
+    types = InsightsEngine()._detect_column_types([{"ok": True}, {"ok": False}], ["ok"])
+    assert types["ok"] == "boolean"

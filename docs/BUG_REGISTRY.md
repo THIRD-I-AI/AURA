@@ -3832,10 +3832,10 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Fix:** `POST /analyze/results` refuses more rows than `AURA_QUERY_MAX_ROWS` (413, the same cap query results use) and runs `InsightsEngine.analyze` through `asyncio.to_thread`. Regression tests in `test_analyze_results_bounds.py` failed on the old code (the engine ran on the event loop; 50 rows over a cap of 10 were accepted).
 
 ## BUG-376: InsightsEngine infers a column's type from its first non-null value, then float()s every row, so a mixed-type column crashes /analyze/results with an unhandled 500
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode audit of collab/MCP, safety/evolution/synthetic and dar/insights/causal/semantic (run wf_d4e82922-262, dar-insights-causal scope; confirmed by 2 adversarial verifiers), 2026-10-08. `aurabackend/insights_service/engine.py:248`.
 - **Severity:** low
 - **Root cause:** _detect_column_types (engine.py:138-141) marks a column 'numeric' when its first non-null value is an int or float, and that includes bool, since bool is a subclass of int, which makes the 'boolean' branch at line 142 unreachable. _generate_insights then runs `float(r[col])` on every row (line 248) with no try/except. The gateway route analyze_results (queries.py:549-553) has no exception handling either.
 - **Failure scenario:** POST /api/v1/analyze/results?query=q with {"results": [{"amount": 10}, {"amount": "N/A"}]}, a common shape for exported or sparsely cleaned data. float('N/A') raises ValueError, and the caller gets an HTTP 500 instead of insights. Separately, a column of true/false flags is summarized as a numeric measure, with Mean/Std/outlier and 'trend' insights over 0/1 values, instead of being treated as boolean.
 - **Caused by:** none -- pre-existing.
-- **Fix:** pending.
+- **Fix:** `_detect_column_types` checks bool before int/float (bool is an int subclass, so the boolean branch was unreachable) and marks a column numeric only when every non-null value is a number; a mixed column is "object", so the stats pass no longer `float()`s a string and 500s. The existing `test_boolean_detection`, which pinned the old behaviour ("numeric"), now expects "boolean". Regression tests `test_a_column_that_turns_non_numeric_later_does_not_crash` and `test_a_boolean_column_is_not_treated_as_numeric` failed on the old code.
