@@ -505,3 +505,39 @@ async def test_platform_proposals_are_visible_and_decidable_by_an_admin_only(db_
     assert (await api.list_proposals(member, db=db_session))["count"] == 0
     with pytest.raises(Exception):
         await api.get_proposal(proposal.id, member, db=db_session)
+
+
+# ── BUG-374: unthrottled, any-user evolution cycles ─────────────────
+
+@pytest.mark.asyncio
+async def test_only_the_platform_operator_can_run_a_cycle_and_only_one_at_a_time(monkeypatch):
+    from fastapi import HTTPException
+
+    from evolution import api
+
+    calls = 0
+    gate = asyncio.Event()
+
+    class _Engine:
+        async def trigger_cycle(self):
+            nonlocal calls
+            calls += 1
+            await gate.wait()
+            return {"status": "completed"}
+
+    monkeypatch.setattr(api, "get_evolution_engine", lambda: _Engine())
+    member = _request({"sub": "u@acme", "org_id": "acme", "role": "member"})
+    admin = _request({"sub": "ops@x", "org_id": "ops", "role": "admin"})
+
+    with pytest.raises(HTTPException) as exc:
+        await api.trigger_cycle(member)
+    assert exc.value.status_code == 403
+
+    first = asyncio.create_task(api.trigger_cycle(admin))
+    await asyncio.sleep(0.05)
+    with pytest.raises(HTTPException) as exc:
+        await api.trigger_cycle(admin)
+    assert exc.value.status_code == 409
+    gate.set()
+    assert (await first)["status"] == "completed"
+    assert calls == 1

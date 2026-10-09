@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
@@ -45,6 +46,13 @@ logger = logging.getLogger("evolution.engine")
 # How often the engine wakes up (seconds)
 _DEFAULT_CYCLE_INTERVAL = int(3600)  # 1 hour
 _MIN_SAMPLES_FOR_ANALYSIS = 5
+
+
+def _max_groups_per_cycle() -> int:
+    try:
+        return max(1, int(os.getenv("AURA_EVOLUTION_MAX_GROUPS", "20")))
+    except ValueError:
+        return 20
 _CONFIDENCE_DEPLOY_THRESHOLD = 0.75
 
 
@@ -134,6 +142,10 @@ class EvolutionEngine:
             )
             .where(AgentFeedback.created_at >= since)
             .group_by(AgentFeedback.agent_name, AgentFeedback.task_type)
+            # BUG-374: each qualifying group costs one LLM call, and group names are
+            # caller-chosen strings; analyse only the worst groups per cycle.
+            .order_by(func.sum((AgentFeedback.success == False).cast(Integer)).desc())  # noqa: E712
+            .limit(_max_groups_per_cycle())
         )
         rows = result.all()
 
