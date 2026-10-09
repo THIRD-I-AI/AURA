@@ -178,3 +178,29 @@ async def test_generated_model_persists_via_repository(db_session):
     field_by_name = {f.name: f for f in model.fields}
     assert field_by_name["total"].field_type == "measure"
     assert field_by_name["total"].aggregation == "sum"
+
+
+@pytest.mark.asyncio
+async def test_field_metadata_is_saved_and_the_listing_serialises(db_session):
+    # BUG-371: the repository passed metadata= (an unmapped attribute, `metadata` being
+    # reserved on DeclarativeBase), so every field saved {}; and the gateway serializer
+    # read field.metadata -- Base.metadata, a sqlalchemy MetaData -- so listing any model
+    # with fields failed to serialise (HTTP 500).
+    import json
+
+    from api_gateway.routers.pipelines import _serialize_semantic_model
+    from metadata_store.repository import MetadataRepository
+
+    repo = MetadataRepository(db_session)
+    await repo.upsert_semantic_model(
+        model_id=None, name="orders", description="", source="file:x", tags=[], workspace_id="tenant-a",
+        fields=[{"name": "total", "field_type": "measure", "data_type": "numeric",
+                 "metadata": {"stats": {"mean": 42.0}}}],
+    )
+    db_session.expire_all()
+
+    reloaded = (await repo.list_semantic_models(workspace_id="tenant-a"))[0]
+    assert reloaded.fields[0].field_metadata == {"stats": {"mean": 42.0}}
+
+    body = json.loads(json.dumps(_serialize_semantic_model(reloaded), default=str))
+    assert body["fields"][0]["metadata"] == {"stats": {"mean": 42.0}}
