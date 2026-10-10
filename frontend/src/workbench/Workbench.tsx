@@ -133,15 +133,18 @@ function WorkbenchInner() {
     uploadService.getUploadedFiles().then((f) => setFiles(f.length)).catch(() => setFilesError(true));
     analyticsService.getQueryHistory()
       .then((rows: unknown) => {
-        const list = Array.isArray(rows) ? rows : (rows as { history?: unknown[] })?.history ?? [];
+        // BUG-393: GET /query-history answers {success, queries, total} with rows shaped
+        // {prompt, sql, status, rows, executionTime, timestamp}; this read an array or a
+        // .history key and never showed any saved history.
+        const list = Array.isArray(rows) ? rows : (rows as { queries?: unknown[] })?.queries ?? [];
         setHistory((list as Array<Record<string, unknown>>).slice(0, 8).map((r) => ({
           time: String(r.timestamp ?? r.time ?? '').slice(11, 16) || '—',
-          q: String(r.query ?? r.sql ?? r.question ?? '(query)').slice(0, 64),
+          q: String(r.prompt ?? r.sql ?? r.query ?? '(query)').slice(0, 64),
           engine: String(r.engine ?? 'DuckDB'),
           status: String(r.status ?? 'completed'),
           cost: String(r.cost ?? '—'),
-          dur: r.duration_ms ? `${((r.duration_ms as number) / 1000).toFixed(1)}s` : '—',
-          by: String(r.user ?? r.by ?? '—'),
+          dur: typeof r.executionTime === 'number' ? `${((r.executionTime as number) / 1000).toFixed(1)}s` : '—',
+          by: String(r.user ?? r.by ?? 'you'),
         })));
       })
       .catch(() => undefined);

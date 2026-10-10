@@ -267,3 +267,20 @@ describe('Workbench datasets tile', () => {
     vi.useRealTimers();
   });
 });
+
+// BUG-393: the cockpit read the history response as an array (or a .history key),
+// but GET /query-history answers {success, queries, total}; nothing ever showed.
+describe('Workbench query history', () => {
+  it('shows saved history from the real response shape', async () => {
+    const { analyticsService } = await import('../services/api');
+    (analyticsService.getQueryHistory as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      success: true, total: 1,
+      queries: [{ id: 'q1', prompt: 'Revenue by region', sql: 'select 1', status: 'success', rows: 4, executionTime: 1500, timestamp: '2026-08-22T09:41:00Z' }],
+    });
+    vi.useFakeTimers();
+    await boot();
+    await act(async () => { await Promise.resolve(); });
+    expect(screen.getAllByText(/Revenue by region/).length).toBeGreaterThan(0);
+    vi.useRealTimers();
+  });
+});

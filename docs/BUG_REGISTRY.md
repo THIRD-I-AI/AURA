@@ -3985,13 +3985,13 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Fix:** pending.
 
 ## BUG-393: Cockpit query-history card and 'Recent queries' tile never load saved history: the response object is read as an array or as a .history field
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode second-pass frontend audit (run wf_dc428ec9-32e, data-correctness lens; confirmed by 2 adversarial verifiers), 2026-10-09. `frontend/src/workbench/Workbench.tsx:134`.
 - **Severity:** medium
 - **Root cause:** analyticsService.getQueryHistory() resolves to {success, queries, total} (api.ts:861, the gateway's GET /query-history in queries.py:575). Workbench.tsx:134 does `Array.isArray(rows) ? rows : rows?.history ?? []`. The value is not an array and has no `history` key, so `list` is always []. The mapper also reads fields the API never sends: r.query, r.duration_ms, r.user, r.engine, r.cost.
 - **Failure scenario:** A user ran 30 chat queries yesterday. Every one was recorded server-side by chat.py _track_query. Today they open the Workbench home view. The 'Recent queries' tile (Workbench.tsx:303) shows 0 and the Query history card shows 'No queries recorded yet in this workspace.' Only questions asked in the current tab appear, through AskAuraChat's setHistory. The cockpit says the workspace has no history when it has 30 queries.
 - **Caused by:** none -- pre-existing.
-- **Fix:** pending.
+- **Fix:** the cockpit reads GET /query-history's real shape (`{success, queries, total}`, rows `{prompt, sql, status, rows, executionTime, timestamp}`) -- the query text from `prompt`/`sql` and the duration from `executionTime` -- so the history card and "Recent queries" tile show saved history instead of nothing. Regression test `shows saved history from the real response shape` failed on the old code.
 
 ## BUG-394: Query History panel reads row_count / execution_time_ms, but the API returns rows / executionTime, so Rows and Execution time are always '—'
 - **Status:** fixed
