@@ -19,11 +19,13 @@ def _fresh_registry():
     """Isolate each test by resetting the module-level pool registry."""
     import api_gateway.routers.queries as q
 
-    snapshot = dict(q._pg_pool_registry)
+    snapshot, lru = dict(q._pg_pool_registry), list(q._pg_pool_lru)
     q._pg_pool_registry.clear()
+    q._pg_pool_lru.clear()
     yield
     q._pg_pool_registry.clear()
     q._pg_pool_registry.update(snapshot)
+    q._pg_pool_lru[:] = lru
 
 
 @pytest.fixture()
@@ -163,3 +165,31 @@ class TestCloseAllPgPools:
         assert len(q._pg_pool_registry) == 0
         for p in pools:
             p.close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_the_registry_keeps_at_most_aura_pg_pool_max_pools(mock_asyncpg, monkeypatch):
+    # BUG-380: every new credential kept a live pool forever; a caller looping over fresh
+    # passwords against a permissive server exhausted the worker's sockets and memory.
+    import api_gateway.routers.queries as q
+
+    monkeypatch.setenv("AURA_PG_POOL_MAX", "2")
+    made = []
+
+    async def _create_pool(**kwargs):
+        pool = MagicMock()
+        pool.close = AsyncMock()
+        made.append(pool)
+        return pool
+
+    mock_asyncpg.create_pool = _create_pool
+    first = await q._get_or_create_pg_pool(_cfg(password="p1"))
+    await q._get_or_create_pg_pool(_cfg(password="p2"))
+    await q._get_or_create_pg_pool(_cfg(password="p1"))  # p1 is now the most recent
+    await q._get_or_create_pg_pool(_cfg(password="p3"))
+
+    assert len(made) == 3
+    assert sum(len(v) for v in q._pg_pool_registry.values()) == 2
+    made[1].close.assert_awaited()          # p2 was least recently used
+    first.close.assert_not_awaited()
+    assert await q._get_or_create_pg_pool(_cfg(password="p1")) is first

@@ -3868,13 +3868,13 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Fix:** `POST /hooks/fire/{slug}` reads its body through `_read_bounded_body`: a declared Content-Length over `AURA_HOOK_MAX_BODY_BYTES` (default 1 MiB) is refused with 413 before anything is read, and a streamed body is cut off at the cap; the JSON is parsed from those bytes. Regression test `test_an_oversized_fire_body_is_refused_before_it_is_read` accepted a 10 KB body over a 2 KB cap on the old code.
 
 ## BUG-380: The asyncpg pool registry behind /execute/query grows without bound and never evicts: each new (host, db, user, password) keeps an open pool for the life of the process
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode second-pass audit of the gateway routers/persistence, auth/workspaces and metadata/ingestion/orchestration (run wf_35296976-667, gateway-files-queries scope; confirmed by 2 adversarial verifiers), 2026-10-08. `aurabackend/api_gateway/routers/queries.py:158`.
 - **Severity:** medium
 - **Root cause:** `_get_or_create_pg_pool` appends a new `(password, pool)` entry for every coordinate key and password it has not seen (lines 150-158). Each pool is created with min_size=1 (an open connection, socket and buffers) and up to DB_POOL_SIZE=10 connections. Nothing caps `_pg_pool_registry` or ages entries out; only `close_all_pg_pools` at lifespan teardown frees them. The BUG-050 fix made each password its own entry, so a caller can mint as many entries as they like.
 - **Failure scenario:** An authenticated user points connector_config at a Postgres they control that uses trust auth (it accepts any password) and loops POST /api/v1/execute/query with a fresh random password or database name each time. Every request creates and keeps another live pool with at least one TCP connection. On the deployed single-worker gateway (mem_limit 520m) this exhausts file descriptors and memory until the container is OOM-killed or can no longer open sockets, which takes down every tenant.
 - **Caused by:** none -- pre-existing.
-- **Fix:** pending.
+- **Fix:** the asyncpg pool registry behind `/execute/query` keeps at most `AURA_PG_POOL_MAX` (default 16) pools and closes the least recently used one when a new pool would exceed that; the BUG-050 per-password matching is unchanged. Regression test `test_the_registry_keeps_at_most_aura_pg_pool_max_pools` errored on the old code, which has no bound to keep.
 
 ## BUG-381: POST /execute (DuckDB path) and POST /dashboards/{id}/render run user or stored SQL in to_thread with no timeout or interrupt, so a few runaway queries tie up the default executor
 - **Status:** open

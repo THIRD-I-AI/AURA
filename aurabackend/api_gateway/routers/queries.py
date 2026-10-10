@@ -89,6 +89,8 @@ _SCHEDULER_INTERVAL_SEC = 30
 _pg_pool_registry_lock = threading.Lock()
 # coords_key -> list of (password, pool) -- see _pg_pool_key/_get_or_create_pg_pool.
 _pg_pool_registry: Dict[str, List[Any]] = {}
+# Pools in least- to most-recently-used order (BUG-380); guarded by the same lock.
+_pg_pool_lru: List[Any] = []
 
 
 def _pg_pool_key(config: "ConnectorConfig") -> str:
@@ -136,6 +138,8 @@ async def _get_or_create_pg_pool(config: "ConnectorConfig") -> Any:
     with _pg_pool_registry_lock:
         for stored_password, pool in _pg_pool_registry.get(key, []):
             if hmac.compare_digest(stored_password, presented):
+                _pg_pool_lru.remove(pool)
+                _pg_pool_lru.append(pool)
                 return pool
 
     pool = await asyncpg.create_pool(
@@ -156,10 +160,32 @@ async def _get_or_create_pg_pool(config: "ConnectorConfig") -> Any:
                 break
         else:
             entries.append((presented, pool))
+            _pg_pool_lru.append(pool)
             dup = None
+        # BUG-380: every new (host, database, user, password) kept a live pool for the
+        # life of the process, so a caller looping over fresh credentials against a
+        # permissive server exhausted the worker's sockets and memory. Keep at most
+        # AURA_PG_POOL_MAX pools and close the least recently used.
+        evicted = []
+        while len(_pg_pool_lru) > _max_pg_pools():
+            old = _pg_pool_lru.pop(0)
+            for k, items in list(_pg_pool_registry.items()):
+                items[:] = [(pw, p) for pw, p in items if p is not old]
+                if not items:
+                    del _pg_pool_registry[k]
+            evicted.append(old)
     if dup is not None:
         await dup.close()
+    for old in evicted:
+        await old.close()
     return pool
+
+
+def _max_pg_pools() -> int:
+    try:
+        return max(1, int(os.getenv("AURA_PG_POOL_MAX", "16")))
+    except ValueError:
+        return 16
 
 
 async def close_all_pg_pools() -> None:
@@ -167,6 +193,7 @@ async def close_all_pg_pools() -> None:
     with _pg_pool_registry_lock:
         pools = [pool for entries in _pg_pool_registry.values() for _password, pool in entries]
         _pg_pool_registry.clear()
+        _pg_pool_lru.clear()
     for pool in pools:
         try:
             await pool.close()
