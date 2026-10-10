@@ -3895,13 +3895,13 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Fix:** the file-metadata lifespan worker (and its one-time flat-upload migration) scans `workspaces._UPLOADS_ROOT` -- the `AURA_UPLOADS_ROOT` uploads actually use -- instead of the empty `<app>/data/uploads`. Regression test `test_the_refresh_worker_scans_the_configured_uploads_root` failed on the old code.
 
 ## BUG-383: GET /dashboard/stats calls refresh_stale_file_metadata with one tenant's directory, which prunes every other tenant's file-metadata rows
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode second-pass audit of the gateway routers/persistence, auth/workspaces and metadata/ingestion/orchestration (run wf_35296976-667, gateway-files-queries scope; confirmed by 2 adversarial verifiers), 2026-10-08. `aurabackend/api_gateway/persistence.py:1036`.
 - **Severity:** low
 - **Root cause:** `refresh_stale_file_metadata(upload_dir)` builds `on_disk` only from the directory it is given but compares it against `list_file_metadata()`, which returns ALL rows across all tenants, and prunes every cached path not under that directory. It was written for the global root walk. `get_dashboard_stats` (queries.py:1108) calls it with `tenant_upload_dir(request)`, a single tenant's directory, whenever any of the caller's files is missing from the cache.
 - **Failure scenario:** Tenant A uploads a file and opens the Overview. Its new file is not yet cached, so the endpoint calls refresh_stale_file_metadata('/data/uploads/<A>'), which deletes every metadata row belonging to tenants B, C and the rest. Tenant B's next GET /api/v1/dashboard/stats finds its rows gone and re-counts all of B's files synchronously, which in turn prunes A's rows. One tenant's request deletes another tenant's persisted rows, and with two or more active tenants the cache thrashes even after the main.py path bug is fixed.
 - **Caused by:** none -- pre-existing.
-- **Fix:** pending.
+- **Fix:** `refresh_stale_file_metadata` prunes only cached rows under the directory it scanned, so `GET /dashboard/stats` refreshing one tenant's directory no longer deletes every other tenant's rows (and the cache stops thrashing between tenants). Regression test `test_refreshing_one_tenants_directory_keeps_other_tenants_rows` failed on the old code.
 
 ## BUG-384: WebhookDispatcher mutators run concurrently on worker threads with no lock, so the subscription store file can be truncated or interleaved (all webhooks lost on restart)
 - **Status:** open

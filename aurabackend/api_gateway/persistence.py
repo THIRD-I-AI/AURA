@@ -1032,8 +1032,19 @@ async def refresh_stale_file_metadata(upload_dir: str) -> Dict[str, int]:
         await index_file_metadata(path)
         indexed += 1
 
-    # Prune cache entries for files no longer on disk.
-    missing = [p for p in cached if p not in on_disk]
+    # Prune cache entries for files no longer on disk -- but only those under the
+    # directory just scanned. BUG-383: the cache holds every tenant's rows, and GET
+    # /dashboard/stats scans ONE tenant's directory, so this pruned every other
+    # tenant's rows (and they then pruned that tenant's).
+    scanned_root = str(upload_path.resolve())
+
+    def _under_scanned_root(path: str) -> bool:
+        try:
+            return os.path.commonpath([os.path.abspath(path), scanned_root]) == scanned_root
+        except ValueError:  # different drive (Windows) -> not under it
+            return False
+
+    missing = [p for p in cached if p not in on_disk and _under_scanned_root(p)]
     pruned = await prune_missing_file_metadata(missing)
 
     return {"indexed": indexed, "skipped": skipped, "pruned": pruned}

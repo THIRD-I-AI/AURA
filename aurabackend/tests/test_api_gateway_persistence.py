@@ -734,3 +734,22 @@ async def test_refresh_schema_context_passes_tenant_str_not_list(
         "refresh_schema_context returned False — schema context was not stored. "
         "Check that the tenant was resolved correctly and files were found."
     )
+
+
+@pytest.mark.asyncio
+async def test_refreshing_one_tenants_directory_keeps_other_tenants_rows(gateway_db, tmp_path) -> None:
+    # BUG-383: GET /dashboard/stats refreshes ONE tenant's directory, and the prune
+    # step deleted every cached row outside it -- i.e. every other tenant's.
+    a_dir, b_dir = tmp_path / "tenant-a", tmp_path / "tenant-b"
+    a_dir.mkdir()
+    b_dir.mkdir()
+    (a_dir / "a.csv").write_text("x\n1\n")
+    (b_dir / "b.csv").write_text("y\n2\n")
+    await persistence.refresh_stale_file_metadata(str(tmp_path))
+    assert len(await persistence.list_file_metadata()) == 2
+
+    stats = await persistence.refresh_stale_file_metadata(str(a_dir))
+
+    assert stats["pruned"] == 0
+    paths = {r["file_path"] for r in await persistence.list_file_metadata()}
+    assert str((b_dir / "b.csv").resolve()) in paths
