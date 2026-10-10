@@ -25,3 +25,14 @@ def test_private_hosts_can_be_allowed_by_the_operator(client, monkeypatch):  # n
     monkeypatch.setenv("AURA_CONNECTORS_ALLOW_PRIVATE_HOSTS", "true")
     r = client.post(f"{V1}/connectors/postgresql/test", json={"host": "127.0.0.1", "port": 1, "database": "x"})
     assert r.status_code != 400 or "public address" not in r.text
+
+
+@pytest.mark.parametrize("host", ["127.0.0.1", "10.0.0.12", ""])
+def test_execute_query_refuses_internal_database_hosts(client, host):  # noqa: F811
+    # BUG-377: POST /execute/query built its own connector and skipped the BUG-367 check.
+    r = client.post(f"{V1}/execute/query", json={
+        "query": "SELECT 1", "connector_type": "postgresql",
+        "connector_config": {"host": host, "port": 5432, "database": "x", "username": "u", "password": "p"},
+    })
+    assert r.status_code == 400, r.text
+    assert "public address" in r.text
