@@ -31,3 +31,29 @@ def test_the_deploy_compose_files_put_the_store_on_the_volume():
     prod = (root / "docker-compose.prod.yml").read_text(encoding="utf-8")
     assert "AURA_WEBHOOK_DIR: /data/webhooks" in free_tier
     assert "AURA_WEBHOOK_DIR: /data/webhooks" in prod and "aura-webhooks:/data/webhooks" in prod
+
+
+
+def test_a_failed_store_write_keeps_the_previous_subscriptions(monkeypatch, tmp_path):
+    # BUG-384: the store was rewritten in place (open "w" truncates first) by several
+    # worker threads at once with no lock, so a write that failed or raced part-way
+    # left a truncated file -- and every subscription was gone on the next load. It is
+    # now written to a temp file and swapped in, under a lock.
+    from shared import webhook_dispatcher as wd
+
+    monkeypatch.setattr(wd, "_DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(wd, "_STORE_PATH", str(tmp_path / "subscriptions.json"))
+    disp = wd.WebhookDispatcher()
+    disp.register("ws", "https://example.com/a", ["*"])
+
+    def _boom(obj, fp, **kw):
+        fp.write("[{")
+        raise OSError("disk full")
+
+    monkeypatch.setattr(wd.json, "dump", _boom)
+    disp.register("ws", "https://example.com/b", ["*"])
+    monkeypatch.undo()
+    monkeypatch.setattr(wd, "_STORE_PATH", str(tmp_path / "subscriptions.json"))
+
+    reloaded = wd.WebhookDispatcher()
+    assert [s.url for s in reloaded.list("ws")] == ["https://example.com/a"]
