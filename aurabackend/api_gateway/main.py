@@ -40,13 +40,14 @@ async def _file_metadata_refresh_loop(stop_event: asyncio.Event) -> None:
 
     Never raises — exceptions are logged at debug so a momentary DB
     blip doesn't spam the warning channel."""
-    from pathlib import Path as _Path
-
     from api_gateway import persistence
+    from api_gateway.routers.workspaces import _UPLOADS_ROOT
     from shared.upload_migration import migrate_flat_uploads_to_default
 
-    base = _Path(__file__).resolve().parent.parent
-    upload_dir = base / "data" / "uploads"
+    # BUG-382: this was hard-coded to <app>/data/uploads -- empty in the container,
+    # where uploads live under AURA_UPLOADS_ROOT (/data/uploads) -- so every tick
+    # pruned every tenant's cached file metadata. Use the root the uploads use.
+    upload_dir = _UPLOADS_ROOT
     try:
         migrate_flat_uploads_to_default(str(upload_dir))
     except Exception as exc:
