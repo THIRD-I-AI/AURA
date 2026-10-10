@@ -22,6 +22,8 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import hmac
+import json
+import os
 import uuid
 from typing import Any, Dict, List, Optional
 
@@ -150,6 +152,30 @@ def _verify_signature(secret: str, body: bytes, signature_header: Optional[str])
     return hmac.compare_digest(expected, sig)
 
 
+def _max_fire_body_bytes() -> int:
+    try:
+        return max(1024, int(os.getenv("AURA_HOOK_MAX_BODY_BYTES", str(1 << 20))))
+    except ValueError:
+        return 1 << 20
+
+
+async def _read_bounded_body(request: Request) -> bytes:
+    """BUG-379: this public, pre-auth route buffered the whole body (request.body())
+    before checking the hook's signature, so one large POST could OOM the single
+    gateway worker. Refuse on the declared length, and stop reading past the cap."""
+    cap = _max_fire_body_bytes()
+    declared = request.headers.get("content-length")
+    if declared and declared.isdigit() and int(declared) > cap:
+        raise HTTPException(status_code=413, detail="Request body too large")
+    chunks, size = [], 0
+    async for chunk in request.stream():
+        size += len(chunk)
+        if size > cap:
+            raise HTTPException(status_code=413, detail="Request body too large")
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
 @router.post("/hooks/fire/{slug}")
 async def fire_hook(slug: str, request: Request) -> Dict[str, Any]:
     """Public trigger endpoint — POST a JSON body to launch the hook."""
@@ -159,14 +185,14 @@ async def fire_hook(slug: str, request: Request) -> Dict[str, Any]:
     if not hook.active:
         raise HTTPException(status_code=403, detail="Hook is disabled")
 
-    body = await request.body()
+    body = await _read_bounded_body(request)
     if hook.secret:
         sig = request.headers.get("x-aura-signature") or request.headers.get("x-hub-signature-256")
         if not _verify_signature(hook.secret, body, sig):
             raise HTTPException(status_code=401, detail="Invalid or missing signature")
 
     try:
-        payload = await request.json() if body else {}
+        payload = json.loads(body) if body else {}
     except Exception:
         payload = {"_raw": body.decode("utf-8", errors="replace")}
     # BUG-243: valid JSON need not be an object -- senders batch events as an array.
