@@ -817,7 +817,10 @@ export const connectorService = {
   },
 
   async getSchema(connectionId: string): Promise<Record<string, string[]>> {
-    const resp = await client.get<{ success: boolean; schema: Record<string, string[]> }>(`/connections/${connectionId}/schema`);
+    const resp = await client.get<{ success: boolean; error?: string; schema: Record<string, string[]> }>(`/connections/${connectionId}/schema`);
+    // BUG-391: a connect/list failure is HTTP 200 {success:false, error}; returning its
+    // empty schema made the picker say "No tables found" instead of why.
+    if (resp.success === false) throw new Error(resp.error || 'Could not read this connection');
     return resp.schema;
   },
 
