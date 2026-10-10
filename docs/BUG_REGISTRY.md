@@ -3886,13 +3886,13 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Fix:** a shared `run_interruptible(con, fn)` (shared/duckdb_factory.py) runs DuckDB work in a thread under `AURA_QUERY_TIMEOUT_SECONDS` (default 120) and calls `con.interrupt()` on timeout or cancellation; `/execute`'s DuckDB path and dashboard tile rendering use it. Regression tests `test_a_runaway_execute_query_is_stopped_at_the_timeout` and `test_run_interruptible_stops_the_query_and_frees_the_connection` failed on the old code (the query ran for minutes).
 
 ## BUG-382: The file-metadata lifespan worker walks /app/data/uploads instead of AURA_UPLOADS_ROOT (/data/uploads) and deletes every cached row each 60s tick
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode second-pass audit of the gateway routers/persistence, auth/workspaces and metadata/ingestion/orchestration (run wf_35296976-667, gateway-files-queries scope; confirmed by 2 adversarial verifiers), 2026-10-08. `aurabackend/api_gateway/main.py:49`. A second reviewer filed the same defect together with BUG-383 ("File-metadata refresh prunes other tenants' cached rows, and the lifespan worker scans the wrong directory"); it is recorded once here and once there.
 - **Severity:** medium
 - **Root cause:** `_file_metadata_refresh_loop` hard-codes `upload_dir = Path(__file__).resolve().parent.parent / "data" / "uploads"`, which is /app/data/uploads. The Dockerfile creates that directory empty (Dockerfile:45/67 `mkdir -p /app/data/uploads`). The deployed compose stores uploads under `AURA_UPLOADS_ROOT=/data/uploads` (docker-compose.yml:94), which is what workspaces._UPLOADS_ROOT reads. `refresh_stale_file_metadata` therefore finds `on_disk == {}` while `cached` holds every tenant's real /data/uploads rows, and `missing = [p for p in cached if p not in on_disk]` (persistence.py:1036) prunes all of them. `migrate_flat_uploads_to_default` also runs against the wrong directory.
 - **Failure scenario:** On the deployed stack, the upload hook indexes a tenant's file into gateway_file_metadata, and within 60s the lifespan tick deletes that row along with every other tenant's. Every GET /api/v1/dashboard/stats outside the 30s dashboard_cache window then sees missing rows and synchronously re-runs a full COUNT(*) over every file the tenant has uploaded. The P-2a cache never holds, so on large uploads the Overview page pays the per-request full scan the cache was built to remove, and the CPU spent on those COUNT(*) runs slows every tenant.
 - **Caused by:** none -- pre-existing.
-- **Fix:** pending.
+- **Fix:** the file-metadata lifespan worker (and its one-time flat-upload migration) scans `workspaces._UPLOADS_ROOT` -- the `AURA_UPLOADS_ROOT` uploads actually use -- instead of the empty `<app>/data/uploads`. Regression test `test_the_refresh_worker_scans_the_configured_uploads_root` failed on the old code.
 
 ## BUG-383: GET /dashboard/stats calls refresh_stale_file_metadata with one tenant's directory, which prunes every other tenant's file-metadata rows
 - **Status:** open
