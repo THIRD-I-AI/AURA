@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { RefreshCw, Settings } from 'lucide-react';
 import { type PageType } from '../lib/pageTypes';
 import {
@@ -303,18 +303,24 @@ const PipelinesPanel: React.FC<PipelinesPanelProps> = () => {
   };
 
   // ── Load source preview ──
+  // BUG-395: a slower preview for a previously selected file must not overwrite the
+  // preview (and column list) of the file selected now -- only the latest request lands.
+  const previewSeq = useRef(0);
   const loadSourcePreview = useCallback(async (filename: string) => {
     if (!filename) return;
+    const seq = ++previewSeq.current;
     setIsLoading(true);
     setError(null);
     try {
       const preview = await etlService.previewSource(filename, 10);
+      if (seq !== previewSeq.current) return;
       setSourcePreview(preview);
     } catch (e: any) {
+      if (seq !== previewSeq.current) return;
       setError(e.message || 'Failed to preview source file');
       setSourcePreview(null);
     } finally {
-      setIsLoading(false);
+      if (seq === previewSeq.current) setIsLoading(false);
     }
   }, []);
 
