@@ -104,7 +104,13 @@ export default function QueryHistoryPanel() {
   const load = useCallback(async () => {
     try {
       const resp = await analyticsService.getQueryHistory(50);
-      setRows((resp.queries ?? []) as QueryRow[]);
+      // BUG-394: the API sends `rows` / `executionTime` (persistence._row_to_history_dict),
+      // not the row_count / execution_time_ms this panel reads, so both showed '—'.
+      setRows((resp.queries ?? []).map((q: Record<string, unknown>) => ({
+        ...q,
+        row_count: (q.row_count ?? q.rows) as number | null | undefined,
+        execution_time_ms: (q.execution_time_ms ?? q.executionTime) as number | null | undefined,
+      })) as QueryRow[]);
       setError(null);
     } catch {
       setError('Could not reach the gateway to load query history.');

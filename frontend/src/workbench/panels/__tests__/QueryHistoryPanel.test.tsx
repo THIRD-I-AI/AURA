@@ -100,3 +100,20 @@ describe('QueryHistoryPanel', () => {
     await waitFor(() => expect(screen.queryByText('Query detail')).not.toBeInTheDocument());
   });
 });
+
+// BUG-394: the API's wire shape is {rows, executionTime}; the panel read
+// row_count / execution_time_ms and always showed '—'.
+describe('QueryHistoryPanel with the API wire shape', () => {
+  beforeEach(() => { vi.clearAllMocks(); });
+
+  it('shows rows and execution time from `rows` / `executionTime`', async () => {
+    getQueryHistory.mockResolvedValue({ success: true, total: 1, queries: [
+      { id: 'q1', prompt: 'Orders by month', sql: 'select 3', status: 'success', rows: 37, executionTime: 12.5, timestamp: '2026-08-22T09:00:00Z' },
+    ] });
+    render(<QueryHistoryPanel />);
+    await waitFor(() => expect(screen.getByText('Orders by month')).toBeInTheDocument());
+    expect(screen.getByText('37')).toBeInTheDocument();
+    await userEvent.setup().click(screen.getByText('Orders by month'));
+    await waitFor(() => expect(screen.getByText('12.5 ms')).toBeInTheDocument());
+  });
+});
