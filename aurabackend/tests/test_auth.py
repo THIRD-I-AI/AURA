@@ -317,3 +317,41 @@ class TestRequireRole:
         other_user = {"sub": "user-2", "role": "user"}
         with pytest.raises(ForbiddenError):
             asyncio.run(dependency(user=other_user))
+
+
+class TestRegistrationUniqueness:
+    """BUG-385: no unique constraint on users.email, and an exact-match existence check,
+    so a double-submitted (or case-varied) registration created two accounts."""
+
+    def test_the_same_address_in_another_case_is_a_conflict(self, password_client):
+        body = {"name": "A", "email": "ada@example.com", "password": "correct horse battery"}
+        assert password_client.post(f"{V1}/auth/register", json=body).status_code == 201
+        dup = password_client.post(f"{V1}/auth/register", json={**body, "email": "ADA@example.com"})
+        assert dup.status_code == 409, dup.text
+
+    def test_init_db_enforces_one_account_per_address(self, password_client):
+        import asyncio
+
+        from sqlalchemy.exc import IntegrityError
+
+        from metadata_store import db as db_mod
+
+        async def _scenario():
+            from metadata_store.models import User
+
+            await db_mod.init_db()
+            factory = db_mod.get_session_factory()
+            async with factory() as session:
+                session.add(User(id="u1", name="x", email="x@example.com", role="user"))
+                await session.commit()
+            try:
+                async with factory() as session:
+                    session.add(User(id="u2", name="x", email="X@example.com", role="user"))
+                    await session.commit()
+            except IntegrityError:
+                return "refused"
+            finally:
+                await db_mod.get_engine().dispose()
+            return "inserted"
+
+        assert asyncio.run(_scenario()) == "refused"

@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
 from typing import AsyncGenerator
 
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase
 
@@ -80,3 +82,14 @@ async def init_db() -> None:
     engine = get_engine()
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+    # BUG-385: users.email had no unique constraint, so two concurrent registrations
+    # of one address both passed the existence check and created two accounts.
+    # create_all never alters an existing table, so the index is added here; if
+    # older duplicates block it, startup continues and says so.
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS ux_users_email_lower ON users (lower(email))"))
+    except Exception as exc:  # noqa: BLE001
+        logging.getLogger(__name__).warning(
+            "Could not add the unique index on users.email (existing duplicates?): %s", exc)
