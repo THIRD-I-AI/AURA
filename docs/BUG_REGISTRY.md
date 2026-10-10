@@ -3940,13 +3940,13 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Fix:** `ensureAuditorToken` still mints an auditor token in open auth mode (BUG-112's behaviour), but when `/auth/token` refuses the mint -- password mode, i.e. production -- and the user is signed in, it keeps the user's own token instead of throwing, so the audit actions run under the user's session (which `/counterfactual/audit/financial` and the exceptions routes accept). With nobody signed in it still fails. Regression test `keeps the signed-in user's own token when minting is refused` failed on the old code.
 
 ## BUG-388: ETL source preview error (HTTP 200 {status:'error'}) is stored as a preview and crashes the Pipelines view
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode second-pass frontend audit (run wf_dc428ec9-32e, api-contract lens; confirmed by 2 adversarial verifiers), 2026-10-09. `frontend/src/pages/PipelinesPanel.tsx:312`.
 - **Severity:** medium
 - **Root cause:** POST /etl/preview-source (aurabackend/api_gateway/routers/etl.py ~381-382) catches any load failure and returns HTTP 200 {status:'error', error}, with no columns, row_count, table_name or preview. etlService.previewSource (api.ts) returns that body unchanged. loadSourcePreview checks neither status nor error and calls setSourcePreview(preview). The render at PipelinesPanel.tsx:915 then evaluates sourcePreview.row_count.toLocaleString() and sourcePreview.columns.length on undefined fields.
 - **Failure scenario:** A user uploads a malformed .json or .csv file that DuckDB/smart_load_file cannot parse, opens Pipelines and picks it as the source. The gateway answers 200 {status:'error', error:'...'}. The render throws a TypeError, and workbench/views.tsx ViewBoundary swaps the whole Pipelines module for 'The pipelines module failed to render inside the workbench shell. This is a bug', which throws away the user's builder state. The real reason ('could not read the file') is never shown.
 - **Caused by:** none -- pre-existing.
-- **Fix:** pending.
+- **Fix:** `etlService.previewSource` turns the gateway's HTTP 200 `{status:'error', error}` into a rejected promise with the server's message, so the Pipelines builder shows that error through its existing catch instead of storing the body as a preview and crashing the view. Regression test `etlPreviewSource.test.ts` failed on the old code.
 
 ## BUG-389: Chat answers never show execution_result.truncated, so a capped result reads as the full answer ('10000 rows')
 - **Status:** open

@@ -1259,10 +1259,16 @@ export interface ETLNaturalLanguageResult {
 export const etlService = {
   /** Preview source file schema and first N rows */
   async previewSource(sourceFile: string, limit = 20): Promise<ETLSourcePreview> {
-    return client.post<ETLSourcePreview>('/etl/preview-source', {
-      source_file: sourceFile,
-      limit,
-    });
+    const body = await client.post<ETLSourcePreview & { status?: string; error?: string }>(
+      '/etl/preview-source',
+      { source_file: sourceFile, limit },
+    );
+    // BUG-388: a file that fails to load comes back as HTTP 200 {status:'error'}; stored
+    // as a preview it crashed the Pipelines view (row_count/columns undefined).
+    if (body.status === 'error') {
+      throw new Error(body.error || 'Failed to preview source file');
+    }
+    return body;
   },
 
   /** Execute an ETL pipeline (or preview-only) */
