@@ -87,7 +87,10 @@ export function AskAuraChat({ pushFeed, setHistory }: Props) {
           // server-side; this panel advertises "DPC cross-check" but
           // never showed a mismatch to the user it protects.
           verification = er?.verification;
-          critic = ok ? `executed · ${er?.row_count ?? 0} rows` : undefined;
+          // BUG-389: say when the result was cut off at the server row cap.
+          critic = ok
+            ? `executed · ${er?.truncated ? 'first ' : ''}${er?.row_count ?? 0} rows${er?.truncated ? ' (cut off at the row limit)' : ''}`
+            : undefined;
           answer = ok
             ? (er?.conclusion || er?.sql_explanation || resp.message || 'Done.')
             : (er?.error || resp.error_message || 'Query failed.');

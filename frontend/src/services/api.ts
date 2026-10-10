@@ -326,6 +326,8 @@ export interface ExecutionResult {
   columns?: string[];
   rows?: Array<Array<any>>;
   row_count?: number;
+  // BUG-389: true when the result hit the server row cap and was cut off there.
+  truncated?: boolean;
   execution_time_ms?: number;
   error?: string;
   chart_spec?: Record<string, any>;

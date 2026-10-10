@@ -3949,13 +3949,13 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Fix:** `etlService.previewSource` turns the gateway's HTTP 200 `{status:'error', error}` into a rejected promise with the server's message, so the Pipelines builder shows that error through its existing catch instead of storing the body as a preview and crashing the view. Regression test `etlPreviewSource.test.ts` failed on the old code.
 
 ## BUG-389: Chat answers never show execution_result.truncated, so a capped result reads as the full answer ('10000 rows')
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode second-pass frontend audit (run wf_dc428ec9-32e, api-contract lens; confirmed by 2 adversarial verifiers), 2026-10-09. `frontend/src/workbench/panels/AskAuraPanel.tsx:57`. A second reviewer filed the same defect ("Ask AURA ignores execution_result.truncated"); recorded once here.
 - **Severity:** medium
 - **Root cause:** Since BUG-359, ExecutionAgent stops chat SQL results at AURA_QUERY_MAX_ROWS (default 10000) and /chat returns execution_result.truncated=true with row_count = the capped count (chat.py:127, 677-678; execution_agent.py:76-86). The frontend ExecutionResult type (services/api.ts ~331) has no truncated field. AskAuraPanel builds rowCount only from er.row_count and shows '{rowCount} rows' at line 152. AskAuraChat.tsx:90 ('executed · N rows') and terminal QueryPanel also ignore the flag. No chat surface reads truncated (git grep finds it only in DashboardsPanel).
 - **Failure scenario:** A user uploads a 250,000-row dataset and asks 'list all orders over $50'. 180,000 rows match. The gateway returns the first 10,000 with truncated:true. The panel says '10000 rows · showing first 12' and the chart and conclusion are built on that slice. Nothing tells the user the answer was cut off, so they read 10,000 as the real number of matches.
 - **Caused by:** BUG-359 (added the flag; the UI never read it).
-- **Fix:** pending.
+- **Fix:** the frontend `ExecutionResult` type carries `truncated`, and both chat surfaces read it: Ask AURA shows "first N rows · result cut off at the row limit, so the answer may be incomplete" and the cockpit strip shows "executed · first N rows (cut off at the row limit)". Regression test `says when the result was cut off at the row limit` failed on the old code.
 
 ## BUG-390: Residual of BUG-247: GET /files failure arrives as HTTP 200 {status:'error'}, and getUploadedFiles still turns it into an empty list
 - **Status:** open

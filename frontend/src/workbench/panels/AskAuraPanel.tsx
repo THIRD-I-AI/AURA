@@ -20,6 +20,8 @@ type Msg = {
   columns?: string[];
   data?: Record<string, unknown>[];
   rowCount?: number;
+  // BUG-389: the result hit the server row cap (AURA_QUERY_MAX_ROWS) and was cut off.
+  truncated?: boolean;
   chartSpec?: ChartSpec | null;
   verification?: VerificationResult | null;
   error?: string;
@@ -55,6 +57,7 @@ export default function AskAuraPanel() {
         columns: (er.columns as string[]) || undefined,
         data: (er.data as Record<string, unknown>[]) || undefined,
         rowCount: typeof er.row_count === 'number' ? (er.row_count as number) : undefined,
+        truncated: er.truncated === true,
         // BUG-134: the backend's visualization_node produces a real
         // chart_spec on every successful query, but no live chat surface
         // ever read it -- RechartsVisualization (the only component built
@@ -149,7 +152,10 @@ export default function AskAuraPanel() {
                   )}
                   {typeof m.rowCount === 'number' && (
                     <div className="font-mono text-2xs text-text-tertiary">
-                      {m.rowCount} row{m.rowCount === 1 ? '' : 's'}{m.data && m.data.length > 12 ? ' · showing first 12' : ''}
+                      {m.truncated
+                        ? `first ${m.rowCount} rows · result cut off at the row limit, so the answer may be incomplete`
+                        : `${m.rowCount} row${m.rowCount === 1 ? '' : 's'}`}
+                      {m.data && m.data.length > 12 ? ' · showing first 12' : ''}
                     </div>
                   )}
                 </div>
