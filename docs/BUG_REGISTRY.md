@@ -3929,3 +3929,111 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Failure scenario:** A tenant uploads sales.csv through POST /upload. The background _record_upload_profile task writes the dataset profile. The tenant then calls POST /api/v1/semantic/models/from-file/sales.csv, which returns 200 {"status":"success","model":{...,"description":"Auto-generated semantic model for sales.csv (0 column(s)).","fields":[]}}. An empty semantic model is saved permanently in metadata.db. Every call adds another empty model, because model_id=None always takes the create path. Auto-modelling of uploaded files never works, yet the API reports success. Only connector-ingest profiles, which use the 'schema' key (connections.py:724), produce fields.
 - **Caused by:** none -- pre-existing.
 - **Fix:** the semantic builder recognises the profile shape the upload hook stores (`{"columns": [{"name", "type"}], "sample_data": [...]}`, mapping `type` to `dtype`), and `POST /semantic/models/from-file/{file_id}` answers 422 instead of saving and reporting success for a model with no fields. Regression test `test_the_upload_profile_shape_yields_fields` got no fields on the old code.
+
+## BUG-387: ensureAuditorToken breaks every financial-audit entry point for normal users in password mode (production)
+- **Status:** fixed
+- **Found by:** ultracode second-pass frontend audit (run wf_dc428ec9-32e, auth-session lens; confirmed by 2 adversarial verifiers), 2026-10-09. `frontend/src/services/api.ts:1820`.
+- **Severity:** high
+- **Root cause:** ensureAuditorToken() runs whenever the signed-in role is not 'auditor' or 'admin'. It POSTs {user_id:'auditor-demo', role:'auditor'} to /auth/token, which is the open-mode minting shape. Production runs AURA_AUTH_MODE=password (docker-compose.prod.yml:44, deploy/aws-free-tier/.env.example:46, helm values.yaml:30). In that mode _issue_token_password raises ValidationError (422, 'email and password are required in password auth mode'; aurabackend/api_gateway/routers/auth.py). Every caller awaits this before its real request, so the 422 aborts the action. That includes actions the backend allows for any authenticated user: POST /counterfactual/audit/financial only depends on get_current_user. Self-registration can only create role 'user' (BUG-205), so this hits every self-registered account. BUG-112 changed the guard from token presence to role and so created this path. It assumed open mode and is not registered.
+- **Failure scenario:** A user signs up on the production site (role 'user') and opens Workbench > Exception Queue. They click 'Run sample audit', paste a ledger and click run, or enter a record hash and click Load (ExceptionQueue.tsx:105, 133, 213). Each action first calls ensureAuditorToken, which gets a 422 back, so the panel shows an error ('[object Object]', because of the separate BUG-3xx createError issue) and the audit never runs. The same happens in /app/terminal on the Audit panel's Run button (useAuditDeck.ts:48 shows 'Audit failed') and on the Findings panel's run (FindingsPanel.tsx:26). The financial-audit flow therefore cannot be used at all by any non-auditor account in production.
+- **Caused by:** BUG-112 (the role-based guard assumed open auth mode).
+- **Fix:** `ensureAuditorToken` still mints an auditor token in open auth mode (BUG-112's behaviour), but when `/auth/token` refuses the mint -- password mode, i.e. production -- and the user is signed in, it keeps the user's own token instead of throwing, so the audit actions run under the user's session (which `/counterfactual/audit/financial` and the exceptions routes accept). With nobody signed in it still fails. Regression test `keeps the signed-in user's own token when minting is refused` failed on the old code.
+
+## BUG-388: ETL source preview error (HTTP 200 {status:'error'}) is stored as a preview and crashes the Pipelines view
+- **Status:** open
+- **Found by:** ultracode second-pass frontend audit (run wf_dc428ec9-32e, api-contract lens; confirmed by 2 adversarial verifiers), 2026-10-09. `frontend/src/pages/PipelinesPanel.tsx:312`.
+- **Severity:** medium
+- **Root cause:** POST /etl/preview-source (aurabackend/api_gateway/routers/etl.py ~381-382) catches any load failure and returns HTTP 200 {status:'error', error}, with no columns, row_count, table_name or preview. etlService.previewSource (api.ts) returns that body unchanged. loadSourcePreview checks neither status nor error and calls setSourcePreview(preview). The render at PipelinesPanel.tsx:915 then evaluates sourcePreview.row_count.toLocaleString() and sourcePreview.columns.length on undefined fields.
+- **Failure scenario:** A user uploads a malformed .json or .csv file that DuckDB/smart_load_file cannot parse, opens Pipelines and picks it as the source. The gateway answers 200 {status:'error', error:'...'}. The render throws a TypeError, and workbench/views.tsx ViewBoundary swaps the whole Pipelines module for 'The pipelines module failed to render inside the workbench shell. This is a bug', which throws away the user's builder state. The real reason ('could not read the file') is never shown.
+- **Caused by:** none -- pre-existing.
+- **Fix:** pending.
+
+## BUG-389: Chat answers never show execution_result.truncated, so a capped result reads as the full answer ('10000 rows')
+- **Status:** open
+- **Found by:** ultracode second-pass frontend audit (run wf_dc428ec9-32e, api-contract lens; confirmed by 2 adversarial verifiers), 2026-10-09. `frontend/src/workbench/panels/AskAuraPanel.tsx:57`. A second reviewer filed the same defect ("Ask AURA ignores execution_result.truncated"); recorded once here.
+- **Severity:** medium
+- **Root cause:** Since BUG-359, ExecutionAgent stops chat SQL results at AURA_QUERY_MAX_ROWS (default 10000) and /chat returns execution_result.truncated=true with row_count = the capped count (chat.py:127, 677-678; execution_agent.py:76-86). The frontend ExecutionResult type (services/api.ts ~331) has no truncated field. AskAuraPanel builds rowCount only from er.row_count and shows '{rowCount} rows' at line 152. AskAuraChat.tsx:90 ('executed · N rows') and terminal QueryPanel also ignore the flag. No chat surface reads truncated (git grep finds it only in DashboardsPanel).
+- **Failure scenario:** A user uploads a 250,000-row dataset and asks 'list all orders over $50'. 180,000 rows match. The gateway returns the first 10,000 with truncated:true. The panel says '10000 rows · showing first 12' and the chart and conclusion are built on that slice. Nothing tells the user the answer was cut off, so they read 10,000 as the real number of matches.
+- **Caused by:** BUG-359 (added the flag; the UI never read it).
+- **Fix:** pending.
+
+## BUG-390: Residual of BUG-247: GET /files failure arrives as HTTP 200 {status:'error'}, and getUploadedFiles still turns it into an empty list
+- **Status:** open
+- **Found by:** ultracode second-pass frontend audit (run wf_dc428ec9-32e, api-contract lens; confirmed by 2 adversarial verifiers), 2026-10-09. `frontend/src/services/api.ts:1154`.
+- **Severity:** medium
+- **Root cause:** The BUG-247 fix only removed the catch around client.get('/files'). The gateway's list_files (aurabackend/api_gateway/routers/files.py ~314-324) returns HTTP 200 {status:'error', error} when file_service is unavailable or the storage listing raises, for example during an S3/boto3 failure. getUploadedFiles never checks resp.status and returns `resp.files || []`, so the error body becomes [] and does not reject.
+- **Failure scenario:** With AURA_STORAGE_BACKEND=s3 and an S3 credential or network failure, the user opens Files & Data. FilesAndDataPanel.load gets [] and shows the empty 'no datasets' state instead of 'Could not reach the gateway to list datasets.' The Pipelines source dropdown and DatasetsPanel are empty the same way, with no error. The user concludes their uploads are gone, which is the exact failure BUG-247 was meant to fix.
+- **Caused by:** none -- pre-existing.
+- **Fix:** pending.
+
+## BUG-391: Connection schema failure (HTTP 200 {success:false}) shows 'No tables found on this connection' instead of the error
+- **Status:** open
+- **Found by:** ultracode second-pass frontend audit (run wf_dc428ec9-32e, api-contract lens; confirmed by 2 adversarial verifiers), 2026-10-09. `frontend/src/services/api.ts:819`.
+- **Severity:** medium
+- **Root cause:** GET /connections/{id}/schema (connections.py ~516-517) catches connect/list failures and returns HTTP 200 {success:false, error, schema:{}}. connectorService.getSchema returns resp.schema without checking success, so ConnectorsPanel.openPicker gets {} and sets tables=[]. Its catch, the only path that sets schemaError, never runs, and SyncCell (ConnectorsPanel.tsx ~96-98) shows 'No tables found on this connection.'
+- **Failure scenario:** A user saves a Postgres connection whose password was later rotated, or whose host is down, and clicks 'Sync to chat'. The connect fails server-side, the gateway answers 200 {success:false, error:'...', schema:{}}, and the picker says 'No tables found on this connection.' The user believes the database is empty, when the real cause (authentication or reachability) was in the response's error field and was dropped.
+- **Caused by:** none -- pre-existing.
+- **Fix:** pending.
+
+## BUG-392: Sign-out and account switches do not reach other open tabs; they keep acting as the old user
+- **Status:** open
+- **Found by:** ultracode second-pass frontend audit (run wf_dc428ec9-32e, auth-session lens; confirmed by 2 adversarial verifiers), 2026-10-09. `frontend/src/services/api.ts:66`.
+- **Severity:** medium
+- **Root cause:** The bearer token is read from localStorage once, at module load (`let _authToken = localStorage.getItem('aura.authToken')`). After that it changes only through setAuthToken() in the same tab. AuthContext (auth/AuthContext.tsx:20) also seeds user only once at mount. Nothing in frontend/src listens for the 'storage' event or uses a BroadcastChannel; git grep finds no matches. The backend has no logout or revocation endpoint (auth.py has only /token, /register, /oidc/*, /me), so a token that one tab has dropped stays valid for its full 30-minute TTL in every other tab.
+- **Failure scenario:** On a shared machine, user A has /workbench open in two tabs and clicks 'Sign out' in tab 1 (UserMenu or palette). Tab 2 still holds A's token in memory and still shows A in the account menu. Its 10-second pulse and every panel action keep reading and changing A's tenant data (files, dashboards, healing approvals) until the JWT expires. If user B then signs in on tab 1, tab 2 keeps sending A's token, while tab 2's localStorage now holds B's token. Reloading tab 2 then silently swaps it to B's session in the middle of whatever was on screen.
+- **Caused by:** none -- pre-existing.
+- **Fix:** pending.
+
+## BUG-393: Cockpit query-history card and 'Recent queries' tile never load saved history: the response object is read as an array or as a .history field
+- **Status:** open
+- **Found by:** ultracode second-pass frontend audit (run wf_dc428ec9-32e, data-correctness lens; confirmed by 2 adversarial verifiers), 2026-10-09. `frontend/src/workbench/Workbench.tsx:134`.
+- **Severity:** medium
+- **Root cause:** analyticsService.getQueryHistory() resolves to {success, queries, total} (api.ts:861, the gateway's GET /query-history in queries.py:575). Workbench.tsx:134 does `Array.isArray(rows) ? rows : rows?.history ?? []`. The value is not an array and has no `history` key, so `list` is always []. The mapper also reads fields the API never sends: r.query, r.duration_ms, r.user, r.engine, r.cost.
+- **Failure scenario:** A user ran 30 chat queries yesterday. Every one was recorded server-side by chat.py _track_query. Today they open the Workbench home view. The 'Recent queries' tile (Workbench.tsx:303) shows 0 and the Query history card shows 'No queries recorded yet in this workspace.' Only questions asked in the current tab appear, through AskAuraChat's setHistory. The cockpit says the workspace has no history when it has 30 queries.
+- **Caused by:** none -- pre-existing.
+- **Fix:** pending.
+
+## BUG-394: Query History panel reads row_count / execution_time_ms, but the API returns rows / executionTime, so Rows and Execution time are always '—'
+- **Status:** open
+- **Found by:** ultracode second-pass frontend audit (run wf_dc428ec9-32e, data-correctness lens; confirmed by 2 adversarial verifiers), 2026-10-09. `frontend/src/workbench/panels/QueryHistoryPanel.tsx:80`.
+- **Severity:** medium
+- **Root cause:** QueryRow declares row_count and execution_time_ms, which are used at lines 80, 82, 169 and 174. The backend wire shape (persistence._row_to_history_dict, persistence.py:525-535) is {id, prompt, sql, status, rows, executionTime, timestamp}. These are the same keys track_query writes in queries.py:187-195. Neither key the panel reads is ever present.
+- **Failure scenario:** A chat query returns 1,240 rows in 850 ms and is recorded with rows=1240 and executionTime=850. In Workbench > Query History, the ROWS column shows '—' for every query, so sorting by Rows does nothing (every row's sortValue is -1). Clicking the row opens a detail sheet that shows Rows '—' and Execution time '—', even though the server stored both values.
+- **Caused by:** none -- pre-existing.
+- **Fix:** pending.
+
+## BUG-395: Pipelines builder: a slower source preview for an earlier file overwrites the preview and column list of the file now selected
+- **Status:** open
+- **Found by:** ultracode second-pass frontend audit (run wf_dc428ec9-32e, data-correctness lens; confirmed by 2 adversarial verifiers), 2026-10-09. `frontend/src/pages/PipelinesPanel.tsx:312`.
+- **Severity:** medium
+- **Root cause:** handleSourceChange (line 321) sets selectedSource and calls loadSourcePreview(file). loadSourcePreview (306-319) awaits etlService.previewSource and then calls setSourcePreview(preview) unconditionally. There is no request id or check that `filename` is still the selected source. The previous preview is not cleared on change either, and whichever request finishes first sets isLoading=false. sourcePreview.columns feeds the transform step editors (line 984).
+- **Failure scenario:** A user picks big_sales.csv from the source dropdown, then quickly switches to customers.csv. The customers preview returns first, then the slower big_sales preview arrives and replaces it. The panel now shows big_sales' row count, columns and preview rows under the selected source customers.csv. The transform editors offer big_sales columns. The user builds filter or aggregate steps on those columns, and Execute runs them against customers.csv: it fails on missing columns or silently binds to the wrong data.
+- **Caused by:** none -- pre-existing.
+- **Fix:** pending.
+
+## BUG-396: Connection-create validation errors use a dict `detail`, which errorBodyMessage drops, so the form shows 'Bad Request'
+- **Status:** open
+- **Found by:** ultracode second-pass frontend audit (run wf_dc428ec9-32e, api-contract lens; confirmed by 2 adversarial verifiers), 2026-10-09. `frontend/src/services/api.ts:452`.
+- **Severity:** low
+- **Root cause:** POST /connections raises HTTPException with dict details: {error:'credentials_json must be a JSON object.'}, {error:'Connector settings are too large.'} (413), {error:'Unknown settings...'} and the unknown/unavailable connector type errors (connections.py:154,163,165,180,186,391,399). There is no HTTPException handler, so the body is {detail:{error:...}}. errorBodyMessage (api.ts ~265-279) reads only a string `message`, a string `detail` or an array `detail`, returns null, and ApiClient falls back to response.statusText (or 'HTTP 400' over HTTP/2, where statusText is empty).
+- **Failure scenario:** In Workbench > Connectors > Add connection, a user picks BigQuery and pastes a service-account JSON with a stray trailing comma (or pastes a non-object). The gateway rejects it with 400 {detail:{error:'credentials_json must be a JSON object.'}}. AddConnectionForm shows only 'Bad Request' (or 'HTTP 400'), so the user cannot tell which field is wrong. An oversized key file shows 'Payload Too Large' or 'HTTP 413' instead of 'Connector settings are too large.'
+- **Caused by:** none -- pre-existing.
+- **Fix:** pending.
+
+## BUG-397: No token refresh: active users are force-logged-out every 30 minutes and lose unsaved panel state
+- **Status:** open
+- **Found by:** ultracode second-pass frontend audit (run wf_dc428ec9-32e, auth-session lens; confirmed by 2 adversarial verifiers), 2026-10-09. `frontend/src/auth/AuthContext.tsx:28`.
+- **Severity:** low
+- **Root cause:** Access tokens are minted with a fixed 30-minute exp (aurabackend/shared/config.py:291 access_token_expire_minutes=30, shared/auth.py:56-59). There is no refresh endpoint and no sliding re-issue: auth.py has only /token, /register, /oidc/* and /me. On the frontend, the only reaction to expiry is the session-expired listener, which clears the token and sets user to null. ProtectedRoute then unmounts the whole Workbench and redirects to /login. Nothing renews a token for a user who is actively using the app.
+- **Failure scenario:** An auditor signs in and works in the Workbench Exception Queue, typing a long rationale for a finding, or runs a multi-turn Ask AURA conversation. 30 minutes after login, the next background pulse (healingService.pending every 10s, Workbench.tsx) gets a 401. The tab jumps to /login and the Workbench tree unmounts, so the typed rationale, the chat transcript, the loaded exception queue and any in-progress counterfactual result are discarded. This repeats every 30 minutes regardless of activity.
+- **Caused by:** none -- pre-existing.
+- **Fix:** pending.
+
+## BUG-398: Cockpit 'Datasets loaded' tile shows a loading skeleton forever when GET /files fails
+- **Status:** open
+- **Found by:** ultracode second-pass frontend audit (run wf_dc428ec9-32e, data-correctness lens; confirmed by 2 adversarial verifiers), 2026-10-09. `frontend/src/workbench/Workbench.tsx:131`.
+- **Severity:** low
+- **Root cause:** Since BUG-247, uploadService.getUploadedFiles() rejects on HTTP or network errors. Workbench.tsx:131 swallows the rejection with `.catch(() => undefined)`, so `files` stays null. The tile at line 301 sets `loading: files == null`, so CockpitStats renders the Skeleton with no end, no error and no retry. BUG-255 fixed this same pattern for the Pipelines and Pending-approvals tiles but not this one.
+- **Failure scenario:** The gateway's /files route returns 500 (for example, the storage backend is unreachable) or 403 while the rest of the app loads. On the Workbench home view, the 'Datasets loaded' tile pulses as a skeleton indefinitely. The user cannot tell whether the count is still loading, is zero, or failed, and the tile never recovers until a full page reload.
+- **Caused by:** none -- pre-existing.
+- **Fix:** pending.

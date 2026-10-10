@@ -1820,10 +1820,19 @@ export const financialAuditService = {
   async ensureAuditorToken(userId = 'auditor-demo'): Promise<void> {
     const role = authService.currentUser()?.role;
     if (role === 'auditor' || role === 'admin') return;
-    const resp = await client.post<{ access_token: string }>('/auth/token', {
-      user_id: userId,
-      role: 'auditor',
-    });
+    // Minting an auditor token only works in open auth mode. BUG-387: in password
+    // mode (production) /auth/token refuses this body, and throwing here aborted every
+    // audit action for a signed-in user -- whose own token those routes accept.
+    let resp: { access_token: string };
+    try {
+      resp = await client.post<{ access_token: string }>('/auth/token', {
+        user_id: userId,
+        role: 'auditor',
+      });
+    } catch (err) {
+      if (getAuthToken()) return; // keep the user's own session
+      throw err;
+    }
     setAuthToken(resp.access_token);
   },
 
