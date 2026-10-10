@@ -90,6 +90,7 @@ services:
       AURA_AUDIT_DIR: /data/audit
       AURA_ARTIFACT_DIR: /data/artifacts
       AURA_SIGNING_KEY_DIR: /data/keys
+      AURA_WEBHOOK_DIR: /data/webhooks
       # Every dataset a user uploads. Tenant-scoped as <root>/<workspace>/<file>.
       AURA_UPLOADS_ROOT: /data/uploads
       # Reaches the uasr_service container below. The code default is

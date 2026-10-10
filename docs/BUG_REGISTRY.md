@@ -3850,13 +3850,13 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Fix:** `POST /execute/query` runs the same `_check_network_host` (public-address SSRF rule, `AURA_CONNECTORS_ALLOW_PRIVATE_HOSTS` opt-out) before building its connector or asyncpg pool. Regression test `test_execute_query_refuses_internal_database_hosts` (loopback, RFC1918, empty) connected on the old code.
 
 ## BUG-378: Outbound webhook subscriptions and inbound hooks are stored inside the container image filesystem, not on the /data volume, so every redeploy deletes them
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode second-pass audit of the gateway routers/persistence, auth/workspaces and metadata/ingestion/orchestration (run wf_35296976-667, gateway-auth-workspaces scope; confirmed by 2 adversarial verifiers), 2026-10-08. `aurabackend/shared/webhook_dispatcher.py:54`.
 - **Severity:** high
 - **Root cause:** _DATA_DIR is hard-coded to <package>/data/webhooks (webhook_dispatcher.py:54-58 -> /app/data/webhooks/subscriptions.json; the same in shared/inbound_hooks.py:31-35 -> /app/data/webhooks/inbound.json). No env var overrides it. deploy/aws-free-tier/docker-compose.yml mounts only aura-data:/data, and the Dockerfile creates /app/data as part of the image layer. Every other piece of state was moved to /data/state, /data/uploads and so on (the compose comments note that user accounts were lost exactly this way), but these two stores were missed.
 - **Failure scenario:** A tenant registers POST /api/v1/webhooks (url=https://ops.example/hook, events=['pipeline.failed']) and POST /api/v1/hooks (slug 'nightly-load', kind=pipeline) and gives the fire URL to an external scheduler. Both calls return success and both records are written to /app/data/webhooks/*.json. The operator then runs redeploy.sh (docker compose pull && up -d), which replaces the api_gateway container. At startup WebhookDispatcher._load() and InboundHookRegistry._load() find no file. All subscriptions are gone, so the lifespan dispatcher silently stops delivering pipeline.failed alerts, and every POST /api/v1/hooks/fire/nightly-load from the external system now returns 404. Nothing warns anyone, and the GET /webhooks and /hooks lists come back empty.
 - **Caused by:** none -- pre-existing.
-- **Fix:** pending.
+- **Fix:** both stores (`shared/webhook_dispatcher.py`, `shared/inbound_hooks.py`) take their directory from `AURA_WEBHOOK_DIR` (default unchanged), and the deploy compose files set it on persistent storage: `/data/webhooks` on the free-tier box's `aura-data` volume, and a new `aura-webhooks` volume for the prod gateway. Subscriptions created before this deploy were in the container and were already lost by earlier redeploys. Regression tests in `test_webhook_store_location.py` failed on the old code.
 
 ## BUG-379: Public POST /hooks/fire/{slug} reads an unbounded request body into memory before the HMAC check (pre-auth OOM of the single gateway worker)
 - **Status:** open

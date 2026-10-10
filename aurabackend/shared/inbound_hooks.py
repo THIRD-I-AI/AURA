@@ -28,7 +28,10 @@ from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger("aura.inbound_hooks")
 
-_DATA_DIR = os.path.join(
+# BUG-378 (same as shared/webhook_dispatcher.py): this was always <package>/data/webhooks -- inside the container image, not
+# on the /data volume -- so every redeploy deleted all webhook subscriptions and inbound
+# hooks. Deployments point AURA_WEBHOOK_DIR at the volume (see deploy/ compose files).
+_DATA_DIR = os.getenv("AURA_WEBHOOK_DIR") or os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
     "data", "webhooks",
 )
