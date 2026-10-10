@@ -42,6 +42,7 @@ def test_query_validation_failure_is_now_a_real_400_not_a_200(client):
 def test_a_successful_query_is_reported_as_successful(client, monkeypatch):
     """The success-path response left out `error`, which the model required, so the
     handler's except turned every successful query into success=False."""
+    monkeypatch.setenv("AURA_CONNECTORS_ALLOW_PRIVATE_HOSTS", "true")  # local test host (BUG-377)
     from agents.base import AgentResult, AgentStatus
     from agents.specialists import analysis_agent
     from api_gateway.routers import queries

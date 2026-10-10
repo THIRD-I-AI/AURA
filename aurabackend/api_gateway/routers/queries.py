@@ -454,6 +454,10 @@ async def execute_query_with_insights(request: ExecuteQueryRequest):
                        "cannot be queried through /execute/query; use /execute for uploaded data.",
             )
         connector_config = ConnectorConfig(source_type=SourceType(request.connector_type), name=f"exec-{request.connector_type}", **request.connector_config)
+        # BUG-377: the BUG-367 host check covered only the /connectors and /connections
+        # routes; this one connected to private/loopback (and empty -> localhost) hosts.
+        from api_gateway.routers.connections import _check_network_host
+        await _check_network_host(request.connector_type, connector_config.host)
         connector = build_connector(request.connector_type, connector_config)
         if connector is None:
             raise ValueError(f"Unknown or unavailable connector type: {request.connector_type}")
