@@ -35,6 +35,7 @@ import hmac
 import json
 import logging
 import os
+import threading
 import time
 import uuid
 from collections import deque
@@ -171,6 +172,10 @@ class WebhookDispatcher:
         self._task: Optional[asyncio.Task] = None
         self._stop = asyncio.Event()
         self._client: Optional[httpx.AsyncClient] = None
+        # BUG-384: the routes run register/update/delete on worker threads, so two
+        # requests mutated _subs and rewrote the store file at the same time -- a
+        # truncated or interleaved file, and a subscription lost on the next load.
+        self._lock = threading.RLock()
         self._load()
 
     # ── Persistence ────────────────────────────────────────────────
@@ -188,11 +193,18 @@ class WebhookDispatcher:
             logger.warning("Failed to load webhook store: %s", exc)
 
     def _save(self) -> None:
+        """Write the store atomically (temp file + replace); callers hold self._lock."""
         os.makedirs(_DATA_DIR, exist_ok=True)
+        tmp = f"{_STORE_PATH}.{uuid.uuid4().hex}.tmp"
         try:
-            with open(_STORE_PATH, "w", encoding="utf-8") as f:
+            with open(tmp, "w", encoding="utf-8") as f:
                 json.dump([s.__dict__ for s in self._subs.values()], f, indent=2)
+            os.replace(tmp, _STORE_PATH)
         except Exception as exc:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
             logger.warning("Failed to persist webhook store: %s", exc)
 
     # ── CRUD ───────────────────────────────────────────────────────
@@ -226,11 +238,16 @@ class WebhookDispatcher:
             description=description,
             workspace_id=workspace_id,
         )
-        self._subs[sub.id] = sub
-        self._save()
+        with self._lock:
+            self._subs[sub.id] = sub
+            self._save()
         return sub
 
     def update(self, sub_id: str, workspace_id: str, **fields) -> Optional[WebhookSubscription]:
+        with self._lock:
+            return self._update_locked(sub_id, workspace_id, fields)
+
+    def _update_locked(self, sub_id: str, workspace_id: str, fields: Dict[str, Any]) -> Optional[WebhookSubscription]:
         sub = self.get(sub_id, workspace_id)
         if not sub:
             return None
@@ -248,11 +265,12 @@ class WebhookDispatcher:
         return sub
 
     def delete(self, sub_id: str, workspace_id: str) -> bool:
-        sub = self.get(sub_id, workspace_id)
-        if sub is None:
-            return False
-        self._subs.pop(sub_id, None)
-        self._save()
+        with self._lock:
+            sub = self.get(sub_id, workspace_id)
+            if sub is None:
+                return False
+            self._subs.pop(sub_id, None)
+            self._save()
         return True
 
     def deliveries(self, workspace_id: str) -> List[DeliveryRecord]:
