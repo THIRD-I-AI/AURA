@@ -86,6 +86,8 @@ function WorkbenchInner() {
   const [health, setHealth] = useState<{ up: number; total: number } | null>(null);
   const [services, setServices] = useState<Array<{ name: string; up: boolean }> | null>(null);
   const [files, setFiles] = useState<number | null>(null);
+  // BUG-398: a failed GET /files left `files` null and the tile skeleton spinning forever.
+  const [filesError, setFilesError] = useState(false);
   const [pipelines, setPipelines] = useState<Array<{ name: string; status: string }> | null>(null);
   const [gatewayUp, setGatewayUp] = useState<boolean | null>(null);
   const [ledgerDown, setLedgerDown] = useState(false);
@@ -128,7 +130,7 @@ function WorkbenchInner() {
         }
       })
       .catch(() => setLedgerDown(true));
-    uploadService.getUploadedFiles().then((f) => setFiles(f.length)).catch(() => undefined);
+    uploadService.getUploadedFiles().then((f) => setFiles(f.length)).catch(() => setFilesError(true));
     analyticsService.getQueryHistory()
       .then((rows: unknown) => {
         const list = Array.isArray(rows) ? rows : (rows as { history?: unknown[] })?.history ?? [];
@@ -298,7 +300,7 @@ function WorkbenchInner() {
   const dash = { value: '—', subColor: 'var(--text3)' };
   const stats: Stat[] = [
     { label: 'Services healthy', value: health ? `${health.up}/${health.total}` : gatewayUp ? '✓' : dash.value, sub: gatewayUp === false ? 'gateway offline' : gatewayUp ? 'gateway up' : 'checking…', subColor: gatewayUp === false ? 'var(--danger)' : gatewayUp ? 'var(--accent)' : 'var(--text3)', loading: gatewayUp === null && health === null },
-    { label: 'Datasets loaded', value: files != null ? String(files) : dash.value, sub: 'workspace uploads', subColor: 'var(--text3)', loading: files == null },
+    { label: 'Datasets loaded', value: files != null ? String(files) : dash.value, sub: filesError ? 'unavailable' : 'workspace uploads', subColor: filesError ? 'var(--warn)' : 'var(--text3)', loading: files == null && !filesError },
     { label: 'Ledger records', value: ledger ? ledger.no.replace('#', '') : dash.value, sub: ledger ? `chain ${ledger.intact ? 'intact' : 'BROKEN'}` : ledgerDown ? ledgerNote : 'verifying…', subColor: ledger?.intact === false ? 'var(--danger)' : ledgerDown ? 'var(--warn)' : 'var(--accent)', loading: !ledger && !ledgerDown },
     { label: 'Recent queries', value: String(history.length), sub: 'this workspace', subColor: 'var(--text3)', loading: false },
     { label: 'Pending approvals', value: healingState === 'error' ? dash.value : String(pendingCount), sub: healingState === 'error' ? 'queue unavailable' : pendingCount > 0 ? 'healing queue' : 'queue clear', subColor: healingState === 'error' || pendingCount > 0 ? 'var(--warn)' : 'var(--accent)', loading: healingState === 'loading' },

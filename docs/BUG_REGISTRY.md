@@ -4030,10 +4030,10 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Fix:** pending.
 
 ## BUG-398: Cockpit 'Datasets loaded' tile shows a loading skeleton forever when GET /files fails
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode second-pass frontend audit (run wf_dc428ec9-32e, data-correctness lens; confirmed by 2 adversarial verifiers), 2026-10-09. `frontend/src/workbench/Workbench.tsx:131`.
 - **Severity:** low
 - **Root cause:** Since BUG-247, uploadService.getUploadedFiles() rejects on HTTP or network errors. Workbench.tsx:131 swallows the rejection with `.catch(() => undefined)`, so `files` stays null. The tile at line 301 sets `loading: files == null`, so CockpitStats renders the Skeleton with no end, no error and no retry. BUG-255 fixed this same pattern for the Pipelines and Pending-approvals tiles but not this one.
 - **Failure scenario:** The gateway's /files route returns 500 (for example, the storage backend is unreachable) or 403 while the rest of the app loads. On the Workbench home view, the 'Datasets loaded' tile pulses as a skeleton indefinitely. The user cannot tell whether the count is still loading, is zero, or failed, and the tile never recovers until a full page reload.
 - **Caused by:** none -- pre-existing.
-- **Fix:** pending.
+- **Fix:** the cockpit's "Datasets loaded" tile records a failed GET /files and shows "unavailable" (warn colour) instead of its loading skeleton forever -- the pattern BUG-255 applied to the Pipelines and Pending-approvals tiles. Regression test `says "unavailable" when the file listing fails` failed on the old code.

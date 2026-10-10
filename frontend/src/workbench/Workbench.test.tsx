@@ -253,3 +253,17 @@ describe('Workbench', () => {
     });
   });
 });
+
+// BUG-398: a failed GET /files left the Datasets tile on its loading skeleton forever.
+describe('Workbench datasets tile', () => {
+  it('says "unavailable" when the file listing fails', async () => {
+    const { uploadService } = await import('../services/api');
+    (uploadService.getUploadedFiles as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error('boom'));
+    vi.useFakeTimers();
+    await boot();
+    await act(async () => { await Promise.resolve(); });
+    const tile = screen.getByText('Datasets loaded').closest('div')!.parentElement!;
+    expect(tile.textContent).toMatch(/unavailable/i);
+    vi.useRealTimers();
+  });
+});
