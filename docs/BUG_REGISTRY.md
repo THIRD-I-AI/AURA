@@ -3859,13 +3859,13 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Fix:** both stores (`shared/webhook_dispatcher.py`, `shared/inbound_hooks.py`) take their directory from `AURA_WEBHOOK_DIR` (default unchanged), and the deploy compose files set it on persistent storage: `/data/webhooks` on the free-tier box's `aura-data` volume, and a new `aura-webhooks` volume for the prod gateway. Subscriptions created before this deploy were in the container and were already lost by earlier redeploys. Regression tests in `test_webhook_store_location.py` failed on the old code.
 
 ## BUG-379: Public POST /hooks/fire/{slug} reads an unbounded request body into memory before the HMAC check (pre-auth OOM of the single gateway worker)
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode second-pass audit of the gateway routers/persistence, auth/workspaces and metadata/ingestion/orchestration (run wf_35296976-667, gateway-auth-workspaces scope; confirmed by 2 adversarial verifiers), 2026-10-08. `aurabackend/api_gateway/routers/inbound_hooks.py:162`.
 - **Severity:** high
 - **Root cause:** fire_hook is on the JWT/API-key public prefix allowlist (/api/v1/hooks/fire/). It calls `body = await request.body()` (line 162), which buffers the whole body (Starlette joins the chunks, so about 2x the body size in memory), and only then checks the hook's secret (line 163-166). After that it runs `request.json()` (line 169), which parses the whole document on the event loop. The only body cap in the gateway is UploadBodyLimitMiddleware, which applies only to paths ending in /upload. The Caddyfile sets no request_body max_size, and uvicorn has no body limit.
 - **Failure scenario:** An unauthenticated attacker who knows or guesses any registered slug (slugs are user-chosen names like 'github-push' and are handed to third parties) sends POST https://<domain>/api/v1/hooks/fire/github-push with a 300 MB body. It does not matter whether the hook has a secret, because the body is read in full before the signature is checked. The gateway container is capped at mem_limit 520m and already uses about 240m at idle. Buffering and joining the body exceeds the cap, the kernel OOM-kills the only uvicorn worker, and every tenant's API goes down. A smaller body made of a JSON array of small numbers has the same effect when json.loads expands it, and the parse also blocks the event loop. One request is enough, so the rate limiter does not help.
 - **Caused by:** none -- pre-existing.
-- **Fix:** pending.
+- **Fix:** `POST /hooks/fire/{slug}` reads its body through `_read_bounded_body`: a declared Content-Length over `AURA_HOOK_MAX_BODY_BYTES` (default 1 MiB) is refused with 413 before anything is read, and a streamed body is cut off at the cap; the JSON is parsed from those bytes. Regression test `test_an_oversized_fire_body_is_refused_before_it_is_read` accepted a 10 KB body over a 2 KB cap on the old code.
 
 ## BUG-380: The asyncpg pool registry behind /execute/query grows without bound and never evicts: each new (host, db, user, password) keeps an open pool for the life of the process
 - **Status:** open

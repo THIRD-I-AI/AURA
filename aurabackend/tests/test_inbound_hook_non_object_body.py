@@ -40,3 +40,24 @@ async def test_an_object_body_is_passed_through_unchanged(env, monkeypatch):  # 
     monkeypatch.setattr(router_mod, "_fire_pipeline", _capture)
     assert client.post(f"{V1}/hooks/fire/obj", json={"preview_only": True}).status_code == 200
     assert seen == [{"preview_only": True}]
+
+
+@pytest.mark.asyncio
+async def test_an_oversized_fire_body_is_refused_before_it_is_read(env, monkeypatch):  # noqa: F811
+    # BUG-379: this public route buffered the whole body before checking the signature,
+    # so one large unauthenticated POST could OOM the single gateway worker.
+    client, _, router_mod = env
+    client.post(f"{V1}/hooks", json={"slug": "big", "kind": "pipeline", "target": "pipe_own", "secret": "s"})
+    fired = []
+
+    async def _capture(pipeline_id, payload, owner_workspace_id):
+        fired.append(payload)
+        return {"status": "ok"}
+
+    monkeypatch.setattr(router_mod, "_fire_pipeline", _capture)
+    monkeypatch.setenv("AURA_HOOK_MAX_BODY_BYTES", "2048")
+
+    r = client.post(f"{V1}/hooks/fire/big", content=b"x" * 10_000, headers={"content-type": "application/json"})
+
+    assert r.status_code == 413, r.text
+    assert fired == []
