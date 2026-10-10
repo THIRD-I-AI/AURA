@@ -4012,13 +4012,13 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Fix:** `loadSourcePreview` numbers each preview request and applies a response (preview, error, loading state) only if it is still the latest, so a slower preview for a previously selected file can no longer overwrite the preview and column list of the file selected now. Regression test `keeps the preview of the most recently selected file` failed on the old code.
 
 ## BUG-396: Connection-create validation errors use a dict `detail`, which errorBodyMessage drops, so the form shows 'Bad Request'
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode second-pass frontend audit (run wf_dc428ec9-32e, api-contract lens; confirmed by 2 adversarial verifiers), 2026-10-09. `frontend/src/services/api.ts:452`.
 - **Severity:** low
 - **Root cause:** POST /connections raises HTTPException with dict details: {error:'credentials_json must be a JSON object.'}, {error:'Connector settings are too large.'} (413), {error:'Unknown settings...'} and the unknown/unavailable connector type errors (connections.py:154,163,165,180,186,391,399). There is no HTTPException handler, so the body is {detail:{error:...}}. errorBodyMessage (api.ts ~265-279) reads only a string `message`, a string `detail` or an array `detail`, returns null, and ApiClient falls back to response.statusText (or 'HTTP 400' over HTTP/2, where statusText is empty).
 - **Failure scenario:** In Workbench > Connectors > Add connection, a user picks BigQuery and pastes a service-account JSON with a stray trailing comma (or pastes a non-object). The gateway rejects it with 400 {detail:{error:'credentials_json must be a JSON object.'}}. AddConnectionForm shows only 'Bad Request' (or 'HTTP 400'), so the user cannot tell which field is wrong. An oversized key file shows 'Payload Too Large' or 'HTTP 413' instead of 'Connector settings are too large.'
 - **Caused by:** none -- pre-existing.
-- **Fix:** pending.
+- **Fix:** `errorBodyMessage` also reads a dict `detail` (`{error}` or `{message}`), the shape POST /connections and other routes raise, so those forms show the server's reason (e.g. "credentials_json must be a JSON object.") instead of "Bad Request". Regression tests `BUG-396: errorBodyMessage reads a dict detail` failed on the old code.
 
 ## BUG-397: No token refresh: active users are force-logged-out every 30 minutes and lose unsaved panel state
 - **Status:** open

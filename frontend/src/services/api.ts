@@ -274,6 +274,13 @@ export function errorBodyMessage(body: unknown): string | null {
       .filter((m): m is string => !!m);
     if (msgs.length) return msgs.join('; ');
   }
+  // BUG-396: several routes raise HTTPException(detail={"error": ...}) (or
+  // {"message": ...}); that dict was dropped and the form showed "Bad Request".
+  if (b.detail && typeof b.detail === 'object') {
+    const d = b.detail as { error?: unknown; message?: unknown };
+    if (typeof d.error === 'string' && d.error) return d.error;
+    if (typeof d.message === 'string' && d.message) return d.message;
+  }
   return null;
 }
 

@@ -42,3 +42,17 @@ describe('ApiClient errors', () => {
     expect(errorBodyMessage(null)).toBeNull();
   });
 });
+
+// BUG-396: POST /connections (and others) raise HTTPException(detail={"error": ...});
+// that dict detail was dropped and the form showed only "Bad Request".
+describe('BUG-396: errorBodyMessage reads a dict detail', () => {
+  it('uses detail.error', () => {
+    expect(errorBodyMessage({ detail: { error: 'credentials_json must be a JSON object.' } }))
+      .toBe('credentials_json must be a JSON object.');
+  });
+
+  it('uses detail.message', () => {
+    expect(errorBodyMessage({ detail: { message: 'Connector settings are too large.' } }))
+      .toBe('Connector settings are too large.');
+  });
+});
