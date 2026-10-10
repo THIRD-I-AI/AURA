@@ -43,3 +43,32 @@ async def test_saved_query_runner_is_capped_too(monkeypatch):
     monkeypatch.setenv("AURA_QUERY_MAX_ROWS", "7")
     res = await _execute_saved_query_sql("SELECT * FROM range(100)")
     assert res["row_count"] == 7 and res["truncated"] is True
+
+
+def test_a_runaway_execute_query_is_stopped_at_the_timeout(monkeypatch):
+    # BUG-381: /execute ran user SQL in a bare to_thread with no limit, holding a scarce
+    # executor thread until DuckDB finished; it is now interrupted at the timeout.
+    import time
+
+    from api_gateway.main import app
+
+    monkeypatch.setenv("AURA_QUERY_TIMEOUT_SECONDS", "1")
+    started = time.monotonic()
+    r = TestClient(app).post("/api/v1/execute", json={
+        "sql": "SELECT count(*) FROM range(1000000000) a, range(1000) b"})
+    assert r.json()["success"] is False
+    assert time.monotonic() - started < 15
+
+
+def test_run_interruptible_stops_the_query_and_frees_the_connection(monkeypatch):
+    import asyncio
+
+    import duckdb
+
+    from shared.duckdb_factory import run_interruptible
+
+    con = duckdb.connect(":memory:")
+    slow = lambda: con.execute("SELECT count(*) FROM range(1000000000) a, range(1000) b").fetchall()  # noqa: E731
+    with pytest.raises(asyncio.TimeoutError):
+        asyncio.run(run_interruptible(con, slow, timeout=0.5))
+    assert con.execute("SELECT 1").fetchone()[0] == 1

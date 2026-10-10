@@ -430,7 +430,8 @@ async def execute_for_chat(req: _ChatExecuteRequest, request: Request):
         def _run_sql() -> tuple:
             return _fetch_capped(con.execute(sql))
 
-        columns, rows, truncated = await asyncio.to_thread(_run_sql)
+        from shared.duckdb_factory import run_interruptible
+        columns, rows, truncated = await run_interruptible(con, _run_sql)  # BUG-381
         records = [dict(zip(columns, row)) for row in rows]
 
         conclusion = None
