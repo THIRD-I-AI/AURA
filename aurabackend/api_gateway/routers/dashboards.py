@@ -194,7 +194,8 @@ async def _run_tile(tile: Dict[str, Any], saved_queries: List[Dict[str, Any]], c
             cur = con.execute(sq["sql"])
             return [d[0] for d in cur.description], cur.fetchmany(_TILE_PREVIEW_ROWS + 1)
 
-        columns, rows = await asyncio.to_thread(_run)
+        from shared.duckdb_factory import run_interruptible
+        columns, rows = await run_interruptible(con, _run)  # BUG-381
         elapsed = (time.perf_counter() - started) * 1000
         # BUG-234: read at most one row past the preview instead of fetchall()-ing the
         # whole result only to keep 500 of it.

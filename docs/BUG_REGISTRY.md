@@ -3877,13 +3877,13 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Fix:** the asyncpg pool registry behind `/execute/query` keeps at most `AURA_PG_POOL_MAX` (default 16) pools and closes the least recently used one when a new pool would exceed that; the BUG-050 per-password matching is unchanged. Regression test `test_the_registry_keeps_at_most_aura_pg_pool_max_pools` errored on the old code, which has no bound to keep.
 
 ## BUG-381: POST /execute (DuckDB path) and POST /dashboards/{id}/render run user or stored SQL in to_thread with no timeout or interrupt, so a few runaway queries tie up the default executor
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode second-pass audit of the gateway routers/persistence, auth/workspaces and metadata/ingestion/orchestration (run wf_35296976-667, gateway-files-queries scope; confirmed by 2 adversarial verifiers), 2026-10-08. `aurabackend/api_gateway/routers/queries.py:406`.
 - **Severity:** medium
 - **Root cause:** `execute_for_chat` runs `await asyncio.to_thread(_run_sql)` (queries.py:406), and `_run_tile` runs `await asyncio.to_thread(_run)` (dashboards.py:197), each with no wait_for and no `con.interrupt()`. BUG-335 (scheduler) and BUG-363 (chat ExecutionAgent) added a 120s interrupt only on their own paths. lock_down_connection blocks file and network access but not CPU-heavy table functions. A client disconnecting does not cancel a to_thread call, and these calls share the loop's default ThreadPoolExecutor: min(32, cpu+4), about 6 threads on the 2-vCPU t3.micro.
 - **Failure scenario:** A user sends about six POST /api/v1/execute requests with {"sql":"SELECT sum(a.range*b.range) FROM range(100000000) a, range(100000) b"}, or saves such a query as a dashboard tile and renders it repeatedly. Each query occupies a default-executor thread indefinitely and pins the CPUs. Every other asyncio.to_thread call in the gateway then queues behind them for all tenants (storage listing, file-metadata counts, DuckDB execution, credential DNS checks), so uploads, chat and dashboards hang until the process restarts.
 - **Caused by:** none -- pre-existing.
-- **Fix:** pending.
+- **Fix:** a shared `run_interruptible(con, fn)` (shared/duckdb_factory.py) runs DuckDB work in a thread under `AURA_QUERY_TIMEOUT_SECONDS` (default 120) and calls `con.interrupt()` on timeout or cancellation; `/execute`'s DuckDB path and dashboard tile rendering use it. Regression tests `test_a_runaway_execute_query_is_stopped_at_the_timeout` and `test_run_interruptible_stops_the_query_and_frees_the_connection` failed on the old code (the query ran for minutes).
 
 ## BUG-382: The file-metadata lifespan worker walks /app/data/uploads instead of AURA_UPLOADS_ROOT (/data/uploads) and deletes every cached row each 60s tick
 - **Status:** open
