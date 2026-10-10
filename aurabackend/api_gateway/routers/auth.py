@@ -18,7 +18,8 @@ import uuid
 
 from fastapi import APIRouter, Cookie, Depends
 from pydantic import BaseModel, Field, field_validator
-from sqlalchemy import select
+from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 
 from shared.auth import create_access_token, require_user
 from shared.config import settings
@@ -193,9 +194,9 @@ async def register_user(body: RegisterRequest):
 
     session_factory = get_session_factory()
     async with session_factory() as session:
-        # Check for existing email
+        # Check for existing email (case-insensitive, like the BUG-385 unique index)
         result = await session.execute(
-            select(User).where(User.email == body.email)
+            select(User).where(func.lower(User.email) == body.email.lower())
         )
         if result.scalar_one_or_none() is not None:
             raise ConflictError(f"User with email '{body.email}' already exists")
@@ -212,7 +213,11 @@ async def register_user(body: RegisterRequest):
             org_id=str(uuid.uuid4()),
         )
         session.add(user)
-        await session.commit()
+        try:
+            await session.commit()
+        except IntegrityError:
+            # BUG-385: a concurrent registration of the same address won the race.
+            raise ConflictError(f"User with email '{body.email}' already exists")
         await session.refresh(user)
 
     logger.info("User registered: email=%s id=%s", user.email, user.id)
