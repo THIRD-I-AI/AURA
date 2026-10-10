@@ -103,8 +103,10 @@ services:
         condition: service_healthy
     volumes:
       - aura-uploads:/data/uploads
+      - aura-webhooks:/data/webhooks  # BUG-378: webhook subscriptions + inbound hooks
     environment:
       <<: *backend-env
+      AURA_WEBHOOK_DIR: /data/webhooks
       ORCHESTRATION_SERVICE_URL: http://orchestration_service:8006/v1/orchestrations/query
       AURA_CODEGEN_URL: http://code_generation_service:8001
       AURA_CONNECTORS_URL: http://connector_service:8002
@@ -197,3 +199,4 @@ volumes:
   scheduler_data:
   aura-pgdata:
   aura-uploads:
+  aura-webhooks:
