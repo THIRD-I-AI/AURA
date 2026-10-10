@@ -401,6 +401,9 @@ async def auto_generate_model_from_file(file_id: str, request: Request) -> Dict[
             if profile_record is None:
                 raise HTTPException(status_code=404, detail="Dataset profile not found")
             model_payload = semantic_builder.generate_model_from_profile(file_id=file_id, dataset_name=profile_record.dataset_name or f"dataset_{file_id[:8]}", profile=profile_record.profile)
+            if not model_payload["fields"]:
+                # BUG-386: an empty model used to be saved and reported as success.
+                raise HTTPException(status_code=422, detail="The file's profile has no columns to model")
             model = await repo.upsert_semantic_model(model_id=None, name=model_payload['name'], description=model_payload['description'], source=model_payload['source'], tags=model_payload['tags'], fields=model_payload['fields'], workspace_id=current_workspace_id(request))
             break
         return {"status": "success", "model": _serialize_semantic_model(model)}

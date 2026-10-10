@@ -204,3 +204,17 @@ async def test_field_metadata_is_saved_and_the_listing_serialises(db_session):
 
     body = json.loads(json.dumps(_serialize_semantic_model(reloaded), default=str))
     assert body["fields"][0]["metadata"] == {"stats": {"mean": 42.0}}
+
+
+def test_the_upload_profile_shape_yields_fields():
+    # BUG-386: the upload hook stores {"columns": [{name, type}], "sample_data": [...]},
+    # which the builder did not recognise -- every model from an uploaded file was empty.
+    profile = {"columns": [{"name": "region", "type": "VARCHAR"}, {"name": "revenue", "type": "DOUBLE"}],
+               "sample_data": [{"region": "east", "revenue": 1.0}]}
+
+    model = semantic_builder.generate_model_from_profile(file_id="f1", dataset_name="sales", profile=profile)
+
+    by_name = {f["name"]: f for f in model["fields"]}
+    assert set(by_name) == {"region", "revenue"}
+    assert by_name["revenue"]["field_type"] == "measure"
+    assert by_name["region"]["field_type"] == "dimension"

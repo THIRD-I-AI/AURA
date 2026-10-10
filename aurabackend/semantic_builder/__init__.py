@@ -49,6 +49,16 @@ def _normalize_columns(profile: Dict[str, Any]) -> List[Tuple[str, Dict[str, Any
     if isinstance(schema, dict):
         return [(name, {"dtype": type_str}) for name, type_str in schema.items()]
 
+    # Upload-hook shape (files.py, PipelineGenerator.get_file_schema):
+    # {"columns": [{"name": ..., "type": ...}, ...], "sample_data": [...]}.
+    # BUG-386: unrecognised, so every model generated from an uploaded file had no fields.
+    columns = profile.get("columns")
+    if isinstance(columns, list):
+        return [
+            (str(c["name"]), {("dtype" if k == "type" else k): v for k, v in c.items() if k != "name"})
+            for c in columns if isinstance(c, dict) and c.get("name")
+        ]
+
     return []
 
 
