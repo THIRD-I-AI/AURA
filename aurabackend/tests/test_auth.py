@@ -355,3 +355,47 @@ class TestRegistrationUniqueness:
             return "inserted"
 
         assert asyncio.run(_scenario()) == "refused"
+
+
+class TestTokenRefresh:
+    """BUG-397: tokens last 30 minutes and nothing renewed them, so an active user was
+    signed out mid-task. POST /auth/refresh renews, bounded by the sign-in time."""
+
+    def _login(self, client):
+        body = {"name": "A", "email": "refresh@example.com", "password": "correct horse battery"}
+        assert client.post(f"{V1}/auth/register", json=body).status_code == 201
+        return client.post(f"{V1}/auth/token", json=body).json()["access_token"]
+
+    def test_a_valid_token_is_renewed_with_the_same_identity(self, password_client):
+        from shared.auth import decode_access_token
+
+        token = self._login(password_client)
+        resp = password_client.post(f"{V1}/auth/refresh", headers={"Authorization": f"Bearer {token}"})
+
+        assert resp.status_code == 200, resp.text
+        old, new = decode_access_token(token), decode_access_token(resp.json()["access_token"])
+        assert (new["sub"], new["email"], new["org_id"], new["role"]) == (old["sub"], old["email"], old["org_id"], old["role"])
+        assert new["exp"] >= old["exp"] and new["auth_time"] == pytest.approx(old["iat"], abs=2)
+
+    def test_no_token_is_refused(self, password_client):
+        assert password_client.post(f"{V1}/auth/refresh").status_code == 401
+
+    def test_a_session_older_than_the_cap_cannot_be_renewed(self, password_client):
+        import time
+
+        from shared.auth import create_access_token, decode_access_token
+
+        claims = decode_access_token(self._login(password_client))
+        stale = create_access_token({
+            "sub": claims["sub"], "email": claims["email"], "role": "user", "org_id": claims["org_id"],
+            "auth_time": time.time() - 13 * 3600,
+        })
+        resp = password_client.post(f"{V1}/auth/refresh", headers={"Authorization": f"Bearer {stale}"})
+        assert resp.status_code == 401, resp.text
+
+    def test_a_deleted_account_cannot_renew(self, password_client):
+        from shared.auth import create_access_token
+
+        ghost = create_access_token({"sub": "no-such-user", "role": "admin", "org_id": "x"})
+        resp = password_client.post(f"{V1}/auth/refresh", headers={"Authorization": f"Bearer {ghost}"})
+        assert resp.status_code == 401, resp.text

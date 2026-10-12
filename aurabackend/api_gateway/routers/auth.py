@@ -13,7 +13,9 @@ Supports two modes (controlled by ``AURA_AUTH_MODE``):
 from __future__ import annotations
 
 import asyncio
+import os
 import secrets
+import time
 import uuid
 
 from fastapi import APIRouter, Cookie, Depends
@@ -318,6 +320,43 @@ async def oidc_exchange(body: ExchangeRequest):
     if token is None:
         raise AuthenticationError("Unknown or expired SSO code — restart sign-in")
     return TokenResponse(access_token=token)
+
+
+def _session_max_seconds() -> float:
+    try:
+        return max(1.0, float(os.getenv("AURA_SESSION_MAX_HOURS", "12"))) * 3600
+    except ValueError:
+        return 12 * 3600.0
+
+
+@router.post("/refresh", response_model=TokenResponse)
+async def refresh_token(user: dict = Depends(require_user)):
+    """Exchange a still-valid token for a fresh one (BUG-397).
+
+    Tokens last ``ACCESS_TOKEN_EXPIRE_MINUTES`` (30) and nothing renewed them, so a
+    user who was actively working was signed out mid-task every half hour. The
+    session is still bounded: ``auth_time`` (when the user actually signed in)
+    travels with each renewal, and after ``AURA_SESSION_MAX_HOURS`` (12) a renewal
+    is refused. In password mode the account is re-read, so a deleted user cannot
+    renew and a changed role takes effect.
+    """
+    now = time.time()
+    auth_time = float(user.get("auth_time") or user.get("iat") or now)
+    if now - auth_time > _session_max_seconds():
+        raise AuthenticationError("Session too old; sign in again")
+
+    claims = {k: user[k] for k in ("sub", "email", "name", "role", "org_id") if user.get(k) is not None}
+    if settings.auth_mode == "password":
+        from metadata_store.db import get_session_factory
+        from metadata_store.models import User
+
+        async with get_session_factory()() as session:
+            account = (await session.execute(select(User).where(User.id == user["sub"]))).scalar_one_or_none()
+        if account is None:
+            raise AuthenticationError("Account no longer exists")
+        claims["role"] = account.role or "user"
+    claims["auth_time"] = auth_time
+    return TokenResponse(access_token=create_access_token(claims))
 
 
 @router.get("/me", response_model=UserInfo)

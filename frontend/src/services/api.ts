@@ -198,7 +198,41 @@ function decodeAuthToken(token: string): AuthUser | null {
   }
 }
 
+/** Seconds until the current token expires; null with no (readable) token. */
+export function authTokenSecondsLeft(): number | null {
+  const token = getAuthToken();
+  if (!token) return null;
+  try {
+    const exp = JSON.parse(atob(token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/'))).exp;
+    return typeof exp === 'number' ? exp - Date.now() / 1000 : null;
+  } catch {
+    return null;
+  }
+}
+
 export const authService = {
+  /** BUG-397: renew the session token (POST /auth/refresh). Tokens last 30 minutes
+   *  and nothing renewed them, so an active user was signed out mid-task. Returns
+   *  false -- and leaves the current token alone -- when the server will not renew. */
+  async refresh(): Promise<boolean> {
+    const token = getAuthToken();
+    if (!token) return false;
+    try {
+      const resp = await fetch(`${API_BASE_URL}/auth/refresh`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!resp.ok) return false;
+      const body = (await resp.json()) as { access_token?: string };
+      // Another tab may have signed out or switched account while this was in flight.
+      if (!body.access_token || getAuthToken() !== token) return false;
+      setAuthToken(body.access_token);
+      return true;
+    } catch {
+      return false;
+    }
+  },
+
   async login(email: string, password: string): Promise<AuthUser> {
     const resp = await client.post<{ access_token: string }>('/auth/token', { email, password });
     setAuthToken(resp.access_token);
