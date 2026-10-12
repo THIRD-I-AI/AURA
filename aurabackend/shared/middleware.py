@@ -87,9 +87,20 @@ class AuditLogMiddleware(BaseHTTPMiddleware):
     _SKIP = {"/health", "/healthz", "/ready", "/metrics"}
 
     async def dispatch(self, request: Request, call_next: Callable):
-        response = await call_next(request)
-        if request.url.path in self._SKIP:
-            return response
+        try:
+            response = await call_next(request)
+        except Exception:
+            # BUG-412: an unhandled exception is re-raised through here and only turned
+            # into a 500 by the outermost handler, so this request -- the kind an audit
+            # trail most needs -- was never recorded. Record it as a 500, then re-raise.
+            if request.url.path not in self._SKIP:
+                await self._record(request, 500)
+            raise
+        if request.url.path not in self._SKIP:
+            await self._record(request, response.status_code)
+        return response
+
+    async def _record(self, request: Request, status_code: int) -> None:
         try:
             from shared.audit_log import AUDIT_ENABLED, audit_request
             if AUDIT_ENABLED:
@@ -110,13 +121,12 @@ class AuditLogMiddleware(BaseHTTPMiddleware):
                     audit_request,
                     method=request.method,
                     path=request.url.path,
-                    status=response.status_code,
+                    status=status_code,
                     request_id=getattr(request.state, "request_id", ""),
                     user=user,
                 )
         except Exception as exc:
             logger.warning("audit middleware failed (non-fatal): %s", exc)
-        return response
 
 
 # ── API Key Authentication Middleware ────────────────────────────────
