@@ -1,7 +1,7 @@
 """BUG-179: the 25MB upload limit only fired after the whole multipart body was spooled to disk."""
 from __future__ import annotations
 
-from fastapi import FastAPI, File, UploadFile
+from fastapi import FastAPI, File, Request, UploadFile
 from fastapi.testclient import TestClient
 
 from shared.middleware import UploadBodyLimitMiddleware
@@ -54,3 +54,48 @@ def test_the_service_factory_installs_it_with_the_documented_limit():
 
     src = inspect.getsource(service_factory)
     assert "UploadBodyLimitMiddleware" in src and "26 * 1024 * 1024" in src
+
+
+# ── BUG-411: every non-upload request body is bounded too ───────────
+
+def _json_app(max_bytes: int) -> TestClient:
+    from shared.middleware import RequestBodyLimitMiddleware
+
+    app = FastAPI()
+    app.add_middleware(RequestBodyLimitMiddleware, max_bytes=max_bytes)
+
+    @app.post("/auth/token")
+    async def token(request: Request):
+        return {"read": len(await request.body())}
+
+    @app.post("/files/upload")
+    async def upload(request: Request):
+        return {"read": len(await request.body())}
+
+    return TestClient(app)
+
+
+def test_an_oversized_json_body_is_refused_from_its_declared_length():
+    r = _json_app(1024).post("/auth/token", content=b"x" * 5000)
+    assert r.status_code == 413
+
+
+def test_a_chunked_body_is_cut_off_at_the_limit():
+    def chunks():
+        for _ in range(10):
+            yield b"x" * 500
+
+    r = _json_app(1024).post("/auth/token", content=chunks())
+    assert r.status_code == 413
+
+
+def test_bodies_within_the_limit_and_upload_paths_are_untouched():
+    client = _json_app(1024)
+    assert client.post("/auth/token", content=b"x" * 800).json() == {"read": 800}
+    assert client.post("/files/upload", content=b"x" * 5000).json() == {"read": 5000}
+
+
+def test_the_gateway_installs_the_request_body_limit():
+    from api_gateway.main import app
+
+    assert "RequestBodyLimitMiddleware" in [m.cls.__name__ for m in app.user_middleware]

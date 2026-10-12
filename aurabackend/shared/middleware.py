@@ -508,6 +508,73 @@ class UploadBodyLimitMiddleware:
         await self.app(scope, receive, send)
 
 
+class _BodyTooLarge(Exception):
+    pass
+
+
+class RequestBodyLimitMiddleware:
+    """Bound every request body that is not a file upload (BUG-411).
+
+    FastAPI reads a JSON body whole into memory before validation, and nothing capped
+    it: one large POST to a public route such as /auth/token could exhaust the single
+    gateway worker's memory. A declared Content-Length over the limit is refused
+    before anything is read; a body with no declared length (chunked) is cut off as
+    soon as it passes the limit. Paths ending in ``upload_suffix`` are left to
+    UploadBodyLimitMiddleware, which has its own, larger limit.
+    """
+
+    def __init__(self, app, *, max_bytes: int, upload_suffix: str = "/upload") -> None:
+        self.app = app
+        self.max_bytes = max_bytes
+        self.upload_suffix = upload_suffix
+
+    async def _refuse(self, scope, receive, send) -> None:
+        response = JSONResponse(
+            {"detail": f"Request body exceeds the {self.max_bytes // (1024 * 1024)}MB limit"},
+            status_code=413,
+        )
+        await response(scope, receive, send)
+
+    async def __call__(self, scope, receive, send):
+        skip = scope["type"] != "http" or scope["method"] in ("GET", "HEAD", "OPTIONS")
+        if skip or scope["path"].endswith(self.upload_suffix):
+            await self.app(scope, receive, send)
+            return
+        for name, value in scope.get("headers", []):
+            if name == b"content-length":
+                try:
+                    if int(value) > self.max_bytes:
+                        await self._refuse(scope, receive, send)
+                        return
+                except ValueError:
+                    pass
+                break
+
+        received = 0
+        started = False
+
+        async def limited_receive():
+            nonlocal received
+            message = await receive()
+            if message["type"] == "http.request":
+                received += len(message.get("body", b""))
+                if received > self.max_bytes:
+                    raise _BodyTooLarge()
+            return message
+
+        async def tracking_send(message):
+            nonlocal started
+            if message["type"] == "http.response.start":
+                started = True
+            await send(message)
+
+        try:
+            await self.app(scope, limited_receive, tracking_send)
+        except _BodyTooLarge:
+            if not started:
+                await self._refuse(scope, receive, send)
+
+
 def register_exception_handlers(app: FastAPI) -> None:
     """Attach global exception handlers so every error returns structured JSON."""
 
