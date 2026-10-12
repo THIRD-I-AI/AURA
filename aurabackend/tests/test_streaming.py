@@ -1980,3 +1980,26 @@ class TestWindowEviction:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v", "--tb=short"])
+
+
+def test_aggregates_use_the_documented_field_key():
+    # BUG-399: the API contract names the column "field" (schemas + every template), but
+    # only "column" was read, so SUM/AVG/MAX aggregated the constant 1 -- revenue came out
+    # as the order count, and the templates' alert rules never matched an output key.
+    wp = WindowProcessor(
+        WindowConfig(type=WindowType.TUMBLING, size_seconds=10),
+        watermark_delay=0,
+        aggregate_fields=[
+            {"field": "amount", "function": "SUM"},
+            {"field": "amount", "function": "COUNT"},
+            {"field": "temperature", "function": "MAX"},
+            {"field": "temperature", "function": "AVG"},
+        ],
+    )
+    wp.process_event(_event(1, data={"amount": 100, "temperature": 20}))
+    wp.process_event(_event(3, data={"amount": 250, "temperature": 30}))
+    fired, _ = wp.process_event(_event(22))
+
+    agg = fired[0].aggregations
+    assert agg["sum_amount"] == 350 and agg["count_amount"] == 2
+    assert agg["max_temperature"] == 30 and agg["avg_temperature"] == 25

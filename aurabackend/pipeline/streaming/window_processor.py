@@ -364,8 +364,13 @@ class WindowProcessor:
         if self.aggregate_fields:
             for agg in self.aggregate_fields:
                 func = agg.get("function", "COUNT").upper()
-                col = agg.get("column", "*")
-                alias = agg.get("alias", f"{func}_{col}")
+                # BUG-399: the API contract (GET /streaming/schemas, every template) names
+                # the column "field"; only "column" was read, so col was always "*" and
+                # every SUM/AVG/MIN/MAX aggregated the constant 1 -- revenue came out as
+                # the event count. The default alias is <func>_<field> in lower case,
+                # the name the templates' alert rules look up (e.g. max_temperature).
+                col = agg.get("column") or agg.get("field") or "*"
+                alias = agg.get("alias") or (f"{func}_{col}" if col == "*" else f"{func.lower()}_{col}")
 
                 val = event.data.get(col) if col != "*" else 1
                 if val is None:
