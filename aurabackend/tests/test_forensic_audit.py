@@ -229,3 +229,22 @@ def test_forensic_demo_dataset_trips_every_technique(monkeypatch):
     as2401_tests = {f.evidence_payload.get("test") for f in as2401}
     assert "duplicate" in descs and "round-dollar" in descs
     assert {"benford_first_digit", "period_end_cutoff"} <= as2401_tests
+
+
+# ── BUG-400: credits (negative amounts) ────────────────────────────
+
+def test_a_material_credit_entry_is_flagged(monkeypatch):
+    # The threshold is built from abs(amounts) but the test compared the signed value,
+    # so a -60,000 entry was never flagged and the audit was signed clean.
+    agent = _agent(monkeypatch)
+    ledger = [{"internal_id": "L1", "account_code": "4000", "amount": -60_000.0}]
+    findings = asyncio.run(agent.execute_as2305_analytical_procedures(ledger, 7_500.0))
+    absolute = [f for f in findings if f.evidence_payload.get("test") == "absolute_materiality"]
+    assert len(absolute) == 1 and absolute[0].evidence_payload["amount"] == -60_000.0
+
+
+def test_a_round_dollar_credit_is_flagged(monkeypatch):
+    agent = _agent(monkeypatch)
+    jes = [{"internal_id": "J1", "amount": -5000.0, "account_code": "6000", "vendor_id": "V1"}]
+    findings = asyncio.run(agent.execute_as2401_fraud_detection(jes))
+    assert any("round-dollar" in f.description for f in findings)

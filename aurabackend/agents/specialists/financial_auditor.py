@@ -192,7 +192,10 @@ class FinancialAuditorAgent:
         for entry in ledger_batch:
             amount = float(_money(entry.get("amount")))
             acct = entry.get("account_code")
-            if amount > materiality_threshold:
+            # BUG-400: by magnitude. The threshold is built from abs(amounts), but this
+            # compared the signed value, so a material credit (negative) entry was never
+            # flagged and the audit was signed clean.
+            if abs(amount) > materiality_threshold:
                 finding = AuditFinding(
                     pcaob_standard="AS 2305",
                     risk_level="High",
@@ -322,7 +325,7 @@ class FinancialAuditorAgent:
             seen.add(dup_key)
 
             # Round-dollar anomaly: manual round-number entries are a fraud signal.
-            if amt > 0 and amt % 1000 == 0:
+            if amt != 0 and abs(amt) % 1000 == 0:  # BUG-400: credits too
                 finding = AuditFinding(
                     pcaob_standard="AS 2401",
                     risk_level="High",
