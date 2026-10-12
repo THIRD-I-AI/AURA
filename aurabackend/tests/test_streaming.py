@@ -2022,3 +2022,52 @@ def test_window_configs_that_explode_or_divide_by_zero_are_rejected(kwargs):
 def test_an_ordinary_sliding_window_is_still_accepted():
     cfg = WindowConfig(type=WindowType.SLIDING, size_seconds=300, slide_seconds=60)
     assert cfg.size_seconds / cfg.slide_seconds == 5
+
+
+def test_a_run_loop_failure_releases_the_source_and_sinks():
+    # BUG-409: a run-loop exception set FAILED but left the ingest task, source and
+    # sinks running, and stop() then refused to act on a FAILED engine.
+    from pipeline.streaming.sinks.console_sink import ConsoleSink
+    from pipeline.streaming.streaming_engine import StreamingEngine
+
+    pipeline = TestStreamingEngine()._make_engine_pipeline()
+    engine = StreamingEngine(pipeline, batch_size=20, tick_interval=0.05)
+    stopped = []
+    real_stop = ConsoleSink.stop
+
+    async def _spy_stop(self):
+        stopped.append(self)
+        await real_stop(self)
+
+    async def _scenario():
+        await engine.start()
+        ConsoleSink.stop = _spy_stop
+        try:
+            def _boom(ev):
+                raise RuntimeError("poisoned event")
+
+            engine._window_proc.process_event = _boom
+            for _ in range(100):
+                if pipeline.status == StreamPipelineStatus.FAILED and engine._released:
+                    break
+                await asyncio.sleep(0.05)
+            assert pipeline.status == StreamPipelineStatus.FAILED
+            assert engine._ingest_task.done(), "the ingest loop kept running after the failure"
+            assert len(stopped) == 1, "the sink was never stopped"
+            await engine.stop()  # safe to call; nothing left to release
+            assert len(stopped) == 1
+        finally:
+            ConsoleSink.stop = real_stop
+
+    asyncio.run(_scenario())
+
+
+def test_a_numeric_filter_skips_events_whose_value_is_not_a_number():
+    # BUG-409: float() on a non-numeric value raised out of the run loop and killed
+    # the whole pipeline; the event just does not match the filter.
+    from pipeline.streaming.streaming_engine import _apply_transforms
+
+    gt = [StreamTransform(type=TransformType.FILTER, config={"field": "amount", "operator": ">", "value": 10})]
+    assert _apply_transforms(_event(1, data={"amount": "n/a"}), gt) is None
+    assert _apply_transforms(_event(1, data={"amount": "25"}), gt) is not None
+    assert _apply_transforms(_event(1, data={"amount": 5}), gt) is None
