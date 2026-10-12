@@ -116,14 +116,15 @@ def _apply_transforms(event: StreamEvent, transforms) -> Optional[StreamEvent]:
                 return None
             if op == "!=" and actual == value:
                 return None
-            if op == ">" and (actual is None or float(actual) <= float(value)):
-                return None
-            if op == "<" and (actual is None or float(actual) >= float(value)):
-                return None
-            if op == ">=" and (actual is None or float(actual) < float(value)):
-                return None
-            if op == "<=" and (actual is None or float(actual) > float(value)):
-                return None
+            if op in (">", "<", ">=", "<="):
+                # BUG-409: float() on a non-numeric event value raised out of the run
+                # loop and killed the pipeline; such an event simply does not match.
+                try:
+                    lhs, rhs = float(actual), float(value)
+                except (TypeError, ValueError):
+                    return None
+                if not {">": lhs > rhs, "<": lhs < rhs, ">=": lhs >= rhs, "<=": lhs <= rhs}[op]:
+                    return None
             if op == "in" and actual not in (value if isinstance(value, list) else [value]):
                 return None
 
@@ -221,6 +222,7 @@ class StreamingEngine:
         # BUG-169: checked by both loops so one that absorbs a cancellation
         # still exits on its next iteration; see _cancel_loop_task.
         self._stopping = False
+        self._released = False
         self._loop_stop_timeout = 5.0
         self._start_time: float = 0.0
 
@@ -333,6 +335,7 @@ class StreamingEngine:
             self._start_time = time.time()
             self._paused = False
             self._stopping = False
+            self._released = False
             self._ingest_task = asyncio.create_task(self._ingest_loop())
             self._task = asyncio.create_task(self._run_loop())
             logger.info("Pipeline %s is now RUNNING", self.pipeline.id)
@@ -370,10 +373,13 @@ class StreamingEngine:
 
     async def stop(self) -> None:
         """Graceful shutdown: flush, checkpoint, close all."""
+        # BUG-409: FAILED too. A run-loop failure used to leave the ingest task, source
+        # and sinks running, and stop() then refused to do anything about it.
+        failed = self.pipeline.status == StreamPipelineStatus.FAILED
         if self.pipeline.status not in (
             StreamPipelineStatus.RUNNING,
             StreamPipelineStatus.PAUSED,
-        ):
+        ) and not (failed and not self._released):
             return
 
         self.pipeline.status = StreamPipelineStatus.STOPPING
@@ -404,6 +410,7 @@ class StreamingEngine:
             except Exception as e:
                 logger.error("Error stopping source: %s", e)
 
+        self._released = True
         self.pipeline.status = StreamPipelineStatus.STOPPED
         logger.info("Pipeline %s stopped", self.pipeline.id)
 
@@ -434,6 +441,23 @@ class StreamingEngine:
                 return
         if not task.cancelled():
             task.exception()  # mark retrieved so asyncio does not warn about it
+
+    async def _release_after_failure(self) -> None:
+        """BUG-409: the run loop died. Stop ingesting and close the source and sinks,
+        which otherwise kept running with nothing left to consume them or stop them."""
+        self._stopping = True
+        await self._cancel_loop_task(self._ingest_task, "ingest loop")
+        for sink in self._sinks:
+            try:
+                await sink.stop()
+            except Exception as exc:
+                logger.error("Error stopping sink after failure: %s", exc)
+        if self._source:
+            try:
+                await self._source.stop()
+            except Exception as exc:
+                logger.error("Error stopping source after failure: %s", exc)
+        self._released = True
 
     async def pause(self) -> None:
         self._paused = True
@@ -575,6 +599,7 @@ class StreamingEngine:
             self._metrics.errors.append(
                 sanitize_error(e, context=f"streaming pipeline {self.pipeline.id} run loop")
             )
+            await self._release_after_failure()
 
     # ── Internal helpers ──────────────────────────────────────────
 

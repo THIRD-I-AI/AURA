@@ -4129,13 +4129,13 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Fix:** pending.
 
 ## BUG-409: A run-loop exception marks the streaming pipeline FAILED but leaves the ingest task, source and sinks running, and stop() then does nothing
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode second-pass audit of pipeline, counterfactual_service and shared (run wf_e7c7c9a9-564, pipeline scope; confirmed by 2 adversarial verifiers), 2026-10-12. `aurabackend/pipeline/streaming/streaming_engine.py:573`.
 - **Severity:** medium
 - **Root cause:** _run_loop's handler only sets status FAILED and records the error (streaming_engine.py:573-577). It does not cancel `_ingest_task`, stop the source, or stop/flush the sinks. stop() returns immediately unless status is RUNNING or PAUSED (lines 373-377), so after a run-loop failure nothing can shut the engine down; a later start builds a new engine and overwrites `_engines[pipeline_id]` (streaming_api.py:272), and delete is allowed for FAILED, so the reference is lost while the old ingest loop keeps going (its `while not self._stopping` never becomes false). The run loop is easy to kill from data: _apply_transforms calls `float(actual)` / `float(value)` for the >, <, >=, <= filter operators with no error handling (lines 119-126), and it is called outside any try block (line 500). The BUG-126 cleanup covers only a failed start(), not this path.
 - **Failure scenario:** Entry point: POST /api/v1/streaming/pipelines with a file_watcher (or kafka/websocket) source and transform {"type": "filter", "config": {"field": "amount", "operator": ">", "value": "100"}}, then /start. One row arrives whose amount is 'N/A' or empty (file-watcher CSV values are all strings). float('N/A') raises ValueError, the processing loop ends and the pipeline shows FAILED. The ingest loop keeps reading the source: it fills the 10,000-event buffer, then every further event waits 5 s and is dropped (backpressure.py:161-166), indefinitely. POST /streaming/pipelines/{id}/stop returns {"status": "failed"} without closing anything, so window results buffered in the FileSink are never flushed and the Kafka consumer, websocket or database connection stays open. Starting the pipeline again, or deleting it, orphans that ingest task and its connections for the rest of the process lifetime.
 - **Caused by:** none -- pre-existing.
-- **Fix:** pending.
+- **Fix:** when the streaming run loop dies, the engine now stops ingesting and closes its source and sinks (`_release_after_failure`), and `stop()` also acts on a FAILED engine that still holds resources; the numeric filter operators treat a non-numeric event value as "does not match" instead of raising `float()` errors out of the loop, which was the easy way to kill a pipeline from data. Regression tests `test_a_run_loop_failure_releases_the_source_and_sinks` and `test_a_numeric_filter_skips_events_whose_value_is_not_a_number` failed on the old code.
 
 ## BUG-410: Behind Caddy every client shares one rate-limit bucket: 10 logins/min and 100 requests/min for the whole deployment
 - **Status:** open
