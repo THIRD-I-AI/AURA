@@ -3994,13 +3994,13 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Fix:** pending.
 
 ## BUG-394: Query History panel reads row_count / execution_time_ms, but the API returns rows / executionTime, so Rows and Execution time are always '—'
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode second-pass frontend audit (run wf_dc428ec9-32e, data-correctness lens; confirmed by 2 adversarial verifiers), 2026-10-09. `frontend/src/workbench/panels/QueryHistoryPanel.tsx:80`.
 - **Severity:** medium
 - **Root cause:** QueryRow declares row_count and execution_time_ms, which are used at lines 80, 82, 169 and 174. The backend wire shape (persistence._row_to_history_dict, persistence.py:525-535) is {id, prompt, sql, status, rows, executionTime, timestamp}. These are the same keys track_query writes in queries.py:187-195. Neither key the panel reads is ever present.
 - **Failure scenario:** A chat query returns 1,240 rows in 850 ms and is recorded with rows=1240 and executionTime=850. In Workbench > Query History, the ROWS column shows '—' for every query, so sorting by Rows does nothing (every row's sortValue is -1). Clicking the row opens a detail sheet that shows Rows '—' and Execution time '—', even though the server stored both values.
 - **Caused by:** none -- pre-existing.
-- **Fix:** pending.
+- **Fix:** the Query History panel maps the API's wire fields (`rows`, `executionTime` -- persistence._row_to_history_dict) onto the `row_count` / `execution_time_ms` it displays, so Rows and Execution time show real values instead of '—'. Regression test `shows rows and execution time from rows / executionTime` failed on the old code.
 
 ## BUG-395: Pipelines builder: a slower source preview for an earlier file overwrites the preview and column list of the file now selected
 - **Status:** fixed
