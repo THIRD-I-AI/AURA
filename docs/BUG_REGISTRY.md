@@ -4048,13 +4048,13 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Fix:** `WindowProcessor._accumulate` reads the aggregate's column from `column` or the documented `field`, and the default output name is `<func>_<field>` in lower case (`sum_amount`, `max_temperature`), which is what the shipped templates' alert rules look up; an explicit `alias` and the old `column` spelling still work. Regression test `test_aggregates_use_the_documented_field_key` got the event count for SUM on the old code.
 
 ## BUG-400: AS 2305 absolute materiality test compares the signed amount, so material credit (negative) entries are never flagged and the audit is signed clean
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode second-pass audit of pipeline, counterfactual_service and shared (run wf_e7c7c9a9-564, counterfactual scope; confirmed by 2 adversarial verifiers), 2026-10-12. `aurabackend/agents/specialists/financial_auditor.py:195`.
 - **Severity:** high
 - **Root cause:** The materiality basis at line 139 is computed over `abs(_money(amount))` ('so credits count'), but the per-entry test at line 195 is `if amount > materiality_threshold` on the signed value. A negative entry of any magnitude fails it. The only other branch (line 205, `abs(amount - expectation)`) runs only when `historical_reports` contains that account. The round-dollar test at line 325 has the same sign blindness (`amt > 0 and amt % 1000 == 0`). Negative amounts are a supported input: the frontend parser frontend/src/audit/ledgerFiles.ts `toNumber` converts accounting negatives '(500.00)' to -500.
 - **Failure scenario:** Entry point: POST /api/v1/counterfactual/audit/financial. A ledger has routine debits totalling $2M and one -$5,000,000 credit (a reversal or revenue write-off), with no historical_reports. Basis is $7M, performance materiality is $52,500. The -$5M entry is about 95 times materiality, yet `-5000000 > 52500` is False, so no AS 2305 finding is produced. The response and the signed completion document report n_findings=0 with the materiality threshold shown, and the ledger chains it as a completed audit. The same applies to a -$1,000,000 round-dollar manual journal entry.
 - **Caused by:** none -- pre-existing.
-- **Fix:** pending.
+- **Fix:** the AS 2305 absolute-materiality test compares `abs(amount)` with the threshold (which was already built from absolute amounts), and the AS 2401 round-dollar test checks `abs(amount) % 1000`, so material and round-number credit entries are flagged like debits. Regression tests `test_a_material_credit_entry_is_flagged` and `test_a_round_dollar_credit_is_flagged` failed on the old code.
 
 ## BUG-401: Benford first-digit test applies Nigrini's large-sample MAD cutoff from n=50, so clean small journals are signed as 'amounts may be fabricated'
 - **Status:** open
