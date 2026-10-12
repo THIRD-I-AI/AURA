@@ -3976,13 +3976,13 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Fix:** `connectorService.getSchema` rejects when GET /connections/{id}/schema answers HTTP 200 `{success:false, error}`, so the Connectors table picker's existing error state shows the reason instead of "No tables found on this connection". Regression test `connectionSchema.test.ts` failed on the old code.
 
 ## BUG-392: Sign-out and account switches do not reach other open tabs; they keep acting as the old user
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode second-pass frontend audit (run wf_dc428ec9-32e, auth-session lens; confirmed by 2 adversarial verifiers), 2026-10-09. `frontend/src/services/api.ts:66`.
 - **Severity:** medium
 - **Root cause:** The bearer token is read from localStorage once, at module load (`let _authToken = localStorage.getItem('aura.authToken')`). After that it changes only through setAuthToken() in the same tab. AuthContext (auth/AuthContext.tsx:20) also seeds user only once at mount. Nothing in frontend/src listens for the 'storage' event or uses a BroadcastChannel; git grep finds no matches. The backend has no logout or revocation endpoint (auth.py has only /token, /register, /oidc/*, /me), so a token that one tab has dropped stays valid for its full 30-minute TTL in every other tab.
 - **Failure scenario:** On a shared machine, user A has /workbench open in two tabs and clicks 'Sign out' in tab 1 (UserMenu or palette). Tab 2 still holds A's token in memory and still shows A in the account menu. Its 10-second pulse and every panel action keep reading and changing A's tenant data (files, dashboards, healing approvals) until the JWT expires. If user B then signs in on tab 1, tab 2 keeps sending A's token, while tab 2's localStorage now holds B's token. Reloading tab 2 then silently swaps it to B's session in the middle of whatever was on screen.
 - **Caused by:** none -- pre-existing.
-- **Fix:** pending.
+- **Fix:** the API client listens for the browser `storage` event on the token key: when another tab signs out or signs in as someone else, this tab's in-memory token follows (cleared or replaced) and `subscribeAuthChanged` subscribers are told; `AuthContext` re-reads the user from the new token, so ProtectedRoute logs the tab out or switches it. Not covered: the backend has no revocation, so a copied token stays valid until it expires. Regression tests in `crossTabSession.test.ts` failed on the old code.
 
 ## BUG-393: Cockpit query-history card and 'Recent queries' tile never load saved history: the response object is read as an array or as a .history field
 - **Status:** fixed
