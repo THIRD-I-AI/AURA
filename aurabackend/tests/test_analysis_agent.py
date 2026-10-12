@@ -149,3 +149,23 @@ def test_column_profiling_runs_off_the_event_loop(monkeypatch, module):
 
     assert seen, "profile_columns was not called"
     assert all(t is not threading.main_thread() for t in seen)
+
+
+def test_correlations_use_row_aligned_pairs():
+    # BUG-407: each column's nulls were stripped separately and the lists truncated to
+    # the shorter one, so after the first blank x[i] and y[i] came from different rows.
+    from agents.specialists.analysis_agent import _build_stats_summary
+    from insights_service.engine import InsightsEngine
+    from shared.data_profile import profile_columns
+
+    # y = 2x exactly on every row that has both; x is blank on the first row.
+    rows = [{"x": None, "y": 100.0}] + [{"x": float(i), "y": 2.0 * i} for i in range(1, 9)]
+    rows.append({"x": 9.0, "y": None})
+
+    stats = _build_stats_summary(rows, profile_columns(rows, ["x", "y"]))
+    assert stats["correlations"]["x vs y"] == 1.0
+
+    engine = InsightsEngine()
+    engine.analyze("q", rows)
+    corr = [i for i in engine.insights if i.type.value == "correlation"]
+    assert corr and "r=1.000" in corr[0].description

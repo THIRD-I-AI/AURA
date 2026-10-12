@@ -39,6 +39,24 @@ def numeric_values(records: List[Dict[str, Any]], col: str) -> List[float]:
     return [f for r in records if (f := safe_float(r.get(col))) is not None]
 
 
+def paired_numeric_values(
+    records: List[Dict[str, Any]], col_a: str, col_b: str,
+) -> tuple[List[float], List[float]]:
+    """The two columns' values from the rows where BOTH are numeric, row-aligned.
+
+    BUG-407: correlations were computed from each column's own null-stripped list,
+    truncated to the shorter one -- so after the first blank, x[i] and y[i] came from
+    different rows and the reported r was a number about nothing."""
+    xs: List[float] = []
+    ys: List[float] = []
+    for r in records:
+        x, y = safe_float(r.get(col_a)), safe_float(r.get(col_b))
+        if x is not None and y is not None:
+            xs.append(x)
+            ys.append(y)
+    return xs, ys
+
+
 def describe_column(values: List[float]) -> Dict[str, Any]:
     """Descriptive statistics for a numeric series."""
     n = len(values)
