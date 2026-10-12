@@ -158,3 +158,37 @@ describe('AskAuraPanel error reporting', () => {
     });
   });
 });
+
+// BUG-389: a chat result cut off at the server row cap (execution_result.truncated)
+// was shown as "10000 rows", as if it were the whole answer.
+describe('AskAuraPanel truncated results', () => {
+  beforeAll(() => { Element.prototype.scrollTo = vi.fn(); });
+  afterEach(() => { vi.restoreAllMocks(); });
+
+  it('says when the result was cut off at the row limit', async () => {
+    vi.spyOn(chatService, 'sendMessage').mockResolvedValue({
+      status: 'Success',
+      execution_result: {
+        success: true, columns: ['id'], data: [{ id: 1 }, { id: 2 }], row_count: 10000, truncated: true,
+      },
+    } as never);
+
+    await ask('list all orders');
+
+    await waitFor(() => {
+      expect(screen.getByText(/cut off at the row limit/i)).toBeInTheDocument();
+    });
+  });
+
+  it('shows a plain row count when the result is complete', async () => {
+    vi.spyOn(chatService, 'sendMessage').mockResolvedValue({
+      status: 'Success',
+      execution_result: { success: true, columns: ['id'], data: [{ id: 1 }], row_count: 1, truncated: false },
+    } as never);
+
+    await ask('one order');
+
+    await waitFor(() => { expect(screen.getByText(/^1 row/)).toBeInTheDocument(); });
+    expect(screen.queryByText(/cut off/i)).not.toBeInTheDocument();
+  });
+});
