@@ -52,6 +52,12 @@ _engines: Dict[str, StreamingEngine] = {}
 
 # BUG-282: both stores are process-global and were uncapped, and every running engine
 # holds two permanent tasks plus its buffers on the one worker all tenants share.
+# BUG-408: a PAUSED engine still holds its tasks, source and sinks. Every lifecycle
+# guard tested RUNNING only, so starting a paused pipeline replaced its engine (the
+# old one then ran forever with nothing pointing at it), deleting one dropped it the
+# same way, and paused pipelines did not count against the running cap.
+_LIVE_STATUSES = (StreamPipelineStatus.RUNNING, StreamPipelineStatus.PAUSED)
+
 MAX_PIPELINES_PER_TENANT = 50
 MAX_RUNNING_PER_TENANT = 10
 _starting: set = set()
@@ -65,7 +71,7 @@ def _tenant_running_count(tenant: Optional[str], excluding: str) -> int:
     return sum(
         1 for pid, p in _pipelines.items()
         if p.tenant_id == tenant and pid != excluding
-        and (p.status == StreamPipelineStatus.RUNNING or pid in _starting)
+        and (p.status in _LIVE_STATUSES or pid in _starting)
     )
 
 # BUG-089: start_pipeline's status check, engine construction, and
@@ -227,10 +233,12 @@ async def delete_pipeline(pipeline_id: str, user: Optional[Dict[str, Any]] = Dep
     # start's own local engine reference once it resumes and spawns its
     # background tasks -- unstoppable, since nothing points at it anymore.
     async with _start_lock_for(pipeline_id):
-        if pipe.status == StreamPipelineStatus.RUNNING:
+        if pipe.status in _LIVE_STATUSES:
             raise HTTPException(status_code=409, detail="Stop the pipeline before deleting")
         _pipelines.pop(pipeline_id, None)
-        _engines.pop(pipeline_id, None)
+        old = _engines.pop(pipeline_id, None)
+        if old is not None:
+            await old.stop()  # a failed engine may still hold resources (BUG-409)
     # BUG-131: _start_locks (BUG-089's registry) grows one entry per
     # pipeline_id ever started and is never pruned elsewhere -- evict it
     # here, now that the pipeline itself is gone. Safe to pop after the
@@ -258,6 +266,8 @@ async def start_pipeline(pipeline_id: str, user: Optional[Dict[str, Any]] = Depe
     async with _start_lock_for(pipeline_id):
         if pipe.status == StreamPipelineStatus.RUNNING:
             raise HTTPException(status_code=409, detail="Already running")
+        if pipe.status == StreamPipelineStatus.PAUSED:
+            raise HTTPException(status_code=409, detail="Pipeline is paused; resume it or stop it first")
 
         # DSR-002: pipe.runtime's field names mirror StreamingEngine's kwargs
         # exactly, so the opt-in trigger/watermark/barrier-alignment/backpressure
@@ -268,6 +278,9 @@ async def start_pipeline(pipeline_id: str, user: Optional[Dict[str, Any]] = Depe
                 status_code=409,
                 detail=f"Limit of {MAX_RUNNING_PER_TENANT} running streaming pipelines reached; stop one first",
             )
+        previous = _engines.get(pipeline_id)
+        if previous is not None:
+            await previous.stop()  # never replace an engine that may still hold resources
         engine = StreamingEngine(pipe, **pipe.runtime.model_dump())
         _engines[pipeline_id] = engine
         _starting.add(pipeline_id)

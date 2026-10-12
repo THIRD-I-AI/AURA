@@ -111,3 +111,38 @@ async def test_another_tenants_running_pipelines_do_not_block_a_start():
         assert result["status"] == StreamPipelineStatus.RUNNING.value
     finally:
         await api._engines[mine.id].stop()
+
+
+# ── BUG-408: a paused pipeline is still live ────────────────────────
+
+@pytest.mark.asyncio
+async def test_a_paused_pipeline_cannot_be_started_over_or_deleted():
+    mine = _pipeline("acme")
+    await api.start_pipeline(mine.id, user={"org_id": "acme"})
+    engine = api._engines[mine.id]
+    try:
+        await api.pause_pipeline(mine.id, user={"org_id": "acme"})
+        assert mine.status == StreamPipelineStatus.PAUSED
+
+        with pytest.raises(HTTPException) as exc:
+            await api.start_pipeline(mine.id, user={"org_id": "acme"})
+        assert exc.value.status_code == 409
+        assert api._engines[mine.id] is engine, "the paused engine was replaced and orphaned"
+
+        with pytest.raises(HTTPException) as exc:
+            await api.delete_pipeline(mine.id, user={"org_id": "acme"})
+        assert exc.value.status_code == 409
+        assert mine.id in api._pipelines
+    finally:
+        await engine.stop()
+
+
+@pytest.mark.asyncio
+async def test_paused_pipelines_count_against_the_running_limit():
+    for _ in range(api.MAX_RUNNING_PER_TENANT):
+        _pipeline("acme", StreamPipelineStatus.PAUSED)
+    extra = _pipeline("acme")
+
+    with pytest.raises(HTTPException) as exc:
+        await api.start_pipeline(extra.id, user={"org_id": "acme"})
+    assert exc.value.status_code == 409
