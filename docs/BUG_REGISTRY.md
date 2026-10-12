@@ -3967,13 +3967,13 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Fix:** `uploadService.getUploadedFiles` rejects when GET /files answers HTTP 200 `{status:'error'}` (a storage failure), so callers' error states fire instead of "no datasets". Regression test `rejects with the server error` failed on the old code.
 
 ## BUG-391: Connection schema failure (HTTP 200 {success:false}) shows 'No tables found on this connection' instead of the error
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode second-pass frontend audit (run wf_dc428ec9-32e, api-contract lens; confirmed by 2 adversarial verifiers), 2026-10-09. `frontend/src/services/api.ts:819`.
 - **Severity:** medium
 - **Root cause:** GET /connections/{id}/schema (connections.py ~516-517) catches connect/list failures and returns HTTP 200 {success:false, error, schema:{}}. connectorService.getSchema returns resp.schema without checking success, so ConnectorsPanel.openPicker gets {} and sets tables=[]. Its catch, the only path that sets schemaError, never runs, and SyncCell (ConnectorsPanel.tsx ~96-98) shows 'No tables found on this connection.'
 - **Failure scenario:** A user saves a Postgres connection whose password was later rotated, or whose host is down, and clicks 'Sync to chat'. The connect fails server-side, the gateway answers 200 {success:false, error:'...', schema:{}}, and the picker says 'No tables found on this connection.' The user believes the database is empty, when the real cause (authentication or reachability) was in the response's error field and was dropped.
 - **Caused by:** none -- pre-existing.
-- **Fix:** pending.
+- **Fix:** `connectorService.getSchema` rejects when GET /connections/{id}/schema answers HTTP 200 `{success:false, error}`, so the Connectors table picker's existing error state shows the reason instead of "No tables found on this connection". Regression test `connectionSchema.test.ts` failed on the old code.
 
 ## BUG-392: Sign-out and account switches do not reach other open tabs; they keep acting as the old user
 - **Status:** open
