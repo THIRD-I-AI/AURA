@@ -36,6 +36,7 @@ from shared.middleware import (
     AuditLogMiddleware,
     JWTAuthMiddleware,
     RateLimitMiddleware,
+    RequestBodyLimitMiddleware,
     RequestIDMiddleware,
     RequestLoggingMiddleware,
     SecurityHeadersMiddleware,
@@ -124,6 +125,11 @@ def create_service(
     app.add_middleware(
         UploadBodyLimitMiddleware,
         max_bytes=int(os.getenv("AURA_MAX_UPLOAD_BODY_BYTES", str(26 * 1024 * 1024))),
+    )
+    #  1. Every other request body (BUG-411); AURA_MAX_REQUEST_BODY_BYTES overrides 16MB.
+    app.add_middleware(
+        RequestBodyLimitMiddleware,
+        max_bytes=int(os.getenv("AURA_MAX_REQUEST_BODY_BYTES", str(16 * 1024 * 1024))),
     )
     #  2. Rate limiting  (env-driven; can be disabled via AURA_RATE_LIMIT_ENABLED=0)
     if settings.rate_limit_enabled:
