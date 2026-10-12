@@ -29,7 +29,7 @@ from connectors import (
 )
 from shared.error_handler import sanitize_error
 from shared.logging_config import get_logger
-from shared.ssrf import is_public_url_async
+from shared.ssrf import is_allowed_db_host
 
 logger = get_logger("aura.api_gateway.connections")
 
@@ -103,11 +103,7 @@ async def _check_network_host(conn_type: str, host: Optional[str]) -> None:
     AURA_CONNECTORS_ALLOW_PRIVATE_HOSTS=true."""
     if conn_type not in _NETWORK_HOST_CONNECTORS:
         return
-    if os.getenv("AURA_CONNECTORS_ALLOW_PRIVATE_HOSTS", "").strip().lower() in ("1", "true", "yes"):
-        return
-    host = (host or "").strip()
-    target = f"[{host}]" if ":" in host and not host.startswith("[") else host
-    if not host or not await is_public_url_async(f"http://{target}/"):
+    if not await is_allowed_db_host(host):
         raise HTTPException(
             status_code=400,
             detail=f"{conn_type} host must be a public address",

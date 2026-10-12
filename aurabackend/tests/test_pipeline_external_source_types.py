@@ -49,6 +49,7 @@ class _FakeConnector:
 
 @pytest.fixture
 def fake_postgres(monkeypatch):
+    monkeypatch.setenv("AURA_CONNECTORS_ALLOW_PRIVATE_HOSTS", "true")  # local fake (BUG-404)
     monkeypatch.setattr(connectors, "PostgreSQLConnector", _FakeConnector)
 
 

@@ -33,6 +33,15 @@ from pipeline.models import (
 
 logger = logging.getLogger("aura.pipeline.engine")
 
+
+async def _require_public_db_host(kind: str, host: Any) -> None:
+    """BUG-404: a pipeline's database source/sink host comes from the request, and an
+    omitted one became the gateway's own localhost; nothing checked it."""
+    from shared.ssrf import is_allowed_db_host
+
+    if not await is_allowed_db_host(host):
+        raise ValueError(f"{kind} host must be a public address")
+
 OUTPUT_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "processed")
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
@@ -398,6 +407,7 @@ class PipelineEngine:
         src_type = CSourceType.POSTGRESQL if source.type == SourceType.POSTGRESQL else CSourceType.MYSQL
         connector_cls = PostgreSQLConnector if source.type == SourceType.POSTGRESQL else MySQLConnector
 
+        await _require_public_db_host(source.type.value, cfg.get("host"))
         connector = connector_cls(ConnectorConfig(
             source_type=src_type,
             name="pipeline_source",
@@ -959,6 +969,7 @@ class PipelineEngine:
         if sink.if_exists not in ("replace", "append", "fail"):
             raise ValueError(f"Unsupported if_exists for a PostgreSQL sink: {sink.if_exists!r}")
 
+        await _require_public_db_host("postgresql", cfg.get("host"))
         pg = PostgreSQLConnector(ConnectorConfig(
             source_type=CSourceType.POSTGRESQL,
             name="pipeline_sink",

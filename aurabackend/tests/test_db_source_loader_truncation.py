@@ -4,6 +4,13 @@ import pytest
 from connectors.sql_limit import has_trailing_limit
 
 
+@pytest.fixture(autouse=True)
+def _allow_local_database_hosts(monkeypatch):
+    # The loader tests use a faked connector on a local host; BUG-404's host check
+    # refuses that unless the operator opts in.
+    monkeypatch.setenv("AURA_CONNECTORS_ALLOW_PRIVATE_HOSTS", "true")
+
+
 @pytest.mark.parametrize("q", [
     "SELECT * FROM t LIMIT 5", "select * from t limit 5;", "SELECT * FROM t LIMIT 5 OFFSET 2",
     "SELECT * FROM t LIMIT 2, 5", "SELECT * FROM t LIMIT ALL",

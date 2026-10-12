@@ -36,3 +36,48 @@ def test_execute_query_refuses_internal_database_hosts(client, host):  # noqa: F
     })
     assert r.status_code == 400, r.text
     assert "public address" in r.text
+
+
+# ── BUG-404: pipeline engine and streaming database sink ────────────
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("host", ["127.0.0.1", "10.0.0.12", None])
+async def test_pipeline_database_source_and_sink_refuse_internal_hosts(host):
+    from pipeline import engine
+
+    with pytest.raises(ValueError, match="public address"):
+        await engine._require_public_db_host("postgresql", host)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("config", [
+    {"connector": "postgresql", "host": "10.0.0.12"},
+    {"connector": "postgresql"},
+    {"connector": "postgresql", "dsn": "postgresql://u:p@127.0.0.1:5432/db"},
+])
+async def test_streaming_database_sink_refuses_internal_hosts(config, monkeypatch):
+    import sys
+    import types
+
+    from pipeline.streaming.sinks.database_sink import DatabaseSink
+
+    connected = []
+
+    async def _connect(*a, **k):
+        connected.append((a, k))
+        raise AssertionError("connected to an internal host")
+
+    monkeypatch.setitem(sys.modules, "asyncpg", types.SimpleNamespace(connect=_connect))
+    sink = DatabaseSink({**config, "table": "t"})
+    with pytest.raises(ValueError, match="public address"):
+        await sink.start()
+    assert connected == []
+
+
+@pytest.mark.asyncio
+async def test_private_database_hosts_can_be_allowed_by_the_operator(monkeypatch):
+    from shared.ssrf import is_allowed_db_host
+
+    assert await is_allowed_db_host("127.0.0.1") is False
+    monkeypatch.setenv("AURA_CONNECTORS_ALLOW_PRIVATE_HOSTS", "true")
+    assert await is_allowed_db_host("127.0.0.1") is True
