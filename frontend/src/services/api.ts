@@ -91,6 +91,27 @@ export function subscribeSessionExpired(cb: () => void): () => void {
   return () => { _sessionExpiredListeners.delete(cb); };
 }
 
+// BUG-392: signing out (or in as someone else) in one tab changes the stored token,
+// but every other open tab kept its own in-memory copy and went on acting as the
+// previous user. Follow the shared token, and tell subscribers (AuthContext).
+const _authChangedListeners = new Set<() => void>();
+
+export function subscribeAuthChanged(cb: () => void): () => void {
+  _authChangedListeners.add(cb);
+  return () => { _authChangedListeners.delete(cb); };
+}
+
+if (typeof window !== 'undefined') {
+  window.addEventListener('storage', (event: StorageEvent) => {
+    if (event.key !== null && event.key !== AUTH_TOKEN_STORAGE_KEY) return;
+    let next: string | null = null;
+    try { next = localStorage.getItem(AUTH_TOKEN_STORAGE_KEY) || null; } catch { /* storage blocked */ }
+    if (next === _authToken) return;
+    _authToken = next;
+    _authChangedListeners.forEach((cb) => cb());
+  });
+}
+
 /**
  * fetch() for the call sites that need the raw Response (uploads, job polling)
  * and so cannot use ApiClient.request. Carries the bearer, and -- BUG-252 --

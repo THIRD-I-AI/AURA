@@ -1,5 +1,5 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from 'react';
-import { authService, subscribeSessionExpired, type AuthUser } from '../services/api';
+import { authService, subscribeAuthChanged, subscribeSessionExpired, type AuthUser } from '../services/api';
 
 /**
  * App-wide authentication state. Seeds from any token already in storage so a
@@ -26,6 +26,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // reactively, so ProtectedRoute redirects to /login as soon as the app
   // actually discovers the session is dead.
   useEffect(() => subscribeSessionExpired(() => setUser(null)), []);
+  // BUG-392: another tab signed out or switched account -- mirror it here.
+  useEffect(() => subscribeAuthChanged(() => setUser(authService.currentUser())), []);
 
   const value: AuthContextValue = {
     user,
