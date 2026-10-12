@@ -35,6 +35,12 @@ DEFAULT_OVERALL_MATERIALITY = 50_000.0
 BENFORD_EXPECTED: Dict[int, float] = {d: math.log10(1 + 1 / d) for d in range(1, 10)}
 BENFORD_MAD_NONCONFORMITY = 0.015  # Nigrini first-digit nonconformity cutoff
 MIN_BENFORD_SAMPLE = 50
+# BUG-401: MAD is not sample-size adjusted. Sampling noise alone gives an expected MAD
+# of about 0.235/sqrt(n) -- 0.033 at n=50 -- so the 0.015 cutoff by itself flagged ~99%
+# of perfectly Benford-distributed 50-entry journals (and ~60% at n=200) as "amounts
+# may be fabricated". The deviation must also be statistically significant: a
+# chi-square goodness-of-fit test (8 degrees of freedom) at the 1% level.
+BENFORD_CHI_SQUARE_CRITICAL = 20.09  # chi-square(8), p = 0.01
 # Period-end cutoff window: entries posted within this many days of the
 # period close are higher-risk for window dressing (revenue pulled
 # forward, expenses deferred) and warrant cutoff testing.
@@ -90,6 +96,19 @@ def _benford_first_digit_mad(amounts: List[Any]) -> tuple[Optional[float], int]:
         counts[d] += 1
     mad = sum(abs(counts[d] / n - BENFORD_EXPECTED[d]) for d in range(1, 10)) / 9
     return mad, n
+
+
+def _benford_chi_square(amounts: List[Any]) -> Optional[float]:
+    """Chi-square goodness-of-fit statistic of the first digits against Benford's Law
+    (8 degrees of freedom); None when no amount yields a leading digit."""
+    digits = [d for d in (_first_significant_digit(a) for a in amounts) if d is not None]
+    n = len(digits)
+    if n == 0:
+        return None
+    return sum(
+        (digits.count(d) - n * BENFORD_EXPECTED[d]) ** 2 / (n * BENFORD_EXPECTED[d])
+        for d in range(1, 10)
+    )
 
 
 def _parse_date(value: Any) -> Optional[datetime]:
@@ -337,15 +356,20 @@ class FinancialAuditorAgent:
 
         # Benford's-Law first-digit test over the whole population (gated on
         # sample size so the statistic is meaningful).
-        mad, n_benford = _benford_first_digit_mad([je.get("amount") for je in journal_entries])
-        if mad is not None and n_benford >= MIN_BENFORD_SAMPLE and mad > BENFORD_MAD_NONCONFORMITY:
+        je_amounts = [je.get("amount") for je in journal_entries]
+        mad, n_benford = _benford_first_digit_mad(je_amounts)
+        chi_square = _benford_chi_square(je_amounts)
+        if (mad is not None and n_benford >= MIN_BENFORD_SAMPLE and mad > BENFORD_MAD_NONCONFORMITY
+                and chi_square is not None and chi_square > BENFORD_CHI_SQUARE_CRITICAL):
             finding = AuditFinding(
                 pcaob_standard="AS 2401",
                 risk_level="High",
                 description=(f"First-digit distribution of {n_benford} entries deviates from Benford's Law "
                              f"(MAD={mad:.4f} > {BENFORD_MAD_NONCONFORMITY}); amounts may be fabricated."),
                 evidence_payload={"test": "benford_first_digit", "n": n_benford,
-                                  "mad": round(mad, 6), "threshold": BENFORD_MAD_NONCONFORMITY},
+                                  "mad": round(mad, 6), "threshold": BENFORD_MAD_NONCONFORMITY,
+                                  "chi_square": round(chi_square, 4),
+                                  "chi_square_critical": BENFORD_CHI_SQUARE_CRITICAL},
             )
             findings.append(finding)
             audit_event("as2401_fraud_risk_benford", finding.model_dump())
