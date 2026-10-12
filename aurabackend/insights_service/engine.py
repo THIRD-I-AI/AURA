@@ -329,11 +329,13 @@ class InsightsEngine:
         for i in range(len(num_cols)):
             for j in range(i + 1, len(num_cols)):
                 a, b = num_cols[i], num_cols[j]
-                xa, xb = col_values[a], col_values[b]
-                n = min(len(xa), len(xb))
-                if n < 3:
+                # BUG-407: row-aligned pairs (rows where both are present), not each
+                # column's own null-stripped list truncated to the shorter one.
+                pairs = [(float(r[a]), float(r[b])) for r in results
+                         if r.get(a) is not None and r.get(b) is not None]
+                if len(pairs) < 3:
                     continue
-                xa, xb = xa[:n], xb[:n]
+                xa, xb = [p[0] for p in pairs], [p[1] for p in pairs]
                 mx, my = _stats.mean(xa), _stats.mean(xb)
                 num = sum((xi - mx) * (yi - my) for xi, yi in zip(xa, xb))
                 den_a = math.sqrt(sum((xi - mx) ** 2 for xi in xa))

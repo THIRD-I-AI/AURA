@@ -19,6 +19,7 @@ from agents.base import AgentContext, AgentResult, AgentStatus, BaseAgent
 from shared.data_profile import (
     describe_column,
     numeric_values,
+    paired_numeric_values,
     profile_columns,
     profile_to_text,
     safe_float,
@@ -98,7 +99,7 @@ def _build_stats_summary(
     for i in range(len(num_cols)):
         for j in range(i + 1, len(num_cols)):
             a, b = num_cols[i], num_cols[j]
-            corr = _pearson_correlation(col_values[a], col_values[b])
+            corr = _pearson_correlation(*paired_numeric_values(records, a, b))  # BUG-407
             if corr is not None:
                 summary["correlations"][f"{a} vs {b}"] = corr
 
