@@ -159,3 +159,38 @@ describe('UserMenu', () => {
     expect(screen.getByTestId('user-menu-logout')).toBeTruthy();
   });
 });
+
+// BUG-397: an active user's token is renewed before it expires; an idle tab's is not.
+describe('AuthProvider session renewal', () => {
+  const inSeconds = (s: number) => Math.floor(Date.now() / 1000) + s;
+
+  afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); setAuthToken(null); });
+
+  async function mountWithToken(secondsLeft: number) {
+    vi.useFakeTimers();
+    setAuthToken(fakeToken({ sub: 'u1', exp: inSeconds(secondsLeft) }));
+    const { authService } = await import('../../services/api');
+    const refresh = vi.spyOn(authService, 'refresh').mockResolvedValue(true);
+    render(<MemoryRouter><AuthProvider><div>app</div></AuthProvider></MemoryRouter>);
+    return refresh;
+  }
+
+  it('renews a token that is close to expiry while the user is active', async () => {
+    const refresh = await mountWithToken(5 * 60);
+    fireEvent.keyDown(window, { key: 'a' });
+    await act(async () => { vi.advanceTimersByTime(61_000); });
+    expect(refresh).toHaveBeenCalled();
+  });
+
+  it('leaves a fresh token alone', async () => {
+    const refresh = await mountWithToken(25 * 60);
+    await act(async () => { vi.advanceTimersByTime(61_000); });
+    expect(refresh).not.toHaveBeenCalled();
+  });
+
+  it('does not renew for a tab nobody has touched in a long time', async () => {
+    const refresh = await mountWithToken(28 * 60);
+    await act(async () => { vi.advanceTimersByTime(20 * 60_000); });
+    expect(refresh).not.toHaveBeenCalled();
+  });
+});

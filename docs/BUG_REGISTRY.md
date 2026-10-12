@@ -4021,13 +4021,13 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Fix:** `errorBodyMessage` also reads a dict `detail` (`{error}` or `{message}`), the shape POST /connections and other routes raise, so those forms show the server's reason (e.g. "credentials_json must be a JSON object.") instead of "Bad Request". Regression tests `BUG-396: errorBodyMessage reads a dict detail` failed on the old code.
 
 ## BUG-397: No token refresh: active users are force-logged-out every 30 minutes and lose unsaved panel state
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode second-pass frontend audit (run wf_dc428ec9-32e, auth-session lens; confirmed by 2 adversarial verifiers), 2026-10-09. `frontend/src/auth/AuthContext.tsx:28`.
 - **Severity:** low
 - **Root cause:** Access tokens are minted with a fixed 30-minute exp (aurabackend/shared/config.py:291 access_token_expire_minutes=30, shared/auth.py:56-59). There is no refresh endpoint and no sliding re-issue: auth.py has only /token, /register, /oidc/* and /me. On the frontend, the only reaction to expiry is the session-expired listener, which clears the token and sets user to null. ProtectedRoute then unmounts the whole Workbench and redirects to /login. Nothing renews a token for a user who is actively using the app.
 - **Failure scenario:** An auditor signs in and works in the Workbench Exception Queue, typing a long rationale for a finding, or runs a multi-turn Ask AURA conversation. 30 minutes after login, the next background pulse (healingService.pending every 10s, Workbench.tsx) gets a 401. The tab jumps to /login and the Workbench tree unmounts, so the typed rationale, the chat transcript, the loaded exception queue and any in-progress counterfactual result are discarded. This repeats every 30 minutes regardless of activity.
 - **Caused by:** none -- pre-existing.
-- **Fix:** pending.
+- **Fix:** new `POST /auth/refresh` exchanges a still-valid token for a fresh one with the same identity; the session stays bounded by `auth_time` (the original sign-in, carried through renewals) and `AURA_SESSION_MAX_HOURS` (default 12), and in password mode the account is re-read so a deleted user cannot renew and a changed role takes effect. The frontend's `AuthProvider` checks once a minute and renews when the token has under 10 minutes left and the user was active in the last 15; an idle tab is left to expire, and a renewal never overwrites a token another tab changed meanwhile. Regression tests: `TestTokenRefresh` (backend, 4), `tokenRefresh.test.ts` and `AuthProvider session renewal` (frontend); the route and the renewal did not exist before.
 
 ## BUG-398: Cockpit 'Datasets loaded' tile shows a loading skeleton forever when GET /files fails
 - **Status:** fixed
