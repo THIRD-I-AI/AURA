@@ -16,6 +16,8 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import pytest
+
 import agents.specialists.financial_auditor as fa
 
 
@@ -269,3 +271,20 @@ def test_benford_does_not_flag_honest_small_journals(monkeypatch):
         findings = asyncio.run(agent.execute_as2401_fraud_detection(jes))
         flagged += any(f.evidence_payload.get("test") == "benford_first_digit" for f in findings)
     assert flagged <= 10, f"{flagged}/200 honest journals were flagged as possibly fabricated"
+
+
+# ── BUG-406: approval authority with CSV-typed fields ──────────────
+
+@pytest.mark.parametrize("amount,limit,exceeds", [
+    (50_000.0, "10000", True),      # the CSV shape: numeric amount, text limit (was a TypeError -> 500)
+    ("9000", "10000", False),       # two strings compared alphabetically: "9000" > "10000"
+    ("50,000.00", "$10,000", True),
+    (50_000.0, "n/a", False),       # an unusable limit skips the control
+])
+def test_approval_authority_coerces_its_fields(monkeypatch, amount, limit, exceeds):
+    agent = _agent(monkeypatch)
+    invoices = [{"invoice_number": "INV-1", "po_number": "PO-1", "approved_by": "bob",
+                 "amount": amount, "approval_limit": limit}]
+    findings = asyncio.run(agent.execute_as2201_internal_controls([{"po_number": "PO-1"}], invoices))
+    auth = [f for f in findings if f.evidence_payload.get("control") == "approval_authority"]
+    assert bool(auth) is exceeds

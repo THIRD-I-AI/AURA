@@ -47,6 +47,17 @@ BENFORD_CHI_SQUARE_CRITICAL = 20.09  # chi-square(8), p = 0.01
 CUTOFF_WINDOW_DAYS = 3
 
 
+def _number_or_none(value: Any) -> Optional[float]:
+    """A finite number from a ledger field (numeric, or text such as "5,000.00"), else None."""
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        number = float(str(value).replace(",", "").replace("$", "").strip())
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
+
+
 def _money(value: Any) -> Decimal:
     """Exact decimal for a monetary input.
 
@@ -294,8 +305,12 @@ class FinancialAuditorAgent:
                 findings.append(finding)
                 audit_event("as2201_control_deficiency", finding.model_dump())
 
-            limit = inv.get("approval_limit")
-            amount = inv.get("amount")
+            # BUG-406: these were compared raw. A CSV upload sends approval_limit as text
+            # and amount as a number, so `amount > limit` raised TypeError and the whole
+            # audit returned 500; two strings compared alphabetically. Unparseable values
+            # skip the control rather than count as zero.
+            limit = _number_or_none(inv.get("approval_limit"))
+            amount = _number_or_none(inv.get("amount"))
             if approver is not None and limit is not None and amount is not None and amount > limit:
                 finding = AuditFinding(
                     pcaob_standard="AS 2201",

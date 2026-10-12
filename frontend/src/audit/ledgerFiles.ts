@@ -30,7 +30,8 @@ export interface LedgerDatasetSpec {
 
 export const LEDGER_DATASETS: LedgerDatasetSpec[] = [
   { key: 'ledger', label: 'General ledger', recommended: ['internal_id', 'account_code', 'amount'], numeric: ['amount'] },
-  { key: 'invoices', label: 'Invoices', recommended: ['invoice_number', 'po_number', 'amount'], numeric: ['amount'] },
+  // BUG-406: the backend reads approval_limit from invoices (the approval-authority control).
+  { key: 'invoices', label: 'Invoices', recommended: ['invoice_number', 'po_number', 'amount'], numeric: ['amount', 'approval_limit'] },
   { key: 'purchase_orders', label: 'Purchase orders', recommended: ['po_number'], numeric: ['amount', 'approval_limit'] },
   { key: 'journal_entries', label: 'Journal entries', recommended: ['internal_id', 'account_code', 'amount'], numeric: ['amount'] },
   { key: 'goods_receipts', label: 'Goods receipts', recommended: ['po_number'], numeric: ['amount'] },
