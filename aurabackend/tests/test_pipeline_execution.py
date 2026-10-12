@@ -360,6 +360,7 @@ def test_get_file_schema_reads_real_csv_through_storage_backend(tmp_path, monkey
 
 @pytest.mark.asyncio
 async def test_pg_sink_quotes_table_name_containing_double_quote(monkeypatch):
+    monkeypatch.setenv("AURA_CONNECTORS_ALLOW_PRIVATE_HOSTS", "true")  # local fake (BUG-404)
     """BUG-020 #1: sink.table is raw pipeline-definition input; it must be
     quoted via quote_identifier before splicing into DROP/CREATE/INSERT,
     not spliced in raw where a `"` could break out of the identifier."""
@@ -683,6 +684,7 @@ async def test_kafka_source_insert_is_batched_not_per_row(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_db_source_insert_is_batched_not_per_row(monkeypatch):
+    monkeypatch.setenv("AURA_CONNECTORS_ALLOW_PRIVATE_HOSTS", "true")  # local fake (BUG-404)
     """DSR-001 regression: _load_db_source's insert used the same per-row
     conn.execute() loop as _load_kafka_source. Must use executemany()."""
     import connectors

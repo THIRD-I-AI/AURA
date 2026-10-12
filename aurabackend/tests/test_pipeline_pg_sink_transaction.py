@@ -19,6 +19,13 @@ DSN = os.getenv("AURA_PG_TEST_DSN")
 pytestmark = pytest.mark.skipif(not DSN, reason="needs Postgres (set AURA_PG_TEST_DSN=postgresql+asyncpg://...)")
 
 
+@pytest.fixture(autouse=True)
+def _allow_local_database_hosts(monkeypatch):
+    # These tests talk to a local (or faked-local) database on purpose; BUG-404's host
+    # check refuses that unless the operator opts in.
+    monkeypatch.setenv("AURA_CONNECTORS_ALLOW_PRIVATE_HOSTS", "true")
+
+
 def _sink_connection() -> dict:
     u = urlparse(DSN.replace("postgresql+asyncpg", "postgresql"))
     return {"host": u.hostname, "port": u.port or 5432, "username": u.username,

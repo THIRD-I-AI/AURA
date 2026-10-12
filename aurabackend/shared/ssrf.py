@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import ipaddress
+import os
 import socket
 from typing import Sequence
 from urllib.parse import urlparse
@@ -58,3 +59,22 @@ def _is_public_address(ip) -> bool:
 
 async def is_public_url_async(url: str, schemes: Sequence[str] = ("http", "https")) -> bool:
     return await asyncio.to_thread(is_public_url, url, schemes)
+
+
+async def is_allowed_db_host(host: object) -> bool:
+    """May the backend open a database connection to this caller-supplied host?
+
+    The one rule for every place that connects to a caller-named database (connector
+    routes, /execute/query, pipeline sources and sinks, the streaming database sink):
+    BUG-367, 377 and 404 were the same gap found in three places because each route
+    carried its own copy, or none. False for an empty host (drivers turn that into
+    the gateway's own localhost) and for any non-public address, unless the operator
+    has set AURA_CONNECTORS_ALLOW_PRIVATE_HOSTS for a private-network deployment.
+    """
+    if os.getenv("AURA_CONNECTORS_ALLOW_PRIVATE_HOSTS", "").strip().lower() in ("1", "true", "yes"):
+        return True
+    name = str(host or "").strip()
+    if not name:
+        return False
+    target = f"[{name}]" if ":" in name and not name.startswith("[") else name
+    return await is_public_url_async(f"http://{target}/")

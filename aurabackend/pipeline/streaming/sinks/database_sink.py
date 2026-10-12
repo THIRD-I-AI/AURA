@@ -93,6 +93,15 @@ class DatabaseSink(BaseSink):
                     "Install it with: pip install asyncpg"
                 )
             dsn = self.config.get("dsn")
+            # BUG-404: the webhook sink and websocket source check their targets
+            # (BUG-287); this sink connected to whatever host or DSN it was given.
+            from urllib.parse import urlparse
+
+            from shared.ssrf import is_allowed_db_host
+
+            target_host = urlparse(dsn).hostname if dsn else self.config.get("host")
+            if not await is_allowed_db_host(target_host):
+                raise ValueError("database sink host must be a public address")
             if dsn:
                 self._conn = await asyncpg.connect(dsn)
             else:
