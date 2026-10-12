@@ -51,3 +51,11 @@ def test_preflight_still_answered_and_security_headers_still_wrap_cors(jwt_app):
     assert resp.headers.get("access-control-allow-origin") == ORIGIN
     names = [m.cls.__name__ for m in jwt_app.user_middleware]
     assert names.index("SecurityHeadersMiddleware") < names.index("CORSMiddleware"), names
+
+
+def test_rate_limiting_wraps_authentication(jwt_app):
+    # BUG-413: JWT used to sit outside the limiter, so its 401 returned before the
+    # limiter counted the request and token-less traffic was never throttled.
+    names = [m.cls.__name__ for m in jwt_app.user_middleware]  # outermost first
+    if "RateLimitMiddleware" in names:
+        assert names.index("RateLimitMiddleware") < names.index("JWTAuthMiddleware"), names

@@ -96,7 +96,10 @@ class AuditLogMiddleware(BaseHTTPMiddleware):
             if request.url.path not in self._SKIP:
                 await self._record(request, 500)
             raise
-        if request.url.path not in self._SKIP:
+        # BUG-413: a throttled request did nothing and is unbounded in number; giving
+        # each one a locked, fsync'd audit record let a flood fill the audit volume.
+        # The limiter logs it instead.
+        if request.url.path not in self._SKIP and response.status_code != 429:
             await self._record(request, response.status_code)
         return response
 
