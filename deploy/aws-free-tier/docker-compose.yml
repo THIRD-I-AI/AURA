@@ -91,6 +91,11 @@ services:
       AURA_ARTIFACT_DIR: /data/artifacts
       AURA_SIGNING_KEY_DIR: /data/keys
       AURA_WEBHOOK_DIR: /data/webhooks
+      # BUG-410: every request reaches the gateway from Caddy's container address, so
+      # without this all users shared ONE rate-limit bucket (10 logins/min and 100
+      # requests/min for the whole deployment). Caddy is the only proxy in front and
+      # sets X-Forwarded-For itself; the gateway reads the right-most entry.
+      AURA_TRUST_FORWARDED_FOR: "true"
       # Every dataset a user uploads. Tenant-scoped as <root>/<workspace>/<file>.
       AURA_UPLOADS_ROOT: /data/uploads
       # Reaches the uasr_service container below. The code default is
