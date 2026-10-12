@@ -84,3 +84,36 @@ describe('PipelinesPanel', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent('Could not load your uploaded files');
   });
 });
+
+// BUG-395: a slower preview for the file selected first overwrote the preview of the
+// file selected after it.
+describe('PipelinesPanel source preview ordering (BUG-395)', () => {
+  it('keeps the preview of the most recently selected file', async () => {
+    const { etlService } = await import('../../services/api');
+    const { fireEvent } = await import('@testing-library/react');
+    (uploadService.getUploadedFiles as ReturnType<typeof vi.fn>).mockResolvedValue([
+      { filename: 'first.csv' }, { filename: 'second.csv' },
+    ]);
+    let releaseFirst: (v: unknown) => void = () => {};
+    (etlService.previewSource as ReturnType<typeof vi.fn>).mockImplementation((file: string) =>
+      file === 'first.csv'
+        ? new Promise(resolve => { releaseFirst = resolve; })
+        : Promise.resolve({ table_name: 'second_table', columns: [{ name: 'b', type: 'INT' }], row_count: 2, preview: [] }),
+    );
+
+    renderPanel();
+    fireEvent.click(screen.getByText('Visual Builder'));
+    const select = await screen.findByDisplayValue('Select an uploaded file…');
+    await screen.findByRole('option', { name: 'second.csv' });
+
+    fireEvent.change(select, { target: { value: 'first.csv' } });
+    fireEvent.change(select, { target: { value: 'second.csv' } });
+    await screen.findByText('second_table');
+
+    releaseFirst({ table_name: 'first_table', columns: [{ name: 'a', type: 'INT' }], row_count: 1, preview: [] });
+    await new Promise(r => setTimeout(r, 20));
+
+    expect(screen.queryByText('first_table')).not.toBeInTheDocument();
+    expect(screen.getByText('second_table')).toBeInTheDocument();
+  });
+});

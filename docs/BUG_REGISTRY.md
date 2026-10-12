@@ -4003,13 +4003,13 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Fix:** pending.
 
 ## BUG-395: Pipelines builder: a slower source preview for an earlier file overwrites the preview and column list of the file now selected
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode second-pass frontend audit (run wf_dc428ec9-32e, data-correctness lens; confirmed by 2 adversarial verifiers), 2026-10-09. `frontend/src/pages/PipelinesPanel.tsx:312`.
 - **Severity:** medium
 - **Root cause:** handleSourceChange (line 321) sets selectedSource and calls loadSourcePreview(file). loadSourcePreview (306-319) awaits etlService.previewSource and then calls setSourcePreview(preview) unconditionally. There is no request id or check that `filename` is still the selected source. The previous preview is not cleared on change either, and whichever request finishes first sets isLoading=false. sourcePreview.columns feeds the transform step editors (line 984).
 - **Failure scenario:** A user picks big_sales.csv from the source dropdown, then quickly switches to customers.csv. The customers preview returns first, then the slower big_sales preview arrives and replaces it. The panel now shows big_sales' row count, columns and preview rows under the selected source customers.csv. The transform editors offer big_sales columns. The user builds filter or aggregate steps on those columns, and Execute runs them against customers.csv: it fails on missing columns or silently binds to the wrong data.
 - **Caused by:** none -- pre-existing.
-- **Fix:** pending.
+- **Fix:** `loadSourcePreview` numbers each preview request and applies a response (preview, error, loading state) only if it is still the latest, so a slower preview for a previously selected file can no longer overwrite the preview and column list of the file selected now. Regression test `keeps the preview of the most recently selected file` failed on the old code.
 
 ## BUG-396: Connection-create validation errors use a dict `detail`, which errorBodyMessage drops, so the form shows 'Bad Request'
 - **Status:** open
