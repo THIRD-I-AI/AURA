@@ -71,3 +71,39 @@ describe('BUG-112: ensureAuditorToken checks role, not mere token presence', () 
     expect(authService.currentUser()?.role).toBe('auditor');
   });
 });
+
+// BUG-387: in password auth mode (production) /auth/token refuses the open-mode mint
+// body, and the thrown 422 aborted every audit action for a signed-in 'user'.
+describe('BUG-387: ensureAuditorToken in password mode', () => {
+  beforeEach(() => setAuthToken(null));
+  afterEach(() => vi.restoreAllMocks());
+
+  it("keeps the signed-in user's own token when minting is refused", async () => {
+    const own = fakeToken({ sub: 'u1', role: 'user' });
+    setAuthToken(own);
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 422,
+      statusText: 'Unprocessable Entity',
+      headers: new Headers({ 'content-type': 'application/json' }),
+      json: async () => ({ detail: 'email and password are required in password auth mode' }),
+      text: async () => '{"detail":"email and password are required in password auth mode"}',
+    }) as unknown as typeof fetch;
+
+    await expect(financialAuditService.ensureAuditorToken()).resolves.toBeUndefined();
+    expect(getAuthToken()).toBe(own);
+  });
+
+  it('still fails when nobody is signed in and minting is refused', async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 422,
+      statusText: 'Unprocessable Entity',
+      headers: new Headers({ 'content-type': 'application/json' }),
+      json: async () => ({ detail: 'nope' }),
+      text: async () => '{"detail":"nope"}',
+    }) as unknown as typeof fetch;
+
+    await expect(financialAuditService.ensureAuditorToken()).rejects.toBeTruthy();
+  });
+});
