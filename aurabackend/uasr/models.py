@@ -202,6 +202,22 @@ def infer_schema_snapshot(rows: List[Dict[str, Any]], columns: List[str]) -> Dic
     return snapshot
 
 
+def set_transformed_rows(batch: "BatchPayload", rows: List[Dict[str, Any]]) -> None:
+    """Replace a batch's rows with shim output and keep its schema in step.
+
+    BUG-416: the snapshot describes the rows it was computed from. Carried over
+    unchanged after a shim renamed or retyped a column, it made the detector report
+    the original schema drift again whatever the shim had done.
+    """
+    changed = rows != batch.rows
+    batch.rows = rows
+    if not rows:
+        return
+    batch.columns = list(dict.fromkeys(k for r in rows for k in r))
+    if changed and batch.schema_snapshot:
+        batch.schema_snapshot = infer_schema_snapshot(rows, batch.columns)
+
+
 def schema_types_match(a: str, b: str) -> bool:
     """Whether two snapshot type names describe the same column type.
 

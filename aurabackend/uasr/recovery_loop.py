@@ -34,6 +34,7 @@ from .models import (
     RecoveryMode,
     RecoveryStatus,
     ShimResult,
+    set_transformed_rows,
 )
 from .reflector_agent import DiagnosticReflectorAgent
 
@@ -483,10 +484,11 @@ class RecoveryLoop:
             transformed_batch = BatchPayload(
                 source_id=original_batch.source_id,
                 batch_id=f"{original_batch.batch_id}_shimmed",
-                columns=list(transformed_rows[0].keys()) if transformed_rows else [],
-                rows=transformed_rows,
+                columns=original_batch.columns,
+                rows=original_batch.rows,
                 schema_snapshot=original_batch.schema_snapshot,
             )
+            set_transformed_rows(transformed_batch, transformed_rows)
 
             # Re-run drift detection on transformed data. record_state=False:
             # this is a probe on a candidate shim, not a live observation —
@@ -541,6 +543,13 @@ class RecoveryLoop:
                             if post_drift.drift_detected else ""
                         )
                     ),
+                }
+
+            if post_drift.drift_type == DriftType.SCHEMA:
+                return {
+                    "passed": False,
+                    "post_kl": post_kl,
+                    "reason": f"Schema drift still present after the shim: {post_drift.details}",
                 }
 
             return {
