@@ -57,3 +57,11 @@ def test_a_failed_store_write_keeps_the_previous_subscriptions(monkeypatch, tmp_
 
     reloaded = wd.WebhookDispatcher()
     assert [s.url for s in reloaded.list("ws")] == ["https://example.com/a"]
+
+
+def test_the_free_tier_deploy_rate_limits_per_client_not_per_proxy():
+    # BUG-410: behind Caddy every request has the proxy's address; without
+    # AURA_TRUST_FORWARDED_FOR all users shared one rate-limit bucket.
+    root = Path(__file__).resolve().parents[2]
+    compose = (root / "deploy" / "aws-free-tier" / "docker-compose.yml").read_text(encoding="utf-8")
+    assert 'AURA_TRUST_FORWARDED_FOR: "true"' in compose
