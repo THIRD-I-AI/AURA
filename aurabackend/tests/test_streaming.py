@@ -2003,3 +2003,22 @@ def test_aggregates_use_the_documented_field_key():
     agg = fired[0].aggregations
     assert agg["sum_amount"] == 350 and agg["count_amount"] == 2
     assert agg["max_temperature"] == 30 and agg["avg_temperature"] == 25
+
+
+@pytest.mark.parametrize("kwargs", [
+    {"type": WindowType.SLIDING, "size_seconds": 86400, "slide_seconds": 1},
+    {"type": WindowType.TUMBLING, "size_seconds": 0},
+    {"type": WindowType.SLIDING, "size_seconds": 0, "slide_seconds": 0},
+])
+def test_window_configs_that_explode_or_divide_by_zero_are_rejected(kwargs):
+    # BUG-403: each event of a sliding window is assigned to size/slide windows in a
+    # synchronous loop on the event loop; size_seconds=0 divided by zero.
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        WindowConfig(**kwargs)
+
+
+def test_an_ordinary_sliding_window_is_still_accepted():
+    cfg = WindowConfig(type=WindowType.SLIDING, size_seconds=300, slide_seconds=60)
+    assert cfg.size_seconds / cfg.slide_seconds == 5
