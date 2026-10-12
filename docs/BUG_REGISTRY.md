@@ -4102,13 +4102,13 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Fix:** pending.
 
 ## BUG-406: Approval-authority control compares raw un-coerced invoice fields: an invoices CSV with approval_limit returns 500 for the whole audit, and string pairs compare lexicographically
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode second-pass audit of pipeline, counterfactual_service and shared (run wf_e7c7c9a9-564, counterfactual scope; confirmed by 2 adversarial verifiers), 2026-10-12. `aurabackend/agents/specialists/financial_auditor.py:277`.
 - **Severity:** medium
 - **Root cause:** BUG-025 routed the AS 2305 and AS 2401 amount reads through `_money()`, but execute_as2201_internal_controls still reads `limit = inv.get("approval_limit")` and `amount = inv.get("amount")` raw and evaluates `amount > limit` (lines 275-277). The UI parser frontend/src/audit/ledgerFiles.ts coerces only `amount` for the invoices dataset (line 33: numeric: ['amount']). It declares `approval_limit` numeric on purchase_orders (line 34), where the backend never reads it. An `approval_limit` column in an invoices CSV therefore arrives as a string while `amount` is a number. Nothing in run_full_audit or main.financial_audit catches the resulting TypeError.
 - **Failure scenario:** Entry point: POST /api/v1/counterfactual/audit/financial via the Workbench bring-your-own-ledger flow. A user uploads an invoices CSV with columns invoice_number, po_number, amount, approved_by, approval_limit. The first row with all three fields evaluates `1250.0 > "5000"`, which raises TypeError, and the whole audit returns HTTP 500 with no report. Any AS 2305 or earlier AS 2201 findings already written to the audit log by audit_event are left without a completion document. For a direct JSON caller sending both fields as strings, the comparison is lexicographic: '900' > '10000' is True (a false High 'exceeds the approver's authority limit' finding gets signed) and '10000' > '9000' is False (a real over-limit approval is missed).
 - **Caused by:** none -- pre-existing.
-- **Fix:** pending.
+- **Fix:** the AS 2201 approval-authority control parses `amount` and `approval_limit` as numbers (accepting text such as "10000" or "$10,000"; an unusable value skips the control instead of counting as zero), so a CSV upload no longer raises TypeError and fails the whole audit with 500, and text values no longer compare alphabetically. The frontend ledger parser also treats `approval_limit` as numeric on invoices, where the backend reads it. Regression tests `test_approval_authority_coerces_its_fields` (3 of 4 cases) failed on the old code.
 
 ## BUG-407: Chat analysis reports a Pearson r computed over misaligned rows whenever either column has a null
 - **Status:** open
