@@ -93,3 +93,27 @@ def test_a_request_that_crashes_is_still_audited(monkeypatch):
 
     assert resp.status_code == 500
     assert [(c["path"], c["status"]) for c in calls] == [("/boom", 500)]
+
+
+def test_a_throttled_request_is_not_given_an_audit_record(monkeypatch):
+    # BUG-413: throttled requests are unbounded in number; each used to cost a locked,
+    # fsync'd audit record.
+    from fastapi import FastAPI
+    from fastapi.responses import JSONResponse
+    from fastapi.testclient import TestClient
+
+    from shared import audit_log
+    from shared.middleware import AuditLogMiddleware
+
+    calls = []
+    monkeypatch.setattr(audit_log, "AUDIT_ENABLED", True)
+    monkeypatch.setattr(audit_log, "audit_request", lambda **kw: calls.append(kw))
+    app = FastAPI()
+    app.add_middleware(AuditLogMiddleware)
+
+    @app.get("/limited")
+    async def limited():
+        return JSONResponse({"detail": "slow down"}, status_code=429)
+
+    assert TestClient(app).get("/limited").status_code == 429
+    assert calls == []

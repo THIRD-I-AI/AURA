@@ -131,6 +131,17 @@ def create_service(
         RequestBodyLimitMiddleware,
         max_bytes=int(os.getenv("AURA_MAX_REQUEST_BODY_BYTES", str(16 * 1024 * 1024))),
     )
+    #  3. JWT auth  (opt-in — AURA_JWT_ENABLED=true)
+    if settings.jwt_enabled:
+        app.add_middleware(JWTAuthMiddleware)
+        logger.info("JWT authentication ENABLED for %s", name)
+    #  4. API Key auth  (opt-in — only when AURA_API_KEY is set)
+    if settings.api_key:
+        app.add_middleware(APIKeyMiddleware, api_key=settings.api_key)
+        logger.info("API key authentication ENABLED for %s", name)
+    #  BUG-413: rate limiting is added AFTER the auth middlewares, so it wraps them.
+    #  It used to sit inside JWT, whose 401 returned before the limiter ever counted the
+    #  request -- token-less traffic to protected routes was never throttled.
     #  2. Rate limiting  (env-driven; can be disabled via AURA_RATE_LIMIT_ENABLED=0)
     if settings.rate_limit_enabled:
         from shared.rate_limit import get_rate_limit_backend
@@ -147,14 +158,6 @@ def create_service(
         )
     else:
         logger.warning("Rate limiting DISABLED for %s (AURA_RATE_LIMIT_ENABLED=false)", name)
-    #  3. JWT auth  (opt-in — AURA_JWT_ENABLED=true)
-    if settings.jwt_enabled:
-        app.add_middleware(JWTAuthMiddleware)
-        logger.info("JWT authentication ENABLED for %s", name)
-    #  4. API Key auth  (opt-in — only when AURA_API_KEY is set)
-    if settings.api_key:
-        app.add_middleware(APIKeyMiddleware, api_key=settings.api_key)
-        logger.info("API key authentication ENABLED for %s", name)
     #  5. Request-ID  (sets request.state.request_id)
     app.add_middleware(RequestIDMiddleware)
     #  6. Request logging  (uses request_id set above)
