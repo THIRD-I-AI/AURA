@@ -41,3 +41,14 @@ describe('BUG-247: getUploadedFiles propagates failures instead of returning []'
     await expect(uploadService.getUploadedFiles()).resolves.toEqual([]);
   });
 });
+
+// BUG-390: GET /files reports a storage failure as HTTP 200 {status:'error'}.
+describe('BUG-390: getUploadedFiles rejects a 200 error body', () => {
+  beforeEach(() => setAuthToken(fakeToken({ sub: 'u1' })));
+  afterEach(() => vi.restoreAllMocks());
+
+  it('rejects with the server error', async () => {
+    mockFetchOnce(200, { status: 'error', error: 'storage unavailable' });
+    await expect(uploadService.getUploadedFiles()).rejects.toThrow('storage unavailable');
+  });
+});

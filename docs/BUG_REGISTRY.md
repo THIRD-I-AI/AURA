@@ -3958,13 +3958,13 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Fix:** the frontend `ExecutionResult` type carries `truncated`, and both chat surfaces read it: Ask AURA shows "first N rows · result cut off at the row limit, so the answer may be incomplete" and the cockpit strip shows "executed · first N rows (cut off at the row limit)". Regression test `says when the result was cut off at the row limit` failed on the old code.
 
 ## BUG-390: Residual of BUG-247: GET /files failure arrives as HTTP 200 {status:'error'}, and getUploadedFiles still turns it into an empty list
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode second-pass frontend audit (run wf_dc428ec9-32e, api-contract lens; confirmed by 2 adversarial verifiers), 2026-10-09. `frontend/src/services/api.ts:1154`.
 - **Severity:** medium
 - **Root cause:** The BUG-247 fix only removed the catch around client.get('/files'). The gateway's list_files (aurabackend/api_gateway/routers/files.py ~314-324) returns HTTP 200 {status:'error', error} when file_service is unavailable or the storage listing raises, for example during an S3/boto3 failure. getUploadedFiles never checks resp.status and returns `resp.files || []`, so the error body becomes [] and does not reject.
 - **Failure scenario:** With AURA_STORAGE_BACKEND=s3 and an S3 credential or network failure, the user opens Files & Data. FilesAndDataPanel.load gets [] and shows the empty 'no datasets' state instead of 'Could not reach the gateway to list datasets.' The Pipelines source dropdown and DatasetsPanel are empty the same way, with no error. The user concludes their uploads are gone, which is the exact failure BUG-247 was meant to fix.
 - **Caused by:** none -- pre-existing.
-- **Fix:** pending.
+- **Fix:** `uploadService.getUploadedFiles` rejects when GET /files answers HTTP 200 `{status:'error'}` (a storage failure), so callers' error states fire instead of "no datasets". Regression test `rejects with the server error` failed on the old code.
 
 ## BUG-391: Connection schema failure (HTTP 200 {success:false}) shows 'No tables found on this connection' instead of the error
 - **Status:** open

@@ -1152,7 +1152,10 @@ export const uploadService = {
   // BUG-247: errors propagate. Returning [] on failure made an outage or an expired
   // session render as "no datasets", and left every caller's error state unreachable.
   async getUploadedFiles(): Promise<Array<{ filename: string; size: number; modified: string }>> {
-    const resp = await client.get<{ status: string; files?: Array<{ filename: string; size: number; modified: string }> }>('/files');
+    const resp = await client.get<{ status: string; error?: string; files?: Array<{ filename: string; size: number; modified: string }> }>('/files');
+    // BUG-390: a storage failure comes back as HTTP 200 {status:'error'}; returning
+    // `files || []` turned it into "no datasets" again, as BUG-247 had for HTTP errors.
+    if (resp.status === 'error') throw new Error(resp.error || 'Could not list your files');
     return resp.files || [];
   },
 };
