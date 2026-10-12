@@ -68,3 +68,28 @@ def test_the_audit_write_does_not_run_on_the_event_loop(monkeypatch):
     assert resp.status_code == 200
     assert seen["path"] == "/api/v1/things" and seen["status"] == 200
     assert seen["thread"] != seen["loop_thread"]
+
+
+def test_a_request_that_crashes_is_still_audited(monkeypatch):
+    # BUG-412: an unhandled exception skipped the audit write entirely, so the 500s an
+    # audit trail most needs were missing from it.
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from shared import audit_log
+    from shared.middleware import AuditLogMiddleware
+
+    calls = []
+    monkeypatch.setattr(audit_log, "AUDIT_ENABLED", True)
+    monkeypatch.setattr(audit_log, "audit_request", lambda **kw: calls.append(kw))
+    app = FastAPI()
+    app.add_middleware(AuditLogMiddleware)
+
+    @app.get("/boom")
+    async def boom():
+        raise RuntimeError("unexpected")
+
+    resp = TestClient(app, raise_server_exceptions=False).get("/boom")
+
+    assert resp.status_code == 500
+    assert [(c["path"], c["status"]) for c in calls] == [("/boom", 500)]
