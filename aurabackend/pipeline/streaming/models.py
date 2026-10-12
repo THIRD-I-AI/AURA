@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Dict, List, Literal, Optional
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 # ────────────────────────────────────────────────────────────────────
 # Enums
@@ -95,6 +95,9 @@ class StreamEvent(BaseModel):
 # Window Configuration
 # ────────────────────────────────────────────────────────────────────
 
+MAX_WINDOWS_PER_EVENT = 100
+
+
 class WindowConfig(BaseModel):
     """Configuration for temporal windowing."""
     type: WindowType = WindowType.TUMBLING
@@ -117,6 +120,27 @@ class WindowConfig(BaseModel):
         if v is not None and v < 0:
             raise ValueError("slide_seconds must not be negative")
         return v
+
+    @field_validator("size_seconds")
+    @classmethod
+    def _size_seconds_must_be_positive(cls, v: int) -> int:
+        # BUG-403: 0 divided by zero in the tumbling/sliding window arithmetic.
+        if v < 1:
+            raise ValueError("size_seconds must be at least 1")
+        return v
+
+    @model_validator(mode="after")
+    def _sliding_overlap_is_bounded(self) -> "WindowConfig":
+        # BUG-403: a sliding window assigns each event to size/slide windows, in a
+        # synchronous loop on the gateway's event loop. size=86400, slide=1 made
+        # every event allocate 86,400 windows and froze every tenant's requests.
+        slide = self.slide_seconds or self.size_seconds
+        if self.type == WindowType.SLIDING and self.size_seconds / slide > MAX_WINDOWS_PER_EVENT:
+            raise ValueError(
+                f"size_seconds / slide_seconds must be at most {MAX_WINDOWS_PER_EVENT} "
+                f"(each event belongs to that many overlapping windows)"
+            )
+        return self
 
 
 # ────────────────────────────────────────────────────────────────────

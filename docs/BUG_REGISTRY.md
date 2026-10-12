@@ -4075,13 +4075,13 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Fix:** pending.
 
 ## BUG-403: Sliding-window size/slide ratio is unbounded: one event creates size/slide windows synchronously on the event loop (and size_seconds=0 raises ZeroDivisionError)
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode second-pass audit of pipeline, counterfactual_service and shared (run wf_e7c7c9a9-564, pipeline scope; confirmed by 2 adversarial verifiers), 2026-10-12. `aurabackend/pipeline/streaming/window_processor.py:275`.
 - **Severity:** high
 - **Root cause:** WindowConfig.size_seconds is a bare `int = 60` with no validator (streaming/models.py:101); the only validator rejects a negative slide_seconds (BUG-081). _assign_sliding computes earliest_start = floor((et - size)/slide)*slide + slide and loops `while start <= latest_start: ... self._windows[win_key] = WindowState(...); start += slide` (window_processor.py:271-297), i.e. size/slide iterations and WindowState allocations per event. It is called synchronously from StreamingEngine._run_loop (streaming_engine.py:511 `self._window_proc.process_event(ev)`), a coroutine on the gateway's single event loop. The 50,000 active-window cap (_evict_stale_windows) only runs in _fire_ready_windows, after the loop returns. BUG-282's bounds cover num_keys, events_per_second, max_buffer and backpressure_buffer but not the window sizes. Separately, size_seconds=0 makes _assign_tumbling divide by zero (line 242).
 - **Failure scenario:** Entry point: POST /api/v1/streaming/pipelines with source {type: simulated} and window {"type": "sliding", "size_seconds": 2000000000, "slide_seconds": 1}, then POST /streaming/pipelines/{id}/start. The first simulated event enters _assign_sliding, which runs 2 billion iterations creating WindowState objects without ever awaiting. The single uvicorn worker stops answering every tenant's requests (including /stop for this pipeline and health checks), and memory grows until the 520m container is OOM-killed. A non-malicious config does the same at smaller scale: size_seconds=86400 with slide_seconds=1 creates 86,400 windows per event at 10 events/s. Any authenticated user can trigger this.
 - **Caused by:** none -- pre-existing.
-- **Fix:** pending.
+- **Fix:** `WindowConfig` rejects `size_seconds < 1` (it divided by zero in the window arithmetic) and, for sliding windows, a size/slide ratio above 100 (`MAX_WINDOWS_PER_EVENT`), since every event is assigned to that many windows in a synchronous loop on the gateway's event loop. Regression tests `test_window_configs_that_explode_or_divide_by_zero_are_rejected` were accepted on the old code.
 
 ## BUG-404: Pipeline engine and streaming DatabaseSink connect to Postgres/MySQL hosts with no SSRF check, and an omitted host means the gateway's own localhost (BUG-367/377 fix does not cover these paths)
 - **Status:** open
