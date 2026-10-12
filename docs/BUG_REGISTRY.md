@@ -3510,12 +3510,12 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Fix:** Every call to the synchronous google-cloud-bigquery client in `connectors/bigquery_connector.py` (list_tables, get_table, query + result) runs through `asyncio.to_thread`. Regression: `tests/test_bigquery_off_event_loop.py` (a stand-in client records whether each call ran on the event loop; no BigQuery reachable from the test lane).
 
 ## BUG-340: Production stopped redeploying: the box stayed on build 982b679 while main moved on
-- **Status:** open
+- **Status:** fixed
 - **Found by:** live verification, 2026-10-03. `/health` reported `build: 982b679` (PR #628, merged ~15:00 UTC 2026-10-02) for 15+ hours while the CD workflow kept publishing images (latest successful CD run on `05379a2`) and about 30 PRs merged.
 - **Severity:** high -- every fix merged since #628 (the counterfactual, `shared/` and frontend audits, including the live-stream fix BUG-318) is not running in production.
 - **Root cause:** unconfirmed. The box redeploys by a 15-minute cron running `deploy/aws-free-tier/redeploy.sh` (git checkout + `docker compose pull` + `up -d`); that has stopped taking effect. Not diagnosed: SSH to the box timed out on port 22 and the local AWS CLI session had expired, so the redeploy log, crontab and disk could not be read. Candidates: cron/crond not running, a failing `git fetch`/`checkout`, a failing image pull (disk or registry auth), or the health wait timing out.
 - **Caused by:** unknown.
-- **Fix:** pending -- needs access to the box (user to re-authenticate the AWS CLI or check it directly); redeploying is a production action that needs the user's go-ahead.
+- **Fix:** root cause confirmed on 2026-10-08: the box's 30 GB root disk was 100% full (`/health` reported `[Errno 28] No space left on device`), because every deploy pulled a new image set and none was ever removed (Docker held 25 GB of superseded images; the four live images are 3.7 GB), so `docker compose pull` could not complete. Recovered with the user's go-ahead: the root volume was grown to 40 GB off-box (the disk was too full for Docker or SSM to start), stale images were pruned, and the BUG-341 `redeploy.sh` (timeouts, image pruning on every run, runs from a private copy) was run once by hand; the cron has redeployed every merge since (builds d38aa99, 3d0075e, 60c9279, 0856bd8 observed on `/health`, live verification 19/19 each time). The instance also got an Elastic IP, so its address no longer changes on stop/start.
 
 ## BUG-341: redeploy.sh has no time limits, never prunes images, and runs a splice of itself when a deploy changes it
 - **Status:** fixed
