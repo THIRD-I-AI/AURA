@@ -248,3 +248,24 @@ def test_a_round_dollar_credit_is_flagged(monkeypatch):
     jes = [{"internal_id": "J1", "amount": -5000.0, "account_code": "6000", "vendor_id": "V1"}]
     findings = asyncio.run(agent.execute_as2401_fraud_detection(jes))
     assert any("round-dollar" in f.description for f in findings)
+
+
+# ── BUG-401: Benford on small, honest journals ─────────────────────
+
+def test_benford_does_not_flag_honest_small_journals(monkeypatch):
+    # MAD > 0.015 alone flagged ~99% of perfectly Benford-distributed 50-entry journals
+    # (sampling noise gives E[MAD] ~ 0.033 at n=50). With the significance test added,
+    # false alarms on honest samples are about 1%.
+    import random
+
+    agent = _agent(monkeypatch)
+    rng = random.Random(401)
+    digits, weights = list(fa.BENFORD_EXPECTED), list(fa.BENFORD_EXPECTED.values())
+    flagged = 0
+    for trial in range(200):
+        jes = [{"internal_id": f"J{trial}_{i}", "amount": d * 1000 + i + 0.37,
+                "account_code": "6000", "vendor_id": f"V{trial}_{i}"}
+               for i, d in enumerate(rng.choices(digits, weights, k=60))]
+        findings = asyncio.run(agent.execute_as2401_fraud_detection(jes))
+        flagged += any(f.evidence_payload.get("test") == "benford_first_digit" for f in findings)
+    assert flagged <= 10, f"{flagged}/200 honest journals were flagged as possibly fabricated"
