@@ -82,6 +82,25 @@ except ImportError:  # pragma: no cover
 
 # ── Config ────────────────────────────────────────────────────────────
 
+def _decode_event(raw: Optional[bytes]) -> Any:
+    """Deserialize one Kafka record value; None for a record that cannot be read.
+
+    BUG-414: aiokafka runs the deserializer inside its record generator, before the
+    position moves past the record. An exception there (a tombstone's None value,
+    non-UTF-8 bytes, non-JSON text) made every later getmany() for that partition
+    raise on the same offset, so the worker stopped consuming while still reporting
+    itself as running. Returning None lets the position advance; the batch builder
+    only keeps dict values, so the record is skipped.
+    """
+    if raw is None:
+        return None
+    try:
+        return json.loads(raw.decode("utf-8"))
+    except ValueError:
+        logger.warning("Skipping a Kafka record that is not UTF-8 JSON (%d bytes)", len(raw))
+        return None
+
+
 @dataclass
 class MAPEKConfig:
     """Configuration for one MAPE-K worker instance."""
@@ -316,7 +335,7 @@ class MAPEKWorker:
             group_id=self._cfg.group_id,
             auto_offset_reset=self._cfg.auto_offset_reset,
             enable_auto_commit=False,
-            value_deserializer=lambda v: json.loads(v.decode("utf-8")),
+            value_deserializer=_decode_event,
         )
         duckdb_con = None
         try:
@@ -694,8 +713,10 @@ class MAPEKWorker:
                     max_records=self._cfg.batch_size - len(rows),
                 )
             except Exception as exc:
+                # Keep what this window already collected: those offsets have advanced,
+                # so dropping the rows here would lose them on the next commit.
                 logger.warning("Kafka getmany failed: %s", exc)
-                return None
+                break
 
             for tp_msgs in msg_pack.values():
                 for m in tp_msgs:
