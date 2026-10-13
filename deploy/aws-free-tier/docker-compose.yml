@@ -96,6 +96,10 @@ services:
       # requests/min for the whole deployment). Caddy is the only proxy in front and
       # sets X-Forwarded-For itself; the gateway reads the right-most entry.
       AURA_TRUST_FORWARDED_FOR: "true"
+      # Route families this stack does not use: none has a screen in the frontend,
+      # and the agent routes call services (connectors, sandbox) this stack does
+      # not run. Remove a name to switch that family back on.
+      AURA_DISABLED_ROUTERS: "agent,approvals,evolution,synthetic"
       # Every dataset a user uploads. Tenant-scoped as <root>/<workspace>/<file>.
       AURA_UPLOADS_ROOT: /data/uploads
       # Reaches the uasr_service container below. The code default is
