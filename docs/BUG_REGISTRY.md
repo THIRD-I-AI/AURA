@@ -4298,3 +4298,120 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Failure scenario:** A user mistypes their password a few times and trips the per-IP auth rate limit (or several colleagues behind one office NAT sign in around the same time). They then enter the correct password; the gateway answers 429. The form says 'Wrong email or password.', so they keep retrying (extending the throttle) or go through a needless password reset. The same message appears when the gateway is down or restarting during a deploy, hiding the outage as a user error.
 - **Caused by:** none -- pre-existing.
 - **Fix:** `AuthForm` picks the login failure text from the error's status: 429 reads "Too many sign-in attempts. Wait a minute and try again.", a network failure, timeout or 5xx reads "Cannot reach the server right now. Please try again shortly.", and anything else stays "Wrong email or password.". Regression: `auth/__tests__/loginFailureMessage.test.tsx`.
+
+## BUG-428: POST /auth/refresh rejects every SSO (OIDC) session in password mode, so SSO users are logged out every 30 minutes
+- **Status:** open
+- **Found by:** ultracode audit of gateway routers, agents and connectors (run wf_121f5057-8a0, routers scope; confirmed by 2 adversarial verifiers), 2026-10-13. `aurabackend/api_gateway/routers/auth.py:354`.
+- **Severity:** medium
+- **Root cause:** refresh_token() re-reads the account whenever settings.auth_mode == "password" (lines 349-357): `select(User).where(User.id == user["sub"])`, and raises AuthenticationError("Account no longer exists") when no row is found. An OIDC login never creates a users row: oidc_callback (lines 298-308) only mints a JWT whose sub is the IdP subject, and shared/oidc.py has no User write. AURA_AUTH_MODE can only be 'open' or 'password' (shared/config.py:259-262) and production must be 'password', so every production SSO session takes this branch and fails the lookup.
+- **Failure scenario:** Production deployment with AURA_AUTH_MODE=password and AURA_OIDC_* configured. A user signs in through /auth/oidc/login -> callback -> exchange and gets a JWT with sub=<IdP subject>. The frontend's renewal (authService.refresh, frontend/src/services/api.ts:217) calls POST /api/v1/auth/refresh when under 10 minutes remain; the gateway answers 401 'Account no longer exists' although the token is valid. refresh() returns false, the token expires at 30 minutes, and the user is sent to /login mid-task. This is the BUG-397 symptom, still present for all SSO users; password users are unaffected.
+- **Caused by:** none -- pre-existing.
+- **Fix:** pending.
+
+## BUG-429: /system/health probes six services on hard-coded localhost, so any containerized deployment is reported 'critical' with those services 'down'
+- **Status:** open
+- **Found by:** ultracode audit of gateway routers, agents and connectors (run wf_121f5057-8a0, routers scope; confirmed by 2 adversarial verifiers), 2026-10-13. `aurabackend/api_gateway/main.py:371`.
+- **Severity:** medium
+- **Root cause:** _SERVICES (lines 371-383) hard-codes http://localhost:8011, 8002, 8003, 8004, 8005 and 8007 for code_generation, database_service, execution_sandbox, scheduler, insights and metadata_store. Inside the gateway container localhost is the gateway itself; the comment at lines 378-381 fixed exactly this for UASR only. The gateway's own configured URLs (AURA_CODEGEN_URL, AURA_CONNECTORS_URL, AURA_SANDBOX_URL, AURA_SCHEDULER_URL, AURA_INSIGHTS_URL in docker-compose.yml:30-34) are ignored, and code_generation is probed on 8011 while compose runs it on 8001. The overall status (lines 425-431) is 'critical' when fewer than total//2 are healthy.
+- **Failure scenario:** deploy/aws-free-tier (gateway + uasr only) or docker-compose.prod.yml (each service in its own container): GET /api/v1/system/health gets connection-refused for all six localhost probes, so healthy = 2 (api_gateway, uasr) of 8, and 2 >= 4 is false -> overall 'critical', services 'down'. The terminal PipelinePanel (reachable since BUG-423) shows 'CRITICAL - 2/8 services' on a fully healthy deployment, the same snapshot is broadcast on the system:health SSE topic, and in the full stack a real outage of any of those services cannot be distinguished from the permanent false 'down'.
+- **Caused by:** none -- pre-existing.
+- **Fix:** pending.
+
+## BUG-430: Synthetic job records and SSE events live in one worker's memory; under the prod compose (--workers 4) job polls 404 and progress streams stay silent
+- **Status:** open
+- **Found by:** ultracode audit of gateway routers, agents and connectors (run wf_121f5057-8a0, routers scope; confirmed by 2 adversarial verifiers), 2026-10-13. `aurabackend/api_gateway/routers/synthetic.py:105`.
+- **Severity:** medium
+- **Root cause:** `_jobs` (line 105) is a module-level dict, written by synthetic_generate (line 239) and read by get_synthetic_job/list_synthetic_jobs (lines 264, 278). docker-compose.prod.yml:100 runs the gateway with `--workers 4`, so each worker process has its own copy; the registry covers this multi-worker setup only for the saved-query scheduler (BUG-368). The same holds for shared.streaming_manager (per-process subscribers and buffers, subscribed in routers/stream.py:57), so events published by the worker that runs a job never reach an SSE client connected to another worker. Records are also lost on any restart and are never evicted.
+- **Failure scenario:** Prod compose stack: POST /api/v1/synthetic/generate is handled by worker A and returns {job_id, status: 'queued'}. The client polls GET /api/v1/synthetic/jobs/{job_id}; about 3 of 4 polls land on workers B-D and get 404 'job <id> not found' while the job is running and writing files on worker A, and GET /synthetic/jobs lists it only intermittently. Likewise POST /pipeline/execute/async on worker A followed by GET /stream/pipeline:{run_id} on worker B yields only heartbeats: no plan, progress or 'complete' event ever arrives, so the UI spinner never stops. After a gateway restart every job record is gone and a running job's output is orphaned on disk with no record.
+- **Caused by:** none -- pre-existing.
+- **Fix:** pending.
+
+## BUG-431: POST /execute with connection_id reads EXECUTION_SANDBOX_URL, which no deployment sets, so it always targets the gateway's own localhost:8003
+- **Status:** open
+- **Found by:** ultracode audit of gateway routers, agents and connectors (run wf_121f5057-8a0, routers scope; confirmed by 2 adversarial verifiers), 2026-10-13. `aurabackend/api_gateway/routers/queries.py:356`.
+- **Severity:** medium
+- **Root cause:** execute_for_chat resolves the sandbox with `os.getenv("EXECUTION_SANDBOX_URL", "http://localhost:8003")`. Every compose file gives the gateway `AURA_SANDBOX_URL=http://execution_sandbox:8003` (docker-compose.yml:32, docker-compose.prod.yml:113), which is also what shared/config.py:130 and agents/tools.py:32 read; EXECUTION_SANDBOX_URL appears nowhere else. The connect error is then caught by the broad `except Exception` (line 394) and returned as HTTP 200 with success=false. The same mismatch exists at routers/connections.py:531 (reads DATABASE_SERVICE_URL; the gateway is given AURA_CONNECTORS_URL), so GET /databases/test/{db_type} always answers 503.
+- **Failure scenario:** Full docker-compose stack with a healthy execution_sandbox container. The frontend sends POST /api/v1/execute {sql, connection_id} (frontend/src/services/api.ts:950). The gateway posts to http://localhost:8003/execute_sql inside its own container, gets connection refused, and returns 200 {success: false, error: <generic message>}; after repeated failures the breaker opens and every call returns 'Execution sandbox unavailable (circuit open)'. SQL against a saved database connection can never run, and the reported cause (sandbox down) is wrong.
+- **Caused by:** none -- pre-existing.
+- **Fix:** pending.
+
+## BUG-432: Public share-link route GET /public/saved-queries/{token} is not on the auth allowlist, so it returns 401 whenever JWT is enabled
+- **Status:** open
+- **Found by:** ultracode audit of gateway routers, agents and connectors (run wf_121f5057-8a0, routers scope; confirmed by 2 adversarial verifiers), 2026-10-13. `aurabackend/api_gateway/routers/queries.py:738`.
+- **Severity:** medium
+- **Root cause:** read_shared_query is documented as a 'Public read-only endpoint' that 'intentionally bypasses the workspace header -- anyone with the token sees the query', and takes no auth dependency. JWTAuthMiddleware rejects any path not in _PUBLIC_PATHS/_PUBLIC_PATH_PREFIXES (shared/middleware.py:138-189, 270-278), and /api/v1/public/saved-queries/ is in neither. Same class as BUG-005, BUG-016/017 and BUG-037 (handler written as unauthenticated, allowlist never updated), but this route is not in the registry.
+- **Failure scenario:** Deployment with AURA_JWT_ENABLED=true (the production default). A user calls POST /api/v1/saved-queries/{id}/share, receives a token and sends the link (savedQueries.shareUrl) to a recipient with no AURA login. The recipient's GET /api/v1/public/saved-queries/<token> returns 401 {"error": "AUTHENTICATION_REQUIRED", "message": "Bearer token required"} before the handler runs, so share tokens can be minted and revoked but never redeemed by the people they are meant for.
+- **Caused by:** none -- pre-existing.
+- **Fix:** pending.
+
+## BUG-433: Chat chart spec is always collapsed to type 'table' (output key mismatch between VisualizationAgent and visualization_node)
+- **Status:** open
+- **Found by:** ultracode audit of gateway routers, agents and connectors (run wf_121f5057-8a0, agents scope; confirmed by 2 adversarial verifiers), 2026-10-13. `aurabackend/agents/langgraph_orchestrator.py:316`.
+- **Severity:** high
+- **Root cause:** visualization_node reads `res.output.get("chart") or res.output.get("chartSpec") or res.output`, but VisualizationAgent writes its result under the key `chart_spec` (specialists/visualization_agent.py:104, `result.output = {"chart_spec": spec}`). Neither lookup matches, so chart_payload becomes the wrapper dict `{"chart_spec": {...}}`. The wrapper has no `type`/`x`/`y`/`title`, so lines 321-327 build `ChartSpec(type="table", x=None, y=[], title="", reason="")` from the defaults. The real LLM or heuristic spec is discarded with no error. The same empty spec is then handed to AnalysisAgent as the chosen chart (line 355-365).
+- **Failure scenario:** Any POST /chat question that returns rows, e.g. 'total sales by region'. VisualizationAgent returns {"chart_spec": {"type":"bar","x":"region","y":["total"],...}}; chat.py:680 then ships execution_result.chart_spec = {type:'table', x:None, y:[], title:'', reason:''}. Confirmed by running visualization_node with a stubbed agent returning that bar spec: output was ChartSpec(type='table', x=None, y=[], title='', reason=''). No chat answer can ever render a bar/line/pie/kpi chart, and the analysis prompt always says 'Chart chosen: table (x=None, y=[])'.
+- **Caused by:** none -- pre-existing.
+- **Fix:** pending.
+
+## BUG-434: Duplicate result column names overwrite each other in records (JOIN queries show the wrong values)
+- **Status:** open
+- **Found by:** ultracode audit of gateway routers, agents and connectors (run wf_121f5057-8a0, agents scope; confirmed by 2 adversarial verifiers), 2026-10-13. `aurabackend/agents/specialists/execution_agent.py:78`.
+- **Severity:** high
+- **Root cause:** Records are built as `{col: val for col, val in zip(columns, row)}`. DuckDB keeps duplicate names in cursor.description (verified locally: `select a.name, b.name from a join b ...` gives description ['name', 'name']), so the dict keeps only the last value for a repeated name. `columns` and `rows` still carry both columns, so records no longer line up with columns. Chat returns records as execution_result.data (chat.py:674), and Visualization/Analysis profile the records.
+- **Failure scenario:** Tables customers(id, name) and products(id, name); the user asks 'list each customer with the product they bought'. The LLM emits `SELECT c."name", p."name", o."qty" FROM ...`. A row ('alice', 'widget', 3) becomes the record {"name": "widget", "qty": 3}. The customer name is gone, columns = ['name','name','qty'] disagrees with the 2-key records, and any table rendered from data/columns shows the product name in both 'name' columns. The same happens with `SELECT a.id, b.id` and with `SELECT *` over a join. Stats and the narrative are computed on the wrong column.
+- **Caused by:** none -- pre-existing.
+- **Fix:** pending.
+
+## BUG-435: DPC reports 'mismatch' on correct GROUP BY answers because the pandas index (group keys) is dropped before comparison
+- **Status:** open
+- **Found by:** ultracode audit of gateway routers, agents and connectors (run wf_121f5057-8a0, agents scope; confirmed by 2 adversarial verifiers), 2026-10-13. `aurabackend/agents/dpc_verifier.py:57`.
+- **Severity:** medium
+- **Root cause:** results_agree (lines 65-71) compares the flat multiset of every SQL cell against the flat multiset of every pandas cell. _pandas_to_2d turns a Series into `[[v] for v in result.tolist()]` (line 57-58) and a DataFrame into `result.values.tolist()` (line 56), both of which drop the index. A grouped pandas result keeps its group keys in the index, while the SQL result has them as a column, so the two multisets always differ in size. The prompt (lines 231-247) gives only a scalar example and never asks for reset_index(). A second cause of the same false verdict: execution rows are already serialised by ExecutionAgent (timestamps as isoformat with 'T'), while the pandas side stringifies raw values with a space.
+- **Failure scenario:** The user asks 'total sales by region' over one table. SQL correctly returns [['East', 100.0], ['West', 250.0]] (4 cells). The verifier LLM writes the natural `df.groupby("region")["sales"].sum()`, a Series whose values are [100.0, 250.0] (2 cells). results_agree returns False, so verify_node sets status='mismatch' and the UI shows the amber 'independent pandas computation disagrees' warning on a correct answer (BUG-137 made that banner visible). On the DAGExecutor path (sql_generator_agent.py:161-187) the same false mismatch triggers a regeneration that replaces the correct SQL.
+- **Caused by:** none -- pre-existing.
+- **Fix:** pending.
+
+## BUG-436: DAGExecutor runs tasks whose dependency was skipped; only a directly failed dependency blocks a task
+- **Status:** open
+- **Found by:** ultracode audit of gateway routers, agents and connectors (run wf_121f5057-8a0, agents scope; confirmed by 2 adversarial verifiers), 2026-10-13. `aurabackend/agents/executor.py:131`.
+- **Severity:** medium
+- **Root cause:** _run_task skips a task only when `dep_id in failed` (lines 131-136). A skipped task is appended to report.skipped but never added to `failed`. The ready-set calculation (lines 201-207) treats a skipped dependency as satisfied, so the next task downstream becomes ready, passes the `failed` check, and runs with an empty upstream_results (line 149-153 only includes deps present in `completed`). This contradicts the module contract ('If a critical-path task fails, all downstream tasks are SKIPPED'). Skipping stops after exactly one hop.
+- **Failure scenario:** POST /api/v1/agent/execute with a plan t1 SQLGeneratorAgent -> t2 TransformAgent -> t3 QualityAgent -> t4 PipelineAgent. t1 fails (LLM error or rate limit returns FAILED). t2 is skipped. t3 depends only on t2, which is in report.skipped and not in `failed`, so QualityAgent runs with no upstream and executes its checks against the sandbox; t4 then runs and designs a pipeline. Both are stored as SUCCESS in task_results. The report says 'Skipped: 1. Failures: 1' while two downstream tasks ran on nothing and report success.
+- **Caused by:** none -- pre-existing.
+- **Fix:** pending.
+
+## BUG-437: IngestionAgent calls its tools with wrong keyword names, so every ingest raises TypeError that is swallowed and the task reports SUCCESS with zero sources
+- **Status:** open
+- **Found by:** ultracode audit of gateway routers, agents and connectors (run wf_121f5057-8a0, agents scope; confirmed by 2 adversarial verifiers), 2026-10-13. `aurabackend/agents/specialists/ingestion_agent.py:53`.
+- **Severity:** medium
+- **Root cause:** The agent calls `self.tools.call("ingest_and_profile", filepath=filepath)` (lines 53-56), but the registered tool is `ingest_and_profile(*, file_path: str)` (agents/tools.py:78). ToolRegistry.call does `tool.fn(**kwargs)`, so this always raises TypeError (unexpected keyword 'filepath'). The same applies to `introspect_database` called with `connection=ctx.connection` (line 82-85), whose signature is (connector_type, config, connection_id). Both calls sit inside `except Exception` blocks that only add an ERROR step (lines 70-75, 96-101). The agent then returns with status left as RUNNING, which BaseAgent.execute turns into SUCCESS, with output {ingested_sources: [], total_sources: 0}. It also reads `row_count`/`column_types`/`null_counts`, while agents/api.py reads `rows`/`dtypes` from the same tool. The same pattern exists in PipelineAgent (pipeline_agent.py:85-90: create_schedule called with pipeline_id/cron/payload, real signature name/query/schedule_type/cron_expression) and SchemaArchitectAgent (schema_architect_agent.py:59-63: recommend_indexes called with schema_context/tables, real signature table/query_patterns), so scheduling and index recommendations can never succeed either.
+- **Failure scenario:** POST /api/v1/agent/execute with files=['sales.csv'] and a prompt like 'ingest this file and clean it'. The planner emits an IngestionAgent task. The tool call raises TypeError for every file. The task result is status 'success' with total_sources 0, DAGExecutor counts it as completed, the summary says 'Executed N/N tasks successfully' and report.success stays True. Downstream SchemaArchitect/Transform/Quality tasks run with no ingested data, and the user is told the ingest worked although nothing was ever profiled.
+- **Caused by:** none -- pre-existing.
+- **Fix:** pending.
+
+## BUG-438: Postgres/MySQL execute_query appends LIMIT after a trailing semicolon or line comment: the query either fails silently as zero rows or runs with no row cap
+- **Status:** open
+- **Found by:** ultracode audit of gateway routers, agents and connectors (run wf_121f5057-8a0, connectors scope; confirmed by 2 adversarial verifiers), 2026-10-13. `aurabackend/connectors/postgresql_connector.py:152`.
+- **Severity:** high
+- **Root cause:** `if not _has_trailing_limit(query): query = f"{query} LIMIT {limit}"` (same code at mysql_connector.py:137-138) concatenates onto the raw text. `connectors/sql_limit.py` tolerates a `;` only after an existing LIMIT. A query ending in `;` becomes `SELECT ...; LIMIT 1000`: asyncpg rejects it as multiple commands in a prepared statement, MySQL returns a 1064 syntax error, and the `except` at 157-161 turns that into `[]` unless `raise_errors=True` (only pipeline/engine.py passes it). A query ending in a `--` comment becomes `SELECT ... -- note LIMIT 1000`, so the cap sits inside the comment and is never applied. BUG-192 changed LIMIT detection but did not cover either case.
+- **Failure scenario:** (1) POST /api/v1/execute/query {"connector_type":"postgresql","query":"SELECT * FROM orders;",...}: `SQLSafetyValidator` allows the semicolon, queries.py:500 calls `execute_query(request.query)`, and the response is `success: true, rows: 0, columns: []` for a table that has data. The scheduler path (connectors/main.py:392) records the same query as JobStatus.SUCCESS with 0 rows. (2) `SELECT * FROM events -- full export` against a 50M-row table: no LIMIT reaches the server, `conn.fetch` / `cur.fetchall` materialises every row in the worker, and the configured limit (default 1000, QueryRequest.limit le=100000) is never enforced.
+- **Caused by:** none -- pre-existing.
+- **Fix:** pending.
+
+## BUG-439: Connectors service /connections/{id}/query ignores connect() failure and swallowed query errors, returning HTTP 200 with zero rows (scheduler marks the job SUCCESS)
+- **Status:** open
+- **Found by:** ultracode audit of gateway routers, agents and connectors (run wf_121f5057-8a0, connectors scope; confirmed by 2 adversarial verifiers), 2026-10-13. `aurabackend/connectors/main.py:391`.
+- **Severity:** medium
+- **Root cause:** `await connector.connect()` discards the boolean result. Every connector's `connect()` catches its own exception and returns False, and `execute_query` then returns `[]` because `_is_connected` is False. Query errors are swallowed the same way, because `raise_errors` is not passed on line 392. The handler therefore always reaches lines 398-402 and returns `{"columns": [], "rows": [], "row_count": 0}` with status 200. The `except Exception` -> 500 branch is effectively unreachable for database failures. BUG-029 item 1 fixed only the connection_id routing in this handler.
+- **Failure scenario:** DB_HOST points at a database that is down, DB_PASSWORD is wrong, or a scheduled job's SQL names a dropped table. scheduler_service/executor.py:310 posts to /connections/default/query, gets 200 with row_count 0, and executor.py:187-205 records JobStatus.SUCCESS, logs "Job completed successfully. Rows: 0", advances next_execution_time and skips the retry/failure-notification path. The execution sandbox proxy (execution_sandbox_service/main.py:56) likewise returns an empty successful result to the agent's execute_sql tool. An outage or broken query looks the same as a table with no rows.
+- **Caused by:** none -- pre-existing.
+- **Fix:** pending.
+
+## BUG-440: BigQuery execute_query still uses the substring LIMIT check that BUG-192 removed from Postgres/MySQL: any query mentioning 'limit' runs uncapped
+- **Status:** open
+- **Found by:** ultracode audit of gateway routers, agents and connectors (run wf_121f5057-8a0, connectors scope; confirmed by 2 adversarial verifiers), 2026-10-13. `aurabackend/connectors/bigquery_connector.py:156`.
+- **Severity:** medium
+- **Root cause:** `if "LIMIT" not in query.upper(): query = f"{query} LIMIT {limit}"` matches the word anywhere: a column such as `credit_limit` or `rate_limited`, an alias, a string literal, a comment, or a LIMIT inside a subquery. BUG-192 replaced this test with `connectors/sql_limit.has_trailing_limit` for the Postgres and MySQL connectors only. When the substring matches, no cap is appended, and `limit` is not applied anywhere else: `_query_rows` (line 47) builds a list of every row of the result. Errors, including the syntax error from appending after a trailing `;`, are swallowed to `[]` at 160-162 with no raise_errors option.
+- **Failure scenario:** A saved BigQuery connection is queried through POST /api/v1/execute/query with `SELECT account_id, credit_limit FROM accounts` on a table of tens of millions of rows. 'LIMIT' is found inside `CREDIT_LIMIT`, so the statement is sent with no LIMIT. BigQuery scans and returns the whole table (billed), and `[dict(row.items()) for row in ...result()]` loads all of it into the gateway worker, which has a 512M limit in docker-compose.prod.yml, instead of the 1000 rows the caller's limit promises. Conversely `SELECT * FROM t;` becomes `...; LIMIT 1000`, fails, and comes back as a successful empty result.
+- **Caused by:** none -- pre-existing.
+- **Fix:** pending.
