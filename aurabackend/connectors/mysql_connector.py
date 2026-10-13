@@ -8,7 +8,7 @@ from typing import Any, Dict, List, Optional
 
 import aiomysql
 
-from connectors.sql_limit import has_trailing_limit as _has_trailing_limit  # noqa: E402
+from connectors.sql_limit import with_row_limit  # noqa: E402
 from shared.sql_identifiers import quote_identifier
 
 from .base import BaseConnector, ConnectorConfig
@@ -134,8 +134,7 @@ class MySQLConnector(BaseConnector):
             async with self.pool.acquire() as conn:
                 async with conn.cursor(aiomysql.DictCursor) as cur:
                     # Append LIMIT if not present
-                    if not _has_trailing_limit(query):
-                        query = f"{query} LIMIT {limit}"
+                    query = with_row_limit(query, limit)
 
                     await cur.execute(query)
                     rows = await cur.fetchall()

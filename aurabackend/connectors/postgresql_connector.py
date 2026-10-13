@@ -13,7 +13,7 @@ try:
 except ImportError:  # pragma: no cover - exercised only when driver absent
     asyncpg = None
 
-from connectors.sql_limit import has_trailing_limit as _has_trailing_limit  # noqa: E402
+from connectors.sql_limit import with_row_limit  # noqa: E402
 from shared.sql_identifiers import quote_identifier
 
 from .base import BaseConnector, ConnectorConfig
@@ -149,8 +149,7 @@ class PostgreSQLConnector(BaseConnector):
         try:
             async with self.pool.acquire() as conn:
                 # Append LIMIT if not present
-                if not _has_trailing_limit(query):
-                    query = f"{query} LIMIT {limit}"
+                query = with_row_limit(query, limit)
 
                 rows = await conn.fetch(query)
                 return [dict(row) for row in rows]
