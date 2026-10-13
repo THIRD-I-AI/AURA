@@ -27,7 +27,14 @@ export default function QueryPanel(_props: IDockviewPanelProps) {
     setBusy(true); setError(null);
     try {
       const res = await chatService.sendMessage(prompt, { uploadedFile: activeDataset });
-      if (seq === requestSeq.current) setResult(res);
+      if (seq !== requestSeq.current) return;
+      setResult(res);
+      // BUG-425: /chat reports a failed query as HTTP 200 with status 'Error' (or
+      // execution_result.success false); nothing in the render reads those fields,
+      // so the panel showed nothing at all.
+      if (res.status === 'Error' || res.execution_result?.success === false) {
+        setError(res.execution_result?.error || res.error_message || res.message || 'Query failed');
+      }
     } catch (e) {
       if (seq === requestSeq.current) setError(e instanceof Error ? e.message : 'Query failed');
     } finally {
@@ -60,6 +67,7 @@ export default function QueryPanel(_props: IDockviewPanelProps) {
         <button data-testid="query-run" onClick={run} disabled={busy}>{busy ? '…' : 'Run'}</button>
       </div>
       {error && <div className="panel-error-inline">{error}</div>}
+      {!error && result?.message && !er && <div className="panel-context" data-testid="query-message">{result.message}</div>}
       {result?.final_query && <pre className="query-sql">{result.final_query}</pre>}
       {er?.verification?.status === 'mismatch' && (
         <div className="panel-warn-inline">

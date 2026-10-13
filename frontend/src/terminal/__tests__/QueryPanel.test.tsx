@@ -105,3 +105,35 @@ describe('QueryPanel', () => {
     expect(sendMessage).toHaveBeenCalledTimes(2);
   });
 });
+
+describe('QueryPanel failures reported as HTTP 200 (BUG-425)', () => {
+  const ask = () => {
+    render(<QueryPanel api={{} as never} params={{} as never} containerApi={{} as never} />);
+    fireEvent.change(screen.getByTestId('query-input'), { target: { value: 'total revenue' } });
+    fireEvent.click(screen.getByTestId('query-run'));
+  };
+
+  it('shows the reason when SQL generation fails', async () => {
+    sendMessage.mockResolvedValue({
+      job_id: 'j1', status: 'Error', final_query: null, execution_result: null,
+      error_message: 'SQL generation failed: the model is rate-limited.',
+    });
+    ask();
+    expect(await screen.findByText(/the model is rate-limited/)).toBeInTheDocument();
+  });
+
+  it('shows the execution error when the query itself fails', async () => {
+    sendMessage.mockResolvedValue({
+      job_id: 'j1', status: 'Success', final_query: 'SELECT nope',
+      execution_result: { success: false, error: 'Column "nope" does not exist', columns: [], rows: [] },
+    });
+    ask();
+    expect(await screen.findByText(/Column "nope" does not exist/)).toBeInTheDocument();
+  });
+
+  it('shows a message-only reply', async () => {
+    sendMessage.mockResolvedValue({ job_id: 'j1', status: 'Conversational', message: 'Hello there.' });
+    ask();
+    expect(await screen.findByTestId('query-message')).toHaveTextContent('Hello there.');
+  });
+});
