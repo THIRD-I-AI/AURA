@@ -328,6 +328,14 @@ def _evict_finished_jobs() -> None:
 @app.post("/counterfactual/jobs")
 async def submit_job(query: CounterfactualQuery,
                      user: Dict[str, Any] = Depends(require_user)) -> Dict[str, str]:
+    # BUG-420: a filter or row limit was accepted, hashed and signed with the query,
+    # but the estimators ran over every row of the source regardless. Refuse it
+    # rather than sign a result for a subset that was never taken.
+    if query.dataset.where is not None or query.dataset.limit is not None:
+        raise HTTPException(422, (
+            "dataset.where and dataset.limit are not supported: the estimate is computed "
+            "over every row of the source. Filter the data before uploading."
+        ))
     job_id = _new_job("ca", _ledger_tenant(user))
     # Hold the Task reference inside the job record. Without this, the
     # task is eligible for garbage collection as soon as submit_job

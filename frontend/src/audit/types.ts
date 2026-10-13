@@ -20,7 +20,7 @@ export interface Estimate {
 // S33 (backend) computes the significance-aware verdict once and attaches it to
 // the rendered block. The frontend reads this as the single source of truth so
 // the web certificate can never disagree with the signed PDF for the same hash.
-export type VerdictStatus = 'empty' | 'not_material' | 'not_significant' | 'detected';
+export type VerdictStatus = 'empty' | 'not_material' | 'not_significant' | 'inconsistent' | 'detected';
 
 export interface RenderedVerdict {
   status: VerdictStatus;
