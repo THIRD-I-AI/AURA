@@ -4354,13 +4354,13 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Fix:** `visualization_node` reads the spec from `chart_spec` (the key `VisualizationAgent` writes) before the older `chart` / `chartSpec` names, so the chosen type, axes and title reach `execution_result.chart_spec` and the analysis prompt instead of an empty table spec. Regression test `tests/test_visualization_node_chart_key.py`. Visible effect: chat answers now render bar/line/pie charts in the panels that already support them (BUG-134).
 
 ## BUG-434: Duplicate result column names overwrite each other in records (JOIN queries show the wrong values)
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode audit of gateway routers, agents and connectors (run wf_121f5057-8a0, agents scope; confirmed by 2 adversarial verifiers), 2026-10-13. `aurabackend/agents/specialists/execution_agent.py:78`.
 - **Severity:** high
 - **Root cause:** Records are built as `{col: val for col, val in zip(columns, row)}`. DuckDB keeps duplicate names in cursor.description (verified locally: `select a.name, b.name from a join b ...` gives description ['name', 'name']), so the dict keeps only the last value for a repeated name. `columns` and `rows` still carry both columns, so records no longer line up with columns. Chat returns records as execution_result.data (chat.py:674), and Visualization/Analysis profile the records.
 - **Failure scenario:** Tables customers(id, name) and products(id, name); the user asks 'list each customer with the product they bought'. The LLM emits `SELECT c."name", p."name", o."qty" FROM ...`. A row ('alice', 'widget', 3) becomes the record {"name": "widget", "qty": 3}. The customer name is gone, columns = ['name','name','qty'] disagrees with the 2-key records, and any table rendered from data/columns shows the product name in both 'name' columns. The same happens with `SELECT a.id, b.id` and with `SELECT *` over a join. Stats and the narrative are computed on the wrong column.
 - **Caused by:** none -- pre-existing.
-- **Fix:** pending.
+- **Fix:** `ExecutionAgent` de-duplicates result column names before building records (`_unique_column_names`: `name`, `name_2`, ..., skipping any suffix that is already a real column), and returns the same list as `columns`, so `records`, `rows` and `columns` stay aligned for joins that select two columns with one name. Regression tests in `tests/test_execution_duplicate_columns.py`.
 
 ## BUG-435: DPC reports 'mismatch' on correct GROUP BY answers because the pandas index (group keys) is dropped before comparison
 - **Status:** open

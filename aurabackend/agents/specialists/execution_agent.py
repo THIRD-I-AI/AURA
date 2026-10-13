@@ -16,6 +16,29 @@ def _max_result_rows() -> int:
         return 10000
 
 
+def _unique_column_names(names: list[str]) -> list[str]:
+    """Suffix repeated result column names (name, name_2, ...).
+
+    BUG-434: DuckDB keeps duplicate names from a join (`SELECT a.name, b.name`), and
+    the per-row dict built from them kept only the last value for each name, so
+    records disagreed with `columns` and showed one table's value under both.
+    """
+    taken = set(names)
+    seen: dict[str, int] = {}
+    unique = []
+    for name in names:
+        seen[name] = seen.get(name, 0) + 1
+        candidate = name
+        if seen[name] > 1:
+            candidate = f"{name}_{seen[name]}"
+            while candidate in taken:
+                seen[name] += 1
+                candidate = f"{name}_{seen[name]}"
+            taken.add(candidate)
+        unique.append(candidate)
+    return unique
+
+
 class ExecutionAgent(BaseAgent):
     """
     Takes an upstream generated SQL query from the SQLGeneratorAgent and securely executes it
@@ -62,7 +85,7 @@ class ExecutionAgent(BaseAgent):
 
             def _run_sql() -> tuple[list[str], list[tuple]]:
                 cur = con.execute(sql)
-                cols = [desc[0] for desc in cur.description]
+                cols = _unique_column_names([desc[0] for desc in cur.description])
                 return cols, cur.fetchmany(cap + 1)
 
             try:
