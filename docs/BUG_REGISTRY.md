@@ -4327,13 +4327,13 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Fix:** pending.
 
 ## BUG-431: POST /execute with connection_id reads EXECUTION_SANDBOX_URL, which no deployment sets, so it always targets the gateway's own localhost:8003
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode audit of gateway routers, agents and connectors (run wf_121f5057-8a0, routers scope; confirmed by 2 adversarial verifiers), 2026-10-13. `aurabackend/api_gateway/routers/queries.py:356`.
 - **Severity:** medium
 - **Root cause:** execute_for_chat resolves the sandbox with `os.getenv("EXECUTION_SANDBOX_URL", "http://localhost:8003")`. Every compose file gives the gateway `AURA_SANDBOX_URL=http://execution_sandbox:8003` (docker-compose.yml:32, docker-compose.prod.yml:113), which is also what shared/config.py:130 and agents/tools.py:32 read; EXECUTION_SANDBOX_URL appears nowhere else. The connect error is then caught by the broad `except Exception` (line 394) and returned as HTTP 200 with success=false. The same mismatch exists at routers/connections.py:531 (reads DATABASE_SERVICE_URL; the gateway is given AURA_CONNECTORS_URL), so GET /databases/test/{db_type} always answers 503.
 - **Failure scenario:** Full docker-compose stack with a healthy execution_sandbox container. The frontend sends POST /api/v1/execute {sql, connection_id} (frontend/src/services/api.ts:950). The gateway posts to http://localhost:8003/execute_sql inside its own container, gets connection refused, and returns 200 {success: false, error: <generic message>}; after repeated failures the breaker opens and every call returns 'Execution sandbox unavailable (circuit open)'. SQL against a saved database connection can never run, and the reported cause (sandbox down) is wrong.
 - **Caused by:** none -- pre-existing.
-- **Fix:** pending.
+- **Fix:** `POST /execute` with a `connection_id` reads the sandbox address from `AURA_SANDBOX_URL` and `GET /databases/test/{db_type}` reads the connectors address from `AURA_CONNECTORS_URL` -- the names every compose file sets -- instead of `EXECUTION_SANDBOX_URL` / `DATABASE_SERVICE_URL`, which nothing sets. Regression test `tests/test_gateway_upstream_env_names.py`; `test_connections_database_test_proxy.py` updated to the new name. Not changed: an unreachable sandbox is still answered as HTTP 200 with `success: false`.
 
 ## BUG-432: Public share-link route GET /public/saved-queries/{token} is not on the auth allowlist, so it returns 401 whenever JWT is enabled
 - **Status:** open
