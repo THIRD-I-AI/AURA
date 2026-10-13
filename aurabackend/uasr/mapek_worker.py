@@ -61,6 +61,7 @@ from .models import (
     RecoveryLoopResult,
     RecoveryStatus,
     infer_schema_snapshot,
+    set_transformed_rows,
 )
 from .numeric_heal_controller import HealState, NumericHealController
 from .numeric_semantics import (
@@ -480,7 +481,7 @@ class MAPEKWorker:
                 if self._shim_router is not None:
                     try:
                         routed = await self._shim_router.apply(batch.source_id, batch.rows)
-                        batch.rows = routed["rows"]
+                        set_transformed_rows(batch, routed["rows"])
                     except Exception as exc:
                         # ShimRouter.apply() returns a normal dict for "no
                         # routes yet" — it only raises on a genuine canary-shim
@@ -497,8 +498,7 @@ class MAPEKWorker:
                         )
                 else:
                     healed_rows, _, _ = await self._loop.apply_shims_counted_async(batch.source_id, batch.rows)
-                    batch.rows = healed_rows
-                batch.columns = list(batch.rows[0].keys()) if batch.rows else batch.columns
+                    set_transformed_rows(batch, healed_rows)
 
                 # ── Analyze ────────────────────────────────────────────
                 # Offloaded like service.py's HTTP handlers: detect() can hit a

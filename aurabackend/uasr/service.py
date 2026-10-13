@@ -44,6 +44,7 @@ from .models import (
     RecoveryMode,
     RecoveryRecord,
     RecoveryStatus,
+    set_transformed_rows,
 )
 from .recovery_loop import RecoveryLoop, RecoveryLoopConfig
 from .recovery_persistence import mark_shim_rolled_back
@@ -718,8 +719,8 @@ async def heal_batch(req: IngestRequest, request: Request, db: AsyncSession = De
     standing = len(_loop.get_deployed_shims(batch.source_id))
     standing_applied = 0
     if standing:
-        batch.rows, standing_applied, _ = await _loop.apply_shims_counted_async(batch.source_id, batch.rows)
-        batch.columns = list(batch.rows[0].keys()) if batch.rows else batch.columns
+        healed_rows, standing_applied, _ = await _loop.apply_shims_counted_async(batch.source_id, batch.rows)
+        set_transformed_rows(batch, healed_rows)
     # BUG-271: a standing shim that raised used to be invisible here.
     standing_failed = standing_applied < standing
 
@@ -793,10 +794,10 @@ async def heal_batch(req: IngestRequest, request: Request, db: AsyncSession = De
     deployed = loop_result.status == RecoveryStatus.DEPLOYED
     applied, total = standing_applied, standing
     if deployed and loop_result.shim is not None:
-        batch.rows, ok = await _loop.apply_new_shim_async(
+        healed_rows, ok = await _loop.apply_new_shim_async(
             batch.source_id, loop_result.shim.shim_code, batch.rows)
         applied, total = standing_applied + ok, standing + 1
-        batch.columns = list(batch.rows[0].keys()) if batch.rows else batch.columns
+        set_transformed_rows(batch, healed_rows)
     apply_failed = applied < total
 
     # BUG-271: this was `deployed or bool(standing)`, so a source with ANY earlier shim
