@@ -4372,13 +4372,13 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Fix:** `_pandas_to_2d` calls `reset_index()` on a Series or DataFrame whose index levels are all named (the shape `groupby` produces), so group keys take part in the comparison as they do on the SQL side; the unnamed positional index of a plain or filtered frame is still left out. `_norm_scalar` serialises datetimes with `isoformat()`, matching how `ExecutionAgent` serialises the SQL side. Regression tests in `tests/test_dpc_group_keys.py` (grouped Series and frame agree, a wrong total still mismatches, a filtered frame is unaffected, timestamps agree). Not changed: the verifier prompt.
 
 ## BUG-436: DAGExecutor runs tasks whose dependency was skipped; only a directly failed dependency blocks a task
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode audit of gateway routers, agents and connectors (run wf_121f5057-8a0, agents scope; confirmed by 2 adversarial verifiers), 2026-10-13. `aurabackend/agents/executor.py:131`.
 - **Severity:** medium
 - **Root cause:** _run_task skips a task only when `dep_id in failed` (lines 131-136). A skipped task is appended to report.skipped but never added to `failed`. The ready-set calculation (lines 201-207) treats a skipped dependency as satisfied, so the next task downstream becomes ready, passes the `failed` check, and runs with an empty upstream_results (line 149-153 only includes deps present in `completed`). This contradicts the module contract ('If a critical-path task fails, all downstream tasks are SKIPPED'). Skipping stops after exactly one hop.
 - **Failure scenario:** POST /api/v1/agent/execute with a plan t1 SQLGeneratorAgent -> t2 TransformAgent -> t3 QualityAgent -> t4 PipelineAgent. t1 fails (LLM error or rate limit returns FAILED). t2 is skipped. t3 depends only on t2, which is in report.skipped and not in `failed`, so QualityAgent runs with no upstream and executes its checks against the sandbox; t4 then runs and designs a pipeline. Both are stored as SUCCESS in task_results. The report says 'Skipped: 1. Failures: 1' while two downstream tasks ran on nothing and report success.
 - **Caused by:** none -- pre-existing.
-- **Fix:** pending.
+- **Fix:** `DAGExecutor._run_task` skips a task when any dependency failed or was itself skipped, so a failure blocks the whole chain below it instead of one hop. Regression test `tests/test_executor_skip_propagates.py`.
 
 ## BUG-437: IngestionAgent calls its tools with wrong keyword names, so every ingest raises TypeError that is swallowed and the task reports SUCCESS with zero sources
 - **Status:** open

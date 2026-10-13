@@ -127,9 +127,11 @@ class DAGExecutor:
 
         async def _run_task(task: TaskNode) -> None:
             async with semaphore:
-                # Skip if any dependency failed
+                # Skip if any dependency failed -- or was itself skipped (BUG-436):
+                # a skipped task was treated as satisfied, so skipping stopped after one
+                # hop and later tasks ran with no upstream results.
                 for dep_id in task.depends_on:
-                    if dep_id in failed:
+                    if dep_id in failed or dep_id in report.skipped:
                         task.status = AgentStatus.SKIPPED
                         report.skipped.append(task.id)
                         await self._progress(f"⏭ Skipped {task.id} (dependency failed)", "skip", 0)
