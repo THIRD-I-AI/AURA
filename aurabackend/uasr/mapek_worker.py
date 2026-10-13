@@ -60,6 +60,7 @@ from .models import (
     DriftType,
     RecoveryLoopResult,
     RecoveryStatus,
+    infer_schema_snapshot,
 )
 from .numeric_heal_controller import HealState, NumericHealController
 from .numeric_semantics import (
@@ -732,7 +733,7 @@ class MAPEKWorker:
             batch_id=uuid.uuid4().hex[:12],
             columns=cols,
             rows=rows,
-            schema_snapshot={c: type(rows[0].get(c)).__name__ for c in cols if rows[0].get(c) is not None},
+            schema_snapshot=infer_schema_snapshot(rows, cols),
         )
 
     async def _commit_offsets(self) -> None:

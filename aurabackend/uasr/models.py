@@ -182,6 +182,36 @@ class BatchPayload(BaseModel):
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
+def infer_schema_snapshot(rows: List[Dict[str, Any]], columns: List[str]) -> Dict[str, str]:
+    """Type name per column, taken from the first non-null value in the batch.
+
+    BUG-415: the snapshot used to come from the first row alone, so a null there made
+    the column look removed and a whole-number value made a float column look retyped.
+    A column that is null in every row is "unknown". JSON does not distinguish 10 from
+    10.0, so a parsed int or float is reported as "number".
+    """
+    snapshot: Dict[str, str] = {}
+    for col in columns:
+        value = next((r[col] for r in rows if r.get(col) is not None), None)
+        if value is None:
+            snapshot[col] = "unknown"
+        elif isinstance(value, (int, float)) and not isinstance(value, bool):
+            snapshot[col] = "number"
+        else:
+            snapshot[col] = type(value).__name__
+    return snapshot
+
+
+def schema_types_match(a: str, b: str) -> bool:
+    """Whether two snapshot type names describe the same column type.
+
+    "unknown" matches anything and "number" matches int or float; int against float
+    is still a change, because a caller that names them explicitly means it.
+    """
+    numeric = {"int", "float", "number"}
+    return a == b or "unknown" in (a, b) or ("number" in (a, b) and a in numeric and b in numeric)
+
+
 class DriftDetectionResult(BaseModel):
     source_id: str
     batch_id: str

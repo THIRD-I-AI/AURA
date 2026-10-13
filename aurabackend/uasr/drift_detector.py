@@ -32,6 +32,7 @@ from .models import (
     DriftDetectionResult,
     DriftSeverity,
     DriftType,
+    schema_types_match,
 )
 from .state_store import InMemoryStateStore, SourceState, StateStore
 
@@ -424,7 +425,7 @@ class DriftDetector:
             if batch.schema_snapshot:
                 type_changes = []
                 for col, dtype in batch.schema_snapshot.items():
-                    if col in baseline_schema and baseline_schema[col] != dtype and baseline_schema[col] != "unknown":
+                    if col in baseline_schema and not schema_types_match(baseline_schema[col], dtype):
                         type_changes.append(col)
                 if type_changes:
                     type_changed_types = {c: batch.schema_snapshot[c] for c in type_changes}
@@ -439,6 +440,15 @@ class DriftDetector:
                         "old_types": {c: baseline_schema[c] for c in type_changes},
                         "new_types": {c: batch.schema_snapshot[c] for c in type_changes},
                     }, False
+                # A column the baseline only ever saw as null gets its type from the
+                # first batch that carries a value, so later retypes are detectable.
+                learned = {
+                    c: t for c, t in batch.schema_snapshot.items()
+                    if baseline_schema.get(c) == "unknown" and t != "unknown"
+                }
+                if learned:
+                    st.schema = {**baseline_schema, **learned}
+                    return None, True
             return None, False
 
         added_types = {
