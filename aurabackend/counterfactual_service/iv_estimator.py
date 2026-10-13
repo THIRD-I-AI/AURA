@@ -49,6 +49,11 @@ def first_stage_diagnostics(
     Xc = df[confounders].to_numpy(dtype=float) if confounders else np.empty((n, 0))
     Z = df[instruments].to_numpy(dtype=float)
     T = df[treatment].to_numpy(dtype=float)
+    # BUG-419: with a constant treatment both residual sums below are float
+    # round-off, so their ratio was an arbitrary -- sometimes large -- F statistic,
+    # and stage 2 then returned a confident estimate from a collinear design.
+    if np.ptp(T) <= 1e-12 * max(1.0, float(np.abs(T).max())):
+        raise WeakInstrumentError(f"treatment '{treatment}' does not vary; an effect cannot be estimated")
 
     full = np.hstack([intercept, Z, Xc])
     restricted = np.hstack([intercept, Xc])
