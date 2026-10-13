@@ -4345,13 +4345,13 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Fix:** pending.
 
 ## BUG-433: Chat chart spec is always collapsed to type 'table' (output key mismatch between VisualizationAgent and visualization_node)
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode audit of gateway routers, agents and connectors (run wf_121f5057-8a0, agents scope; confirmed by 2 adversarial verifiers), 2026-10-13. `aurabackend/agents/langgraph_orchestrator.py:316`.
 - **Severity:** high
 - **Root cause:** visualization_node reads `res.output.get("chart") or res.output.get("chartSpec") or res.output`, but VisualizationAgent writes its result under the key `chart_spec` (specialists/visualization_agent.py:104, `result.output = {"chart_spec": spec}`). Neither lookup matches, so chart_payload becomes the wrapper dict `{"chart_spec": {...}}`. The wrapper has no `type`/`x`/`y`/`title`, so lines 321-327 build `ChartSpec(type="table", x=None, y=[], title="", reason="")` from the defaults. The real LLM or heuristic spec is discarded with no error. The same empty spec is then handed to AnalysisAgent as the chosen chart (line 355-365).
 - **Failure scenario:** Any POST /chat question that returns rows, e.g. 'total sales by region'. VisualizationAgent returns {"chart_spec": {"type":"bar","x":"region","y":["total"],...}}; chat.py:680 then ships execution_result.chart_spec = {type:'table', x:None, y:[], title:'', reason:''}. Confirmed by running visualization_node with a stubbed agent returning that bar spec: output was ChartSpec(type='table', x=None, y=[], title='', reason=''). No chat answer can ever render a bar/line/pie/kpi chart, and the analysis prompt always says 'Chart chosen: table (x=None, y=[])'.
 - **Caused by:** none -- pre-existing.
-- **Fix:** pending.
+- **Fix:** `visualization_node` reads the spec from `chart_spec` (the key `VisualizationAgent` writes) before the older `chart` / `chartSpec` names, so the chosen type, axes and title reach `execution_result.chart_spec` and the analysis prompt instead of an empty table spec. Regression test `tests/test_visualization_node_chart_key.py`. Visible effect: chat answers now render bar/line/pie charts in the panels that already support them (BUG-134).
 
 ## BUG-434: Duplicate result column names overwrite each other in records (JOIN queries show the wrong values)
 - **Status:** open

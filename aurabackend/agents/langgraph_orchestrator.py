@@ -313,7 +313,12 @@ async def visualization_node(state: OrchestratorState) -> Dict[str, Any]:
     if res.status == AgentStatus.FAILED:
         return _err(state, "visualization", res.error or "visualization failed", dur)
 
-    chart_payload = res.output.get("chart") or res.output.get("chartSpec") or res.output
+    # BUG-433: VisualizationAgent writes its spec under "chart_spec". Only "chart" and
+    # "chartSpec" were read, so the wrapper dict itself was taken as the spec and
+    # every chart collapsed to an empty table.
+    chart_payload = (
+        res.output.get("chart_spec") or res.output.get("chart") or res.output.get("chartSpec") or res.output
+    )
     if not isinstance(chart_payload, dict):
         return _err(state, "visualization", "viz output is not a dict", dur)
 
