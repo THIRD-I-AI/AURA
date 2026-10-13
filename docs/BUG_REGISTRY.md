@@ -4264,13 +4264,13 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Fix:** pending.
 
 ## BUG-424: Ask AURA panel discards the server's `message`: conversational, pipeline-created and audit-completed replies all render as 'Done.'
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode audit of uasr, counterfactual_service and frontend (run wf_f6f9a8a7-162, frontend scope; confirmed by 2 adversarial verifiers), 2026-10-12. `frontend/src/workbench/panels/AskAuraPanel.tsx:55`.
 - **Severity:** medium
 - **Root cause:** `text` is built from `er.conclusion || er.sql_explanation || (ok ? 'Done.' : undefined)` and `error` (lines 78-82) from `er.error || resp.error_message || 'Query failed.'`. Neither reads `resp.message`. POST /chat puts the entire reply in `message` (with no execution_result) for three success statuses - Conversational (chat.py:436-442), PipelineCreated (479-491) and AuditCompleted (604-612) - and for the pipeline/audit failure branches, which return status 'Error' with the reason only in `message` (chat.py:497-503, 513-522, 549-554, 625-630). The cockpit's AskAuraChat fallback does read `resp.message` on success (AskAuraChat.tsx:95), so the two surfaces disagree.
 - **Failure scenario:** In the 'Ask AURA' nav view the user types 'audit the amounts in invoices.csv'. The gateway runs the forensic auditor, signs a certificate and returns status 'AuditCompleted' with message 'Forensic audit of ... 7 finding(s) - 2 high ... Certificate <hash>. Open the signed certificate...'. The panel shows only 'Done.' - the finding counts and certificate reference are lost. Likewise 'hello' shows 'Done.' instead of the greeting, 'build a pipeline that ...' shows 'Done.' instead of the saved pipeline's name, and 'audit my data' with no numeric column shows 'Query failed.' instead of 'I need a dataset with a numeric/amount column to audit...'.
 - **Caused by:** none -- pre-existing.
-- **Fix:** pending.
+- **Fix:** `AskAuraPanel` falls back to the response's `message` for both the answer text and the error text, so conversational, pipeline-created and audit-completed replies show what the server said instead of "Done.", and message-only failures show their reason instead of "Query failed.". The cockpit `AskAuraChat` error branch gets the same fallback. Regression: 2 tests in `AskAuraPanel.test.tsx`.
 
 ## BUG-425: Terminal Query panel shows nothing at all when /chat answers status 'Error' (HTTP 200)
 - **Status:** open

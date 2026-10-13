@@ -93,7 +93,7 @@ export function AskAuraChat({ pushFeed, setHistory }: Props) {
             : undefined;
           answer = ok
             ? (er?.conclusion || er?.sql_explanation || resp.message || 'Done.')
-            : (er?.error || resp.error_message || 'Query failed.');
+            : (er?.error || resp.error_message || resp.message || 'Query failed.');
         } catch {
           answer = 'Could not reach AURA — please check your connection and try again.';
         }

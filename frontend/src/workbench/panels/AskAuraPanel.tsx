@@ -49,10 +49,14 @@ export default function AskAuraPanel() {
       const er = (resp as { execution_result?: Record<string, unknown> }).execution_result || {};
       const sql = (resp as { final_query?: string }).final_query;
       const ok = (resp as { status?: string }).status !== 'Error' && er.success !== false;
+      // BUG-424: conversational, pipeline-created and audit-completed replies carry
+      // their whole answer in `message` with no execution_result, and so do the
+      // pipeline/audit failure branches.
+      const message = (resp as { message?: string }).message;
       const filled: Msg = {
         id: pending.id,
         role: 'assistant',
-        text: (er.conclusion as string) || (er.sql_explanation as string) || (ok ? 'Done.' : undefined),
+        text: (er.conclusion as string) || (er.sql_explanation as string) || (ok ? message || 'Done.' : undefined),
         sql: sql || undefined,
         columns: (er.columns as string[]) || undefined,
         data: (er.data as Record<string, unknown>[]) || undefined,
@@ -79,6 +83,7 @@ export default function AskAuraPanel() {
           ? undefined
           : ((er.error as string)
             || (resp as { error_message?: string }).error_message
+            || message
             || 'Query failed.'),
       };
       setMessages((m) => m.map((x) => (x.id === pending.id ? filled : x)));

@@ -192,3 +192,28 @@ describe('AskAuraPanel truncated results', () => {
     expect(screen.queryByText(/cut off/i)).not.toBeInTheDocument();
   });
 });
+
+describe('AskAuraPanel message-only replies (BUG-424)', () => {
+  beforeAll(() => { Element.prototype.scrollTo = vi.fn(); });
+  afterEach(() => { vi.restoreAllMocks(); });
+
+  it('shows a conversational reply instead of "Done."', async () => {
+    vi.spyOn(chatService, 'sendMessage').mockResolvedValue({
+      status: 'Conversational',
+      message: 'Hello! Upload a dataset and ask me about it.',
+    } as never);
+    await ask('hi');
+    expect(await screen.findByText('Hello! Upload a dataset and ask me about it.')).toBeInTheDocument();
+    expect(screen.queryByText('Done.')).not.toBeInTheDocument();
+  });
+
+  it('shows the reason when a failure is reported only in message', async () => {
+    vi.spyOn(chatService, 'sendMessage').mockResolvedValue({
+      status: 'Error',
+      message: 'Could not build the pipeline: no source file was named.',
+    } as never);
+    await ask('build a pipeline');
+    expect(await screen.findByText(/no source file was named/)).toBeInTheDocument();
+    expect(screen.queryByText('Query failed.')).not.toBeInTheDocument();
+  });
+});
