@@ -368,19 +368,29 @@ except ImportError as exc:
 
 # ── Unified system health endpoint ─────────────────────────────────
 
-_SERVICES = {
-    "code_generation": "http://localhost:8011/health",
-    "database_service": "http://localhost:8002/health",
-    "execution_sandbox": "http://localhost:8003/health",
-    "scheduler":        "http://localhost:8004/health",
-    "insights":         "http://localhost:8005/health",
-    "metadata_store":   "http://localhost:8007/health",
-    # NOT localhost: UASR is its own container. Inside the gateway, localhost is
-    # the gateway itself, so this dashboard reported UASR down no matter how
-    # healthy it was — on the one endpoint built for cross-service triage. The
-    # module already resolves the real address into _UASR_URL above.
-    "uasr":             f"{_UASR_URL}/health",
+# BUG-429: these were hard-coded to localhost, which inside the gateway container is
+# the gateway itself, so every containerized deployment reported them down and the
+# whole system "critical". Each is probed at the address the gateway is configured
+# with, and a service this deployment does not configure is left out of the report
+# rather than counted as down.
+_SERVICE_URL_ENV = {
+    "code_generation":   "AURA_CODEGEN_URL",
+    "database_service":  "AURA_CONNECTORS_URL",
+    "execution_sandbox": "AURA_SANDBOX_URL",
+    "scheduler":         "AURA_SCHEDULER_URL",
+    "insights":          "AURA_INSIGHTS_URL",
+    "metadata_store":    "AURA_METADATA_URL",
 }
+
+
+def _configured_services() -> dict:
+    services = {
+        name: f"{os.environ[env].rstrip('/')}/health"
+        for name, env in _SERVICE_URL_ENV.items() if os.environ.get(env)
+    }
+    # UASR is its own container; the module resolves its address into _UASR_URL above.
+    services["uasr"] = f"{_UASR_URL}/health"
+    return services
 
 
 # BUG-423: also served under /api/v1. The root path is what the frontend used to
@@ -398,13 +408,14 @@ async def system_health():
     returns a useful result for the dashboard.
     """
     results: dict = {"api_gateway": {"status": "healthy"}}
+    services = _configured_services()
     async with httpx.AsyncClient(timeout=2.0) as client:
         responses = await asyncio.gather(
-            *[client.get(url) for url in _SERVICES.values()],
+            *[client.get(url) for url in services.values()],
             return_exceptions=True,
         )
 
-    for name, resp in zip(_SERVICES.keys(), responses):
+    for name, resp in zip(services.keys(), responses):
         if isinstance(resp, Exception):
             results[name] = {"status": "down", "error": str(resp)}
         elif resp.status_code == 200:
