@@ -114,23 +114,31 @@ services:
       AURA_SCHEDULER_URL: http://scheduler_service:8004
       AURA_INSIGHTS_URL: http://insights_service:8005
 
+  # BUG-443: `ports: !reset []` (Compose 2.24+) removes the host port mapping the
+  # base file adds for local development. Without it every internal service --
+  # which trusts its network position -- was published on the production host.
+  # Only the frontend (80) and the gateway (8000) stay reachable from outside.
   code_generation_service:
+    ports: !reset []
     <<: *prod-common
     command: uvicorn code_generation_service.main:code_gen_app --host 0.0.0.0 --port 8001 --workers 2
     volumes: []
 
   connector_service:
+    ports: !reset []
     <<: *prod-common
     command: uvicorn connectors.main:app --host 0.0.0.0 --port 8002 --workers 2
     volumes: []
 
   execution_sandbox:
+    ports: !reset []
     <<: *prod-common
     command: uvicorn execution_sandbox_service.main:execution_app --host 0.0.0.0 --port 8003 --workers 2
     volumes:
       - scheduler_data:/app/data
 
   scheduler_service:
+    ports: !reset []
     <<: *prod-common
     command: uvicorn scheduler_service.main:scheduler_app --host 0.0.0.0 --port 8004 --workers 1
     depends_on:
@@ -143,16 +151,19 @@ services:
       DATABASE_SERVICE_URL: http://connector_service:8002
 
   insights_service:
+    ports: !reset []
     <<: *prod-common
     command: uvicorn insights_service.main:app --host 0.0.0.0 --port 8005 --workers 2
     volumes: []
 
   orchestration_service:
+    ports: !reset []
     <<: *prod-common
     command: uvicorn orchestration_service.main:app --host 0.0.0.0 --port 8006 --workers 2
     volumes: []
 
   metadata_store:
+    ports: !reset []
     <<: *prod-common
     command: uvicorn metadata_store.main:metadata_app --host 0.0.0.0 --port 8007 --workers 1
     depends_on:
@@ -163,6 +174,7 @@ services:
       <<: *backend-env
 
   uasr_service:
+    ports: !reset []
     <<: *prod-common
     command: uvicorn uasr.service:app --host 0.0.0.0 --port 8009 --workers 1
     depends_on:
@@ -183,6 +195,7 @@ services:
 
   # ── Redis — UASR shared state + distributed repair admission ──────────
   redis:
+    ports: !reset []
     <<: *prod-common
     image: redis:7-alpine
     command: ["redis-server", "--appendonly", "yes", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru"]
@@ -193,6 +206,15 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+
+  # BUG-443: defined only in docker-compose.yml, so their dev port mappings carried
+  # straight into production.
+  causal_service:
+    ports: !reset []
+  redpanda:
+    ports: !reset []
+  jaeger:
+    ports: !reset []
 
 volumes:
   aura-redis:
