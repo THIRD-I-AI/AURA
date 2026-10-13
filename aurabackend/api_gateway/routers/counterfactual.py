@@ -95,6 +95,7 @@ from counterfactual_service.main import (
 )
 from counterfactual_service.schemas import CounterfactualQuery
 from shared.auth import get_current_user, require_tenant, require_user
+from shared.public_routes import public_route
 
 router = APIRouter(prefix="/counterfactual", tags=["counterfactual"])
 
@@ -137,11 +138,13 @@ async def report_pdf(record_hash: str,
 
 
 @router.get("/artifacts/{record_hash}/verify")
+@public_route("signature check only: returns verified/unsigned for a record hash, never the artifact (BUG-321)")
 async def verify_artifact(record_hash: str) -> Dict[str, Any]:
     return await _svc_verify_artifact(record_hash)
 
 
 @router.get("/public-key")
+@public_route("public key material, the same key the JWKS route already publishes")
 async def public_key() -> Dict[str, Any]:
     return await _svc_get_public_key()
 
@@ -164,6 +167,7 @@ async def admin_revoke_key(
 # ── S31b — One-click demo on pre-loaded compliance data ───────────────
 
 @router.get("/demo/scenarios")
+@public_route("static list of the built-in demo scenarios shown on the landing page (BUG-321)")
 async def demo_scenarios() -> Dict[str, Any]:
     return await _svc_demo_scenarios()
 
@@ -229,6 +233,7 @@ async def audit_ledger_subject_history(subject_id: str, tenant: str = Depends(re
 
 
 @router.get("/audit/financial/verify/{record_hash}")
+@public_route("signature check only for a financial-audit record hash (BUG-321)")
 async def financial_audit_verify(record_hash: str) -> Dict[str, Any]:
     return await _svc_financial_audit_verify(record_hash)
 
