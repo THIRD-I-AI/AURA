@@ -21,12 +21,12 @@ from connectors import (
     SourceType,
     available_connectors,
 )
+from shared.connector_policy import ConnectorPolicyError, open_connector
 from shared.error_handler import sanitize_error
 from shared.logging_config import get_logger
 
 # Add parent directory to path for imports
 from shared.service_factory import create_service
-from shared.ssrf import is_allowed_db_host
 
 logger = get_logger("aura.connectors")
 
@@ -87,46 +87,19 @@ class TableListResponse(BaseModel):
 
 # ==================== Connector Operations ====================
 
-# Connector types that open a network connection to a caller-named host, and types
-# that open a file on this service's own disk. Mirrors the gateway's connector routes.
-_NETWORK_HOST_CONNECTORS = frozenset({"postgresql", "mysql"})
-_SERVER_FILE_CONNECTORS = frozenset({"duckdb", "duckdb_spatial", "faiss"})
+async def _open_connector(connector_type: str, config: ConnectorConfig):
+    """Open a caller-configured connector through the one guarded door (BUG-442).
 
-
-async def _guarded_config(connector_type: str, config: Dict[str, Any]) -> Dict[str, Any]:
-    """Validate a caller-supplied connector config before anything connects.
-
-    BUG-442: /test, /tables and /introspect connected to whatever they were given, so
-    this service reached loopback, private and metadata addresses from inside the
-    deployment network, and opened any .duckdb file on its disk. The host rule is the
-    shared one (shared.ssrf.is_allowed_db_host); a file path must be ':memory:' or lie
-    inside the uploads root.
+    This service has no tenant of its own, so a server-file path is confined to the
+    uploads root; the gateway confines to the caller's own directory before it calls.
     """
-    checked = dict(config)
-    if connector_type in _NETWORK_HOST_CONNECTORS and not await is_allowed_db_host(checked.get("host")):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"{connector_type} host must be a public address",
+    try:
+        return await open_connector(
+            connector_type, config, files_root=_uploads_root(),
+            build=lambda cfg: _create_connector(connector_type, cfg),
         )
-    if connector_type in _SERVER_FILE_CONNECTORS:
-        def confined(raw: Any) -> Any:
-            if not raw or raw == ":memory:":
-                return raw
-            resolved = _confined_upload_path(raw)
-            if resolved is None:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail=f"{connector_type} path must be ':memory:' or a file in the uploads",
-                )
-            return resolved
-
-        for key in ("connection_string", "database"):
-            if key in checked:
-                checked[key] = confined(checked[key])
-        extra = checked.get("extra_params")
-        if isinstance(extra, dict) and "db_path" in extra:
-            checked["extra_params"] = {**extra, "db_path": confined(extra["db_path"])}
-    return checked
+    except ConnectorPolicyError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
 
 
 @app.post("/test", response_model=ConnectorTestResponse)
@@ -138,11 +111,11 @@ async def test_connector(request: ConnectorTestRequest):
         connector_config = ConnectorConfig(
             source_type=SourceType(connector_type),
             name=f"test-{connector_type}",
-            **await _guarded_config(connector_type, request.config),
+            **request.config,
         )
 
         # Create appropriate connector
-        connector = _create_connector(connector_type, connector_config)
+        connector = await _open_connector(connector_type, connector_config)
 
         # Test connection
         connected = await connector.connect()
@@ -181,11 +154,11 @@ async def list_tables(request: TableListRequest):
         connector_config = ConnectorConfig(
             source_type=SourceType(connector_type),
             name=f"list-{connector_type}",
-            **await _guarded_config(connector_type, request.config),
+            **request.config,
         )
 
         # Create connector
-        connector = _create_connector(connector_type, connector_config)
+        connector = await _open_connector(connector_type, connector_config)
 
         # List tables
         await connector.connect()
@@ -345,11 +318,11 @@ async def introspect_database(request: IntrospectRequest):
         connector_config = ConnectorConfig(
             source_type=SourceType(connector_type),
             name=f"introspect-{connector_type}",
-            **await _guarded_config(connector_type, request.config),
+            **request.config,
         )
 
         # Create connector
-        connector = _create_connector(connector_type, connector_config)
+        connector = await _open_connector(connector_type, connector_config)
 
         # Connect and discover schema
         await connector.connect()
