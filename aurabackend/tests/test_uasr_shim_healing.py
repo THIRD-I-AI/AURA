@@ -207,7 +207,9 @@ class TestDetectRecordStateFalseDoesNotPoisonHistory:
             det.detect(self._drifted_batch(seed=100 + i), record_state=False)
         assert len(det._kl_history.get("src", [])) == before_len
 
-        # A real (default) call must still append, proving detect() itself
-        # still records state normally.
-        det.detect(self._drifted_batch(seed=999))
+        # A real (default) call must still append, proving detect() itself still
+        # records state normally. (BUG-417: a batch whose location has shifted is
+        # deliberately not recorded, so this uses an unshifted one.)
+        unshifted = [{"v": rnd.gauss(50.0, 5.0)} for _ in range(300)]
+        det.detect(BatchPayload(source_id="src", columns=["v"], rows=unshifted))
         assert len(det._kl_history.get("src", [])) == before_len + 1
