@@ -1238,7 +1238,7 @@ export const healthService = {
 
 /**
  * Aggregated system health — the gateway polls every microservice and returns
- * a unified per-service report (GET /system/health, at the ROOT, not /api/v1).
+ * a unified per-service report (GET /api/v1/system/health).
  * `checkHealth()` above only proves the gateway answered; this call is what the
  * pipeline cockpit uses to colour each node.
  */
@@ -1252,12 +1252,13 @@ export interface SystemHealth {
 }
 
 export const systemService = {
-  /** Unified per-service health report (served at the root path). */
+  /** Unified per-service health report. BUG-423: this was a bare fetch of the
+   *  root path -- no bearer, and a path the deployed proxy hands to the SPA. */
   async health(): Promise<SystemHealth> {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 5000);
     try {
-      const response = await fetch(`${ROOT_BASE_URL}/system/health`, { signal: controller.signal });
+      const response = await authFetch(`${API_BASE_URL}/system/health`, { signal: controller.signal });
       if (!response.ok) throw new Error(response.statusText);
       return await response.json();
     } finally {
