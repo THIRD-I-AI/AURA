@@ -34,14 +34,6 @@ from pipeline.models import (
 logger = logging.getLogger("aura.pipeline.engine")
 
 
-async def _require_public_db_host(kind: str, host: Any) -> None:
-    """BUG-404: a pipeline's database source/sink host comes from the request, and an
-    omitted one became the gateway's own localhost; nothing checked it."""
-    from shared.ssrf import is_allowed_db_host
-
-    if not await is_allowed_db_host(host):
-        raise ValueError(f"{kind} host must be a public address")
-
 OUTPUT_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "processed")
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
@@ -155,6 +147,7 @@ def _prune_auto_named_outputs(tenant_dir: str) -> None:
 # the SQL-injection hardening — so two of the three "quote an identifier"
 # implementations in this repo silently missed that guard while the third had
 # it. Aliasing covers every existing call site without touching them.
+from shared.connector_policy import open_connector  # noqa: E402
 from shared.sql_expression_guard import validate_sql_expression as _validate_expression  # noqa: E402
 from shared.sql_identifiers import quote_identifier as _q  # noqa: E402
 from shared.sql_identifiers import quote_literal  # noqa: E402
@@ -407,16 +400,16 @@ class PipelineEngine:
         src_type = CSourceType.POSTGRESQL if source.type == SourceType.POSTGRESQL else CSourceType.MYSQL
         connector_cls = PostgreSQLConnector if source.type == SourceType.POSTGRESQL else MySQLConnector
 
-        await _require_public_db_host(source.type.value, cfg.get("host"))
-        connector = connector_cls(ConnectorConfig(
+        # host=cfg.get("host"): no localhost default -- an omitted host is refused.
+        connector = await open_connector(source.type.value, ConnectorConfig(
             source_type=src_type,
             name="pipeline_source",
-            host=cfg.get("host", "localhost"),
+            host=cfg.get("host"),
             port=cfg.get("port"),
             username=cfg.get("username", "postgres"),
             password=cfg.get("password", ""),
             database=cfg.get("database", "postgres"),
-        ))
+        ), files_root=None, build=connector_cls)
 
         connected = await connector.connect()
         if not connected:
@@ -969,16 +962,15 @@ class PipelineEngine:
         if sink.if_exists not in ("replace", "append", "fail"):
             raise ValueError(f"Unsupported if_exists for a PostgreSQL sink: {sink.if_exists!r}")
 
-        await _require_public_db_host("postgresql", cfg.get("host"))
-        pg = PostgreSQLConnector(ConnectorConfig(
+        pg = await open_connector("postgresql", ConnectorConfig(
             source_type=CSourceType.POSTGRESQL,
             name="pipeline_sink",
-            host=cfg.get("host", "localhost"),
+            host=cfg.get("host"),
             port=cfg.get("port", 5432),
             username=cfg.get("username", "postgres"),
             password=cfg.get("password", ""),
             database=cfg.get("database", "postgres"),
-        ))
+        ), files_root=None, build=PostgreSQLConnector)
 
         connected = await pg.connect()
         if not connected:

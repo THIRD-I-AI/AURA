@@ -43,10 +43,17 @@ def test_execute_query_refuses_internal_database_hosts(client, host):  # noqa: F
 @pytest.mark.asyncio
 @pytest.mark.parametrize("host", ["127.0.0.1", "10.0.0.12", None])
 async def test_pipeline_database_source_and_sink_refuse_internal_hosts(host):
-    from pipeline import engine
+    # The engine opens both through shared.connector_policy.open_connector; a refused
+    # host must stop it before any connector is built.
+    from connectors import ConnectorConfig, SourceType
+    from shared.connector_policy import open_connector
 
+    def _never(cfg):
+        raise AssertionError("a connector was built for a refused host")
+
+    config = ConnectorConfig(source_type=SourceType.POSTGRESQL, name="pipeline_source", host=host)
     with pytest.raises(ValueError, match="public address"):
-        await engine._require_public_db_host("postgresql", host)
+        await open_connector("postgresql", config, files_root=None, build=_never)
 
 
 @pytest.mark.asyncio

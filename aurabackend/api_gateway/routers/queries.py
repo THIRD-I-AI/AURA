@@ -29,11 +29,12 @@ from api_gateway.routers.workspaces import (
     tenant_from_workspace_id,
     tenant_upload_dir,
 )
-from connectors import ConnectorConfig, SourceType, build_connector
+from connectors import ConnectorConfig, SourceType
 from insights_service import InsightsEngine
 from safety import SQLSafetyValidator
 from shared.cache import dashboard_cache, query_cache
 from shared.circuit_breaker import get_breaker
+from shared.connector_policy import open_connector
 from shared.error_handler import sanitize_error
 from shared.logging_config import get_logger
 from shared.public_routes import public_route
@@ -489,7 +490,8 @@ async def execute_query_with_insights(request: ExecuteQueryRequest):
         # routes; this one connected to private/loopback (and empty -> localhost) hosts.
         from api_gateway.routers.connections import _check_network_host
         await _check_network_host(request.connector_type, connector_config.host)
-        connector = build_connector(request.connector_type, connector_config)
+        # files_root=None: embedded (server-file) types were refused above.
+        connector = await open_connector(request.connector_type, connector_config, files_root=None)
         if connector is None:
             raise ValueError(f"Unknown or unavailable connector type: {request.connector_type}")
 

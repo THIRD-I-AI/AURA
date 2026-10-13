@@ -40,7 +40,14 @@ def test_a_duckdb_file_outside_the_uploads_is_refused(client, route, tmp_path):
 async def test_a_public_host_and_an_upload_path_pass_through(tmp_path, monkeypatch):
     monkeypatch.setenv("AURA_UPLOADS_ROOT", str(tmp_path))
     monkeypatch.setenv("AURA_CONNECTORS_ALLOW_PRIVATE_HOSTS", "true")
-    assert (await connectors_main._guarded_config("postgresql", {"host": "db.internal"}))["host"] == "db.internal"
-    checked = await connectors_main._guarded_config("duckdb", {"database": "mine.duckdb"})
-    assert checked["database"] == str((tmp_path / "mine.duckdb").resolve())
-    assert (await connectors_main._guarded_config("duckdb", {"database": ":memory:"}))["database"] == ":memory:"
+    from connectors import ConnectorConfig, SourceType
+
+    monkeypatch.setattr(connectors_main, "_create_connector", lambda kind, cfg: cfg)
+
+    async def opened(kind, **fields):
+        return await connectors_main._open_connector(
+            kind, ConnectorConfig(source_type=SourceType(kind), name="t", **fields))
+
+    assert (await opened("postgresql", host="db.internal")).host == "db.internal"
+    assert (await opened("duckdb", database="mine.duckdb")).database == str((tmp_path / "mine.duckdb").resolve())
+    assert (await opened("duckdb", database=":memory:")).database == ":memory:"

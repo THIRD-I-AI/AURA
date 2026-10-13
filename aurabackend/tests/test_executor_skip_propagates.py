@@ -18,7 +18,15 @@ class _Recorder:
 
 
 @pytest.mark.asyncio
-async def test_tasks_downstream_of_a_skipped_task_do_not_run():
+async def test_tasks_downstream_of_a_skipped_task_do_not_run(monkeypatch):
+    # execute() ends by firing a background task that writes to the evolution
+    # database. Left running, it outlives this test's event loop with the global
+    # engine bound to it, and the next test that starts the gateway hangs in its
+    # database start-up. This test is about scheduling only, so the write is stubbed.
+    async def _no_record(plan, user_prompt, report):
+        return None
+
+    monkeypatch.setattr(DAGExecutor, "_record_in_evolution_engine", staticmethod(_no_record))
     executor = DAGExecutor()
     recorder = _Recorder()
     executor._agents = {"Stub": recorder}

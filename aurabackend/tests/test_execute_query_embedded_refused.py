@@ -60,7 +60,10 @@ def test_a_successful_query_is_reported_as_successful(client, monkeypatch):
     async def _no_llm(self, ctx):
         return AgentResult(status=AgentStatus.FAILED, error="no provider in tests")
 
-    monkeypatch.setattr(queries, "build_connector", lambda ctype, cfg: FakeConnector())
+    async def _open(ctype, cfg, *, files_root, build=None):
+        return FakeConnector()
+
+    monkeypatch.setattr(queries, "open_connector", _open)
     monkeypatch.setattr(analysis_agent.AnalysisAgent, "execute", _no_llm)
 
     resp = client.post(URL, json={"query": "SELECT region, total FROM sales", "connector_type": "mysql",

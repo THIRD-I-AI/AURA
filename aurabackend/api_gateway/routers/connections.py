@@ -24,12 +24,17 @@ from connectors import (
     ConnectorConfig,
     SourceType,
     available_connectors,
-    build_connector,
     get_connector,
+)
+from shared.connector_policy import (
+    SERVER_FILE_CONNECTORS,
+    ConnectorPolicyError,
+    confine_file_paths,
+    open_connector,
+    require_allowed_host,
 )
 from shared.error_handler import sanitize_error
 from shared.logging_config import get_logger
-from shared.ssrf import is_allowed_db_host
 
 logger = get_logger("aura.api_gateway.connections")
 
@@ -46,82 +51,57 @@ router = APIRouter(tags=["Connections"])
 
 
 # Connector types that open a file on the SERVER at a path taken from the config.
-_SERVER_FILE_CONNECTORS = frozenset({"duckdb", "duckdb_spatial", "faiss"})
+_SERVER_FILE_CONNECTORS = SERVER_FILE_CONNECTORS
 
 
-def _confine_server_file_paths(conn_type: str, config: ConnectorConfig, http_request: Request) -> None:
-    """BUG-232: a DuckDB/FAISS config names a path on the gateway's own disk, and nothing
-    confined it -- a caller could open another tenant's uploaded .duckdb by absolute path
-    (then /sync copies its tables into their own uploads), or make duckdb.connect create a
-    file anywhere the process can write. Allow ':memory:' or a path inside the caller's own
-    upload directory (created there if new); rewrite it to the resolved absolute path."""
-    if conn_type not in _SERVER_FILE_CONNECTORS:
-        return
+def _tenant_files_root(http_request: Request) -> Optional[str]:
+    """The caller's own upload directory, or None when the active storage backend has
+    no local directory (S3): then a server-file connector may only use ':memory:'."""
     from shared.storage import get_storage_backend
     from shared.storage.local import LocalBackend
 
-    # The tenant's files live wherever the ACTIVE storage backend puts them; with a
-    # remote backend (S3) there is no local directory at all, so only ':memory:' passes.
     backend = get_storage_backend()
-    root = (
-        os.path.realpath(backend.tenant_dir(_request_tenant(http_request)))
-        if isinstance(backend, LocalBackend) else None
-    )
-    def confined(raw: Any) -> Any:
-        if not raw or raw == ":memory:":
-            return raw
-        resolved = None
-        if root is not None:
-            candidate = raw if os.path.isabs(str(raw)) else os.path.join(root, str(raw))
-            resolved = os.path.realpath(candidate)
-        if resolved is None or os.path.commonpath([resolved, root]) != root:
-            raise HTTPException(
-                status_code=400,
-                detail=f"{conn_type} path must be ':memory:' or a file in your own uploads",
-            )
-        return resolved
-
-    for attr in ("connection_string", "database"):
-        setattr(config, attr, confined(getattr(config, attr, None)))
-    # BUG-357: DuckDBConnector also opens extra_params["db_path"] (ahead of `database`),
-    # which the ad-hoc /connectors/{type}/* routes pass straight through.
-    extra = getattr(config, "extra_params", None)
-    if isinstance(extra, dict) and "db_path" in extra:
-        extra["db_path"] = confined(extra["db_path"])
+    if not isinstance(backend, LocalBackend):
+        return None
+    return os.path.realpath(backend.tenant_dir(_request_tenant(http_request)))
 
 
-# Connector types that open a network connection to a caller-named host.
-_NETWORK_HOST_CONNECTORS = frozenset({"postgresql", "mysql"})
+def _confine_server_file_paths(conn_type: str, config: ConnectorConfig, http_request: Request) -> None:
+    """BUG-232 / BUG-357: a DuckDB/FAISS config names a path on the gateway's own disk.
+    Allow ':memory:' or a path inside the caller's own upload directory, rewritten to
+    the resolved absolute path. The rule itself lives in shared.connector_policy."""
+    try:
+        confine_file_paths(conn_type, config, _tenant_files_root(http_request))
+    except ConnectorPolicyError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
 
 
 async def _check_network_host(conn_type: str, host: Optional[str]) -> None:
     """BUG-367: refuse a database host that is, or resolves to, a loopback, private,
     link-local or otherwise non-public address -- and an empty one, which the drivers
-    turn into the gateway's own localhost. Without this the connector routes reached
-    the gateway's internal network (and worked as a port scanner). A deployment whose
-    databases do live on a private network opts in with
-    AURA_CONNECTORS_ALLOW_PRIVATE_HOSTS=true."""
-    if conn_type not in _NETWORK_HOST_CONNECTORS:
-        return
-    if not await is_allowed_db_host(host):
-        raise HTTPException(
-            status_code=400,
-            detail=f"{conn_type} host must be a public address",
-        )
+    turn into the gateway's own localhost. A deployment whose databases do live on a
+    private network opts in with AURA_CONNECTORS_ALLOW_PRIVATE_HOSTS=true. The rule
+    itself lives in shared.connector_policy."""
+    try:
+        await require_allowed_host(conn_type, host)
+    except ConnectorPolicyError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
 
 async def _make_connector(conn_type: str, config: ConnectorConfig, http_request: Request):
-    """Construct a connector via the central registry.
+    """Open a connector through the one guarded door (shared.connector_policy).
 
-    DB-agnostic: any connector registered with a ``factory`` — built-in
-    or a third-party ``aura.connectors`` entry-point plugin — is built
-    the same way, with no hardcoded type->class switch to keep in sync.
-    Server-local file connectors are confined to the caller's uploads first,
-    and network ones to public hosts.
+    DB-agnostic: any connector registered with a ``factory`` -- built-in or a
+    third-party ``aura.connectors`` entry-point plugin -- is built the same way.
+    Server-local file connectors are confined to the caller's uploads first, and
+    network ones to public hosts.
     """
-    _confine_server_file_paths(conn_type, config, http_request)
-    await _check_network_host(conn_type, getattr(config, "host", None))
-    return build_connector(conn_type, config)
+    try:
+        return await open_connector(conn_type, config, files_root=_tenant_files_root(http_request))
+    except ConnectorPolicyError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
 
 # ── Models ───────────────────────────────────────────────────────────
