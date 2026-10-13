@@ -8,7 +8,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, List, Optional, cast
 
-from agents.base import AgentContext, AgentResult, BaseAgent, Severity
+from agents.base import AgentContext, AgentResult, AgentStatus, BaseAgent, Severity
 from agents.params import IngestionAgentParams
 
 logger = logging.getLogger("aura.agents.ingestion")
@@ -43,6 +43,7 @@ class IngestionAgent(BaseAgent):
                     )
 
         ingested: List[Dict[str, Any]] = []
+        errors: List[str] = []
 
         # ── File ingestion ──────────────────────────────────────────
         for filepath in (files or []):
@@ -69,6 +70,7 @@ class IngestionAgent(BaseAgent):
                                        f"{len(profile.get('columns',[]))} columns",
                     )
                 except Exception as exc:
+                    errors.append(f"{filepath}: {exc}")
                     result.add_step(
                         action="ingest_error",
                         output_summary=str(exc),
@@ -95,6 +97,7 @@ class IngestionAgent(BaseAgent):
                         output_summary=f"Found {len(schema_info.get('tables',[]))} tables",
                     )
                 except Exception as exc:
+                    errors.append(f"database: {exc}")
                     result.add_step(
                         action="db_error",
                         output_summary=str(exc),
@@ -103,4 +106,10 @@ class IngestionAgent(BaseAgent):
 
         result.output = {"ingested_sources": ingested, "total_sources": len(ingested)}
         result.artifacts["sources"] = ingested
+        # BUG-437: every source failing used to leave the status unset, which the base
+        # class turns into SUCCESS -- the plan reported a completed ingest with zero
+        # sources and ran its downstream tasks on nothing.
+        if errors and not ingested:
+            result.status = AgentStatus.FAILED
+            result.error = "No source could be ingested: " + "; ".join(errors)
         return result
