@@ -4273,13 +4273,13 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Fix:** `AskAuraPanel` falls back to the response's `message` for both the answer text and the error text, so conversational, pipeline-created and audit-completed replies show what the server said instead of "Done.", and message-only failures show their reason instead of "Query failed.". The cockpit `AskAuraChat` error branch gets the same fallback. Regression: 2 tests in `AskAuraPanel.test.tsx`.
 
 ## BUG-425: Terminal Query panel shows nothing at all when /chat answers status 'Error' (HTTP 200)
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode audit of uasr, counterfactual_service and frontend (run wf_f6f9a8a7-162, frontend scope; confirmed by 2 adversarial verifiers), 2026-10-12. `frontend/src/terminal/panels/QueryPanel.tsx:30`.
 - **Severity:** medium
 - **Root cause:** `run` stores any HTTP-200 body with `setResult(res)` and only sets `error` in the catch. The render reads only `result.final_query`, `er.verification`, `er.chart_spec` and `er.columns/rows`; it never looks at `result.status`, `result.error_message`, `result.message` or `er.error`. /chat reports failures as HTTP 200: SQL-generation failure returns status 'Error', `error_message: 'SQL generation failed: ...'`, `final_query: null`, `execution_result: null` (chat.py:649-659, 703-717); execution failure returns the SQL plus `execution_result.error` with empty columns/rows. The idle placeholder is suppressed because `result` is non-null (line 42).
 - **Failure scenario:** In /app/terminal the user selects a dataset and asks a question while the LLM provider is rate-limited. The gateway returns 200 {status:'Error', error_message:'SQL generation failed: rate-limited, try again shortly', execution_result:null}. The panel body goes completely blank: no error, no SQL, no table, no 'No query run yet' placeholder. For a query whose SQL fails at execution, the generated SQL is shown above an empty table header (columns is []), with the 'Execution failed: ...' text dropped, so it reads as a query that returned no rows. Conversational/pipeline/audit replies (message only) are equally blank.
 - **Caused by:** none -- pre-existing.
-- **Fix:** pending.
+- **Fix:** the Terminal `QueryPanel` treats `status === 'Error'` or `execution_result.success === false` as a failure and shows `execution_result.error`, then `error_message`, then `message`; a message-only success reply is rendered too. Regression: 3 tests in `terminal/__tests__/QueryPanel.test.tsx`.
 
 ## BUG-426: 'Edit in Visual Builder' throws away the AI pipeline's steps whenever its source file differs from the selected one
 - **Status:** open
