@@ -4415,3 +4415,21 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Failure scenario:** A saved BigQuery connection is queried through POST /api/v1/execute/query with `SELECT account_id, credit_limit FROM accounts` on a table of tens of millions of rows. 'LIMIT' is found inside `CREDIT_LIMIT`, so the statement is sent with no LIMIT. BigQuery scans and returns the whole table (billed), and `[dict(row.items()) for row in ...result()]` loads all of it into the gateway worker, which has a 512M limit in docker-compose.prod.yml, instead of the 1000 rows the caller's limit promises. Conversely `SELECT * FROM t;` becomes `...; LIMIT 1000`, fails, and comes back as a successful empty result.
 - **Caused by:** none -- pre-existing.
 - **Fix:** `BigQueryConnector.execute_query` uses `with_row_limit` (BUG-438) instead of the substring test, so the cap is appended unless the statement really ends in a LIMIT -- a `credit_limit` column, a string literal, a comment or a subquery LIMIT no longer switches it off, and a trailing semicolon no longer breaks the statement. Regression tests in `tests/test_bigquery_row_cap.py` (stub client; no BigQuery is reachable from the test lane). Not changed: errors are still returned as an empty list (see BUG-439).
+
+## BUG-441: Agent `files` paths are read by the connectors `/ingest` route with no tenant confinement (any CSV/JSON/Parquet/XLSX on the box)
+- **Status:** open
+- **Found by:** ultracode audit of gateway routers, agents and connectors (run wf_121f5057-8a0, connectors scope). The audit's verifiers were cut off by the usage limit; confirmed by a manual read of the code, 2026-10-13. `aurabackend/connectors/main.py:197`, `aurabackend/agents/api.py:75`.
+- **Severity:** high
+- **Root cause:** `ingest_file` takes `request.file_path` verbatim, checks only that it exists, and returns columns, dtypes, null counts and five sample rows; the 404 echoes the path, so it is also a file-existence oracle. The read is synchronous inside an async handler and `.json`/`.parquet` are loaded whole. The gateway feeds it caller-controlled paths: `_enrich_schema_from_files` calls `ingest_and_profile(file_path=fp)` for every entry of `AgentExecuteRequest.files` on `/agent/execute` and `/agent/execute/stream`, with no check that the path is the caller's own upload.
+- **Failure scenario:** Tenant B posts `/api/v1/agent/execute` with `files: ["/data/uploads/<tenant A>/payroll.csv"]`. The gateway hands the path to connectors `/ingest`, which reads tenant A's file; its column names, types and row count enter tenant B's agent context. Anyone who can reach the connectors service directly gets sample rows of any tabular file on the box. Deployments without a connectors service (the free-tier stack) are not exposed: the call fails.
+- **Caused by:** none -- pre-existing.
+- **Fix:** pending.
+
+## BUG-442: Connectors service `/test`, `/tables` and `/introspect` skip the database-host rule and the server-file confinement the gateway routes enforce
+- **Status:** open
+- **Found by:** ultracode audit of gateway routers, agents and connectors (run wf_121f5057-8a0, connectors scope). The audit's verifiers were cut off by the usage limit; confirmed by a manual read of the code, 2026-10-13. `aurabackend/connectors/main.py:87`.
+- **Severity:** high
+- **Root cause:** the three handlers splat `request.config` into `ConnectorConfig` and call `connect()` directly. None calls `shared.ssrf.is_allowed_db_host` (the one rule for every place that connects to a caller-named database; BUG-367/377/404 fixed the gateway routes, the pipeline engine and the streaming sink only), and none confines a duckdb/faiss path the way the gateway's `_confine_server_file_paths` does (BUG-232/357).
+- **Failure scenario:** a caller who can reach the connectors service posts `/introspect` with a private, loopback or metadata host (or no host, which the drivers turn into localhost): the service connects from inside the deployment network and returns table names and per-column samples, and refused-versus-hung timing works as an internal port scanner. With `connector_type: duckdb` and `database` set to another tenant's `.duckdb` path it returns that tenant's tables and row counts.
+- **Caused by:** none -- pre-existing.
+- **Fix:** pending.
