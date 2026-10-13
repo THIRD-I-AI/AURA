@@ -117,3 +117,30 @@ describe('PipelinesPanel source preview ordering (BUG-395)', () => {
     expect(screen.getByText('second_table')).toBeInTheDocument();
   });
 });
+
+describe('PipelinesPanel Edit in Visual Builder (BUG-426)', () => {
+  it('keeps the AI pipeline steps when its source file differs from the selected one', async () => {
+    const { pipelineService } = await import('../../services/api');
+    const { fireEvent } = await import('@testing-library/react');
+    (uploadService.getUploadedFiles as ReturnType<typeof vi.fn>).mockResolvedValue([{ filename: 'products.csv' }]);
+    (pipelineService.generate as ReturnType<typeof vi.fn>).mockResolvedValue({
+      status: 'success',
+      pipeline: {
+        name: 'Top products',
+        source: { type: 'file', file_name: 'products.csv' },
+        steps: [
+          { id: 's1', type: 'filter', description: 'rating above 4', config: {} },
+          { id: 's2', type: 'sort', description: 'by price', config: {} },
+        ],
+        sink: { format: 'csv' },
+      },
+    });
+
+    renderPanel();
+    fireEvent.change(await screen.findByPlaceholderText(/Read products\.csv/), { target: { value: 'top products' } });
+    fireEvent.click(screen.getByText('Generate Pipeline'));
+    fireEvent.click(await screen.findByText('Edit in Visual Builder'));
+
+    expect(await screen.findByText('2 steps')).toBeInTheDocument();
+  });
+});

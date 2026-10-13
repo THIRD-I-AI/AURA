@@ -542,11 +542,13 @@ const PipelinesPanel: React.FC<PipelinesPanelProps> = () => {
       description: step.description || '',
       config: step.config || {},
     }));
-    setTransforms(converted);
-    // Use AI pipeline source file if available
+    // Use AI pipeline source file if available. BUG-426: switch the source first --
+    // handleSourceChange clears the transforms, and it used to run after the
+    // converted steps were set, discarding them.
     if (aiPipeline.source.file_name && aiPipeline.source.file_name !== selectedSource) {
       handleSourceChange(aiPipeline.source.file_name);
     }
+    setTransforms(converted);
     // Set destination format from sink
     if (aiPipeline.sink.format) {
       setDestFormat(aiPipeline.sink.format);
