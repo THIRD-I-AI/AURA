@@ -353,7 +353,9 @@ async def execute_for_chat(req: _ChatExecuteRequest, request: Request):
 
     # If there's a connection_id, proxy to the sandbox
     if req.connection_id:
-        sandbox_url = os.getenv("EXECUTION_SANDBOX_URL", "http://localhost:8003")
+        # BUG-431: this read EXECUTION_SANDBOX_URL, which no deployment sets -- the
+        # gateway is given AURA_SANDBOX_URL -- so it always called its own localhost.
+        sandbox_url = os.getenv("AURA_SANDBOX_URL", "http://localhost:8003")
         workspace_id = current_workspace_id(request)
         job_id = f"chat-{int(time.time()*1000)}"
         payload = {

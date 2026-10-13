@@ -528,7 +528,9 @@ async def test_database_connection(db_type: str, request: Request):
         auth = request.headers.get("Authorization")
         if auth:
             headers["Authorization"] = auth
-        db_svc = os.getenv("DATABASE_SERVICE_URL", "http://localhost:8002")
+        # BUG-431: the gateway is configured with AURA_CONNECTORS_URL; the name read
+        # here was set nowhere, so this always probed the gateway's own localhost.
+        db_svc = os.getenv("AURA_CONNECTORS_URL", "http://localhost:8002")
         async with httpx.AsyncClient(timeout=10.0) as client:
             response = await client.get(f"{db_svc}/databases/test/{db_type}", headers=headers)
         try:

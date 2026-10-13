@@ -89,7 +89,7 @@ def test_preserves_upstream_error_status_code(gw, monkeypatch):
 
 
 def test_unreachable_service_returns_503_not_200(gw, monkeypatch):
-    monkeypatch.setenv("DATABASE_SERVICE_URL", "http://localhost:1")
+    monkeypatch.setenv("AURA_CONNECTORS_URL", "http://localhost:1")
 
     r = gw.get(f"{V1}/databases/test/postgresql")
     assert r.status_code == 503, r.text
