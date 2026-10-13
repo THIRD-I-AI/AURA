@@ -12,6 +12,8 @@ from typing import Any, Dict, List, Optional
 from google.cloud import bigquery
 from google.oauth2 import service_account
 
+from connectors.sql_limit import with_row_limit
+
 from .base import BaseConnector, ConnectorConfig
 
 logger = logging.getLogger("aura.connectors.bigquery")
@@ -152,10 +154,10 @@ class BigQueryConnector(BaseConnector):
             return []
 
         try:
-            # Append LIMIT if not present
-            if "LIMIT" not in query.upper():
-                query = f"{query} LIMIT {limit}"
-
+            # BUG-440: the cap was skipped whenever the text contained "limit" anywhere
+            # (a credit_limit column, a comment, a subquery), and nothing else bounded
+            # the result.
+            query = with_row_limit(query, limit)
             return await asyncio.to_thread(self._query_rows, query)
         except Exception as e:
             logger.warning("BigQuery query failed: %s", e)

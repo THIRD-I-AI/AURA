@@ -4408,10 +4408,10 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Fix:** pending.
 
 ## BUG-440: BigQuery execute_query still uses the substring LIMIT check that BUG-192 removed from Postgres/MySQL: any query mentioning 'limit' runs uncapped
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode audit of gateway routers, agents and connectors (run wf_121f5057-8a0, connectors scope; confirmed by 2 adversarial verifiers), 2026-10-13. `aurabackend/connectors/bigquery_connector.py:156`.
 - **Severity:** medium
 - **Root cause:** `if "LIMIT" not in query.upper(): query = f"{query} LIMIT {limit}"` matches the word anywhere: a column such as `credit_limit` or `rate_limited`, an alias, a string literal, a comment, or a LIMIT inside a subquery. BUG-192 replaced this test with `connectors/sql_limit.has_trailing_limit` for the Postgres and MySQL connectors only. When the substring matches, no cap is appended, and `limit` is not applied anywhere else: `_query_rows` (line 47) builds a list of every row of the result. Errors, including the syntax error from appending after a trailing `;`, are swallowed to `[]` at 160-162 with no raise_errors option.
 - **Failure scenario:** A saved BigQuery connection is queried through POST /api/v1/execute/query with `SELECT account_id, credit_limit FROM accounts` on a table of tens of millions of rows. 'LIMIT' is found inside `CREDIT_LIMIT`, so the statement is sent with no LIMIT. BigQuery scans and returns the whole table (billed), and `[dict(row.items()) for row in ...result()]` loads all of it into the gateway worker, which has a 512M limit in docker-compose.prod.yml, instead of the 1000 rows the caller's limit promises. Conversely `SELECT * FROM t;` becomes `...; LIMIT 1000`, fails, and comes back as a successful empty result.
 - **Caused by:** none -- pre-existing.
-- **Fix:** pending.
+- **Fix:** `BigQueryConnector.execute_query` uses `with_row_limit` (BUG-438) instead of the substring test, so the cap is appended unless the statement really ends in a LIMIT -- a `credit_limit` column, a string literal, a comment or a subquery LIMIT no longer switches it off, and a trailing semicolon no longer breaks the statement. Regression tests in `tests/test_bigquery_row_cap.py` (stub client; no BigQuery is reachable from the test lane). Not changed: errors are still returned as an empty list (see BUG-439).
