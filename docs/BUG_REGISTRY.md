@@ -4237,13 +4237,13 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Fix:** pending.
 
 ## BUG-421: Challenges are sorted by the severity string alphabetically (high, low, medium), so the operator card's top two challenges show low-severity items ahead of medium ones
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode audit of uasr, counterfactual_service and frontend (run wf_f6f9a8a7-162, counterfactual scope; confirmed by 2 adversarial verifiers), 2026-10-12. `aurabackend/counterfactual_service/engine.py:1935`.
 - **Severity:** low
 - **Root cause:** run_job sorts challenges with key `(c.severity, sha1(text))`. Severity is the literal string 'low' | 'medium' | 'high', so ascending order is high < low < medium. renderers._operator (renderers.py:147) then takes `art.challenges[:2]` as `top_challenges`, treating the list as ordered most-severe first. Medium challenges are therefore always ranked after every low one.
 - **Failure scenario:** A job whose critic returns one medium challenge ('seasonality is an unadjusted confounder') and two low ones, with no high challenges. The sorted list is [low, low, medium]; the operator view (the default audience for POST /counterfactual/jobs and the chat card) shows the two low-severity notes as the top challenges and the medium one is not shown at all. With one high, one medium and one low, the card shows high and low and drops the medium.
 - **Caused by:** none -- pre-existing.
-- **Fix:** pending.
+- **Fix:** `run_job` sorts challenges on `_SEVERITY_RANK` (high, medium, low) with the same SHA-1 tie-breaker, so the operator card's top two are the most severe. Newly produced artifacts hash over the new order; stored ones verify from their stored order. Regression test `tests/test_challenge_severity_order.py`.
 
 ## BUG-422: MCP tools counterfactual_run and counterfactual_get call the service handlers without `user`, so the FastAPI Depends sentinel reaches _ledger_tenant: submit always raises AttributeError and get can never return a job
 - **Status:** open
