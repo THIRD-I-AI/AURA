@@ -4309,13 +4309,13 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Fix:** the OIDC callback stamps `idp: "oidc"` into the token it mints, and `/auth/refresh` skips the users-table re-read for such a token (and carries the claim into the renewed one), so an SSO session renews like a password session, still bounded by the 12-hour sign-in cap. Password sessions are still re-read. Regression test `test_an_sso_session_is_renewed_without_a_users_row` in `tests/test_auth.py`. Note: an SSO token minted before this deploy has no `idp` claim and cannot renew; it expires within 30 minutes.
 
 ## BUG-429: /system/health probes six services on hard-coded localhost, so any containerized deployment is reported 'critical' with those services 'down'
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode audit of gateway routers, agents and connectors (run wf_121f5057-8a0, routers scope; confirmed by 2 adversarial verifiers), 2026-10-13. `aurabackend/api_gateway/main.py:371`.
 - **Severity:** medium
 - **Root cause:** _SERVICES (lines 371-383) hard-codes http://localhost:8011, 8002, 8003, 8004, 8005 and 8007 for code_generation, database_service, execution_sandbox, scheduler, insights and metadata_store. Inside the gateway container localhost is the gateway itself; the comment at lines 378-381 fixed exactly this for UASR only. The gateway's own configured URLs (AURA_CODEGEN_URL, AURA_CONNECTORS_URL, AURA_SANDBOX_URL, AURA_SCHEDULER_URL, AURA_INSIGHTS_URL in docker-compose.yml:30-34) are ignored, and code_generation is probed on 8011 while compose runs it on 8001. The overall status (lines 425-431) is 'critical' when fewer than total//2 are healthy.
 - **Failure scenario:** deploy/aws-free-tier (gateway + uasr only) or docker-compose.prod.yml (each service in its own container): GET /api/v1/system/health gets connection-refused for all six localhost probes, so healthy = 2 (api_gateway, uasr) of 8, and 2 >= 4 is false -> overall 'critical', services 'down'. The terminal PipelinePanel (reachable since BUG-423) shows 'CRITICAL - 2/8 services' on a fully healthy deployment, the same snapshot is broadcast on the system:health SSE topic, and in the full stack a real outage of any of those services cannot be distinguished from the permanent false 'down'.
 - **Caused by:** none -- pre-existing.
-- **Fix:** pending.
+- **Fix:** `/system/health` builds its probe list from the addresses the gateway is configured with (`AURA_CODEGEN_URL`, `AURA_CONNECTORS_URL`, `AURA_SANDBOX_URL`, `AURA_SCHEDULER_URL`, `AURA_INSIGHTS_URL`, `AURA_METADATA_URL`) instead of hard-coded localhost ports, and leaves out a service whose address is not set rather than counting it as down. On the free-tier stack the report is now the gateway and UASR only. Regression tests in `tests/test_system_health_service_addresses.py`.
 
 ## BUG-430: Synthetic job records and SSE events live in one worker's memory; under the prod compose (--workers 4) job polls 404 and progress streams stay silent
 - **Status:** open
