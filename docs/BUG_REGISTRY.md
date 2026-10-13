@@ -4417,13 +4417,13 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Fix:** `BigQueryConnector.execute_query` uses `with_row_limit` (BUG-438) instead of the substring test, so the cap is appended unless the statement really ends in a LIMIT -- a `credit_limit` column, a string literal, a comment or a subquery LIMIT no longer switches it off, and a trailing semicolon no longer breaks the statement. Regression tests in `tests/test_bigquery_row_cap.py` (stub client; no BigQuery is reachable from the test lane). Not changed: errors are still returned as an empty list (see BUG-439).
 
 ## BUG-441: Agent `files` paths are read by the connectors `/ingest` route with no tenant confinement (any CSV/JSON/Parquet/XLSX on the box)
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode audit of gateway routers, agents and connectors (run wf_121f5057-8a0, connectors scope). The audit's verifiers were cut off by the usage limit; confirmed by a manual read of the code, 2026-10-13. `aurabackend/connectors/main.py:197`, `aurabackend/agents/api.py:75`.
 - **Severity:** high
 - **Root cause:** `ingest_file` takes `request.file_path` verbatim, checks only that it exists, and returns columns, dtypes, null counts and five sample rows; the 404 echoes the path, so it is also a file-existence oracle. The read is synchronous inside an async handler and `.json`/`.parquet` are loaded whole. The gateway feeds it caller-controlled paths: `_enrich_schema_from_files` calls `ingest_and_profile(file_path=fp)` for every entry of `AgentExecuteRequest.files` on `/agent/execute` and `/agent/execute/stream`, with no check that the path is the caller's own upload.
 - **Failure scenario:** Tenant B posts `/api/v1/agent/execute` with `files: ["/data/uploads/<tenant A>/payroll.csv"]`. The gateway hands the path to connectors `/ingest`, which reads tenant A's file; its column names, types and row count enter tenant B's agent context. Anyone who can reach the connectors service directly gets sample rows of any tabular file on the box. Deployments without a connectors service (the free-tier stack) are not exposed: the call fails.
 - **Caused by:** none -- pre-existing.
-- **Fix:** pending.
+- **Fix:** two layers. Gateway: `/agent/execute`, `/agent/execute/stream` and `/agent/execute/async` resolve every entry of `files` inside the caller's own upload directory (`_own_upload_paths`) and answer 400 for anything else -- another tenant's upload, an absolute path elsewhere, a traversal. Connectors service: `/ingest` resolves the path inside the uploads root (`AURA_UPLOADS_ROOT`) and answers one 404 for "outside" and "missing" without echoing the path; the pandas read runs in a thread and the response no longer returns the resolved server path. Regression tests in `tests/test_ingest_path_confinement.py`. Not changed: `.json` / `.parquet` are still read whole; the connectors service, having no tenant of its own, confines to the uploads root rather than to one tenant.
 
 ## BUG-442: Connectors service `/test`, `/tables` and `/introspect` skip the database-host rule and the server-file confinement the gateway routes enforce
 - **Status:** open

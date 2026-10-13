@@ -63,6 +63,32 @@ def _make_registry() -> ToolRegistry:
     return registry
 
 
+def _own_upload_paths(files: List[str], request: Request) -> List[str]:
+    """Resolve each entry of ``files`` inside the caller's own upload directory.
+
+    BUG-441: these paths were passed verbatim to the connectors /ingest route and to
+    the agents, so a caller could name another tenant's upload -- or any tabular file
+    on the box -- and have it profiled into their own agent context.
+    """
+    import os
+
+    from api_gateway.routers.workspaces import tenant_upload_dir
+
+    root = os.path.realpath(tenant_upload_dir(request))
+    resolved = []
+    for name in files:
+        candidate = name if os.path.isabs(name) else os.path.join(root, name)
+        path = os.path.realpath(candidate)
+        try:
+            inside = os.path.commonpath([path, root]) == root
+        except ValueError:  # different drives
+            inside = False
+        if not name or not inside:
+            raise HTTPException(status_code=400, detail="files must name files in your own uploads")
+        resolved.append(path)
+    return resolved
+
+
 async def _enrich_schema_from_files(
     files: List[str],
     existing_schema: Optional[Dict[str, Any]],
@@ -114,8 +140,9 @@ async def create_plan(req: AgentExecuteRequest):
 
 
 @router.post("/execute", response_model=AgentExecuteResponse)
-async def execute_prompt(req: AgentExecuteRequest):
+async def execute_prompt(req: AgentExecuteRequest, request: Request):
     """Plan + execute the full DAG synchronously.  Returns when done."""
+    req.files = _own_upload_paths(req.files, request)
     registry = _make_registry()
     memory = AgentMemory()
 
@@ -153,8 +180,9 @@ async def execute_prompt(req: AgentExecuteRequest):
 
 
 @router.post("/execute/stream")
-async def execute_prompt_stream(req: AgentExecuteRequest):
+async def execute_prompt_stream(req: AgentExecuteRequest, request: Request):
     """Plan + execute with real-time SSE progress."""
+    req.files = _own_upload_paths(req.files, request)
     progress_queue: asyncio.Queue[str] = asyncio.Queue()
 
     async def _progress_cb(message: str, agent: str, pct: float) -> None:
@@ -220,6 +248,7 @@ async def execute_prompt_async(req: AgentExecuteRequest, request: Request):
     ``GET /stream/agent:{session_id}`` to receive live progress/complete/error
     events published through the universal streaming bus.
     """
+    req.files = _own_upload_paths(req.files, request)
     session_id = uuid.uuid4().hex
     # Resolved eagerly, in the request handler — the background task below
     # outlives the request and must not depend on request.state still being
