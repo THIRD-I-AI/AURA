@@ -383,6 +383,10 @@ _SERVICES = {
 }
 
 
+# BUG-423: also served under /api/v1. The root path is what the frontend used to
+# call, but the deployed proxy forwards only /api/* and /health to the gateway, so
+# the browser got the SPA's index.html back and the cockpit never loaded health.
+@app.get(f"{_API_V1}/system/health")
 @app.get("/system/health")
 async def system_health():
     """
