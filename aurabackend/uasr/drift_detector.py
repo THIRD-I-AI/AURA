@@ -627,9 +627,13 @@ class DriftDetector:
                 drifted_cols.append(col_name)
                 max_kl = max(max_kl, kl)
 
-        # Record for dynamic threshold adaptation
+        # Record for dynamic threshold adaptation. BUG-417: not when a column's
+        # location moved by more than 2 sigma. That batch's score is the surrogate
+        # `loc_shift * zeta`, so feeding it back raised zeta in proportion to itself
+        # -- one unit-bug detection lifted the threshold above the largest KL a
+        # histogram can produce, hiding shape drift for the next 200 batches.
         mutated = False
-        if kl_values:
+        if kl_values and max_loc_shift <= 2.0:
             avg_kl = sum(kl_values.values()) / len(kl_values)
             st.kl_history.append(avg_kl)
             # Keep last 200 samples
