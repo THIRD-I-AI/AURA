@@ -41,6 +41,9 @@ logger = logging.getLogger("uasr.drift_detector")
 # Small constant to prevent log(0)
 _EPS = 1e-10
 
+# Divergence reported when a column is numeric on one side and categorical on the other.
+_KIND_CHANGE_KL = -math.log(_EPS)
+
 # Default bins for continuous-valued histograms
 _DEFAULT_BINS = 50
 
@@ -577,6 +580,7 @@ class DriftDetector:
         col_stats: Dict[str, Dict[str, Any]] = {}
         max_kl = 0.0
         max_loc_shift = 0.0
+        kind_changed = False
 
         zeta = self._dynamic_threshold(st.kl_history)
 
@@ -586,6 +590,7 @@ class DriftDetector:
 
             ref_dist = baseline[col_name]
             kl = self._kl_divergence(batch_dist.histogram, ref_dist.histogram)
+            kind_changed = kind_changed or kl == _KIND_CHANGE_KL
 
             # Location / scale shift: if both have mean & std, compute a
             # normalised distance so that range shifts (e.g. 10-500 vs
@@ -632,8 +637,10 @@ class DriftDetector:
         # `loc_shift * zeta`, so feeding it back raised zeta in proportion to itself
         # -- one unit-bug detection lifted the threshold above the largest KL a
         # histogram can produce, hiding shape drift for the next 200 batches.
+        # A column that changed kind is likewise a fault, not a sample of this
+        # source's ordinary noise.
         mutated = False
-        if kl_values and max_loc_shift <= 2.0:
+        if kl_values and max_loc_shift <= 2.0 and not kind_changed:
             avg_kl = sum(kl_values.values()) / len(kl_values)
             st.kl_history.append(avg_kl)
             # Keep last 200 samples
@@ -669,6 +676,7 @@ class DriftDetector:
             self._warmup_batches
             and len(st.kl_history) <= self._warmup_batches
             and max_loc_shift <= 2.0
+            and not kind_changed
         ):
             return None, mutated
 
@@ -770,6 +778,13 @@ class DriftDetector:
         # Numeric histograms with bins/counts
         p_counts = p_hist.get("counts", [])
         q_counts = q_hist.get("counts", [])
+
+        # BUG-418: one side numeric, the other categorical -- the column changed
+        # kind (a numeric column now carries text, or the reverse). The two share no
+        # support, so this is the largest divergence the epsilon floor allows; it used
+        # to fall through to the empty-counts case below and score 0.
+        if (p_counts and "categories" in q_hist) or (q_counts and "categories" in p_hist):
+            return _KIND_CHANGE_KL
 
         if not p_counts or not q_counts:
             return 0.0
