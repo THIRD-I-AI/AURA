@@ -4172,3 +4172,129 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Failure scenario:** Entry point: any protected gateway route, e.g. GET /api/v1/files with no Authorization header. An anonymous client sends a few hundred requests per second. Every one returns 401 and none is counted by the limiter, so no 429 ever comes back. Each appends a ~200-byte fsync'd line to /data/audit/audit-aura-<day>.jsonl, the same aura-data volume that holds gateway.db, metadata.db, uploads and signing keys; at that rate the log grows by gigabytes per day until the volume is full and SQLite writes and uploads fail for all tenants. Meanwhile the flood's audit writes queue on the writer lock and occupy the small default thread pool (6 threads on the 2-vCPU box) that uploads and DuckDB queries also use, so legitimate requests slow down. Read from code, not executed.
 - **Caused by:** none -- pre-existing.
 - **Fix:** `service_factory` now adds `RateLimitMiddleware` after the JWT and API-key middlewares, so it wraps them (still inside CORS, so a 429 keeps its CORS headers): a request rejected for a missing or bad token is counted against the caller's bucket like any other. `AuditLogMiddleware` no longer writes a record for a 429, since throttled requests are unbounded in number and each record is a locked, fsync'd write. Regression tests `test_rate_limiting_wraps_authentication` (`tests/test_cors_outermost.py`) and `test_a_throttled_request_is_not_given_an_audit_record` (`tests/test_audit_middleware_user.py`).
+
+## BUG-414: One null-valued or non-JSON Kafka message wedges the MAPE-K worker forever while status still reports running and not paused
+- **Status:** open
+- **Found by:** ultracode audit of uasr, counterfactual_service and frontend (run wf_f6f9a8a7-162, uasr scope; confirmed by 2 adversarial verifiers), 2026-10-12. `aurabackend/uasr/mapek_worker.py:319`.
+- **Severity:** medium
+- **Root cause:** The consumer's value_deserializer is `lambda v: json.loads(v.decode("utf-8"))` with no guard. aiokafka 0.13 calls it inside the record generator (`fetcher.py` `_consumer_record`, called for a None value too). An exception there kills the generator before the position is advanced. The next `getmany` finds the dead generator, sets the position to the bad record's offset and refetches it, so `getmany` raises again on every cycle. `_monitor_pull_batch` (lines 696-698) catches every exception, logs "Kafka getmany failed" and returns None, which the loop treats the same as an empty poll. Nothing skips the record, pauses the worker or sets `_last_error`. Rows already collected in that window are discarded too.
+- **Failure scenario:** A tombstone (value=None, normal on compacted topics) arrives on aura.uasr.events: `None.decode` raises AttributeError. The same happens for any non-JSON or non-UTF-8 payload. From then on every `getmany` for that partition raises, and the worker loops on warnings without consuming anything past that offset. `/uasr/mapek/status` shows running=true, paused=false, last_error=null. A restart resumes at the same offset and wedges again. If another partition still yields batches, `consumer.commit()` commits the wedged partition's position at the bad offset, so records returned before it in the failing call are lost. Established by reading the installed aiokafka source, not by running against a broker.
+- **Caused by:** none -- pre-existing.
+- **Fix:** pending.
+
+## BUG-415: Kafka batches infer schema from rows[0] only, so a null or whole-number value in the first row raises false SCHEMA drift and pauses the consumer
+- **Status:** open
+- **Found by:** ultracode audit of uasr, counterfactual_service and frontend (run wf_f6f9a8a7-162, uasr scope; confirmed by 2 adversarial verifiers), 2026-10-12. `aurabackend/uasr/mapek_worker.py:714`.
+- **Severity:** medium
+- **Root cause:** `_monitor_pull_batch` builds `schema_snapshot={c: type(rows[0].get(c)).__name__ for c in cols if rows[0].get(c) is not None}`. Columns come from the union of all rows, but the snapshot drops every column that is None or absent in the first row and types each column from that one value. `_check_schema_drift` (drift_detector.py:414-415) uses the snapshot keys as the batch's column set whenever a snapshot is present, and compares its types to the baseline.
+- **Failure scenario:** Reproduced against DriftDetector with batches built exactly as the worker builds them. Baseline batch: row0 = {id:1, amount:10.5, note:'x'}. (a) Identical data with row0.note = null gives SCHEMA drift, HIGH, "Removed: ['note']". (b) Identical data with row0.amount = 10 (JSON whole number parsed as int) gives SCHEMA drift, MEDIUM, "Type changed in columns: ['amount']". Both meet the default pause_on_severity of MEDIUM, so the consumer pauses and runs an LLM recovery on healthy data. Because of the stale-snapshot defect in the next finding, validation cannot pass, so the worker parks. An operator resume rewinds to the same offset, the same first row produces the same false drift, and it parks again.
+- **Caused by:** none -- pre-existing.
+- **Fix:** pending.
+
+## BUG-416: Shim validation and post-shim detection reuse the pre-shim schema_snapshot, so a schema-fix shim can never validate or take effect when a snapshot is present
+- **Status:** open
+- **Found by:** ultracode audit of uasr, counterfactual_service and frontend (run wf_f6f9a8a7-162, uasr scope; confirmed by 2 adversarial verifiers), 2026-10-12. `aurabackend/uasr/recovery_loop.py:488`.
+- **Severity:** medium
+- **Root cause:** `_validate_shim` builds the transformed batch with `schema_snapshot=original_batch.schema_snapshot`, the drifted schema. `_check_schema_drift` prefers snapshot keys over `batch.columns`, so the re-check sees the original drift whatever the shim did to the rows. Since `pre_kl` is None for schema drift, the result is `passed: False` with reason "Insufficient improvement: pre_kl=0.0000, post_kl=0.0000, target=<0.0000", which misstates the cause. The same staleness exists on the live path: mapek_worker.py:481 refreshes `batch.columns` after applying shims but not `batch.schema_snapshot`, which was computed on raw rows.
+- **Failure scenario:** Reproduced. A Kafka batch renames `amount` to `amt`, giving SCHEMA drift HIGH. A correct shim renaming it back is rejected by `_validate_shim` with the reason above. All 3 iterations fail, status is FAILED, and the consumer stays paused. So schema drift is never auto-healed on the Kafka path, where a snapshot is always set, nor on HTTP `/uasr/ingest` or `/uasr/heal` when the caller sends `schema_snapshot`. Separately, running that shim on a later batch and calling `detect()` still reports "Added: ['amt'], Removed: ['amount']", so a human-approved schema shim also keeps re-firing drift on every batch.
+- **Caused by:** none -- pre-existing.
+- **Fix:** pending.
+
+## BUG-417: Adaptive ζ feeds on the drift it just flagged: one unit-bug detection lifts the threshold above the maximum possible KL, blinding the histogram channel for 200 batches
+- **Status:** open
+- **Found by:** ultracode audit of uasr, counterfactual_service and frontend (run wf_f6f9a8a7-162, uasr scope; confirmed by 2 adversarial verifiers), 2026-10-12. `aurabackend/uasr/drift_detector.py:604`.
+- **Severity:** medium
+- **Root cause:** For a location shift above 2σ the code sets `kl = max(kl, loc_shift * zeta)`. That synthetic value, proportional to the current ζ, is averaged into `avg_kl` and appended to `st.kl_history` (lines 623-624) even though the batch is being reported as drifted. `_dynamic_threshold` then computes ζ = mean + 2·std over that history. A drifted batch therefore raises ζ, and each further detection multiplies by the already-raised ζ.
+- **Failure scenario:** Reproduced with a 2-numeric-column source, 500 rows per batch, 30 healthy batches (ζ = 0.61). One batch with `amount` ×100 is detected with max_kl 589, and ζ becomes 76.0. Re-detecting the same batch, as happens after a failed recovery and operator resume, gives ζ = 9467, then 1,150,424. Histogram KL is capped near ln(1e10) ≈ 23, so after the first detection no shape-only drift can exceed ζ until the sample leaves the 200-entry window. A bimodal `amount` with unchanged mean (KL 9.06) is flagged by a fresh detector and returns "No drift detected" from the poisoned one.
+- **Caused by:** none -- pre-existing.
+- **Fix:** pending.
+
+## BUG-418: A numeric column that starts carrying any non-numeric value scores KL = 0 and no location shift, so the corruption passes as "No drift detected"
+- **Status:** open
+- **Found by:** ultracode audit of uasr, counterfactual_service and frontend (run wf_f6f9a8a7-162, uasr scope; confirmed by 2 adversarial verifiers), 2026-10-12. `aurabackend/uasr/drift_detector.py:760`.
+- **Severity:** medium
+- **Root cause:** `_compute_distributions` types a column all-or-nothing (line 836): one non-numeric value makes the whole column categorical, with a `{"categories": ...}` histogram and mean/std of None. In `_kl_divergence`, when one histogram is categorical and the other is bins/counts, the categorical branch is skipped and `q_hist.get("counts", [])` is empty, so it returns 0.0 (lines 757-761). The location-shift check is skipped as well because `batch_dist.mean` is None. A numeric-to-categorical flip is scored as zero divergence.
+- **Failure scenario:** Reproduced. Baseline `amount` ~ N(100, 10). A batch where half the `amount` values are the string "N/A" and the other half are ~100000 (×1000) returns drift_detected=False, "No drift detected". This happens on HTTP ingest without a `schema_snapshot`, and on the Kafka path whenever the first row's value is still a float. The only other channel that can catch a flip is semantic, and only when a reference embedding was registered through a BatchPayload baseline. The Kafka worker's own re-baselining uses the dict path and stores none.
+- **Caused by:** none -- pre-existing.
+- **Fix:** pending.
+
+## BUG-419: Median binarisation turns a zero-inflated treatment into a constant, and IV 2SLS then returns a confident garbage effect that is signed as 'Disparate impact detected'
+- **Status:** open
+- **Found by:** ultracode audit of uasr, counterfactual_service and frontend (run wf_f6f9a8a7-162, counterfactual scope; confirmed by 2 adversarial verifiers), 2026-10-12. `aurabackend/counterfactual_service/audit_mapping.py:189`.
+- **Severity:** high
+- **Root cause:** validate_and_prepare binarises a non-binary treatment with `work[treatment] = (work[treatment] >= median)`. When at least half the rows sit at the minimum value (any zero-inflated count or amount), the median equals the minimum and every row becomes 1.0. Nothing checks that both arms exist afterwards. double_ml and tmle then fail with 'no variation', but the IV path has no treatment-variance guard: in iv_estimator.py:62-68 first_stage_diagnostics regresses a constant T on [1, Z, X], so rss_u and rss_r are both float round-off (about 1e-27) and their ratio is an arbitrary large F. The design-rank check only looks at the regressors, so it passes too. In stage 2, t_hat is a constant column collinear with the intercept; np.linalg.lstsq returns the minimum-norm solution, which splits the intercept between the two columns, so beta2[1] is about half the intercept. pinv gives a finite, small SE.
+- **Failure scenario:** Reproduced by running the code (not the full suite). POST /api/v1/counterfactual/audit with treatment = a count column that is 60% zeros and otherwise 1..5, a numeric confounder and a binary instrument, n=2000, true effect 0, outcome mean about 62. After validate_and_prepare the treatment is {1.0: 2000}. first_stage_diagnostics reports first_stage_f=164.5 and full rank. run_iv_2sls returns point 25.26, CI [24.81, 25.72]. tmle errors with 'n_treated=2000, n_control=0' and double_ml errors, so IV is the only usable estimate and significance_verdict returns status 'detected', avg 25.26: a signed fairness certificate stating disparate impact where the true effect is zero. With no confounders the F comes out 0.00 and IV is refused, so the outcome depends on round-off.
+- **Caused by:** none -- pre-existing.
+- **Fix:** pending.
+
+## BUG-420: outcome.window, outcome.agg, dataset.where and dataset.limit are accepted, signed and printed in the PDF but never applied to the data
+- **Status:** open
+- **Found by:** ultracode audit of uasr, counterfactual_service and frontend (run wf_f6f9a8a7-162, counterfactual scope; confirmed by 2 adversarial verifiers), 2026-10-12. `aurabackend/counterfactual_service/main.py:244`.
+- **Severity:** high
+- **Root cause:** CounterfactualQuery requires outcome.agg and outcome.window and accepts dataset.where and dataset.limit (schemas.py:25-26, 43-44). `_resolve_dataset` (main.py:219-236) takes only source_id and returns the whole upload, and run_job / run_estimators (engine.py:1855-1884) never read window, agg, where or limit; a grep of counterfactual_service finds no reader other than pdf_renderer.py:179-182, which prints 'Aggregation' and 'Window' in the signed report. Every estimator returns a per-row average effect over all rows of the file, whatever the query says.
+- **Failure scenario:** POST /api/v1/counterfactual/jobs with the frontend's own default query (pages/Counterfactual.tsx:17-29): outcome {column: monthly_revenue, agg: 'sum', window: ['2025-07-01','2025-09-30']} on uploaded_file:sales_2025.csv covering the full year, or any query with dataset.where = "region = 'EU'". The estimators run on all twelve months and all regions and return a per-row mean difference. The artifact is hashed and signed with the query embedded, and the PDF states 'Aggregation: sum, Window: 2025-07-01 -> 2025-09-30'. The number is neither a Q3 figure nor a sum, and a changed window or where clause changes the artifact hash but not one estimate.
+- **Caused by:** none -- pre-existing.
+- **Fix:** pending.
+
+## BUG-421: Challenges are sorted by the severity string alphabetically (high, low, medium), so the operator card's top two challenges show low-severity items ahead of medium ones
+- **Status:** open
+- **Found by:** ultracode audit of uasr, counterfactual_service and frontend (run wf_f6f9a8a7-162, counterfactual scope; confirmed by 2 adversarial verifiers), 2026-10-12. `aurabackend/counterfactual_service/engine.py:1935`.
+- **Severity:** low
+- **Root cause:** run_job sorts challenges with key `(c.severity, sha1(text))`. Severity is the literal string 'low' | 'medium' | 'high', so ascending order is high < low < medium. renderers._operator (renderers.py:147) then takes `art.challenges[:2]` as `top_challenges`, treating the list as ordered most-severe first. Medium challenges are therefore always ranked after every low one.
+- **Failure scenario:** A job whose critic returns one medium challenge ('seasonality is an unadjusted confounder') and two low ones, with no high challenges. The sorted list is [low, low, medium]; the operator view (the default audience for POST /counterfactual/jobs and the chat card) shows the two low-severity notes as the top challenges and the medium one is not shown at all. With one high, one medium and one low, the card shows high and low and drops the medium.
+- **Caused by:** none -- pre-existing.
+- **Fix:** pending.
+
+## BUG-422: MCP tools counterfactual_run and counterfactual_get call the service handlers without `user`, so the FastAPI Depends sentinel reaches _ledger_tenant: submit always raises AttributeError and get can never return a job
+- **Status:** open
+- **Found by:** ultracode audit of uasr, counterfactual_service and frontend (run wf_f6f9a8a7-162, counterfactual scope; confirmed by 2 adversarial verifiers), 2026-10-12. `aurabackend/mcp_servers/aura_mcp_server.py:372`.
+- **Severity:** medium
+- **Root cause:** Outside the gateway routers but a direct caller of the service. `counterfactual_run` does `await submit_job(CounterfactualQuery(**query))` and `counterfactual_get` does `await get_job(job_id)` (line 383). Both handlers declare `user: Dict = Depends(require_user)` (counterfactual_service/main.py:329-330, 341), so a direct in-process call leaves `user` as the Depends object. `_ledger_tenant(user)` (main.py:37-39) sees a truthy object and calls `user.get(...)`. The gateway router documents this exact trap (routers/counterfactual.py:101-105) and forwards `user` by hand; the MCP server was not updated when the handlers became tenant-scoped.
+- **Failure scenario:** Reproduced by calling the handler the way the MCP tool does: `await submit_job(CounterfactualQuery(...))` raises `AttributeError: 'Depends' object has no attribute 'get'`. Any MCP client invoking counterfactual_run gets a tool error and no job is created. counterfactual_get returns 404 for an unknown id and would raise the same AttributeError for any id that exists, so no job result is retrievable over MCP.
+- **Caused by:** none -- pre-existing.
+- **Fix:** pending.
+
+## BUG-423: Terminal pipeline health never loads when JWT is on or behind the prod proxy: systemService.health() is a bare root-path fetch
+- **Status:** open
+- **Found by:** ultracode audit of uasr, counterfactual_service and frontend (run wf_f6f9a8a7-162, frontend scope; confirmed by 2 adversarial verifiers), 2026-10-12. `frontend/src/services/api.ts:1260`.
+- **Severity:** medium
+- **Root cause:** systemService.health() does `fetch(`${ROOT_BASE_URL}/system/health`)` with no Authorization header, at the root path rather than under /api/v1. Two things break it outside an open-auth local dev setup. (1) `/system/health` is not in `_PUBLIC_PATHS` (aurabackend/shared/middleware.py:138 lists only /health, /healthz, /ready, ...), so with AURA_JWT_ENABLED=true (docker-compose.prod.yml:43, deploy/aws-free-tier/.env.example:45) the gateway answers 401. (2) In the deployed topology, deploy/aws-free-tier/Caddyfile forwards only `/api/*` and `/health` to the gateway; `/system/health` falls through to the frontend nginx, whose `try_files ... /index.html` returns the SPA HTML with 200, so `response.json()` throws. Either way the only caller, usePipelineTelemetry (frontend/src/terminal/pipeline/usePipelineTelemetry.ts:108-118), swallows the error in an empty catch. The SSE fallback cannot fill in either: the `system:health` event is published only as a side effect inside the GET /system/health handler (aurabackend/api_gateway/main.py:436-452), and nothing else calls that handler.
+- **Failure scenario:** A signed-in user on the deployed site opens /app/terminal. PipelinePanel polls /system/health every 8s; every poll gets index.html (or a 401 on a direct-to-gateway base with JWT on) and is silently dropped. No `system:health` SSE event is ever published because the handler never runs. The panel header stays at 'UNKNOWN · 0/0 services' with every service node 'unknown' indefinitely, while the chip next to it says 'stream live' (the SSE connection itself opens fine). LiveFeedPanel, subscribed to the same topic, stays empty. A real outage of a backend service is never shown.
+- **Caused by:** none -- pre-existing.
+- **Fix:** pending.
+
+## BUG-424: Ask AURA panel discards the server's `message`: conversational, pipeline-created and audit-completed replies all render as 'Done.'
+- **Status:** open
+- **Found by:** ultracode audit of uasr, counterfactual_service and frontend (run wf_f6f9a8a7-162, frontend scope; confirmed by 2 adversarial verifiers), 2026-10-12. `frontend/src/workbench/panels/AskAuraPanel.tsx:55`.
+- **Severity:** medium
+- **Root cause:** `text` is built from `er.conclusion || er.sql_explanation || (ok ? 'Done.' : undefined)` and `error` (lines 78-82) from `er.error || resp.error_message || 'Query failed.'`. Neither reads `resp.message`. POST /chat puts the entire reply in `message` (with no execution_result) for three success statuses - Conversational (chat.py:436-442), PipelineCreated (479-491) and AuditCompleted (604-612) - and for the pipeline/audit failure branches, which return status 'Error' with the reason only in `message` (chat.py:497-503, 513-522, 549-554, 625-630). The cockpit's AskAuraChat fallback does read `resp.message` on success (AskAuraChat.tsx:95), so the two surfaces disagree.
+- **Failure scenario:** In the 'Ask AURA' nav view the user types 'audit the amounts in invoices.csv'. The gateway runs the forensic auditor, signs a certificate and returns status 'AuditCompleted' with message 'Forensic audit of ... 7 finding(s) - 2 high ... Certificate <hash>. Open the signed certificate...'. The panel shows only 'Done.' - the finding counts and certificate reference are lost. Likewise 'hello' shows 'Done.' instead of the greeting, 'build a pipeline that ...' shows 'Done.' instead of the saved pipeline's name, and 'audit my data' with no numeric column shows 'Query failed.' instead of 'I need a dataset with a numeric/amount column to audit...'.
+- **Caused by:** none -- pre-existing.
+- **Fix:** pending.
+
+## BUG-425: Terminal Query panel shows nothing at all when /chat answers status 'Error' (HTTP 200)
+- **Status:** open
+- **Found by:** ultracode audit of uasr, counterfactual_service and frontend (run wf_f6f9a8a7-162, frontend scope; confirmed by 2 adversarial verifiers), 2026-10-12. `frontend/src/terminal/panels/QueryPanel.tsx:30`.
+- **Severity:** medium
+- **Root cause:** `run` stores any HTTP-200 body with `setResult(res)` and only sets `error` in the catch. The render reads only `result.final_query`, `er.verification`, `er.chart_spec` and `er.columns/rows`; it never looks at `result.status`, `result.error_message`, `result.message` or `er.error`. /chat reports failures as HTTP 200: SQL-generation failure returns status 'Error', `error_message: 'SQL generation failed: ...'`, `final_query: null`, `execution_result: null` (chat.py:649-659, 703-717); execution failure returns the SQL plus `execution_result.error` with empty columns/rows. The idle placeholder is suppressed because `result` is non-null (line 42).
+- **Failure scenario:** In /app/terminal the user selects a dataset and asks a question while the LLM provider is rate-limited. The gateway returns 200 {status:'Error', error_message:'SQL generation failed: rate-limited, try again shortly', execution_result:null}. The panel body goes completely blank: no error, no SQL, no table, no 'No query run yet' placeholder. For a query whose SQL fails at execution, the generated SQL is shown above an empty table header (columns is []), with the 'Execution failed: ...' text dropped, so it reads as a query that returned no rows. Conversational/pipeline/audit replies (message only) are equally blank.
+- **Caused by:** none -- pre-existing.
+- **Fix:** pending.
+
+## BUG-426: 'Edit in Visual Builder' throws away the AI pipeline's steps whenever its source file differs from the selected one
+- **Status:** open
+- **Found by:** ultracode audit of uasr, counterfactual_service and frontend (run wf_f6f9a8a7-162, frontend scope; confirmed by 2 adversarial verifiers), 2026-10-12. `frontend/src/pages/PipelinesPanel.tsx:548`.
+- **Severity:** medium
+- **Root cause:** handleEditInVisualBuilder calls `setTransforms(converted)` (line 545) and then, when `aiPipeline.source.file_name !== selectedSource`, calls `handleSourceChange(file)` (line 548). handleSourceChange unconditionally runs `setTransforms([])` (line 330). Both updates are in the same click handler, so the later one wins and the converted steps are discarded before the Visual tab renders.
+- **Failure scenario:** On Pipelines the user opens the Saved tab and loads a saved pipeline with 4 steps on orders.csv (handleLoadPipeline sets aiPipeline; selectedSource is still ''), or generates one in the AI tab without first picking a source so the generator chose the file. They click 'Edit in Visual Builder'. The Visual tab opens with orders.csv selected, the pipeline's name and destination format filled in, and zero transform steps. Saving from there is blocked by 'Add at least one transform step before saving', and Run/Preview executes an empty pipeline that just copies the source - the steps the user asked to edit are gone with no message.
+- **Caused by:** none -- pre-existing.
+- **Fix:** pending.
+
+## BUG-427: Login form reports every failure as 'Wrong email or password.', including rate-limit 429s and an unreachable gateway
+- **Status:** open
+- **Found by:** ultracode audit of uasr, counterfactual_service and frontend (run wf_f6f9a8a7-162, frontend scope; confirmed by 2 adversarial verifiers), 2026-10-12. `frontend/src/auth/AuthForm.tsx:45`.
+- **Severity:** low
+- **Root cause:** The catch maps any Error thrown by login() to the fixed string 'Wrong email or password.' without looking at the error's status. ApiClient throws ApiRequestError for every non-2xx and for network failures (status 0, 'Network error - backend may be offline'; 408 timeout), so 429 from the stricter auth rate-limit bucket on /api/v1/auth/token (shared/middleware.py `_AUTH_PATHS`), 5xx/503 (e.g. ServiceUnavailableError for an unsupported AURA_AUTH_MODE, or the DB being down) and an offline gateway are all presented as a credential error. Signup, by contrast, shows `err.message`.
+- **Failure scenario:** A user mistypes their password a few times and trips the per-IP auth rate limit (or several colleagues behind one office NAT sign in around the same time). They then enter the correct password; the gateway answers 429. The form says 'Wrong email or password.', so they keep retrying (extending the throttle) or go through a needless password reset. The same message appears when the gateway is down or restarting during a deploy, hiding the outage as a user error.
+- **Caused by:** none -- pre-existing.
+- **Fix:** pending.
