@@ -4282,13 +4282,13 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Fix:** the Terminal `QueryPanel` treats `status === 'Error'` or `execution_result.success === false` as a failure and shows `execution_result.error`, then `error_message`, then `message`; a message-only success reply is rendered too. Regression: 3 tests in `terminal/__tests__/QueryPanel.test.tsx`.
 
 ## BUG-426: 'Edit in Visual Builder' throws away the AI pipeline's steps whenever its source file differs from the selected one
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode audit of uasr, counterfactual_service and frontend (run wf_f6f9a8a7-162, frontend scope; confirmed by 2 adversarial verifiers), 2026-10-12. `frontend/src/pages/PipelinesPanel.tsx:548`.
 - **Severity:** medium
 - **Root cause:** handleEditInVisualBuilder calls `setTransforms(converted)` (line 545) and then, when `aiPipeline.source.file_name !== selectedSource`, calls `handleSourceChange(file)` (line 548). handleSourceChange unconditionally runs `setTransforms([])` (line 330). Both updates are in the same click handler, so the later one wins and the converted steps are discarded before the Visual tab renders.
 - **Failure scenario:** On Pipelines the user opens the Saved tab and loads a saved pipeline with 4 steps on orders.csv (handleLoadPipeline sets aiPipeline; selectedSource is still ''), or generates one in the AI tab without first picking a source so the generator chose the file. They click 'Edit in Visual Builder'. The Visual tab opens with orders.csv selected, the pipeline's name and destination format filled in, and zero transform steps. Saving from there is blocked by 'Add at least one transform step before saving', and Run/Preview executes an empty pipeline that just copies the source - the steps the user asked to edit are gone with no message.
 - **Caused by:** none -- pre-existing.
-- **Fix:** pending.
+- **Fix:** `handleEditInVisualBuilder` switches the source file first and sets the converted steps afterwards, so `handleSourceChange`'s reset can no longer discard them. Regression: `PipelinesPanel.test.tsx` "keeps the AI pipeline steps when its source file differs from the selected one".
 
 ## BUG-427: Login form reports every failure as 'Wrong email or password.', including rate-limit 429s and an unreachable gateway
 - **Status:** open
