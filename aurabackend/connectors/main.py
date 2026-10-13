@@ -3,6 +3,7 @@ AURA Connector Service - Database connection management
 Handles PostgreSQL, MySQL, BigQuery, and DuckDB connections
 """
 
+import inspect
 import os
 import sys
 from typing import Any, Dict, List
@@ -388,9 +389,21 @@ async def execute_query(connection_id: str, request: QueryRequest):
 
         connector = _create_connector(connector_type, connector_config)
 
-        await connector.connect()
-        rows = await connector.execute_query(request.query, limit=request.limit)
-        await connector.disconnect()
+        # BUG-439: connect() reports failure by returning False and execute_query by
+        # returning [], so a dead database or a failed statement came back as HTTP
+        # 200 with zero rows -- and the scheduler recorded the job as a success.
+        if not await connector.connect():
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail="Could not connect to the database for this connection",
+            )
+        try:
+            if "raise_errors" in inspect.signature(connector.execute_query).parameters:
+                rows = await connector.execute_query(request.query, limit=request.limit, raise_errors=True)
+            else:
+                rows = await connector.execute_query(request.query, limit=request.limit)
+        finally:
+            await connector.disconnect()
 
         # Derive columns from first row
         columns = list(rows[0].keys()) if rows else []

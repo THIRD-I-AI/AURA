@@ -4399,13 +4399,13 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Fix:** new `with_row_limit(query, limit)` in `connectors/sql_limit.py` strips trailing whitespace, semicolons and comments (leaving `--` inside a string literal alone) before deciding whether a LIMIT is already there, and appends the cap to the cleaned statement. The Postgres and MySQL connectors use it in place of the raw concatenation. Regression tests in `tests/test_row_limit_placement.py`, run against DuckDB: the old concatenation gave a parser error after `;` and returned all 25 rows after a `--` comment. Not changed: query errors are still returned as an empty list unless the caller passes `raise_errors=True` (see BUG-439).
 
 ## BUG-439: Connectors service /connections/{id}/query ignores connect() failure and swallowed query errors, returning HTTP 200 with zero rows (scheduler marks the job SUCCESS)
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode audit of gateway routers, agents and connectors (run wf_121f5057-8a0, connectors scope; confirmed by 2 adversarial verifiers), 2026-10-13. `aurabackend/connectors/main.py:391`.
 - **Severity:** medium
 - **Root cause:** `await connector.connect()` discards the boolean result. Every connector's `connect()` catches its own exception and returns False, and `execute_query` then returns `[]` because `_is_connected` is False. Query errors are swallowed the same way, because `raise_errors` is not passed on line 392. The handler therefore always reaches lines 398-402 and returns `{"columns": [], "rows": [], "row_count": 0}` with status 200. The `except Exception` -> 500 branch is effectively unreachable for database failures. BUG-029 item 1 fixed only the connection_id routing in this handler.
 - **Failure scenario:** DB_HOST points at a database that is down, DB_PASSWORD is wrong, or a scheduled job's SQL names a dropped table. scheduler_service/executor.py:310 posts to /connections/default/query, gets 200 with row_count 0, and executor.py:187-205 records JobStatus.SUCCESS, logs "Job completed successfully. Rows: 0", advances next_execution_time and skips the retry/failure-notification path. The execution sandbox proxy (execution_sandbox_service/main.py:56) likewise returns an empty successful result to the agent's execute_sql tool. An outage or broken query looks the same as a table with no rows.
 - **Caused by:** none -- pre-existing.
-- **Fix:** pending.
+- **Fix:** the connectors `/connections/{id}/query` handler answers 502 when `connect()` returns False, calls `execute_query(..., raise_errors=True)` on connectors that support it so a failed statement becomes an error response instead of zero rows, and disconnects in a `finally`. Regression tests in `tests/test_connectors_query_failures_surface.py`. Not changed: the BigQuery and DuckDB connectors have no `raise_errors` option, so their query errors are still returned as an empty result.
 
 ## BUG-440: BigQuery execute_query still uses the substring LIMIT check that BUG-192 removed from Postgres/MySQL: any query mentioning 'limit' runs uncapped
 - **Status:** fixed
