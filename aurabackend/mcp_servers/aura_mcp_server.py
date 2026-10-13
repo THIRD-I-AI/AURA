@@ -92,6 +92,13 @@ METADATA_DSN = os.getenv(
 )
 MAX_ROWS = int(os.getenv("AURA_MCP_MAX_ROWS", "200"))
 
+# BUG-422: the counterfactual handlers take their caller from FastAPI's
+# Depends(require_user). Called in-process without `user`, they received the Depends
+# object itself: submit raised AttributeError and get could never match a tenant. The
+# MCP server has one credential and no per-user identity, so its jobs are stamped
+# with, and read back under, this one principal.
+_MCP_PRINCIPAL: Dict[str, Any] = {"sub": "aura-mcp"}
+
 
 # ── Connection caches ─────────────────────────────────────────────────
 
@@ -369,7 +376,7 @@ def build_server() -> "FastMCP":
     async def counterfactual_run(query: Dict[str, Any]) -> Dict[str, Any]:
         from counterfactual_service.main import submit_job
         from counterfactual_service.schemas import CounterfactualQuery
-        return await submit_job(CounterfactualQuery(**query))
+        return await submit_job(CounterfactualQuery(**query), user=_MCP_PRINCIPAL)
 
     @server.tool(
         description=(
@@ -380,7 +387,7 @@ def build_server() -> "FastMCP":
     )
     async def counterfactual_get(job_id: str) -> Dict[str, Any]:
         from counterfactual_service.main import get_job
-        return await get_job(job_id)
+        return await get_job(job_id, user=_MCP_PRINCIPAL)
 
     # ── Resources (read-only context endpoints) ───────────────────────
 
