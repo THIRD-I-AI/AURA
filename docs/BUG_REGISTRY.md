@@ -4210,13 +4210,13 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Fix:** `_check_statistical_drift` no longer appends to `kl_history` when any column's location moved by more than 2 sigma -- the case whose score is the surrogate `loc_shift * zeta`. Batches without a location shift, including warm-up batches whose alert is suppressed, are recorded as before, so the adaptive window still fills. Regression test `tests/test_zeta_not_fed_by_drift.py` (re-detecting a x100 unit bug four times leaves zeta unchanged; on the old code it went 0.43 -> 85 -> 3,170,740). `test_record_state_false_leaves_history_length_unchanged` now proves recording with an unshifted batch. Not changed: a batch flagged on histogram shape alone is still recorded.
 
 ## BUG-418: A numeric column that starts carrying any non-numeric value scores KL = 0 and no location shift, so the corruption passes as "No drift detected"
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode audit of uasr, counterfactual_service and frontend (run wf_f6f9a8a7-162, uasr scope; confirmed by 2 adversarial verifiers), 2026-10-12. `aurabackend/uasr/drift_detector.py:760`.
 - **Severity:** medium
 - **Root cause:** `_compute_distributions` types a column all-or-nothing (line 836): one non-numeric value makes the whole column categorical, with a `{"categories": ...}` histogram and mean/std of None. In `_kl_divergence`, when one histogram is categorical and the other is bins/counts, the categorical branch is skipped and `q_hist.get("counts", [])` is empty, so it returns 0.0 (lines 757-761). The location-shift check is skipped as well because `batch_dist.mean` is None. A numeric-to-categorical flip is scored as zero divergence.
 - **Failure scenario:** Reproduced. Baseline `amount` ~ N(100, 10). A batch where half the `amount` values are the string "N/A" and the other half are ~100000 (×1000) returns drift_detected=False, "No drift detected". This happens on HTTP ingest without a `schema_snapshot`, and on the Kafka path whenever the first row's value is still a float. The only other channel that can catch a flip is semantic, and only when a reference embedding was registered through a BatchPayload baseline. The Kafka worker's own re-baselining uses the dict path and stores none.
 - **Caused by:** none -- pre-existing.
-- **Fix:** pending.
+- **Fix:** `_kl_divergence` returns the maximal divergence (`_KIND_CHANGE_KL`, -ln eps) when one histogram is numeric and the other categorical, instead of falling through to the empty-counts case and returning 0. A kind change is exempt from the cold-start warm-up suppression and, like a location shift (BUG-417), is not recorded into `kl_history`. Regression tests in `tests/test_numeric_to_categorical_flip.py`. Not changed: column typing is still all-or-nothing, so numeric stats are not computed over the parseable subset of a mixed column.
 
 ## BUG-419: Median binarisation turns a zero-inflated treatment into a constant, and IV 2SLS then returns a confident garbage effect that is signed as 'Disparate impact detected'
 - **Status:** open
