@@ -299,6 +299,9 @@ async def oidc_callback(code: str, state: str,
         "sub": str(claims.get("sub")),
         "role": "user",
         "org_id": oidc.map_org(claims),   # fail-closed tenant mapping
+        # Marks the session as SSO-issued: there is no users row behind it, which
+        # /auth/refresh needs to know (BUG-428).
+        "idp": "oidc",
     }
     if claims.get("email"):
         aura_claims["email"] = claims["email"]
@@ -345,8 +348,11 @@ async def refresh_token(user: dict = Depends(require_user)):
     if now - auth_time > _session_max_seconds():
         raise AuthenticationError("Session too old; sign in again")
 
-    claims = {k: user[k] for k in ("sub", "email", "name", "role", "org_id") if user.get(k) is not None}
-    if settings.auth_mode == "password":
+    claims = {k: user[k] for k in ("sub", "email", "name", "role", "org_id", "idp") if user.get(k) is not None}
+    # BUG-428: an SSO login never creates a users row, so the account re-read below
+    # refused every SSO session ("Account no longer exists") and SSO users were
+    # signed out when their first 30-minute token ran out.
+    if settings.auth_mode == "password" and user.get("idp") != "oidc":
         from metadata_store.db import get_session_factory
         from metadata_store.models import User
 

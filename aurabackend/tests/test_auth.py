@@ -399,3 +399,15 @@ class TestTokenRefresh:
         ghost = create_access_token({"sub": "no-such-user", "role": "admin", "org_id": "x"})
         resp = password_client.post(f"{V1}/auth/refresh", headers={"Authorization": f"Bearer {ghost}"})
         assert resp.status_code == 401, resp.text
+
+    def test_an_sso_session_is_renewed_without_a_users_row(self, password_client):
+        # BUG-428: an OIDC login mints a token and writes no users row; the account
+        # re-read refused every such session.
+        from shared.auth import create_access_token, decode_access_token
+
+        sso = create_access_token({"sub": "idp-subject-1", "role": "user", "org_id": "acme", "idp": "oidc"})
+        resp = password_client.post(f"{V1}/auth/refresh", headers={"Authorization": f"Bearer {sso}"})
+
+        assert resp.status_code == 200, resp.text
+        renewed = decode_access_token(resp.json()["access_token"])
+        assert (renewed["sub"], renewed["org_id"], renewed["idp"]) == ("idp-subject-1", "acme", "oidc")

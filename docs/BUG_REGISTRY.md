@@ -4300,13 +4300,13 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Fix:** `AuthForm` picks the login failure text from the error's status: 429 reads "Too many sign-in attempts. Wait a minute and try again.", a network failure, timeout or 5xx reads "Cannot reach the server right now. Please try again shortly.", and anything else stays "Wrong email or password.". Regression: `auth/__tests__/loginFailureMessage.test.tsx`.
 
 ## BUG-428: POST /auth/refresh rejects every SSO (OIDC) session in password mode, so SSO users are logged out every 30 minutes
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode audit of gateway routers, agents and connectors (run wf_121f5057-8a0, routers scope; confirmed by 2 adversarial verifiers), 2026-10-13. `aurabackend/api_gateway/routers/auth.py:354`.
 - **Severity:** medium
 - **Root cause:** refresh_token() re-reads the account whenever settings.auth_mode == "password" (lines 349-357): `select(User).where(User.id == user["sub"])`, and raises AuthenticationError("Account no longer exists") when no row is found. An OIDC login never creates a users row: oidc_callback (lines 298-308) only mints a JWT whose sub is the IdP subject, and shared/oidc.py has no User write. AURA_AUTH_MODE can only be 'open' or 'password' (shared/config.py:259-262) and production must be 'password', so every production SSO session takes this branch and fails the lookup.
 - **Failure scenario:** Production deployment with AURA_AUTH_MODE=password and AURA_OIDC_* configured. A user signs in through /auth/oidc/login -> callback -> exchange and gets a JWT with sub=<IdP subject>. The frontend's renewal (authService.refresh, frontend/src/services/api.ts:217) calls POST /api/v1/auth/refresh when under 10 minutes remain; the gateway answers 401 'Account no longer exists' although the token is valid. refresh() returns false, the token expires at 30 minutes, and the user is sent to /login mid-task. This is the BUG-397 symptom, still present for all SSO users; password users are unaffected.
 - **Caused by:** none -- pre-existing.
-- **Fix:** pending.
+- **Fix:** the OIDC callback stamps `idp: "oidc"` into the token it mints, and `/auth/refresh` skips the users-table re-read for such a token (and carries the claim into the renewed one), so an SSO session renews like a password session, still bounded by the 12-hour sign-in cap. Password sessions are still re-read. Regression test `test_an_sso_session_is_renewed_without_a_users_row` in `tests/test_auth.py`. Note: an SSO token minted before this deploy has no `idp` claim and cannot renew; it expires within 30 minutes.
 
 ## BUG-429: /system/health probes six services on hard-coded localhost, so any containerized deployment is reported 'critical' with those services 'down'
 - **Status:** open
