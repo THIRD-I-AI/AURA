@@ -33,6 +33,8 @@ def test_a_control_missing_from_the_data_is_dropped():
 
 @pytest.mark.asyncio
 async def test_an_estimate_under_unmeasured_confounding_is_not_pushed_further_off():
+    # TMLE needs scikit-learn, which only CI's causal lane installs (it lists this file).
+    pytest.importorskip("sklearn")
     # u confounds t and y and is not in the data; z is a strong instrument. The true
     # effect is 1. Conditioning on z removes the exogenous variation in t and leaves
     # the share driven by u, so the old adjustment set gave a larger bias.
