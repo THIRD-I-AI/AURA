@@ -36,6 +36,7 @@ from shared.cache import dashboard_cache, query_cache
 from shared.circuit_breaker import get_breaker
 from shared.error_handler import sanitize_error
 from shared.logging_config import get_logger
+from shared.public_routes import public_route
 from shared.streaming_manager import TOPIC_QUERY, streaming_manager
 
 logger = get_logger("aura.api_gateway.queries")
@@ -738,6 +739,7 @@ async def revoke_share_link(query_id: str, request: Request):
 
 
 @router.get("/public/saved-queries/{token}")
+@public_route("read-only; gated by the unguessable, revocable share token in the path (BUG-432)")
 async def read_shared_query(token: str):
     """Public read-only endpoint for a shared saved query.
 

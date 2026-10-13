@@ -23,6 +23,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 
 from shared.exceptions import AuraError
 from shared.logging_config import bind_request_id, get_logger, reset_request_id
+from shared.public_routes import is_declared_public
 
 logger = get_logger("aura.middleware")
 
@@ -188,6 +189,17 @@ _PUBLIC_PATH_PREFIXES = (
 def _is_public_path(path: str) -> bool:
     return path in _PUBLIC_PATHS or path.startswith(_PUBLIC_PATH_PREFIXES)
 
+
+def _needs_no_login(request: Request) -> bool:
+    """Public by the lists above, or by the handler's own ``@public_route``.
+
+    New public routes are declared on the handler (shared/public_routes.py); the
+    lists above remain for paths that have no handler of ours (docs, health) and
+    for the routes that were public before the decorator existed.
+    """
+    path = request.url.path
+    return _is_public_path(path) or is_declared_public(request.app, request.method, path)
+
 # The credential endpoints. Unauthenticated by necessity — you cannot present a
 # token to the endpoint that mints it — which is exactly why they must NOT
 # inherit _PUBLIC_PATHS' rate-limit exemption: that set answers "does this need
@@ -226,7 +238,7 @@ class APIKeyMiddleware(BaseHTTPMiddleware):
 
     async def dispatch(self, request: Request, call_next: Callable):
         # Always allow public paths
-        if _is_public_path(request.url.path):
+        if _needs_no_login(request):
             return await call_next(request)
 
         # Allow CORS preflight
@@ -267,7 +279,7 @@ class JWTAuthMiddleware(BaseHTTPMiddleware):
     """
 
     async def dispatch(self, request: Request, call_next: Callable):
-        if _is_public_path(request.url.path) or request.method == "OPTIONS":
+        if _needs_no_login(request) or request.method == "OPTIONS":
             return await call_next(request)
 
         auth_header = request.headers.get("Authorization", "")
