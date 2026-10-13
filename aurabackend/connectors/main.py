@@ -3,10 +3,11 @@ AURA Connector Service - Database connection management
 Handles PostgreSQL, MySQL, BigQuery, and DuckDB connections
 """
 
+import asyncio
 import inspect
 import os
 import sys
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from fastapi import HTTPException, status
 from pydantic import BaseModel, Field
@@ -193,6 +194,31 @@ class IntrospectRequest(BaseModel):
     config: Dict[str, Any] = Field(default_factory=dict, description="Connector configuration")
 
 
+def _uploads_root() -> str:
+    return os.path.realpath(os.getenv("AURA_UPLOADS_ROOT") or os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "uploads"))
+
+
+def _confined_upload_path(raw: Any) -> Optional[str]:
+    """The real path of ``raw`` if it lies inside the uploads root, else None.
+
+    BUG-441: /ingest read whatever path it was handed -- any tabular file on the box,
+    for any caller. This service has no tenant of its own, so it confines to the
+    uploads root; the gateway confines to the caller's own tenant directory before
+    it calls here.
+    """
+    if not raw or raw == ":memory:":
+        return None
+    root = _uploads_root()
+    candidate = str(raw) if os.path.isabs(str(raw)) else os.path.join(root, str(raw))
+    resolved = os.path.realpath(candidate)
+    try:
+        inside = os.path.commonpath([resolved, root]) == root
+    except ValueError:  # different drives
+        inside = False
+    return resolved if inside else None
+
+
 @app.post("/ingest")
 async def ingest_file(request: IngestRequest):
     """Ingest a file and return basic profiling information.
@@ -200,36 +226,36 @@ async def ingest_file(request: IngestRequest):
     Used by the agentic DE framework to ingest data files.
     """
     import os as _os
-    file_path = request.file_path
+    file_path = _confined_upload_path(request.file_path)
 
-    if not _os.path.exists(file_path):
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"File not found: {file_path}",
-        )
+    if file_path is None or not _os.path.isfile(file_path):
+        # One answer for "outside the uploads" and "not there", and no path echoed
+        # back: the old 404 told a caller which paths exist on the box.
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found in uploads")
 
     # Basic profiling with pandas if available
     try:
         import pandas as pd
 
         ext = _os.path.splitext(file_path)[1].lower()
+        # Off the event loop: these reads are synchronous and can be large.
         if ext == ".csv":
-            df = pd.read_csv(file_path, nrows=10_000)
+            df = await asyncio.to_thread(pd.read_csv, file_path, nrows=10_000)
         elif ext in (".xlsx", ".xls"):
-            df = pd.read_excel(file_path, nrows=10_000)
+            df = await asyncio.to_thread(pd.read_excel, file_path, nrows=10_000)
         elif ext == ".json":
-            df = pd.read_json(file_path)
+            df = await asyncio.to_thread(pd.read_json, file_path)
         elif ext == ".parquet":
-            df = pd.read_parquet(file_path)
+            df = await asyncio.to_thread(pd.read_parquet, file_path)
         else:
             return {
-                "file_path": file_path,
+                "file_path": request.file_path,
                 "status": "unsupported_format",
                 "message": f"Unsupported file extension: {ext}",
             }
 
         profile = {
-            "file_path": file_path,
+            "file_path": request.file_path,
             "rows": len(df),
             "columns": list(df.columns),
             "dtypes": {col: str(dtype) for col, dtype in df.dtypes.items()},
@@ -241,7 +267,7 @@ async def ingest_file(request: IngestRequest):
 
     except ImportError:
         return {
-            "file_path": file_path,
+            "file_path": request.file_path,
             "status": "limited",
             "message": "pandas not available — returning file metadata only",
             "size_bytes": _os.path.getsize(file_path),
