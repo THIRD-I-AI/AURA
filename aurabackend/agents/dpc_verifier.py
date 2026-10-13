@@ -7,6 +7,7 @@ See docs/superpowers/specs/2026-05-31-dpc-sql-verification-design.md.
 from __future__ import annotations
 
 import asyncio
+import datetime
 import math
 import os
 from typing import Any, List, Literal, Optional, Tuple
@@ -30,6 +31,10 @@ def _norm_scalar(v: Any) -> Tuple[str, Any]:
         return ("none", "")
     if isinstance(v, bool):
         return ("num", float(v))
+    if isinstance(v, datetime.datetime):
+        # The SQL side arrives already serialised with isoformat() ('T' separator);
+        # str() of a pandas Timestamp uses a space, so equal instants compared unequal.
+        return ("str", v.isoformat())
     try:
         f = float(v)
         if math.isnan(f):
@@ -52,6 +57,15 @@ def _to_multiset(values_2d: Any, ndigits: int) -> List[Tuple[str, Any]]:
 
 
 def _pandas_to_2d(result: Any) -> List[List[Any]]:
+    # BUG-435: a grouped result keeps its group keys in the index, while the SQL
+    # result has them as a column, so the two sides never held the same cells and a
+    # correct GROUP BY answer was reported as a mismatch. A named index is data; the
+    # unnamed positional index of a plain or filtered frame is not.
+    if isinstance(result, (pd.DataFrame, pd.Series)) and all(n is not None for n in result.index.names):
+        try:
+            result = result.reset_index()
+        except ValueError:  # an index level named like an existing column
+            pass
     if isinstance(result, pd.DataFrame):
         return result.values.tolist()
     if isinstance(result, pd.Series):

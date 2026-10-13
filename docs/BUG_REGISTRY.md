@@ -4363,13 +4363,13 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Fix:** `ExecutionAgent` de-duplicates result column names before building records (`_unique_column_names`: `name`, `name_2`, ..., skipping any suffix that is already a real column), and returns the same list as `columns`, so `records`, `rows` and `columns` stay aligned for joins that select two columns with one name. Regression tests in `tests/test_execution_duplicate_columns.py`.
 
 ## BUG-435: DPC reports 'mismatch' on correct GROUP BY answers because the pandas index (group keys) is dropped before comparison
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode audit of gateway routers, agents and connectors (run wf_121f5057-8a0, agents scope; confirmed by 2 adversarial verifiers), 2026-10-13. `aurabackend/agents/dpc_verifier.py:57`.
 - **Severity:** medium
 - **Root cause:** results_agree (lines 65-71) compares the flat multiset of every SQL cell against the flat multiset of every pandas cell. _pandas_to_2d turns a Series into `[[v] for v in result.tolist()]` (line 57-58) and a DataFrame into `result.values.tolist()` (line 56), both of which drop the index. A grouped pandas result keeps its group keys in the index, while the SQL result has them as a column, so the two multisets always differ in size. The prompt (lines 231-247) gives only a scalar example and never asks for reset_index(). A second cause of the same false verdict: execution rows are already serialised by ExecutionAgent (timestamps as isoformat with 'T'), while the pandas side stringifies raw values with a space.
 - **Failure scenario:** The user asks 'total sales by region' over one table. SQL correctly returns [['East', 100.0], ['West', 250.0]] (4 cells). The verifier LLM writes the natural `df.groupby("region")["sales"].sum()`, a Series whose values are [100.0, 250.0] (2 cells). results_agree returns False, so verify_node sets status='mismatch' and the UI shows the amber 'independent pandas computation disagrees' warning on a correct answer (BUG-137 made that banner visible). On the DAGExecutor path (sql_generator_agent.py:161-187) the same false mismatch triggers a regeneration that replaces the correct SQL.
 - **Caused by:** none -- pre-existing.
-- **Fix:** pending.
+- **Fix:** `_pandas_to_2d` calls `reset_index()` on a Series or DataFrame whose index levels are all named (the shape `groupby` produces), so group keys take part in the comparison as they do on the SQL side; the unnamed positional index of a plain or filtered frame is still left out. `_norm_scalar` serialises datetimes with `isoformat()`, matching how `ExecutionAgent` serialises the SQL side. Regression tests in `tests/test_dpc_group_keys.py` (grouped Series and frame agree, a wrong total still mismatches, a filtered frame is unaffected, timestamps agree). Not changed: the verifier prompt.
 
 ## BUG-436: DAGExecutor runs tasks whose dependency was skipped; only a directly failed dependency blocks a task
 - **Status:** open
