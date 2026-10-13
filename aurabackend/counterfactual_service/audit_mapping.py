@@ -186,9 +186,21 @@ def validate_and_prepare(
         work[treatment] = (work[treatment] == hi).astype(float)
     else:
         median = float(work[treatment].median())
-        work[treatment] = (work[treatment] >= median).astype(float)
-        warnings.append(
-            f"treatment '{treatment}' was continuous; binarised at its median ({median:.3g})"
+        # BUG-419: when at least half the rows sit at the minimum (a zero-inflated
+        # count or amount) the median IS the minimum, and `>= median` put every row
+        # in the treated arm. Rows at the minimum are the control arm in that case.
+        if median <= uniq[0]:
+            work[treatment] = (work[treatment] > median).astype(float)
+            split = f"above its median ({median:.3g})"
+        else:
+            work[treatment] = (work[treatment] >= median).astype(float)
+            split = f"at its median ({median:.3g})"
+        warnings.append(f"treatment '{treatment}' was continuous; binarised {split}")
+
+    if work[treatment].nunique() < 2:
+        raise ValueError(
+            f"treatment '{treatment}' has the same value in every usable row; "
+            "an effect cannot be estimated without both a treated and a control group"
         )
 
     dq = DataQuality(
