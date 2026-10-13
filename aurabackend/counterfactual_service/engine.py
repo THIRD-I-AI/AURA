@@ -1852,6 +1852,9 @@ def _request_hash(query: CounterfactualQuery, dataset_fingerprint: str,
     })
 
 
+_SEVERITY_RANK = {"high": 0, "medium": 1, "low": 2}
+
+
 async def run_job(
     query: CounterfactualQuery,
     df: pd.DataFrame,
@@ -1935,7 +1938,9 @@ async def run_job(
     challenges = sorted(
         challenges_unsorted,
         key=lambda c: (
-            c.severity,
+            # BUG-421: sorting on the severity string put "low" ahead of "medium",
+            # and the operator card shows only the first two challenges.
+            _SEVERITY_RANK[c.severity],
             hashlib.sha1(c.text.encode("utf-8"), usedforsecurity=False).hexdigest(),
         ),
     )
