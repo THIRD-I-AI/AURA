@@ -12,6 +12,18 @@ type Mode = 'login' | 'signup';
  * feel effortless). Signup also collects a name; on success both flows land the
  * user on the app (or wherever they were headed before being asked to log in).
  */
+// BUG-427: every login failure used to read as a credential error, including a
+// rate-limit 429 and an unreachable gateway -- sending people to retype a password
+// that was never the problem.
+function loginFailureMessage(err: Error): string {
+  const status = (err as { status?: number }).status;
+  if (status === 429) return 'Too many sign-in attempts. Wait a minute and try again.';
+  if (status === 0 || status === 408 || (status !== undefined && status >= 500)) {
+    return 'Cannot reach the server right now. Please try again shortly.';
+  }
+  return 'Wrong email or password.';
+}
+
 export function AuthForm({ mode }: { mode: Mode }) {
   const { login, register } = useAuth();
   const navigate = useNavigate();
@@ -42,7 +54,7 @@ export function AuthForm({ mode }: { mode: Mode }) {
     } catch (err) {
       setError(
         err instanceof Error
-          ? (isSignup ? `Could not create your account: ${err.message}` : 'Wrong email or password.')
+          ? (isSignup ? `Could not create your account: ${err.message}` : loginFailureMessage(err))
           : 'Something went wrong. Please try again.',
       );
     } finally {

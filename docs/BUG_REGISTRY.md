@@ -4291,10 +4291,10 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Fix:** `handleEditInVisualBuilder` switches the source file first and sets the converted steps afterwards, so `handleSourceChange`'s reset can no longer discard them. Regression: `PipelinesPanel.test.tsx` "keeps the AI pipeline steps when its source file differs from the selected one".
 
 ## BUG-427: Login form reports every failure as 'Wrong email or password.', including rate-limit 429s and an unreachable gateway
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode audit of uasr, counterfactual_service and frontend (run wf_f6f9a8a7-162, frontend scope; confirmed by 2 adversarial verifiers), 2026-10-12. `frontend/src/auth/AuthForm.tsx:45`.
 - **Severity:** low
 - **Root cause:** The catch maps any Error thrown by login() to the fixed string 'Wrong email or password.' without looking at the error's status. ApiClient throws ApiRequestError for every non-2xx and for network failures (status 0, 'Network error - backend may be offline'; 408 timeout), so 429 from the stricter auth rate-limit bucket on /api/v1/auth/token (shared/middleware.py `_AUTH_PATHS`), 5xx/503 (e.g. ServiceUnavailableError for an unsupported AURA_AUTH_MODE, or the DB being down) and an offline gateway are all presented as a credential error. Signup, by contrast, shows `err.message`.
 - **Failure scenario:** A user mistypes their password a few times and trips the per-IP auth rate limit (or several colleagues behind one office NAT sign in around the same time). They then enter the correct password; the gateway answers 429. The form says 'Wrong email or password.', so they keep retrying (extending the throttle) or go through a needless password reset. The same message appears when the gateway is down or restarting during a deploy, hiding the outage as a user error.
 - **Caused by:** none -- pre-existing.
-- **Fix:** pending.
+- **Fix:** `AuthForm` picks the login failure text from the error's status: 429 reads "Too many sign-in attempts. Wait a minute and try again.", a network failure, timeout or 5xx reads "Cannot reach the server right now. Please try again shortly.", and anything else stays "Wrong email or password.". Regression: `auth/__tests__/loginFailureMessage.test.tsx`.
