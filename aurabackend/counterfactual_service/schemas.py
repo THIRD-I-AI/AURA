@@ -22,6 +22,10 @@ class InterventionSpec(BaseModel):
 
 class OutcomeSpec(BaseModel):
     column: str
+    # BUG-420: `agg` and `window` are recorded with the query but NOT applied. Every
+    # estimator returns the average effect per row over all rows of the source. They
+    # stay required so existing callers keep working; the report no longer presents
+    # them as if they shaped the estimate.
     agg: Literal["sum", "mean", "count"]
     window: Tuple[str, str]   # ISO date strings (inclusive on both ends)
 
@@ -198,6 +202,24 @@ class JobStatus(BaseModel):
 
 # ── The artifact ──────────────────────────────────────────────────────
 
+class AppliedSpec(BaseModel):
+    """What the engine actually did, as opposed to what the query asked for.
+
+    The report and the verdict are written from this, never from the request, so a
+    signed artifact cannot attest to a filter, window or adjustment set that was not
+    applied (BUG-402, 405, 420). It is part of the signed payload.
+    """
+    estimand: str
+    rows_used: int
+    adjustment_set: List[str] = Field(default_factory=list)
+    instruments: List[str] = Field(default_factory=list)
+    # Which materiality rule produced the verdict; an artifact is always re-rendered
+    # with the rule it was sealed under.
+    verdict_rule: str
+    # Query fields that are stored with the artifact but had no effect on the result.
+    recorded_only: List[str] = Field(default_factory=list)
+
+
 class CounterfactualArtifact(BaseModel):
     record_id: str
     query: CounterfactualQuery
@@ -218,3 +240,6 @@ class CounterfactualArtifact(BaseModel):
     rendered: Dict[str, Any] = Field(default_factory=dict)
     warnings: List[str] = Field(default_factory=list)
     created_at: Optional[datetime] = None
+    # None for artifacts sealed before the applied spec existed. It is left out of
+    # their signed payload (engine.strip_for_hashing), so their signatures still verify.
+    applied: Optional[AppliedSpec] = None

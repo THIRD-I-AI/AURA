@@ -19,7 +19,7 @@ import logging
 from typing import Any, Dict, Optional
 from xml.sax.saxutils import escape as _xml_escape
 
-from .verdict import significance_verdict
+from .verdict import rule_for, significance_verdict
 
 logger = logging.getLogger("aura.counterfactual.pdf")
 
@@ -100,7 +100,7 @@ def _verdict_text(artifact_dict: Dict[str, Any]) -> Optional[str]:
     so the downloadable compliance artifact never asserts a directional effect
     whose 95% CI straddles zero. Returns None when no estimator succeeded."""
     estimates = artifact_dict.get("estimates", [])
-    verdict = significance_verdict(estimates)
+    verdict = significance_verdict(estimates, rule_for(artifact_dict))
     if verdict["status"] == "empty":
         return None
     pts = [f for f in (_to_float(e.get("point")) for e in estimates if not e.get("error"))
@@ -172,14 +172,22 @@ def render_pdf(artifact_dict: Dict[str, Any]) -> Optional[bytes]:
 
     treatment = query.get("treatment", {})
     outcome = query.get("outcome", {})
+    applied = artifact_dict.get("applied") or {}
     spec_table = Table(
         [
             ["Treatment column", treatment.get("column", "—"),
              "Actual value",         f"{treatment.get('actual', '—')}",
              "Counterfactual",       f"{treatment.get('counterfactual', '—')}"],
             ["Outcome column",   outcome.get("column", "—"),
-             "Aggregation",       outcome.get("agg", "—"),
-             "Window",            f"{outcome.get('window', ['—', '—'])[0]} → {outcome.get('window', ['—', '—'])[1]}"],
+             # BUG-420: this row used to print the query's aggregation and date
+             # window, neither of which is applied to the data. It now states what
+             # the engine did (the artifact's applied spec when it has one).
+             "Estimand",          applied.get("estimand", "average effect per row"),
+             "Rows",              (f"{applied['rows_used']:,} (all rows of the source)"
+                                   if applied.get("rows_used") is not None else "all rows of the source")],
+            ["Adjusted for",      ", ".join(applied.get("adjustment_set") or []) or "—",
+             "Instrument",        ", ".join(applied.get("instruments") or []) or "—",
+             "Verdict rule",      applied.get("verdict_rule", "v1")],
         ],
         colWidths=[35 * mm, 35 * mm, 25 * mm, 25 * mm, 25 * mm, 25 * mm],
     )

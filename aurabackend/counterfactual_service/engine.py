@@ -33,6 +33,7 @@ from . import critic_cache, cryptography, persistence, signing
 from .canonical import canonical_dumps, sha256_canonical
 from .schemas import (
     AdversarialChallenge,
+    AppliedSpec,
     CounterfactualArtifact,
     CounterfactualEstimate,
     CounterfactualQuery,
@@ -432,12 +433,7 @@ def _run_one_econml_dr_learner(
         # DAG that omits the seasonality→treatment edge yields an empty
         # control set, so the estimator overstates the effect and the
         # critic gets to flag the missing confounder.
-        treatment_parents = sorted({
-            src for src, dst in dag.get("edges", [])
-            if dst == treatment.column
-            and src != outcome.column   # outcome can't be a confounder
-            and src in df.columns       # must be present in the data
-        })
+        treatment_parents = _adjustment_set(dag, treatment.column, outcome.column, df.columns)
 
         n = len(df)
         # EconML's LinearDRLearner requires a non-degenerate X (the
@@ -626,12 +622,7 @@ def _run_one_econml_forest_dr_learner(
             )
         Y = df[outcome.column].to_numpy(dtype=float)
 
-        treatment_parents = sorted({
-            src for src, dst in dag.get("edges", [])
-            if dst == treatment.column
-            and src != outcome.column
-            and src in df.columns
-        })
+        treatment_parents = _adjustment_set(dag, treatment.column, outcome.column, df.columns)
 
         n = len(df)
         if treatment_parents:
@@ -788,6 +779,26 @@ def _seed_for(request_hash: str, name: str) -> int:
 _ENGINE_RNG_LOCK = threading.RLock()
 
 
+def _adjustment_set(dag: Dict[str, Any], treatment: str, outcome: str, columns) -> List[str]:
+    """Backdoor controls for the adjustment-based estimators.
+
+    The DAG parents of the treatment that are in the data, minus the outcome and
+    minus any instrument (a node that points at the treatment but not at the
+    outcome). BUG-405: instruments used to be included. An instrument is declared
+    exactly when unmeasured confounding is suspected, and conditioning on one there
+    amplifies that confounding bias and drives propensities toward 0/1 -- while the
+    signed identification statement listed only the confounders.
+    """
+    from .iv_estimator import instruments_from_dag
+
+    edges = dag.get("edges", [])
+    instruments = set(instruments_from_dag(edges, treatment, outcome))
+    return sorted({
+        src for src, dst in edges
+        if dst == treatment and src != outcome and src not in instruments and src in columns
+    })
+
+
 _ERROR_PATH = re.compile(r"""(?:[A-Za-z]:[\\/]|/(?=[\w.\-]+/))[^\s'"]*""")
 
 
@@ -897,12 +908,7 @@ def _run_one_tmle(
         T_bin = (df[treatment.column] == treatment.actual).astype(int).to_numpy()
         Y = df[outcome.column].to_numpy(dtype=float)
 
-        treatment_parents = sorted({
-            src for src, dst in dag.get("edges", [])
-            if dst == treatment.column
-            and src != outcome.column
-            and src in df.columns
-        })
+        treatment_parents = _adjustment_set(dag, treatment.column, outcome.column, df.columns)
         if treatment_parents:
             X = df[treatment_parents].to_numpy(dtype=float)
         else:
@@ -1270,12 +1276,7 @@ def _attach_sensitivity(
         logger.warning("Sensitivity outcome_sd capture failed: %s", exc)
         return
 
-    n_controls = sum(
-        1 for src, dst in dag.get("edges", [])
-        if dst == treatment.column
-        and src != outcome.column
-        and src in df.columns
-    )
+    n_controls = len(_adjustment_set(dag, treatment.column, outcome.column, df.columns))
 
     for est in estimates:
         if est.error is not None:
@@ -1820,15 +1821,27 @@ def strip_for_hashing(artifact: Any) -> Dict[str, Any]:
     bytes diverged from what had actually been signed.
     """
     if isinstance(artifact, CounterfactualArtifact):
-        return artifact.model_dump(mode="json", exclude=_HASH_EXCLUDE_FIELDS)
+        return _without_absent_applied(artifact.model_dump(mode="json", exclude=_HASH_EXCLUDE_FIELDS))
     # dict path: re-parse through Pydantic so the exclude spec applies
     # with the same nested semantics. Extra fields are dropped, missing
     # ones fail closed — that's deliberate, we want a structural mismatch
     # to surface as ValidationError rather than silently produce bytes
     # that differ from what was signed.
-    return CounterfactualArtifact.model_validate(artifact).model_dump(
+    return _without_absent_applied(CounterfactualArtifact.model_validate(artifact).model_dump(
         mode="json", exclude=_HASH_EXCLUDE_FIELDS,
-    )
+    ))
+
+
+def _without_absent_applied(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Drop ``applied`` from the signed payload when the artifact has none.
+
+    Artifacts sealed before the applied spec existed were signed without the key.
+    Re-dumping one through the current model would add ``"applied": null`` and change
+    the canonical bytes, so every such signature would stop verifying.
+    """
+    if payload.get("applied") is None:
+        payload.pop("applied", None)
+    return payload
 
 
 def _request_hash(query: CounterfactualQuery, dataset_fingerprint: str,
@@ -1853,6 +1866,24 @@ def _request_hash(query: CounterfactualQuery, dataset_fingerprint: str,
 
 
 _SEVERITY_RANK = {"high": 0, "medium": 1, "low": 2}
+
+
+def _applied_spec(query: CounterfactualQuery, df: pd.DataFrame) -> AppliedSpec:
+    """Record what this run did with the query, for the report and the signature."""
+    from .iv_estimator import instruments_from_dag
+    from .verdict import CURRENT_RULE
+
+    dag = {"edges": [list(e) for e in query.dag.edges]}
+    treatment, outcome = query.treatment.column, query.outcome.column
+    return AppliedSpec(
+        estimand="average effect per row",
+        rows_used=int(len(df)),
+        adjustment_set=_adjustment_set(dag, treatment, outcome, df.columns),
+        instruments=[i for i in instruments_from_dag(dag["edges"], treatment, outcome) if i in df.columns],
+        verdict_rule=CURRENT_RULE,
+        # Stored with the query, not applied to the data (BUG-420).
+        recorded_only=["outcome.agg", "outcome.window"],
+    )
 
 
 async def run_job(
@@ -1959,6 +1990,7 @@ async def run_job(
         dataset_fingerprint=fingerprint,
         regenerated_critic=regenerated,
         warnings=critic_warnings,
+        applied=_applied_spec(query, df),
     )
 
     # Compute artifact_hash over the artifact MINUS audit/render/signature

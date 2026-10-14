@@ -10,7 +10,7 @@ from __future__ import annotations
 from typing import Any, Dict
 
 from .schemas import Audience, CounterfactualArtifact
-from .verdict import significance_verdict
+from .verdict import rule_for, significance_verdict
 
 
 def _headline(art: CounterfactualArtifact) -> str:
@@ -19,7 +19,7 @@ def _headline(art: CounterfactualArtifact) -> str:
         return "Estimation failed across all methods."
     # Lead with the significance-aware verdict (shared rule) so the chat/operator
     # headline cannot overclaim a directional effect whose CI straddles zero.
-    label = significance_verdict(art.estimates)["label"]
+    label = significance_verdict(art.estimates, rule_for(art))["label"]
     avg_point = sum(e.point for e in valid) / len(valid)
     return (
         f"{label} (average effect {avg_point:+.2f} on "
@@ -162,7 +162,7 @@ def _operator(art: CounterfactualArtifact) -> Dict[str, Any]:
     out: Dict[str, Any] = {
         "record_id": art.record_id,
         "headline": _headline(art),
-        "verdict": significance_verdict(art.estimates),
+        "verdict": significance_verdict(art.estimates, rule_for(art)),
         "point_estimate": point,
         "ci": [ci_lo, ci_hi],
         "ci_method": ci_method_overall,

@@ -155,6 +155,7 @@ jobs:
           python -m pytest tests/test_counterfactual_*.py tests/test_uasr_canary_causal_estimator.py \
             tests/test_audit_encode.py tests/test_audit_endpoint.py tests/test_critic_timeout.py \
             tests/test_demo_endpoints.py tests/test_demo_scenarios.py tests/test_iv_estimator.py \
+            tests/test_instrument_not_adjusted.py \
             --tb=short \
             -q \
             --cov=counterfactual_service \
