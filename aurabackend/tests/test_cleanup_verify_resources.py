@@ -126,7 +126,7 @@ def test_dry_run_reports_accurate_row_counts_and_leaves_dbs_untouched(tmp_path: 
         for t in ("uasr_drift_events", "uasr_recovery_records", "uasr_distribution_snapshots", "uasr_batch_embeddings")
     }
 
-    result = _run_script("--metadata-db", str(metadata_db), "--uasr-db", str(uasr_db))
+    result = _run_script("--metadata-db", str(metadata_db), "--uasr-db", str(uasr_db), "--delete-login")
 
     assert result.returncode == 0, result.stderr
     assert "DRY RUN" in result.stdout
@@ -135,7 +135,7 @@ def test_dry_run_reports_accurate_row_counts_and_leaves_dbs_untouched(tmp_path: 
 
     # 1 user row + (5 rows * 4 tables) = 21 rows -- NOT "1 key + 1 key = 2",
     # which is what the DISTINCT-count regression would have reported.
-    assert "Dry run only: 21 row(s) would be deleted." in result.stdout
+    assert "Dry run only: 21 row(s) and 0 file(s) would be deleted." in result.stdout
 
     # Nothing was actually touched.
     assert _users_snapshot(metadata_db) == before_users
@@ -158,7 +158,7 @@ def test_confirm_deletes_only_matched_rows_and_reports_real_counts(tmp_path: Pat
         NEAR_MISS_SOURCE_ID_UPPERCASE: 2,
     })
 
-    result = _run_script("--metadata-db", str(metadata_db), "--uasr-db", str(uasr_db), "--confirm")
+    result = _run_script("--metadata-db", str(metadata_db), "--uasr-db", str(uasr_db), "--confirm", "--delete-login")
 
     assert result.returncode == 0, result.stderr
     assert "metadata.db: OK -- 1 row(s) deleted." in result.stdout
@@ -206,7 +206,7 @@ def test_missing_uasr_db_skips_that_half_and_still_processes_metadata(tmp_path: 
     _seed_metadata_db(metadata_db, [REAL_EMAIL, MANUAL_VERIFY_EMAIL])
     assert not missing_uasr_db.exists()
 
-    result = _run_script("--metadata-db", str(metadata_db), "--uasr-db", str(missing_uasr_db), "--confirm")
+    result = _run_script("--metadata-db", str(metadata_db), "--uasr-db", str(missing_uasr_db), "--confirm", "--delete-login")
 
     assert result.returncode == 0, result.stderr
     assert "[skip] database not found" in result.stdout
@@ -275,12 +275,12 @@ def test_missing_default_paths_fall_back_to_the_docker_volume_copy(tmp_path: Pat
     _seed_metadata_db(tmp_path / "metadata.db", [REAL_EMAIL, MANUAL_VERIFY_EMAIL])
     _seed_uasr_db(tmp_path / "uasr.db", {REAL_SOURCE_ID: 1, NAMESPACED_MATCH_SOURCE_ID: 2})
 
-    result = _run_script(env={"AURA_CLEANUP_FALLBACK_STATE_DIR": str(tmp_path)})
+    result = _run_script("--delete-login", env={"AURA_CLEANUP_FALLBACK_STATE_DIR": str(tmp_path)})
 
     assert result.returncode == 0, result.stderr
     assert "[note]" in result.stdout and str(tmp_path) in result.stdout
     assert "NOTHING WAS CHECKED" not in result.stdout
-    assert "9 row(s) would be deleted" in result.stdout  # 1 login + 2 rows x 4 UASR tables
+    assert "9 row(s) and 0 file(s) would be deleted" in result.stdout  # 1 login + 2 rows x 4 UASR tables
     assert "verify-uasr@example.com" in result.stdout
     assert NAMESPACED_MATCH_SOURCE_ID in result.stdout
     # Dry run: nothing was touched.
@@ -306,3 +306,51 @@ def test_an_explicit_path_is_never_replaced_by_the_fallback(tmp_path: Path) -> N
     assert "[note]" not in result.stdout
     assert MANUAL_VERIFY_EMAIL in _users_snapshot(tmp_path / "metadata.db"), "the skipped half was modified"
     assert NAMESPACED_MATCH_SOURCE_ID not in _table_source_ids(tmp_path / "uasr.db", "uasr_drift_events")
+
+
+# ── The shared login is kept; leftover verify uploads are removed ──────────────
+
+
+def _seed_uploads(root: Path) -> dict[str, Path]:
+    files = {
+        "verify_csv": root / "tenant-a" / "verify_05d29aeb_upload.csv",
+        "verify_xlsx": root / "tenant-a" / "verify_05d29aeb_xlsx.xlsx",
+        "customer": root / "tenant-a" / "sales_2025.csv",
+        "near_miss": root / "tenant-b" / "verify_report.csv",
+        "too_deep": root / "tenant-b" / "nested" / "verify_0829aaf7_upload.csv",
+    }
+    for f in files.values():
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text("a,b\n1,2\n")
+    return files
+
+
+def test_by_default_the_shared_login_is_kept(tmp_path: Path) -> None:
+    metadata_db, uasr_db = tmp_path / "metadata.db", tmp_path / "uasr.db"
+    _seed_metadata_db(metadata_db, [REAL_EMAIL, MANUAL_VERIFY_EMAIL])
+    _seed_uasr_db(uasr_db, {NAMESPACED_MATCH_SOURCE_ID: 1})
+
+    result = _run_script("--metadata-db", str(metadata_db), "--uasr-db", str(uasr_db),
+                         "--uploads-dir", str(tmp_path / "none"), "--confirm")
+
+    assert result.returncode == 0, result.stderr
+    assert MANUAL_VERIFY_EMAIL in _users_snapshot(metadata_db)
+    assert f"kept ({MANUAL_VERIFY_EMAIL})" in result.stdout
+
+
+def test_verify_uploads_are_listed_then_deleted_and_nothing_else_is(tmp_path: Path) -> None:
+    uploads = tmp_path / "uploads"
+    files = _seed_uploads(uploads)
+    common = ("--metadata-db", str(tmp_path / "absent.db"), "--uasr-db", str(tmp_path / "absent2.db"),
+              "--uploads-dir", str(uploads))
+
+    dry = _run_script(*common)
+    assert dry.returncode == 0, dry.stderr
+    assert "0 row(s) and 2 file(s) would be deleted" in dry.stdout
+    assert all(f.exists() for f in files.values())
+
+    done = _run_script(*common, "--confirm")
+    assert done.returncode == 0, done.stderr
+    assert "2 of 2 file(s) deleted" in done.stdout
+    assert not files["verify_csv"].exists() and not files["verify_xlsx"].exists()
+    assert files["customer"].exists() and files["near_miss"].exists() and files["too_deep"].exists()
