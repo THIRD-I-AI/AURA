@@ -52,7 +52,15 @@ async def _file_metadata_refresh_loop(stop_event: asyncio.Event) -> None:
         migrate_flat_uploads_to_default(str(upload_dir))
     except Exception as exc:
         logger.warning("upload migration skipped (non-fatal): %s", exc)
+    from shared.upload_retention import expire_verify_uploads
+
     while not stop_event.is_set():
+        try:
+            expired = await asyncio.to_thread(expire_verify_uploads, str(upload_dir))
+            if expired:
+                logger.info("expired %d verification upload(s)", expired)
+        except Exception as exc:
+            logger.debug("verification upload expiry failed: %s", exc)
         try:
             stats = await persistence.refresh_stale_file_metadata(str(upload_dir))
             if stats["indexed"] or stats["pruned"]:
