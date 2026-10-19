@@ -37,8 +37,12 @@ Usage
     # Dry run (default) -- just prints what would be deleted, changes nothing:
     python3 scripts/cleanup_verify_resources.py
 
-    # Actually delete the matched rows:
+    # Actually delete the matched rows and files:
     python3 scripts/cleanup_verify_resources.py --confirm
+
+    # Also delete the shared verify login (the live checks sign in with it, so
+    # they fail until it is registered again):
+    python3 scripts/cleanup_verify_resources.py --confirm --delete-login
 
     # Point at non-default DB locations (e.g. testing against a copy):
     python3 scripts/cleanup_verify_resources.py \\
@@ -83,6 +87,7 @@ from pathlib import Path
 
 DEFAULT_METADATA_DB = "/data/state/metadata.db"
 DEFAULT_UASR_DB = "/data/state/uasr.db"
+DEFAULT_UPLOADS_DIR = "/data/uploads"
 
 # The defaults above are the CONTAINER's paths. Run on the host (the documented
 # "run it on the box" procedure) they do not exist: the same files live in the
@@ -102,6 +107,12 @@ MANUAL_VERIFY_EMAIL = "verify-uasr@example.com"
 # self-heal check always uses label="uasr", so the full shape is
 # "verify_<8 lowercase hex>_uasr" -- anchored on both ends, case-sensitive.
 VERIFY_SOURCE_ID_RE = re.compile(r"^verify_[0-9a-f]{8}_uasr$")
+
+# Files verify_live_deployment.py uploads: f"{v.ns(label)}.{ext}", i.e.
+# "verify_<8 lowercase hex>_<label>.<ext>". They pile up in the staging account's
+# upload directory (72 of them made every chat prompt overflow, BUG-444). Anchored
+# on both ends; a customer's "verify_report.csv" does not match.
+VERIFY_UPLOAD_RE = re.compile(r"^verify_[0-9a-f]{8}_[a-z0-9_]+\.(csv|tsv|xlsx|xls|json|parquet)$")
 
 UASR_TABLES = (
     "uasr_drift_events",
@@ -127,13 +138,22 @@ def is_verify_source_id(source_id: str) -> bool:
     return bool(VERIFY_SOURCE_ID_RE.match(source_id))
 
 
-def resolve_db_path(path: str, default: str, filename: str) -> str:
+def _exists(path: Path) -> bool:
+    """Like Path.exists(), but a path this user may not look into counts as absent:
+    /var/lib/docker is root-only, so without sudo the fallback is simply unavailable."""
+    try:
+        return path.exists()
+    except OSError:
+        return False
+
+
+def resolve_db_path(path: str, default: str, filename: str, fallback_dir: str | None = None) -> str:
     """The path to actually open: `path` itself unless it is the untouched
     default and missing, in which case the Docker-volume copy if that exists."""
-    if path != default or Path(path).exists():
+    if path != default or _exists(Path(path)):
         return path
-    fallback = Path(DOCKER_VOLUME_STATE_DIR) / filename
-    if fallback.exists():
+    fallback = Path(fallback_dir or DOCKER_VOLUME_STATE_DIR) / filename
+    if _exists(fallback):
         print(f"[note] {path} not found; using the Docker volume copy at {fallback}")
         return str(fallback)
     return path
@@ -188,6 +208,26 @@ def find_uasr_matches(conn: sqlite3.Connection) -> list[Match]:
             ).fetchone()
             matches.append(Match(table=table, key_column="source_id", value=source_id, row_count=count))
     return matches
+
+
+def find_upload_matches(uploads_dir: str) -> list[Path]:
+    """verify_* files directly inside each tenant directory of the uploads root.
+
+    Only regular files are matched -- never a symlink -- and only one level down,
+    exactly where the gateway stores a tenant's uploads (<root>/<tenant>/<file>)."""
+    root = Path(uploads_dir)
+    found = []
+    try:
+        if not root.is_dir():
+            print(f"[skip] uploads directory not found: {uploads_dir}")
+            return []
+        for tenant_dir in sorted(p for p in root.iterdir() if p.is_dir() and not p.is_symlink()):
+            for f in sorted(tenant_dir.iterdir()):
+                if f.is_file() and not f.is_symlink() and VERIFY_UPLOAD_RE.match(f.name):
+                    found.append(f)
+    except OSError as exc:
+        print(f"[skip] could not read uploads directory {uploads_dir}: {exc}")
+    return found
 
 
 def print_report(title: str, matches: list[Match]) -> None:
@@ -266,25 +306,39 @@ def main() -> int:
                          help=f"Path to the gateway metadata database (default: {DEFAULT_METADATA_DB})")
     parser.add_argument("--uasr-db", default=DEFAULT_UASR_DB,
                          help=f"Path to the UASR service database (default: {DEFAULT_UASR_DB})")
+    parser.add_argument("--uploads-dir", default=DEFAULT_UPLOADS_DIR,
+                         help=f"Uploads root, one directory per tenant (default: {DEFAULT_UPLOADS_DIR})")
     parser.add_argument("--confirm", action="store_true",
                          help="Actually delete the matched rows. Without this flag, only reports what would be deleted.")
+    parser.add_argument("--delete-login", action="store_true",
+                         help=f"Also delete the shared {MANUAL_VERIFY_EMAIL} login. Off by default: "
+                              "verify_live_deployment.py signs in with it.")
     args = parser.parse_args()
 
     metadata_path = resolve_db_path(args.metadata_db, DEFAULT_METADATA_DB, "metadata.db")
     uasr_path = resolve_db_path(args.uasr_db, DEFAULT_UASR_DB, "uasr.db")
+    uploads_path = resolve_db_path(
+        args.uploads_dir, DEFAULT_UPLOADS_DIR, "uploads", fallback_dir=str(Path(DOCKER_VOLUME_STATE_DIR).parent),
+    )
 
     print("cleanup_verify_resources.py")
     print(f"  metadata db: {metadata_path}")
     print(f"  uasr db:     {uasr_path}")
+    print(f"  uploads:     {uploads_path}")
+    print(f"  login:       {'DELETE (--delete-login given)' if args.delete_login else f'kept ({MANUAL_VERIFY_EMAIL})'}")
     print(f"  mode:        {'DELETE (--confirm given)' if args.confirm else 'DRY RUN (pass --confirm to delete)'}")
 
     metadata_matches: list[Match] = []
     metadata_conn = open_db_readonly(metadata_path)
     if metadata_conn is not None:
         try:
-            metadata_matches = find_metadata_matches(metadata_conn)
+            # The live checks sign in with this login; deleting it is opt-in.
+            if args.delete_login:
+                metadata_matches = find_metadata_matches(metadata_conn)
         finally:
             metadata_conn.close()
+
+    upload_matches = find_upload_matches(uploads_path)
 
     uasr_matches: list[Match] = []
     uasr_conn = open_db_readonly(uasr_path)
@@ -294,7 +348,7 @@ def main() -> int:
         finally:
             uasr_conn.close()
 
-    if metadata_conn is None and uasr_conn is None:
+    if metadata_conn is None and uasr_conn is None and not _exists(Path(uploads_path)):
         # Reporting "Nothing to do." here would read as a clean box when in fact
         # no database was examined at all.
         print()
@@ -307,14 +361,20 @@ def main() -> int:
 
     print_report("Gateway metadata.db -- users to delete", metadata_matches)
     print_report("UASR uasr.db -- source_ids to delete", uasr_matches)
+    print("\nUploaded files to delete")
+    print("------------------------")
+    for f in upload_matches:
+        print(f"  {f}")
+    print(f"  ({len(upload_matches)} file(s))" if upload_matches else "  (no matching files)")
 
     total_rows = sum(m.row_count for m in metadata_matches) + sum(m.row_count for m in uasr_matches)
-    if total_rows == 0:
+    if total_rows == 0 and not upload_matches:
         print("\nNothing to do.")
         return 0
 
     if not args.confirm:
-        print(f"\nDry run only: {total_rows} row(s) would be deleted. Re-run with --confirm to delete them.")
+        print(f"\nDry run only: {total_rows} row(s) and {len(upload_matches)} file(s) would be deleted. "
+              "Re-run with --confirm to delete them.")
         return 0
 
     exit_code = 0
@@ -336,6 +396,16 @@ def main() -> int:
             exit_code = 1
     else:
         print("uasr.db: nothing matched, no delete attempted.")
+
+    removed = 0
+    for f in upload_matches:
+        try:
+            f.unlink()
+            removed += 1
+        except OSError as exc:
+            print(f"uploads: FAILED to delete {f}: {exc}")
+            exit_code = 1
+    print(f"uploads: {removed} of {len(upload_matches)} file(s) deleted.")
 
     if exit_code != 0:
         print("\nOne or more deletes FAILED -- see above for exactly which database/rows were "
