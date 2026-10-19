@@ -33,15 +33,20 @@ async def chat_audit_env(tmp_path, monkeypatch):
     L._tenant_locks.clear()
     await L.init_database()
 
-    async def _schema(con, tenant, use_llm=False):
+    # Chat reads the catalog first and loads tables only once it knows the intent.
+    async def _catalog(tenant, use_llm=False):
+        return {"tables": TABLES, "context_text": "TABLE ledger(entry_id, amount)", "relationships": [],
+                "loaders": []}
+
+    async def _materialize(con, catalog, names=None):
         con.execute("CREATE TABLE ledger (entry_id INTEGER, amount DOUBLE)")
         con.execute("INSERT INTO ledger SELECT i, 100.0 + i * 37.5 FROM range(60) t(i)")
-        return {"tables": TABLES, "context_text": "TABLE ledger(entry_id, amount)", "relationships": []}
 
     async def _audit_intent(self, ctx):
         return types.SimpleNamespace(succeeded=True, output={"intent": "audit"})
 
-    monkeypatch.setattr(chatmod, "build_schema_context_cached", _schema)
+    monkeypatch.setattr(chatmod, "load_catalog", _catalog)
+    monkeypatch.setattr(chatmod, "materialize_tables", _materialize)
     monkeypatch.setattr(chatmod.IntentAgent, "execute", _audit_intent)
     yield
     await L.close_database()

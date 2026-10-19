@@ -740,55 +740,244 @@ def _replay_tables(conn: Any, loaders: List[Dict[str, Any]]) -> None:
             logger.warning("Cache replay failed for %s: %s", table_name, e)
 
 
-def _build_schema_context_with_recipe(
-    conn: Any,
-    tenant: str,
-    use_llm: bool,
-) -> Dict[str, Any]:
-    """Same as build_schema_context but also returns a per-table loader recipe
-    that can re-create the tables on a fresh DuckDB connection later."""
+# ─── Catalog: profile each file once, load only what a question needs ─────────
+#
+# The schema of an upload is worked out once and kept: in memory, and for local
+# storage in a sidecar next to the file, so it also survives a restart. A request
+# then reads the catalog and materialises only the tables it is going to query.
+# Before this, every request loaded every one of the tenant's files into memory,
+# and one new upload re-profiled all of them (header inference by LLM included).
+
+_CATALOG_DIRNAME = ".aura_catalog"
+# Bump when the shape of a stored entry changes; older entries are then rebuilt.
+# 2: tables are loaded from a Parquet copy made while profiling.
+_CATALOG_VERSION = 2
+_RELATIONSHIPS_FILE = "_relationships.json"
+
+
+def _catalog_dir(duckdb_uri: str) -> Optional[Path]:
+    """Sidecar directory for a local upload; None for remote storage (s3://...)."""
+    if "://" in duckdb_uri:
+        return None
+    # A sibling subdirectory, like the header cache, so the non-recursive upload
+    # scan never mistakes a sidecar for a data file.
+    return Path(duckdb_uri).parent / _CATALOG_DIRNAME
+
+
+def _read_json(path: Optional[Path]) -> Optional[Any]:
+    if path is None:
+        return None
+    try:
+        with open(path, encoding="utf-8") as fh:
+            return json.load(fh)
+    except (OSError, ValueError):
+        return None
+
+
+def _write_json(path: Optional[Path], payload: Any) -> None:
+    """Best effort: a catalog that cannot be written is rebuilt next time."""
+    if path is None:
+        return
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(payload, fh, default=str)
+        os.replace(tmp, path)
+    except OSError as exc:
+        logger.debug("catalog sidecar not written (%s): %s", path, exc)
+
+
+def _stored_entry(obj: Any) -> Optional[Dict[str, Any]]:
+    d = _catalog_dir(obj.duckdb_uri)
+    entry = _read_json(d / f"{obj.name}.json" if d else None)
+    if (
+        isinstance(entry, dict)
+        and entry.get("version") == _CATALOG_VERSION
+        and entry.get("fingerprint") == obj.fingerprint
+    ):
+        return entry
+    return None
+
+
+def _profile_file(conn: Any, obj: Any, table_name: str, read_fn: str, use_llm: bool) -> Tuple[Dict, Dict]:
+    """Load one file into *conn* and describe it. Returns ``(info, loader)``."""
+    info = smart_load_file(conn, obj.duckdb_uri, table_name, use_llm=use_llm)
+    renames: List[Tuple[str, str]] = []
+    if info.get("headers_inferred"):
+        sniff = conn.execute(
+            f"DESCRIBE SELECT * FROM {read_fn}({quote_literal(obj.duckdb_uri)})"
+        ).fetchall()
+        original_cols = [r[0] for r in sniff]
+        final_cols = [c["name"] for c in info["columns"]]
+        if len(original_cols) == len(final_cols):
+            renames = list(zip(original_cols, final_cols))
+    loader = {"table_name": table_name, "duckdb_uri": obj.duckdb_uri, "read_fn": read_fn, "renames": renames}
+    return info, _parquet_loader(conn, obj, table_name) or loader
+
+
+def _parquet_loader(conn: Any, obj: Any, table_name: str) -> Optional[Dict[str, Any]]:
+    """Write the loaded table to a Parquet copy beside the upload and return a loader
+    that reads it, or None (keep reading the original) for remote storage or on error.
+
+    Parquet is columnar and compressed: a request loads it far faster than re-parsing
+    a CSV, and an .xlsx no longer goes through pandas on every request. The table is
+    written after header inference, so the copy already carries the final names.
+    """
+    d = _catalog_dir(obj.duckdb_uri)
+    if d is None:
+        return None
+    target = d / f"{obj.name}.parquet"
+    tmp = d / f"{obj.name}.parquet.tmp"
+    try:
+        d.mkdir(parents=True, exist_ok=True)
+        conn.execute(
+            f"COPY {quote_identifier(table_name)} TO {quote_literal(tmp.as_posix())} "
+            "(FORMAT PARQUET, COMPRESSION ZSTD)"
+        )
+        os.replace(tmp, target)
+    except Exception as exc:
+        logger.debug("parquet copy skipped for %s: %s", obj.name, exc)
+        return None
+    return {"table_name": table_name, "duckdb_uri": target.as_posix(), "read_fn": "read_parquet", "renames": []}
+
+
+def _prune_sidecars(catalog_dir: Path, live_names: set) -> None:
+    """Remove catalog entries and Parquet copies of files that are gone, so a
+    deleted upload does not keep costing disk."""
+    try:
+        entries = list(catalog_dir.iterdir())
+    except OSError:
+        return
+    for f in entries:
+        name = f.name
+        for suffix in (".json", ".parquet", ".parquet.tmp", ".json.tmp"):
+            if name.endswith(suffix):
+                base = name[: -len(suffix)]
+                if base and base not in live_names and not name.startswith("_relationships"):
+                    try:
+                        f.unlink()
+                    except OSError:
+                        pass
+                break
+
+
+def _might_relate(a: Dict, b: Dict) -> bool:
+    return any(
+        _columns_might_relate(c1["name"], c2["name"], c1["type"], c2["type"])
+        for c1 in a["columns"] for c2 in b["columns"]
+    )
+
+
+def _build_catalog(tenant: str, use_llm: bool) -> Dict[str, Any]:
+    """Describe every data file of *tenant*, reusing each stored entry whose file is
+    unchanged. Only new or changed files are loaded and profiled, and only table
+    pairs not seen before are probed for relationships, on a scratch connection."""
+    from shared.duckdb_factory import new_connection
     from shared.storage import get_storage_backend
+
     backend = get_storage_backend()
-    tables: Dict[str, Dict] = {}
-    loaders: List[Dict[str, Any]] = []
+    scratch = new_connection()
+    try:
+        tables: Dict[str, Dict] = {}
+        loaders: Dict[str, Dict] = {}
+        keys: Dict[str, str] = {}  # table name -> "name|fingerprint" of its file
+        loaded: set = set()
+        rel_dirs: set = set()
+        for obj in backend.list(tenant):
+            ext = os.path.splitext(obj.name)[1].lower()
+            read_fn = _READ_FN_BY_EXT.get(ext)
+            if not read_fn:
+                continue
+            table_name = _unique_table_name(obj.name, tables)
+            entry = _stored_entry(obj)
+            try:
+                if entry is not None:
+                    info, loader = entry["info"], entry["loader"]
+                else:
+                    info, loader = _profile_file(scratch, obj, table_name, read_fn, use_llm)
+                    loaded.add(table_name)
+                    d = _catalog_dir(obj.duckdb_uri)
+                    _write_json(d / f"{obj.name}.json" if d else None, {
+                        "version": _CATALOG_VERSION, "fingerprint": obj.fingerprint,
+                        "info": info, "loader": loader,
+                    })
+            except Exception as e:
+                logger.warning("Failed to load %s: %s", obj.name, e)
+                continue
+            # The table name depends on the other files' names, so it is set here
+            # rather than trusted from the stored entry.
+            tables[table_name] = {**info, "table_name": table_name}
+            loaders[table_name] = {**loader, "table_name": table_name}
+            keys[table_name] = f"{obj.name}|{obj.fingerprint}"
+            d = _catalog_dir(obj.duckdb_uri)
+            if d is not None:
+                rel_dirs.add(d)
 
-    for obj in backend.list(tenant):
-        ext = os.path.splitext(obj.name)[1].lower()
-        read_fn = _READ_FN_BY_EXT.get(ext)
-        if not read_fn:
-            continue
-        table_name = _unique_table_name(obj.name, tables)
-        try:
-            info = smart_load_file(conn, obj.duckdb_uri, table_name, use_llm=use_llm)
-            tables[table_name] = info
+        live_names = {k.split("|", 1)[0] for k in keys.values()}
+        for d in rel_dirs:
+            _prune_sidecars(d, live_names)
 
-            renames: List[Tuple[str, str]] = []
-            if info.get("headers_inferred"):
-                sniff = conn.execute(
-                    f"DESCRIBE SELECT * FROM {read_fn}({quote_literal(obj.duckdb_uri)})"
-                ).fetchall()
-                original_cols = [r[0] for r in sniff]
-                final_cols = [c["name"] for c in info["columns"]]
-                if len(original_cols) == len(final_cols):
-                    renames = list(zip(original_cols, final_cols))
+        # One relationship cache per tenant directory (there is exactly one locally).
+        rel_path = next(iter(rel_dirs)) / _RELATIONSHIPS_FILE if len(rel_dirs) == 1 else None
+        stored = _read_json(rel_path)
+        rel_cache: Dict[str, List[Dict]] = stored if isinstance(stored, dict) else {}
+        fresh_cache: Dict[str, List[Dict]] = {}
+        relationships: List[Dict] = []
+        names = list(tables)
+        for a_i, t1 in enumerate(names):
+            for t2 in names[a_i + 1:]:
+                if not _might_relate(tables[t1], tables[t2]):
+                    continue
+                pair_key = f"{t1}={keys[t1]}||{t2}={keys[t2]}"
+                if pair_key not in rel_cache:
+                    for t in (t1, t2):
+                        if t not in loaded:
+                            _replay_tables(scratch, [loaders[t]])
+                            loaded.add(t)
+                    rel_cache[pair_key] = detect_relationships(scratch, {t1: tables[t1], t2: tables[t2]})
+                fresh_cache[pair_key] = rel_cache[pair_key]
+                relationships.extend(rel_cache[pair_key])
+        _write_json(rel_path, fresh_cache)  # pairs of deleted or changed files drop out
+    finally:
+        scratch.close()
 
-            loaders.append({
-                "table_name": table_name,
-                "duckdb_uri": obj.duckdb_uri,
-                "read_fn": read_fn,
-                "renames": renames,
-            })
-        except Exception as e:
-            logger.warning("Failed to load %s: %s", obj.name, e)
-
-    relationships = detect_relationships(conn, tables)
-    context_text = _format_context_for_llm(tables, relationships)
     return {
         "tables": tables,
         "relationships": relationships,
-        "context_text": context_text,
-        "_loaders": loaders,
+        "context_text": _format_context_for_llm(tables, relationships),
+        "loaders": list(loaders.values()),
     }
+
+
+async def load_catalog(tenant: Optional[str], use_llm: bool = True) -> Dict[str, Any]:
+    """The tenant's catalog: ``{tables, relationships, context_text, loaders}``.
+
+    Loads no data into any caller's connection; use ``materialize_tables`` for the
+    tables a query needs. Cheap when nothing changed (in-memory hit), and after a
+    restart or a new upload only new or changed files are profiled.
+    """
+    effective_tenant: str = tenant if tenant is not None else "default"
+    # backend.list() is blocking I/O (a boto3 paginator on S3): keep it off the loop (BUG-177).
+    sig = await asyncio.to_thread(_signature_for_tenant, effective_tenant)
+    if not sig:
+        return {"tables": {}, "relationships": [], "context_text": "", "loaders": []}
+    cache_key = f"{SCHEMA_CACHE_PREFIX}{effective_tenant}:{sig}"
+    cached = await schema_cache.get(cache_key)
+    if cached:
+        return cached
+    catalog = await asyncio.to_thread(_build_catalog, effective_tenant, use_llm)
+    await schema_cache.set(cache_key, catalog)
+    return catalog
+
+
+async def materialize_tables(conn: Any, catalog: Dict[str, Any], names: Optional[Any] = None) -> None:
+    """Load the named tables of *catalog* into *conn* (all of them when *names* is
+    None). Must run before ``lock_down_connection``, which cuts off file access."""
+    wanted = None if names is None else set(names)
+    loaders = [ld for ld in catalog.get("loaders", []) if wanted is None or ld["table_name"] in wanted]
+    if loaders:
+        await asyncio.to_thread(_replay_tables, conn, loaders)
 
 
 async def build_schema_context_cached(
@@ -796,46 +985,20 @@ async def build_schema_context_cached(
     tenant: Optional[str],
     use_llm: bool = True,
 ) -> Dict[str, Any]:
-    """Cached + non-blocking variant of build_schema_context.
+    """The tenant's schema context, with every table loaded into *conn*.
 
     ``tenant`` is the caller's org id (from the verified JWT via
-    ``_request_tenant``); ``None`` maps to the 'default' tenant bucket
-    (matches ``default_upload_dir()`` semantics for unauthenticated callers).
-
-    Cache hit: replays the loader recipe on the fresh DuckDB ``conn`` and
-    returns the cached schema dict.  Cache miss: runs the full discovery
-    in a worker thread (LLM header inference + O(N²) relationship probes
-    do not block the event loop) and stores the result.
+    ``_request_tenant``); ``None`` maps to the 'default' tenant bucket. Callers
+    that query only some tables should use ``load_catalog`` and
+    ``materialize_tables`` instead and load just those.
     """
-    # Resolve tenant=None to "default" so the storage backend slug is stable.
-    effective_tenant: str = tenant if tenant is not None else "default"
-
-    # backend.list() is blocking I/O (a boto3 paginator on S3): keep it off the loop (BUG-177).
-    sig = await asyncio.to_thread(_signature_for_tenant, effective_tenant)
-    if not sig:
-        return {"tables": {}, "relationships": [], "context_text": ""}
-
-    cache_key = f"{SCHEMA_CACHE_PREFIX}{effective_tenant}:{sig}"
-    cached = await schema_cache.get(cache_key)
-    if cached:
-        await asyncio.to_thread(_replay_tables, conn, cached["loaders"])
-        return {
-            "tables": cached["tables"],
-            "relationships": cached["relationships"],
-            "context_text": cached["context_text"],
-        }
-
-    result = await asyncio.to_thread(
-        _build_schema_context_with_recipe, conn, effective_tenant, use_llm
-    )
-    loaders = result.pop("_loaders")
-    await schema_cache.set(cache_key, {
-        "tables": result["tables"],
-        "relationships": result["relationships"],
-        "context_text": result["context_text"],
-        "loaders": loaders,
-    })
-    return result
+    catalog = await load_catalog(tenant, use_llm=use_llm)
+    await materialize_tables(conn, catalog)
+    return {
+        "tables": catalog["tables"],
+        "relationships": catalog["relationships"],
+        "context_text": catalog["context_text"],
+    }
 
 
 async def invalidate_schema_cache() -> None:
