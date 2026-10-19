@@ -354,3 +354,21 @@ def test_verify_uploads_are_listed_then_deleted_and_nothing_else_is(tmp_path: Pa
     assert "2 of 2 file(s) deleted" in done.stdout
     assert not files["verify_csv"].exists() and not files["verify_xlsx"].exists()
     assert files["customer"].exists() and files["near_miss"].exists() and files["too_deep"].exists()
+
+
+def test_an_unreadable_uploads_fallback_is_skipped_not_a_crash(tmp_path: Path, monkeypatch) -> None:
+    # CI runners have a root-only /var/lib/docker: the fallback exists but cannot be read.
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("cleanup_mod", SCRIPT_PATH)
+    mod = importlib.util.module_from_spec(spec)
+    monkeypatch.setitem(sys.modules, "cleanup_mod", mod)  # dataclasses look the module up
+    spec.loader.exec_module(mod)
+
+    def denied(self):
+        raise PermissionError(13, "Permission denied", str(self))
+
+    monkeypatch.setattr(mod.Path, "exists", denied)
+    monkeypatch.setattr(mod.Path, "is_dir", denied)
+    assert mod.resolve_db_path("/data/uploads", "/data/uploads", "uploads", fallback_dir=str(tmp_path)) == "/data/uploads"
+    assert mod.find_upload_matches(str(tmp_path)) == []

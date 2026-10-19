@@ -138,13 +138,22 @@ def is_verify_source_id(source_id: str) -> bool:
     return bool(VERIFY_SOURCE_ID_RE.match(source_id))
 
 
+def _exists(path: Path) -> bool:
+    """Like Path.exists(), but a path this user may not look into counts as absent:
+    /var/lib/docker is root-only, so without sudo the fallback is simply unavailable."""
+    try:
+        return path.exists()
+    except OSError:
+        return False
+
+
 def resolve_db_path(path: str, default: str, filename: str, fallback_dir: str | None = None) -> str:
     """The path to actually open: `path` itself unless it is the untouched
     default and missing, in which case the Docker-volume copy if that exists."""
-    if path != default or Path(path).exists():
+    if path != default or _exists(Path(path)):
         return path
     fallback = Path(fallback_dir or DOCKER_VOLUME_STATE_DIR) / filename
-    if fallback.exists():
+    if _exists(fallback):
         print(f"[note] {path} not found; using the Docker volume copy at {fallback}")
         return str(fallback)
     return path
@@ -207,14 +216,17 @@ def find_upload_matches(uploads_dir: str) -> list[Path]:
     Only regular files are matched -- never a symlink -- and only one level down,
     exactly where the gateway stores a tenant's uploads (<root>/<tenant>/<file>)."""
     root = Path(uploads_dir)
-    if not root.is_dir():
-        print(f"[skip] uploads directory not found: {uploads_dir}")
-        return []
     found = []
-    for tenant_dir in sorted(p for p in root.iterdir() if p.is_dir() and not p.is_symlink()):
-        for f in sorted(tenant_dir.iterdir()):
-            if f.is_file() and not f.is_symlink() and VERIFY_UPLOAD_RE.match(f.name):
-                found.append(f)
+    try:
+        if not root.is_dir():
+            print(f"[skip] uploads directory not found: {uploads_dir}")
+            return []
+        for tenant_dir in sorted(p for p in root.iterdir() if p.is_dir() and not p.is_symlink()):
+            for f in sorted(tenant_dir.iterdir()):
+                if f.is_file() and not f.is_symlink() and VERIFY_UPLOAD_RE.match(f.name):
+                    found.append(f)
+    except OSError as exc:
+        print(f"[skip] could not read uploads directory {uploads_dir}: {exc}")
     return found
 
 
@@ -336,7 +348,7 @@ def main() -> int:
         finally:
             uasr_conn.close()
 
-    if metadata_conn is None and uasr_conn is None and not Path(uploads_path).is_dir():
+    if metadata_conn is None and uasr_conn is None and not _exists(Path(uploads_path)):
         # Reporting "Nothing to do." here would read as a clean box when in fact
         # no database was examined at all.
         print()
