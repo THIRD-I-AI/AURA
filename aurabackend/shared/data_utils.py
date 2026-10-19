@@ -705,7 +705,8 @@ def _replay_tables(conn: Any, loaders: List[Dict[str, Any]]) -> None:
 
 _CATALOG_DIRNAME = ".aura_catalog"
 # Bump when the shape of a stored entry changes; older entries are then rebuilt.
-_CATALOG_VERSION = 1
+# 2: tables are loaded from a Parquet copy made while profiling.
+_CATALOG_VERSION = 2
 _RELATIONSHIPS_FILE = "_relationships.json"
 
 
@@ -767,7 +768,53 @@ def _profile_file(conn: Any, obj: Any, table_name: str, read_fn: str, use_llm: b
         if len(original_cols) == len(final_cols):
             renames = list(zip(original_cols, final_cols))
     loader = {"table_name": table_name, "duckdb_uri": obj.duckdb_uri, "read_fn": read_fn, "renames": renames}
-    return info, loader
+    return info, _parquet_loader(conn, obj, table_name) or loader
+
+
+def _parquet_loader(conn: Any, obj: Any, table_name: str) -> Optional[Dict[str, Any]]:
+    """Write the loaded table to a Parquet copy beside the upload and return a loader
+    that reads it, or None (keep reading the original) for remote storage or on error.
+
+    Parquet is columnar and compressed: a request loads it far faster than re-parsing
+    a CSV, and an .xlsx no longer goes through pandas on every request. The table is
+    written after header inference, so the copy already carries the final names.
+    """
+    d = _catalog_dir(obj.duckdb_uri)
+    if d is None:
+        return None
+    target = d / f"{obj.name}.parquet"
+    tmp = d / f"{obj.name}.parquet.tmp"
+    try:
+        d.mkdir(parents=True, exist_ok=True)
+        conn.execute(
+            f"COPY {quote_identifier(table_name)} TO {quote_literal(tmp.as_posix())} "
+            "(FORMAT PARQUET, COMPRESSION ZSTD)"
+        )
+        os.replace(tmp, target)
+    except Exception as exc:
+        logger.debug("parquet copy skipped for %s: %s", obj.name, exc)
+        return None
+    return {"table_name": table_name, "duckdb_uri": target.as_posix(), "read_fn": "read_parquet", "renames": []}
+
+
+def _prune_sidecars(catalog_dir: Path, live_names: set) -> None:
+    """Remove catalog entries and Parquet copies of files that are gone, so a
+    deleted upload does not keep costing disk."""
+    try:
+        entries = list(catalog_dir.iterdir())
+    except OSError:
+        return
+    for f in entries:
+        name = f.name
+        for suffix in (".json", ".parquet", ".parquet.tmp", ".json.tmp"):
+            if name.endswith(suffix):
+                base = name[: -len(suffix)]
+                if base and base not in live_names and not name.startswith("_relationships"):
+                    try:
+                        f.unlink()
+                    except OSError:
+                        pass
+                break
 
 
 def _might_relate(a: Dict, b: Dict) -> bool:
@@ -821,6 +868,10 @@ def _build_catalog(tenant: str, use_llm: bool) -> Dict[str, Any]:
             d = _catalog_dir(obj.duckdb_uri)
             if d is not None:
                 rel_dirs.add(d)
+
+        live_names = {k.split("|", 1)[0] for k in keys.values()}
+        for d in rel_dirs:
+            _prune_sidecars(d, live_names)
 
         # One relationship cache per tenant directory (there is exactly one locally).
         rel_path = next(iter(rel_dirs)) / _RELATIONSHIPS_FILE if len(rel_dirs) == 1 else None

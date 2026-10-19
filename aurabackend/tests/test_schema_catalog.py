@@ -101,3 +101,25 @@ async def test_the_full_loader_still_loads_everything(uploads):
     result = await du.build_schema_context_cached(con, "acme", use_llm=False)
     assert set(result["tables"]) == {"customers", "orders"}
     assert con.execute("SELECT SUM(amount) FROM orders").fetchone()[0] == pytest.approx(12.5)
+
+
+@pytest.mark.asyncio
+async def test_tables_are_loaded_from_a_parquet_copy(uploads):
+    catalog = await du.load_catalog("acme", use_llm=False)
+    loaders = {ld["table_name"]: ld for ld in catalog["loaders"]}
+    assert loaders["orders"]["read_fn"] == "read_parquet"
+    assert (uploads / du._CATALOG_DIRNAME / "orders.csv.parquet").exists()
+
+    con = duckdb.connect(":memory:")
+    await du.materialize_tables(con, catalog, {"orders"})
+    assert con.execute("SELECT SUM(amount) FROM orders").fetchone()[0] == pytest.approx(12.5)
+
+
+@pytest.mark.asyncio
+async def test_a_deleted_upload_leaves_no_catalog_files_behind(uploads):
+    await du.load_catalog("acme", use_llm=False)
+    (uploads / "orders.csv").unlink()
+    await du.load_catalog("acme", use_llm=False)
+    left = {f.name for f in (uploads / du._CATALOG_DIRNAME).iterdir()}
+    assert not any(n.startswith("orders.csv") for n in left)
+    assert "customers.csv.parquet" in left and "customers.csv.json" in left
