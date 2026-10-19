@@ -4442,3 +4442,21 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Failure scenario:** a host started with `docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d` and no host firewall exposes the connectors service, the execution sandbox, the scheduler, the metadata store, Redis and Kafka directly to the internet, bypassing the gateway. Those services trust their network position (see BUG-441/442 for what the connectors service does with a direct caller). The free-tier stack uses its own compose file and is not affected.
 - **Caused by:** none -- pre-existing.
 - **Fix:** every internal service in `docker-compose.prod.yml` carries `ports: !reset []` (Compose 2.24+), including new override entries for `causal_service`, `redpanda` and `jaeger`. Verified with `docker compose -f docker-compose.yml -f docker-compose.prod.yml config`: only `frontend` (80) and `api_gateway` (8000) remain published. Regression test `tests/test_prod_compose_internal_ports.py`.
+
+## BUG-444: Chat sends every table's schema when the context is over budget and the question names no table, so data questions fail for any account with many uploads
+- **Status:** fixed
+- **Found by:** live verification of build 0b0e8c8, 2026-10-19: the `chat` check timed out and a direct `What is the total revenue?` on the staging account (72 uploads) answered `Prompt exceeds AURA_MAX_TOKENS_PER_REQUEST (56037 > 8000)`. `aurabackend/api_gateway/routers/chat.py:380`.
+- **Severity:** high
+- **Root cause:** the chat router sends the full multi-table schema when it fits `AURA_MAX_SCHEMA_CONTEXT_CHARS` (16,000), and otherwise focuses on a table the message names. The condition was `len(full) <= budget or not focus_name`, so an over-budget context with no named table fell into the first branch and the whole thing went to the model.
+- **Failure scenario:** a user with a few dozen uploaded files asks a data question that does not quote a table name. SQL generation is refused by the per-request token cap, and the user gets `SQL generation failed` for every question.
+- **Caused by:** none -- pre-existing.
+- **Fix:** new `shared.data_utils.select_tables_within_budget`: the named table and its related tables first, then the tables whose names or columns share the most words with the question, added while the formatted schema stays within the budget (at least one table is always kept). The chat router uses it whenever the full context is over budget. Regression tests in `tests/test_schema_context_budget.py` (72-table account: the question about revenue keeps `sales_2025` and fits; a named table brings its join partner). Verified on production after deploy by re-asking the failing question.
+
+## BUG-445: The first chat call on an account with many uploads takes longer than 30 seconds
+- **Status:** open
+- **Found by:** live verification of build 0b0e8c8, 2026-10-19: the live `chat` check timed out at 30 s three times in a row on the staging account (72 uploads); a later call answered in 4.9 s. `aurabackend/api_gateway/routers/chat.py:339`.
+- **Severity:** medium
+- **Root cause:** unconfirmed. Likely `build_schema_context_cached(..., use_llm=True)` rebuilding the context for every upload, including LLM header inference, when the cache is cold.
+- **Failure scenario:** a user with many files opens chat after the cache expired; the first answer takes over 30 s, longer than the frontend and the live check wait.
+- **Caused by:** none -- pre-existing.
+- **Fix:** pending.

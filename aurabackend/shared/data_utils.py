@@ -601,6 +601,51 @@ def _columns_might_relate(name1: str, name2: str, type1: str, type2: str) -> boo
 
 # ─── Formatting ──────────────────────────────────────────────────────────────
 
+def select_tables_within_budget(
+    tables: Dict[str, Dict],
+    relationships: List[Dict],
+    message: str,
+    budget_chars: int,
+    focus: Optional[str] = None,
+) -> Tuple[Dict[str, Dict], List[Dict], str]:
+    """The tables most relevant to ``message`` whose formatted schema fits the budget.
+
+    BUG-444: when every table's schema was over the budget and the message named no
+    table, the whole context went to the model anyway -- 56,037 tokens against the
+    8,000-token request cap for an account with 72 uploads -- so every data question
+    failed. Tables are ranked by how many of the message's words appear in the table
+    or column names (``focus`` and its related tables first) and added while the
+    formatted text stays within ``budget_chars``. At least one table is always kept.
+    Returns ``(tables, relationships, context_text)``.
+    """
+    words = {w for w in re.findall(r"[a-z0-9]+", message.lower()) if len(w) >= 3}
+
+    def score(name: str) -> int:
+        cols = " ".join(str(c.get("name", "")) for c in tables[name].get("columns", []))
+        haystack = f"{name} {cols}".lower()
+        return sum(1 for w in words if w in haystack)
+
+    first = []
+    if focus in tables:
+        first.append(focus)
+        for r in relationships:
+            if focus in (r.get("from_table"), r.get("to_table")):
+                first.extend(t for t in (r.get("from_table"), r.get("to_table")) if t in tables)
+    rest = sorted((n for n in tables if n not in first), key=score, reverse=True)
+
+    chosen: Dict[str, Dict] = {}
+    text = ""
+    for name in dict.fromkeys(first + rest):
+        trial = {**chosen, name: tables[name]}
+        rels = [r for r in relationships if r.get("from_table") in trial and r.get("to_table") in trial]
+        trial_text = _format_context_for_llm(trial, rels)
+        if chosen and len(trial_text) > budget_chars:
+            continue
+        chosen, text = trial, trial_text
+    rels = [r for r in relationships if r.get("from_table") in chosen and r.get("to_table") in chosen]
+    return chosen, rels, text
+
+
 def _format_context_for_llm(
     tables: Dict[str, Dict],
     relationships: List[Dict],

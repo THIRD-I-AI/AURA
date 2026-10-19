@@ -377,24 +377,19 @@ async def chat_endpoint(request: ChatRequest, http_request: Request) -> ChatResp
     if not all_tables:
         table_schemas = {}
         schema_context = "No tables available. User needs to upload a file first."
-    elif len(full_context_text) <= max_schema_chars or not focus_name:
+    elif len(full_context_text) <= max_schema_chars:
         # Small enough (the common case) — give the model every table.
         table_schemas = full_table_schemas
         schema_context = full_context_text
     else:
-        # Over budget AND the user named a table: focus on it + its directly
-        # related tables so joins across the subset still have real columns.
-        from shared.data_utils import _format_context_for_llm
-        focused_rels = [
-            r for r in schema_result["relationships"]
-            if r.get("from_table") == focus_name or r.get("to_table") == focus_name
-        ]
-        related = {focus_name}
-        for r in focused_rels:
-            related.add(r.get("from_table"))
-            related.add(r.get("to_table"))
-        focused_tables = {n: all_tables[n] for n in related if n in all_tables}
-        schema_context = _format_context_for_llm(focused_tables, focused_rels)
+        # Over budget: the named table (and its related tables, so joins still have
+        # real columns) first, then the tables most relevant to the message, as many
+        # as fit (BUG-444 -- this used to send the whole context when no table was
+        # named, which overflowed the request cap).
+        from shared.data_utils import select_tables_within_budget
+        focused_tables, _, schema_context = select_tables_within_budget(
+            all_tables, schema_result["relationships"], message, max_schema_chars, focus=focus_name,
+        )
         table_schemas = {
             n: [c["name"] for c in all_tables[n]["columns"]] for n in focused_tables
         }
