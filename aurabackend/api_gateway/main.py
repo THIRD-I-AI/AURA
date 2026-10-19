@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 import os
 from contextlib import asynccontextmanager
-from typing import AsyncGenerator
+from typing import AsyncGenerator, Optional
 
 import httpx
 
@@ -322,8 +322,34 @@ from api_gateway.routers.synthetic import router as synthetic_router
 from api_gateway.routers.webhooks import router as webhooks_router
 from api_gateway.routers.workspaces import router as workspaces_router
 
+# Route families a deployment can switch off. Each is a surface with no screen in
+# the frontend; a deployment that does not use one should not carry it -- every
+# mounted route is something to authenticate, rate-limit and keep correct.
+# AURA_DISABLED_ROUTERS is a comma-separated list of these names.
+OPTIONAL_ROUTERS = frozenset({"agent", "approvals", "evolution", "synthetic"})
+
+
+def disabled_routers(raw: Optional[str] = None) -> frozenset:
+    """Parse AURA_DISABLED_ROUTERS. An unknown name is an error, not a no-op: a typo
+    would otherwise leave switched on the very surface the operator meant to remove."""
+    value = os.getenv("AURA_DISABLED_ROUTERS", "") if raw is None else raw
+    names = frozenset(n.strip().lower() for n in value.split(",") if n.strip())
+    unknown = names - OPTIONAL_ROUTERS
+    if unknown:
+        raise ValueError(
+            f"AURA_DISABLED_ROUTERS names unknown router(s) {sorted(unknown)}; "
+            f"it accepts: {sorted(OPTIONAL_ROUTERS)}"
+        )
+    return names
+
+
+_DISABLED_ROUTERS = disabled_routers()
+if _DISABLED_ROUTERS:
+    logger.info("Routers switched off by AURA_DISABLED_ROUTERS: %s", sorted(_DISABLED_ROUTERS))
+
 app.include_router(auth_router, prefix=_API_V1)
-app.include_router(approvals_router, prefix=_API_V1)
+if "approvals" not in _DISABLED_ROUTERS:
+    app.include_router(approvals_router, prefix=_API_V1)
 app.include_router(workspaces_router, prefix=_API_V1)
 app.include_router(chat_router, prefix=_API_V1)
 app.include_router(files_router, prefix=_API_V1)
@@ -333,7 +359,8 @@ app.include_router(dashboards_router, prefix=_API_V1)
 app.include_router(lineage_router, prefix=_API_V1)
 app.include_router(etl_router, prefix=_API_V1)
 app.include_router(pipelines_router, prefix=_API_V1)
-app.include_router(synthetic_router, prefix=_API_V1)
+if "synthetic" not in _DISABLED_ROUTERS:
+    app.include_router(synthetic_router, prefix=_API_V1)
 app.include_router(stream_router, prefix=_API_V1)
 app.include_router(webhooks_router, prefix=_API_V1)
 app.include_router(inbound_hooks_router, prefix=_API_V1)
@@ -344,11 +371,12 @@ app.include_router(counterfactual_router, prefix=_API_V1)
 app.include_router(collab_router)
 
 # Agentic DE framework
-try:
-    from agents.api import router as agent_router
-    app.include_router(agent_router, prefix=_API_V1)
-except ImportError:
-    logger.info("Agent framework not available — skipping")
+if "agent" not in _DISABLED_ROUTERS:
+    try:
+        from agents.api import router as agent_router
+        app.include_router(agent_router, prefix=_API_V1)
+    except ImportError:
+        logger.info("Agent framework not available — skipping")
 
 # Streaming pipeline engine
 try:
@@ -358,12 +386,13 @@ except ImportError:
     logger.info("Streaming engine not available — skipping")
 
 # Evolution engine API
-try:
-    from evolution.api import router as evolution_router
-    app.include_router(evolution_router, prefix=_API_V1)
-    logger.info("Evolution engine API mounted at %s/evolution", _API_V1)
-except ImportError as exc:
-    logger.warning("Evolution API not available: %s", exc)
+if "evolution" not in _DISABLED_ROUTERS:
+    try:
+        from evolution.api import router as evolution_router
+        app.include_router(evolution_router, prefix=_API_V1)
+        logger.info("Evolution engine API mounted at %s/evolution", _API_V1)
+    except ImportError as exc:
+        logger.warning("Evolution API not available: %s", exc)
 
 
 # ── Unified system health endpoint ─────────────────────────────────
