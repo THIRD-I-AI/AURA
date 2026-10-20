@@ -146,9 +146,12 @@ class FileService:
         tenant = subdir or "default"
         backend = get_storage_backend()
         deleted = False
+        from shared.data_utils import remove_catalog_files
+
         for o in backend.list(tenant):
             if o.name == file_id or os.path.splitext(o.name)[0] == file_id:
                 deleted = backend.delete(tenant, o.name) or deleted
+                remove_catalog_files(o.duckdb_uri)  # BUG-450: sample rows and Parquet copies go with it
         # Clean up local processed-data artefacts (best-effort, harmless if missing).
         try:
             for file_path in self.processed_path.glob(f"{file_id}_processed.*"):

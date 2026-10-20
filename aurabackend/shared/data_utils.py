@@ -12,6 +12,8 @@ import json
 import logging
 import os
 import re
+import threading
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -54,6 +56,7 @@ def _load_cached_headers(
     if (
         payload.get("mtime_ns") != stat.st_mtime_ns
         or payload.get("size") != stat.st_size
+        or payload.get("by_llm") is not True
     ):
         return None
     headers = payload.get("headers")
@@ -75,6 +78,9 @@ def _store_cached_headers(
                     "mtime_ns": stat.st_mtime_ns,
                     "size": stat.st_size,
                     "headers": headers,
+                    # BUG-451: marks names the model produced; caches without it
+                    # (written before the fix, possibly heuristic) are ignored.
+                    "by_llm": True,
                 },
                 fh,
             )
@@ -288,6 +294,7 @@ def smart_load_csv(
             logger.info(
                 "File '%s' has no headers — using cached inferred names", file_name
             )
+            result["headers_by_llm"] = True  # only model-produced names are cached
         else:
             logger.info("File '%s' has no headers — inferring column names", file_name)
 
@@ -297,6 +304,7 @@ def smart_load_csv(
             # Try LLM inference first
             if use_llm:
                 inferred_names = infer_headers_with_llm(file_name, col_types, sample)
+            named_by_llm = bool(inferred_names)
 
             # Fallback to heuristic inference
             if not inferred_names:
@@ -315,8 +323,12 @@ def smart_load_csv(
                     else:
                         seen[name] = 0
 
-            if file_stat is not None:
+            # BUG-451: only names the model produced are kept. A heuristic fallback
+            # (use_llm=False, or the model failed or was rate-limited) cached here was
+            # served forever after, so inference was never retried for the file.
+            if file_stat is not None and named_by_llm:
                 _store_cached_headers(file_path, file_stat, inferred_names)
+            result["headers_by_llm"] = named_by_llm
 
         # Rename columns in the table
         for old_name, new_name in zip(col_names, inferred_names):
@@ -788,16 +800,32 @@ def _write_json(path: Optional[Path], payload: Any) -> None:
         logger.debug("catalog sidecar not written (%s): %s", path, exc)
 
 
-def _stored_entry(obj: Any) -> Optional[Dict[str, Any]]:
+def _stored_entry(obj: Any, use_llm: bool) -> Optional[Dict[str, Any]]:
     d = _catalog_dir(obj.duckdb_uri)
     entry = _read_json(d / f"{obj.name}.json" if d else None)
-    if (
+    if not (
         isinstance(entry, dict)
         and entry.get("version") == _CATALOG_VERSION
         and entry.get("fingerprint") == obj.fingerprint
     ):
-        return entry
-    return None
+        return None
+    info = entry.get("info") or {}
+    # BUG-451: column names guessed without the model are not final. A caller that
+    # asks for model inference profiles the file again rather than reusing them.
+    if use_llm and info.get("headers_inferred") and not info.get("headers_by_llm"):
+        return None
+    loader = entry.get("loader") or {}
+    if loader.get("read_fn") == "read_parquet" and not Path(loader.get("duckdb_uri", "")).is_file():
+        return None  # its Parquet copy is gone
+    return entry
+
+
+def _copy_stem(obj: Any) -> str:
+    """Per-version name for a file's Parquet copy (BUG-449): two builds of two
+    versions of one upload never write the same path, so a slow build of the old
+    version cannot overwrite the copy the new catalog reads."""
+    digest = hashlib.sha256(f"{obj.name}|{obj.fingerprint}".encode()).hexdigest()[:12]
+    return f"{obj.name}.{digest}"
 
 
 def _profile_file(conn: Any, obj: Any, table_name: str, read_fn: str, use_llm: bool) -> Tuple[Dict, Dict]:
@@ -827,8 +855,9 @@ def _parquet_loader(conn: Any, obj: Any, table_name: str) -> Optional[Dict[str, 
     d = _catalog_dir(obj.duckdb_uri)
     if d is None:
         return None
-    target = d / f"{obj.name}.parquet"
-    tmp = d / f"{obj.name}.parquet.tmp"
+    stem = _copy_stem(obj)
+    target = d / f"{stem}.parquet"
+    tmp = d / f"{stem}.{os.getpid()}.{threading.get_ident()}.parquet.tmp"
     try:
         d.mkdir(parents=True, exist_ok=True)
         conn.execute(
@@ -842,24 +871,71 @@ def _parquet_loader(conn: Any, obj: Any, table_name: str) -> Optional[Dict[str, 
     return {"table_name": table_name, "duckdb_uri": target.as_posix(), "read_fn": "read_parquet", "renames": []}
 
 
-def _prune_sidecars(catalog_dir: Path, live_names: set) -> None:
-    """Remove catalog entries and Parquet copies of files that are gone, so a
-    deleted upload does not keep costing disk."""
+# A sidecar younger than this is never pruned: another build may have just written
+# it for a file this build's listing predates (BUG-448).
+_PRUNE_MIN_AGE_S = 600
+
+
+def _prune_sidecars(catalog_dir: Path, live: Dict[str, Any]) -> None:
+    """Remove catalog files nothing current refers to, so a deleted upload and old
+    versions of a changed one stop costing disk.
+
+    *live* maps each current file name to its storage object. Kept: each live file's
+    entry, its current Parquet copy, the relationship cache, and anything written in
+    the last ``_PRUNE_MIN_AGE_S`` seconds.
+    """
+    keep = {_RELATIONSHIPS_FILE}
+    for name, obj in live.items():
+        keep.add(f"{name}.json")
+        keep.add(f"{_copy_stem(obj)}.parquet")
+    cutoff = time.time() - _PRUNE_MIN_AGE_S
     try:
         entries = list(catalog_dir.iterdir())
     except OSError:
         return
     for f in entries:
-        name = f.name
-        for suffix in (".json", ".parquet", ".parquet.tmp", ".json.tmp"):
-            if name.endswith(suffix):
-                base = name[: -len(suffix)]
-                if base and base not in live_names and not name.startswith("_relationships"):
-                    try:
-                        f.unlink()
-                    except OSError:
-                        pass
-                break
+        try:
+            if f.name in keep or not f.is_file() or f.stat().st_mtime > cutoff:
+                continue
+            f.unlink()
+        except OSError:
+            continue
+
+
+def remove_catalog_files(duckdb_uri: str) -> None:
+    """Delete everything derived from one upload: its catalog entry (which holds
+    sample rows), every Parquet copy of its data, its cached column names, and the
+    relationship-cache pairs that name it (BUG-450).
+
+    Called when an upload is deleted or expires. Without it a "deleted" file's full
+    data stayed on disk -- and counted against the storage limit -- until the
+    account next built its catalog, which for an account that never chats again
+    was never."""
+    name = Path(duckdb_uri).name
+    try:
+        _header_cache_path(duckdb_uri).unlink(missing_ok=True)
+    except OSError:
+        pass
+    d = _catalog_dir(duckdb_uri)
+    if d is None:
+        return
+    try:
+        entries = list(d.iterdir())
+    except OSError:
+        return
+    for f in entries:
+        if f.name == f"{name}.json" or (f.name.startswith(f"{name}.") and ".parquet" in f.name):
+            try:
+                f.unlink()
+            except OSError:
+                pass
+    rel_path = d / _RELATIONSHIPS_FILE
+    stored = _read_json(rel_path)
+    if isinstance(stored, dict):
+        # Pair keys read "<table>=<file name>|<fingerprint>||<table>=...".
+        kept = {k: v for k, v in stored.items() if f"={name}|" not in k}
+        if len(kept) != len(stored):
+            _write_json(rel_path, kept)
 
 
 def _might_relate(a: Dict, b: Dict) -> bool:
@@ -869,7 +945,24 @@ def _might_relate(a: Dict, b: Dict) -> bool:
     )
 
 
+_BUILD_LOCKS: Dict[str, threading.Lock] = {}
+_BUILD_LOCKS_GUARD = threading.Lock()
+
+
+def _build_lock(tenant: str) -> threading.Lock:
+    with _BUILD_LOCKS_GUARD:
+        return _BUILD_LOCKS.setdefault(tenant, threading.Lock())
+
+
 def _build_catalog(tenant: str, use_llm: bool) -> Dict[str, Any]:
+    """One build per tenant at a time in this process (BUG-448/449: two concurrent
+    builds raced on the same catalog files). Builds in other worker processes are
+    kept safe by per-version copy names and the prune age guard."""
+    with _build_lock(tenant):
+        return _build_catalog_unlocked(tenant, use_llm)
+
+
+def _build_catalog_unlocked(tenant: str, use_llm: bool) -> Dict[str, Any]:
     """Describe every data file of *tenant*, reusing each stored entry whose file is
     unchanged. Only new or changed files are loaded and profiled, and only table
     pairs not seen before are probed for relationships, on a scratch connection."""
@@ -890,7 +983,7 @@ def _build_catalog(tenant: str, use_llm: bool) -> Dict[str, Any]:
             if not read_fn:
                 continue
             table_name = _unique_table_name(obj.name, tables)
-            entry = _stored_entry(obj)
+            entry = _stored_entry(obj, use_llm)
             try:
                 if entry is not None:
                     info, loader = entry["info"], entry["loader"]
@@ -914,9 +1007,11 @@ def _build_catalog(tenant: str, use_llm: bool) -> Dict[str, Any]:
             if d is not None:
                 rel_dirs.add(d)
 
-        live_names = {k.split("|", 1)[0] for k in keys.values()}
+        # A fresh listing, not this build's start-time one: a file uploaded while
+        # this build ran is live and keeps its catalog files (BUG-448).
+        live = {o.name: o for o in backend.list(tenant)}
         for d in rel_dirs:
-            _prune_sidecars(d, live_names)
+            _prune_sidecars(d, live)
 
         # One relationship cache per tenant directory (there is exactly one locally).
         rel_path = next(iter(rel_dirs)) / _RELATIONSHIPS_FILE if len(rel_dirs) == 1 else None
@@ -962,7 +1057,7 @@ async def load_catalog(tenant: Optional[str], use_llm: bool = True) -> Dict[str,
     sig = await asyncio.to_thread(_signature_for_tenant, effective_tenant)
     if not sig:
         return {"tables": {}, "relationships": [], "context_text": "", "loaders": []}
-    cache_key = f"{SCHEMA_CACHE_PREFIX}{effective_tenant}:{sig}"
+    cache_key = f"{SCHEMA_CACHE_PREFIX}{effective_tenant}:{sig}:{'llm' if use_llm else 'plain'}"
     cached = await schema_cache.get(cache_key)
     if cached:
         return cached

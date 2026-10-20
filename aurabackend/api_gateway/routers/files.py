@@ -173,13 +173,16 @@ async def upload_universal(
         data = buf.getvalue()
         # Per-tenant storage cap. A re-upload replaces the file of the same name, so
         # that file's current size does not count against the new one.
-        from shared.upload_retention import catalog_bytes, over_quota, tenant_quota_bytes
+        from shared.upload_retention import over_quota, tenant_dir_bytes, tenant_quota_bytes
         backend = get_storage_backend()
-        existing = await asyncio.to_thread(backend.list, tenant)
         tenant_dir = backend.tenant_dir(tenant) if hasattr(backend, "tenant_dir") else None
-        # The catalog's Parquet copies (shared.data_utils) are part of what an account uses.
-        sidecars = await asyncio.to_thread(catalog_bytes, tenant_dir, safe_name)
-        if over_quota([sidecars, *(o.size for o in existing if o.name != safe_name)], bytes_written):
+        # Every file in the account's folder, any extension, plus the catalog's Parquet
+        # copies (BUG-447); remote storage has no folder, so its listing is used.
+        used = await asyncio.to_thread(tenant_dir_bytes, tenant_dir, safe_name)
+        if used is None:
+            existing = await asyncio.to_thread(backend.list, tenant)
+            used = sum(o.size for o in existing if o.name != safe_name)
+        if over_quota([used], bytes_written):
             raise HTTPException(
                 status_code=413,
                 detail=f"This upload would take your files past the {tenant_quota_bytes() // (1024 * 1024)}MB "

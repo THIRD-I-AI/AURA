@@ -1,6 +1,9 @@
 """The catalog profiles each upload once and loads only the tables a query needs."""
 from __future__ import annotations
 
+import os
+import time
+
 import duckdb
 import pytest
 
@@ -108,7 +111,8 @@ async def test_tables_are_loaded_from_a_parquet_copy(uploads):
     catalog = await du.load_catalog("acme", use_llm=False)
     loaders = {ld["table_name"]: ld for ld in catalog["loaders"]}
     assert loaders["orders"]["read_fn"] == "read_parquet"
-    assert (uploads / du._CATALOG_DIRNAME / "orders.csv.parquet").exists()
+    # One copy per version of the file (BUG-449): orders.csv.<digest>.parquet.
+    assert len(list((uploads / du._CATALOG_DIRNAME).glob("orders.csv.*.parquet"))) == 1
 
     con = duckdb.connect(":memory:")
     await du.materialize_tables(con, catalog, {"orders"})
@@ -119,7 +123,11 @@ async def test_tables_are_loaded_from_a_parquet_copy(uploads):
 async def test_a_deleted_upload_leaves_no_catalog_files_behind(uploads):
     await du.load_catalog("acme", use_llm=False)
     (uploads / "orders.csv").unlink()
+    # Recently written catalog files are spared (BUG-448); age them past the guard.
+    old = time.time() - 2 * du._PRUNE_MIN_AGE_S
+    for f in (uploads / du._CATALOG_DIRNAME).iterdir():
+        os.utime(f, (old, old))
     await du.load_catalog("acme", use_llm=False)
     left = {f.name for f in (uploads / du._CATALOG_DIRNAME).iterdir()}
     assert not any(n.startswith("orders.csv") for n in left)
-    assert "customers.csv.parquet" in left and "customers.csv.json" in left
+    assert "customers.csv.json" in left and any(n.startswith("customers.csv.") and n.endswith(".parquet") for n in left)
