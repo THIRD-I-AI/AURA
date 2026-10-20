@@ -14,7 +14,7 @@ class _Tools:
     async def call(self, name, **kwargs):
         if self.fail:
             raise TypeError("ingest_and_profile() got an unexpected keyword argument 'filepath'")
-        return {"row_count": 3, "columns": ["a"]}
+        return {"rows": 3, "columns": ["a"]}
 
 
 @pytest.mark.asyncio

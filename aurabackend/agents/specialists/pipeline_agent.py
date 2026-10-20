@@ -81,25 +81,19 @@ class PipelineAgent(BaseAgent):
 
         # Register with scheduler if tool is available
         scheduled = False
-        if self.tools and pipeline_def.get("schedule"):
-            try:
-                await self.tools.call(
-                    "create_schedule",
-                    pipeline_id=pipeline_def.get("name", str(uuid.uuid4())),
-                    cron=pipeline_def["schedule"],
-                    payload=pipeline_def,
-                )
-                scheduled = True
-                result.add_step(
-                    action="pipeline_scheduled",
-                    output_summary=f"Scheduled: {pipeline_def['schedule']}",
-                )
-            except Exception as exc:
-                result.add_step(
-                    action="schedule_error",
-                    output_summary=str(exc),
-                    severity=Severity.WARNING,
-                )
+        if pipeline_def.get("schedule"):
+            # BUG-437: this called create_schedule with pipeline_id= / cron= / payload=,
+            # arguments it does not take, so scheduling always failed. That tool
+            # schedules a SQL query on a connection, not a multi-step pipeline, so it
+            # cannot run this pipeline at all; say so instead of pretending.
+            result.add_step(
+                action="schedule_not_applied",
+                output_summary=(
+                    f"Requested schedule '{pipeline_def['schedule']}' was not applied: save the "
+                    "pipeline and schedule it from the Pipelines tab."
+                ),
+                severity=Severity.WARNING,
+            )
 
         result.output = {
             "pipeline": pipeline_def,
