@@ -16,10 +16,31 @@ import pandas as pd
 
 
 def instruments_from_dag(edges, treatment: str, outcome: str) -> List[str]:
+    """Parents of the treatment whose every directed path to the outcome runs
+    through the treatment (the exclusion restriction, read off the DAG).
+
+    BUG-452: this used to accept any parent without a *direct* edge to the outcome,
+    so a confounder X with X->T and X->M->Y was called an instrument -- the IV
+    estimate used an invalid instrument and the backdoor estimators dropped X from
+    their adjustment set, leaving T<-X->M->Y open.
+    """
+    children: dict = {}
+    for src, dst in edges:
+        children.setdefault(src, set()).add(dst)
+
+    def reaches_outcome_avoiding_treatment(start: str) -> bool:
+        seen, stack = {start}, [start]
+        while stack:
+            for nxt in children.get(stack.pop(), ()):
+                if nxt == outcome:
+                    return True
+                if nxt != treatment and nxt not in seen:
+                    seen.add(nxt)
+                    stack.append(nxt)
+        return False
+
     to_treatment = {src for src, dst in edges if dst == treatment}
-    to_outcome = {src for src, dst in edges if dst == outcome}
-    insts = [n for n in to_treatment if n != outcome and n not in to_outcome]
-    return sorted(insts)
+    return sorted(n for n in to_treatment if n != outcome and not reaches_outcome_avoiding_treatment(n))
 
 
 def _ols(X: np.ndarray, y: np.ndarray) -> np.ndarray:

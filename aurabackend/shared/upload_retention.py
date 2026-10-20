@@ -59,6 +59,9 @@ def expire_verify_uploads(uploads_root: str, now: Optional[float] = None) -> int
                 ):
                     f.unlink()
                     deleted += 1
+                    from shared.data_utils import remove_catalog_files
+
+                    remove_catalog_files(str(f))  # BUG-450
             except OSError:
                 continue
     return deleted
@@ -78,6 +81,27 @@ def catalog_bytes(tenant_dir: Optional[Path], replacing: Optional[str] = None) -
     except OSError:
         return total
     return total
+
+
+def tenant_dir_bytes(tenant_dir: Optional[Path], replacing: Optional[str] = None) -> Optional[int]:
+    """Bytes held by every regular file directly in a local tenant directory -- of
+    any extension -- plus its catalog sidecars; None when there is no local
+    directory (remote storage), so the caller falls back to the backend listing.
+
+    BUG-447: the limit used the backend's listing, which shows only the readable
+    data extensions, while the upload route stores any name; a .bin or .txt upload
+    never counted. *replacing* (a file about to be overwritten) is left out with
+    its sidecars."""
+    if tenant_dir is None:
+        return None
+    total = 0
+    try:
+        for f in tenant_dir.iterdir():
+            if f.name != replacing and f.is_file() and not f.is_symlink():
+                total += f.stat().st_size
+    except OSError:
+        pass
+    return total + catalog_bytes(tenant_dir, replacing)
 
 
 def over_quota(existing_sizes: Iterable[int], incoming: int) -> bool:
