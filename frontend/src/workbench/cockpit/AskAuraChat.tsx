@@ -3,6 +3,7 @@
    feed and query-history table via the callbacks Workbench.tsx passes down. */
 import { useRef, useState } from 'react';
 import { chatService, type VerificationResult } from '../../services/api';
+import { chatOutcome } from '../../services/chatResponse';
 import RechartsVisualization, { type ChartSpec } from '../../components/RechartsVisualization';
 import type { Msg, HistoryEntry } from './types';
 
@@ -72,7 +73,8 @@ export function AskAuraChat({ pushFeed, setHistory }: Props) {
           const resp = await chatService.sendMessage(q);
           const er = resp.execution_result;
           sql = resp.final_query;
-          const ok = resp.status !== 'Error' && er?.success !== false;
+          const outcome = chatOutcome(resp);
+          const ok = outcome.ok;
           if (er?.columns && er.rows) {
             columns = er.columns;
             rows = er.rows.map((r) => r.map((cell) => String(cell ?? '')));
@@ -91,9 +93,7 @@ export function AskAuraChat({ pushFeed, setHistory }: Props) {
           critic = ok
             ? `executed · ${er?.truncated ? 'first ' : ''}${er?.row_count ?? 0} rows${er?.truncated ? ' (cut off at the row limit)' : ''}`
             : undefined;
-          answer = ok
-            ? (er?.conclusion || er?.sql_explanation || resp.message || 'Done.')
-            : (er?.error || resp.error_message || resp.message || 'Query failed.');
+          answer = outcome.answer ?? outcome.error ?? 'Query failed.';
         } catch {
           answer = 'Could not reach AURA — please check your connection and try again.';
         }
