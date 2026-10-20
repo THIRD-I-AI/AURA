@@ -19,6 +19,7 @@ from typing import Callable
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
+from starlette.exceptions import HTTPException
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from shared.exceptions import AuraError
@@ -212,14 +213,18 @@ _AUTH_PATHS = {
     # (a handoff code / a JWT respectively) from caller-supplied input, the
     # same class of endpoint /auth/token is -- excluded from the rate-limit
     # exemption below so they're throttled like any other credential mint,
-    # not treated as free infrastructure traffic. oidc_status/oidc_login
-    # mint nothing and stay exempt.
+    # not treated as free infrastructure traffic. oidc_status mints nothing
+    # and stays exempt; oidc_login is throttled too (see below).
     "/api/v1/auth/oidc/callback", "/api/v1/auth/oidc/exchange",
 }
 
 # Infrastructure paths that genuinely need no throttling: liveness probes get
 # polled hard by orchestrators, and the docs are static.
-_RATE_LIMIT_EXEMPT_PATHS = _PUBLIC_PATHS - _AUTH_PATHS
+# BUG-453: oidc_login mints no credential but stores a PKCE state per call, so
+# leaving it exempt let one unauthenticated client grow that store without limit.
+# It takes the general per-IP bucket, not the auth one, so SSO sign-ins do not
+# spend the password-guess allowance.
+_RATE_LIMIT_EXEMPT_PATHS = _PUBLIC_PATHS - _AUTH_PATHS - {"/api/v1/auth/oidc/login"}
 
 
 class APIKeyMiddleware(BaseHTTPMiddleware):
@@ -533,7 +538,10 @@ class UploadBodyLimitMiddleware:
         await self.app(scope, receive, send)
 
 
-class _BodyTooLarge(Exception):
+class _BodyTooLarge(HTTPException):
+    # BUG-455: an HTTPException, because FastAPI turns any other exception raised
+    # while it parses a Pydantic body into a 400 "error parsing the body" before
+    # this middleware can answer; an HTTPException it re-raises as-is.
     pass
 
 
@@ -553,11 +561,11 @@ class RequestBodyLimitMiddleware:
         self.max_bytes = max_bytes
         self.upload_suffix = upload_suffix
 
+    def _limit_message(self) -> str:
+        return f"Request body exceeds the {self.max_bytes // (1024 * 1024)}MB limit"
+
     async def _refuse(self, scope, receive, send) -> None:
-        response = JSONResponse(
-            {"detail": f"Request body exceeds the {self.max_bytes // (1024 * 1024)}MB limit"},
-            status_code=413,
-        )
+        response = JSONResponse({"detail": self._limit_message()}, status_code=413)
         await response(scope, receive, send)
 
     async def __call__(self, scope, receive, send):
@@ -584,7 +592,7 @@ class RequestBodyLimitMiddleware:
             if message["type"] == "http.request":
                 received += len(message.get("body", b""))
                 if received > self.max_bytes:
-                    raise _BodyTooLarge()
+                    raise _BodyTooLarge(413, self._limit_message())
             return message
 
         async def tracking_send(message):

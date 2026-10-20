@@ -32,6 +32,7 @@ from urllib.parse import urlencode
 from shared.config import settings
 
 STATE_TTL_SECONDS = 600
+MAX_PENDING_STATES = 10_000
 HANDOFF_TTL_SECONDS = 60
 DISCOVERY_TTL_SECONDS = 3600
 _state_store: Dict[str, Tuple[str, float]] = {}
@@ -51,9 +52,16 @@ def is_configured() -> bool:
 def new_state() -> Tuple[str, str, str]:
     """Returns (state, code_verifier, code_challenge) and stores the pair."""
     now = time.time()
-    # opportunistic TTL sweep so the store cannot grow unbounded
-    for k in [k for k, (_, exp) in _state_store.items() if exp < now]:
-        _state_store.pop(k, None)
+    # BUG-453: every entry gets the same TTL, so dict insertion order is expiry
+    # order -- sweep from the oldest end and stop at the first live entry. The old
+    # full scan cost O(store) per login on the single event loop, and nothing
+    # capped the store, so a login flood (even from many IPs) grew it without
+    # bound. Past the cap the oldest pending login is dropped.
+    while _state_store:
+        oldest = next(iter(_state_store))
+        if _state_store[oldest][1] >= now and len(_state_store) < MAX_PENDING_STATES:
+            break
+        del _state_store[oldest]
     state = secrets.token_urlsafe(24)
     verifier = secrets.token_urlsafe(48)
     challenge = base64.urlsafe_b64encode(
