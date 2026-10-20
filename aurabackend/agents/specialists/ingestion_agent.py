@@ -112,4 +112,7 @@ class IngestionAgent(BaseAgent):
         if errors and not ingested:
             result.status = AgentStatus.FAILED
             result.error = "No source could be ingested: " + "; ".join(errors)
+        else:
+            # Some sources may have failed; what was ingested is still a result.
+            result.status = AgentStatus.SUCCESS
         return result

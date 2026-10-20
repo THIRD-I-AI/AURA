@@ -256,7 +256,18 @@ class BaseAgent(ABC):
                 timeout=ctx.timeout_seconds,
             )
             if result.status == AgentStatus.RUNNING:
-                result.status = AgentStatus.SUCCESS
+                # An agent that records an error and returns without deciding its own
+                # status has failed. Treating it as a success let a swallowed tool
+                # failure pass as a completed task (BUG-437 and the same shape in the
+                # quality, transform, schema-architect and SQL-generator agents), and
+                # the plan then ran dependants on nothing. An agent that succeeds
+                # despite some errors sets SUCCESS itself.
+                errors = [s.output_summary for s in result.steps if s.severity == Severity.ERROR]
+                if errors:
+                    result.status = AgentStatus.FAILED
+                    result.error = result.error or "; ".join(e for e in errors if e)[:1000] or f"{self.name} reported an error"
+                else:
+                    result.status = AgentStatus.SUCCESS
         except asyncio.TimeoutError:
             result.status = AgentStatus.FAILED
             result.error = (
