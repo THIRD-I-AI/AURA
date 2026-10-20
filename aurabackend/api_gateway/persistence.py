@@ -353,6 +353,25 @@ class ChatMessageRow(Base):
     )
 
 
+class SyntheticJobRow(Base):
+    """One synthetic-data generation job -- tenant-scoped (BUG-430).
+
+    Replaces the router's in-memory dict: with more than one gateway worker a
+    poll landed on a worker that had never seen the job and answered 404, and
+    every restart lost every job. ``record_json`` is the job record the API
+    returns; ``updated_ts`` moves on every status or progress write.
+    """
+
+    __tablename__ = "gateway_synthetic_jobs"
+
+    job_id = Column(String(32), primary_key=True)
+    workspace_id = Column(String(64), nullable=False, index=True)
+    status = Column(String(16), nullable=False, default="queued")
+    record_json = Column(Text, nullable=False)
+    created_ts = Column(Float, nullable=False)
+    updated_ts = Column(Float, nullable=False)
+
+
 class PipelineRow(Base):
     """One saved pipeline — tenant-scoped (S50).
 
@@ -1381,6 +1400,53 @@ def _row_to_pipeline_list_dict(row: "PipelineRow") -> Dict[str, Any]:
         "created_at": row.created_at,
         "tags": json.loads(row.tags_json) if row.tags_json else [],
     }
+
+
+# ── Synthetic-data jobs (BUG-430) ─────────────────────────────────────
+
+async def insert_synthetic_job(record: Dict[str, Any]) -> None:
+    async with session_scope() as s:
+        s.add(SyntheticJobRow(
+            job_id=record["job_id"], workspace_id=record["workspace_id"],
+            status=record["status"], record_json=json.dumps(record, default=str),
+            created_ts=float(record["created_at"]), updated_ts=float(record["created_at"]),
+        ))
+
+
+async def update_synthetic_job(job_id: str, fields: Dict[str, Any], updated_ts: float) -> None:
+    """Merge *fields* into the stored record. No-op for an unknown id."""
+    async with session_scope() as s:
+        row = (await s.execute(
+            select(SyntheticJobRow).where(SyntheticJobRow.job_id == job_id)
+        )).scalar_one_or_none()
+        if row is None:
+            return
+        record = {**json.loads(row.record_json), **fields}
+        row.record_json = json.dumps(record, default=str)
+        row.status = record.get("status", row.status)
+        row.updated_ts = updated_ts
+
+
+async def get_synthetic_job(job_id: str, workspace_id: str) -> Optional[Dict[str, Any]]:
+    async with session_scope() as s:
+        row = (await s.execute(
+            select(SyntheticJobRow)
+            .where(SyntheticJobRow.job_id == job_id)
+            .where(SyntheticJobRow.workspace_id == workspace_id)
+        )).scalar_one_or_none()
+        return json.loads(row.record_json) if row is not None else None
+
+
+async def list_synthetic_jobs(workspace_id: str, limit: int = 200) -> List[Dict[str, Any]]:
+    """Newest first, bounded."""
+    async with session_scope() as s:
+        rows = (await s.execute(
+            select(SyntheticJobRow)
+            .where(SyntheticJobRow.workspace_id == workspace_id)
+            .order_by(SyntheticJobRow.created_ts.desc())
+            .limit(limit)
+        )).scalars().all()
+        return [json.loads(r.record_json) for r in rows]
 
 
 async def save_pipeline(record: Dict[str, Any]) -> Dict[str, Any]:

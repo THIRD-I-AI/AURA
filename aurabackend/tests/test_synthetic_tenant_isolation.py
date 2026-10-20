@@ -21,8 +21,11 @@ import types
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import uuid  # noqa: E402
+
 import pytest  # noqa: E402
 
+from api_gateway import persistence  # noqa: E402
 from api_gateway.routers import synthetic  # noqa: E402
 
 
@@ -33,15 +36,14 @@ def _req(org):
     )
 
 
-@pytest.fixture(autouse=True)
-def _clean_jobs():
-    synthetic._jobs.clear()
-    yield
-    synthetic._jobs.clear()
+# Jobs live in the gateway database now (BUG-430). Each test uses its own org
+# names so rows from other tests in the same database never show up.
+def _org(name: str) -> str:
+    return f"{name}-{uuid.uuid4().hex[:8]}"
 
 
-def _seed_job(job_id: str, workspace_id: str) -> None:
-    synthetic._jobs[job_id] = {
+async def _seed_job(job_id: str, workspace_id: str) -> None:
+    await persistence.insert_synthetic_job({
         "job_id": job_id,
         "workspace_id": workspace_id,
         "status": "completed",
@@ -51,35 +53,39 @@ def _seed_job(job_id: str, workspace_id: str) -> None:
         "progress": None,
         "result": None,
         "error": None,
-    }
+    })
 
 
 @pytest.mark.asyncio
 async def test_list_jobs_scoped_to_caller_workspace():
-    _seed_job("job-a", "orgA")
-    _seed_job("job-b", "orgB")
+    org_a, org_b = _org("orgA"), _org("orgB")
+    job_a, job_b = uuid.uuid4().hex[:12], uuid.uuid4().hex[:12]
+    await _seed_job(job_a, org_a)
+    await _seed_job(job_b, org_b)
 
-    resp_a = await synthetic.list_synthetic_jobs(_req("orgA"))
-    resp_b = await synthetic.list_synthetic_jobs(_req("orgB"))
+    resp_a = await synthetic.list_synthetic_jobs(_req(org_a))
+    resp_b = await synthetic.list_synthetic_jobs(_req(org_b))
 
-    assert [j["job_id"] for j in resp_a["jobs"]] == ["job-a"]
-    assert [j["job_id"] for j in resp_b["jobs"]] == ["job-b"]
+    assert [j["job_id"] for j in resp_a["jobs"]] == [job_a]
+    assert [j["job_id"] for j in resp_b["jobs"]] == [job_b]
 
 
 @pytest.mark.asyncio
 async def test_get_job_rejects_cross_tenant_read():
     from fastapi import HTTPException
 
-    _seed_job("job-a", "orgA")
+    org_a, org_b = _org("orgA"), _org("orgB")
+    job_a = uuid.uuid4().hex[:12]
+    await _seed_job(job_a, org_a)
 
     # Owner can read it.
-    job = await synthetic.get_synthetic_job("job-a", _req("orgA"))
-    assert job["job_id"] == "job-a"
+    job = await synthetic.get_synthetic_job(job_a, _req(org_a))
+    assert job["job_id"] == job_a
 
     # A different tenant gets the same 404 as a genuinely unknown id --
     # never confirms the job exists under someone else's workspace.
     with pytest.raises(HTTPException) as exc_info:
-        await synthetic.get_synthetic_job("job-a", _req("orgB"))
+        await synthetic.get_synthetic_job(job_a, _req(org_b))
     assert exc_info.value.status_code == 404
 
 
@@ -93,6 +99,7 @@ async def test_generate_stamps_caller_workspace_on_new_job(monkeypatch):
         target_size="1KB",
         output_uri="file:///tmp/out",
     )
-    result = await synthetic.synthetic_generate(req, _req("orgA"))
-    job = synthetic._jobs[result["job_id"]]
-    assert job["workspace_id"] == "orgA"
+    org_a = _org("orgA")
+    result = await synthetic.synthetic_generate(req, _req(org_a))
+    job = await persistence.get_synthetic_job(result["job_id"], org_a)
+    assert job is not None and job["workspace_id"] == org_a

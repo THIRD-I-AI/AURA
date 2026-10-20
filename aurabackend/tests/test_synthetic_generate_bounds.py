@@ -69,7 +69,7 @@ def test_generation_runs_on_its_own_pool_not_the_shared_default_executor(monkeyp
 
     ran_on = []
     monkeypatch.setattr(synthetic, "_run_job",
-                        lambda job_id, req: ran_on.append(threading.current_thread().name))
+                        lambda job_id, req, loop: ran_on.append(threading.current_thread().name))
 
     r = _gen(TestClient(app))
 
