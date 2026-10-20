@@ -56,9 +56,16 @@ async def _file_metadata_refresh_loop(stop_event: asyncio.Event) -> None:
 
     while not stop_event.is_set():
         try:
-            expired = await asyncio.to_thread(expire_verify_uploads, str(upload_dir))
+            removed: list = []
+            expired = await asyncio.to_thread(expire_verify_uploads, str(upload_dir), None, removed)
             if expired:
                 logger.info("expired %d verification upload(s)", expired)
+            from shared.file_service import purge_upload_metadata
+
+            for tenant_dir, name in removed:
+                # BUG-461: the directory is the tenant's slug, which is the tenant
+                # id itself for the UUID org ids and "default" that own these.
+                await purge_upload_metadata(tenant_dir, name)
         except Exception as exc:
             logger.debug("verification upload expiry failed: %s", exc)
         try:

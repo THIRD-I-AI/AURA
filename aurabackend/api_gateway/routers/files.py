@@ -412,10 +412,20 @@ async def delete_file(file_id: str, request: Request) -> Dict[str, Any]:
     if file_service is None:
         return {"status": "error", "error": "File service not available"}
     try:
-        sub = tenant_dir_name(_request_tenant(request))
-        success = await asyncio.to_thread(file_service.delete_file, file_id, subdir=sub)
+        tenant = _request_tenant(request)
+        sub = tenant_dir_name(tenant)
+
+        def _delete():
+            info = file_service.get_file_info(file_id, subdir=sub) or {}
+            return file_service.delete_file(file_id, subdir=sub), info.get("filename")
+
+        success, filename = await asyncio.to_thread(_delete)
         if success:
             await invalidate_schema_cache()
+            if filename:
+                from shared.file_service import purge_upload_metadata
+
+                await purge_upload_metadata(tenant, filename)  # BUG-461
             return {"status": "success", "message": "File deleted successfully"}
         raise HTTPException(status_code=404, detail="File not found or deletion failed")
     except HTTPException:

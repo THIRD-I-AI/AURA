@@ -76,6 +76,15 @@ async def index_uploaded_file(file_path: str, source_id: Optional[str] = None) -
         return {"tables": 0, "columns": 0}
 
 
+async def delete_indexed_source(source_id: str) -> None:
+    """Remove every ``schema_columns`` row of one source (BUG-461: they carry
+    sample values, so a deleted upload must not leave them behind)."""
+    factory = get_session_factory()
+    async with factory() as sess:
+        await sess.execute(delete(SchemaColumn).where(SchemaColumn.source_id == source_id))
+        await sess.commit()
+
+
 # ── DuckDB introspection ──────────────────────────────────────────────
 
 def _introspect_via_duckdb(file_path: str) -> List[Dict[str, Any]]:
