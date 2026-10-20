@@ -29,12 +29,34 @@ import json
 import logging
 import time
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlsplit
+
+from shared.connector_policy import ConnectorPolicyError
+from shared.ssrf import is_allowed_db_host
 
 logger = logging.getLogger("aura.kafka")
 
 
 # Progress callback: (consumed, lag_estimate) -> awaitable.
 ProgressCb = Any  # Optional[Callable[[int, Optional[int]], Awaitable[None]]]
+
+
+async def require_allowed_brokers(bootstrap_servers: Any) -> None:
+    """Refuse a caller-supplied broker list that reaches a non-public host.
+
+    BUG-457: bootstrap_servers comes from the request, so without this a tenant
+    could point the backend at the platform's own broker (and every tenant's
+    topics) or at loopback / private / metadata addresses. Same rule as the
+    postgres and mysql connectors (``shared.ssrf.is_allowed_db_host``), applied
+    to every host:port entry. Called right before each connection is opened.
+    """
+    entries = bootstrap_servers if isinstance(bootstrap_servers, (list, tuple)) else str(bootstrap_servers or "").split(",")
+    hosts = [urlsplit("//" + str(e).strip()).hostname for e in entries if str(e).strip()]
+    if not hosts:
+        raise ConnectorPolicyError("kafka bootstrap_servers must name at least one broker")
+    for host in hosts:
+        if not await is_allowed_db_host(host):
+            raise ConnectorPolicyError("kafka broker host must be a public address")
 
 
 async def consume_batch(
@@ -63,6 +85,7 @@ async def consume_batch(
     topic     = cfg.get("topic")
     if not bootstrap or not topic:
         raise ValueError("Kafka source requires 'bootstrap_servers' and 'topic'")
+    await require_allowed_brokers(bootstrap)
 
     group_id       = cfg.get("group_id") or f"aura-pipeline-{topic}"
     max_messages   = int(cfg.get("max_messages", 10_000))

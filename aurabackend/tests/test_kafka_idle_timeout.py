@@ -46,6 +46,7 @@ def _fake_aiokafka(batches):
 
 
 async def _consume(monkeypatch, batches, **cfg):
+    monkeypatch.setenv("AURA_CONNECTORS_ALLOW_PRIVATE_HOSTS", "true")  # local fake broker (BUG-457)
     mod, errors = _fake_aiokafka(batches)
     monkeypatch.setitem(sys.modules, "aiokafka", mod)
     monkeypatch.setitem(sys.modules, "aiokafka.errors", errors)

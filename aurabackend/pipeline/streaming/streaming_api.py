@@ -217,8 +217,14 @@ async def update_pipeline(pipeline_id: str, req: UpdateStreamPipelineRequest, us
     if pipe.status not in (StreamPipelineStatus.DRAFT, StreamPipelineStatus.STOPPED, StreamPipelineStatus.FAILED):
         raise HTTPException(status_code=409, detail="Pipeline must be stopped to edit")
 
-    for field, value in req.model_dump(exclude_none=True).items():
-        setattr(pipe, field, value)
+    # BUG-458: assign the validated objects, not model_dump()'s dicts --
+    # StreamPipeline does not re-validate on assignment, so a dict stored here
+    # made every later start fail on pipe.runtime.model_dump() / src.type.
+    for field in req.model_dump(exclude_none=True):
+        setattr(pipe, field, getattr(req, field))
+    # Same guarantee create_pipeline gives, or /stream answers 409 after a sinks update.
+    if not any(s.type == StreamSinkType.SSE for s in pipe.sinks):
+        pipe.sinks = [*pipe.sinks, StreamSink(type=StreamSinkType.SSE, config={})]
     pipe.updated_at = datetime.now(timezone.utc).isoformat()
     return pipe.model_dump()
 
