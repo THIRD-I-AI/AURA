@@ -33,6 +33,10 @@ services:
       - AURA_SCHEDULER_URL=http://scheduler_service:8004
       - AURA_INSIGHTS_URL=http://insights_service:8005
       - AURA_CAUSAL_URL=http://causal_service:8010
+      # BUG-446: unset, the gateway looked for UASR (and system health for the
+      # metadata store) on its own localhost inside the container.
+      - AURA_UASR_URL=http://uasr_service:8009
+      - AURA_METADATA_URL=http://metadata_store:8007
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health').read()"]
       interval: 30s

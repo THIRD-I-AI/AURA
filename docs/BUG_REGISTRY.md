@@ -4460,3 +4460,12 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Failure scenario:** a user with many files opens chat after the cache expired; the first answer takes over 30 s, longer than the frontend and the live check wait.
 - **Caused by:** none -- pre-existing.
 - **Fix:** pending.
+
+## BUG-446: The full-stack compose never tells the gateway where UASR is, so the gateway looks for it on its own localhost
+- **Status:** fixed
+- **Found by:** plan step 5 (checked contracts), a new test comparing the service addresses the gateway reads with what `docker-compose.yml` sets, 2026-10-19. `docker-compose.yml:27`.
+- **Severity:** medium
+- **Root cause:** `api_gateway/main.py`, `routers/connections.py` and `routers/pipelines.py` read `AURA_UASR_URL` with a `http://localhost:8009` default. The free-tier compose sets it; `docker-compose.yml` (and so the production overlay, which merges onto it) never did. Inside the gateway container localhost is the gateway itself.
+- **Failure scenario:** in the full multi-service stack the UASR metrics poller, the connection-to-ingest bridge and the pipelines' UASR calls all fail to connect, and system health reports UASR down on a healthy deployment. Same class as BUG-429 and BUG-431.
+- **Caused by:** none -- pre-existing.
+- **Fix:** the gateway's environment in `docker-compose.yml` sets `AURA_UASR_URL=http://uasr_service:8009` (and `AURA_METADATA_URL`, so system health includes the metadata store). `tests/test_compose_service_addresses.py` reads every `..._URL` the gateway's code reads and fails unless it is set in that compose file or listed with the reason it may stay unset; on the old file it reports `AURA_UASR_URL`.
