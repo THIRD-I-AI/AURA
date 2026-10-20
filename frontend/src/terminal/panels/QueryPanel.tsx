@@ -1,6 +1,7 @@
 import { useRef, useState } from 'react';
 import type { IDockviewPanelProps } from 'dockview-react';
 import { chatService, type QueryResponse } from '../../services/api';
+import { chatOutcome } from '../../services/chatResponse';
 import RechartsVisualization, { type ChartSpec } from '../../components/RechartsVisualization';
 import { useCockpit } from '../CockpitProvider';
 
@@ -29,12 +30,9 @@ export default function QueryPanel(_props: IDockviewPanelProps) {
       const res = await chatService.sendMessage(prompt, { uploadedFile: activeDataset });
       if (seq !== requestSeq.current) return;
       setResult(res);
-      // BUG-425: /chat reports a failed query as HTTP 200 with status 'Error' (or
-      // execution_result.success false); nothing in the render reads those fields,
-      // so the panel showed nothing at all.
-      if (res.status === 'Error' || res.execution_result?.success === false) {
-        setError(res.execution_result?.error || res.error_message || res.message || 'Query failed');
-      }
+      // BUG-425: /chat reports a failed query as HTTP 200; chatOutcome reads it.
+      const outcome = chatOutcome(res);
+      if (!outcome.ok) setError(outcome.error ?? 'Query failed.');
     } catch (e) {
       if (seq === requestSeq.current) setError(e instanceof Error ? e.message : 'Query failed');
     } finally {

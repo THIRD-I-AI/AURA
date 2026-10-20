@@ -10,6 +10,7 @@ import { Button } from '@/components/ui-kit/button';
 import { EmptyState } from '@/components/ui-kit/empty-state';
 import { cn } from '@/lib/cn';
 import { chatService, type VerificationResult } from '../../services/api';
+import { chatOutcome } from '../../services/chatResponse';
 import RechartsVisualization, { type ChartSpec } from '../../components/RechartsVisualization';
 
 type Msg = {
@@ -48,15 +49,11 @@ export default function AskAuraPanel() {
       const resp = await chatService.sendMessage(q);
       const er = (resp as { execution_result?: Record<string, unknown> }).execution_result || {};
       const sql = (resp as { final_query?: string }).final_query;
-      const ok = (resp as { status?: string }).status !== 'Error' && er.success !== false;
-      // BUG-424: conversational, pipeline-created and audit-completed replies carry
-      // their whole answer in `message` with no execution_result, and so do the
-      // pipeline/audit failure branches.
-      const message = (resp as { message?: string }).message;
+      const outcome = chatOutcome(resp);
       const filled: Msg = {
         id: pending.id,
         role: 'assistant',
-        text: (er.conclusion as string) || (er.sql_explanation as string) || (ok ? message || 'Done.' : undefined),
+        text: outcome.answer,
         sql: sql || undefined,
         columns: (er.columns as string[]) || undefined,
         data: (er.data as Record<string, unknown>[]) || undefined,
@@ -79,12 +76,7 @@ export default function AskAuraPanel() {
         // only execution_result.error discarded that: a provider daily-quota
         // 429 rendered as "Query failed.", identical to broken SQL, when the
         // honest answer was "rate-limited, try again shortly".
-        error: ok
-          ? undefined
-          : ((er.error as string)
-            || (resp as { error_message?: string }).error_message
-            || message
-            || 'Query failed.'),
+        error: outcome.error,
       };
       setMessages((m) => m.map((x) => (x.id === pending.id ? filled : x)));
     } catch {
