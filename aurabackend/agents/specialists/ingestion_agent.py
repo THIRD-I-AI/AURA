@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Optional, cast
 
 from agents.base import AgentContext, AgentResult, AgentStatus, BaseAgent, Severity
 from agents.params import IngestionAgentParams
+from agents.tools import introspect_args
 
 logger = logging.getLogger("aura.agents.ingestion")
 
@@ -52,22 +53,22 @@ class IngestionAgent(BaseAgent):
 
             if self.tools:
                 try:
-                    profile = await self.tools.call(
-                        "ingest_and_profile",
-                        filepath=filepath,
-                    )
+                    # The tool's argument is file_path, and the connectors /ingest
+                    # route answers rows / dtypes / null_counts (BUG-437: the call used
+                    # filepath= and read row_count / column_types, so it always failed).
+                    profile = await self.tools.call("ingest_and_profile", file_path=filepath)
                     ingested.append({
                         "file": filepath,
-                        "rows": profile.get("row_count", 0),
+                        "rows": profile.get("rows", 0),
                         "columns": profile.get("columns", []),
-                        "types": profile.get("column_types", {}),
+                        "types": profile.get("dtypes", {}),
                         "nulls": profile.get("null_counts", {}),
                     })
                     result.add_step(
                         action="file_profiled",
                         tool_name="ingest_and_profile",
-                        output_summary=f"{filepath}: {profile.get('row_count',0)} rows, "
-                                       f"{len(profile.get('columns',[]))} columns",
+                        output_summary=f"{filepath}: {profile.get('rows', 0)} rows, "
+                                       f"{len(profile.get('columns', []))} columns",
                     )
                 except Exception as exc:
                     errors.append(f"{filepath}: {exc}")
@@ -83,8 +84,7 @@ class IngestionAgent(BaseAgent):
             if self.tools:
                 try:
                     schema_info = await self.tools.call(
-                        "introspect_database",
-                        connection=ctx.connection,
+                        "introspect_database", **introspect_args(ctx.connection),
                     )
                     ingested.append({
                         "source": "database",

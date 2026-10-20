@@ -9,6 +9,7 @@ import logging
 from typing import Any, Dict, List
 
 from agents.base import AgentContext, AgentResult, BaseAgent, Severity
+from agents.tools import introspect_args
 
 logger = logging.getLogger("aura.agents.schema_architect")
 
@@ -28,7 +29,7 @@ class SchemaArchitectAgent(BaseAgent):
         # ── Inspect existing schema ─────────────────────────────────
         if self.tools and ctx.connection:
             try:
-                schema = await self.tools.call("introspect_database", connection=ctx.connection)
+                schema = await self.tools.call("introspect_database", **introspect_args(ctx.connection))
                 tables_discovered = schema.get("tables", [])
                 result.add_step(
                     action="schema_inspected",
@@ -56,12 +57,16 @@ class SchemaArchitectAgent(BaseAgent):
         index_recs: List[str] = []
         if self.tools:
             try:
-                recs = await self.tools.call(
-                    "recommend_indexes",
-                    schema_context=ctx.schema_context,
-                    tables=tables_discovered,
-                )
-                index_recs = recs if isinstance(recs, list) else []
+                # The tool takes one table at a time (BUG-437: it was called with
+                # schema_context= / tables=, which it does not accept).
+                for table in tables_discovered[:10]:
+                    name = table.get("name") if isinstance(table, dict) else table
+                    if not name:
+                        continue
+                    recs = await self.tools.call("recommend_indexes", table=str(name))
+                    found = recs.get("recommendations", recs) if isinstance(recs, dict) else recs
+                    if isinstance(found, list):
+                        index_recs.extend(str(r) for r in found)
             except Exception as exc:
                 logger.exception("recommend_indexes tool call failed")
                 result.add_step(

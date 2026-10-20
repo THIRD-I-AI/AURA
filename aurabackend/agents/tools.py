@@ -107,6 +107,18 @@ async def introspect_database(
         return {"tables": result.get("tables", []), "source": "tables_fallback"}
 
 
+def introspect_args(connection: Dict[str, Any]) -> Dict[str, Any]:
+    """``introspect_database`` arguments for an agent's ``ctx.connection`` dict.
+
+    BUG-437: agents passed ``connection=ctx.connection``, an argument the tool does
+    not take, so every database introspection failed. The connector type travels in
+    the dict under "connector_type" or "type"; the rest is the connector config.
+    """
+    config = dict(connection or {})
+    connector_type = config.pop("connector_type", None) or config.pop("type", None) or "postgresql"
+    return {"connector_type": str(connector_type), "config": config}
+
+
 async def list_uploaded_files() -> Any:
     """List all uploaded files known to the gateway.
 

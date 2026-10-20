@@ -51,9 +51,9 @@ async def test_an_ingest_where_some_sources_worked_still_succeeds():
 
     class _Tools:
         async def call(self, name, **kwargs):
-            if kwargs.get("filepath") == "bad.csv":
+            if kwargs.get("file_path") == "bad.csv":
                 raise RuntimeError("unreadable")
-            return {"row_count": 3, "columns": ["a"]}
+            return {"rows": 3, "columns": ["a"]}
 
     ctx = AgentContext(user_prompt="ingest", task_description="ingest", files=["good.csv", "bad.csv"])
     result = await IngestionAgent(tool_registry=_Tools()).execute(ctx)
