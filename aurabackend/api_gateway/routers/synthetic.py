@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import asyncio
 import os
-import threading
 import time
 import uuid as _uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -100,9 +99,13 @@ _GENERATION_POOL = ThreadPoolExecutor(max_workers=2, thread_name_prefix="synthet
 
 router = APIRouter(tags=["Synthetic Data"])
 
-# ── In-memory job store ─────────────────────────────────────────────
-_jobs_lock = threading.Lock()
-_jobs: Dict[str, Dict[str, Any]] = {}
+# Job records live in the gateway database (api_gateway.persistence), not in this
+# process (BUG-430): with several gateway workers a poll could reach a worker that
+# never saw the job, and a restart lost every job. The generation thread writes its
+# updates back through the event loop that owns the database engine.
+
+# Progress is written at most this often; status changes are always written.
+_PROGRESS_WRITE_INTERVAL_S = 1.0
 
 
 # ── Request / response models ───────────────────────────────────────
@@ -180,11 +183,31 @@ async def synthetic_plan(req: PlanRequest):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
 
 
-def _run_job(job_id: str, req: GenerateRequest) -> None:
-    """Worker-thread body: generate the dataset, updating the job record."""
+def _run_job(job_id: str, req: GenerateRequest, loop: asyncio.AbstractEventLoop) -> None:
+    """Worker-thread body: generate the dataset, recording progress in the database."""
+    from api_gateway import persistence
+
+    def record(**fields: Any) -> None:
+        write = persistence.update_synthetic_job(job_id, fields, time.time())
+        try:
+            if loop.is_running():
+                # The server's loop owns the async engine; run the write there.
+                asyncio.run_coroutine_threadsafe(write, loop).result(timeout=30)
+            else:
+                # Only when that loop has stopped -- a test client that opens a fresh
+                # loop per request -- does the thread run the write on its own.
+                asyncio.run(write)
+        except Exception as exc:  # noqa: BLE001 -- a lost progress write must not kill the job
+            logger.warning("synthetic job %s: could not record %s: %s", job_id, sorted(fields), exc)
+
+    last_progress = 0.0
+
     def progress_cb(p: Dict[str, Any]) -> None:
-        with _jobs_lock:
-            _jobs[job_id]["progress"] = p
+        nonlocal last_progress
+        now = time.monotonic()
+        if now - last_progress >= _PROGRESS_WRITE_INTERVAL_S:
+            last_progress = now
+            record(progress=p)
 
     try:
         schema = _build_schema(req.schema_def)
@@ -193,23 +216,16 @@ def _run_job(job_id: str, req: GenerateRequest) -> None:
             schema, seed=req.seed, compression=req.compression,
             chunk_rows=req.chunk_rows, file_target_bytes=req.file_target_bytes,
         )
-        with _jobs_lock:
-            _jobs[job_id]["status"] = "running"
-            _jobs[job_id]["plan"] = writer.plan(target).to_dict()
+        record(status="running", plan=writer.plan(target).to_dict())
         result = writer.generate(
             req.output_uri, target,
             dataset_name=schema.name, max_files=req.max_files,
             progress_cb=progress_cb,
         )
-        with _jobs_lock:
-            _jobs[job_id]["status"] = "completed"
-            _jobs[job_id]["result"] = result.to_dict()
-            _jobs[job_id]["finished_at"] = time.time()
+        record(status="completed", result=result.to_dict(), finished_at=time.time())
     except Exception as exc:  # noqa: BLE001 — surface any failure into the job record
-        with _jobs_lock:
-            _jobs[job_id]["status"] = "failed"
-            _jobs[job_id]["error"] = sanitize_error(exc, logger=logger, context="synthetic generate")
-            _jobs[job_id]["finished_at"] = time.time()
+        record(status="failed", error=sanitize_error(exc, logger=logger, context="synthetic generate"),
+               finished_at=time.time())
 
 
 @router.post("/synthetic/generate")
@@ -235,20 +251,22 @@ async def synthetic_generate(req: GenerateRequest, request: Request):
     except (ValueError, TypeError) as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
 
-    with _jobs_lock:
-        _jobs[job_id] = {
-            "job_id": job_id,
-            "workspace_id": current_workspace_id(request),
-            "status": "queued",
-            "output_uri": req.output_uri,
-            "target_size": req.target_size,
-            "created_at": time.time(),
-            "progress": None,
-            "result": None,
-            "error": None,
-        }
+    from api_gateway import persistence
+
+    await persistence.insert_synthetic_job({
+        "job_id": job_id,
+        "workspace_id": current_workspace_id(request),
+        "status": "queued",
+        "output_uri": req.output_uri,
+        "target_size": req.target_size,
+        "created_at": time.time(),
+        "progress": None,
+        "result": None,
+        "error": None,
+    })
     # Run CPU-bound generation off the event loop, on this router's own pool.
-    asyncio.get_running_loop().run_in_executor(_GENERATION_POOL, _run_job, job_id, req)
+    loop = asyncio.get_running_loop()
+    loop.run_in_executor(_GENERATION_POOL, _run_job, job_id, req, loop)
     return {"success": True, "job_id": job_id, "status": "queued"}
 
 
@@ -259,10 +277,9 @@ async def list_synthetic_jobs(request: Request):
     _jobs was a bare in-memory dict with no tenant field at all -- every
     caller saw every other tenant's job list (output URIs, schema, sizes).
     """
-    workspace_id = current_workspace_id(request)
-    with _jobs_lock:
-        jobs = [j for j in _jobs.values() if j.get("workspace_id") == workspace_id]
-        return {"jobs": sorted(jobs, key=lambda j: j["created_at"], reverse=True)}
+    from api_gateway import persistence
+
+    return {"jobs": await persistence.list_synthetic_jobs(current_workspace_id(request))}
 
 
 @router.get("/synthetic/jobs/{job_id}")
@@ -274,8 +291,9 @@ async def get_synthetic_job(job_id: str, request: Request):
     same 404 as a genuinely unknown id, never confirming the job exists
     under a different tenant.
     """
-    with _jobs_lock:
-        job = _jobs.get(job_id)
-        if job is None or job.get("workspace_id") != current_workspace_id(request):
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"job {job_id} not found")
-        return dict(job)
+    from api_gateway import persistence
+
+    job = await persistence.get_synthetic_job(job_id, current_workspace_id(request))
+    if job is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"job {job_id} not found")
+    return job
