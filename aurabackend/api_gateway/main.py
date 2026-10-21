@@ -65,7 +65,12 @@ async def _file_metadata_refresh_loop(stop_event: asyncio.Event) -> None:
             for tenant_dir, name in removed:
                 # BUG-461: the directory is the tenant's slug, which is the tenant
                 # id itself for the UUID org ids and "default" that own these.
-                await purge_upload_metadata(tenant_dir, name)
+                # Each purge stands alone: the file is already gone from disk, so
+                # no later pass would retry the rows a failed purge left behind.
+                try:
+                    await purge_upload_metadata(tenant_dir, name)
+                except Exception as exc:
+                    logger.warning("metadata purge for expired upload %s failed: %s", name, exc)
         except Exception as exc:
             logger.debug("verification upload expiry failed: %s", exc)
         try:
