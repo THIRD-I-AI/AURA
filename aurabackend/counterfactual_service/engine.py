@@ -2022,7 +2022,16 @@ async def run_job(
     # replay returns byte-identical content.
     try:
         full_persistable = artifact.model_dump(mode="json")
-        persistence.write_artifact(artifact_hash, full_persistable)
+        # BUG-485: the hash excludes the signature fields, so an unsigned
+        # re-seal of identical content (replay after key revocation, a
+        # transient sign failure) lands on the same file. Overwriting would
+        # turn a certificate already handed out into "NOT verified"; the
+        # existing signature still covers these exact bytes, so keep it.
+        existing = None if sig_b64 is not None else persistence.read_artifact(artifact_hash)
+        if (existing or {}).get("signature_status") == "signed":
+            logger.info("Keeping signed artifact %s over unsigned re-seal", artifact_hash[:12])
+        else:
+            persistence.write_artifact(artifact_hash, full_persistable)
         if sig_b64 is not None:
             persistence.write_signature(artifact_hash, sig_b64)
     except Exception as exc:  # pragma: no cover
