@@ -29,6 +29,12 @@ from shared.cache import schema_cache
     'df.agg(df.columns[0], {path!r})',
     'df.pivot_table(index="a", values="a", aggfunc="to_csv")',
     'max([{path!r}], key=df.agg)',
+    'df.agg(None, x=("a", "to_csv"))',
+    'df["a"].agg(None, x="to_csv")',
+    'df["a"].agg(None, x="__class__")',
+    'df.agg(None, x=("a", df.columns[0]))',
+    'df["a"].map("to_csv")',
+    'df["a"].map(df.columns[0])',
 ])
 def test_string_dispatch_cannot_reach_io_methods(tmp_path, expr):
     target = tmp_path / "pwned.csv"
@@ -44,6 +50,7 @@ def test_string_dispatch_cannot_reach_io_methods(tmp_path, expr):
     ('df.groupby("g").agg(total=("a", "sum"))["total"].sum()', 3),
     ('df["a"].apply(abs).sum()', 3),
     ('df["a"].transform("cumsum").iloc[-1]', 3),
+    ('df["a"].map({1: "x", 2: "y"}).tolist()', ["x", "y"]),
 ])
 def test_ordinary_aggregations_still_evaluate(expr, expected):
     df = pd.DataFrame({"a": [1, 2], "g": ["x", "y"]})
