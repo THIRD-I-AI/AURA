@@ -89,7 +89,7 @@ class SQLGeneratorAgent(BaseAgent):
         if not sql:
             reason = gen_error or (
                 "No LLM provider available — install Ollama or set GROQ_API_KEY/GEMINI_API_KEY."
-                if not self._llm.is_available() else
+                if not await asyncio.to_thread(self._llm.is_available) else
                 "LLM returned an empty SQL response."
             )
             result.add_step(
@@ -202,8 +202,9 @@ class SQLGeneratorAgent(BaseAgent):
         """Return (sql, error_reason). Either field may be set."""
         last_error: Optional[str] = None
 
-        # Try LLM first
-        if self._llm.is_available():
+        # Try LLM first. is_available() is a blocking HTTP probe for Ollama, so it
+        # runs off the event loop like generate() does (BUG-474).
+        if await asyncio.to_thread(self._llm.is_available):
             try:
                 prompt = _SQL_GEN_PROMPT.format(schema=schema, question=question)
                 logger.debug("SQL generator prompt (len=%d)", len(prompt))
@@ -247,7 +248,7 @@ class SQLGeneratorAgent(BaseAgent):
         import os
         if os.getenv("AURA_EXPLAIN_SQL", "1") == "0":
             return None
-        if not self._llm.is_available():
+        if not await asyncio.to_thread(self._llm.is_available):
             return None
         try:
             prompt = _SQL_EXPLAIN_PROMPT.format(sql=sql[:2000])

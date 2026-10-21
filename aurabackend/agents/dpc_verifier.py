@@ -135,6 +135,53 @@ _BAD_ATTRS = frozenset({"eval", "query", "pipe"})
 _BANNED_NODES = (ast.Lambda, ast.ListComp, ast.SetComp, ast.DictComp,
                  ast.GeneratorExp, ast.Await, ast.Yield, ast.YieldFrom,
                  ast.NamedExpr, ast.Starred)
+# BUG-472: these methods take a method NAME as a string and getattr() it on the
+# frame (pandas apply_str), so df.apply("to_csv", args=[path]) reached the I/O
+# sinks the attribute check above blocks. A denylist of string constants is
+# bypassable ("t" + "o_csv", a name read from the data), so the function spec of
+# a dispatching call must be a literal from this allowlist or a safe builtin.
+_STR_DISPATCH = frozenset({"apply", "agg", "aggregate", "transform", "map", "applymap", "pivot_table"})
+_SAFE_STR_FUNCS = frozenset({
+    "sum", "mean", "median", "min", "max", "count", "nunique", "size", "std",
+    "var", "sem", "prod", "first", "last", "idxmin", "idxmax", "any", "all",
+    "cumsum", "cumprod", "cummin", "cummax", "rank", "abs", "round", "skew",
+    "kurt", "quantile", "shift", "diff", "pct_change", "unique", "mode",
+    "value_counts", "describe",
+})
+# Keywords of the dispatching methods that are not a function spec.
+_DISPATCH_NON_FUNC_KW = frozenset({
+    "axis", "raw", "result_type", "args", "by_row", "engine", "engine_kwargs",
+    "convert_dtype", "na_action",
+})
+
+
+def _is_safe_func_spec(node: ast.AST) -> bool:
+    if isinstance(node, ast.Constant):
+        return node.value is None or (isinstance(node.value, str) and node.value in _SAFE_STR_FUNCS)
+    if isinstance(node, ast.Name):
+        return node.id in _SAFE_BUILTINS
+    if isinstance(node, (ast.List, ast.Tuple)):
+        return all(_is_safe_func_spec(e) for e in node.elts)
+    if isinstance(node, ast.Dict):
+        # Keys are column labels; the values are what pandas dispatches.
+        return all(_is_safe_func_spec(v) for v in node.values)
+    return False
+
+
+def _func_specs(call: ast.Call) -> List[ast.AST]:
+    attr = call.func.attr  # type: ignore[attr-defined]
+    specs = list(call.args[3:4] if attr == "pivot_table" else call.args[:1])
+    specs += [k.value for k in call.keywords if k.arg in ("func", "arg", "aggfunc")]
+    if not specs and attr in ("agg", "aggregate"):
+        # Named aggregation: agg(out=("col", func)) -- only `func` is dispatched.
+        for kw in call.keywords:
+            if kw.arg in _DISPATCH_NON_FUNC_KW:
+                continue
+            val = kw.value
+            if isinstance(val, ast.Tuple) and len(val.elts) == 2:
+                val = val.elts[1]
+            specs.append(val)
+    return specs
 
 
 def _assert_safe_expr(expr: str) -> "ast.Expression":
@@ -148,7 +195,18 @@ def _assert_safe_expr(expr: str) -> "ast.Expression":
         tree = ast.parse(expr, mode="eval")
     except SyntaxError as exc:
         raise ValueError(f"unparsable pandas expression: {exc}")
+    called = set()
     for node in ast.walk(tree):
+        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                and node.func.attr in _STR_DISPATCH):
+            called.add(id(node.func))
+            if not all(_is_safe_func_spec(s) for s in _func_specs(node)):
+                raise ValueError(f"disallowed function argument to {node.func.attr}")
+    for node in ast.walk(tree):
+        # A dispatcher passed as a value (max(..., key=df.agg)) would get its
+        # method name from data rather than from a vetted literal.
+        if isinstance(node, ast.Attribute) and node.attr in _STR_DISPATCH and id(node) not in called:
+            raise ValueError(f"disallowed reference to {node.attr}")
         if isinstance(node, _BANNED_NODES):
             raise ValueError(f"disallowed construct: {type(node).__name__}")
         if isinstance(node, ast.Attribute) and (

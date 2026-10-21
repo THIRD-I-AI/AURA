@@ -999,8 +999,9 @@ def _build_catalog_unlocked(tenant: str, use_llm: bool) -> Dict[str, Any]:
                 logger.warning("Failed to load %s: %s", obj.name, e)
                 continue
             # The table name depends on the other files' names, so it is set here
-            # rather than trusted from the stored entry.
-            tables[table_name] = {**info, "table_name": table_name}
+            # rather than trusted from the stored entry. source_file lets a caller
+            # holding a filename find its collision-suffixed table (BUG-473).
+            tables[table_name] = {**info, "table_name": table_name, "source_file": obj.name}
             loaders[table_name] = {**loader, "table_name": table_name}
             keys[table_name] = f"{obj.name}|{obj.fingerprint}"
             d = _catalog_dir(obj.duckdb_uri)
