@@ -5,6 +5,7 @@ Database connection CRUD, testing, schema introspection, and connector proxies.
 """
 
 import asyncio
+import contextlib
 import io
 import json
 import os
@@ -543,6 +544,24 @@ class ConnectorIngestRequest(BaseModel):
     register_baseline: bool = True
 
 
+async def _paged_batches(connector: Any, query: str, batch_size: int, row_cap: int):
+    """Page ``query`` with LIMIT/OFFSET for connectors that cannot stream one statement.
+
+    BUG-469: without an ORDER BY these pages are not guaranteed a stable row order;
+    the fallback keeps memory bounded to one batch rather than reading the table at once.
+    """
+    offset = 0
+    while offset < row_cap:
+        limit = min(batch_size, row_cap - offset)
+        rows = await connector.execute_query(f"{query} LIMIT {limit} OFFSET {offset}", limit=limit)
+        if not rows:
+            return
+        yield rows
+        offset += len(rows)
+        if len(rows) < limit:
+            return
+
+
 @router.post("/connectors/{connector_type}/ingest")
 async def ingest_connector_data(connector_type: str, req: ConnectorIngestRequest, request: Request):
     """Stream a connector table through the UASR self-healing pipeline.
@@ -609,14 +628,26 @@ async def ingest_connector_data(connector_type: str, req: ConnectorIngestRequest
         uasr_headers = {}
         if request.headers.get("Authorization"):
             uasr_headers["Authorization"] = request.headers["Authorization"]
-        # BUG-469: read the table in one statement and batch it here. Separate
-        # LIMIT/OFFSET statements with no ORDER BY may each see a different row order,
-        # so the batches overlapped and skipped rows; row_cap bounds the read as before.
-        all_rows = await connector.execute_query(f'SELECT * FROM {req.table_name}', limit=row_cap)
-        truncated = req.max_rows is None and len(all_rows) >= row_cap
-        async with httpx.AsyncClient(timeout=120, headers=uasr_headers) as client:
-            while True:
-                rows = all_rows[offset:offset + req.batch_size]
+        # BUG-469: separate LIMIT/OFFSET statements with no ORDER BY may each see a
+        # different row order, so the batches overlapped and skipped rows. A connector
+        # that can stream one statement (Postgres: server-side cursor in one REPEATABLE
+        # READ transaction) is read that way. Reading the whole table in one
+        # execute_query call instead would hold up to row_cap rows in the single worker,
+        # so a connector without streaming keeps the paged read, one batch at a time.
+        query = f'SELECT * FROM {req.table_name}'
+        stream = getattr(connector, "stream_query", None)
+        batch_iter = (
+            stream(query, req.batch_size, row_cap) if stream is not None
+            else _paged_batches(connector, query, req.batch_size, row_cap)
+        )
+        # aclosing: a mid-stream failure must release the cursor's pooled connection
+        # before the finally's disconnect() closes the pool, which waits for it -- so
+        # the UASR error paths below raise without disconnecting inside this block.
+        async with (
+            contextlib.aclosing(batch_iter) as batch_stream,
+            httpx.AsyncClient(timeout=120, headers=uasr_headers) as client,
+        ):
+            async for rows in batch_stream:
                 if not rows:
                     break
 
@@ -651,12 +682,10 @@ async def ingest_connector_data(connector_type: str, req: ConnectorIngestRequest
                         },
                     )
                 except httpx.HTTPError as e:
-                    await connector.disconnect()
                     raise HTTPException(status_code=502, detail=f"UASR ingest failed: {sanitize_error(e, logger=logger, context='uasr ingest')}")
                 # BUG-229: a 4xx/5xx from UASR used to be parsed as a result and the
                 # batch counted as ingested; stop and report the real upstream status.
                 if resp.status_code >= 400:
-                    await connector.disconnect()
                     raise HTTPException(
                         status_code=502,
                         detail=f"UASR ingest returned HTTP {resp.status_code} at row offset {offset}; "
@@ -665,7 +694,6 @@ async def ingest_connector_data(connector_type: str, req: ConnectorIngestRequest
                 try:
                     result = resp.json()
                 except ValueError:
-                    await connector.disconnect()
                     raise HTTPException(status_code=502, detail="UASR ingest returned a non-JSON response")
 
                 drifted = bool(result.get("drift_detected") or (result.get("drift") or {}).get("detected"))
@@ -682,6 +710,7 @@ async def ingest_connector_data(connector_type: str, req: ConnectorIngestRequest
                     })
 
                 offset += len(rows)
+        truncated = req.max_rows is None and total_rows >= row_cap
     finally:
         await connector.disconnect()
 
