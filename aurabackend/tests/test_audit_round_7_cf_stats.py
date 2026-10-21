@@ -172,3 +172,91 @@ def test_bug_489_refuters_scale_by_the_contrast_width():
     ))
     assert refs[0].error is None, refs[0].error
     assert refs[0].estimate_after == pytest.approx(5.0, abs=0.2)
+
+
+# ── BUG-486 (part 2): the signed applied spec names the IV control set ──
+
+def _iv_query():
+    from counterfactual_service.schemas import CounterfactualQuery, DAGSpec, DatasetRef
+
+    return CounterfactualQuery(
+        question="iv controls",
+        treatment=InterventionSpec(column="t", actual=1.0, counterfactual=0.0),
+        outcome=OUTCOME,
+        # m is a mediator (t -> m -> y); w is a non-descendant parent of y.
+        dag=DAGSpec(edges=[("z", "t"), ("t", "m"), ("m", "y"), ("t", "y"), ("w", "y")]),
+        dataset=DatasetRef(source_id="bug486"),
+    )
+
+
+def _iv_mediator_df(n: int = 3000) -> pd.DataFrame:
+    rng = np.random.default_rng(4862)
+    z, w, u = rng.normal(0, 1, n), rng.normal(0, 1, n), rng.normal(0, 1, n)
+    t = ((z + u + rng.normal(0, 1, n)) > 0).astype(float)
+    m = 2.0 * t + rng.normal(0, 1, n)
+    y = t + m + 3.0 * w + u + rng.normal(0, 1, n)
+    return pd.DataFrame({"z": z, "w": w, "t": t, "m": m, "y": y})
+
+
+def test_bug_486_applied_spec_lists_iv_controls_and_excludes_mediators(monkeypatch, tmp_path):
+    from tests._mock_llm import UnifiedMockLLM, install_mock
+
+    install_mock(monkeypatch, UnifiedMockLLM(default_response='{"challenges": []}'))
+    monkeypatch.setenv("AURA_AUDIT_DIR", str(tmp_path))
+    artifact = asyncio.run(engine.run_job(_iv_query(), df=_iv_mediator_df(), methods=["iv"]))
+
+    iv = [e for e in artifact.estimates if e.method == "iv"]
+    assert iv and iv[0].error is None, iv
+    assert artifact.applied.iv_controls == ["w"]
+    assert "m" not in artifact.applied.iv_controls
+    # Signed: the controls are inside the hashed payload.
+    assert engine.strip_for_hashing(artifact)["applied"]["iv_controls"] == ["w"]
+
+
+def test_bug_486_applied_spec_without_iv_hashes_as_before():
+    from counterfactual_service.schemas import AppliedSpec, CounterfactualArtifact
+
+    df = _iv_mediator_df(n=50)
+    no_iv = [CounterfactualEstimate(method="linear_regression", point=1.0, ci_lower=0.5,
+                                    ci_upper=1.5, n_samples=50, elapsed_ms=1.0)]
+    applied = engine._applied_spec(_iv_query(), df, no_iv)
+    assert applied.iv_controls is None
+
+    art = CounterfactualArtifact(
+        record_id="ca_bug486", query=_iv_query(), confidence="medium",
+        schema_version="v1", dataset_fingerprint="f" * 16, applied=applied,
+    )
+    payload = engine.strip_for_hashing(art)
+    assert "iv_controls" not in payload["applied"]
+    # Bytes an artifact signed before the field existed (its stored applied dict has
+    # no iv_controls key) are reproduced exactly, both from the model and from storage.
+    stored = art.model_dump(mode="json")
+    stored["applied"].pop("iv_controls")
+    legacy_applied = AppliedSpec.model_fields.keys() - {"iv_controls"}
+    assert set(payload["applied"]) == set(legacy_applied)
+    assert engine.sha256_canonical(engine.strip_for_hashing(stored)) == engine.sha256_canonical(payload)
+
+
+def test_bug_486_pdf_prints_iv_controls():
+    from counterfactual_service import pdf_renderer
+
+    if not pdf_renderer.pdf_available():
+        pytest.skip("reportlab not installed")
+    captured = []
+    real_table = pdf_renderer.Table
+
+    def _spy(rows, *a, **kw):
+        captured.append(rows)
+        return real_table(rows, *a, **kw)
+
+    art = {
+        "record_id": "ca_bug486", "query": _iv_query().model_dump(mode="json"),
+        "estimates": [], "refutations": [], "challenges": [], "confidence": "medium",
+        "applied": {"estimand": "average effect per row", "rows_used": 10,
+                    "adjustment_set": [], "instruments": ["z"], "iv_controls": ["w"],
+                    "verdict_rule": "v2", "recorded_only": []},
+    }
+    import unittest.mock as um
+    with um.patch.object(pdf_renderer, "Table", _spy):
+        assert pdf_renderer.render_pdf(art)
+    assert any(row[:2] == ["IV (2SLS) controls", "w"] for rows in captured for row in rows)

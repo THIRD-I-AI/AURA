@@ -173,30 +173,38 @@ def render_pdf(artifact_dict: Dict[str, Any]) -> Optional[bytes]:
     treatment = query.get("treatment", {})
     outcome = query.get("outcome", {})
     applied = artifact_dict.get("applied") or {}
-    spec_table = Table(
-        [
-            ["Treatment column", treatment.get("column", "—"),
-             "Actual value",         f"{treatment.get('actual', '—')}",
-             "Counterfactual",       f"{treatment.get('counterfactual', '—')}"],
-            ["Outcome column",   outcome.get("column", "—"),
-             # BUG-420: this row used to print the query's aggregation and date
-             # window, neither of which is applied to the data. It now states what
-             # the engine did (the artifact's applied spec when it has one).
-             "Estimand",          applied.get("estimand", "average effect per row"),
-             "Rows",              (f"{applied['rows_used']:,} (all rows of the source)"
-                                   if applied.get("rows_used") is not None else "all rows of the source")],
-            ["Adjusted for",      ", ".join(applied.get("adjustment_set") or []) or "—",
-             "Instrument",        ", ".join(applied.get("instruments") or []) or "—",
-             "Verdict rule",      applied.get("verdict_rule", "v1")],
-        ],
-        colWidths=[35 * mm, 35 * mm, 25 * mm, 25 * mm, 25 * mm, 25 * mm],
-    )
-    spec_table.setStyle(TableStyle([
+    spec_rows = [
+        ["Treatment column", treatment.get("column", "—"),
+         "Actual value",         f"{treatment.get('actual', '—')}",
+         "Counterfactual",       f"{treatment.get('counterfactual', '—')}"],
+        ["Outcome column",   outcome.get("column", "—"),
+         # BUG-420: this row used to print the query's aggregation and date
+         # window, neither of which is applied to the data. It now states what
+         # the engine did (the artifact's applied spec when it has one).
+         "Estimand",          applied.get("estimand", "average effect per row"),
+         "Rows",              (f"{applied['rows_used']:,} (all rows of the source)"
+                               if applied.get("rows_used") is not None else "all rows of the source")],
+        ["Adjusted for",      ", ".join(applied.get("adjustment_set") or []) or "—",
+         "Instrument",        ", ".join(applied.get("instruments") or []) or "—",
+         "Verdict rule",      applied.get("verdict_rule", "v1")],
+    ]
+    spec_style = [
         ("FONT", (0, 0), (-1, -1), "Helvetica", 8),
         ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#f1f5f9")),
         ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#cbd5e1")),
         ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-    ]))
+    ]
+    if applied.get("iv_controls") is not None:
+        # BUG-486: "Adjusted for" is the DoWhy/DR set; 2SLS conditions on its own
+        # controls, so the report states them instead of implying the same set.
+        spec_rows.append(["IV (2SLS) controls", ", ".join(applied["iv_controls"]) or "none",
+                          "", "", "", ""])
+        spec_style.append(("SPAN", (1, len(spec_rows) - 1), (-1, len(spec_rows) - 1)))
+    spec_table = Table(
+        spec_rows,
+        colWidths=[35 * mm, 35 * mm, 25 * mm, 25 * mm, 25 * mm, 25 * mm],
+    )
+    spec_table.setStyle(TableStyle(spec_style))
     story.append(Spacer(1, 6))
     story.append(spec_table)
 
