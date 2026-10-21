@@ -16,6 +16,7 @@ from shared.data_utils import invalidate_schema_cache
 from shared.error_handler import sanitize_error
 from shared.logging_config import get_logger
 from shared.storage import get_storage_backend
+from shared.storage.local import _READ_EXTS
 from shared.streaming_manager import TOPIC_UPLOAD, streaming_manager
 
 from .workspaces import _request_tenant, current_workspace_id, tenant_dir_name, tenant_upload_dir
@@ -127,6 +128,13 @@ async def upload_universal(
     safe_name = _safe_upload_name(target_file.filename)
     if safe_name is None:
         raise HTTPException(status_code=400, detail="Invalid filename")
+    # BUG-477: the listing, info and delete paths only see these extensions, so any
+    # other name was stored, counted against the quota, and could never be freed.
+    if os.path.splitext(safe_name)[1].lower() not in _READ_EXTS:
+        raise HTTPException(
+            status_code=415,
+            detail="Unsupported file type; upload a .csv, .xlsx, .json or .parquet file",
+        )
 
     tenant = _request_tenant(request)
     workspace_id = current_workspace_id(request)

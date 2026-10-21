@@ -76,6 +76,18 @@ def expire_verify_uploads(
     return deleted
 
 
+# The sidecar names shared.data_utils writes for one upload: its entry, its Parquet
+# copy (legacy, or per-version with a 12-hex digest) and an in-flight temp copy.
+_SIDECAR_SUFFIX = re.compile(r"json|(?:[0-9a-f]{12}\.)?parquet|[0-9a-f]{12}\.\d+\.\d+\.parquet\.tmp")
+
+
+def _is_sidecar_of(sidecar: str, name: str) -> bool:
+    # BUG-478: a bare prefix test also matched every 'name.*' upload's sidecars, so
+    # replacing 'sales' dropped sales.csv's Parquet copies from the quota.
+    prefix = f"{name}."
+    return sidecar.startswith(prefix) and _SIDECAR_SUFFIX.fullmatch(sidecar[len(prefix):]) is not None
+
+
 def catalog_bytes(tenant_dir: Optional[Path], replacing: Optional[str] = None) -> int:
     """Disk used by the catalog's sidecars (entries and Parquet copies) for one
     tenant's local uploads; they count against the quota too. The sidecars of
@@ -85,7 +97,7 @@ def catalog_bytes(tenant_dir: Optional[Path], replacing: Optional[str] = None) -
     total = 0
     try:
         for f in (tenant_dir / ".aura_catalog").iterdir():
-            if f.is_file() and not (replacing and f.name.startswith(f"{replacing}.")):
+            if f.is_file() and not (replacing and _is_sidecar_of(f.name, replacing)):
                 total += f.stat().st_size
     except OSError:
         return total
