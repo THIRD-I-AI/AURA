@@ -1078,9 +1078,21 @@ def _run_one_estimator(
         iv_t0 = time.perf_counter()
         edges = dag.get("edges", [])
         instruments = instruments_from_dag(edges, treatment.column, outcome.column)
+        # BUG-486: a parent of the outcome that is downstream of the treatment (a
+        # mediator, or a collider on T's path) must not be a control: conditioning on
+        # it blocks part of the total effect and, with the unmeasured T-Y confounding
+        # that motivates IV, opens collider bias.
+        downstream = {treatment.column}
+        frontier = [treatment.column]
+        while frontier:
+            node = frontier.pop()
+            for src, dst in edges:
+                if src == node and dst not in downstream:
+                    downstream.add(dst)
+                    frontier.append(dst)
         confounders = [
             src for src, dst in edges
-            if dst == outcome.column and src != treatment.column
+            if dst == outcome.column and src not in downstream
             and src not in instruments
         ]
         try:
@@ -1272,6 +1284,15 @@ def _attach_sensitivity(
         # ddof=1 to match the unbiased sample-SD convention every other
         # statistical step in the engine uses (statsmodels, sklearn).
         outcome_sd = float(np.std(y_arr, ddof=1)) if len(y_arr) > 1 else 0.0
+        # BUG-488: a 0/1 outcome's effect is a risk difference; its E-value comes
+        # from the risk ratio over the counterfactual arm's risk, not from Chinn.
+        baseline_risk = None
+        if len(y_arr) and set(np.unique(y_arr[~np.isnan(y_arr)]).tolist()) <= {0.0, 1.0}:
+            arm = df[treatment.column] == treatment.counterfactual
+            # A continuous treatment may have no row exactly at the counterfactual
+            # level; the pooled risk is then the closest available baseline.
+            ref = y_arr[arm.to_numpy()] if bool(arm.any()) else y_arr
+            baseline_risk = float(np.nanmean(ref))
     except Exception as exc:
         logger.warning("Sensitivity outcome_sd capture failed: %s", exc)
         return
@@ -1289,6 +1310,7 @@ def _attach_sensitivity(
                 n_samples=int(est.n_samples),
                 n_controls=n_controls,
                 outcome_sd=outcome_sd,
+                baseline_risk=baseline_risk,
             )
             est.sensitivity = SensitivityReport(**payload)
         except Exception as exc:  # pragma: no cover
@@ -1325,6 +1347,7 @@ def _run_one_refuter(
     identified: Any,
     baseline_estimate: Any,
     seed: int = 0,
+    contrast_scale: float = 1.0,
 ) -> RefutationResult:
     t0 = time.perf_counter()
     try:
@@ -1363,7 +1386,12 @@ def _run_one_refuter(
                 p_value = float(p_raw) if p_raw is not None else None
             except Exception:
                 p_value = None
-        baseline_val = float(getattr(baseline_estimate, "value", 0.0) or 0.0)
+        # BUG-489: DoWhy's baseline and new_effect are per-unit slopes; the estimates
+        # beside them are the actual-minus-counterfactual contrast (BUG-293), so the
+        # refuter numbers are put on that same scale before they are judged or shown.
+        baseline_val = float(getattr(baseline_estimate, "value", 0.0) or 0.0) * contrast_scale
+        if new_value is not None:
+            new_value *= contrast_scale
         passed = (
             _refuter_passed(refuter_key, baseline_val, new_value)
             if new_value is not None
@@ -1463,6 +1491,7 @@ async def run_refuters(
             return await asyncio.wait_for(
                 loop.run_in_executor(
                     None, _run_one_refuter, r, model, identified, baseline, seed,
+                    float(treatment.actual) - float(treatment.counterfactual),
                 ),
                 timeout_s,
             )

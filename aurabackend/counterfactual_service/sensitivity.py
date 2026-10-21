@@ -35,7 +35,7 @@ the caller can route to ``sensitivity=None``.
 from __future__ import annotations
 
 import math
-from typing import Dict
+from typing import Dict, Optional
 
 # Chinn (2000) conversion constant. d -> log(RR) ≈ 0.91 · d.
 # Documented in VanderWeele & Ding (2017) Section 4 for continuous-
@@ -73,6 +73,7 @@ def compute_evalue(
     ci_upper: float,
     *,
     outcome_sd: float,
+    baseline_risk: Optional[float] = None,
 ) -> Dict[str, object]:
     """E-value of the point estimate AND the CI bound closer to null.
 
@@ -93,6 +94,12 @@ def compute_evalue(
     * ``rr_approx`` — the approximate RR used for the point E-value
     * ``standardised_effect_d`` — d = point / outcome_sd (signed)
     * ``null_crossed`` — 1.0 if the CI crosses 0, else 0.0
+
+    ``baseline_risk`` (BUG-488): for a 0/1 outcome the effect is a risk
+    difference, and the Chinn conversion misstates the risk ratio (1.29
+    instead of 1.125 at 0.80 vs 0.90; 1.35 instead of 3.0 at 0.05 vs 0.15).
+    With the counterfactual-arm risk p0 given, RR = (p0 + effect) / p0 is
+    used directly, as VanderWeele-Ding do for binary outcomes.
     """
     if outcome_sd <= 0.0 or not math.isfinite(outcome_sd):
         # Degenerate outcome (constant column) — no sensitivity question
@@ -105,8 +112,14 @@ def compute_evalue(
             "null_crossed": True,
         }
 
+    def _rr(effect: float) -> float:
+        if baseline_risk is not None:
+            p0 = min(max(baseline_risk, 1e-6), 1.0)
+            return min(max(p0 + effect, 1e-6), 1.0) / p0
+        return math.exp(_CHINN_LOG_RR_PER_D * abs(effect / outcome_sd))
+
     d_point = point / outcome_sd
-    rr_point = math.exp(_CHINN_LOG_RR_PER_D * abs(d_point))
+    rr_point = _rr(point)
     e_point = _evalue_from_rr(rr_point)
 
     # The CI defines a confidence interval for the SAME effect on the
@@ -119,8 +132,7 @@ def compute_evalue(
     else:
         # Pick the limit closer to 0 in absolute value.
         closer = ci_lower if abs(ci_lower) < abs(ci_upper) else ci_upper
-        d_ci = closer / outcome_sd
-        rr_ci = math.exp(_CHINN_LOG_RR_PER_D * abs(d_ci))
+        rr_ci = _rr(closer)
         e_ci = _evalue_from_rr(rr_ci)
         null_crossed = False
 
@@ -221,6 +233,7 @@ def compute_sensitivity_report(
     n_samples: int,
     n_controls: int,
     outcome_sd: float,
+    baseline_risk: Optional[float] = None,
 ) -> Dict[str, float]:
     """Flat dict shaped for ``schemas.SensitivityReport``.
 
@@ -256,6 +269,7 @@ def compute_sensitivity_report(
         ci_lower=ci_lower,
         ci_upper=ci_upper,
         outcome_sd=outcome_sd,
+        baseline_risk=baseline_risk,
     )
     rv = compute_robustness_value(point=point, se=se, dof=dof)
 
