@@ -71,8 +71,11 @@ def _money(value: Any) -> Decimal:
     Bad or non-finite inputs contribute zero rather than raising, matching how
     the surrounding checks already treat unusable rows.
     """
+    # BUG-487: strip thousands separators and "$" exactly as _number_or_none
+    # does. Without this, "1,250,000.00" parsed as 0, so a material entry
+    # vanished from the materiality basis and every AS 2305/2401 test.
     try:
-        d = Decimal(str(value if value is not None else 0))
+        d = Decimal(str(value if value is not None else 0).replace(",", "").replace("$", "").strip())
     except (InvalidOperation, ValueError, TypeError):
         return Decimal(0)
     return d if d.is_finite() else Decimal(0)

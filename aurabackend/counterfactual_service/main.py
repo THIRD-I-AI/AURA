@@ -208,7 +208,14 @@ def _read_upload(name: str, tenant: Optional[str], nrows: Optional[int] = None) 
         return None
     data = io.BytesIO(get_storage_backend().read(tenant, name))
     if read_fn == "read_csv_auto":
-        return pd.read_csv(data, nrows=nrows)
+        df = pd.read_csv(data, nrows=nrows)
+        # BUG-482: pandas keeps the space in "id, loan_amount"; DuckDB's
+        # read_csv_auto (the chat pipeline) and the wizard's preview both trim it,
+        # so the mapped names were rejected as "columns not in file".
+        stripped = [c.strip() if isinstance(c, str) else c for c in df.columns]
+        if len(set(stripped)) == len(stripped):  # "a, a" would collapse into one label
+            df.columns = stripped
+        return df
     if read_fn == "read_parquet":
         return pd.read_parquet(data)
     if read_fn == "read_json_auto":
@@ -458,13 +465,18 @@ class AuditRequest(BaseModel):
 
 
 # ``uploaded_file`` is user-controlled. A name like "../../etc/passwd" must never
-# escape the uploads dir — reject anything but a bare safe filename, and re-verify
-# the resolved realpath is inside the allow-listed base.
-_SAFE_UPLOAD_NAME = re.compile(r"^[A-Za-z0-9._-]+$")
-
-
+# escape the uploads dir. BUG-481: this used to be an [A-Za-z0-9._-] allow-list,
+# stricter than the gateway upload (files.py::_safe_upload_name), which stores and
+# returns names like "Loan Data 2024.csv" unchanged -- so those files uploaded but
+# could never be audited. Apply the storage layer's own rule, the one that wrote it.
 def _safe_upload_name(name: str) -> bool:
-    return bool(name) and name not in (".", "..") and bool(_SAFE_UPLOAD_NAME.match(name))
+    from shared.storage.base import safe_object_name
+
+    try:
+        safe_object_name(name)
+    except ValueError:
+        return False
+    return True
 
 
 def _csv_header_columns(name: str, tenant: Optional[str]) -> Optional[list]:
@@ -600,7 +612,21 @@ def _artifact_for_caller(art: Optional[Dict[str, Any]], record_hash: str, user: 
     caller = _ledger_tenant(user if isinstance(user, dict) else None)
     if owner and str(owner) != caller:
         raise HTTPException(404, f"artifact {record_hash} not found")
-    return art
+    return _with_verdict(art)
+
+
+def _with_verdict(art: Dict[str, Any]) -> Dict[str, Any]:
+    """BUG-480: run_job persists the artifact before any caller renders it, so a
+    replayed artifact had ``rendered == {}`` and the web certificate fell back to
+    its own copy of the legacy v1 rule -- contradicting the signed PDF, which
+    applies the rule the artifact was sealed under. Replay now carries that same
+    verdict. ``rendered`` is outside the signed bytes, so nothing re-signs."""
+    if "estimates" not in art or (art.get("rendered") or {}).get("verdict"):
+        return art
+    from .verdict import rule_for, significance_verdict
+
+    verdict = significance_verdict(art.get("estimates") or [], rule_for(art))
+    return {**art, "rendered": {**(art.get("rendered") or {}), "verdict": verdict}}
 
 
 @app.get("/counterfactual/artifacts/{record_hash}")

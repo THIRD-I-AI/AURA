@@ -213,6 +213,10 @@ class AppliedSpec(BaseModel):
     rows_used: int
     adjustment_set: List[str] = Field(default_factory=list)
     instruments: List[str] = Field(default_factory=list)
+    # BUG-486: the controls the IV (2SLS) estimator conditioned on (non-descendant
+    # parents of the outcome), which differ from adjustment_set. None when IV did not
+    # run; strip_for_hashing then omits it so older signed bytes are unchanged.
+    iv_controls: Optional[List[str]] = None
     # Which materiality rule produced the verdict; an artifact is always re-rendered
     # with the rule it was sealed under.
     verdict_rule: str

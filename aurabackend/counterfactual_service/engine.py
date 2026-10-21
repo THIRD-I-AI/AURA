@@ -779,6 +779,30 @@ def _seed_for(request_hash: str, name: str) -> int:
 _ENGINE_RNG_LOCK = threading.RLock()
 
 
+def _iv_controls(edges, treatment: str, outcome: str, instruments) -> List[str]:
+    """The controls the IV (2SLS) estimator conditions on: parents of the outcome
+    that are neither instruments nor descendants of the treatment.
+
+    BUG-486: a parent of the outcome that is downstream of the treatment (a
+    mediator, or a collider on T's path) must not be a control: conditioning on
+    it blocks part of the total effect and, with the unmeasured T-Y confounding
+    that motivates IV, opens collider bias. Shared with _applied_spec so the signed
+    artifact names exactly the set the estimator used.
+    """
+    downstream = {treatment}
+    frontier = [treatment]
+    while frontier:
+        node = frontier.pop()
+        for src, dst in edges:
+            if src == node and dst not in downstream:
+                downstream.add(dst)
+                frontier.append(dst)
+    return sorted({
+        src for src, dst in edges
+        if dst == outcome and src not in downstream and src not in instruments
+    })
+
+
 def _adjustment_set(dag: Dict[str, Any], treatment: str, outcome: str, columns) -> List[str]:
     """Backdoor controls for the adjustment-based estimators.
 
@@ -1078,18 +1102,14 @@ def _run_one_estimator(
         iv_t0 = time.perf_counter()
         edges = dag.get("edges", [])
         instruments = instruments_from_dag(edges, treatment.column, outcome.column)
-        confounders = [
-            src for src, dst in edges
-            if dst == outcome.column and src != treatment.column
-            and src not in instruments
-        ]
+        confounders = _iv_controls(edges, treatment.column, outcome.column, instruments)
         try:
             if not instruments:
                 raise ValueError("no instrument in DAG (need a node -> treatment, not -> outcome)")
             from .iv_estimator import WEAK_INSTRUMENT_F
 
             point, lo, hi = run_iv_2sls(
-                df, treatment.column, outcome.column, instruments, sorted(set(confounders)),
+                df, treatment.column, outcome.column, instruments, confounders,
                 min_first_stage_f=WEAK_INSTRUMENT_F,
             )
             point, lo, hi = _per_unit_to_contrast(point, lo, hi, treatment)
@@ -1272,6 +1292,15 @@ def _attach_sensitivity(
         # ddof=1 to match the unbiased sample-SD convention every other
         # statistical step in the engine uses (statsmodels, sklearn).
         outcome_sd = float(np.std(y_arr, ddof=1)) if len(y_arr) > 1 else 0.0
+        # BUG-488: a 0/1 outcome's effect is a risk difference; its E-value comes
+        # from the risk ratio over the counterfactual arm's risk, not from Chinn.
+        baseline_risk = None
+        if len(y_arr) and set(np.unique(y_arr[~np.isnan(y_arr)]).tolist()) <= {0.0, 1.0}:
+            arm = df[treatment.column] == treatment.counterfactual
+            # A continuous treatment may have no row exactly at the counterfactual
+            # level; the pooled risk is then the closest available baseline.
+            ref = y_arr[arm.to_numpy()] if bool(arm.any()) else y_arr
+            baseline_risk = float(np.nanmean(ref))
     except Exception as exc:
         logger.warning("Sensitivity outcome_sd capture failed: %s", exc)
         return
@@ -1289,6 +1318,7 @@ def _attach_sensitivity(
                 n_samples=int(est.n_samples),
                 n_controls=n_controls,
                 outcome_sd=outcome_sd,
+                baseline_risk=baseline_risk,
             )
             est.sensitivity = SensitivityReport(**payload)
         except Exception as exc:  # pragma: no cover
@@ -1325,6 +1355,7 @@ def _run_one_refuter(
     identified: Any,
     baseline_estimate: Any,
     seed: int = 0,
+    contrast_scale: float = 1.0,
 ) -> RefutationResult:
     t0 = time.perf_counter()
     try:
@@ -1363,7 +1394,12 @@ def _run_one_refuter(
                 p_value = float(p_raw) if p_raw is not None else None
             except Exception:
                 p_value = None
-        baseline_val = float(getattr(baseline_estimate, "value", 0.0) or 0.0)
+        # BUG-489: DoWhy's baseline and new_effect are per-unit slopes; the estimates
+        # beside them are the actual-minus-counterfactual contrast (BUG-293), so the
+        # refuter numbers are put on that same scale before they are judged or shown.
+        baseline_val = float(getattr(baseline_estimate, "value", 0.0) or 0.0) * contrast_scale
+        if new_value is not None:
+            new_value *= contrast_scale
         passed = (
             _refuter_passed(refuter_key, baseline_val, new_value)
             if new_value is not None
@@ -1463,6 +1499,7 @@ async def run_refuters(
             return await asyncio.wait_for(
                 loop.run_in_executor(
                     None, _run_one_refuter, r, model, identified, baseline, seed,
+                    float(treatment.actual) - float(treatment.counterfactual),
                 ),
                 timeout_s,
             )
@@ -1841,6 +1878,10 @@ def _without_absent_applied(payload: Dict[str, Any]) -> Dict[str, Any]:
     """
     if payload.get("applied") is None:
         payload.pop("applied", None)
+    elif payload["applied"].get("iv_controls") is None:
+        # BUG-486: iv_controls was added after artifacts were already signed, and it
+        # is None whenever IV did not run; leaving it out keeps those bytes unchanged.
+        payload["applied"].pop("iv_controls", None)
     return payload
 
 
@@ -1868,18 +1909,27 @@ def _request_hash(query: CounterfactualQuery, dataset_fingerprint: str,
 _SEVERITY_RANK = {"high": 0, "medium": 1, "low": 2}
 
 
-def _applied_spec(query: CounterfactualQuery, df: pd.DataFrame) -> AppliedSpec:
+def _applied_spec(query: CounterfactualQuery, df: pd.DataFrame,
+                  estimates: Optional[List[CounterfactualEstimate]] = None) -> AppliedSpec:
     """Record what this run did with the query, for the report and the signature."""
     from .iv_estimator import instruments_from_dag
     from .verdict import CURRENT_RULE
 
     dag = {"edges": [list(e) for e in query.dag.edges]}
     treatment, outcome = query.treatment.column, query.outcome.column
+    instruments = instruments_from_dag(dag["edges"], treatment, outcome)
+    # BUG-486: adjustment_set (parents of the treatment) is what the DoWhy/DR
+    # estimators adjust for; 2SLS conditions on a different set. Record that set
+    # only when an IV estimate was produced, so an artifact without IV keeps
+    # iv_controls=None and its signed bytes stay what they were.
+    iv_ran = any(e.method == "iv" and e.error is None for e in (estimates or []))
     return AppliedSpec(
         estimand="average effect per row",
         rows_used=int(len(df)),
         adjustment_set=_adjustment_set(dag, treatment, outcome, df.columns),
-        instruments=[i for i in instruments_from_dag(dag["edges"], treatment, outcome) if i in df.columns],
+        instruments=[i for i in instruments if i in df.columns],
+        iv_controls=(_iv_controls(dag["edges"], treatment, outcome, instruments)
+                     if iv_ran else None),
         verdict_rule=CURRENT_RULE,
         # Stored with the query, not applied to the data (BUG-420).
         recorded_only=["outcome.agg", "outcome.window"],
@@ -1990,7 +2040,7 @@ async def run_job(
         dataset_fingerprint=fingerprint,
         regenerated_critic=regenerated,
         warnings=critic_warnings,
-        applied=_applied_spec(query, df),
+        applied=_applied_spec(query, df, estimates),
     )
 
     # Compute artifact_hash over the artifact MINUS audit/render/signature
@@ -2022,7 +2072,16 @@ async def run_job(
     # replay returns byte-identical content.
     try:
         full_persistable = artifact.model_dump(mode="json")
-        persistence.write_artifact(artifact_hash, full_persistable)
+        # BUG-485: the hash excludes the signature fields, so an unsigned
+        # re-seal of identical content (replay after key revocation, a
+        # transient sign failure) lands on the same file. Overwriting would
+        # turn a certificate already handed out into "NOT verified"; the
+        # existing signature still covers these exact bytes, so keep it.
+        existing = None if sig_b64 is not None else persistence.read_artifact(artifact_hash)
+        if (existing or {}).get("signature_status") == "signed":
+            logger.info("Keeping signed artifact %s over unsigned re-seal", artifact_hash[:12])
+        else:
+            persistence.write_artifact(artifact_hash, full_persistable)
         if sig_b64 is not None:
             persistence.write_signature(artifact_hash, sig_b64)
     except Exception as exc:  # pragma: no cover

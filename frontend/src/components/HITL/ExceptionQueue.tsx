@@ -96,11 +96,21 @@ export function ExceptionQueue() {
     setVerified(v.verified);
   }, []);
 
+  // BUG-483: refreshQueue only writes on success, so a failed lookup or run left
+  // the previous record's findings, '✓ signature verified' and live decision
+  // buttons (which sign against queue.record_hash) under the new attempt's error.
+  const clearRecord = useCallback(() => {
+    setQueue(null);
+    setVerified(null);
+    setReport(null);
+    setSelected(null);
+    setLastDecisionHash(null);
+  }, []);
+
   const runSampleAudit = useCallback(async () => {
     setBusy(true);
     setError(null);
-    setSelected(null);
-    setLastDecisionHash(null);
+    clearRecord();
     try {
       await financialAuditService.ensureAuditorToken();
       const r = await financialAuditService.runAudit(SAMPLE_AUDIT_BATCH);
@@ -111,7 +121,7 @@ export function ExceptionQueue() {
     } finally {
       setBusy(false);
     }
-  }, [refreshQueue]);
+  }, [clearRecord, refreshQueue]);
 
   // Pre-validate client-side so an obviously malformed hash never reaches the
   // network — getExceptions/verify throw on this same 64-hex-char check, and
@@ -126,9 +136,7 @@ export function ExceptionQueue() {
     setHashError(null);
     setError(null);
     setBusy(true);
-    setSelected(null);
-    setLastDecisionHash(null);
-    setReport(null); // a hash lookup only yields the queue view, not a full report
+    clearRecord(); // a hash lookup only yields the queue view, not a full report
     try {
       await financialAuditService.ensureAuditorToken();
       await refreshQueue(candidate);
@@ -137,7 +145,7 @@ export function ExceptionQueue() {
     } finally {
       setBusy(false);
     }
-  }, [hashInput, refreshQueue]);
+  }, [hashInput, clearRecord, refreshQueue]);
 
   const loadLedgerFile = useCallback((spec: LedgerDatasetSpec, file: File) => {
     const reader = new FileReader();
@@ -207,8 +215,7 @@ export function ExceptionQueue() {
     setLedgerError(null);
     setError(null);
     setBusy(true);
-    setSelected(null);
-    setLastDecisionHash(null);
+    clearRecord();
     try {
       await financialAuditService.ensureAuditorToken();
       // tenant_id is required on the wire, but the backend always overrides
@@ -231,7 +238,7 @@ export function ExceptionQueue() {
     } finally {
       setBusy(false);
     }
-  }, [ledgerText, ledgerFiles, usableFileKeys, brokenFiles, periodEnd, subjectId, preparerId, refreshQueue]);
+  }, [ledgerText, ledgerFiles, usableFileKeys, brokenFiles, periodEnd, subjectId, preparerId, clearRecord, refreshQueue]);
 
   const submitDecision = useCallback(async (approved: boolean) => {
     if (!queue || !selected || !rationale.trim()) return;
