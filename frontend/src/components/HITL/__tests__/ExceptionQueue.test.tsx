@@ -283,4 +283,43 @@ describe('ExceptionQueue (HITL workbench)', () => {
     expect(await screen.findByText(/invalid json/i)).toBeInTheDocument();
     expect(svc.runAudit).not.toHaveBeenCalled();
   });
+
+  // BUG-483: a failed lookup or run left the previous record's findings, its
+  // '✓ signature verified' and live decision buttons on screen.
+  describe('BUG-483: a failed load does not leave the previous record on screen', () => {
+    const loadHash = async (hash: string) => {
+      const input = screen.getByLabelText(/record hash/i);
+      await userEvent.clear(input);
+      await userEvent.type(input, hash);
+      await userEvent.click(screen.getByRole('button', { name: /load audit/i }));
+    };
+
+    it('clears record A when the lookup of record B fails', async () => {
+      render(<ExceptionQueue />);
+      await loadHash(REPORT.record_hash);
+      await waitFor(() => expect(screen.getByText(/AS 2201/)).toBeInTheDocument());
+      expect(screen.getByText(/signature verified/i)).toBeInTheDocument();
+
+      svc.getExceptions.mockRejectedValue(new Error('HTTP 404: audit not found'));
+      await loadHash('d'.repeat(64));
+      await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent(/404/));
+      expect(screen.queryByText(/AS 2201/)).not.toBeInTheDocument();
+      expect(screen.queryByText(/signature verified/i)).not.toBeInTheDocument();
+      expect(screen.queryByText(/aaaaaaaaaaaa…/)).not.toBeInTheDocument();
+    });
+
+    it('clears record A when a new run succeeds but its queue refresh fails', async () => {
+      render(<ExceptionQueue />);
+      await userEvent.click(screen.getByRole('button', { name: /run demo scenario/i }));
+      await waitFor(() => expect(screen.getByText(/AS 2201/)).toBeInTheDocument());
+
+      svc.runAudit.mockResolvedValue({ ...REPORT, record_hash: 'e'.repeat(64), signature_status: 'unsigned' });
+      svc.verify.mockRejectedValue(new Error('HTTP 503: verify unavailable'));
+      await userEvent.click(screen.getByRole('button', { name: /run demo scenario/i }));
+      await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent(/503/));
+      expect(screen.queryByText(/AS 2201/)).not.toBeInTheDocument();
+      expect(screen.queryByText(/signature verified/i)).not.toBeInTheDocument();
+      expect(screen.queryByText(/aaaaaaaaaaaa…/)).not.toBeInTheDocument();
+    });
+  });
 });

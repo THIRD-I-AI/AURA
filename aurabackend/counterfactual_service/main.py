@@ -208,7 +208,12 @@ def _read_upload(name: str, tenant: Optional[str], nrows: Optional[int] = None) 
         return None
     data = io.BytesIO(get_storage_backend().read(tenant, name))
     if read_fn == "read_csv_auto":
-        return pd.read_csv(data, nrows=nrows)
+        df = pd.read_csv(data, nrows=nrows)
+        # BUG-482: pandas keeps the space in "id, loan_amount"; DuckDB's
+        # read_csv_auto (the chat pipeline) and the wizard's preview both trim it,
+        # so the mapped names were rejected as "columns not in file".
+        df.columns = [c.strip() if isinstance(c, str) else c for c in df.columns]
+        return df
     if read_fn == "read_parquet":
         return pd.read_parquet(data)
     if read_fn == "read_json_auto":
@@ -458,13 +463,18 @@ class AuditRequest(BaseModel):
 
 
 # ``uploaded_file`` is user-controlled. A name like "../../etc/passwd" must never
-# escape the uploads dir — reject anything but a bare safe filename, and re-verify
-# the resolved realpath is inside the allow-listed base.
-_SAFE_UPLOAD_NAME = re.compile(r"^[A-Za-z0-9._-]+$")
-
-
+# escape the uploads dir. BUG-481: this used to be an [A-Za-z0-9._-] allow-list,
+# stricter than the gateway upload (files.py::_safe_upload_name), which stores and
+# returns names like "Loan Data 2024.csv" unchanged -- so those files uploaded but
+# could never be audited. Apply the storage layer's own rule, the one that wrote it.
 def _safe_upload_name(name: str) -> bool:
-    return bool(name) and name not in (".", "..") and bool(_SAFE_UPLOAD_NAME.match(name))
+    from shared.storage.base import safe_object_name
+
+    try:
+        safe_object_name(name)
+    except ValueError:
+        return False
+    return True
 
 
 def _csv_header_columns(name: str, tenant: Optional[str]) -> Optional[list]:

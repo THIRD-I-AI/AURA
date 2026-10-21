@@ -1885,6 +1885,13 @@ const _hex64 = (v: string, what: string): string => {
   return ok;
 };
 
+// BUG-484: the client cannot ask which auth mode the server runs, so the first
+// refusal of the open-mode mint is remembered and re-thrown instead of re-sent.
+// Every retry in password mode was a certain 422 that still used up one of the
+// 10-per-minute auth:<ip> sign-in slots, until real logins from that IP got 429.
+let auditorMintRefusal: ApiRequestError | null = null;
+const PERMANENT_MINT_REFUSALS = new Set([400, 403, 422]);
+
 export const financialAuditService = {
   /** Mint an open-mode dev/demo token with the auditor role and install it
    *  as the bearer for subsequent calls. In password mode use the real
@@ -1900,6 +1907,10 @@ export const financialAuditService = {
     // Minting an auditor token only works in open auth mode. BUG-387: in password
     // mode (production) /auth/token refuses this body, and throwing here aborted every
     // audit action for a signed-in user -- whose own token those routes accept.
+    if (auditorMintRefusal) {
+      if (getAuthToken()) return;
+      throw auditorMintRefusal;
+    }
     let resp: { access_token: string };
     try {
       resp = await client.post<{ access_token: string }>('/auth/token', {
@@ -1907,6 +1918,9 @@ export const financialAuditService = {
         role: 'auditor',
       });
     } catch (err) {
+      if (err instanceof ApiRequestError && PERMANENT_MINT_REFUSALS.has(err.status)) {
+        auditorMintRefusal = err;
+      }
       if (getAuthToken()) return; // keep the user's own session
       throw err;
     }
