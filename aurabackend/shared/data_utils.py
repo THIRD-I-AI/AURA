@@ -858,16 +858,27 @@ def _parquet_loader(conn: Any, obj: Any, table_name: str) -> Optional[Dict[str, 
     stem = _copy_stem(obj)
     target = d / f"{stem}.parquet"
     tmp = d / f"{stem}.{os.getpid()}.{threading.get_ident()}.parquet.tmp"
+    threads = conn.execute("SELECT current_setting('threads')").fetchone()[0]
     try:
         d.mkdir(parents=True, exist_ok=True)
+        # BUG-490: each writer thread buffers its own row group, so under the
+        # BUG-468 per-connection memory cap a large upload's copy ran out of memory
+        # on a many-core machine (a 937 MB CSV failed at 16 threads, fits at 1-2).
+        # One thread also keeps the copy in the upload's row order.
+        conn.execute("SET threads=1")
         conn.execute(
             f"COPY {quote_identifier(table_name)} TO {quote_literal(tmp.as_posix())} "
             "(FORMAT PARQUET, COMPRESSION ZSTD)"
         )
         os.replace(tmp, target)
     except Exception as exc:
-        logger.debug("parquet copy skipped for %s: %s", obj.name, exc)
+        # A failed copy left its partial .tmp behind, uncounted by anything that
+        # would remove it and charged to the tenant's storage limit.
+        tmp.unlink(missing_ok=True)
+        logger.warning("parquet copy skipped for %s: %s", obj.name, exc)
         return None
+    finally:
+        conn.execute(f"SET threads={int(threads)}")
     return {"table_name": table_name, "duckdb_uri": target.as_posix(), "read_fn": "read_parquet", "renames": []}
 
 
