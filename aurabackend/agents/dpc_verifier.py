@@ -10,6 +10,8 @@ import asyncio
 import datetime
 import math
 import os
+import sys
+import time
 from typing import Any, List, Literal, Optional, Tuple
 
 import numpy as np
@@ -133,6 +135,18 @@ _ALLOWED_NAMES = frozenset({"df", *_SAFE_BUILTINS})
 _BAD_ATTR_PREFIXES = ("_", "to_", "read_")
 # plot/hist/boxplot take backend="<module>" and import it (BUG-472 review).
 _BAD_ATTRS = frozenset({"eval", "query", "pipe", "plot", "hist", "boxplot", "style"})
+# BUG-479: methods whose output size is set by an argument rather than by the data
+# (df["a"].repeat(10**9) or sample(n=..., replace=True) from a 2-row frame) or that
+# multiply row counts (cross merge, explode). A value cross-check never needs them.
+_AMPLIFYING_ATTRS = frozenset({
+    "repeat", "sample", "merge", "join", "explode", "reindex", "reindex_like",
+    "resize", "tile", "outer", "kron", "broadcast_to", "combine", "expanding",
+})
+# BUG-479: the largest literal a sequence or string may be multiplied by, and the
+# largest constant exponent ("x" * 600000000 and 10**300000000 pass the name and
+# attribute checks; the big int is computed holding the GIL, so no timeout fires).
+_MAX_LITERAL_FACTOR = 10_000
+_MAX_EXPONENT = 64
 _BANNED_NODES = (ast.Lambda, ast.ListComp, ast.SetComp, ast.DictComp,
                  ast.GeneratorExp, ast.Await, ast.Yield, ast.YieldFrom,
                  ast.NamedExpr, ast.Starred)
@@ -271,7 +285,46 @@ def _assert_safe_expr(expr: str) -> "ast.Expression":
             raise ValueError(f"disallowed attribute: {node.attr}")
         if isinstance(node, ast.Name) and node.id not in _ALLOWED_NAMES:
             raise ValueError(f"disallowed name: {node.id}")
+        if isinstance(node, ast.Attribute) and node.attr in _AMPLIFYING_ATTRS:
+            raise ValueError(f"disallowed size-amplifying method: {node.attr}")
+        if isinstance(node, ast.BinOp):
+            _assert_bounded_binop(node)
     return tree
+
+
+def _constant_value(node: ast.AST) -> Optional[Any]:
+    """The value of a subtree built only from numeric literals, else None."""
+    if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)):
+        return node.value
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.USub, ast.UAdd)):
+        v = _constant_value(node.operand)
+        return None if v is None else (-v if isinstance(node.op, ast.USub) else v)
+    if isinstance(node, ast.BinOp) and isinstance(node.op, (ast.Add, ast.Sub, ast.Mult, ast.Pow)):
+        left, right = _constant_value(node.left), _constant_value(node.right)
+        if left is None or right is None:
+            return None
+        if isinstance(node.op, ast.Pow):
+            return left ** right  # exponent already bounded by _assert_bounded_binop
+        return {ast.Add: left + right, ast.Sub: left - right, ast.Mult: left * right}[type(node.op)]
+    return None
+
+
+def _assert_bounded_binop(node: ast.BinOp) -> None:
+    """BUG-479: refuse arithmetic whose result size is set by a literal."""
+    if isinstance(node.op, (ast.LShift, ast.RShift)):
+        raise ValueError("disallowed operator: shift")
+    if isinstance(node.op, ast.Pow):
+        exponent = _constant_value(node.right)
+        if exponent is None or abs(exponent) > _MAX_EXPONENT:
+            raise ValueError("exponent must be a literal no larger than 64")
+        if any(isinstance(n, ast.BinOp) and isinstance(n.op, ast.Pow) for n in ast.walk(node.left)):
+            raise ValueError("nested powers are not allowed")
+    if isinstance(node.op, ast.Mult):
+        for side in (node.left, node.right):
+            v = _constant_value(side)
+            # A float factor cannot repeat a string or list; an int one can.
+            if isinstance(v, int) and abs(v) > _MAX_LITERAL_FACTOR and not isinstance(v, bool):
+                raise ValueError(f"integer factor larger than {_MAX_LITERAL_FACTOR}")
 
 
 def _run_with_timeout(fn, timeout_s: float):
@@ -320,7 +373,78 @@ def safe_eval_pandas(expr: str, df: pd.DataFrame, timeout_s: float = 5.0) -> Any
         # only `df` is in scope. ast.literal_eval can't run pandas method chains.
         return eval(code, safe_globals, {"df": df})  # nosec B307
 
+    if _CAN_FORK:
+        return _run_in_capped_child(_do, timeout_s)
     return _run_with_timeout(_do, timeout_s)
+
+
+# BUG-479: a thread cannot be killed, so a blowup the static check misses (one sized
+# by the data, e.g. df["g"] * df["a"].max()) kept allocating after the timeout and
+# could take the single gateway worker down. Where fork exists (the Linux deploy),
+# the expression runs in a child process with an address-space cap, and a child
+# that overruns is killed. Elsewhere (Windows dev) the thread runner remains.
+_CAN_FORK = hasattr(os, "fork") and sys.platform.startswith("linux")
+_CHILD_EXTRA_BYTES = 512 * 1024 * 1024
+
+
+def _vm_size_bytes() -> int:
+    with open("/proc/self/statm") as fh:
+        return int(fh.read().split()[0]) * os.sysconf("SC_PAGE_SIZE")
+
+
+def _run_in_capped_child(fn, timeout_s: float):
+    import pickle
+    import resource
+    import select
+    import signal
+
+    read_fd, write_fd = os.pipe()
+    cap = _vm_size_bytes() + _CHILD_EXTRA_BYTES
+    pid = os.fork()
+    if pid == 0:  # child: compute, send one pickled reply, exit without cleanup
+        status = 0
+        try:
+            os.close(read_fd)
+            resource.setrlimit(resource.RLIMIT_AS, (cap, cap))
+            try:
+                payload = pickle.dumps(("ok", fn()))
+            except MemoryError:
+                payload = pickle.dumps(("err", MemoryError("pandas eval exceeded its memory cap")))
+            except Exception as exc:
+                try:
+                    payload = pickle.dumps(("err", exc))
+                except Exception:
+                    payload = pickle.dumps(("err", RuntimeError(f"{type(exc).__name__}: {exc}")))
+            view = memoryview(payload)
+            while view:
+                view = view[os.write(write_fd, view):]
+        except BaseException:
+            status = 1
+        finally:
+            os._exit(status)
+
+    os.close(write_fd)
+    chunks: List[bytes] = []
+    deadline = time.monotonic() + timeout_s
+    try:
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0 or not select.select([read_fd], [], [], remaining)[0]:
+                os.kill(pid, signal.SIGKILL)
+                raise TimeoutError(f"pandas eval exceeded {timeout_s:g}s")
+            chunk = os.read(read_fd, 1 << 20)
+            if not chunk:
+                break
+            chunks.append(chunk)
+    finally:
+        os.close(read_fd)
+        os.waitpid(pid, 0)
+    if not chunks:
+        raise RuntimeError("pandas eval process exited without a result")
+    kind, value = pickle.loads(b"".join(chunks))  # nosec B301 -- written by our own child
+    if kind == "err":
+        raise value
+    return value
 
 
 def extract_columns_rows(res: Any) -> Tuple[List[str], Optional[List[List[Any]]]]:

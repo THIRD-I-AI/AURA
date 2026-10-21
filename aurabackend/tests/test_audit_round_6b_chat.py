@@ -141,3 +141,57 @@ async def test_failure_path_probe_runs_off_the_event_loop():
     assert "No LLM provider available" in (result.error or "")
     assert agent._llm.probe_threads
     assert all(t is not loop_thread for t in agent._llm.probe_threads)
+
+
+# ── BUG-479: expressions sized by a literal or by the data must not exhaust memory ──
+
+@pytest.mark.parametrize("expr", [
+    'df["a"].repeat(80000000)',
+    'df.sample(n=120000000, replace=True)',
+    'df["g"] * 600000000',
+    '10**300000000',
+    'df["a"].values.repeat(10**9)',
+    'df.index.repeat(10**9)',
+    'df["g"].str.repeat(10**9)',
+    'df.merge(df, how="cross")',
+    'df["g"] * 10**9',
+    '(10**64)**64',
+    '1 << 10**9',
+    '[1] * 100000000',
+    'df["a"].explode()',
+])
+def test_size_amplifying_expressions_are_refused(expr):
+    with pytest.raises(ValueError):
+        safe_eval_pandas(expr, pd.DataFrame({"a": [1, 2], "g": ["x", "y"]}))
+
+
+@pytest.mark.parametrize("expr, expected", [
+    ('df["a"].sum() * 100', 300),
+    ('(df["a"] ** 2).sum()', 5),
+    ('2**10', 1024),
+])
+def test_ordinary_arithmetic_still_evaluates(expr, expected):
+    assert safe_eval_pandas(expr, pd.DataFrame({"a": [1, 2]})) == expected
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="the capped child process is Linux-only")
+def test_a_data_sized_blowup_is_stopped_and_the_caller_survives():
+    import time
+
+    from agents import dpc_verifier
+
+    df = pd.DataFrame({"g": ["x"], "a": [4_000_000_000]})  # the factor comes from the data
+    started = time.monotonic()
+    with pytest.raises((MemoryError, TimeoutError)):
+        dpc_verifier.safe_eval_pandas('df["g"] * df["a"].max()', df, timeout_s=10)
+    assert time.monotonic() - started < 15
+    # The parent process is intact and evaluates the next expression normally.
+    assert dpc_verifier.safe_eval_pandas('df["a"].max()', df) == 4_000_000_000
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="the capped child process is Linux-only")
+def test_a_child_that_overruns_is_killed():
+    from agents import dpc_verifier
+
+    with pytest.raises(TimeoutError):
+        dpc_verifier._run_in_capped_child(lambda: [0 for _ in iter(int, 1)], 0.5)
