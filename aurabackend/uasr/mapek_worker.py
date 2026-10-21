@@ -69,7 +69,7 @@ from .numeric_semantics import (
     numeric_columns_from_rows,
 )
 from .recovery_loop import RecoveryLoop
-from .recovery_persistence import mark_shim_rolled_back, persist_recovery_row
+from .recovery_persistence import load_deployed_shims, mark_shim_rolled_back, persist_recovery_row
 
 logger = logging.getLogger("uasr.mapek_worker")
 
@@ -235,8 +235,10 @@ class MAPEKWorker:
         metrics: Optional[HealingMetricTracker] = None,
         progress_cb: Optional[ProgressCb] = None,
         repair_scheduler: Optional[Any] = None,
+        shared_shim_registry: bool = False,
     ) -> None:
         self._cfg = config
+        self._shared_shim_registry = shared_shim_registry
         self._detector = detector or DriftDetector()
         self._loop = recovery_loop or RecoveryLoop(self._detector)
         self._metrics = metrics or HealingMetricTracker()
@@ -472,6 +474,14 @@ class MAPEKWorker:
                 batch = await self._monitor_pull_batch()
                 if batch is None or not batch.rows:
                     continue
+
+                if self._shared_shim_registry:
+                    # BUG-467: a peer replica may have approved or rolled back a shim.
+                    try:
+                        self._loop.set_deployed_shims(
+                            batch.source_id, await load_deployed_shims(batch.source_id))
+                    except Exception as exc:
+                        logger.error("could not re-read deployed shims for %s: %s", batch.source_id, exc)
 
                 # Apply already-deployed shims so resolved drift doesn't re-fire.
                 # S18.1c: when ShimRouter is active, use its weighted

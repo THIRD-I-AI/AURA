@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -176,3 +176,23 @@ async def mark_shim_rolled_back(source_id: str, shim_code: Optional[str]) -> Opt
         rec.status = RecoveryStatus.ROLLED_BACK.value
         await db.commit()
         return rec.id
+
+
+async def load_deployed_shims(source_id: str) -> List[str]:
+    """The source's DEPLOYED shim codes in deploy-record order, as startup hydrates them.
+
+    BUG-467: with several UASR replicas the DB is the only registry they share, so a
+    replica re-reads this before applying or rolling back a source's shims.
+    """
+    async with get_session_factory()() as db:
+        rows = (await db.execute(
+            select(RecoveryRecord.shim_code)
+            .join(DriftEvent, RecoveryRecord.drift_event_id == DriftEvent.id)
+            .where(
+                DriftEvent.source_id == source_id,
+                RecoveryRecord.status == RecoveryStatus.DEPLOYED.value,
+                RecoveryRecord.shim_code.isnot(None),
+            )
+            .order_by(RecoveryRecord.created_at.asc())
+        )).scalars().all()
+    return [code for code in rows if code]

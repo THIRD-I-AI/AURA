@@ -83,6 +83,30 @@ async def _file_metadata_refresh_loop(stop_event: asyncio.Event) -> None:
             pass
 
 
+# BUG-465: the uasr:metrics event is untenanted, so every subscriber sees it. Only
+# deployment-wide aggregates go out; per_source names every tenant's sources and
+# their drift statistics.
+_UASR_PUBLIC_METRIC_KEYS = (
+    "hu_score", "total_sources", "total_events", "resolved_events",
+    "global_resolution_rate", "global_avg_latency", "computed_at", "trend",
+)
+
+
+def _uasr_service_headers() -> dict:
+    """A short-lived bearer token for the gateway's own calls to UASR.
+
+    BUG-465: the metrics poller and the /system/health probe sent no credentials, so
+    with AURA_JWT_ENABLED (prod) UASR answered 401 and Hu was never published. The
+    gateway and UASR share the signing secret; the token names the gateway, no user.
+    """
+    from datetime import timedelta
+
+    from shared.auth import create_access_token
+
+    token = create_access_token({"sub": "service:api_gateway"}, expires_delta=timedelta(minutes=5))
+    return {"Authorization": f"Bearer {token}"}
+
+
 async def _uasr_metrics_poller(stop_event: asyncio.Event) -> None:
     """Poll UASR metrics every few seconds and publish to ``uasr:metrics``."""
     from shared.streaming_manager import StreamEvent, streaming_manager
@@ -91,11 +115,15 @@ async def _uasr_metrics_poller(stop_event: asyncio.Event) -> None:
     async with httpx.AsyncClient(timeout=5) as client:
         while not stop_event.is_set():
             try:
-                r = await client.get(f"{_UASR_URL}/uasr/metrics")
+                r = await client.get(f"{_UASR_URL}/uasr/metrics", headers=_uasr_service_headers())
                 if r.status_code == 200:
+                    report = r.json()
                     await streaming_manager.publish(StreamEvent(
-                        topic=topic, event_type="data", payload=r.json(),
+                        topic=topic, event_type="data",
+                        payload={k: report.get(k) for k in _UASR_PUBLIC_METRIC_KEYS},
                     ))
+                else:
+                    logger.debug("UASR metrics poll returned HTTP %s", r.status_code)
             except Exception as exc:
                 logger.debug("UASR metrics poll failed: %s", exc)
             try:
@@ -471,7 +499,7 @@ async def system_health():
     hu_score = None
     try:
         async with httpx.AsyncClient(timeout=2.0) as client:
-            r = await client.get(f"{_UASR_URL}/uasr/metrics")
+            r = await client.get(f"{_UASR_URL}/uasr/metrics", headers=_uasr_service_headers())
             if r.status_code == 200:
                 hu_score = r.json().get("hu_score")
     except Exception:

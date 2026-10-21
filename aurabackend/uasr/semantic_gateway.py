@@ -22,13 +22,22 @@ import statistics
 import struct
 import time
 import uuid
-from collections import defaultdict
+from collections import OrderedDict, deque
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 from .models import BatchPayload, ColumnDistribution
 
 logger = logging.getLogger("uasr.semantic_gateway")
+
+# BUG-466: the matrix and the similarity history were never trimmed, and any caller
+# can mint new source ids through /uasr/gate/check, so memory grew without limit.
+# The adaptive threshold only reads the last _SIM_WINDOW similarities; older
+# reference versions are kept only for rollback; a source evicted for being least
+# recently seen re-baselines on its next batch, as a brand-new source does.
+_SIM_WINDOW = 50
+_MAX_VERSIONS_PER_SOURCE = 10
+_MAX_SOURCES = 10_000
 
 
 # ────────────────────────────────────────────────────────────────────
@@ -99,8 +108,8 @@ class ReferenceContextMatrix:
     """
 
     def __init__(self) -> None:
-        # source_id  →  [ReferenceVersion, …]
-        self._store: Dict[str, List[ReferenceVersion]] = defaultdict(list)
+        # source_id  →  [ReferenceVersion, …], least recently used first
+        self._store: "OrderedDict[str, List[ReferenceVersion]]" = OrderedDict()
 
     # ── Write ───────────────────────────────────────────────────────
 
@@ -111,12 +120,16 @@ class ReferenceContextMatrix:
         description: str = "",
     ) -> str:
         """Register a new reference version and activate it."""
-        # Deactivate previous
-        for v in self._store[source_id]:
+        versions = self._store.setdefault(source_id, [])
+        self._store.move_to_end(source_id)
+        for v in versions:
             v.active = False
 
         version = ReferenceVersion(embedding, description)
-        self._store[source_id].append(version)
+        versions.append(version)
+        del versions[:-_MAX_VERSIONS_PER_SOURCE]
+        while len(self._store) > _MAX_SOURCES:
+            self._store.popitem(last=False)
         logger.info(
             "Registered reference v=%s for source=%s (%d dims)",
             version.version_id,
@@ -138,7 +151,7 @@ class ReferenceContextMatrix:
     def activate_version(self, source_id: str, version_id: str) -> bool:
         """Activate a specific version (for rollback / A-B switching)."""
         found = False
-        for v in self._store[source_id]:
+        for v in self._store.get(source_id, ()):
             if v.version_id == version_id:
                 v.active = True
                 found = True
@@ -150,7 +163,11 @@ class ReferenceContextMatrix:
 
     def active_embedding(self, source_id: str) -> Optional[List[float]]:
         """Return the active reference embedding, or None."""
-        for v in reversed(self._store[source_id]):
+        versions = self._store.get(source_id)
+        if versions is None:
+            return None
+        self._store.move_to_end(source_id)
+        for v in reversed(versions):
             if v.active:
                 return v.embedding
         return None
@@ -163,7 +180,7 @@ class ReferenceContextMatrix:
                 "active": v.active,
                 "description": v.description,
             }
-            for v in self._store[source_id]
+            for v in self._store.get(source_id, ())
         ]
 
 
@@ -223,7 +240,7 @@ class SemanticGateway:
         self._tolerance = tolerance
         self._dim = embedding_dim
         # history for adaptive threshold
-        self._sim_history: Dict[str, List[float]] = defaultdict(list)
+        self._sim_history: "OrderedDict[str, deque[float]]" = OrderedDict()
 
     @property
     def matrix(self) -> ReferenceContextMatrix:
@@ -251,7 +268,11 @@ class SemanticGateway:
         sim = cosine_similarity(batch_emb, ref_emb)
 
         # Record for adaptive threshold
-        self._sim_history[batch.source_id].append(sim)
+        history = self._sim_history.setdefault(batch.source_id, deque(maxlen=_SIM_WINDOW))
+        self._sim_history.move_to_end(batch.source_id)
+        history.append(sim)
+        while len(self._sim_history) > _MAX_SOURCES:
+            self._sim_history.popitem(last=False)
 
         threshold = self._adaptive_threshold(batch.source_id)
         passed = sim >= threshold
@@ -284,14 +305,14 @@ class SemanticGateway:
             threshold = max(1 − τ, mean(sim) − 2·std(sim))
         This prevents the gate from being too strict or too lax.
         """
-        history = self._sim_history.get(source_id, [])
+        history = list(self._sim_history.get(source_id, ()))
         base = 1 - self._tolerance
 
         if len(history) < 5:
             return base
 
-        mu = statistics.mean(history[-50:])   # rolling window
-        sigma = statistics.stdev(history[-50:])
+        mu = statistics.mean(history)
+        sigma = statistics.stdev(history)
         adaptive = mu - 2 * sigma
 
         return max(base * 0.8, min(adaptive, base))

@@ -17,6 +17,7 @@ from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field
 from sqlalchemy import JSON, Boolean, DateTime, Float, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.types import TypeDecorator
 
 from metadata_store.db import Base
 
@@ -71,6 +72,26 @@ class RecoveryMode(str, Enum):
 # SQLAlchemy ORM — persisted in metadata DB
 # ────────────────────────────────────────────────────────────────────
 
+class NaiveUTCDateTime(TypeDecorator):
+    """A TIMESTAMP WITHOUT TIME ZONE column that also accepts aware datetimes.
+
+    BUG-463: the model defaults and the write paths use ``datetime.now(timezone.utc)``,
+    and asyncpg refuses an aware value for a naive column, so on the Postgres stack
+    every drift event and recovery record insert (and every approve/reject) failed.
+    Same fix as BUG-356 in the scheduler. Values are stored and read back as naive
+    UTC, as before, so there is no migration and readers (e.g. the approval reaper,
+    which compares against a naive now) are unchanged.
+    """
+
+    impl = DateTime
+    cache_ok = True
+
+    def process_bind_param(self, value, dialect):
+        if value is not None and value.tzinfo is not None:
+            value = value.astimezone(timezone.utc).replace(tzinfo=None)
+        return value
+
+
 class DriftEvent(Base):
     """One detected drift event."""
     __tablename__ = "uasr_drift_events"
@@ -83,7 +104,7 @@ class DriftEvent(Base):
     cosine_distance: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     drift_vector: Mapped[Dict[str, Any]] = mapped_column(JSON, default=dict)
     details: Mapped[Dict[str, Any]] = mapped_column(JSON, default=dict)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+    created_at: Mapped[datetime] = mapped_column(NaiveUTCDateTime, default=lambda: datetime.now(timezone.utc))
 
 
 class RecoveryRecord(Base):
@@ -108,9 +129,9 @@ class RecoveryRecord(Base):
     # S41: human decision on a held (PENDING_APPROVAL) recovery.
     decided_by: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
     decision_note: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    decided_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
-    completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    decided_at: Mapped[Optional[datetime]] = mapped_column(NaiveUTCDateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(NaiveUTCDateTime, default=lambda: datetime.now(timezone.utc))
+    completed_at: Mapped[Optional[datetime]] = mapped_column(NaiveUTCDateTime, nullable=True)
 
 
 class DistributionSnapshot(Base):
@@ -126,7 +147,7 @@ class DistributionSnapshot(Base):
     null_rate: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     distinct_count: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     sample_size: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+    created_at: Mapped[datetime] = mapped_column(NaiveUTCDateTime, default=lambda: datetime.now(timezone.utc))
 
 
 class BatchEmbeddingRecord(Base):
@@ -139,7 +160,7 @@ class BatchEmbeddingRecord(Base):
     vector: Mapped[List[float]] = mapped_column(JSON, default=list)
     embedding_model: Mapped[str] = mapped_column(String(128), default="hash-projection-256")
     is_reference: Mapped[bool] = mapped_column(Boolean, default=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+    created_at: Mapped[datetime] = mapped_column(NaiveUTCDateTime, default=lambda: datetime.now(timezone.utc))
 
 
 class HealingMetric(Base):
@@ -148,14 +169,14 @@ class HealingMetric(Base):
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: uuid.uuid4().hex[:16])
     domain: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
-    period_start: Mapped[datetime] = mapped_column(DateTime, nullable=False)
-    period_end: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    period_start: Mapped[datetime] = mapped_column(NaiveUTCDateTime, nullable=False)
+    period_end: Mapped[datetime] = mapped_column(NaiveUTCDateTime, nullable=False)
     total_drift_events: Mapped[int] = mapped_column(Integer, default=0)
     resolved_anomalies: Mapped[int] = mapped_column(Integer, default=0)
     avg_latency_seconds: Mapped[float] = mapped_column(Float, default=0.0)
     recovery_rate: Mapped[float] = mapped_column(Float, default=0.0)
     hu_score: Mapped[float] = mapped_column(Float, default=0.0)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+    created_at: Mapped[datetime] = mapped_column(NaiveUTCDateTime, default=lambda: datetime.now(timezone.utc))
 
 
 # ────────────────────────────────────────────────────────────────────

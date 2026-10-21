@@ -47,7 +47,7 @@ from .models import (
     set_transformed_rows,
 )
 from .recovery_loop import RecoveryLoop, RecoveryLoopConfig
-from .recovery_persistence import mark_shim_rolled_back
+from .recovery_persistence import load_deployed_shims, mark_shim_rolled_back
 from .runtime_config import (
     approval_timeout_seconds,
     build_redis_client,
@@ -84,6 +84,11 @@ if (
     or os.getenv("UASR_REPAIR_BACKEND", "local").lower() in ("distributed", "redis", "fleet")
 ):
     _redis_client = build_redis_client()
+
+# BUG-467: the shim registry is per process, so in fleet mode an approve or rollback
+# on one replica never reached the others. Each replica re-reads a source's DEPLOYED
+# shims from the shared DB before it applies, lists or rolls them back.
+_SHARED_SHIM_REGISTRY = _redis_client is not None
 
 # Schema-evolution intent (opt-in via UASR_SCHEMA_INTENT_ENABLED): an
 # operator/CI migration step can declare an upcoming ALTER TABLE via
@@ -196,6 +201,7 @@ async def _mapek_worker_bootstrap() -> None:
                 recovery_loop=_loop,
                 metrics=_tracker,
                 repair_scheduler=_repair_scheduler,
+                shared_shim_registry=_SHARED_SHIM_REGISTRY,
             )
             await worker.start()
         except asyncio.CancelledError:
@@ -449,6 +455,11 @@ app = create_service(
 # ────────────────────────────────────────────────────────────────────
 # DB dependency
 # ────────────────────────────────────────────────────────────────────
+
+async def _sync_shims(source_id: str) -> None:
+    if _SHARED_SHIM_REGISTRY:
+        _loop.set_deployed_shims(source_id, await load_deployed_shims(source_id))
+
 
 async def get_db() -> AsyncGenerator[AsyncSession, None]:
     async for session in get_session():
@@ -716,6 +727,7 @@ async def heal_batch(req: IngestRequest, request: Request, db: AsyncSession = De
 
     # 1. Apply shims already deployed for this source, so drift that was
     #    resolved earlier does not re-fire on every batch.
+    await _sync_shims(batch.source_id)
     standing = len(_loop.get_deployed_shims(batch.source_id))
     standing_applied = 0
     if standing:
@@ -1244,6 +1256,7 @@ async def gate_check(req: GateCheckRequest, request: Request):
 async def rollback_shim(req: RollbackRequest, request: Request, db: AsyncSession = Depends(get_db)):
     """Rollback the most recently deployed shim for a source."""
     req.source_id = scoped_source(caller_tenant(request), req.source_id)
+    await _sync_shims(req.source_id)
     deployed = _loop.get_deployed_shims(req.source_id)
     removed_code = deployed[-1] if deployed else None
     success = _loop.rollback_last_shim(req.source_id)
@@ -1263,6 +1276,7 @@ async def rollback_shim(req: RollbackRequest, request: Request, db: AsyncSession
 async def list_shims(source_id: str, request: Request):
     """List all currently deployed shims for a source."""
     source_id = scoped_source(caller_tenant(request), source_id)
+    await _sync_shims(source_id)
     shims = _loop.get_deployed_shims(source_id)
     return {
         "source_id": source_id,

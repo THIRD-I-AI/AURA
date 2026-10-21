@@ -15,10 +15,10 @@ audit ledger (shared/audit_ledger.py), so an examiner can replay exactly who
 authorized what, in what order, with chain integrity guarantees. Storage
 shares the ledger's engine/Base: approvals ARE audit artifacts.
 
-Single-replica note: vote serialisation reuses the ledger's per-tenant
-asyncio lock; multi-replica deployments get correctness from the ledger's
-Postgres advisory lock on append, but request-status races across replicas
-are a documented follow-up (row-level SELECT ... FOR UPDATE).
+Concurrency: the per-tenant asyncio lock only serialises votes inside one
+process. Across workers/replicas each vote is a compare-and-swap UPDATE on
+(status='pending', decisions_json as read), so a vote that raced another is
+retried against the fresh row instead of overwriting it (BUG-464).
 """
 from __future__ import annotations
 
@@ -28,7 +28,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List
 
-from sqlalchemy import Integer, String, Text, select
+from sqlalchemy import Integer, String, Text, select, update
 from sqlalchemy.orm import Mapped, mapped_column
 
 from shared import audit_ledger
@@ -47,6 +47,11 @@ class ApprovalRequestRow(Base):
     created_by: Mapped[str] = mapped_column(String(255), nullable=False)
     created_at: Mapped[str] = mapped_column(String(64), nullable=False)
     decisions_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+
+
+# A lost compare-and-swap means another vote landed in between; each retry
+# re-reads that vote, so this only runs out under a pile-up of simultaneous voters.
+_MAX_VOTE_ATTEMPTS = 8
 
 
 def _now() -> str:
@@ -112,27 +117,49 @@ async def decide(*, request_id: str, tenant_id: str, approver: str, approve: boo
     audit ledger as part of the transition."""
     await audit_ledger.init_database()
     async with audit_ledger._lock_for(tenant_id):
-        async with audit_ledger.session_scope() as session:
-            row = await _get_row(session, request_id, tenant_id)
-            if row.status != "pending":
-                raise ValueError(f"approval request is resolved ({row.status}) — no further votes")
-            if approver == row.created_by:
-                raise ValueError("segregation of duties: the requester cannot vote on their own request")
-            decisions: List[Dict[str, Any]] = json.loads(row.decisions_json)
-            if any(d["approver"] == approver for d in decisions):
-                raise ValueError(f"approver {approver!r} already decided on this request")
+        for _attempt in range(_MAX_VOTE_ATTEMPTS):
+            async with audit_ledger.session_scope() as session:
+                row = await _get_row(session, request_id, tenant_id)
+                if row.status != "pending":
+                    raise ValueError(f"approval request is resolved ({row.status}) — no further votes")
+                if approver == row.created_by:
+                    raise ValueError("segregation of duties: the requester cannot vote on their own request")
+                read_decisions = row.decisions_json
+                decisions: List[Dict[str, Any]] = json.loads(read_decisions)
+                if any(d["approver"] == approver for d in decisions):
+                    raise ValueError(f"approver {approver!r} already decided on this request")
 
-            ts = _now()
-            decisions.append({"approver": approver, "approve": approve, "ts": ts})
-            approvals = sum(1 for d in decisions if d["approve"])
-            if not approve:
-                row.status = "rejected"                      # any reject fails closed
-            elif approvals >= row.required_approvals:
-                row.status = "approved"
-            row.decisions_json = json.dumps(decisions)
-            await session.commit()
-            await session.refresh(row)
-            result = _to_dict(row)
+                ts = _now()
+                decisions.append({"approver": approver, "approve": approve, "ts": ts})
+                approvals = sum(1 for d in decisions if d["approve"])
+                status = "pending"
+                if not approve:
+                    status = "rejected"                      # any reject fails closed
+                elif approvals >= row.required_approvals:
+                    status = "approved"
+                # BUG-464: the asyncio lock above is per process, so under several
+                # gateway workers two votes could both read the pending row and the
+                # later plain write won -- an approve overwrote a reject, or a vote
+                # vanished. The UPDATE only applies if the row is still exactly as read.
+                swapped = await session.execute(
+                    update(ApprovalRequestRow)
+                    .where(
+                        ApprovalRequestRow.id == request_id,
+                        ApprovalRequestRow.tenant_id == tenant_id,
+                        ApprovalRequestRow.status == "pending",
+                        ApprovalRequestRow.decisions_json == read_decisions,
+                    )
+                    .values(status=status, decisions_json=json.dumps(decisions))
+                    .execution_options(synchronize_session=False)
+                )
+                await session.commit()
+                if swapped.rowcount != 1:
+                    continue
+                await session.refresh(row)
+                result = _to_dict(row)
+                break
+        else:
+            raise ValueError(f"approval request {request_id!r} is contended; vote not recorded, retry")
 
     await audit_ledger.append_audit(
         tenant_id=tenant_id, kind="approval_decision", subject_id=result["subject_id"],
