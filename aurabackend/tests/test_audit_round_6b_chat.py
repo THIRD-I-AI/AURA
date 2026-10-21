@@ -35,6 +35,16 @@ from shared.cache import schema_cache
     'df.agg(None, x=("a", df.columns[0]))',
     'df["a"].map("to_csv")',
     'df["a"].map(df.columns[0])',
+    # Second review: keywords pandas reads as named-aggregation specs.
+    'df.agg(None, x=("a", "sum"), args=("a", "to_csv"))',
+    'df.agg(None, x=("a", "sum"), raw=("a", "to_json"))',
+    'df.aggregate(None, x=("a", "sum"), result_type=("a", "to_csv"))',
+    'df["a"].agg(None, x="sum", na_action="to_dict")',
+    'df["a"].agg(None, x="sum", args="to_csv")',
+    'df.agg("sum", args=(df.columns[0],))',
+    'df.agg(**{{"func": "to_csv"}})',
+    'df.plot(backend="this")',
+    'df["a"].hist(backend="os")',
 ])
 def test_string_dispatch_cannot_reach_io_methods(tmp_path, expr):
     target = tmp_path / "pwned.csv"
@@ -51,6 +61,9 @@ def test_string_dispatch_cannot_reach_io_methods(tmp_path, expr):
     ('df["a"].apply(abs).sum()', 3),
     ('df["a"].transform("cumsum").iloc[-1]', 3),
     ('df["a"].map({1: "x", 2: "y"}).tolist()', ["x", "y"]),
+    ('df["a"].agg(total="sum")["total"]', 3),
+    ('df.agg("sum", numeric_only=True)["a"]', 3),
+    ('df.pivot_table(values="a", index="g", aggfunc="sum")["a"].sum()', 3),
 ])
 def test_ordinary_aggregations_still_evaluate(expr, expected):
     df = pd.DataFrame({"a": [1, 2], "g": ["x", "y"]})

@@ -131,7 +131,8 @@ _SAFE_BUILTINS = {
 _ALLOWED_NAMES = frozenset({"df", *_SAFE_BUILTINS})
 # Attribute names that read/write external state or reach private internals.
 _BAD_ATTR_PREFIXES = ("_", "to_", "read_")
-_BAD_ATTRS = frozenset({"eval", "query", "pipe"})
+# plot/hist/boxplot take backend="<module>" and import it (BUG-472 review).
+_BAD_ATTRS = frozenset({"eval", "query", "pipe", "plot", "hist", "boxplot", "style"})
 _BANNED_NODES = (ast.Lambda, ast.ListComp, ast.SetComp, ast.DictComp,
                  ast.GeneratorExp, ast.Await, ast.Yield, ast.YieldFrom,
                  ast.NamedExpr, ast.Starred)
@@ -148,18 +149,11 @@ _SAFE_STR_FUNCS = frozenset({
     "kurt", "quantile", "shift", "diff", "pct_change", "unique", "mode",
     "value_counts", "describe",
 })
-# Keywords of the dispatching methods that are not a function spec.
-_DISPATCH_NON_FUNC_KW = frozenset({
-    "axis", "raw", "result_type", "args", "by_row", "engine", "engine_kwargs",
-    "convert_dtype", "na_action",
-})
+_SPEC_KW = ("func", "arg", "aggfunc")
 
 
 def _is_safe_func_spec(node: ast.AST) -> bool:
     if isinstance(node, ast.Constant):
-        # BUG-472 (review): None is not safe on its own -- agg(None, x=...) means
-        # "named aggregation follows"; _func_specs drops it only after vetting
-        # every named-aggregation kwarg.
         return isinstance(node.value, str) and node.value in _SAFE_STR_FUNCS
     if isinstance(node, ast.Name):
         return node.id in _SAFE_BUILTINS
@@ -171,30 +165,70 @@ def _is_safe_func_spec(node: ast.AST) -> bool:
     return False
 
 
-def _func_specs(call: ast.Call) -> List[ast.AST]:
+def _is_constant(node: ast.AST) -> bool:
+    if isinstance(node, ast.Constant):
+        return True
+    if isinstance(node, (ast.List, ast.Tuple)):
+        return all(_is_constant(e) for e in node.elts)
+    return False
+
+
+def _is_named_aggregation(call: ast.Call) -> bool:
+    """agg(out=("col", spec)) / Series.agg(out=spec), with no positional spec or a
+    literal None. pandas reads every keyword but axis as a spec, so each one must
+    be a (literal column, vetted spec) pair or a vetted spec."""
+    if len(call.args) > 1 or (call.args and not (
+            isinstance(call.args[0], ast.Constant) and call.args[0].value is None)):
+        return False
+    named = [kw for kw in call.keywords if kw.arg != "axis"]
+    if not named or any(kw.arg is None or kw.arg in _SPEC_KW for kw in named):
+        return False
+    for kw in call.keywords:
+        v = kw.value
+        if kw.arg == "axis":
+            if not isinstance(v, ast.Constant):
+                return False
+        elif isinstance(v, ast.Tuple):
+            if not (len(v.elts) == 2 and isinstance(v.elts[0], ast.Constant)
+                    and _is_safe_func_spec(v.elts[1])):
+                return False
+        elif not _is_safe_func_spec(v):
+            return False
+    return True
+
+
+def _dispatch_call_is_safe(call: ast.Call) -> bool:
+    """BUG-472: a dispatching call is safe only when it names exactly one function
+    spec, that spec is vetted, and every other argument is a literal constant.
+
+    Two earlier versions vetted "the spec" and skipped arguments believed not to
+    be one; each was bypassed, because with func=None pandas reads *every*
+    keyword as a named-aggregation spec (agg(None, x=("a", "to_csv")),
+    agg(None, x=..., args="to_csv")). So named aggregation is allowed only when
+    EVERY keyword is a vetted spec, and otherwise no argument besides the vetted
+    spec may carry a non-literal value (a name read from the data)."""
     attr = call.func.attr  # type: ignore[attr-defined]
-    specs = list(call.args[3:4] if attr == "pivot_table" else call.args[:1])
-    specs += [k.value for k in call.keywords if k.arg in ("func", "arg", "aggfunc")]
-    if attr in ("agg", "aggregate"):
-        # BUG-472 (review): named aggregation agg(out=("col", func)) is vetted
-        # ALWAYS, not only when no func spec is given -- agg(None, x="to_csv")
-        # passed because the None spec suppressed this loop. Every kwarg that is
-        # not a known non-func keyword is treated as a dispatched spec (for a
-        # 2-tuple, its func element), even if that over-rejects func kwargs.
-        named = []
-        for kw in call.keywords:
-            if kw.arg in _DISPATCH_NON_FUNC_KW or kw.arg in ("func", "arg"):
-                continue
-            val = kw.value
-            if isinstance(val, ast.Tuple) and len(val.elts) == 2:
-                val = val.elts[1]
-            named.append(val)
-        if named:
-            # A None func spec just selects named aggregation; the named specs
-            # above now carry the dispatch and are vetted instead.
-            specs = [s for s in specs if not (isinstance(s, ast.Constant) and s.value is None)]
-        specs += named
-    return specs
+    if attr in ("agg", "aggregate") and _is_named_aggregation(call):
+        return True
+    spec_pos = 3 if attr == "pivot_table" else 0
+    positional = list(call.args)
+    specs = positional[spec_pos:spec_pos + 1]
+    others = positional[:spec_pos] + positional[spec_pos + 1:]
+    for kw in call.keywords:
+        if kw.arg is None:
+            return False  # **kwargs
+        (specs if kw.arg in _SPEC_KW else others).append(kw.value)
+    if attr == "pivot_table":
+        if len(specs) > 1:
+            return False
+    elif len(specs) != 1:
+        return False  # no spec means named aggregation (or a malformed call)
+    if attr == "map":
+        if not all(_is_safe_func_spec(sp) or _is_constant_lookup(sp) for sp in specs):
+            return False
+    elif not all(_is_safe_func_spec(sp) for sp in specs):
+        return False
+    return all(_is_constant(o) for o in others)
 
 
 def _is_constant_lookup(node: ast.AST) -> bool:
@@ -222,8 +256,7 @@ def _assert_safe_expr(expr: str) -> "ast.Expression":
         if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
                 and node.func.attr in _STR_DISPATCH):
             called.add(id(node.func))
-            if not all(_is_safe_func_spec(s) or (node.func.attr == "map" and _is_constant_lookup(s))
-                       for s in _func_specs(node)):
+            if not _dispatch_call_is_safe(node):
                 raise ValueError(f"disallowed function argument to {node.func.attr}")
     for node in ast.walk(tree):
         # A dispatcher passed as a value (max(..., key=df.agg)) would get its
