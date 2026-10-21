@@ -600,7 +600,21 @@ def _artifact_for_caller(art: Optional[Dict[str, Any]], record_hash: str, user: 
     caller = _ledger_tenant(user if isinstance(user, dict) else None)
     if owner and str(owner) != caller:
         raise HTTPException(404, f"artifact {record_hash} not found")
-    return art
+    return _with_verdict(art)
+
+
+def _with_verdict(art: Dict[str, Any]) -> Dict[str, Any]:
+    """BUG-480: run_job persists the artifact before any caller renders it, so a
+    replayed artifact had ``rendered == {}`` and the web certificate fell back to
+    its own copy of the legacy v1 rule -- contradicting the signed PDF, which
+    applies the rule the artifact was sealed under. Replay now carries that same
+    verdict. ``rendered`` is outside the signed bytes, so nothing re-signs."""
+    if "estimates" not in art or (art.get("rendered") or {}).get("verdict"):
+        return art
+    from .verdict import rule_for, significance_verdict
+
+    verdict = significance_verdict(art.get("estimates") or [], rule_for(art))
+    return {**art, "rendered": {**(art.get("rendered") or {}), "verdict": verdict}}
 
 
 @app.get("/counterfactual/artifacts/{record_hash}")
