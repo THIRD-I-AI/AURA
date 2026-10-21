@@ -4749,73 +4749,73 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Fix:** `counterfactual_service/main.py::_with_verdict`, applied by `_artifact_for_caller`, attaches `rendered.verdict = significance_verdict(estimates, rule_for(artifact))` to a replayed causal artifact that has none, which is exactly what the PDF prints. `rendered` is outside the signed bytes, so stored signatures still verify; legacy v1 artifacts keep their v1 verdict; financial records (no estimates) are untouched. Tests `tests/test_audit_round_7_counterfactual.py` (3 of 4 fail on the old code).
 
 ## BUG-481: Audit wizard: files whose names contain a space (or any character outside [A-Za-z0-9._-]) upload but can never be audited
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode audit round 7 (run wf_572f71bc-796, frontend area; confirmed by 2 adversarial verifiers), 2026-10-21. `frontend/src/audit/AuditWizard.tsx:71`.
 - **Severity:** high
 - **Root cause:** The two layers disagree on what a valid filename is. The gateway upload (api_gateway/routers/files.py:66-78, _safe_upload_name) only strips path components and returns 'filename': safe_name unchanged (files.py:216). The counterfactual audit path uses a much stricter allow-list regex. The frontend forwards the gateway's name as is (AuditWizard.tsx:57 -> 71).
 - **Failure scenario:** A signed-in user opens /audit/new and picks 'Loan Data 2024.csv'. POST /api/v1/upload accepts it and returns filename 'Loan Data 2024.csv'. The wizard then sends POST /counterfactual/audit with uploaded_file='Loan Data 2024.csv'. counterfactual_service/main.py:569 calls _upload_exists, which returns False because _safe_upload_name (main.py:463-467) only accepts ^[A-Za-z0-9._-]+$, so the route returns 404 "uploaded file not found: 'Loan Data 2024.csv'" for a file that is in the user's storage. The wizard shows 'HTTP 404: ...' and the audit never runs. Names like 'loans (1).csv', which browsers produce for repeat downloads, fail the same way. Checked: re.match(r'^[A-Za-z0-9._-]+$', 'Loan Data 2024.csv') is None.
-- **Fix:** pending
+- **Fix:** `counterfactual_service/main.py::_safe_upload_name` uses the storage layer's own rule (`shared.storage.base.safe_object_name`) instead of a stricter `[A-Za-z0-9._-]` allow-list, so names the gateway stores and returns ('Loan Data 2024.csv', 'loans (1).csv') can be audited. Review follow-up: `safe_object_name` now also refuses ':' (on Windows `tenant_dir / 'D:x.csv'` leaves the tenant directory), which protects the upload path too. Tests `tests/test_audit_round_7_audit_ui.py` (`test_bug481_*`).
 
 ## BUG-482: Audit wizard trims CSV headers but the backend does not, so a CSV with a space after each comma is rejected with 'columns not in file'
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode audit round 7 (run wf_572f71bc-796, frontend area; confirmed by 2 adversarial verifiers), 2026-10-21. `frontend/src/audit/csv.ts:31`.
 - **Severity:** medium
 - **Root cause:** parseLine ends with out.map((s) => s.trim()), so the column names offered in the mapping step are not the names the server will use. The server's authoritative parse (pd.read_csv with defaults) does not strip header whitespace.
 - **Failure scenario:** A user uploads a CSV whose header line is 'id, loan_amount, approved' (space after each comma, which is common). The browser preview (parseLine trims every field) lists columns 'loan_amount' and 'approved', so the user maps treatment=approved and outcome=loan_amount. POST /counterfactual/audit reads the header with pandas.read_csv (counterfactual_service/main.py:208-209, 470-473), which keeps the whitespace: ['id', ' loan_amount', ' approved'] (checked with pandas). main.py:573-577 returns 400 "columns not in file ...: ['approved', 'loan_amount']", even though the user picked those names from AURA's own column list.
-- **Fix:** pending
+- **Fix:** `_read_upload` strips whitespace from CSV header names, matching DuckDB's `read_csv_auto` and the wizard preview, so the header pre-check and the audit worker see the names the user mapped; stripping is skipped if it would merge two labels ('a, a'). Tests `test_bug482_*`.
 
 ## BUG-483: Exception Queue keeps the previous audit's findings and '✓ signature verified' on screen after a failed lookup or run
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode audit round 7 (run wf_572f71bc-796, frontend area; confirmed by 2 adversarial verifiers), 2026-10-21. `frontend/src/components/HITL/ExceptionQueue.tsx:134`.
 - **Severity:** medium
 - **Root cause:** The success path replaces state, but the failure path never resets queue, verified or selected, so state from the previous record stays on screen during a new lookup.
 - **Failure scenario:** An auditor loads record hash A. Its queue appears with 3 pending findings, the header reads 'Record aaaa… · ✓ signature verified', and decision buttons are shown. They paste hash B (a typo, another tenant's record, or one the service has lost) and click Load audit. getExceptions(B) returns 404 and the catch block only sets the error. queue and verified still hold A's values (refreshQueue at line 90-95 writes state only on success, and loadByHash at 120-140 never clears it). The page shows the error next to A's pending list, A's '✓ signature verified' and active Approve/Override buttons, while the input still says B. A decision made now is signed against A (submitDecision uses queue.record_hash). runOwnLedger behaves the same way when refreshQueue fails after a new report: setReport(r) has already run, so the header combines A's hash and verification with B's signature_status.
-- **Fix:** pending
+- **Fix:** `ExceptionQueue.tsx` clears the queue, verification, report, selection and last decision at the start of every load path, so a failed lookup or refresh no longer shows the previous record's findings and 'signature verified'. Tests `frontend/src/components/HITL/__tests__/ExceptionQueue.test.tsx` ('BUG-483').
 
 ## BUG-484: ensureAuditorToken spends the per-IP login rate-limit allowance on every Exception Queue mount and action in password mode
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode audit round 7 (run wf_572f71bc-796, frontend area; confirmed by 2 adversarial verifiers), 2026-10-21. `frontend/src/services/api.ts:1905`.
 - **Severity:** low
 - **Root cause:** The BUG-387 fix kept the open-mode mint attempt and only catches its failure. The client cannot tell which auth mode it is in, so in password mode it fires a call that is certain to fail at a credential endpoint whose throttle is deliberately tight.
 - **Failure scenario:** Production runs AURA_AUTH_MODE=password, and every self-registered account has role 'user'. Each time ExceptionQueue mounts (ExceptionQueue.tsx:257-258) and before each Load / Run demo / Run my audit (lines 105, 133, 213), and on each run in the terminal Audit and Findings panels, ensureAuditorToken POSTs {user_id:'auditor-demo', role:'auditor'} to /api/v1/auth/token. In password mode that always fails with 422 (auth.py:134-135), but RateLimitMiddleware has already recorded it in the auth:<ip> bucket, which allows 10 requests per 60s (shared/config.py:439, shared/middleware.py:416-421). About ten audit-panel actions in a minute from one IP (one user, or a team behind one office NAT) fill the bucket, and the next real sign-in from that IP gets 429 'Too many sign-in attempts' for up to a minute. Every one of these calls is also logged as a failed credential request.
-- **Fix:** pending
+- **Fix:** `ensureAuditorToken` remembers a permanent refusal of the open-mode mint (400/403/422) for the page's lifetime and stops POSTing /auth/token, so password mode spends at most one auth rate-limit slot per page load; 429 and network errors still retry. Tests `frontend/src/services/__tests__/ensureAuditorTokenMintRefused.test.ts`.
 
 ## BUG-485: Re-running an identical audit after key revocation (or any failed signing) overwrites the signed artifact with an unsigned copy, so a validly signed certificate then fails public /verify
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode audit round 7 (run wf_572f71bc-796, counterfactual area; confirmed by 2 adversarial verifiers), 2026-10-21. `aurabackend/counterfactual_service/engine.py:2025`.
 - **Severity:** high
 - **Root cause:** The store is content-addressed on a hash that leaves out the signature fields. persistence.write_artifact is an unconditional os.replace, so a later unsigned seal of the same content overwrites the earlier signed one. verify_artifact (main.py:686) trusts the signature_status in the JSON body over the .sig sidecar that still exists.
 - **Failure scenario:** Reproduced in a temp AURA_ARTIFACT_DIR/AURA_SIGNING_KEY_DIR, with the critic and refuters stubbed out. run_job(q, df, methods=['tmle']) gives hash 76fea87e..., and GET /artifacts/{h}/verify returns verified=True, signature_status='signed'. An admin then calls POST /admin/revoke-key, and the same query is run again: a fresh=true demo, warm_demos, a tenant re-submitting the job, or an auditor 'replaying' it. The artifact hash is the same (record_id, signature_status, signature_b64 and signing_key_source are excluded from the hash, as the Layer-10 determinism contract intends). write_artifact replaces <hash>.json with signature_status='unsigned' and signature_b64=null. The old <hash>.sig stays on disk but is never read again. GET /artifacts/{h}/verify now returns {verified: false, signature_status: 'unsigned', reason: 'artifact was sealed without a signature'}. A certificate that was handed out, and that soft_revoke_key promises stays valid ('historical signatures remain valid'), now reads 'NOT verified' on the public /verify page. The same downgrade happens whenever sign_bytes returns None, for example from a transient key-resolution error.
-- **Fix:** pending
+- **Fix:** `engine.run_job` does not overwrite a stored signed artifact with an unsigned re-seal of the same hash (replay after key revocation, a transient signing failure); the existing signature covers the same canonical bytes. Test `tests/test_audit_round_7_cf_signing.py::test_unsigned_reseal_keeps_the_signed_artifact_verifiable`.
 
 ## BUG-486: IV 2SLS adjusts for every parent of the outcome, including mediators downstream of the treatment, so it estimates a biased quantity with a CI that excludes the true effect; the signed applied spec does not show these controls
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode audit round 7 (run wf_572f71bc-796, counterfactual area; confirmed by 2 adversarial verifiers), 2026-10-21. `aurabackend/counterfactual_service/engine.py:1081`.
 - **Severity:** high
 - **Root cause:** The iv branch builds its control set as `src for src, dst in edges if dst == outcome and src != treatment and src not in instruments`. That set includes descendants of the treatment (mediators, and colliders downstream of T). Conditioning on them blocks part of the causal path and, with an unmeasured confounder, opens collider bias.
 - **Failure scenario:** POST /counterfactual/jobs (or run_estimators with methods including 'iv') with DAG edges [z->t, t->m, m->y, t->y] and an unobserved confounder of t and y. Simulated with n=5000, binary t, true total effect 3.0 (direct 1 + 1x2 through m). The engine's confounder rule gives confounders=['m']. run_iv_2sls(..., ['z'], ['m']) returns point 0.443, CI [-0.215, 1.100], which excludes the true effect 3 and is not significant. Without the mediator, the same IV gives 2.36, CI [1.54, 3.18]. The signed artifact's applied.adjustment_set is [] (_adjustment_set uses parents of the treatment), so the PDF's 'Adjusted for' row does not show that IV conditioned on m. This one estimate also drags the verdict to 'not_significant'.
-- **Fix:** pending
+- **Fix:** the IV (2SLS) controls are the outcome's parents that are neither instruments nor descendants of the treatment (`engine._iv_controls`), so mediators are no longer conditioned on; the signed applied spec records that set as `applied.iv_controls` when IV ran (absent otherwise, so older artifacts hash unchanged), and the PDF prints it. Tests `tests/test_audit_round_7_cf_stats.py` (simulated data: estimate about 0.44 before vs a true 3.0).
 
 ## BUG-487: Financial audit treats formatted amount strings ('1,250,000.00', '$5,000') as 0, so a material entry is never flagged and the signed completion document reports a clean ledger
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode audit round 7 (run wf_572f71bc-796, counterfactual area; confirmed by 2 adversarial verifiers), 2026-10-21. `aurabackend/agents/specialists/financial_auditor.py:75`.
 - **Severity:** high
 - **Root cause:** _money parses with Decimal(str(value)) and maps any parse failure to 0. It does not strip thousands separators or currency symbols the way _number_or_none does, and it cannot tell 'unparseable' apart from 'zero'. A material value is therefore silently removed from the attested 100% population.
 - **Failure scenario:** Reproduced: POST /api/v1/counterfactual/audit/financial (direct API or SDK caller) with ledger=[{internal_id:'L1', account_code:'4000', amount:'1,250,000.00'}] plus 18 rows of 1234.5. _money('1,250,000.00') raises InvalidOperation inside and returns Decimal(0). The materiality basis drops to 22,221 (threshold 7,500 instead of 9,541.66). AS 2305 compares abs(0) > 7500 and does not flag the row: findings=[]. The same ledger with amount 1250000.0 gives an 'absolute_materiality' High finding. The completion document is ED25519-signed and chained into the ledger saying there are 0 findings. In the same file, _number_or_none('1,250,000.00') correctly gives 1250000.0, so the approval-limit check and the materiality and duplicate checks disagree on the same field. The same zeroing hides round-dollar and duplicate-payment hits in AS 2401.
-- **Fix:** pending
+- **Fix:** `financial_auditor._money` strips ',' and '$' before `Decimal()`, as `_number_or_none` does, so formatted amounts are no longer zeroed out of materiality and the AS 2305/2401 tests. Tests `tests/test_audit_round_7_cf_signing.py` (`test_money_parses_formatted_amounts` and two detection tests).
 
 ## BUG-488: E-value for a binary outcome is computed with the continuous-outcome Chinn conversion, overstating robustness for common outcomes (1.90 reported vs 1.50 true)
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode audit round 7 (run wf_572f71bc-796, counterfactual area; confirmed by 2 adversarial verifiers), 2026-10-21. `aurabackend/counterfactual_service/sensitivity.py:109`.
 - **Severity:** medium
 - **Root cause:** _attach_sensitivity always calls compute_evalue with outcome_sd, and compute_evalue always applies d=point/sd and RR=exp(0.91|d|). That is the approximation for a continuous outcome. For a 0/1 outcome, VanderWeele-Ding compute the E-value from the risk ratio itself (p1/p0, or the sqrt-OR conversion for common outcomes), and the engine never computes it.
 - **Failure scenario:** Fairness audit (/counterfactual/audit) with a binary outcome. encode_for_audit explicitly maps two-category outcomes to 0/1, and the demos use approved / claim_approved. Take approval rates of 0.80 in one arm and 0.90 in the other: risk difference 0.10, sd(Y)=0.357. compute_evalue gives d=0.28, RR≈exp(0.91·0.28)=1.29, e_value_point=1.90. The true risk ratio is 0.90/0.80=1.125, which gives VanderWeele-Ding E=1.125+sqrt(1.125·0.125)=1.50. The signed artifact and sensitivity_headline say 'an unmeasured confounder would need an E-value of about 1.90 (on the risk-ratio scale)', when a confounder of RR 1.5 already explains the effect away. For a rare outcome (0.05 vs 0.15) the same code reports 2.05 against a true 5.45. The robustness claim is wrong in both directions, depending on prevalence.
-- **Fix:** pending
+- **Fix:** for a 0/1 outcome the E-value uses the risk ratio over the counterfactual arm's risk, RR = (p0 + effect) / p0 (VanderWeele-Ding), instead of the continuous-outcome Chinn conversion; protective effects invert as before. Tests `tests/test_audit_round_7_cf_stats.py`. Residual: p0 is the crude counterfactual-arm risk (pooled when no row sits at that level), not covariate-adjusted.
 
 ## BUG-489: Refuter estimate_after is reported on the raw per-unit scale while estimates use the actual-minus-counterfactual contrast, so the operator sensitivity band and the PDF contradict each other
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ultracode audit round 7 (run wf_572f71bc-796, counterfactual area; confirmed by 2 adversarial verifiers), 2026-10-21. `aurabackend/counterfactual_service/renderers.py:125`.
 - **Severity:** low
 - **Root cause:** _per_unit_to_contrast is applied to DoWhy and IV estimates (engine.py ~1129) but not to the refuter baseline or new_effect (engine.py:1355). _sensitivity_band then compares contrast-scaled points with per-unit refuter values.
 - **Failure scenario:** POST /counterfactual/jobs on a 0/1 treatment with InterventionSpec(actual=0, counterfactual=1) and a true effect of +5 for 0→1. After BUG-293's fix, every estimator reports -5, the contrast Y(0)-Y(1). run_refuters still uses DoWhy's unscaled linear_regression baseline, so random_common_cause and data_subset report estimate_after ≈ +5 with passed=True. The operator card's sensitivity_band shows baseline -5.0 with every perturbation at +5.0, which looks like each refuter flipped the sign of the effect, yet all are marked passed. The PDF 'Refutation tests' table prints +5 beside an Estimates table of -5, and the LLM critic is handed the same contradictory numbers. With a non-binary treatment (actual=10, counterfactual=5) the refuters come out 5x smaller than the estimates.
-- **Fix:** pending
+- **Fix:** refuter baseline and new-effect values are multiplied by the actual-minus-counterfactual contrast before they are judged or shown, matching the estimates' scale (BUG-293). Tests `tests/test_audit_round_7_cf_stats.py`.
