@@ -16,6 +16,7 @@ from shared.data_utils import invalidate_schema_cache
 from shared.error_handler import sanitize_error
 from shared.logging_config import get_logger
 from shared.storage import get_storage_backend
+from shared.storage.local import _READ_EXTS
 from shared.streaming_manager import TOPIC_UPLOAD, streaming_manager
 
 from .workspaces import _request_tenant, current_workspace_id, tenant_dir_name, tenant_upload_dir
@@ -127,6 +128,13 @@ async def upload_universal(
     safe_name = _safe_upload_name(target_file.filename)
     if safe_name is None:
         raise HTTPException(status_code=400, detail="Invalid filename")
+    # BUG-477: the listing, info and delete paths only see these extensions, so any
+    # other name was stored, counted against the quota, and could never be freed.
+    if os.path.splitext(safe_name)[1].lower() not in _READ_EXTS:
+        raise HTTPException(
+            status_code=415,
+            detail="Unsupported file type; upload a .csv, .xlsx, .json or .parquet file",
+        )
 
     tenant = _request_tenant(request)
     workspace_id = current_workspace_id(request)
@@ -412,10 +420,20 @@ async def delete_file(file_id: str, request: Request) -> Dict[str, Any]:
     if file_service is None:
         return {"status": "error", "error": "File service not available"}
     try:
-        sub = tenant_dir_name(_request_tenant(request))
-        success = await asyncio.to_thread(file_service.delete_file, file_id, subdir=sub)
+        tenant = _request_tenant(request)
+        sub = tenant_dir_name(tenant)
+
+        def _delete():
+            info = file_service.get_file_info(file_id, subdir=sub) or {}
+            return file_service.delete_file(file_id, subdir=sub), info.get("filename")
+
+        success, filename = await asyncio.to_thread(_delete)
         if success:
             await invalidate_schema_cache()
+            if filename:
+                from shared.file_service import purge_upload_metadata
+
+                await purge_upload_metadata(tenant, filename)  # BUG-461
             return {"status": "success", "message": "File deleted successfully"}
         raise HTTPException(status_code=404, detail="File not found or deletion failed")
     except HTTPException:

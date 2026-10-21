@@ -140,8 +140,11 @@ async def _issue_token_password(body: TokenRequest) -> TokenResponse:
 
     session_factory = get_session_factory()
     async with session_factory() as session:
+        # BUG-454: case-insensitive, matching register_user's duplicate check and
+        # the BUG-385 lower(email) unique index -- an exact match 401'd a user who
+        # typed their address in a different case than they registered it.
         result = await session.execute(
-            select(User).where(User.email == body.email)
+            select(User).where(func.lower(User.email) == body.email.lower())
         )
         user = result.scalar_one_or_none()
 

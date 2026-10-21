@@ -242,6 +242,22 @@ def _pick_amount_column(columns: List[Dict[str, Any]]) -> Optional[str]:
     return named or (numeric[0]["name"] if numeric else None)
 
 
+def _table_for_upload(uploaded_file: str, all_tables: Dict[str, Any]) -> Optional[str]:
+    """The catalog table built from *uploaded_file*.
+
+    BUG-473: re-sanitising the stem ignored _unique_table_name's collision suffix,
+    so sales.parquet resolved to 'sales' -- the table of sales.csv."""
+    fname = pathlib.PurePath(uploaded_file).name
+    for name, info in all_tables.items():
+        if info.get("source_file") == fname:
+            return name
+    # A catalog cached before source_file existed: the old stem rule.
+    stem = re.sub(r"[^A-Za-z0-9_]", "_", pathlib.PurePath(fname).stem)
+    if stem in all_tables and "source_file" not in all_tables[stem]:
+        return stem
+    return None
+
+
 def _pick_audit_table(
     uploaded_file: Optional[str], message: str, all_tables: Dict[str, Any],
 ) -> Optional[str]:
@@ -250,9 +266,9 @@ def _pick_audit_table(
     if not all_tables:
         return None
     if uploaded_file:
-        stem = re.sub(r"[^A-Za-z0-9_]", "_", pathlib.PurePath(uploaded_file).stem)
-        if stem in all_tables:
-            return stem
+        target = _table_for_upload(uploaded_file, all_tables)
+        if target:
+            return target
     msg = message.lower()
     for tname in sorted(all_tables, key=len, reverse=True):
         if tname and tname.lower() in msg:
@@ -349,10 +365,7 @@ async def chat_endpoint(request: ChatRequest, http_request: Request) -> ChatResp
     # mentioned in the message itself.
     focus_name: Optional[str] = None
     if request.uploaded_file:
-        stem = pathlib.PurePath(request.uploaded_file).stem
-        candidate = re.sub(r"[^A-Za-z0-9_]", "_", stem)
-        if candidate in all_tables:
-            focus_name = candidate
+        focus_name = _table_for_upload(request.uploaded_file, all_tables)
     if focus_name is None:
         # Longest-first so a shorter name that's a substring of a longer
         # one doesn't shadow the user's actual reference.

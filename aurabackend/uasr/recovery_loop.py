@@ -867,6 +867,13 @@ class RecoveryLoop:
             restored += len(codes)
         return restored
 
+    def set_deployed_shims(self, source_id: str, codes: List[str]) -> None:
+        """Replace one source's registry with the shared (DB) view of it (BUG-467)."""
+        if codes:
+            self._deployed_shims[source_id] = list(codes)
+        else:
+            self._deployed_shims.pop(source_id, None)
+
     def rollback_last_shim(self, source_id: str) -> bool:
         """Remove the most recently deployed shim for a source."""
         shims = self._deployed_shims.get(source_id, [])

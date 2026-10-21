@@ -20,6 +20,7 @@ from typing import Any, Dict, List, Optional
 
 from pipeline.streaming.models import StreamEvent
 from pipeline.streaming.sources.base import BaseSource
+from shared.kafka_client import require_allowed_brokers
 
 logger = logging.getLogger("aura.streaming.source.kafka")
 
@@ -39,6 +40,7 @@ class KafkaSource(BaseSource):
         self._offsets: Dict[str, Any] = {}
 
     async def start(self) -> None:
+        await require_allowed_brokers(self._bootstrap_servers)  # BUG-457
         try:
             from aiokafka import AIOKafkaConsumer
         except ImportError:

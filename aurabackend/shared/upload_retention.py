@@ -15,7 +15,7 @@ import os
 import re
 import time
 from pathlib import Path
-from typing import Iterable, Optional
+from typing import Iterable, List, Optional, Tuple
 
 # The same pattern scripts/cleanup_verify_resources.py uses: anchored both ends, so a
 # customer's "verify_report.csv" never matches.
@@ -37,10 +37,17 @@ def tenant_quota_bytes() -> int:
     return int(_env_number("AURA_TENANT_STORAGE_QUOTA_MB", 1024) * 1024 * 1024)
 
 
-def expire_verify_uploads(uploads_root: str, now: Optional[float] = None) -> int:
+def expire_verify_uploads(
+    uploads_root: str,
+    now: Optional[float] = None,
+    removed: Optional[List[Tuple[str, str]]] = None,
+) -> int:
     """Delete verification uploads older than the TTL, directly inside each tenant
     directory of *uploads_root*. Regular files only, never a symlink. Returns how
-    many were deleted. Blocking: call it from a thread."""
+    many were deleted. Blocking: call it from a thread.
+
+    Each deleted file is appended to *removed* as (tenant directory, file name), so
+    the async caller can purge its metadata-DB rows too (BUG-461)."""
     ttl = verify_upload_ttl_seconds()
     root = Path(uploads_root)
     if ttl <= 0 or not root.is_dir():
@@ -62,9 +69,23 @@ def expire_verify_uploads(uploads_root: str, now: Optional[float] = None) -> int
                     from shared.data_utils import remove_catalog_files
 
                     remove_catalog_files(str(f))  # BUG-450
+                    if removed is not None:
+                        removed.append((tenant_dir.name, f.name))
             except OSError:
                 continue
     return deleted
+
+
+# The sidecar names shared.data_utils writes for one upload: its entry, its Parquet
+# copy (legacy, or per-version with a 12-hex digest) and an in-flight temp copy.
+_SIDECAR_SUFFIX = re.compile(r"json|(?:[0-9a-f]{12}\.)?parquet|[0-9a-f]{12}\.\d+\.\d+\.parquet\.tmp")
+
+
+def _is_sidecar_of(sidecar: str, name: str) -> bool:
+    # BUG-478: a bare prefix test also matched every 'name.*' upload's sidecars, so
+    # replacing 'sales' dropped sales.csv's Parquet copies from the quota.
+    prefix = f"{name}."
+    return sidecar.startswith(prefix) and _SIDECAR_SUFFIX.fullmatch(sidecar[len(prefix):]) is not None
 
 
 def catalog_bytes(tenant_dir: Optional[Path], replacing: Optional[str] = None) -> int:
@@ -76,7 +97,7 @@ def catalog_bytes(tenant_dir: Optional[Path], replacing: Optional[str] = None) -
     total = 0
     try:
         for f in (tenant_dir / ".aura_catalog").iterdir():
-            if f.is_file() and not (replacing and f.name.startswith(f"{replacing}.")):
+            if f.is_file() and not (replacing and _is_sidecar_of(f.name, replacing)):
                 total += f.stat().st_size
     except OSError:
         return total

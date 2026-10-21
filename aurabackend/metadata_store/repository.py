@@ -4,7 +4,7 @@ import uuid
 from typing import Any, AsyncGenerator, Dict, Iterable, List, Optional
 
 import numpy as np
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -171,6 +171,13 @@ class MetadataRepository:
             )
         )
         return result.scalar_one_or_none()
+
+    async def delete_dataset_profile(self, file_id: str, workspace_id: Optional[str] = None) -> None:
+        # BUG-461: the profile holds the file's sample rows, so it goes when the file does.
+        await self._session.execute(
+            delete(DatasetProfile).where(DatasetProfile.id == f"{workspace_id or 'default'}::{file_id}")
+        )
+        await self._session.commit()
 
     async def upsert_semantic_model(
         self,

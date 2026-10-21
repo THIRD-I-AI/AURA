@@ -40,6 +40,7 @@ What v1 still punts on:
 from __future__ import annotations
 
 import asyncio
+import hmac
 import logging
 import os
 from collections import defaultdict
@@ -164,6 +165,18 @@ def _tenant_from_ws_token(token: str | None) -> str:
     return str(user.get("org_id") or user.get("sub"))
 
 
+def _ws_api_key_ok(websocket: WebSocket, api_key: str) -> bool:
+    """BUG-456: APIKeyMiddleware is a BaseHTTPMiddleware and never sees a
+    WebSocket handshake, so the AURA_API_KEY perimeter is enforced here.
+
+    Browsers cannot set headers on a WebSocket handshake, hence the
+    ``?api_key=`` fallback alongside ``X-API-Key``. Compared as bytes the same
+    way the middleware does (BUG-308).
+    """
+    supplied = websocket.headers.get("X-API-Key") or websocket.query_params.get("api_key") or ""
+    return hmac.compare_digest(supplied.encode("latin-1", "replace"), api_key.encode("utf-8"))
+
+
 @router.websocket("/ws/collab/{room_id}")
 async def collab_socket(websocket: WebSocket, room_id: str) -> None:
     # BUG-038: JWTAuthMiddleware never reaches this endpoint (see module
@@ -174,6 +187,10 @@ async def collab_socket(websocket: WebSocket, room_id: str) -> None:
     # Open/dev mode (AURA_JWT_ENABLED=false) keeps v1's behaviour -- every
     # caller shares the "default" tenant namespace, same as the rest of the
     # app's unauthenticated fallback (api_gateway/routers/workspaces.py).
+    if settings.api_key and not _ws_api_key_ok(websocket, settings.api_key):
+        logger.info("collab join rejected: room=%s reason=missing or invalid API key", room_id)
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        return
     if settings.jwt_enabled:
         try:
             tenant = _tenant_from_ws_token(websocket.query_params.get("token"))

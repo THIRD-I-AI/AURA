@@ -650,6 +650,17 @@ class PipelineEngine:
                 raise _bad(f"unsupported operator {op!r}")
             if op.upper() in ("IS NULL", "IS NOT NULL"):
                 return f'SELECT * FROM {_q(prev)} WHERE {_q(col)} {op}'
+            if op.upper() in ("IN", "NOT IN"):
+                # BUG-475: IN needs a parenthesised list; one quoted scalar was a parser
+                # error, so every IN / NOT IN filter (which the generator advertises) failed.
+                if isinstance(val, (list, tuple)):
+                    items = [str(v) for v in val if v is not None]
+                else:
+                    items = [v.strip() for v in str(val).split(",") if v.strip()]
+                literals = [quote_literal(v) for v in items]
+                if not literals:
+                    raise _bad(f"no values for {op.upper()}")
+                return f"SELECT * FROM {_q(prev)} WHERE {_q(col)} {op.upper()} ({', '.join(literals)})"
             safe_val = str(val).replace("'", "''")
             return f"SELECT * FROM {_q(prev)} WHERE {_q(col)} {op} '{safe_val}'"
 

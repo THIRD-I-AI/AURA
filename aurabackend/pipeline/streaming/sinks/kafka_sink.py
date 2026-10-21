@@ -18,6 +18,7 @@ from typing import Any, Dict
 
 from pipeline.streaming.models import StreamEvent, WindowState
 from pipeline.streaming.sinks.base import BaseSink
+from shared.kafka_client import require_allowed_brokers
 
 logger = logging.getLogger("aura.streaming.sink.kafka")
 
@@ -35,6 +36,7 @@ class KafkaSink(BaseSink):
         self._acks: str = config.get("acks", "all")
 
     async def start(self) -> None:
+        await require_allowed_brokers(self._bootstrap_servers)  # BUG-457
         try:
             from aiokafka import AIOKafkaProducer
         except ImportError:

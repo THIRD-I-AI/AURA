@@ -5,6 +5,7 @@ Database connection CRUD, testing, schema introspection, and connector proxies.
 """
 
 import asyncio
+import contextlib
 import io
 import json
 import os
@@ -543,6 +544,24 @@ class ConnectorIngestRequest(BaseModel):
     register_baseline: bool = True
 
 
+async def _paged_batches(connector: Any, query: str, batch_size: int, row_cap: int):
+    """Page ``query`` with LIMIT/OFFSET for connectors that cannot stream one statement.
+
+    BUG-469: without an ORDER BY these pages are not guaranteed a stable row order;
+    the fallback keeps memory bounded to one batch rather than reading the table at once.
+    """
+    offset = 0
+    while offset < row_cap:
+        limit = min(batch_size, row_cap - offset)
+        rows = await connector.execute_query(f"{query} LIMIT {limit} OFFSET {offset}", limit=limit)
+        if not rows:
+            return
+        yield rows
+        offset += len(rows)
+        if len(rows) < limit:
+            return
+
+
 @router.post("/connectors/{connector_type}/ingest")
 async def ingest_connector_data(connector_type: str, req: ConnectorIngestRequest, request: Request):
     """Stream a connector table through the UASR self-healing pipeline.
@@ -609,15 +628,26 @@ async def ingest_connector_data(connector_type: str, req: ConnectorIngestRequest
         uasr_headers = {}
         if request.headers.get("Authorization"):
             uasr_headers["Authorization"] = request.headers["Authorization"]
-        async with httpx.AsyncClient(timeout=120, headers=uasr_headers) as client:
-            while True:
-                remaining = max(0, row_cap - total_rows)
-                if remaining == 0:
-                    truncated = req.max_rows is None
-                    break
-                limit = min(req.batch_size, remaining)
-                query = f'SELECT * FROM {req.table_name} LIMIT {limit} OFFSET {offset}'
-                rows = await connector.execute_query(query, limit=limit)
+        # BUG-469: separate LIMIT/OFFSET statements with no ORDER BY may each see a
+        # different row order, so the batches overlapped and skipped rows. A connector
+        # that can stream one statement (Postgres: server-side cursor in one REPEATABLE
+        # READ transaction) is read that way. Reading the whole table in one
+        # execute_query call instead would hold up to row_cap rows in the single worker,
+        # so a connector without streaming keeps the paged read, one batch at a time.
+        query = f'SELECT * FROM {req.table_name}'
+        stream = getattr(connector, "stream_query", None)
+        batch_iter = (
+            stream(query, req.batch_size, row_cap) if stream is not None
+            else _paged_batches(connector, query, req.batch_size, row_cap)
+        )
+        # aclosing: a mid-stream failure must release the cursor's pooled connection
+        # before the finally's disconnect() closes the pool, which waits for it -- so
+        # the UASR error paths below raise without disconnecting inside this block.
+        async with (
+            contextlib.aclosing(batch_iter) as batch_stream,
+            httpx.AsyncClient(timeout=120, headers=uasr_headers) as client,
+        ):
+            async for rows in batch_stream:
                 if not rows:
                     break
 
@@ -652,12 +682,10 @@ async def ingest_connector_data(connector_type: str, req: ConnectorIngestRequest
                         },
                     )
                 except httpx.HTTPError as e:
-                    await connector.disconnect()
                     raise HTTPException(status_code=502, detail=f"UASR ingest failed: {sanitize_error(e, logger=logger, context='uasr ingest')}")
                 # BUG-229: a 4xx/5xx from UASR used to be parsed as a result and the
                 # batch counted as ingested; stop and report the real upstream status.
                 if resp.status_code >= 400:
-                    await connector.disconnect()
                     raise HTTPException(
                         status_code=502,
                         detail=f"UASR ingest returned HTTP {resp.status_code} at row offset {offset}; "
@@ -666,7 +694,6 @@ async def ingest_connector_data(connector_type: str, req: ConnectorIngestRequest
                 try:
                     result = resp.json()
                 except ValueError:
-                    await connector.disconnect()
                     raise HTTPException(status_code=502, detail="UASR ingest returned a non-JSON response")
 
                 drifted = bool(result.get("drift_detected") or (result.get("drift") or {}).get("detected"))
@@ -683,8 +710,7 @@ async def ingest_connector_data(connector_type: str, req: ConnectorIngestRequest
                     })
 
                 offset += len(rows)
-                if len(rows) < limit:
-                    break
+        truncated = req.max_rows is None and total_rows >= row_cap
     finally:
         await connector.disconnect()
 
@@ -824,28 +850,18 @@ async def sync_connection_table(connection_id: str, req: ConnectionSyncRequest, 
                         ),
                     )
 
-            # Page through the table so an unbounded remote table is never
-            # loaded in one shot; max_rows is the caller's safety valve when
-            # the cheap COUNT(*) above wasn't available.
-            all_rows: List[Dict[str, Any]] = []
-            offset = 0
-            # BUG-193: with no max_rows and no usable row estimate the loop used to be
+            # BUG-193: with no max_rows and no usable row estimate the read used to be
             # unbounded; read at most one row past the ceiling so an over-large table is
             # detected and refused instead of exhausting the worker's memory.
             fetch_cap = req.max_rows if req.max_rows is not None else _SYNC_ROW_CEILING + 1
-            while True:
-                remaining = max(0, fetch_cap - len(all_rows))
-                if remaining == 0:
-                    break
-                limit = min(req.batch_size, remaining)
-                query = f'SELECT * FROM {req.table_name} LIMIT {limit} OFFSET {offset}'
-                rows = await connector.execute_query(query, limit=limit)
-                if not rows:
-                    break
-                all_rows.extend(rows)
-                offset += len(rows)
-                if len(rows) < limit:
-                    break
+            # BUG-469: one statement, not LIMIT/OFFSET pages. Without an ORDER BY (and no
+            # column is known to be orderable or unique) the source may return a different
+            # row order for each page, so pages overlapped and skipped rows while the total
+            # still matched COUNT(*). A single statement reads one consistent scan; every
+            # row is held in memory for the snapshot anyway, so paging saved nothing.
+            all_rows: List[Dict[str, Any]] = await connector.execute_query(
+                f'SELECT * FROM {req.table_name}', limit=fetch_cap,
+            )
         finally:
             await connector.disconnect()
 
@@ -894,8 +910,25 @@ async def sync_connection_table(connection_id: str, req: ConnectionSyncRequest, 
         from shared.storage import get_storage_backend
 
         tenant = _request_tenant(request)
+        backend = get_storage_backend()
+        # BUG-476: the snapshot lands in the same per-tenant store POST /upload caps, so
+        # it gets the same check (files.py); otherwise syncing many tables filled the
+        # shared volume past the quota. A re-sync replaces its own snapshot, so that
+        # file does not count.
+        from shared.upload_retention import over_quota, tenant_dir_bytes, tenant_quota_bytes
+        tenant_dir = backend.tenant_dir(tenant) if hasattr(backend, "tenant_dir") else None
+        used = await asyncio.to_thread(tenant_dir_bytes, tenant_dir, file_name)
+        if used is None:
+            existing = await asyncio.to_thread(backend.list, tenant)
+            used = sum(o.size for o in existing if o.name != file_name)
+        if over_quota([used], len(parquet_bytes)):
+            raise HTTPException(
+                status_code=413,
+                detail=f"This snapshot would take your files past the {tenant_quota_bytes() // (1024 * 1024)}MB "
+                       "storage limit; delete files you no longer need and try again.",
+            )
         # BUG-239: the snapshot can be 2M rows; write() is a blocking file write / S3 put.
-        await asyncio.to_thread(get_storage_backend().write, tenant, file_name, parquet_bytes)
+        await asyncio.to_thread(backend.write, tenant, file_name, parquet_bytes)
 
         # Same post-write step POST /upload takes (files.py) — the DuckDB
         # schema-context cache is keyed on a fingerprint of the upload dir's

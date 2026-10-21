@@ -14,6 +14,41 @@ from fastapi import HTTPException, UploadFile
 logger = logging.getLogger("aura.file_service")
 
 
+def _match_upload(objects, file_id: str):
+    """The one object ``file_id`` names, or None.
+
+    BUG-462: matching "full name OR stem" against every object made a full
+    name also hit files whose stem is that name (``sales.csv`` deleted
+    ``sales.csv.parquet``), and a bare stem hit every format at once. An exact
+    name now wins; a stem resolves only when exactly one object has it.
+    """
+    objects = list(objects)
+    for o in objects:
+        if o.name == file_id:
+            return o
+    by_stem = [o for o in objects if os.path.splitext(o.name)[0] == file_id]
+    return by_stem[0] if len(by_stem) == 1 else None
+
+
+async def purge_upload_metadata(tenant: Optional[str], filename: str) -> None:
+    """Drop the metadata-DB rows derived from one upload: its dataset profile
+    (which holds sample rows) and its ``schema_columns`` rows (sample values).
+
+    BUG-461: deleting or expiring an upload removed only the files, so these
+    rows -- real data from the file -- outlived it, and a semantic model could
+    still be built from the deleted file's profile. ``schema_columns`` is keyed
+    by stem, so a same-stem sibling's rows go too; they are a rebuildable
+    index, while the deleted file's sample values must not survive.
+    """
+    from metadata_store.repository import get_repository
+    from shared.schema_indexer import delete_indexed_source, schema_source_id
+
+    async for repo in get_repository():
+        await repo.delete_dataset_profile(filename, workspace_id=tenant)
+        break
+    await delete_indexed_source(schema_source_id(tenant, filename))
+
+
 class FileService:
     """Service for handling file uploads, storage, and processing"""
 
@@ -83,9 +118,10 @@ class FileService:
         Was a bare ``pass``, so it returned None for every id and the route
         above it answered 404 for files that plainly existed.
 
-        Matches on full name OR stem exactly as ``delete_file`` does, so a
-        caller may pass either ``sales.csv`` or ``sales``. Returns None when
-        this tenant has no such object; the route turns that into a 404.
+        Matches exactly as ``delete_file`` does (``_match_upload``), so a
+        caller may pass either ``sales.csv`` or an unambiguous ``sales``.
+        Returns None when this tenant has no such object; the route turns
+        that into a 404.
 
         Tenant-scoped deliberately: resolving the id across all tenants would
         let one org confirm the existence — and read the inferred schema — of
@@ -93,10 +129,9 @@ class FileService:
         """
         from shared.storage import get_storage_backend
         tenant = subdir or "default"
-        for obj in get_storage_backend().list(tenant):
+        obj = _match_upload(get_storage_backend().list(tenant), file_id)
+        if obj is not None:
             stem = os.path.splitext(obj.name)[0]
-            if obj.name != file_id and stem != file_id:
-                continue
             info: Dict[str, Any] = {
                 "file_id": stem,
                 "filename": obj.name,
@@ -137,8 +172,7 @@ class FileService:
     def delete_file(self, file_id: str, subdir: str = "") -> bool:
         """Delete file (and its processed json) within an optional subdir.
 
-        Iterates the storage backend listing for the tenant and deletes any
-        object whose stem or full name matches ``file_id``.  Processed-data
+        Deletes the one object ``file_id`` names (see ``_match_upload``).  Processed-data
         artefacts on local disk are still cleaned up as before (they are a
         local cache, not stored in the backend).
         """
@@ -148,10 +182,10 @@ class FileService:
         deleted = False
         from shared.data_utils import remove_catalog_files
 
-        for o in backend.list(tenant):
-            if o.name == file_id or os.path.splitext(o.name)[0] == file_id:
-                deleted = backend.delete(tenant, o.name) or deleted
-                remove_catalog_files(o.duckdb_uri)  # BUG-450: sample rows and Parquet copies go with it
+        o = _match_upload(backend.list(tenant), file_id)
+        if o is not None:
+            deleted = backend.delete(tenant, o.name)
+            remove_catalog_files(o.duckdb_uri)  # BUG-450: sample rows and Parquet copies go with it
         # Clean up local processed-data artefacts (best-effort, harmless if missing).
         try:
             for file_path in self.processed_path.glob(f"{file_id}_processed.*"):

@@ -39,8 +39,17 @@ async def run_interruptible(con: Any, fn: Callable[[], T], timeout: float | None
         raise
 
 
+# BUG-468: DuckDB's default memory_limit is 80% of detected RAM *per instance*, and every
+# request opens its own instance; one user sort over range() filled that within seconds
+# and pushed the 512M gateway container into the OOM killer. Past this cap DuckDB spills
+# or fails the one query. A caller that needs more (the pipeline engine) raises it before
+# lock_down_connection; after the lockdown user SQL cannot.
+CONNECTION_MEMORY_LIMIT = "256MB"
+
+
 def new_connection(database: str = ":memory:") -> Any:
     con = duckdb.connect(database)
+    con.execute(f"SET memory_limit='{CONNECTION_MEMORY_LIMIT}'")
     get_storage_backend().configure_duckdb(con)
     return con
 

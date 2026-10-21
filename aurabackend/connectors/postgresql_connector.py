@@ -6,7 +6,7 @@ import json
 import logging
 import os
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, AsyncIterator, Dict, List, Optional
 
 try:
     import asyncpg
@@ -158,6 +158,30 @@ class PostgreSQLConnector(BaseConnector):
             if raise_errors:
                 raise
             return []
+
+    async def stream_query(
+        self, query: str, batch_size: int, max_rows: int
+    ) -> AsyncIterator[List[Dict[str, Any]]]:
+        """Yield the rows of one statement in lists of at most ``batch_size``.
+
+        BUG-469: bulk readers used to page with separate LIMIT/OFFSET statements and
+        no ORDER BY, so each page could see a different scan order and rows were
+        duplicated or skipped. One server-side cursor inside a REPEATABLE READ,
+        read-only transaction reads a single consistent snapshot while holding only
+        one batch in memory. Stops after ``max_rows`` rows. Errors propagate.
+        """
+        if not self._is_connected or not self.pool:
+            return
+        async with self.pool.acquire() as conn:
+            async with conn.transaction(isolation="repeatable_read", readonly=True):
+                cursor = await conn.cursor(query)
+                remaining = max_rows
+                while remaining > 0:
+                    rows = await cursor.fetch(min(batch_size, remaining))
+                    if not rows:
+                        break
+                    remaining -= len(rows)
+                    yield [dict(row) for row in rows]
 
     async def profile_table(self, table_name: str) -> Dict[str, Any]:
         """Generate comprehensive profile for a PostgreSQL table"""

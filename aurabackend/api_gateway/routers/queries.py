@@ -495,6 +495,16 @@ async def execute_query_with_insights(request: ExecuteQueryRequest):
         if connector is None:
             raise ValueError(f"Unknown or unavailable connector type: {request.connector_type}")
 
+        # BUG-470: connect() reports failure by returning False and execute_query by
+        # returning [], so a wrong password or a bad statement came back as
+        # success:true with 0 rows (BUG-439 fixed only the connectors service route).
+        import inspect
+
+        async def _run_query() -> List[Dict[str, Any]]:
+            if "raise_errors" in inspect.signature(connector.execute_query).parameters:
+                return await connector.execute_query(request.query, raise_errors=True)
+            return await connector.execute_query(request.query)
+
         start_time = time.perf_counter()
         if request.connector_type == "postgresql":
             # P-3 finding #6: reuse a long-lived pool — skip connect/disconnect
@@ -502,11 +512,14 @@ async def execute_query_with_insights(request: ExecuteQueryRequest):
             # request.  The registry manages pool lifetime; lifespan tears down.
             connector.pool = await _get_or_create_pg_pool(connector_config)
             connector._is_connected = True
-            results = await connector.execute_query(request.query)
+            results = await _run_query()
         else:
-            await connector.connect()
-            results = await connector.execute_query(request.query)
-            await connector.disconnect()
+            if not await connector.connect():
+                raise ConnectionError(f"Could not connect to the {request.connector_type} database")
+            try:
+                results = await _run_query()
+            finally:
+                await connector.disconnect()
         execution_time = (time.perf_counter() - start_time) * 1000
 
         conclusion = None
@@ -1005,12 +1018,12 @@ async def _fire_due_saved_queries() -> None:
             }
         await _record_run(query_id, entry)
 
-        # next_run_at was already advanced by the claim above.
+        # BUG-471: next_run_at was already advanced by the claim above; writing it again
+        # from the pre-run schedule overwrote a schedule the user changed mid-run.
         await persistence.update_saved_query(
             query_id, record.get("workspace_id") or DEFAULT_WORKSPACE_ID,
             {
                 "last_run_at": entry["completed_at"],
-                "next_run_at": new_next,
                 "updated_at": datetime.now().isoformat(),
             },
         )

@@ -375,11 +375,12 @@ class JobExecutor:
             hour = config.get("hour", 0)
             minute = config.get("minute", 0)
 
+            # BUG-460: roll a week forward only when this week's slot has
+            # passed -- the weekday alone skipped a slot still ahead today.
             next_run = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
-            days_ahead = day_of_week - now.weekday()
-            if days_ahead <= 0:
-                days_ahead += 7
-            next_run += timedelta(days=days_ahead)
+            next_run += timedelta(days=(day_of_week - now.weekday()) % 7)
+            if next_run <= now:
+                next_run += timedelta(days=7)
             return next_run
 
         elif job.schedule_type == "monthly":
@@ -389,19 +390,19 @@ class JobExecutor:
             hour = config.get("hour", 0)
             minute = config.get("minute", 0)
 
-            # day is validated as 1-31 at job-creation time (BUG-023b), but not
-            # every month has 31 days — clamp to the current month's last day
-            # instead of letting datetime.replace() raise and fail a successful run.
-            _, days_in_month = calendar.monthrange(now.year, now.month)
-            day = min(day, days_in_month)
+            # day is validated as 1-31 (BUG-023b), but not every month has 31 days.
+            # BUG-459: clamp against the month the run lands in, starting from the
+            # configured day each time -- clamping only to the current month made
+            # replace(month=+1) raise (Mar 31 -> Apr 31) or drift (Feb 28 -> Mar 28).
+            def _slot(year: int, month: int) -> datetime:
+                last = calendar.monthrange(year, month)[1]
+                return now.replace(year=year, month=month, day=min(day, last),
+                                   hour=hour, minute=minute, second=0, microsecond=0)
 
-            next_run = now.replace(day=day, hour=hour, minute=minute, second=0, microsecond=0)
+            next_run = _slot(now.year, now.month)
             if next_run <= now:
-                # Move to next month
-                if next_run.month == 12:
-                    next_run = next_run.replace(year=next_run.year + 1, month=1)
-                else:
-                    next_run = next_run.replace(month=next_run.month + 1)
+                year, month = (now.year + 1, 1) if now.month == 12 else (now.year, now.month + 1)
+                next_run = _slot(year, month)
             return next_run
 
         # For cron expressions, would need a cron parser library
