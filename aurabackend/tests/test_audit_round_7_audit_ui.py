@@ -49,7 +49,7 @@ def test_bug481_upload_with_space_or_parens_is_found(uploads, name):
     assert list(df.columns) == ["t", "y"]
 
 
-@pytest.mark.parametrize("name", ["../secret.csv", "a/b.csv", "a\\b.csv", "..", ".", "", "x\x00.csv"])
+@pytest.mark.parametrize("name", ["../secret.csv", "a/b.csv", "a\\b.csv", "..", ".", "", "x\x00.csv", "D:secret.csv", "C:x.csv"])
 def test_bug481_traversal_names_still_rejected(uploads, name):
     from counterfactual_service import main
 
@@ -92,3 +92,19 @@ def test_bug482_untrimmed_headers_unchanged(uploads):
     assert main._csv_header_columns("plain.csv", TENANT) == ["a", "b"]
     df = main._read_upload("plain.csv", TENANT)
     assert isinstance(df, pd.DataFrame) and df.shape == (1, 2)
+
+
+def test_bug481_drive_prefixed_names_are_refused_by_the_storage_layer():
+    from shared.storage.base import safe_object_name
+
+    for name in ("D:secret.csv", "C:x.csv", "a:b.csv"):
+        with pytest.raises(ValueError):
+            safe_object_name(name)
+    assert safe_object_name("Loan Data 2024 (1).csv") == "Loan Data 2024 (1).csv"
+
+
+def test_bug482_duplicate_labels_after_stripping_keep_the_raw_header(uploads):
+    from counterfactual_service import main
+
+    (uploads / "dup.csv").write_text("a, a\n1,2\n", encoding="utf-8")
+    assert main._csv_header_columns("dup.csv", TENANT) == ["a", " a"]

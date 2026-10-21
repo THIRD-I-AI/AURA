@@ -212,7 +212,9 @@ def _read_upload(name: str, tenant: Optional[str], nrows: Optional[int] = None) 
         # BUG-482: pandas keeps the space in "id, loan_amount"; DuckDB's
         # read_csv_auto (the chat pipeline) and the wizard's preview both trim it,
         # so the mapped names were rejected as "columns not in file".
-        df.columns = [c.strip() if isinstance(c, str) else c for c in df.columns]
+        stripped = [c.strip() if isinstance(c, str) else c for c in df.columns]
+        if len(set(stripped)) == len(stripped):  # "a, a" would collapse into one label
+            df.columns = stripped
         return df
     if read_fn == "read_parquet":
         return pd.read_parquet(data)

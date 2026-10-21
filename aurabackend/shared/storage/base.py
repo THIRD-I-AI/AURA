@@ -26,7 +26,9 @@ def safe_object_name(filename: str) -> str:
     unchanged when safe; raises ValueError otherwise.
     """
     name = filename or ""
-    if name in ("", ".", "..") or "/" in name or "\\" in name or "\x00" in name:
+    # ':' too (BUG-481 review): on Windows `tenant_dir / "D:x.csv"` is a
+    # drive-relative path outside the tenant directory.
+    if name in ("", ".", "..") or any(c in name for c in ("/", "\\", "\x00", ":")):
         raise ValueError(f"unsafe object filename: {filename!r}")
     return name
 
