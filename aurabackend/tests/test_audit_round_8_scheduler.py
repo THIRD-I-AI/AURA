@@ -18,6 +18,7 @@ from scheduler_service import main as sched_main
 from scheduler_service.executor import JobExecutor
 from scheduler_service.models import JobStatus, ScheduleType
 from scheduler_service.repository import SchedulerRepository
+from scheduler_service.worker import SchedulerWorker
 
 
 @pytest_asyncio.fixture
@@ -158,6 +159,78 @@ async def test_retries_stop_at_max_retries_across_ticks(repo, executor):
     stored = await repo.get_job(job.id)
     # back on its daily 09:00 slot, not the retry time
     assert (stored.next_execution_time.hour, stored.next_execution_time.minute) == (9, 0)
+
+
+# BUG-502 review: with retries out of the tick, a downstream job must not run while
+# its upstream's retry is outstanding (depends_on = "must succeed first").
+
+def _make_due(when=None):
+    return {"next_execution_time": when or datetime.now(timezone.utc) - timedelta(seconds=1)}
+
+
+@pytest.mark.asyncio
+async def test_downstream_waits_for_the_upstream_retry_to_succeed(repo, executor):
+    up = await _daily_job(repo, name="A", query="SELECT 'A'", max_retries=1,
+                          retry_delay_seconds=3600)
+    down = await _daily_job(repo, name="B", query="SELECT 'B'", depends_on=[up.id])
+    b_due = (await repo.get_job(down.id)).next_execution_time
+    ran = []
+
+    async def _query(**kwargs):
+        ran.append(kwargs["query"])
+        if kwargs["query"] == "SELECT 'A'" and ran.count("SELECT 'A'") == 1:
+            raise RuntimeError("blip")
+        return {"row_count": 1, "columns": ["x"], "rows": [[1]]}
+
+    executor._execute_query = _query
+    worker = SchedulerWorker(repo, executor)
+
+    # Tick 1: A fails once -> PENDING; B is deferred and stays due.
+    await asyncio.wait_for(worker._evaluate_and_execute(), timeout=10)
+    assert ran == ["SELECT 'A'"]
+    assert (await repo.list_executions(job_id=up.id))[0].status == JobStatus.PENDING
+    assert await repo.list_executions(job_id=down.id) == []
+    assert (await repo.get_job(down.id)).next_execution_time == b_due
+
+    # Tick 2: A's retry is not due yet; B alone is due and still deferred.
+    await asyncio.wait_for(worker._evaluate_and_execute(), timeout=10)
+    assert ran == ["SELECT 'A'"]
+    assert (await repo.get_job(down.id)).next_execution_time == b_due
+
+    # Tick 3: A's retry comes due and succeeds; B runs after it in the same tick.
+    await repo.update_job(up.id, _make_due())
+    await asyncio.wait_for(worker._evaluate_and_execute(), timeout=10)
+    assert ran == ["SELECT 'A'", "SELECT 'A'", "SELECT 'B'"]
+    b_execs = await repo.list_executions(job_id=down.id)
+    assert [e.status for e in b_execs] == [JobStatus.SUCCESS]
+    assert (await repo.get_job(down.id)).next_execution_time != b_due
+
+
+@pytest.mark.asyncio
+async def test_downstream_stays_due_when_the_upstream_exhausts_its_retries(repo, executor):
+    # No documented on-failed-upstream behaviour (on_failure_action is unused), so B is
+    # kept due (not skipped/advanced) and logged; it runs once A next succeeds.
+    up = await _daily_job(repo, name="A", query="SELECT 'A'", max_retries=0)
+    down = await _daily_job(repo, name="B", query="SELECT 'B'", depends_on=[up.id])
+    b_due = (await repo.get_job(down.id)).next_execution_time
+    ran = []
+
+    async def _query(**kwargs):
+        ran.append(kwargs["query"])
+        if kwargs["query"] == "SELECT 'A'":
+            raise RuntimeError("down")
+        return {"row_count": 1, "columns": ["x"], "rows": [[1]]}
+
+    executor._execute_query = _query
+    worker = SchedulerWorker(repo, executor)
+
+    await asyncio.wait_for(worker._evaluate_and_execute(), timeout=10)
+    await asyncio.wait_for(worker._evaluate_and_execute(), timeout=10)
+
+    assert ran == ["SELECT 'A'"]
+    assert (await repo.list_executions(job_id=up.id))[0].status == JobStatus.FAILED
+    assert await repo.list_executions(job_id=down.id) == []
+    assert (await repo.get_job(down.id)).next_execution_time == b_due
 
 
 # ── BUG-503 ─────────────────────────────────────────────────────────
