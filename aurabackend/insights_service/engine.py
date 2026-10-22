@@ -11,6 +11,28 @@ from datetime import datetime
 from enum import Enum
 from typing import Any, Dict, List, Optional, Tuple
 
+_DATE_FORMATS = ("%Y-%m", "%m/%d/%Y", "%d/%m/%Y", "%Y/%m/%d", "%m/%d/%y")
+
+
+def _parses_as_date(value: str) -> bool:
+    s = value.strip()
+    # The separator check keeps bare digit strings (IDs, "20240115"-style codes)
+    # out of the ISO parser, which would otherwise accept some of them.
+    if "-" not in s and "/" not in s:
+        return False
+    try:
+        datetime.fromisoformat(s)
+        return True
+    except ValueError:
+        pass
+    for fmt in _DATE_FORMATS:
+        try:
+            datetime.strptime(s, fmt)
+            return True
+        except ValueError:
+            continue
+    return False
+
 
 class ChartType(Enum):
     """Supported chart types"""
@@ -150,8 +172,9 @@ class InsightsEngine:
                     else "object"
                 )
             elif isinstance(first_val, str):
-                # Check if it looks like a date
-                if any(d in str(first_val) for d in ["-", "/"]) and len(str(first_val)) < 20:
+                # BUG-510: a '-' or '/' in the first value made SKU-0, North-East, N/A
+                # a "date"; every value must actually parse as one.
+                if all(isinstance(v, str) and _parses_as_date(v) for v in values):
                     types[col] = "date"
                 else:
                     types[col] = "string"
@@ -306,20 +329,25 @@ class InsightsEngine:
                 mid = n // 2
                 first_mean = _stats.mean(values[:mid])
                 second_mean = _stats.mean(values[mid:])
-                change_pct = ((second_mean - first_mean) / first_mean * 100) if first_mean else 0
-                if abs(change_pct) >= 10:
-                    direction = "increased" if change_pct > 0 else "decreased"
+                delta = second_mean - first_mean
+                # BUG-509: divide by |baseline| so a negative baseline does not flip the
+                # sign (-100 -> -50 is an increase). A zero baseline has no defined
+                # percentage, but a move off zero is still a trend worth reporting.
+                change_pct = (delta / abs(first_mean) * 100) if first_mean else None
+                if (abs(change_pct) >= 10) if change_pct is not None else delta != 0:
+                    direction = "increased" if delta > 0 else "decreased"
+                    by = f" by {abs(change_pct):.1f}%" if change_pct is not None else ""
                     self.insights.append(
                         Insight(
                             type=InsightType.TREND,
                             title=f"{col} Trend",
                             description=(
-                                f"{col} {direction} by {abs(change_pct):.1f}% "
+                                f"{col} {direction}{by} "
                                 f"(from {first_mean:.2f} to {second_mean:.2f})"
                             ),
                             metric_name=col,
                             metric_value=second_mean,
-                            metric_change=round(change_pct, 2),
+                            metric_change=round(change_pct, 2) if change_pct is not None else None,
                             confidence=0.75,
                         )
                     )
