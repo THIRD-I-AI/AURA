@@ -141,6 +141,10 @@ _BAD_ATTRS = frozenset({"eval", "query", "pipe", "plot", "hist", "boxplot", "sty
 _AMPLIFYING_ATTRS = frozenset({
     "repeat", "sample", "merge", "join", "explode", "reindex", "reindex_like",
     "resize", "tile", "outer", "kron", "broadcast_to", "combine", "expanding",
+    # BUG-506: string methods whose output length is an argument -- str.pad(10**8)
+    # over a 2-row frame builds 200 MB -- and str.format/expandtabs, whose width
+    # or tab size does the same from a constant ("{:>100000000}".format(1)).
+    "pad", "ljust", "rjust", "center", "zfill", "format", "format_map", "expandtabs",
 })
 # BUG-479: the largest literal a sequence or string may be multiplied by, and the
 # largest constant exponent ("x" * 600000000 and 10**300000000 pass the name and
@@ -289,6 +293,13 @@ def _assert_safe_expr(expr: str) -> "ast.Expression":
             raise ValueError(f"disallowed size-amplifying method: {node.attr}")
         if isinstance(node, ast.BinOp):
             _assert_bounded_binop(node)
+        # BUG-506: f"{x:>100000000}" and "%100000000d" % x size a string by a
+        # width written in the format; a value cross-check never formats text.
+        if isinstance(node, (ast.JoinedStr, ast.FormattedValue)):
+            raise ValueError("disallowed construct: string formatting")
+        if (isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mod)
+                and isinstance(node.left, ast.Constant) and isinstance(node.left.value, str)):
+            raise ValueError("disallowed construct: string formatting")
     return tree
 
 
@@ -384,7 +395,10 @@ def safe_eval_pandas(expr: str, df: pd.DataFrame, timeout_s: float = 5.0) -> Any
 # the expression runs in a child process with an address-space cap, and a child
 # that overruns is killed. Elsewhere (Windows dev) the thread runner remains.
 _CAN_FORK = hasattr(os, "fork") and sys.platform.startswith("linux")
-_CHILD_EXTRA_BYTES = 512 * 1024 * 1024
+# BUG-506: 512 MB of headroom was already the whole 512M gateway container.
+_CHILD_EXTRA_BYTES = 256 * 1024 * 1024
+# A value cross-check returns a scalar or a small table; anything larger is refused.
+_MAX_RESULT_BYTES = 32 * 1024 * 1024
 
 
 def _vm_size_bytes() -> int:
@@ -425,6 +439,7 @@ def _run_in_capped_child(fn, timeout_s: float):
 
     os.close(write_fd)
     chunks: List[bytes] = []
+    received = 0
     deadline = time.monotonic() + timeout_s
     try:
         while True:
@@ -436,6 +451,13 @@ def _run_in_capped_child(fn, timeout_s: float):
             if not chunk:
                 break
             chunks.append(chunk)
+            received += len(chunk)
+            # BUG-506: the address-space cap binds only the child. Joining and
+            # unpickling an unbounded reply here would materialise it two or three
+            # times over in the gateway itself, so an oversized reply is refused.
+            if received > _MAX_RESULT_BYTES:
+                os.kill(pid, signal.SIGKILL)
+                raise MemoryError("pandas eval result exceeded its size limit")
     finally:
         os.close(read_fd)
         os.waitpid(pid, 0)
