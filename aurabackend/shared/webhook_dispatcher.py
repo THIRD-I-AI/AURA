@@ -209,8 +209,14 @@ class WebhookDispatcher:
 
     # ── CRUD ───────────────────────────────────────────────────────
 
+    def _snapshot(self) -> List[WebhookSubscription]:
+        # BUG-495: mutators run on worker threads; iterating the live dict raced them
+        # with "dictionary changed size during iteration".
+        with self._lock:
+            return list(self._subs.values())
+
     def list(self, workspace_id: str) -> List[WebhookSubscription]:
-        return [s for s in self._subs.values() if s.workspace_id == workspace_id]
+        return [s for s in self._snapshot() if s.workspace_id == workspace_id]
 
     def get(self, sub_id: str, workspace_id: str) -> Optional[WebhookSubscription]:
         sub = self._subs.get(sub_id)
@@ -317,22 +323,27 @@ class WebhookDispatcher:
                 logger.warning("Webhook subscriber error: %s", exc)
                 continue
 
-            event_type = _classify(event)
-            if event_type is None:
-                continue
+            # BUG-495: start() never restarts this task, so one event that raises here
+            # would silently end outbound webhooks for every tenant until a restart.
+            try:
+                event_type = _classify(event)
+                if event_type is None:
+                    continue
 
-            matched = self._targets(event_type, event)
-            if not matched:
-                continue
+                matched = self._targets(event_type, event)
+                if not matched:
+                    continue
 
-            payload = self._build_payload(event_type, event)
-            for sub in matched:
-                # Fire-and-forget per subscription so a slow target doesn't block others
-                from shared.tasks import fire_and_forget
-                fire_and_forget(
-                    self._deliver(sub, event_type, payload),
-                    name=f"webhook-{sub.id}",
-                )
+                payload = self._build_payload(event_type, event)
+                for sub in matched:
+                    # Fire-and-forget per subscription so a slow target doesn't block others
+                    from shared.tasks import fire_and_forget
+                    fire_and_forget(
+                        self._deliver(sub, event_type, payload),
+                        name=f"webhook-{sub.id}",
+                    )
+            except Exception:
+                logger.exception("Webhook dispatch failed for event %s", getattr(event, "event_id", "?"))
 
     def _targets(self, event_type: str, event: StreamEvent) -> List[WebhookSubscription]:
         """The subscriptions an event is delivered to: active, matching its type, and
@@ -348,7 +359,7 @@ class WebhookDispatcher:
         """
         event_workspace = event.workspace_id or ""
         return [
-            s for s in self._subs.values()
+            s for s in self._snapshot()
             if s.active and s.matches(event_type) and (s.workspace_id or "") == event_workspace
         ]
 

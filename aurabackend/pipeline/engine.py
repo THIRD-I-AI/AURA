@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import os
 import re
 import threading
@@ -767,7 +768,10 @@ class PipelineEngine:
                     elif is_numeric and value and _val_is_numeric:
                         # BUG-185: only a value that parsed as a number, re-rendered from the
                         # parsed float -- never the caller's raw string.
-                        replaces.append(f'COALESCE({_q(c_name)}, {float(value)!r}) AS {_q(c_name)}')
+                        _num = float(value)
+                        # BUG-497: repr() of NaN/inf is a bare nan/inf, which SQL binds as a column.
+                        _lit = repr(_num) if math.isfinite(_num) else f"CAST({quote_literal(repr(_num))} AS DOUBLE)"
+                        replaces.append(f'COALESCE({_q(c_name)}, {_lit}) AS {_q(c_name)}')
                     elif is_numeric and not value:
                         replaces.append(f'COALESCE({_q(c_name)}, 0) AS {_q(c_name)}')
                     elif not is_numeric and value and not _val_is_numeric:

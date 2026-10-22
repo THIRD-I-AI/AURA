@@ -3,9 +3,9 @@ Workspaces Router
 =================
 Lightweight tenancy for saved queries, dashboards, and lineage.
 
-Workspaces live in an in-memory store (same pattern as saved queries).
+Workspace records live in the gateway database (``gateway_workspaces``).
 Scoping is header-driven — callers send ``X-Workspace-Id``; when absent
-we fall back to the seeded ``default`` workspace. This keeps the API
+we fall back to the shared ``default`` workspace. This keeps the API
 usable without auth while letting the frontend switch context cleanly.
 
 Exposes ``current_workspace_id()`` so sibling routers can scope their
@@ -16,13 +16,14 @@ from __future__ import annotations
 
 import os
 import re
-import threading
+import secrets
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
+from api_gateway import persistence
 from shared.logging_config import get_logger
 
 logger = get_logger("aura.api_gateway.workspaces")
@@ -35,26 +36,22 @@ router = APIRouter(tags=["Workspaces"])
 DEFAULT_WORKSPACE_ID = "default"
 _HEADER = "X-Workspace-Id"
 
-_workspaces_lock = threading.Lock()
-_workspaces_store: List[Dict[str, Any]] = []
+# BUG-494: the registry used to be a list in this process's memory, so under several
+# gateway workers a workspace existed only on the worker that created it, and a restart
+# deleted every one. Records now live in persistence.WorkspaceRow. The shared default
+# workspace is a constant, not a row: every tenant sees it and no one may edit it.
+_DEFAULT_CREATED_AT = datetime.now().isoformat()
+_DEFAULT_RECORD: Dict[str, Any] = {
+    "id": DEFAULT_WORKSPACE_ID,
+    "name": "Default",
+    "description": "Default workspace (auto-created)",
+    "created_at": _DEFAULT_CREATED_AT,
+    "updated_at": _DEFAULT_CREATED_AT,
+    "tenant_id": None,
+}
 
-
-def _seed_default() -> None:
-    with _workspaces_lock:
-        if any(w["id"] == DEFAULT_WORKSPACE_ID for w in _workspaces_store):
-            return
-        ts = datetime.now().isoformat()
-        _workspaces_store.append({
-            "id": DEFAULT_WORKSPACE_ID,
-            "name": "Default",
-            "description": "Default workspace (auto-created)",
-            "created_at": ts,
-            "updated_at": ts,
-            "tenant_id": None,
-        })
-
-
-_seed_default()
+# Generated ids are ws_<hex>; ids from before BUG-494 are ws_<epoch ms>.
+_WORKSPACE_ID_RE = re.compile(r"^ws_[0-9A-Za-z]{1,60}$")
 
 
 # ── Public helpers — used by other routers ──────────────────────────
@@ -82,24 +79,20 @@ def current_workspace_id(request: Request) -> str:
     escape the org; the default folder is the tenant itself.
 
     Unauthenticated requests (dev/open mode, no JWT middleware) keep the
-    legacy header-scoped behaviour and never raise — an unknown id falls
-    back to ``default``.
+    legacy header-scoped behaviour and never raise — a header that is not a
+    workspace id falls back to ``default``.
     """
     raw = (request.headers.get(_HEADER) or "").strip()
     tenant = _request_tenant(request)
     if tenant is None:
-        wsid = raw or DEFAULT_WORKSPACE_ID
-        with _workspaces_lock:
-            known = {w["id"] for w in _workspaces_store}
-        return wsid if wsid in known else DEFAULT_WORKSPACE_ID
+        # BUG-494: this checked the id against the handling worker's in-memory list,
+        # so a workspace made on another worker was silently rerouted to the shared
+        # default and its writes landed there. This sync helper cannot query the async
+        # DB, and open mode has no tenant boundary to defend, so the id's shape decides.
+        return raw if _WORKSPACE_ID_RE.match(raw) else DEFAULT_WORKSPACE_ID
     if not raw or raw == DEFAULT_WORKSPACE_ID:
         return tenant
     return f"{tenant}::{raw}"
-
-
-def workspace_exists(wsid: str) -> bool:
-    with _workspaces_lock:
-        return any(w["id"] == wsid for w in _workspaces_store)
 
 
 def tenant_from_workspace_id(workspace_id: Optional[str]) -> Optional[str]:
@@ -191,8 +184,8 @@ class WorkspaceUpdate(BaseModel):
 
 # ── CRUD endpoints ──────────────────────────────────────────────────
 #
-# BUG-057: these four endpoints operated on the single module-level
-# _workspaces_store with no reference to the caller's tenant at all --
+# BUG-057: these four endpoints operated on one shared workspace
+# registry with no reference to the caller's tenant at all --
 # any authenticated caller could list every tenant's workspace records,
 # and (ids being sequential-ish `ws_<timestamp_ms>`, easily brute-forced)
 # rename or delete another tenant's workspace by id. `tenant_id` is now
@@ -202,16 +195,11 @@ class WorkspaceUpdate(BaseModel):
 # or not) -- it's a shared system placeholder, not tenant data.
 
 
-def _visible_to(record: Dict[str, Any], tenant: Optional[str]) -> bool:
-    return record["id"] == DEFAULT_WORKSPACE_ID or record.get("tenant_id") == tenant
-
-
 @router.get("/workspaces")
 async def list_workspaces(request: Request):
-    tenant = _request_tenant(request)
-    with _workspaces_lock:
-        records = [w for w in _workspaces_store if _visible_to(w, tenant)]
-    records.sort(key=lambda r: (0 if r["id"] == DEFAULT_WORKSPACE_ID else 1, r["name"].lower()))
+    records = await persistence.list_workspaces(_request_tenant(request))
+    records.sort(key=lambda r: r["name"].lower())
+    records.insert(0, dict(_DEFAULT_RECORD))
     return {"success": True, "workspaces": records, "total": len(records)}
 
 
@@ -220,17 +208,18 @@ async def create_workspace(payload: WorkspaceCreate, request: Request):
     name = payload.name.strip()
     if not name:
         raise HTTPException(status_code=400, detail="name is required")
-    ts = datetime.now()
+    ts = datetime.now().isoformat()
     record = {
-        "id": f"ws_{int(ts.timestamp() * 1000)}",
+        # BUG-494: a millisecond timestamp collided for two creates in the same ms
+        # (e.g. on two workers), and the two records then shared one data namespace.
+        "id": f"ws_{secrets.token_hex(8)}",
         "name": name,
         "description": (payload.description or "").strip() or None,
-        "created_at": ts.isoformat(),
-        "updated_at": ts.isoformat(),
+        "created_at": ts,
+        "updated_at": ts,
         "tenant_id": _request_tenant(request),
     }
-    with _workspaces_lock:
-        _workspaces_store.append(record)
+    await persistence.insert_workspace(record)
     return {"success": True, "workspace": record}
 
 
@@ -240,22 +229,17 @@ async def update_workspace(workspace_id: str, payload: WorkspaceUpdate, request:
     # any caller changed its name and description for all of them. Same guard as delete.
     if workspace_id == DEFAULT_WORKSPACE_ID:
         raise HTTPException(status_code=400, detail="Cannot modify the default workspace")
-    tenant = _request_tenant(request)
-    with _workspaces_lock:
-        record = next(
-            (w for w in _workspaces_store if w["id"] == workspace_id and _visible_to(w, tenant)),
-            None,
-        )
-        if record is None:
-            raise HTTPException(status_code=404, detail="Workspace not found")
-        if payload.name is not None:
-            new_name = payload.name.strip()
-            if not new_name:
-                raise HTTPException(status_code=400, detail="name cannot be empty")
-            record["name"] = new_name
-        if payload.description is not None:
-            record["description"] = payload.description.strip() or None
-        record["updated_at"] = datetime.now().isoformat()
+    fields: Dict[str, Any] = {"updated_at": datetime.now().isoformat()}
+    if payload.name is not None:
+        new_name = payload.name.strip()
+        if not new_name:
+            raise HTTPException(status_code=400, detail="name cannot be empty")
+        fields["name"] = new_name
+    if payload.description is not None:
+        fields["description"] = payload.description.strip() or None
+    record = await persistence.update_workspace(workspace_id, _request_tenant(request), fields)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Workspace not found")
     return {"success": True, "workspace": record}
 
 
@@ -263,12 +247,6 @@ async def update_workspace(workspace_id: str, payload: WorkspaceUpdate, request:
 async def delete_workspace(workspace_id: str, request: Request):
     if workspace_id == DEFAULT_WORKSPACE_ID:
         raise HTTPException(status_code=400, detail="Cannot delete the default workspace")
-    tenant = _request_tenant(request)
-    with _workspaces_lock:
-        before = len(_workspaces_store)
-        _workspaces_store[:] = [
-            w for w in _workspaces_store if not (w["id"] == workspace_id and _visible_to(w, tenant))
-        ]
-        if len(_workspaces_store) == before:
-            raise HTTPException(status_code=404, detail="Workspace not found")
+    if not await persistence.delete_workspace(workspace_id, _request_tenant(request)):
+        raise HTTPException(status_code=404, detail="Workspace not found")
     return {"success": True, "id": workspace_id}

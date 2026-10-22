@@ -26,6 +26,13 @@ const FIELD = cn(
   'placeholder:text-text-tertiary outline-none focus-visible:border-ring',
 );
 
+// BUG-493: String() turned STRUCT/MAP cells into '[object Object]' and flattened
+// LIST cells to '1,2,3'; JSON keeps the real value and its brackets.
+function cellText(v: unknown): string {
+  if (v === null || v === undefined) return '';
+  return typeof v === 'object' ? JSON.stringify(v) : String(v);
+}
+
 function TileResult({ tile }: { tile: RenderedTile }) {
   const rows = tile.rows.slice(0, TILE_ROWS_SHOWN);
   const cut = tile.truncated || tile.rows.length > rows.length;
@@ -43,7 +50,7 @@ function TileResult({ tile }: { tile: RenderedTile }) {
             </thead>
             <tbody>
               {rows.map((r, i) => (
-                <tr key={i}>{r.map((v, j) => <td key={j} className="max-w-48 truncate border-b border-border-hairline px-2 py-1 text-card-foreground" title={String(v ?? '')}>{v === null || v === undefined ? '—' : String(v)}</td>)}</tr>
+                <tr key={i}>{r.map((v, j) => <td key={j} className="max-w-48 truncate border-b border-border-hairline px-2 py-1 text-card-foreground" title={cellText(v)}>{v === null || v === undefined ? '—' : cellText(v)}</td>)}</tr>
               ))}
             </tbody>
           </table>

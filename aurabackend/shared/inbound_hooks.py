@@ -104,14 +104,31 @@ class InboundHookRegistry:
                 self._by_slug[h.slug] = h
             logger.info("Loaded %d inbound hooks", len(self._hooks))
         except Exception as exc:
-            logger.warning("Failed to load inbound hook store: %s", exc)
+            # BUG-496: the next _save would overwrite the unreadable file with only the
+            # hooks created since, erasing every other tenant's hooks for good. Move it
+            # aside so it can be recovered by hand.
+            aside = f"{_STORE_PATH}.corrupt-{uuid.uuid4().hex}"
+            try:
+                os.replace(_STORE_PATH, aside)
+            except OSError:
+                aside = "(could not move aside)"
+            logger.warning("Failed to load inbound hook store: %s; preserved as %s", exc, aside)
 
     def _save(self) -> None:
+        """Write the store atomically (temp file + replace); callers hold self._lock."""
+        # BUG-496: an in-place open(..., "w") truncated the file before writing, so a
+        # failed or killed write (on every public fire) left it empty or partial.
         os.makedirs(_DATA_DIR, exist_ok=True)
+        tmp = f"{_STORE_PATH}.{uuid.uuid4().hex}.tmp"
         try:
-            with open(_STORE_PATH, "w", encoding="utf-8") as f:
+            with open(tmp, "w", encoding="utf-8") as f:
                 json.dump([h.__dict__ for h in self._hooks.values()], f, indent=2)
+            os.replace(tmp, _STORE_PATH)
         except Exception as exc:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
             logger.warning("Failed to persist inbound hook store: %s", exc)
 
     # ── CRUD ───────────────────────────────────────────────────────

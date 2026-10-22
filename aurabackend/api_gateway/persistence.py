@@ -372,6 +372,26 @@ class SyntheticJobRow(Base):
     updated_ts = Column(Float, nullable=False)
 
 
+class WorkspaceRow(Base):
+    """One workspace folder record (BUG-494).
+
+    Replaces the workspaces router's in-memory list: under several gateway
+    workers a workspace existed only on the worker that created it, and every
+    restart deleted all of them. ``tenant_id`` is NULL for records created by
+    unauthenticated (open-mode) callers. The shared ``default`` workspace is not
+    stored; the router supplies it.
+    """
+
+    __tablename__ = "gateway_workspaces"
+
+    id = Column(String(64), primary_key=True)
+    tenant_id = Column(String(255), nullable=True, index=True)
+    name = Column(Text, nullable=False)
+    description = Column(Text, nullable=True)
+    created_at = Column(String(64), nullable=False)
+    updated_at = Column(String(64), nullable=False)
+
+
 class PipelineRow(Base):
     """One saved pipeline — tenant-scoped (S50).
 
@@ -1241,10 +1261,18 @@ def _extract_tables(sql: str) -> set:
     for statement in parsed or []:
         if statement is None:
             continue
+        # BUG-498: a WITH-clause name is not a physical table, a table function
+        # (read_csv_auto(...)) parses as a Table with an empty name, and a.orders /
+        # b.orders are two different upstream tables.
+        cte_names = {cte.alias_or_name.lower() for cte in statement.find_all(exp.CTE) if cte.alias_or_name}
         for table in statement.find_all(exp.Table):
             name = getattr(table, "name", None)
-            if name and not name.startswith("__"):
-                tables.add(name.lower())
+            if not name or name.startswith("__"):
+                continue
+            qualifier = [p for p in (table.catalog, table.db) if p]
+            if not qualifier and name.lower() in cte_names:
+                continue
+            tables.add(".".join(qualifier + [name]).lower())
     return tables
 
 
@@ -1447,6 +1475,59 @@ async def list_synthetic_jobs(workspace_id: str, limit: int = 200) -> List[Dict[
             .limit(limit)
         )).scalars().all()
         return [json.loads(r.record_json) for r in rows]
+
+
+# ── Workspaces (BUG-494) ──────────────────────────────────────────────
+
+def _workspace_dict(row: "WorkspaceRow") -> Dict[str, Any]:
+    return {
+        "id": row.id, "name": row.name, "description": row.description,
+        "created_at": row.created_at, "updated_at": row.updated_at, "tenant_id": row.tenant_id,
+    }
+
+
+def _workspace_owned_by(tenant_id: Optional[str]):
+    return WorkspaceRow.tenant_id.is_(None) if tenant_id is None else WorkspaceRow.tenant_id == tenant_id
+
+
+async def insert_workspace(record: Dict[str, Any]) -> None:
+    async with session_scope() as s:
+        s.add(WorkspaceRow(**record))
+
+
+async def list_workspaces(tenant_id: Optional[str]) -> List[Dict[str, Any]]:
+    async with session_scope() as s:
+        rows = (await s.execute(
+            select(WorkspaceRow).where(_workspace_owned_by(tenant_id))
+        )).scalars().all()
+        return [_workspace_dict(r) for r in rows]
+
+
+async def update_workspace(
+    workspace_id: str, tenant_id: Optional[str], fields: Dict[str, Any],
+) -> Optional[Dict[str, Any]]:
+    """Apply *fields* to the tenant's workspace; ``None`` when it has no such workspace."""
+    async with session_scope() as s:
+        row = (await s.execute(
+            select(WorkspaceRow)
+            .where(WorkspaceRow.id == workspace_id)
+            .where(_workspace_owned_by(tenant_id))
+        )).scalar_one_or_none()
+        if row is None:
+            return None
+        for key, value in fields.items():
+            setattr(row, key, value)
+        return _workspace_dict(row)
+
+
+async def delete_workspace(workspace_id: str, tenant_id: Optional[str]) -> bool:
+    async with session_scope() as s:
+        result = await s.execute(
+            delete(WorkspaceRow)
+            .where(WorkspaceRow.id == workspace_id)
+            .where(_workspace_owned_by(tenant_id))
+        )
+        return (result.rowcount or 0) > 0
 
 
 async def save_pipeline(record: Dict[str, Any]) -> Dict[str, Any]:

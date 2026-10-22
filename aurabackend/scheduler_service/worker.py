@@ -48,7 +48,7 @@ from .distributed_queue import (
     compute_lock_id,
 )
 from .executor import JobExecutor
-from .models import ScheduledJob
+from .models import JobStatus, ScheduledJob
 from .repository import SchedulerRepository
 
 logger = logging.getLogger(__name__)
@@ -67,6 +67,10 @@ SCHEDULER_NOTIFY_CHANNEL = "scheduler_jobs"
 # derivation). Two workers contend on this key per tick; whichever
 # acquires first runs the evaluation, the others skip.
 CRON_EVALUATOR_LOCK_ID = compute_lock_id("scheduler_cron_evaluator")
+
+# BUG-502: latest upstream execution states that hold a downstream job (depends_on
+# means "must succeed first", models.py). An upstream that never ran does not block.
+_UPSTREAM_BLOCKING = frozenset({JobStatus.PENDING, JobStatus.RUNNING, JobStatus.FAILED})
 
 
 class SchedulerWorker:
@@ -274,12 +278,58 @@ class SchedulerWorker:
             async def _run(job: ScheduledJob) -> None:
                 async with semaphore:
                     try:
+                        blocked = await self._unsatisfied_upstream(job)
+                        if blocked:
+                            # BUG-502: retries no longer run inside the tick, so after a
+                            # failed attempt the upstream is PENDING (retry outstanding)
+                            # when this wave runs. Running now would read stale data and
+                            # move this job to its next slot, missing the upstream's
+                            # successful retry. Skip without touching next_execution_time:
+                            # the job stays due and a later tick runs it once every
+                            # upstream's latest execution has succeeded.
+                            # WARNING, not INFO: a job blocked by a failed or paused
+                            # upstream stays due indefinitely, and this is its only signal.
+                            logger.warning(
+                                "Deferring job %s (%s): upstream not succeeded: %s",
+                                job.name, job.id, blocked,
+                            )
+                            return
                         logger.info("Starting job: %s (%s)", job.name, job.id)
                         await self.executor.execute_job(job)
                     except Exception as exc:
                         logger.error("Job %s failed: %s", job.id, exc, exc_info=True)
 
             await asyncio.gather(*[_run(j) for j in wave], return_exceptions=True)
+
+    async def _unsatisfied_upstream(self, job: ScheduledJob) -> Dict[str, str]:
+        """Upstream job id -> status for each upstream whose latest execution has not
+        succeeded (PENDING retry, RUNNING, or FAILED). Empty when the job may run."""
+        blocked: Dict[str, str] = {}
+        for upstream_id in job.depends_on or []:
+            # BUG-502 review: a job that depends on itself, or on a job that
+            # (transitively) depends back on it, would wait on its own pending
+            # retry or failure forever. _resolve_execution_order already runs a
+            # cycle anyway to avoid deadlock; the gate must not reintroduce it.
+            if upstream_id == job.id or await self._depends_on(upstream_id, job.id):
+                continue
+            latest = await self.repository.list_executions(job_id=upstream_id, limit=1)
+            if latest and latest[0].status in _UPSTREAM_BLOCKING:
+                blocked[upstream_id] = getattr(latest[0].status, "value", str(latest[0].status))
+        return blocked
+
+    async def _depends_on(self, job_id: str, target_id: str) -> bool:
+        """True when *job_id* reaches *target_id* through depends_on edges."""
+        seen: Set[str] = set()
+        frontier = [job_id]
+        while frontier:
+            current = await self.repository.get_job(frontier.pop())
+            for dep in (current.depends_on or []) if current else []:
+                if dep == target_id:
+                    return True
+                if dep not in seen:
+                    seen.add(dep)
+                    frontier.append(dep)
+        return False
 
     # ── Dependency resolution ──────────────────────────────────────
 

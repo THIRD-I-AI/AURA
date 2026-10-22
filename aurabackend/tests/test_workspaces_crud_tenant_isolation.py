@@ -25,7 +25,6 @@ from api_gateway.routers.workspaces import (  # noqa: E402
     DEFAULT_WORKSPACE_ID,
     WorkspaceCreate,
     WorkspaceUpdate,
-    _workspaces_store,
     create_workspace,
     delete_workspace,
     list_workspaces,
@@ -37,14 +36,6 @@ def _request(org_id: str) -> Request:
     req = Request({"type": "http", "method": "GET", "path": "/", "headers": [], "query_string": b""})
     req.state.user = {"org_id": org_id}
     return req
-
-
-@pytest.fixture(autouse=True)
-def _clean_store():
-    """Isolate each test: snapshot/restore the module-level store."""
-    snapshot = list(_workspaces_store)
-    yield
-    _workspaces_store[:] = snapshot
 
 
 @pytest.mark.asyncio

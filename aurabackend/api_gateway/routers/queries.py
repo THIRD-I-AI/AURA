@@ -672,7 +672,9 @@ async def create_saved_query(payload: SavedQueryCreate, request: Request):
     wsid = current_workspace_id(request)
     ts = datetime.now()
     record = {
-        "id": f"sq_{int(ts.timestamp() * 1000)}",
+        # BUG-499: a millisecond timestamp on a global primary key made two
+        # same-millisecond creates (any two tenants) collide into a 500.
+        "id": f"sq_{uuid.uuid4().hex}",
         "workspace_id": wsid,
         "name": name,
         "sql": sql,
