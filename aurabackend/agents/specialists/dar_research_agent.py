@@ -167,7 +167,8 @@ class DARResearchAgent(BaseAgent):
         return result
 
     async def _call_llm_json(self, prompt: str) -> Optional[Dict[str, Any]]:
-        if not self.llm.is_available():
+        # BUG-508: is_available() is a blocking HTTP probe for Ollama; keep it off the event loop.
+        if not await asyncio.to_thread(self.llm.is_available):
             return None
         try:
             return await asyncio.to_thread(self.llm.generate_json, prompt)

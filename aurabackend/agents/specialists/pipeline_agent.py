@@ -113,7 +113,8 @@ class PipelineAgent(BaseAgent):
             indent=2,
         )
 
-        if self._llm.is_available():
+        # BUG-508: is_available() is a blocking HTTP probe for Ollama; keep it off the event loop.
+        if await asyncio.to_thread(self._llm.is_available):
             try:
                 prompt = _PIPELINE_PROMPT.format(
                     request=ctx.task_description,

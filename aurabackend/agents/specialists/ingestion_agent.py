@@ -6,6 +6,7 @@ Handles: file uploads, DB source connections, data profiling, initial load.
 from __future__ import annotations
 
 import logging
+import os
 from typing import Any, Dict, List, Optional, cast
 
 from agents.base import AgentContext, AgentResult, AgentStatus, BaseAgent, Severity
@@ -21,7 +22,14 @@ class IngestionAgent(BaseAgent):
 
     async def _run(self, ctx: AgentContext, result: AgentResult) -> AgentResult:
         params = cast(IngestionAgentParams, ctx.metadata or {})
-        files = params.get("files", ctx.files)
+        # BUG-507: parameters.files is written by the planner LLM from the user's
+        # prompt, so it can name another tenant's upload. Only ctx.files was confined
+        # to the caller's uploads (BUG-441); the plan may narrow it, never extend it.
+        files = list(ctx.files or [])
+        requested = params.get("files")
+        if requested and files:
+            wanted = {str(f) for f in requested} | {os.path.basename(str(f)) for f in requested}
+            files = [f for f in files if f in wanted or os.path.basename(f) in wanted] or files
 
         if not files and not ctx.connection:
             result.add_step(

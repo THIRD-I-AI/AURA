@@ -246,7 +246,8 @@ class PlannerAgent(BaseAgent):
     # ── LLM call ────────────────────────────────────────────────────
 
     async def _call_llm(self, system_prompt: str, user_message: str) -> Optional[Dict[str, Any]]:
-        if not self._llm.is_available():
+        # BUG-508: is_available() is a blocking HTTP probe for Ollama; keep it off the event loop.
+        if not await asyncio.to_thread(self._llm.is_available):
             return None
         return await asyncio.to_thread(self._llm.generate_json, [system_prompt, user_message])
 

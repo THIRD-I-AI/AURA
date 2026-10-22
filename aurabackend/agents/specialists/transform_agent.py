@@ -98,7 +98,8 @@ class TransformAgent(BaseAgent):
         return result
 
     async def _generate_transforms(self, request: str, schema: str) -> List[str]:
-        if self._llm.is_available():
+        # BUG-508: is_available() is a blocking HTTP probe for Ollama; keep it off the event loop.
+        if await asyncio.to_thread(self._llm.is_available):
             try:
                 prompt = _TRANSFORM_PROMPT.format(schema=schema, request=request)
                 parsed = await asyncio.to_thread(self._llm.generate_json, prompt)
