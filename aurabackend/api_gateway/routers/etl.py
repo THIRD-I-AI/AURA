@@ -100,6 +100,11 @@ from shared.sql_expression_guard import validate_sql_expression as _validate_cus
 from shared.sql_identifiers import quote_identifier as _q  # noqa: E402
 from shared.sql_identifiers import quote_literal  # noqa: E402
 
+# BUG-500: the source table is named after the file stem, which the stem
+# sanitizer reduces to [A-Za-z0-9_]. A '-' keeps the pipeline's own table out of
+# that namespace, so '_etl_output.csv' no longer collides with it.
+_ETL_OUTPUT = "_etl-output"
+
 _CAST_TYPES = frozenset({"INTEGER", "VARCHAR", "DOUBLE", "BOOLEAN", "DATE", "TIMESTAMP", "BIGINT", "FLOAT", "TEXT"})
 
 
@@ -118,9 +123,22 @@ def _copy_or_cleanup(con: Any, sql: str, output_path: str) -> None:
 def _fill_literal(value: str) -> str:
     """SQL literal for a fill value (BUG-185): a number re-rendered from its parse, else a quoted string."""
     try:
-        return repr(float(value))
+        num = float(value)
     except ValueError:
         return quote_literal(value)
+    if math.isfinite(num):
+        return repr(num)
+    # BUG-497: repr() of NaN/inf is nan/inf, which SQL reads as a column name.
+    # A quoted literal casts to NaN/inf in a float column and stays text in a text one.
+    return quote_literal(value)
+
+
+def _numeric_fill_literal(value: str) -> str:
+    """Numeric-column fill literal; NaN/inf typed as DOUBLE, never a bare identifier (BUG-497)."""
+    num = float(value)
+    if math.isfinite(num):
+        return repr(num)
+    return f"CAST({quote_literal(repr(num))} AS DOUBLE)"
 
 # BUG-122: the aggregate step's func sits in a function-CALL position, not an
 # identifier position -- quote_identifier can't protect it (it isn't quoted
@@ -279,7 +297,7 @@ def _build_transform_sql(table: str, steps: List[ETLTransformStep], con=None) ->
                             safe = fill_val.replace("'", "''")
                             replaces.append(f"COALESCE({qc}, '{safe}') AS {qc}")
                     elif is_numeric and fill_val and _val_is_numeric:  # BUG-185: numeric only, re-rendered
-                        replaces.append(f'COALESCE({qc}, {float(fill_val)!r}) AS {qc}')
+                        replaces.append(f'COALESCE({qc}, {_numeric_fill_literal(fill_val)}) AS {qc}')
                     elif is_numeric and not fill_val:
                         replaces.append(f'COALESCE({qc}, 0) AS {qc}')
                     elif not is_numeric and fill_val and not _val_is_numeric:
@@ -446,13 +464,13 @@ async def etl_execute(pipeline: ETLPipelineRequest, request: Request):
             lock_down_connection(con)
 
             transform_sql = _build_transform_sql(table_name, pipeline.transforms, con=con)
-            con.execute(f"CREATE TABLE _etl_output AS {transform_sql}")
+            con.execute(f"CREATE TABLE {_q(_ETL_OUTPUT)} AS {transform_sql}")
 
-            output_count = con.execute("SELECT COUNT(*) FROM _etl_output").fetchone()[0]
-            output_schema = con.execute("DESCRIBE _etl_output").fetchall()
+            output_count = con.execute(f"SELECT COUNT(*) FROM {_q(_ETL_OUTPUT)}").fetchone()[0]
+            output_schema = con.execute(f"DESCRIBE {_q(_ETL_OUTPUT)}").fetchall()
             output_columns = [{"name": r[0], "type": r[1]} for r in output_schema]
 
-            preview_result = con.execute("SELECT * FROM _etl_output LIMIT 50").fetchall()
+            preview_result = con.execute(f"SELECT * FROM {_q(_ETL_OUTPUT)} LIMIT 50").fetchall()
             col_names = [c["name"] for c in output_columns]
             preview_records = [
                 {col: _serialize_value(val) for col, val in zip(col_names, row)}
@@ -471,7 +489,7 @@ async def etl_execute(pipeline: ETLPipelineRequest, request: Request):
 
                 out = new_connection()
                 try:
-                    out.register("_etl_output", con.execute("SELECT * FROM _etl_output").arrow())
+                    out.register(_ETL_OUTPUT, con.execute(f"SELECT * FROM {_q(_ETL_OUTPUT)}").arrow())
                     download_filename = f"{dest_name}.{fmt}"
                     output_path = str(output_dir / download_filename)
                     options = {
@@ -479,7 +497,7 @@ async def etl_execute(pipeline: ETLPipelineRequest, request: Request):
                         "parquet": "(FORMAT PARQUET)",
                         "json": "(FORMAT JSON, ARRAY true)",
                     }[fmt]
-                    _copy_or_cleanup(out, f"COPY _etl_output TO {quote_literal(output_path)} {options}", output_path)
+                    _copy_or_cleanup(out, f"COPY {_q(_ETL_OUTPUT)} TO {quote_literal(output_path)} {options}", output_path)
                 finally:
                     out.close()
 

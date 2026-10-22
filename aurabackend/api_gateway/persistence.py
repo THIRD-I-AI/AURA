@@ -1261,10 +1261,18 @@ def _extract_tables(sql: str) -> set:
     for statement in parsed or []:
         if statement is None:
             continue
+        # BUG-498: a WITH-clause name is not a physical table, a table function
+        # (read_csv_auto(...)) parses as a Table with an empty name, and a.orders /
+        # b.orders are two different upstream tables.
+        cte_names = {cte.alias_or_name.lower() for cte in statement.find_all(exp.CTE) if cte.alias_or_name}
         for table in statement.find_all(exp.Table):
             name = getattr(table, "name", None)
-            if name and not name.startswith("__"):
-                tables.add(name.lower())
+            if not name or name.startswith("__"):
+                continue
+            qualifier = [p for p in (table.catalog, table.db) if p]
+            if not qualifier and name.lower() in cte_names:
+                continue
+            tables.add(".".join(qualifier + [name]).lower())
     return tables
 
 
