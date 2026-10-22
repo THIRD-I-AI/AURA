@@ -155,6 +155,24 @@ describe('Workbench', () => {
     vi.useRealTimers();
   });
 
+  // BUG-517: the palette entry navigated to Counterfactuals while running the
+  // forensic demo audit, whose progress and signed result render only on the
+  // Cockpit -- the user landed on an unrelated page with no visible result.
+  it('the palette audit command stays on the Cockpit, where its result renders', async () => {
+    vi.useFakeTimers();
+    await boot();
+    fireEvent.click(screen.getByText('Dashboards'));
+    expect(screen.queryByTestId('wb-cf')).not.toBeInTheDocument();
+    fireEvent.keyDown(window, { key: 'k', ctrlKey: true });
+    fireEvent.change(screen.getByRole('combobox', { name: 'Command palette' }), { target: { value: 'audit' } });
+    const cmd = screen.getByRole('option', { name: /^Run .*audit/i });
+    expect(cmd.textContent).not.toMatch(/counterfactual/i);
+    await act(async () => { fireEvent.click(cmd); });
+    expect(screen.getByTestId('wb-cf')).toBeInTheDocument();
+    expect(screen.queryByTestId('wb-stub')).not.toBeInTheDocument();
+    vi.useRealTimers();
+  });
+
   // NB: VIEW_REGISTRY is mocked above down to a single 'Dashboards' entry, so
   // ANY other nav name exercises the fallback here — including ones that are
   // registered for real in production (Scheduler now is). This tests the stub

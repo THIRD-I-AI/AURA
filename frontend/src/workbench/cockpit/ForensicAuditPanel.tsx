@@ -1,5 +1,5 @@
 /* Forensic audit demo panel. `cf` + `runCf` stay owned by Workbench.tsx (the
-   command palette's "Run counterfactual audit" entry calls the same runCf,
+   command palette's "Run forensic demo audit" entry calls the same runCf,
    with a ref guard against a stale closure — see Workbench.tsx). Only the
    audience toggle is local, presentation-only state. */
 import { useState } from 'react';

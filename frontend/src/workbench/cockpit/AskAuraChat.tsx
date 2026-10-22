@@ -49,14 +49,23 @@ export function AskAuraChat({ pushFeed, setHistory }: Props) {
     let columns: string[] | undefined; let rows: string[][] | undefined;
     let data: Record<string, unknown>[] | undefined; let chartSpec: ChartSpec | null | undefined;
     let verification: VerificationResult | null | undefined;
+    let failed = false;
     try {
       await chatService.streamMessage(q, {
         onEvent: (ev: { event: string; data: Record<string, unknown> }) => {
           const d = ev.data as { name?: string; arguments?: { sql?: string }; result?: { row_count?: number }; text?: string; message?: string };
           if (ev.event === 'tool_call' && d.arguments?.sql) sql = d.arguments.sql;
-          else if (ev.event === 'tool_result') critic = `verified · ${d.result?.row_count ?? 0} rows · sandboxed`;
-          else if (ev.event === 'text') answer = d.text ?? '';
-          else if (ev.event === 'error') answer = `Error: ${d.message}`;
+          // BUG-516: only run_sql's result verifies the SQL shown above it --
+          // describe_table's row_count is the table size, not a query result --
+          // and a failed run_sql must clear any earlier critic and surface its error.
+          else if (ev.event === 'tool_result' && d.name === 'run_sql') {
+            critic = `verified · ${d.result?.row_count ?? 0} rows · sandboxed`;
+            failed = false;
+          } else if (ev.event === 'tool_error' && d.name === 'run_sql') {
+            critic = `SQL failed: ${d.message ?? 'tool error'}`;
+            failed = true;
+          } else if (ev.event === 'text') answer = d.text ?? '';
+          else if (ev.event === 'error') { answer = `Error: ${d.message}`; failed = true; }
         },
       });
     } catch (err) {
@@ -75,6 +84,7 @@ export function AskAuraChat({ pushFeed, setHistory }: Props) {
           sql = resp.final_query;
           const outcome = chatOutcome(resp);
           const ok = outcome.ok;
+          failed = !ok;
           if (er?.columns && er.rows) {
             columns = er.columns;
             rows = er.rows.map((r) => r.map((cell) => String(cell ?? '')));
@@ -96,9 +106,11 @@ export function AskAuraChat({ pushFeed, setHistory }: Props) {
           answer = outcome.answer ?? outcome.error ?? 'Query failed.';
         } catch {
           answer = 'Could not reach AURA — please check your connection and try again.';
+          failed = true;
         }
       } else {
         answer = describeChatError(err);
+        failed = true;
       }
     }
     setThinking(null);
@@ -107,7 +119,9 @@ export function AskAuraChat({ pushFeed, setHistory }: Props) {
       return [...m.slice(0, -1), { ...last, sql, critic, columns, rows, data, chartSpec, verification, answer: answer || '(no answer)' }];
     });
     pushFeed('QUERY', 'var(--text2)', `commander run: ${q.slice(0, 48)}`);
-    setHistory((h) => [{ time: now(), q: q.length > 52 ? q.slice(0, 52) + '…' : q, engine: 'DuckDB', status: sql ? 'executed' : 'answered', cost: '—', dur: '—', by: 'you' }, ...h]);
+    // BUG-518: a SQL string existing says nothing about whether it ran -- a
+    // failed query must not be logged in history as 'executed'.
+    setHistory((h) => [{ time: now(), q: q.length > 52 ? q.slice(0, 52) + '…' : q, engine: 'DuckDB', status: failed ? 'failed' : sql ? 'executed' : 'answered', cost: '—', dur: '—', by: 'you' }, ...h]);
   };
 
   return (
