@@ -152,3 +152,13 @@ def test_bug500_source_named_etl_output_executes(tmp_path, monkeypatch):
     body = r.json()
     assert body["status"] == "success", body
     assert len(body["preview"]) == 2
+
+
+def test_bug497_non_finite_fill_matches_the_column_case_insensitively(con):
+    # Review: DuckDB resolves "amount" to column "Amount", so the type lookup must too.
+    con.execute('CREATE TABLE mixed ("Amount" INTEGER)')
+    con.execute("INSERT INTO mixed VALUES (NULL), (3)")
+    sql = _build_transform_sql("mixed", [ETLTransformStep(
+        id="s1", type="fill_missing", config={"column": "amount", "value": "NaN"})], con=con)
+    vals = [r[0] for r in con.execute(f"SELECT * FROM ({sql})").fetchall()]
+    assert any(isinstance(v, float) and math.isnan(v) for v in vals) and 3 in vals

@@ -324,7 +324,7 @@ def _build_transform_sql(table: str, steps: List[ETLTransformStep], con=None) ->
                     if non_finite:
                         src_sql = ("WITH " + ",\n".join(cte_parts) + f"\nSELECT * FROM {_q(prev)}") if cte_parts else f"SELECT * FROM {_q(prev)}"
                         try:
-                            col_type = next((ct for cn, ct, *_ in con.execute(f"DESCRIBE ({src_sql})").fetchall() if cn == col), "")
+                            col_type = next((ct for cn, ct, *_ in con.execute(f"DESCRIBE ({src_sql})").fetchall() if cn.lower() == str(col).lower()), "")
                         except Exception:
                             col_type = ""
                         if any(k in col_type.upper() for k in ("INT", "DECIMAL", "NUMERIC")):
