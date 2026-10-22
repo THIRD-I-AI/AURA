@@ -312,7 +312,24 @@ def _build_transform_sql(table: str, steps: List[ETLTransformStep], con=None) ->
                 skipped += 1
                 continue
             else:
-                cte_parts.append(f'{alias} AS (SELECT * REPLACE (COALESCE({_q(col)}, {_fill_literal(fill_val)}) AS {_q(col)}) FROM {_q(prev)})')
+                lit = _fill_literal(fill_val)
+                # BUG-497: a quoted 'NaN'/'inf' only casts into a float column; an
+                # INTEGER/DECIMAL column rejects it (Conversion Error). Like the star
+                # path, look up the column type and promote non-finite fills to DOUBLE.
+                if con is not None and lit == quote_literal(fill_val):
+                    try:
+                        non_finite = not math.isfinite(float(fill_val))
+                    except ValueError:
+                        non_finite = False
+                    if non_finite:
+                        src_sql = ("WITH " + ",\n".join(cte_parts) + f"\nSELECT * FROM {_q(prev)}") if cte_parts else f"SELECT * FROM {_q(prev)}"
+                        try:
+                            col_type = next((ct for cn, ct, *_ in con.execute(f"DESCRIBE ({src_sql})").fetchall() if cn == col), "")
+                        except Exception:
+                            col_type = ""
+                        if any(k in col_type.upper() for k in ("INT", "DECIMAL", "NUMERIC")):
+                            lit = _numeric_fill_literal(fill_val)
+                cte_parts.append(f'{alias} AS (SELECT * REPLACE (COALESCE({_q(col)}, {lit}) AS {_q(col)}) FROM {_q(prev)})')
 
         elif t == "custom_sql":
             sql_expr = (cfg.get("sql") or "").strip()

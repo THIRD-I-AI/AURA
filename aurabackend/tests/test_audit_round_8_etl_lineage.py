@@ -70,6 +70,25 @@ def test_bug497_star_fill_nan_into_integer_column(con):
     assert 3 in vals
 
 
+@pytest.mark.parametrize("col_type", ["INTEGER", "DECIMAL(10,2)", "VARCHAR"])
+@pytest.mark.parametrize("fill", ["NaN", "inf"])
+def test_bug497_single_column_non_finite_fill_by_column_type(con, col_type, fill):
+    # Review leftover: the single-column path quoted 'NaN', which an INTEGER or
+    # DECIMAL column rejects; it must promote to DOUBLE like the star path.
+    con.execute(f"CREATE TABLE typed (v {col_type})")
+    con.execute("INSERT INTO typed VALUES (NULL), ('3')")
+    sql = _build_transform_sql("typed", [ETLTransformStep(
+        id="s1", type="fill_missing", config={"column": "v", "value": fill})], con=con)
+    vals = [r[0] for r in con.execute(f"SELECT v FROM ({sql})").fetchall()]
+    if col_type == "VARCHAR":
+        assert sorted(vals) == sorted([fill, "3"])
+    else:
+        filled = [v for v in vals if v != 3]
+        assert len(filled) == 1 and isinstance(filled[0], float)
+        assert math.isnan(filled[0]) if fill == "NaN" else filled[0] == math.inf
+        assert 3 in vals
+
+
 def test_bug497_finite_values_still_render_as_numbers(con):
     rows = _etl_rows(con, [ETLTransformStep(id="s1", type="fill_missing",
                                             config={"column": "score", "value": "2.5"})])
