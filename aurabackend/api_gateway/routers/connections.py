@@ -6,6 +6,7 @@ Database connection CRUD, testing, schema introspection, and connector proxies.
 
 import asyncio
 import contextlib
+import inspect
 import io
 import json
 import os
@@ -550,10 +551,25 @@ async def _paged_batches(connector: Any, query: str, batch_size: int, row_cap: i
     BUG-469: without an ORDER BY these pages are not guaranteed a stable row order;
     the fallback keeps memory bounded to one batch rather than reading the table at once.
     """
+    # BUG-505: connectors swallow query errors and return [], which this loop reads as
+    # end of table -- a page that failed (BigQuery rejecting an unqualified table, a
+    # MySQL lock timeout on page 40) ended the ingest early and it reported success.
+    surfaces_errors = "raise_errors" in inspect.signature(connector.execute_query).parameters
     offset = 0
     while offset < row_cap:
         limit = min(batch_size, row_cap - offset)
-        rows = await connector.execute_query(f"{query} LIMIT {limit} OFFSET {offset}", limit=limit)
+        page = f"{query} LIMIT {limit} OFFSET {offset}"
+        try:
+            rows = await (
+                connector.execute_query(page, limit=limit, raise_errors=True) if surfaces_errors
+                else connector.execute_query(page, limit=limit)
+            )
+        except Exception as e:
+            raise HTTPException(
+                status_code=502,
+                detail=f"Reading the source failed at row offset {offset}; {offset} rows were "
+                       f"ingested before it failed: {sanitize_error(e, logger=logger, context='ingest page')}",
+            )
         if not rows:
             return
         yield rows

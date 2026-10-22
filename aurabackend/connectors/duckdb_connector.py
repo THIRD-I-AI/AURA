@@ -156,7 +156,9 @@ class DuckDBConnector(BaseConnector):
     async def sample_rows(self, table_name: str, limit: int = 100) -> List[Dict[str, Any]]:
         return await self.execute_query(f"SELECT * FROM {quote_identifier(table_name)} LIMIT {limit}")
 
-    async def execute_query(self, query: str, limit: int = 1000) -> List[Dict[str, Any]]:
+    async def execute_query(
+        self, query: str, limit: int = 1000, raise_errors: bool = False
+    ) -> List[Dict[str, Any]]:
         if not self._conn:
             return []
         try:
@@ -168,6 +170,8 @@ class DuckDBConnector(BaseConnector):
             return await asyncio.to_thread(_run)
         except Exception as exc:
             logger.warning("DuckDB query failed: %s", exc)
+            if raise_errors:
+                raise
             return []
 
     async def profile_table(self, table_name: str) -> Dict[str, Any]:

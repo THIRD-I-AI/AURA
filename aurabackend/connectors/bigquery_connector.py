@@ -148,7 +148,9 @@ class BigQueryConnector(BaseConnector):
             logger.warning("BigQuery sample_rows failed: %s", e)
             return []
 
-    async def execute_query(self, query: str, limit: int = 1000) -> List[Dict[str, Any]]:
+    async def execute_query(
+        self, query: str, limit: int = 1000, raise_errors: bool = False
+    ) -> List[Dict[str, Any]]:
         """Execute SQL query against BigQuery"""
         if not self._is_connected or not self.client:
             return []
@@ -161,6 +163,8 @@ class BigQueryConnector(BaseConnector):
             return await asyncio.to_thread(self._query_rows, query)
         except Exception as e:
             logger.warning("BigQuery query failed: %s", e)
+            if raise_errors:
+                raise
             return []
 
     async def profile_table(self, table_name: str) -> Dict[str, Any]:
