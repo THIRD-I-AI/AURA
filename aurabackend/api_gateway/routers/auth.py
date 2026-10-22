@@ -203,8 +203,17 @@ async def register_user(body: RegisterRequest):
         result = await session.execute(
             select(User).where(func.lower(User.email) == body.email.lower())
         )
-        if result.scalar_one_or_none() is not None:
-            raise ConflictError(f"User with email '{body.email}' already exists")
+        existing = result.scalar_one_or_none()
+        if existing is not None:
+            # BUG-513: metadata_store seeds AURA_ADMIN_EMAIL as id='admin' with no
+            # password and no org. That placeholder holds no credential, so it must
+            # not lock the address out of registration (409 here, then 'Invalid
+            # credentials' at /auth/token forever). The real registration replaces it.
+            if existing.id == "admin" and not existing.password_hash and not existing.org_id:
+                await session.delete(existing)
+                await session.flush()
+            else:
+                raise ConflictError(f"User with email '{body.email}' already exists")
 
         password_hash = await asyncio.to_thread(hash_password, body.password)
         user = User(
