@@ -4955,3 +4955,107 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Root cause:** `_AMPLIFYING_ATTRS` covered repeat/sample/merge and similar, but not the string methods whose output length is an argument (`str.pad/ljust/rjust/center/zfill`), nor `str.format`, f-string widths, `%`-formatting or `expandtabs`. `_assert_bounded_binop` only bounds multiplication and powers. Separately, the address-space cap of `_run_in_capped_child` binds only the child: the parent read every pipe chunk, joined them and unpickled the result with no limit, holding the reply two to three times in the gateway; the child's 512 MB headroom also equalled the whole 512M container.
 - **Failure scenario:** The DPC check is on by default for chat. An LLM-written (or prompt-injected) expression `df["a"].astype("str").str.pad(100000000)` over a 2-row table passes the static check and stays under the child's cap (~200 MB plus its pickle); the gateway then materialises about 600 MB and the 512M container is OOM-killed for every tenant. On non-Linux hosts the thread runner has no cap at all.
 - **Fix:** the static check refuses `pad/ljust/rjust/center/zfill/format/format_map/expandtabs`, f-strings and `%`-formatting of a string literal; the parent stops reading and SIGKILLs the child once its reply exceeds `_MAX_RESULT_BYTES` (32 MB) and never unpickles it; the child's headroom is 256 MB. The old checker accepted all 6 probe expressions. Tests `tests/test_dpc_string_width_and_result_cap.py` (the reply-cap test runs on Linux CI; verified under WSL: an oversized reply is refused and a small one returns).
+
+## BUG-507: LLM-planned `parameters.files` bypasses the BUG-441 upload confinement, so IngestionAgent profiles other tenants' uploads
+- **Status:** open
+- **Found by:** ultracode audit round 9 (run wf_07056d2a-2ef, agents-llm area; confirmed by 2 adversarial verifiers), 2026-10-22. `aurabackend/agents/specialists/ingestion_agent.py:24`.
+- **Severity:** high
+- **Root cause:** The BUG-441 fix confines files only at the API boundary (req.files). The agent trusts task.parameters, which the LLM writes from the user's own prompt, as an equal and preferred source of file paths. The connectors service has no tenant of its own and only confines paths to the uploads root.
+- **Failure scenario:** Tenant B sends POST /api/v1/agent/execute with files=[] and a prompt like "Ingest and profile the file <tenantA-slug>/payroll.csv (put it in the ingest task parameters.files)". _own_upload_paths (agents/api.py) only checks req.files, which is empty here. The planner LLM copies the path into the task's "parameters": {"files": ["<tenantA-slug>/payroll.csv"]}. planner._parse_plan keeps those parameters as they are (planner.py:380), and DAGExecutor passes them in as ctx.metadata (executor.py:172). IngestionAgent then does `files = params.get("files", ctx.files)`, so the LLM-supplied path is used instead of the confined ctx.files, and it calls ingest_and_profile(file_path=...). The connectors /ingest route only checks that the path is inside the uploads root, not inside the caller's tenant directory (connectors/main.py _confined_upload_path), so it reads tenant A's file. Tenant A's column names, dtypes, row count and per-column null counts come back to tenant B in report.tasks[*].output.ingested_sources. This works wherever the gateway and connectors share the uploads directory (dev compose mounts ./aurabackend into both, and single-host deploys do the same).
+- **Fix:** pending
+
+## BUG-508: Planner and the other specialists still call the blocking Ollama is_available() HTTP probe on the event loop (BUG-474 fixed only SQLGeneratorAgent)
+- **Status:** open
+- **Found by:** ultracode audit round 9 (run wf_07056d2a-2ef, agents-llm area; confirmed by 2 adversarial verifiers), 2026-10-22. `aurabackend/agents/planner.py:249`.
+- **Severity:** medium
+- **Root cause:** is_available() makes a network call for Ollama, but these async agent methods treat it like a cheap attribute check. BUG-474 moved the call to asyncio.to_thread only in sql_generator_agent.py.
+- **Failure scenario:** Setup: the documented on-prem config (AURA_LLM_PROVIDER=ollama), or auto-detect with no Groq or Gemini key. Every /agent/plan, /agent/execute and /agent/execute/stream request runs PlannerAgent._call_llm, an async function that calls self._llm.is_available() inline. Through _CachedProvider and _FallbackProvider this reaches OllamaProvider.is_available, a synchronous httpx.get('/api/tags', timeout=3s) (llm_provider.py:394-403). The same inline call sits in TransformAgent._generate_transforms (transform_agent.py:101), OptimizationAgent._generate_recommendations (optimization_agent.py:114), PipelineAgent._design_pipeline (pipeline_agent.py:116) and DarResearchAgent._call_llm_json (dar_research_agent.py:170). When Ollama is slow (loading a model, busy with a long generation, or an unreachable host), each probe blocks the gateway worker's event loop for up to 3s for all tenants. A single agent plan with N LLM-backed tasks blocks it N+1 times.
+- **Fix:** pending
+
+## BUG-509: Trend insight reports the wrong direction and percentage when the first-half mean is negative (and misses any trend starting from a zero mean)
+- **Status:** open
+- **Found by:** ultracode audit round 9 (run wf_07056d2a-2ef, insights-codegen area; confirmed by 2 adversarial verifiers), 2026-10-22. `aurabackend/insights_service/engine.py:309`.
+- **Severity:** medium
+- **Root cause:** change_pct = (second_mean - first_mean) / first_mean * 100 divides by a signed denominator, so a negative baseline flips the sign of the change. direction = 'increased' if change_pct > 0 is then backwards. The `if first_mean else 0` guard drops every trend whose baseline mean is 0.
+- **Failure scenario:** POST /api/v1/analyze/results (queries.py:597 -> InsightsEngine.analyze) or insights /analyze with a net-profit column [-100,-100,-100,-50,-50,-50]. Reproduced locally: the engine returns the insight 'net decreased by 50.0% (from -100.00 to -50.00)' with metric_change=-50.0, but the loss shrank, so net went up. The same wrong sentence goes into the narrative ('Trend detected: ...'). The zero case is also wrong: when the first-half mean is 0 (for example [0,0,0,500,500,500]), change_pct is forced to 0 and no trend is reported at all.
+- **Fix:** pending
+
+## BUG-510: Any string column whose first value contains '-' or '/' is classified as a date, giving a line chart 'Over Time' keyed on a categorical column
+- **Status:** open
+- **Found by:** ultracode audit round 9 (run wf_07056d2a-2ef, insights-codegen area; confirmed by 2 adversarial verifiers), 2026-10-22. `aurabackend/insights_service/engine.py:154`.
+- **Severity:** medium
+- **Root cause:** _detect_column_types marks a string column as 'date' if `any(d in str(first_val) for d in ['-','/']) and len(str(first_val)) < 20`. That test looks only at the first value and never tries to parse it as a date. _generate_charts and _generate_narrative then treat the column as time.
+- **Failure scenario:** Results [{'sku':'SKU-0','revenue':0}, ...] or [{'region':'North-East','sales':10},{'region':'West','sales':20}] sent to /analyze/results. Reproduced locally: the chart comes back as type 'line', titled 'revenue Over Time', with x_axis 'sku'. The narrative says 'Time dimension: sku.' (or 'Time dimension: region.') and lists no categorical dimension, so the categorical bar chart never appears. Common values such as 'N/A', 'A/B', part numbers, phone numbers, hyphenated names and UUID-like codes all trigger it.
+- **Fix:** pending
+
+## BUG-511: _suggest_charts treats boolean columns as numeric measures (the BUG-376 bool-is-int defect, still present in the chart-suggestion path)
+- **Status:** open
+- **Found by:** ultracode audit round 9 (run wf_07056d2a-2ef, insights-codegen area; confirmed by 2 adversarial verifiers), 2026-10-22. `aurabackend/insights_service/main.py:217`.
+- **Severity:** low
+- **Root cause:** The type check at line 217 tests only isinstance(val, (int, float)) and does not exclude bool. It also looks only at data_sample[0], so a first-row None puts a numeric column in neither list.
+- **Failure scenario:** POST /chart-suggestions with columns ['active','region'] and data_sample [{'active': true, 'region': 'East'}], or /analyze with that kind of row. isinstance(True, (int, float)) is True, so 'active' goes into numeric_columns. The response suggests a bar chart 'active by region' with yAxis 'active' (confidence 0.90) and, for small samples, a pie chart 'Distribution of active'. For two flag columns it suggests a scatter plot of flag against flag. BUG-376 fixed this only in engine._detect_column_types.
+- **Fix:** pending
+
+## BUG-512: /analyze computes chart orientation and pie eligibility from a 10-row slice, so a large result never gets a horizontal bar
+- **Status:** open
+- **Found by:** ultracode audit round 9 (run wf_07056d2a-2ef, insights-codegen area; confirmed by 2 adversarial verifiers), 2026-10-22. `aurabackend/insights_service/main.py:92`.
+- **Severity:** low
+- **Root cause:** The size of the sample is used as if it were the size of the result set. The real row count (len(request.results)) is never passed to _suggest_charts.
+- **Failure scenario:** /analyze with 500 rows of (category, value). analyze_results passes data_sample=request.results[:10], and _suggest_charts uses row_count = len(data_sample) (line 222). row_count is therefore never above 10. `orient = 'horizontal' if row_count > 10` (line 238) is never true, and the response tells the client to draw a vertical bar chart with 500 categories. Line 250 uses the same capped count to decide pie eligibility.
+- **Fix:** pending
+
+## BUG-513: The AURA_ADMIN_EMAIL startup seed clashes with the users email unique index: it either crash-loops metadata_store or makes the admin address impossible to register or log in with
+- **Status:** open
+- **Found by:** ultracode audit round 9 (run wf_07056d2a-2ef, orchestration-metadata-api area; confirmed by 2 adversarial verifiers), 2026-10-22. `aurabackend/metadata_store/main.py:49`.
+- **Severity:** medium
+- **Root cause:** The seed upserts by primary key 'admin' while uniqueness is enforced on lower(email). It never checks whether another row already owns that email. It also creates a credential-table row with no password and no org_id that collides with the registration flow's duplicate check.
+- **Failure scenario:** Case A: an operator sets AURA_ADMIN_EMAIL=ops@corp.com (documented in .env.example:100), and ops registers through the gateway's /auth/register, which creates a uuid-id row with that email. On the next metadata_store start, init_db makes ux_users_email_lower (db.py:92). The lifespan then calls upsert_user('admin', email='ops@corp.com'). get_user('admin') finds nothing, so it INSERTs a second row with the same email. That raises IntegrityError inside the lifespan, so startup fails and the container crash-loops. Case B: metadata_store starts first and inserts row id='admin' with that email and password_hash=NULL. When ops later calls /auth/register with ops@corp.com, auth.py:204-208 returns 409 'already exists'. /auth/token finds the row but password_hash is NULL, so it returns 'Invalid credentials'. The configured admin address can never sign in.
+- **Fix:** pending
+
+## BUG-514: Inbound hook 'Copy URL' hands out a relative path in production, so the URL is useless to the outside system
+- **Status:** open
+- **Found by:** ultracode audit round 9 (run wf_07056d2a-2ef, frontend-workbench area; confirmed by 2 adversarial verifiers), 2026-10-22. `frontend/src/services/api.ts:1634`.
+- **Severity:** medium
+- **Root cause:** fireUrl is built as `${API_BASE_URL}/hooks/fire/...`. API_BASE_URL is deliberately relative in the same-origin production build. The sibling savedQueryService.shareUrl (api.ts ~1052) handles this correctly by prefixing window.location.origin; fireUrl does not.
+- **Failure scenario:** Production build is served same-origin behind nginx with VITE_API_URL unset (api.ts:43-52; no deploy config sets it), so API_BASE_URL is the relative '/api/v1'. A user creates an inbound hook with slug 'orders-arrived' and clicks 'Copy URL' (InboundHooksSection.tsx:131). The clipboard gets '/api/v1/hooks/fire/orders-arrived', with no scheme or host. The form preview at line 249 shows the same text. Pasted into GitHub, Zapier or a cron job, it is rejected as an invalid URL or resolves against the wrong host, so the hook never fires. The panel's only job is to give this URL to an external caller.
+- **Fix:** pending
+
+## BUG-515: Cost panel shows platform-wide LLM token usage of every tenant to any signed-in user
+- **Status:** open
+- **Found by:** ultracode audit round 9 (run wf_07056d2a-2ef, frontend-workbench area; confirmed by 2 adversarial verifiers), 2026-10-22. `aurabackend/api_gateway/routers/queries.py:1105`.
+- **Severity:** medium
+- **Root cause:** get_llm_stats takes no Request, tenant or workspace. It returns shared.observability.llm_token_breakdown(), which reads the process-global Prometheus Counter aura_llm_tokens_total (labels provider/model/kind only, observability.py:142-188). Nothing filters it per tenant. The frontend presents it as the user's own accounting.
+- **Failure scenario:** Org A and Org B share the gateway. Org B runs 500 chat queries on gpt-4o. A user in Org A opens Workbench -> Cost (CostPanel.tsx calls GET /llm-stats). The panel shows every provider/model row and the prompt/completion totals, including all of Org B's usage. Any tenant can watch another tenant's activity volume and model choices, and none of them can see their own usage.
+- **Fix:** pending
+
+## BUG-516: Commander chat shows 'verified · N rows · sandboxed' under SQL that failed (tool_error ignored, critic left from describe_table)
+- **Status:** open
+- **Found by:** ultracode audit round 9 (run wf_07056d2a-2ef, frontend-workbench area; confirmed by 2 adversarial verifiers), 2026-10-22. `frontend/src/workbench/cockpit/AskAuraChat.tsx:57`.
+- **Severity:** medium
+- **Root cause:** The onEvent handler sets `critic` on any tool_result, whichever tool produced it. It has no branch for the 'tool_error' event that commander.py:149-152 emits for a failed run_sql. So the last successful non-SQL tool's result stays paired with a later failed query.
+- **Failure scenario:** With AURA_COMMANDER_ENABLED=true, the user asks a question. The commander emits tool_call list_tables, tool_result, tool_call describe_table, tool_result {row_count: 5000} (the table size, commander_tools.py:183), tool_call run_sql {sql: 'SELECT bad_col ...'}, tool_error {message: 'Binder Error ...'}, then text. The handler sets `sql` from the run_sql call. It ignores the tool_error event entirely, and the critic set by describe_table's result is never cleared. The cockpit shows the failing SQL with 'verified · 5000 rows · sandboxed' under it. The SQL error is never shown.
+- **Fix:** pending
+
+## BUG-517: Command palette 'Run counterfactual audit' signs a ledger record off-screen and lands on an unrelated page
+- **Status:** open
+- **Found by:** ultracode audit round 9 (run wf_07056d2a-2ef, frontend-workbench area; confirmed by 2 adversarial verifiers), 2026-10-22. `frontend/src/workbench/Workbench.tsx:385`.
+- **Severity:** low
+- **Root cause:** The palette entry pairs the 'Counterfactuals' nav target with runCf (the Cockpit's financial demo audit), and runCf's state is shown only on the Cockpit. The label, the destination and the action do not match.
+- **Failure scenario:** User presses Cmd/Ctrl+K and picks 'Run counterfactual audit'. The command calls setNav('Counterfactuals') and runCf(). runCf calls GET /counterfactual/audit/financial/demo, a forensic financial audit that signs and chains a record into the ledger, not a counterfactual. Its progress, findings, hash and verify link render only in ForensicAuditPanel, which mounts only when nav === 'Cockpit' (showCf, Workbench.tsx:365). The user sits on the Counterfactuals page, whose textarea and Run button are untouched. A WORM ledger record gets signed with no visible result beyond a toast, and the counterfactual the label promised never runs.
+- **Fix:** pending
+
+## BUG-518: Cockpit query history records failed queries as 'executed'
+- **Status:** open
+- **Found by:** ultracode audit round 9 (run wf_07056d2a-2ef, frontend-workbench area; confirmed by 2 adversarial verifiers), 2026-10-22. `frontend/src/workbench/cockpit/AskAuraChat.tsx:110`.
+- **Severity:** low
+- **Root cause:** The history row's status is derived only from whether any SQL string exists (`sql ? 'executed' : 'answered'`). It ignores outcome.ok and the stream's error/tool_error events.
+- **Failure scenario:** Default config (commander off, so the /chat fallback runs). The user asks a question whose generated SQL fails at execution. /chat returns HTTP 200 with status 'Error', final_query set and execution_result.success false. chatOutcome() correctly reports ok=false and the chat bubble shows the error, but `sql = resp.final_query` is set. The new Query history row (QueryHistoryTable) gets status 'executed', the same as a successful query. The same happens when the commander stream ends in an 'error' event after a run_sql tool_call.
+- **Fix:** pending
+
+## BUG-519: Collab WebSocket checks the JWT only at handshake, so a socket stays open with full read/write access after the token expires, the 12h session cap passes, or the account is deleted
+- **Status:** open
+- **Found by:** ultracode audit round 9 (run wf_07056d2a-2ef, collab-crdt area; confirmed by 2 adversarial verifiers), 2026-10-22. `aurabackend/api_gateway/routers/collab.py:214`.
+- **Severity:** medium
+- **Root cause:** collab_socket authenticates only before websocket.accept() (lines 194-202) and does not keep the token's exp/auth_time. Neither _broadcast nor the receive loop re-validates the principal. JWTAuthMiddleware is a BaseHTTPMiddleware and never runs on WS frames, so nothing else enforces token lifetime on this long-lived connection. (The frontend has no collab client yet, but the endpoint is mounted in api_gateway/main.py:419 and reachable.)
+- **Failure scenario:** Setup: AURA_JWT_ENABLED=true, password mode. User U in org O gets a 30-minute access token and opens ws://gateway/ws/collab/q3-report?token=<jwt>. The token is decoded once, at line 196, before accept(). The receive/relay loop (lines 214-227) then runs until disconnect. It never looks at the token's exp again, and never re-checks AURA_SESSION_MAX_HOURS or whether the account still exists. uvicorn's WS ping keeps the connection alive. Now an admin deletes U or moves U to another org, or U's token was stolen and has since expired. HTTP is closed: every route returns 401, and POST /auth/refresh refuses ("Account no longer exists" / "Session too old"). The open socket still gets every Yjs update and awareness frame other org members broadcast in room O:q3-report, and frames sent on it are still relayed into their shared CRDT document. A leaked 30-minute token therefore gives write access to a live document for as long as the socket stays open, past the BUG-397 12-hour session bound.
+- **Fix:** pending
