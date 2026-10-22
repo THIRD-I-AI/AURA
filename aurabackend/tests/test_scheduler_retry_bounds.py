@@ -33,6 +33,14 @@ class _Repo:
     async def get_execution(self, execution_id):
         return self.executions.get(execution_id)
 
+    async def list_executions(self, job_id=None, status=None, limit=100):
+        rows = [e for e in reversed(list(self.executions.values()))
+                if (job_id is None or e.job_id == job_id) and (status is None or e.status == status)]
+        return rows[:limit]
+
+    async def get_job(self, job_id):
+        return _job(max_retries=0)
+
     async def update_job(self, job_id, updates):
         self.job_updates.append(updates)
 
@@ -45,6 +53,15 @@ def _job(max_retries: int):
         id="job1", name="nightly", connection_id="c1", query="SELECT 1", timeout_seconds=5,
         max_retries=max_retries, retry_delay_seconds=0, schedule_type="daily", is_active=True,
         schedule_config={"hour": 0, "minute": 0})
+
+
+async def _run_until_settled(executor, job, ticks: int = 20):
+    # BUG-502: each call is one attempt; a retry comes back on a later due tick.
+    for _ in range(ticks):
+        result = await executor.execute_job(job)
+        if result.status != JobStatus.PENDING:
+            return result
+    raise SystemExit("retried without bound")
 
 
 def test_a_failing_job_stops_after_max_retries_in_one_execution():
@@ -62,7 +79,7 @@ def test_a_failing_job_stops_after_max_retries_in_one_execution():
     executor._execute_query = _always_fails
     executor.notifications.notify_job_failure = lambda **kw: asyncio.sleep(0)
 
-    result = asyncio.run(asyncio.wait_for(executor.execute_job(_job(max_retries=2)), timeout=10))
+    result = asyncio.run(asyncio.wait_for(_run_until_settled(executor, _job(max_retries=2)), timeout=10))
 
     assert attempts == 3  # the first try plus 2 retries
     assert len(repo.executions) == 1
@@ -83,7 +100,7 @@ def test_a_retry_that_succeeds_completes_the_same_execution():
 
     executor._execute_query = _fails_once
 
-    result = asyncio.run(executor.execute_job(_job(max_retries=2)))
+    result = asyncio.run(_run_until_settled(executor, _job(max_retries=2)))
 
     assert calls == 2 and len(repo.executions) == 1
     assert result.status == JobStatus.SUCCESS and result.retry_count == 1

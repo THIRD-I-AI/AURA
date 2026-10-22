@@ -242,7 +242,7 @@ async def create_job(job: CreateJobRequest):
             schedule_config=job.schedule_config,
             is_active=job.is_active
         )
-        next_execution = exec_temp._calculate_next_execution(temp_job)
+        next_execution = exec_temp._first_execution(temp_job)
 
         # Create job
         created_job = await repository.create_job({
@@ -321,7 +321,7 @@ async def update_job(job_id: str, updates: UpdateJobRequest):
             for key, value in update_dict.items():
                 setattr(merged_job, key, value)
 
-            next_execution = exec_temp._calculate_next_execution(merged_job)
+            next_execution = exec_temp._first_execution(merged_job)
             update_dict["next_execution_time"] = next_execution
 
         updated_job = await repository.update_job(job_id, update_dict)
@@ -409,7 +409,10 @@ async def resume_job(job_id: str):
         # Recalculate next execution
         from .executor import JobExecutor as Exec
         exec_temp = Exec(repository)
-        next_execution = exec_temp._calculate_next_execution(job)
+        # BUG-501: computed from the paused row, is_active=False made every schedule
+        # type come back None, so a resumed job was never due again.
+        job.is_active = True
+        next_execution = exec_temp._first_execution(job)
 
         updated_job = await repository.update_job(
             job_id,
