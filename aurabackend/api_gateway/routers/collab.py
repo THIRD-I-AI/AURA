@@ -43,6 +43,7 @@ import asyncio
 import hmac
 import logging
 import os
+import time
 from collections import defaultdict
 from itertools import count
 from typing import Dict, Set
@@ -53,6 +54,7 @@ from shared.auth import decode_access_token
 from shared.config import settings
 from shared.exceptions import AuthenticationError
 
+from .auth import _session_max_seconds
 from .workspaces import _request_tenant
 
 logger = logging.getLogger(__name__)
@@ -131,26 +133,63 @@ async def _broadcast(room: _Room, sender: WebSocket, payload: bytes | str) -> No
     # sends so a slow client can't stall the room.
     async with room.lock:
         peers = [c for c in room.clients if c is not sender]
+    # BUG-519: a peer whose token lifetime has passed must stop receiving frames.
+    now = time.time()
+    expired = [c for c in peers if _expired(c, now)]
+    timeout = _send_timeout_seconds()
+    if expired:
+        async with room.lock:
+            room.clients.difference_update(expired)
+        await _close_all(expired, timeout, code=status.WS_1008_POLICY_VIOLATION)
+    peers = [c for c in peers if c not in expired]
     if not peers:
         return
     is_text = isinstance(payload, str)
-    timeout = _send_timeout_seconds()
     results = await asyncio.gather(
         *(asyncio.wait_for(c.send_text(payload) if is_text else c.send_bytes(payload), timeout)
           for c in peers),
         return_exceptions=True,
     )
+    dropped = []
     for peer, result in zip(peers, results):
         if isinstance(result, Exception):
             logger.debug("collab fan-out drop: %s", result)
-            try:
-                await peer.close()
-            except Exception:
-                pass
+            dropped.append(peer)
+    await _close_all(dropped, timeout)
 
 
-def _tenant_from_ws_token(token: str | None) -> str:
-    """Derive the caller's tenant from a WebSocket ``?token=`` query param.
+async def _close_all(peers: list, timeout: float, **close_kwargs) -> None:
+    """Close peers concurrently, each bounded by the send timeout. Awaiting a
+    stalled peer's close handshake one by one put the BUG-372 slow-peer stall
+    back on the sender (BUG-519 review)."""
+    if peers:
+        await asyncio.gather(
+            *(asyncio.wait_for(p.close(**close_kwargs), timeout) for p in peers),
+            return_exceptions=True,
+        )
+
+
+def _expired(ws: WebSocket, now: float) -> bool:
+    deadline = getattr(ws.state, "collab_deadline", None)
+    return deadline is not None and now >= deadline
+
+
+def _session_deadline(user: dict) -> float:
+    """BUG-519: the handshake is the only place the JWT is decoded, and the
+    HTTP middleware never sees WS frames, so the socket has to carry the
+    token's lifetime itself: its ``exp``, capped by the BUG-397 session bound
+    (``auth_time`` + AURA_SESSION_MAX_HOURS) that /auth/refresh enforces. A
+    deleted or re-orged account loses the socket when this token runs out,
+    the same point at which its HTTP access ends."""
+    signed_in = float(user.get("auth_time") or user.get("iat") or time.time())
+    deadline = signed_in + _session_max_seconds()
+    if user.get("exp") is not None:
+        deadline = min(deadline, float(user["exp"]))
+    return deadline
+
+
+def _ws_principal(token: str | None) -> dict:
+    """Decode the caller's claims from a WebSocket ``?token=`` query param.
 
     Mirrors ``shared.auth.require_tenant``'s org_id-over-sub precedence, but
     JWTAuthMiddleware never runs for WebSocket connections (it only
@@ -161,8 +200,7 @@ def _tenant_from_ws_token(token: str | None) -> str:
     """
     if not token:
         raise AuthenticationError("token query parameter required")
-    user = decode_access_token(token)
-    return str(user.get("org_id") or user.get("sub"))
+    return decode_access_token(token)
 
 
 def _ws_api_key_ok(websocket: WebSocket, api_key: str) -> bool:
@@ -193,11 +231,13 @@ async def collab_socket(websocket: WebSocket, room_id: str) -> None:
         return
     if settings.jwt_enabled:
         try:
-            tenant = _tenant_from_ws_token(websocket.query_params.get("token"))
+            user = _ws_principal(websocket.query_params.get("token"))
         except AuthenticationError as exc:
             logger.info("collab join rejected: room=%s reason=%s", room_id, exc)
             await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
             return
+        tenant = str(user.get("org_id") or user.get("sub"))
+        websocket.state.collab_deadline = _session_deadline(user)
     else:
         tenant = "default"
 
@@ -223,6 +263,10 @@ async def collab_socket(websocket: WebSocket, room_id: str) -> None:
             size = len(payload.encode("utf-8")) if isinstance(payload, str) else len(payload)
             if size > _max_message_bytes():
                 await websocket.close(code=status.WS_1009_MESSAGE_TOO_BIG)
+                break
+            # BUG-519: a frame sent after the token's lifetime is never relayed.
+            if _expired(websocket, time.time()):
+                await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
                 break
             await _broadcast(room, websocket, payload)
     except WebSocketDisconnect:

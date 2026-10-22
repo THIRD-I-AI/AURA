@@ -1631,7 +1631,13 @@ export const inboundHookService = {
     pass_payload_as: string; active: boolean;
   }>) => client.patch<{ status: string; hook: InboundHook }>(`/hooks/${id}`, body),
   remove: (id: string) => client.delete<{ status: string }>(`/hooks/${id}`),
-  fireUrl: (slug: string) => `${API_BASE_URL}/hooks/fire/${encodeURIComponent(slug)}`,
+  // BUG-514: API_BASE_URL is relative ('/api/v1') in the same-origin production
+  // build, and this URL is handed to an external caller, so it must be absolute.
+  fireUrl: (slug: string) => {
+    const path = `${API_BASE_URL}/hooks/fire/${encodeURIComponent(slug)}`;
+    if (/^https?:\/\//i.test(path) || typeof window === 'undefined') return path;
+    return `${window.location.origin}${path}`;
+  },
 };
 
 // =============================================================================

@@ -164,3 +164,93 @@ describe('AskAuraChat accessibility and busy state (BUG-140, BUG-144)', () => {
     expect(button).toHaveAttribute('aria-busy', 'false');
   });
 });
+
+type StreamEv = { event: string; data: Record<string, unknown> };
+const streamEvents = (events: StreamEv[]) =>
+  vi.spyOn(chatService, 'streamMessage').mockImplementation((async (_q: string, opts: { onEvent: (ev: StreamEv) => void }) => {
+    for (const ev of events) opts.onEvent(ev);
+  }) as never);
+
+async function askWithHistory(question = 'What is the total revenue?') {
+  const setHistory = vi.fn();
+  const user = userEvent.setup();
+  render(<AskAuraChat pushFeed={vi.fn()} setHistory={setHistory} />);
+  await user.type(screen.getByPlaceholderText(/ask anything about your data/i), question);
+  await user.click(screen.getByRole('button', { name: /ask/i }));
+  await waitFor(() => expect(setHistory).toHaveBeenCalled());
+  const updater = setHistory.mock.calls[0][0] as (h: { status: string }[]) => { status: string }[];
+  return updater([])[0].status;
+}
+
+// BUG-516: the critic line was set by ANY tool_result (describe_table's row_count
+// is the table size) and tool_error was ignored, so a failed run_sql showed
+// "verified · 5000 rows · sandboxed" under it and the SQL error never appeared.
+describe('AskAuraChat commander stream critic (BUG-516)', () => {
+  afterEach(() => { vi.restoreAllMocks(); });
+
+  it('does not show a describe_table result as verification of a failed run_sql', async () => {
+    streamEvents([
+      { event: 'tool_call', data: { name: 'list_tables', arguments: {} } },
+      { event: 'tool_result', data: { name: 'list_tables', result: { tables: ['orders'] } } },
+      { event: 'tool_call', data: { name: 'describe_table', arguments: { table: 'orders' } } },
+      { event: 'tool_result', data: { name: 'describe_table', result: { table: 'orders', row_count: 5000 } } },
+      { event: 'tool_call', data: { name: 'run_sql', arguments: { sql: 'SELECT bad_col FROM orders' } } },
+      { event: 'tool_error', data: { name: 'run_sql', message: 'Binder Error: column bad_col not found' } },
+      { event: 'text', data: { text: 'I could not run that query.' } },
+    ]);
+    await ask();
+    await waitFor(() => expect(screen.getByText('I could not run that query.')).toBeInTheDocument());
+    expect(screen.getByText(/SELECT bad_col FROM orders/)).toBeInTheDocument();
+    expect(screen.queryByText(/verified ·/)).not.toBeInTheDocument();
+    expect(screen.getByText(/Binder Error: column bad_col not found/)).toBeInTheDocument();
+  });
+
+  it('still verifies a successful run_sql with its own row count', async () => {
+    streamEvents([
+      { event: 'tool_call', data: { name: 'describe_table', arguments: { table: 'orders' } } },
+      { event: 'tool_result', data: { name: 'describe_table', result: { table: 'orders', row_count: 5000 } } },
+      { event: 'tool_call', data: { name: 'run_sql', arguments: { sql: 'SELECT 1' } } },
+      { event: 'tool_result', data: { name: 'run_sql', result: { columns: ['x'], rows: [[1]], row_count: 1 } } },
+      { event: 'text', data: { text: 'One.' } },
+    ]);
+    await ask();
+    await waitFor(() => expect(screen.getByText('verified · 1 rows · sandboxed')).toBeInTheDocument());
+  });
+});
+
+// BUG-518: history status was `sql ? 'executed' : 'answered'`, so a query whose
+// SQL failed at execution was logged exactly like a successful one.
+describe('AskAuraChat query history status (BUG-518)', () => {
+  afterEach(() => { vi.restoreAllMocks(); });
+
+  it('records a fallback query that failed at execution as failed, not executed', async () => {
+    vi.spyOn(chatService, 'streamMessage').mockRejectedValue(new Error('commander_disabled'));
+    vi.spyOn(chatService, 'sendMessage').mockResolvedValue({
+      job_id: 'j9',
+      status: 'Error',
+      final_query: 'SELECT bad_col FROM sales',
+      error_message: 'Binder Error: column bad_col not found',
+      execution_result: { success: false, error: 'Binder Error: column bad_col not found' },
+    } as never);
+    expect(await askWithHistory()).toBe('failed');
+  });
+
+  it('records a commander stream that ended in an error after run_sql as failed', async () => {
+    streamEvents([
+      { event: 'tool_call', data: { name: 'run_sql', arguments: { sql: 'SELECT 1' } } },
+      { event: 'error', data: { kind: 'provider', message: 'provider down' } },
+    ]);
+    expect(await askWithHistory()).toBe('failed');
+  });
+
+  it('still records a successful fallback query as executed', async () => {
+    vi.spyOn(chatService, 'streamMessage').mockRejectedValue(new Error('commander_disabled'));
+    vi.spyOn(chatService, 'sendMessage').mockResolvedValue({
+      job_id: 'j10',
+      status: 'Success',
+      final_query: 'SELECT 1',
+      execution_result: { success: true, columns: ['x'], rows: [[1]], row_count: 1, conclusion: 'One.' },
+    } as never);
+    expect(await askWithHistory()).toBe('executed');
+  });
+});

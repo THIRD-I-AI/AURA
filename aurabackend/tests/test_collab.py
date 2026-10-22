@@ -199,6 +199,7 @@ def test_an_oversized_frame_closes_the_sender_instead_of_being_relayed(client, m
 def test_a_peer_that_does_not_take_a_frame_in_time_is_dropped(monkeypatch):
     # BUG-372: the sender's loop waited on the slowest peer with no time limit.
     import asyncio
+    import types
 
     from api_gateway.routers import collab
 
@@ -207,6 +208,8 @@ def test_a_peer_that_does_not_take_a_frame_in_time_is_dropped(monkeypatch):
     class _Peer:
         def __init__(self, stall: bool):
             self.stall, self.got, self.closed = stall, [], False
+            # A real WebSocket always has .state; BUG-519 reads the token deadline from it.
+            self.state = types.SimpleNamespace()
 
         async def send_bytes(self, data):
             if self.stall:

@@ -1,4 +1,4 @@
-/* ⌘K command palette — nav jumps, "Run counterfactual audit", "Sign out".
+/* ⌘K command palette — nav jumps, "Run forensic demo audit", "Sign out".
    `commands` is the already-filtered/computed list built in Workbench.tsx
    (needs setNav/selectNav/runCf/logout, which stay owned there). */
 import { useState, type KeyboardEvent, type RefObject } from 'react';

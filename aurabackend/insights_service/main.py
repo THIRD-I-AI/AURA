@@ -91,6 +91,7 @@ async def analyze_results(request: AnalyzeRequest):
             columns=list(request.results[0].keys()) if request.results else [],
             data_sample=request.results[:10] if request.results else [],
             query=request.query,
+            row_count=len(request.results),
         )
 
         return AnalyzeResponse(
@@ -195,6 +196,7 @@ def _suggest_charts(
     columns: List[str],
     data_sample: List[Dict[str, Any]],
     query: Optional[str] = None,
+    row_count: Optional[int] = None,
 ) -> List[Dict[str, Any]]:
     """Suggest appropriate chart types based on column profiles and query intent."""
     suggestions: List[Dict[str, Any]] = []
@@ -213,13 +215,18 @@ def _suggest_charts(
     numeric_columns: List[str] = []
     categorical_columns: List[str] = []
     for col in columns:
-        val = data_sample[0].get(col) if data_sample else None
-        if isinstance(val, (int, float)):
+        # BUG-511: first non-null value, not row 0 (a leading None dropped the
+        # column), and bool is an int subclass, not a measure.
+        val = next((r.get(col) for r in data_sample if r.get(col) is not None), None)
+        if isinstance(val, (int, float)) and not isinstance(val, bool):
             numeric_columns.append(col)
         elif isinstance(val, str) and val:
             categorical_columns.append(col)
 
-    row_count = len(data_sample)
+    # BUG-512: /analyze passes a 10-row sample; orientation and pie eligibility
+    # depend on the full result size, which the caller supplies.
+    if row_count is None:
+        row_count = len(data_sample)
 
     # 1. Time-series → line chart (highest confidence for time + numeric)
     if time_columns and numeric_columns:

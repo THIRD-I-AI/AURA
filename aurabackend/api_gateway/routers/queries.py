@@ -1103,13 +1103,22 @@ async def save_query_history(payload: QueryHistoryRecord, request: Request):
 # ── LLM cost / token stats ───────────────────────────────────────────
 
 @router.get("/llm-stats")
-async def get_llm_stats():
+async def get_llm_stats(request: Request):
     """Snapshot of cumulative LLM token usage by provider/model/kind.
 
     Reads directly from the in-process Prometheus Counter so the dashboard
     works without a Prometheus server. ``available=False`` means the
-    prometheus-client dep isn't installed in this environment.
+    prometheus-client dep isn't installed in this environment, or the caller
+    is not allowed to see platform-wide usage.
     """
+    # BUG-515: the counter is process-global (labels provider/model/kind, no
+    # tenant), so it is every tenant's usage. Only an admin may see it; any
+    # other verified caller gets the "unavailable" shape instead of another
+    # org's activity volume and model choices.
+    user = getattr(request.state, "user", None)
+    if isinstance(user, dict) and user.get("role") != "admin":
+        return {"available": False, "rows": [],
+                "totals": {"prompt": 0.0, "completion": 0.0, "cached_completion": 0.0}}
     from shared.observability import llm_token_breakdown
     return llm_token_breakdown()
 

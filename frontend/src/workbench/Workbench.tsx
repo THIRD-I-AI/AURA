@@ -246,7 +246,7 @@ function WorkbenchInner() {
   /* Runs the REAL one-click forensic audit (signed report → ledger). The
      stage list animates only while the real request is in flight. Stays here
      (not in ForensicAuditPanel) because the command palette's "Run
-     counterfactual audit" entry calls this same function. */
+     forensic demo audit" entry calls this same function. */
   const runCf = async () => {
     // Ref guard, not a `cf` closure read: the palette memo holds a stale
     // runCf reference, so the in-flight check must not rely on captured state.
@@ -382,7 +382,9 @@ function WorkbenchInner() {
     const navs = NAV_GROUPS.flatMap(([, items]) => items);
     const all = [
       ...navs.map((n) => ({ title: 'Go to ' + n, hint: 'NAV', run: () => { selectNav(n); setPaletteOpen(false); } })),
-      { title: 'Run counterfactual audit', hint: 'JOB', run: () => { setNav('Counterfactuals'); setPaletteOpen(false); runCf(); } },
+      // BUG-517: runCf is the forensic financial demo audit (not a counterfactual)
+      // and its progress/result render only on the Cockpit's ForensicAuditPanel.
+      { title: 'Run forensic demo audit', hint: 'JOB', run: () => { setNav('Cockpit'); setPaletteOpen(false); runCf(); } },
       { title: 'Sign out', hint: 'AUTH', run: () => { logout(); setPaletteOpen(false); } },
     ];
     return all.filter((c) => c.title.toLowerCase().includes(q)).slice(0, 9);

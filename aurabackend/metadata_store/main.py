@@ -6,7 +6,9 @@ from contextlib import asynccontextmanager
 from typing import Any, AsyncGenerator, Dict
 
 from fastapi import Body, Depends, FastAPI, HTTPException, Request
-from sqlalchemy import text
+from sqlalchemy import func, select, text
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from shared.config import settings
 from shared.logging_config import get_logger
@@ -39,14 +41,35 @@ def _workspace_id(request: Request) -> str | None:
     return header or None
 
 
+async def _seed_admin_user(session: AsyncSession, email: str) -> None:
+    """Seed the placeholder 'admin' profile row for AURA_ADMIN_EMAIL.
+
+    BUG-513: users.email is unique on lower(email) (ux_users_email_lower), so
+    when the address already belongs to a real account (e.g. it registered via
+    /auth/register) inserting a second row raised IntegrityError inside the
+    lifespan and crash-looped the service. The seed now defers to the existing
+    owner, and any remaining conflict is logged instead of aborting startup.
+    """
+    result = await session.execute(
+        select(User).where(func.lower(User.email) == email.lower(), User.id != "admin")
+    )
+    if result.scalars().first() is not None:
+        logger.info("AURA_ADMIN_EMAIL already belongs to a registered user; skipping admin seed")
+        return
+    try:
+        await MetadataRepository(session).upsert_user("admin", name="AURA Admin", email=email)
+    except IntegrityError as exc:
+        await session.rollback()
+        logger.warning("Admin seed skipped, email conflict: %s", exc)
+
+
 @asynccontextmanager
 async def _lifespan(_: FastAPI) -> AsyncGenerator[None, None]:
     logger.info("Starting Metadata Store — initializing DB")
     await init_db()
     if settings.admin_email:
         async for session in get_session():
-            repo = MetadataRepository(session)
-            await repo.upsert_user("admin", name="AURA Admin", email=settings.admin_email)
+            await _seed_admin_user(session, settings.admin_email)
             break
     yield
     logger.info("Shutting down Metadata Store")
