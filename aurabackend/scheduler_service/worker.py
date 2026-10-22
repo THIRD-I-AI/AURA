@@ -287,7 +287,9 @@ class SchedulerWorker:
                             # successful retry. Skip without touching next_execution_time:
                             # the job stays due and a later tick runs it once every
                             # upstream's latest execution has succeeded.
-                            logger.info(
+                            # WARNING, not INFO: a job blocked by a failed or paused
+                            # upstream stays due indefinitely, and this is its only signal.
+                            logger.warning(
                                 "Deferring job %s (%s): upstream not succeeded: %s",
                                 job.name, job.id, blocked,
                             )
@@ -304,10 +306,30 @@ class SchedulerWorker:
         succeeded (PENDING retry, RUNNING, or FAILED). Empty when the job may run."""
         blocked: Dict[str, str] = {}
         for upstream_id in job.depends_on or []:
+            # BUG-502 review: a job that depends on itself, or on a job that
+            # (transitively) depends back on it, would wait on its own pending
+            # retry or failure forever. _resolve_execution_order already runs a
+            # cycle anyway to avoid deadlock; the gate must not reintroduce it.
+            if upstream_id == job.id or await self._depends_on(upstream_id, job.id):
+                continue
             latest = await self.repository.list_executions(job_id=upstream_id, limit=1)
             if latest and latest[0].status in _UPSTREAM_BLOCKING:
                 blocked[upstream_id] = getattr(latest[0].status, "value", str(latest[0].status))
         return blocked
+
+    async def _depends_on(self, job_id: str, target_id: str) -> bool:
+        """True when *job_id* reaches *target_id* through depends_on edges."""
+        seen: Set[str] = set()
+        frontier = [job_id]
+        while frontier:
+            current = await self.repository.get_job(frontier.pop())
+            for dep in (current.depends_on or []) if current else []:
+                if dep == target_id:
+                    return True
+                if dep not in seen:
+                    seen.add(dep)
+                    frontier.append(dep)
+        return False
 
     # ── Dependency resolution ──────────────────────────────────────
 

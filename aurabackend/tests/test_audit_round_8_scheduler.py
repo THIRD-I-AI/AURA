@@ -233,6 +233,55 @@ async def test_downstream_stays_due_when_the_upstream_exhausts_its_retries(repo,
     assert (await repo.get_job(down.id)).next_execution_time == b_due
 
 
+
+@pytest.mark.asyncio
+async def test_a_self_dependent_job_still_runs_its_retry(repo, executor):
+    # Review of the gate: a job listing itself in depends_on waited on its own
+    # PENDING retry forever.
+    job = await _daily_job(repo, name="A", query="SELECT 'A'", max_retries=1, retry_delay_seconds=3600)
+    await repo.update_job(job.id, {"depends_on": [job.id]})
+    ran = []
+
+    async def _query(**kwargs):
+        ran.append(kwargs["query"])
+        if len(ran) == 1:
+            raise RuntimeError("blip")
+        return {"row_count": 1, "columns": ["x"], "rows": [[1]]}
+
+    executor._execute_query = _query
+    worker = SchedulerWorker(repo, executor)
+    await asyncio.wait_for(worker._evaluate_and_execute(), timeout=10)
+    await repo.update_job(job.id, _make_due())
+    await asyncio.wait_for(worker._evaluate_and_execute(), timeout=10)
+    assert ran == ["SELECT 'A'", "SELECT 'A'"]
+    assert (await repo.list_executions(job_id=job.id))[0].status == JobStatus.SUCCESS
+
+
+@pytest.mark.asyncio
+async def test_a_two_job_cycle_is_not_deadlocked_by_the_gate(repo, executor):
+    a = await _daily_job(repo, name="A", query="SELECT 'A'")
+    b = await _daily_job(repo, name="B", query="SELECT 'B'", depends_on=[a.id])
+    await repo.update_job(a.id, {"depends_on": [b.id]})
+    ran = []
+    fail = {"on": True}
+
+    async def _query(**kwargs):
+        ran.append(kwargs["query"])
+        if fail["on"]:
+            raise RuntimeError("down")
+        return {"row_count": 1, "columns": ["x"], "rows": [[1]]}
+
+    executor._execute_query = _query
+    worker = SchedulerWorker(repo, executor)
+    await asyncio.wait_for(worker._evaluate_and_execute(), timeout=10)  # both FAILED
+    assert sorted(ran) == ["SELECT 'A'", "SELECT 'B'"]
+    fail["on"] = False
+    for j in (a, b):
+        await repo.update_job(j.id, _make_due())
+    await asyncio.wait_for(worker._evaluate_and_execute(), timeout=10)
+    assert sorted(ran) == ["SELECT 'A'", "SELECT 'A'", "SELECT 'B'", "SELECT 'B'"]
+
+
 # ── BUG-503 ─────────────────────────────────────────────────────────
 
 @pytest.mark.asyncio
