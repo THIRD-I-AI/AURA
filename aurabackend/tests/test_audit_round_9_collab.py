@@ -105,3 +105,39 @@ def test_bug519_live_tokens_still_relay(jwt_client):
             assert b.receive_bytes() == b"\x00\x01"
             b.send_text("hi")
             assert a.receive_text() == "hi"
+
+
+def test_bug519_a_stalled_close_does_not_hold_up_the_sender(monkeypatch):
+    # Review: expired and dropped peers were closed one at a time with no timeout,
+    # so a peer stalled in its close handshake stalled the sender (BUG-372 again).
+    import asyncio
+    import time as _time
+    import types
+
+    from api_gateway.routers import collab
+
+    monkeypatch.setenv("AURA_COLLAB_SEND_TIMEOUT", "0.2")
+
+    class _Peer:
+        def __init__(self, deadline=None):
+            self.got = []
+            self.state = types.SimpleNamespace(collab_deadline=deadline)
+
+        async def send_bytes(self, data):
+            self.got.append(data)
+
+        async def close(self, code: int = 1000):
+            await asyncio.sleep(30)
+
+    async def _scenario():
+        room = collab._Room()
+        sender, expired, live = _Peer(), _Peer(deadline=_time.time() - 1), _Peer()
+        room.clients.update({sender, expired, live})
+        started = _time.monotonic()
+        await asyncio.wait_for(collab._broadcast(room, sender, b"hi"), timeout=5)
+        return _time.monotonic() - started, room, expired, live
+
+    elapsed, room, expired, live = asyncio.run(_scenario())
+    assert elapsed < 2
+    assert live.got == [b"hi"] and expired.got == []
+    assert expired not in room.clients

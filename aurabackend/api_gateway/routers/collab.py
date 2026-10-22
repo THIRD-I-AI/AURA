@@ -136,28 +136,37 @@ async def _broadcast(room: _Room, sender: WebSocket, payload: bytes | str) -> No
     # BUG-519: a peer whose token lifetime has passed must stop receiving frames.
     now = time.time()
     expired = [c for c in peers if _expired(c, now)]
-    for peer in expired:
-        try:
-            await peer.close(code=status.WS_1008_POLICY_VIOLATION)
-        except Exception:
-            pass
+    timeout = _send_timeout_seconds()
+    if expired:
+        async with room.lock:
+            room.clients.difference_update(expired)
+        await _close_all(expired, timeout, code=status.WS_1008_POLICY_VIOLATION)
     peers = [c for c in peers if c not in expired]
     if not peers:
         return
     is_text = isinstance(payload, str)
-    timeout = _send_timeout_seconds()
     results = await asyncio.gather(
         *(asyncio.wait_for(c.send_text(payload) if is_text else c.send_bytes(payload), timeout)
           for c in peers),
         return_exceptions=True,
     )
+    dropped = []
     for peer, result in zip(peers, results):
         if isinstance(result, Exception):
             logger.debug("collab fan-out drop: %s", result)
-            try:
-                await peer.close()
-            except Exception:
-                pass
+            dropped.append(peer)
+    await _close_all(dropped, timeout)
+
+
+async def _close_all(peers: list, timeout: float, **close_kwargs) -> None:
+    """Close peers concurrently, each bounded by the send timeout. Awaiting a
+    stalled peer's close handshake one by one put the BUG-372 slow-peer stall
+    back on the sender (BUG-519 review)."""
+    if peers:
+        await asyncio.gather(
+            *(asyncio.wait_for(p.close(**close_kwargs), timeout) for p in peers),
+            return_exceptions=True,
+        )
 
 
 def _expired(ws: WebSocket, now: float) -> bool:
