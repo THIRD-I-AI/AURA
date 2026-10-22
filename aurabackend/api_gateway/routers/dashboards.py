@@ -15,7 +15,9 @@ layout yet; tiles render in order.
 from __future__ import annotations
 
 import asyncio
+import math
 import time
+import uuid
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
@@ -75,6 +77,22 @@ class DashboardUpdate(BaseModel):
 
 # ── Helpers ─────────────────────────────────────────────────────────
 
+def _json_safe_cell(val: Any) -> Any:
+    # BUG-491: the response is serialised after _run_tile's try/except returns,
+    # with json.dumps(allow_nan=False) and a bytes encoder that calls .decode().
+    # One NaN/Infinity or non-UTF-8 BLOB cell in any tile then 500s the whole
+    # render, so make each cell JSON-safe here. STRUCT/MAP/LIST nest them.
+    if isinstance(val, float):
+        return None if math.isnan(val) or math.isinf(val) else val
+    if isinstance(val, (bytes, bytearray, memoryview)):
+        return bytes(val).decode("utf-8", errors="backslashreplace")
+    if isinstance(val, dict):
+        return {k: _json_safe_cell(v) for k, v in val.items()}
+    if isinstance(val, (list, tuple)):
+        return [_json_safe_cell(v) for v in val]
+    return val
+
+
 def _tile_to_record(tile: DashboardTileInput, index: int) -> Dict[str, Any]:
     return {
         "id": f"tile_{index}_{int(time.time() * 1000)}",
@@ -102,7 +120,9 @@ async def create_dashboard(payload: DashboardCreate, request: Request):
     wsid = current_workspace_id(request)
     ts = datetime.now()
     record = {
-        "id": f"dash_{int(ts.timestamp() * 1000)}",
+        # BUG-492: a millisecond timestamp on a global primary key made two
+        # same-millisecond creates (any two tenants) collide into a 500.
+        "id": f"dash_{uuid.uuid4().hex}",
         "workspace_id": wsid,
         "name": name,
         "description": (payload.description or "").strip() or None,
@@ -208,7 +228,7 @@ async def _run_tile(tile: Dict[str, Any], saved_queries: List[Dict[str, Any]], c
             "chart_type": tile.get("chart_type", "table"),
             "status": "success",
             "columns": columns,
-            "rows": [list(r) for r in preview_rows],
+            "rows": [_json_safe_cell(r) for r in preview_rows],
             "row_count": len(preview_rows),
             "truncated": truncated,
             "execution_time_ms": round(elapsed, 1),

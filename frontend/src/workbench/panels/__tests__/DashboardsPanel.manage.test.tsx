@@ -83,6 +83,22 @@ describe('DashboardsPanel: create, open and delete dashboards (BUG-257)', () => 
     expect(screen.getByTestId('dashboard-render-tile-t3')).toHaveTextContent(/no longer exists/);
   });
 
+  it('shows STRUCT/MAP and LIST cells as JSON, not [object Object] or 1,2,3 (BUG-493)', async () => {
+    list.mockResolvedValue([dash('d1', 'Weekly')]);
+    renderDash.mockResolvedValue(rendering('d1', [
+      tile({ columns: ['s', 'l'], rows: [[{ a: 1, b: 'x' }, [1, 2, 3]]] }),
+    ]));
+    const user = userEvent.setup();
+    render(<DashboardsPanel />);
+    await user.click(await screen.findByRole('button', { name: 'Open Weekly' }));
+
+    const ok = await screen.findByTestId('dashboard-render-tile-t1');
+    const struct = within(ok).getByText('{"a":1,"b":"x"}');
+    expect(struct).toHaveAttribute('title', '{"a":1,"b":"x"}');
+    expect(within(ok).getByText('[1,2,3]')).toHaveAttribute('title', '[1,2,3]');
+    expect(ok).not.toHaveTextContent('[object Object]');
+  });
+
   it('a render failure is an error with Retry, not an empty dashboard', async () => {
     list.mockResolvedValue([dash('d1', 'Weekly')]);
     renderDash.mockRejectedValueOnce(new Error('500')).mockResolvedValueOnce(rendering('d1', [tile()]));
