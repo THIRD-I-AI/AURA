@@ -21,9 +21,9 @@ Security
   fail closed.
 * Metadata access goes through SQLAlchemy reflection or
   parameterised statements — never string-concatenated SQL.
-* HTTP transport (SSE) gates every request behind the
-  ``AURA_MCP_API_KEY`` header. Stdio transport inherits the parent
-  process's identity (Claude Code session).
+* HTTP transport (SSE) requires ``AURA_MCP_API_KEY`` to be set and gates
+  every request on ``Authorization: Bearer <AURA_MCP_API_KEY>``. Stdio
+  transport inherits the parent process's identity (Claude Code session).
 * Row caps: ``query`` and ``sample_table`` clamp to a
   ``AURA_MCP_MAX_ROWS`` limit (default 200).
 
@@ -34,6 +34,8 @@ Wire it into Claude Code
 from __future__ import annotations
 
 import argparse
+import hmac
+import inspect
 import json
 import logging
 import os
@@ -131,20 +133,23 @@ async def _get_meta_engine():
 
 # ── SQL safety ────────────────────────────────────────────────────────
 
-def _assert_select_only(sql: str) -> None:
-    """Raise ValueError unless ``sql`` is a single SELECT (CTEs allowed)."""
+def _assert_select_only(sql: str) -> str:
+    """Raise ValueError unless ``sql`` is a single SELECT (CTEs and set operations
+    allowed); return the SQL to execute."""
     if not _SQLGLOT_AVAILABLE:
         # Conservative fallback: only the "select" / "with" prefixes pass.
         head = sql.lstrip().split(None, 1)[0].lower() if sql.strip() else ""
         if head not in {"select", "with"}:
             raise ValueError("Only SELECT statements are permitted (sqlglot unavailable)")
-        return
+        return sql.strip().rstrip(";")
 
     statements = sqlglot.parse(sql, read="duckdb")
     if len(statements) != 1:
         raise ValueError("Exactly one statement allowed")
     stmt = statements[0]
-    if stmt is None or not isinstance(stmt, (_sqlglot_exp.Select, _sqlglot_exp.Subquery, _sqlglot_exp.With)):
+    # BUG-521: UNION/EXCEPT/INTERSECT are read-only and were wrongly refused.
+    allowed = (_sqlglot_exp.Select, _sqlglot_exp.Subquery, _sqlglot_exp.With, _sqlglot_exp.SetOperation)
+    if stmt is None or not isinstance(stmt, allowed):
         raise ValueError(f"Statement type {type(stmt).__name__} not allowed; SELECT only")
     # Defensive: walk the tree for any DML/DDL nodes.
     forbidden = (
@@ -155,15 +160,29 @@ def _assert_select_only(sql: str) -> None:
     for node in stmt.walk():
         if isinstance(node, forbidden):
             raise ValueError(f"Disallowed clause: {type(node).__name__}")
+    # BUG-521: regenerate from the validated AST so a trailing ';' or '--' comment
+    # cannot land inside the row-cap wrapper's parentheses and break it.
+    return stmt.sql(dialect="duckdb")
 
 
 # ── Server build ──────────────────────────────────────────────────────
 
-def build_server() -> "FastMCP":
+def _ctor_takes_host() -> bool:
+    # mcp<2 reads host/port in the constructor; mcp>=2 dropped them there and takes
+    # the host per app (sse_app(host=...)), where it also picks the rebinding guard.
+    return FastMCP is not None and "host" in inspect.signature(FastMCP.__init__).parameters
+
+
+def build_server(host: str = "127.0.0.1", port: int = 8000) -> "FastMCP":
     if not _MCP_AVAILABLE:
         raise RuntimeError(_MCP_IMPORT_ERROR)
 
+    # BUG-520: on mcp<2 host/port reach Settings only through the constructor (env
+    # vars set later never do), and the localhost-only DNS-rebinding guard is chosen
+    # from the host given here.
+    listen = {"host": host, "port": port} if _ctor_takes_host() else {}
     server = FastMCP(
+        **listen,
         name="aura-analytics",
         instructions=(
             "AURA analytics + metadata. Prefer `metadata.search_columns` "
@@ -229,7 +248,7 @@ def build_server() -> "FastMCP":
                     "single SELECT/CTE (parsed by sqlglot). Hard row cap applies."
     )
     def duckdb_query(sql: str, limit: int = 50) -> Dict[str, Any]:
-        _assert_select_only(sql)
+        sql = _assert_select_only(sql)
         limit = max(1, min(limit, MAX_ROWS))
         con = _get_duckdb()
         # Wrap the user query so we cap rows even if they forgot LIMIT,
@@ -406,6 +425,9 @@ def build_server() -> "FastMCP":
     return server
 
 
+_SECRET_QUERY_MARKERS = ("pass", "pwd", "secret", "token", "key", "auth", "credential")
+
+
 def _redact_dsn(dsn: str) -> str:
     """Strip credentials from a SQLAlchemy URL for safe logging/exposure."""
     try:
@@ -413,6 +435,13 @@ def _redact_dsn(dsn: str) -> str:
         url = make_url(dsn)
         if url.password:
             url = url.set(password="***")
+        # BUG-522: libpq/asyncpg DSNs can carry the password (or sslpassword, a token)
+        # as a query parameter, which the rendered URL prints verbatim.
+        if url.query:
+            url = url.set(query={
+                k: ("***" if any(m in k.lower() for m in _SECRET_QUERY_MARKERS) else v)
+                for k, v in url.query.items()
+            })
         return str(url)
     except Exception:
         return "<opaque>"
@@ -430,16 +459,49 @@ def main() -> None:
     args = parser.parse_args()
 
     logging.basicConfig(level=args.log_level)
-    server = build_server()
 
     if args.http is None:
         # stdio — what Claude Code launches when added via `claude mcp add`
-        server.run(transport="stdio")
+        build_server().run(transport="stdio")
     else:
-        # SSE — for in-cluster agents calling over the network
-        os.environ.setdefault("FASTMCP_HOST", "0.0.0.0")
-        os.environ.setdefault("FASTMCP_PORT", str(args.http))
-        server.run(transport="sse")
+        # SSE — for in-cluster agents calling over the network.
+        # BUG-542: this transport exposes every tenant's sources and the whole lake,
+        # so it fails closed without a key instead of serving anonymously.
+        api_key = os.getenv("AURA_MCP_API_KEY", "")
+        if not api_key:
+            raise SystemExit("AURA_MCP_API_KEY must be set to run the HTTP (SSE) transport")
+        import uvicorn
+        host = os.getenv("FASTMCP_HOST", "0.0.0.0")
+        uvicorn.run(
+            _require_api_key(sse_app(build_server(host=host, port=args.http), host), api_key),
+            host=host,
+            port=args.http,
+            log_level=args.log_level.lower(),
+        )
+
+
+def sse_app(server: "FastMCP", host: str) -> Any:
+    """The SSE Starlette app, with the rebinding guard chosen for ``host`` on either mcp API."""
+    return server.sse_app() if _ctor_takes_host() else server.sse_app(host=host)
+
+
+def _require_api_key(app: Any, api_key: str) -> Any:
+    expected = f"Bearer {api_key}".encode()
+
+    async def gated(scope, receive, send):
+        if scope["type"] == "http":
+            supplied = dict(scope["headers"]).get(b"authorization", b"")
+            if not hmac.compare_digest(supplied, expected):
+                await send({
+                    "type": "http.response.start",
+                    "status": 401,
+                    "headers": [(b"content-type", b"text/plain"), (b"www-authenticate", b"Bearer")],
+                })
+                await send({"type": "http.response.body", "body": b"Unauthorized"})
+                return
+        await app(scope, receive, send)
+
+    return gated
 
 
 if __name__ == "__main__":

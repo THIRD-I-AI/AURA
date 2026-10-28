@@ -256,9 +256,17 @@ def create_service(
         details = dict(zip(checks.keys(), results))
         unhealthy = {k: v for k, v in details.items() if v is not None}
         if unhealthy:
+            # BUG-540: /health is public and unthrottled; probe messages carry raw
+            # driver/filesystem text (DB user, host:port, mount paths). Keep that
+            # detail in the operator log and give callers only pass/fail per check.
+            logger.warning("%s /health degraded: %s", service_tag, unhealthy)
             return JSONResponse(
                 status_code=503,
-                content={**base, "status": "degraded", "checks": details},
+                content={
+                    **base,
+                    "status": "degraded",
+                    "checks": {k: "failing" if k in unhealthy else "ok" for k in checks},
+                },
             )
         return {**base, "checks": {k: "ok" for k in checks}}
 

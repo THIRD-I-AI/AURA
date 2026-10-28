@@ -21,6 +21,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException
 from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.middleware.cors import CORSMiddleware
 
 from shared.exceptions import AuraError
 from shared.logging_config import bind_request_id, get_logger, reset_request_id
@@ -514,13 +515,13 @@ class UploadBodyLimitMiddleware:
     body, not the file, so ``max_bytes`` should be the file limit plus multipart overhead.
     """
 
-    def __init__(self, app, *, max_bytes: int, path_suffix: str = "/upload") -> None:
+    def __init__(self, app, *, max_bytes: int, upload_path: str = "/api/v1/upload") -> None:
         self.app = app
         self.max_bytes = max_bytes
-        self.path_suffix = path_suffix
+        self.upload_path = upload_path
 
     async def __call__(self, scope, receive, send):
-        if scope["type"] == "http" and scope["method"] == "POST" and scope["path"].endswith(self.path_suffix):
+        if scope["type"] == "http" and scope["method"] == "POST" and scope["path"] == self.upload_path:
             for name, value in scope.get("headers", []):
                 if name == b"content-length":
                     try:
@@ -552,14 +553,14 @@ class RequestBodyLimitMiddleware:
     it: one large POST to a public route such as /auth/token could exhaust the single
     gateway worker's memory. A declared Content-Length over the limit is refused
     before anything is read; a body with no declared length (chunked) is cut off as
-    soon as it passes the limit. Paths ending in ``upload_suffix`` are left to
+    soon as it passes the limit. A POST to ``upload_path`` is left to
     UploadBodyLimitMiddleware, which has its own, larger limit.
     """
 
-    def __init__(self, app, *, max_bytes: int, upload_suffix: str = "/upload") -> None:
+    def __init__(self, app, *, max_bytes: int, upload_path: str = "/api/v1/upload") -> None:
         self.app = app
         self.max_bytes = max_bytes
-        self.upload_suffix = upload_suffix
+        self.upload_path = upload_path
 
     def _limit_message(self) -> str:
         return f"Request body exceeds the {self.max_bytes // (1024 * 1024)}MB limit"
@@ -570,7 +571,10 @@ class RequestBodyLimitMiddleware:
 
     async def __call__(self, scope, receive, send):
         skip = scope["type"] != "http" or scope["method"] in ("GET", "HEAD", "OPTIONS")
-        if skip or scope["path"].endswith(self.upload_suffix):
+        # BUG-539: exempt exactly the one upload route, and only for the method
+        # UploadBodyLimitMiddleware covers. A suffix match let any path parameter
+        # ending in '/upload' (e.g. PATCH /hooks/upload) skip both limits.
+        if skip or (scope["method"] == "POST" and scope["path"] == self.upload_path):
             await self.app(scope, receive, send)
             return
         for name, value in scope.get("headers", []):
@@ -635,6 +639,27 @@ def register_exception_handlers(app: FastAPI) -> None:
                     )
                 return
 
+    def _apply_cors_and_request_id(request: Request, response) -> None:
+        # BUG-541: Starlette runs the Exception handler in ServerErrorMiddleware,
+        # outside every user middleware, so an unhandled 500 skips CORSMiddleware
+        # and RequestIDMiddleware. Without Access-Control-Allow-Origin a cross-origin
+        # browser sees only 'Failed to fetch' and can never read the request_id.
+        request_id = getattr(request.state, "request_id", None)
+        if request_id:
+            response.headers["X-Request-ID"] = request_id
+        origin = request.headers.get("origin")
+        if not origin:
+            return
+        for mw in app.user_middleware:
+            if getattr(mw, "cls", None) is CORSMiddleware:
+                cors = CORSMiddleware(app=None, **(getattr(mw, "kwargs", None) or {}))
+                response.headers.update(cors.simple_headers)
+                if (cors.allow_all_origins and "cookie" in request.headers) or (
+                    not cors.allow_all_origins and cors.is_allowed_origin(origin)
+                ):
+                    cors.allow_explicit_origin(response.headers, origin)
+                return
+
     @app.exception_handler(AuraError)
     async def _handle_aura_error(request: Request, exc: AuraError):
         request_id = getattr(request.state, "request_id", None)
@@ -664,4 +689,5 @@ def register_exception_handlers(app: FastAPI) -> None:
             payload["request_id"] = request_id
         resp = JSONResponse(status_code=500, content=payload)
         _apply_security_headers(resp)
+        _apply_cors_and_request_id(request, resp)
         return resp

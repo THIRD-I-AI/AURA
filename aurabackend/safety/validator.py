@@ -45,15 +45,36 @@ class SQLSafetyValidator:
         "EXECUTE": "executes stored procedures",
     }
 
+    # Statements that are not reads but whose keyword is too common to forbid
+    # anywhere in the text (replace() is a function, load/copy are column names),
+    # so they are rejected only where they begin a statement (BUG-532 review).
+    STATEMENT_KEYWORDS = {
+        "ATTACH", "DETACH", "COPY", "PRAGMA", "GRANT", "REVOKE", "CALL", "INSTALL",
+        "LOAD", "VACUUM", "REPLACE", "SET", "USE", "IMPORT", "EXPORT",
+    }
+
     # Suspicious patterns
     SUSPICIOUS_PATTERNS = {
         r";\s*DROP": "command injection attempt",
         r"--\s*(DROP|DELETE|TRUNCATE)": "comment-based injection",
         r"/\*.*DROP": "comment-based injection",
         r"UNION.*SELECT": "potential data exfiltration",
-        r"xp_": "extended stored procedure access",
-        r"sp_": "system stored procedure access",
     }
+
+    # BUG-532: the xp_/sp_ checks used to be unanchored substring regexes over
+    # the whole text, so exp_date / resp_time / hosp_id were "stored procedure
+    # access". They are now token-based (see _procedure_call_errors); the raw
+    # regexes survive only as the fail-closed fallback when no dialect can
+    # tokenize the query.
+    PROCEDURE_PREFIXES = {
+        "XP_": "extended stored procedure access",
+        "SP_": "system stored procedure access",
+    }
+
+    # BUG-532: dialects whose tokenizers are consulted. A keyword counts as code
+    # if ANY of them sees it as code, so dialect-specific quoting/comment rules
+    # (backslash escapes, '#' comments, dollar quotes) can never hide one.
+    _TOKENIZE_DIALECTS = (None, "mysql", "postgres", "tsql", "bigquery", "snowflake")
 
     # Performance red flags
     PERFORMANCE_WARNINGS = {
@@ -100,12 +121,32 @@ class SQLSafetyValidator:
             if not query_upper.startswith("SELECT"):
                 errors.append("Dry-run mode: only SELECT queries allowed")
                 risk_level = QueryRiskLevel.CRITICAL
-        else:
-            # Check for destructive operations
-            for keyword, reason in self.FORBIDDEN_KEYWORDS.items():
-                if re.search(rf"\b{keyword}\b", query_upper):
-                    errors.append(f"Forbidden operation: {keyword} ({reason})")
-                    risk_level = QueryRiskLevel.CRITICAL
+
+        # BUG-533: the forbidden-keyword scan used to sit in the else branch of
+        # the dry-run check, so the "stricter" mode let `SELECT 1; DELETE ...`
+        # through. It now runs in every mode.
+        # BUG-532: it is token-based, so 'update' inside a string literal or a
+        # quoted identifier no longer counts as DML.
+        token_streams = self._token_streams(query)
+        for keyword, reason in self.FORBIDDEN_KEYWORDS.items():
+            if self._keyword_in_code(keyword, token_streams, query_upper):
+                errors.append(f"Forbidden operation: {keyword} ({reason})")
+                risk_level = QueryRiskLevel.CRITICAL
+
+        for reason in self._procedure_call_errors(token_streams, query_upper):
+            errors.append(f"Security risk: {reason}")
+            risk_level = QueryRiskLevel.CRITICAL
+
+        # BUG-532 review: every tokenizer drops comments, but MySQL executes the
+        # body of /*! ... */ and /*!50000 ... */, so `/*! DELETE FROM t */` passed
+        # the token scan. No read query needs one: refuse outright.
+        if "/*!" in query:
+            errors.append("Security risk: MySQL executable comment (/*! ... */)")
+            risk_level = QueryRiskLevel.CRITICAL
+
+        for keyword in self._statement_keywords(token_streams, query_upper):
+            errors.append(f"Forbidden operation: {keyword} (not a read statement)")
+            risk_level = QueryRiskLevel.CRITICAL
 
         # Check for suspicious patterns
         for pattern, reason in self.SUSPICIOUS_PATTERNS.items():
@@ -157,6 +198,91 @@ class SQLSafetyValidator:
             suggested_query=suggested_query,
             row_count_estimate=row_count_estimate,
         )
+
+    def _token_streams(self, query: str) -> Optional[List[List[Tuple[str, str]]]]:
+        """Tokenize ``query`` under every dialect in _TOKENIZE_DIALECTS.
+
+        Returns one list of (TOKEN_TYPE_NAME, UPPER_TEXT) per dialect, or None
+        when sqlglot is unavailable or ANY dialect fails to tokenize, in which
+        case callers fall back to the old raw-text regexes (fail closed, BUG-532).
+        """
+        try:
+            from sqlglot.dialects.dialect import Dialect
+
+            streams = []
+            for dialect in self._TOKENIZE_DIALECTS:
+                tokens = Dialect.get_or_raise(dialect).tokenize(query)
+                streams.append([(t.token_type.name, str(t.text).upper()) for t in tokens])
+            return streams
+        except Exception:
+            return None
+
+    @staticmethod
+    def _is_literal_token(token_type: str) -> bool:
+        # String literals of every flavour and quoted identifiers are data, not code.
+        return token_type.endswith("STRING") or token_type == "IDENTIFIER"
+
+    def _keyword_in_code(self, keyword: str, streams, query_upper: str) -> bool:
+        if streams is None:
+            return re.search(rf"\b{keyword}\b", query_upper) is not None
+        return any(
+            text == keyword and not self._is_literal_token(ttype)
+            for stream in streams
+            for ttype, text in stream
+        )
+
+    def _statement_keywords(self, streams, query_upper: str) -> List[str]:
+        """STATEMENT_KEYWORDS that begin a statement (start of query or after ';')."""
+        if streams is None:
+            alternatives = "|".join(sorted(self.STATEMENT_KEYWORDS))
+            return sorted(set(re.findall(rf"(?:^|;)\s*({alternatives})\b", query_upper)))
+        found = set()
+        for stream in streams:
+            at_start = True
+            for ttype, text in stream:
+                if ttype == "SEMICOLON":
+                    at_start = True
+                    continue
+                if at_start and text in self.STATEMENT_KEYWORDS and not self._is_literal_token(ttype):
+                    found.add(text)
+                at_start = False
+        return sorted(found)
+
+    def _procedure_call_errors(self, streams, query_upper: str) -> List[str]:
+        """Flag xp_/sp_ procedures invoked as a statement (BUG-532).
+
+        T-SQL runs a bare procedure name only at the start of a statement
+        (``xp_cmdshell 'dir'`` or ``master.dbo.xp_cmdshell 'dir'``); any other
+        invocation needs EXEC/EXECUTE, which the forbidden-keyword check already
+        rejects. Column names such as xp_count or sp_rate are not calls.
+        """
+        if streams is None:
+            return [
+                reason for prefix, reason in self.PROCEDURE_PREFIXES.items()
+                if prefix in query_upper
+            ]
+        found: List[str] = []
+        for stream in streams:
+            at_statement_start = True
+            for ttype, text in stream:
+                # GO is the T-SQL client batch separator, so it starts a new batch too.
+                if ttype == "SEMICOLON" or text == "GO":
+                    at_statement_start = True
+                    continue
+                if not at_statement_start:
+                    continue
+                if ttype == "DOT":
+                    continue
+                if self._is_literal_token(ttype) and ttype != "IDENTIFIER":
+                    at_statement_start = False
+                    continue
+                for prefix, reason in self.PROCEDURE_PREFIXES.items():
+                    if text.startswith(prefix) and reason not in found:
+                        found.append(reason)
+                # Only a (possibly dotted) leading name can be a bare call.
+                if ttype not in ("VAR", "IDENTIFIER"):
+                    at_statement_start = False
+        return found
 
     def _estimate_query_cost(self, query: str) -> int:
         """Estimate relative query cost via sqlglot AST node counts."""

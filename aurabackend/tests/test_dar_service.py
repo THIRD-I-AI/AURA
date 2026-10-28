@@ -231,7 +231,7 @@ class TestExecuteNode:
             if call_count[0] == 1:
                 result = MagicMock()
                 result.description = [("sum_amount",)]
-                result.fetchall.return_value = [(42000,)]
+                result.fetchmany.return_value = [(42000,)]
                 return result
             else:
                 raise Exception("syntax error")

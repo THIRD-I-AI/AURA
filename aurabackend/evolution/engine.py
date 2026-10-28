@@ -55,6 +55,40 @@ def _max_groups_per_cycle() -> int:
         return 20
 _CONFIDENCE_DEPLOY_THRESHOLD = 0.75
 
+# BUG-534: agent_output used to be stored whole, so every ExecutionAgent run
+# copied up to 2x AURA_QUERY_MAX_ROWS rows of tenant data into an unscoped,
+# never-pruned table. Feedback only needs a summary (the failure analysis reads
+# 300 chars of it), so row collections are reduced to counts and the whole
+# payload is capped.
+_FEEDBACK_OUTPUT_MAX_CHARS = 4000
+_FEEDBACK_STRING_MAX_CHARS = 500
+_FEEDBACK_LIST_MAX_ITEMS = 10
+
+
+def _summarize_agent_output(output: Any) -> Dict[str, Any]:
+    if not isinstance(output, dict):
+        output = {"value": output}
+    summary: Dict[str, Any] = {}
+    for key, value in output.items():
+        if isinstance(value, (list, tuple)) and len(value) > _FEEDBACK_LIST_MAX_ITEMS:
+            summary[key] = {"_omitted_items": len(value)}
+        elif isinstance(value, str) and len(value) > _FEEDBACK_STRING_MAX_CHARS:
+            summary[key] = value[:_FEEDBACK_STRING_MAX_CHARS] + f"...[{len(value)} chars]"
+        else:
+            summary[key] = value
+    text = json.dumps(summary, default=str)
+    if len(text) <= _FEEDBACK_OUTPUT_MAX_CHARS:
+        return json.loads(text)
+    capped: Dict[str, Any] = {
+        "_truncated": True,
+        "_original_chars": len(text),
+        "keys": [str(k)[:64] for k in list(output)[:10]],
+        "preview": text[:1500],
+    }
+    while len(json.dumps(capped)) > _FEEDBACK_OUTPUT_MAX_CHARS and capped["preview"]:
+        capped["preview"] = capped["preview"][: len(capped["preview"]) // 2]
+    return capped
+
 
 class EvolutionEngine:
     """
@@ -393,7 +427,7 @@ class EvolutionEngine:
                 agent_name=agent_name,
                 task_type=task_type,
                 user_prompt=user_prompt[:1000],
-                agent_output=agent_output,
+                agent_output=_summarize_agent_output(agent_output),
                 success=success,
                 duration_ms=duration_ms,
                 user_rating=user_rating,

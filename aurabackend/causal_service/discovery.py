@@ -72,6 +72,41 @@ def dowhy_available() -> bool:
     return _DOWHY_AVAILABLE
 
 
+class AttributionInputError(ValueError):
+    """The request itself is unusable for attribution (the API maps this to a 400)."""
+
+
+class GcmBudgetError(AttributionInputError):
+    """The gcm attribution would exceed its compute budget even for a single anomaly row."""
+
+
+# BUG-523: the work runs in a thread that cannot be cancelled once the gateway gives up (its proxy
+# timeout is 60 s, api_gateway/routers/pipelines.py), so the work itself must be bounded. Separate
+# row and candidate caps were not enough (5 rows x 8 candidates measured ~100 s). gcm evaluates one
+# Shapley set function per coalition, and each evaluation scores every anomaly row against 3000
+# noise samples, so the cost is rows x set evaluations. The cost per row-evaluation depends on the
+# mechanism (linear ~0.13 s, nonlinear ~0.26 s here), so the budget is set on the slowest case:
+# nonlinear data with the default 10k-row training read, sampled to _GCM_MAX_TRAINING_ROWS (which
+# also bounds the fit, since a request may read up to 500k rows). Measured end to end at that
+# input: 4 candidates (32 sets) x 3 rows = 96 units 27.7 s; 2 candidates x 12 rows 26.6 s;
+# 5 candidates x 1 row 19.3 s. 6 or more candidates are refused (method='auto' falls back to
+# correlation instead).
+_GCM_MAX_ROW_EVALUATIONS = 100
+_GCM_MAX_TRAINING_ROWS = 2_000
+
+
+def _gcm_set_evaluations(num_players: int) -> int:
+    """Upper bound on the set functions gcm's default ShapleyConfig evaluates (BUG-523).
+
+    Mirrors dowhy.gcm.shapley: AUTO is exact (every subset) up to 5 players, else permutation
+    sampling: the full and empty sets plus p - 1 prefixes per permutation, deduplicated.
+    """
+    if num_players <= 5:
+        return 2 ** num_players
+    perms = min(math.factorial(num_players), gcm.shapley.ShapleyConfig().num_permutations)
+    return min(2 ** num_players, 2 + perms * (num_players - 1))
+
+
 # ── Public engine selection ───────────────────────────────────────────
 
 def attribute(
@@ -103,6 +138,19 @@ def attribute(
     if not numeric_cands:
         return [], "none", warnings + ["No numeric candidate causes available."], None
 
+    # BUG-527: only the training dtypes were checked; inline anomaly rows built from CSV carry
+    # numbers as strings, and .mean() on an object column raised a TypeError (a 500).
+    anomalies = anomalies.copy()
+    for c in [*numeric_cands, target]:
+        if c in anomalies.columns and not pd.api.types.is_numeric_dtype(anomalies[c]):
+            coerced = pd.to_numeric(anomalies[c], errors="coerce")
+            bad = int((coerced.isna() & anomalies[c].notna()).sum())
+            if bad:
+                warnings.append(
+                    f"Anomaly column {c!r}: {bad} value(s) are not numeric and were treated as missing."
+                )
+            anomalies[c] = coerced
+
     # Method resolution
     chosen = method
     if method == "auto":
@@ -132,9 +180,18 @@ def attribute(
             )
             return [], "refused_non_stationary", warnings, verdict
 
+    attrs = None
     if chosen == "gcm":
-        attrs = _gcm_attribute(training, anomalies, target, numeric_cands, edges, warnings)
-    else:
+        try:
+            attrs = _gcm_attribute(training, anomalies, target, numeric_cands, edges, warnings)
+        except GcmBudgetError as exc:
+            # BUG-523: method='auto' with no candidate_causes uses every numeric column, so a wide
+            # table must not turn a default request into a 400; only an explicit 'gcm' is refused.
+            if method != "auto":
+                raise
+            warnings.append(f"{exc} Falling back to the correlation engine.")
+            chosen, verdict = "correlation", None
+    if attrs is None:
         attrs = _correlation_attribute(training, anomalies, target, numeric_cands, warnings)
 
     attrs.sort(key=lambda a: a.score, reverse=True)
@@ -249,22 +306,62 @@ def _gcm_attribute(
         )
         return []
 
-    if len(train_df) < 30:
-        warnings.append(
-            f"Training set has only {len(train_df)} complete rows — "
-            "gcm mechanism fits will be unstable."
-        )
-
     graph = nx.DiGraph()
     graph.add_nodes_from(cols)
     if edges:
+        # BUG-526: user edges went to gcm unchecked, so a cycle or an unknown node raised
+        # inside dowhy and surfaced as a 500.
+        unknown = sorted({n for edge in edges for n in edge} - set(cols))
+        if unknown:
+            raise AttributionInputError(
+                f"causal_graph_edges reference nodes that are not the target or a candidate: {unknown}"
+            )
         graph.add_edges_from(edges)
+        if not nx.is_directed_acyclic_graph(graph):
+            raise AttributionInputError("causal_graph_edges must form a DAG; the graph contains a cycle.")
+        unreachable = [c for c in candidates if not nx.has_path(graph, c, target)]
+        if unreachable:
+            warnings.append(
+                f"Candidates {unreachable} have no directed path to {target!r} in the supplied "
+                "graph, so their attribution is zero by construction."
+            )
     else:
         # Default: every candidate is a direct parent of the target.
         # Caller can supply a richer DAG via ``edges`` when domain
         # knowledge is available.
         for c in candidates:
             graph.add_edge(c, target)
+
+    # BUG-523: one joint budget on rows x Shapley set evaluations. The players are the target's
+    # noise plus every ancestor's, so cut rows first and refuse only if one row is over budget.
+    set_evals = _gcm_set_evaluations(len(nx.ancestors(graph, target)) + 1)
+    max_rows = _GCM_MAX_ROW_EVALUATIONS // set_evals
+    if max_rows < 1:
+        raise GcmBudgetError(
+            f"gcm attribution over {len(candidates)} candidate causes needs ~{set_evals} Shapley "
+            f"evaluations per anomaly row, over the budget of {_GCM_MAX_ROW_EVALUATIONS}. Pass a "
+            "shorter candidate_causes list, or use method='correlation'."
+        )
+    if len(anom_df) > max_rows:
+        deviation = (anom_df[target] - train_df[target].mean()).abs()
+        anom_df = anom_df.loc[deviation.nlargest(max_rows).index]
+        warnings.append(
+            f"gcm attributed the {max_rows} most anomalous of {len(deviation)} "
+            f"anomaly rows (largest |{target} - training mean|); the rest were not scored."
+        )
+
+    if len(train_df) < 30:
+        warnings.append(
+            f"Training set has only {len(train_df)} complete rows — "
+            "gcm mechanism fits will be unstable."
+        )
+    if len(train_df) > _GCM_MAX_TRAINING_ROWS:
+        # BUG-523 review: the per-evaluation cost grows with the training size (the
+        # request allows up to 500k rows), so the row budget only holds at a fixed size.
+        train_df = train_df.sample(n=_GCM_MAX_TRAINING_ROWS, random_state=0)
+        warnings.append(
+            f"gcm fitted its mechanisms on a sample of {_GCM_MAX_TRAINING_ROWS} training rows."
+        )
 
     scm = gcm.StructuralCausalModel(graph)
     gcm.auto.assign_causal_mechanisms(scm, train_df)
@@ -273,17 +370,28 @@ def _gcm_attribute(
     raw = gcm.attribute_anomalies(scm, target_node=target, anomaly_samples=anom_df)
     # raw is dict[node_name → np.ndarray of length n_anomalies].
     out: List[Attribution] = []
+    if len(anom_df) < 2:
+        # BUG-525: one row has no spread, so 1 - std/|mean| was always 1.0 whatever the score.
+        warnings.append(
+            "Confidence is not estimable from a single anomaly row and is reported as 0."
+        )
     for node, scores in raw.items():
         if node == target:
             continue
+        # BUG-524 residual (accepted): signed per-row contributions can cancel across rows in the mean.
         mean_score = float(_safe_mean(scores))
-        # Confidence: 1 − coefficient of variation, clamped to [0, 1].
-        cv = float(_safe_std(scores)) / max(abs(mean_score), 1e-9)
-        confidence = max(0.0, min(1.0, 1.0 - cv))
+        if len(anom_df) < 2:
+            confidence = 0.0
+        else:
+            # Confidence: 1 − coefficient of variation, clamped to [0, 1].
+            cv = float(_safe_std(scores)) / max(abs(mean_score), 1e-9)
+            confidence = max(0.0, min(1.0, 1.0 - cv))
         direction = _direction_from_correlation(train_df, node, target)
         out.append(Attribution(
             cause=node,
-            score=abs(mean_score),
+            # BUG-524: keep the sign. A negative Shapley contribution means the node made the
+            # target LESS anomalous; abs() ranked such a mitigator as a driver.
+            score=mean_score,
             confidence=confidence,
             direction=direction,
         ))
@@ -481,7 +589,12 @@ def summarise(attrs: List[Attribution], target: str, method: str) -> str:
     if not attrs:
         return f"No causal attributions surfaced for {target} (method={method})."
     top = attrs[0]
+    # BUG-524: a gcm score <= 0 means the cause did not push the target toward the anomaly.
+    if method == "gcm" and top.score <= 0:
+        return f"No candidate cause increased the {target} anomaly (method={method})."
     second = attrs[1] if len(attrs) > 1 else None
+    if second is not None and method == "gcm" and second.score <= 0:
+        second = None
     bits = [
         f"Top driver of the {target} anomaly is **{top.cause}** "
         f"({top.direction} effect, score={top.score:.3f}, "

@@ -68,7 +68,7 @@ def _json_app(max_bytes: int) -> TestClient:
     async def token(request: Request):
         return {"read": len(await request.body())}
 
-    @app.post("/files/upload")
+    @app.post("/api/v1/upload")
     async def upload(request: Request):
         return {"read": len(await request.body())}
 
@@ -92,7 +92,7 @@ def test_a_chunked_body_is_cut_off_at_the_limit():
 def test_bodies_within_the_limit_and_upload_paths_are_untouched():
     client = _json_app(1024)
     assert client.post("/auth/token", content=b"x" * 800).json() == {"read": 800}
-    assert client.post("/files/upload", content=b"x" * 5000).json() == {"read": 5000}
+    assert client.post("/api/v1/upload", content=b"x" * 5000).json() == {"read": 5000}
 
 
 def test_the_gateway_installs_the_request_body_limit():

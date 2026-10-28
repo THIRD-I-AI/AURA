@@ -1,7 +1,8 @@
 import json
 import logging
+import os
 from collections import OrderedDict
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Literal, Optional
 
 from aiokafka import AIOKafkaProducer
 
@@ -12,6 +13,10 @@ logger = logging.getLogger("aura.ingestion.kafka")
 # the same batch_id within a reasonable window (a client re-POST, not a
 # long-forgotten batch from hours ago).
 _DEDUP_WINDOW_SIZE = 10_000
+
+# BUG-531: send failures used to be swallowed after the DLQ attempt, so the
+# caller audited a batch that reached neither topic as processed.
+PublishOutcome = Literal["published", "duplicate", "dead_lettered", "lost"]
 
 
 class KafkaUnavailableError(RuntimeError):
@@ -79,7 +84,7 @@ class ResilientKafkaProducer:
         partition_key: str = None,
         max_retries: int = 3,
         dedup_key: Optional[str] = None,
-    ):
+    ) -> PublishOutcome:
         """
         Publishes a message to the target topic. If it fails beyond the aiokafka retry limit,
         routes the failed message to a Dead Letter Queue (DLQ).
@@ -89,10 +94,13 @@ class ResilientKafkaProducer:
         When given and already seen within the recent window, the publish is
         skipped entirely -- this is the app-level dedup enable_idempotence
         does not provide (see __init__/start()).
+
+        Returns the outcome so the caller can audit what actually happened;
+        raises KafkaUnavailableError when the broker cannot be reached at all.
         """
         if dedup_key is not None and dedup_key in self._recently_published:
             logger.warning(f"Skipping duplicate publish to {topic}: dedup_key={dedup_key!r} already published")
-            return
+            return "duplicate"
         if not await self._ensure_started():
             raise KafkaUnavailableError(
                 f"broker {self.bootstrap_servers} down; cannot publish to {topic}")
@@ -104,11 +112,13 @@ class ResilientKafkaProducer:
                 self._recently_published[dedup_key] = None
                 if len(self._recently_published) > _DEDUP_WINDOW_SIZE:
                     self._recently_published.popitem(last=False)
+            return "published"
         except Exception as e:
             logger.error(f"Failed to publish to {topic} after retries: {e}. Routing to DLQ.")
-            await self._route_to_dlq(payload, error_msg=str(e), original_topic=topic)
+            routed = await self._route_to_dlq(payload, error_msg=str(e), original_topic=topic)
+            return "dead_lettered" if routed else "lost"
 
-    async def _route_to_dlq(self, payload: Dict[str, Any], error_msg: str, original_topic: str):
+    async def _route_to_dlq(self, payload: Dict[str, Any], error_msg: str, original_topic: str) -> bool:
         """
         Routes un-publishable payloads to the DLQ to ensure zero data loss
         and enable later reconciliation.
@@ -123,9 +133,18 @@ class ResilientKafkaProducer:
             # Send without waiting to avoid blocking ingestion loop completely if DLQ is also down
             await self.producer.send_and_wait(dlq_topic, value=dlq_payload, key=dlq_payload.get("original_topic"))
             logger.warning(f"Payload successfully routed to DLQ topic '{dlq_topic}'")
+            return True
         except Exception as dlq_e:
-            # Extreme fallback: Write to disk or alerting system
-            logger.critical(f"FATAL: Failed to route to DLQ! Data loss imminent. Error: {dlq_e}. Payload: {payload}")
+            # BUG-531: never log the payload itself -- it is raw ledger lines
+            # (memo, department, amounts) and this path is outside the
+            # HTTP-only PII masking middleware.
+            logger.critical(
+                f"FATAL: Failed to route to DLQ! Data loss imminent. Error: {dlq_e}. "
+                f"original_topic={original_topic} batch_id={payload.get('batch_id')!r} "
+                f"entries={len(payload.get('entries') or [])}")
+            return False
 
-# Singleton instance
-kafka_producer = ResilientKafkaProducer()
+# Singleton instance. BUG-529: Helm sets KAFKA_BOOTSTRAP_SERVERS; the
+# constructor default only fits a broker on the same host.
+kafka_producer = ResilientKafkaProducer(
+    os.environ.get("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092"))
