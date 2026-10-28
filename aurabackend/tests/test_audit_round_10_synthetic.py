@@ -52,7 +52,7 @@ def test_incompressible_data_does_not_overshoot_the_byte_target(tmp_path, col):
 
 
 # ── BUG-538: non-finite / non-positive sizes are a 400, not a 500 ──
-@pytest.mark.parametrize("spec", ["infGB", "1e400B", "-5GB", "-infB", "1e300PB", "0B"])
+@pytest.mark.parametrize("spec", ["infGB", "1e400B", "-5GB", "-infB", "1e300PB", "0B", "nanGB", "0", "9" * 400, "2EB"])
 def test_parse_size_rejects_non_finite_and_non_positive_sizes(spec):
     with pytest.raises(ValueError):
         parse_size(spec)

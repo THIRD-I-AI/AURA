@@ -127,22 +127,27 @@ _UNITS = {
 }
 
 
+# Far above any real target; keeps every parsed size a float-safe int (BUG-538).
+_MAX_SIZE_BYTES = 2 ** 60
+
+
 def parse_size(spec: str) -> int:
     """'1TB' / '500 GB' / '2PiB' / '1048576' → bytes (int)."""
     s = str(spec).strip().upper().replace(" ", "")
     if s.isdigit():
-        return int(s)
-    for unit in sorted(_UNITS, key=len, reverse=True):
-        if s.endswith(unit):
-            num = s[: -len(unit)]
-            value = float(num) * _UNITS[unit]
-            # BUG-538: 'inf' / '1e400' made int() raise OverflowError (a 500 from the
-            # routes, which only map ValueError), and a negative size slipped past the
-            # generate cap.
-            if not math.isfinite(value) or value <= 0:
-                raise ValueError(f"size {spec!r} must be a finite, positive number of bytes")
-            return int(value)
-    raise ValueError(f"cannot parse size {spec!r} (use e.g. 500MB, 1TB, 2PiB)")
+        value: float = int(s)
+    else:
+        unit = next((u for u in sorted(_UNITS, key=len, reverse=True) if s.endswith(u)), None)
+        if unit is None:
+            raise ValueError(f"cannot parse size {spec!r} (use e.g. 500MB, 1TB, 2PiB)")
+        value = float(s[: -len(unit)]) * _UNITS[unit]
+    # BUG-538: 'inf' / '1e400' made int() raise OverflowError (a 500 from the routes,
+    # which only map ValueError), a negative size slipped past the generate cap, and a
+    # 400-digit bare number overflowed later in plan_generation. One bound for every form.
+    # Range first: math.isfinite() itself overflows on a huge int; NaN fails both.
+    if not (0 < value <= _MAX_SIZE_BYTES and math.isfinite(value)):
+        raise ValueError(f"size {spec!r} must be a positive number of bytes no larger than 1 EiB")
+    return int(value)
 
 
 def human_size(nbytes: float) -> str:
