@@ -96,7 +96,7 @@ def test_bug521_set_operation_with_dml_still_rejected():
 
 # ── BUG-522 ──────────────────────────────────────────────────────────
 
-@pytest.mark.parametrize("key", ["password", "sslpassword", "secret", "token"])
+@pytest.mark.parametrize("key", ["password", "sslpassword", "secret", "token", "api_key", "apikey", "auth", "credential"])
 def test_bug522_query_string_credentials_are_redacted(key):
     dsn = f"postgresql+asyncpg://aura@db:5432/aura?{key}=s3cret&sslmode=require"
     out = srv._redact_dsn(dsn)

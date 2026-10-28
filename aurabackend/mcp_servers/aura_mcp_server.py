@@ -418,7 +418,7 @@ def build_server(host: str = "127.0.0.1", port: int = 8000) -> "FastMCP":
     return server
 
 
-_SECRET_QUERY_MARKERS = ("pass", "pwd", "secret", "token")
+_SECRET_QUERY_MARKERS = ("pass", "pwd", "secret", "token", "key", "auth", "credential")
 
 
 def _redact_dsn(dsn: str) -> str:
