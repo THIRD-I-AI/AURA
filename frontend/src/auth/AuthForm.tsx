@@ -1,7 +1,8 @@
 import { useState, type FormEvent } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { Button } from '@/components/ui-kit/button';
-import { useViewport } from '../shell/ViewportProvider';
+import { ThemeToggle } from '@/ui/ThemeToggle';
+import { useDocumentScroll } from '@/landing/useDocumentScroll';
 import { useAuth } from './AuthContext';
 import './AuthForm.css';
 
@@ -25,20 +26,30 @@ function loginFailureMessage(err: Error): string {
 }
 
 export function AuthForm({ mode }: { mode: Mode }) {
+  useDocumentScroll();
   const { login, register } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
-  const wide = useViewport().atLeast('standard');
-  // Workbench is the single front door; a deep-linked `from` still wins.
-  const from = (location.state as { from?: string } | null)?.from ?? '/workbench';
+  const state = location.state as { from?: string; email?: string; next?: string } | null;
+  // Workbench is the single front door; a deep-linked `from` still wins, and a
+  // visitor who came from the landing page to run an audit goes back to run it.
+  const from = state?.from ?? (state?.next === 'audit' ? '/' : '/workbench');
 
   const [name, setName] = useState('');
-  const [email, setEmail] = useState('');
+  // The landing page hands the address over in router state, never in the URL.
+  const [email, setEmail] = useState(state?.email ?? '');
   const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
   const isSignup = mode === 'signup';
+  const [verifyHash, setVerifyHash] = useState('');
+
+  function verify(e: FormEvent) {
+    e.preventDefault();
+    const hash = verifyHash.trim().toLowerCase();
+    if (/^[0-9a-f]{16,128}$/.test(hash)) navigate(`/verify/${hash}`);
+  }
 
   async function onSubmit(e: FormEvent) {
     e.preventDefault();
@@ -63,18 +74,36 @@ export function AuthForm({ mode }: { mode: Mode }) {
   }
 
   return (
-    <div className={`auth-pane${wide ? ' auth-pane--split' : ''}`}>
-      {wide && (
-        <div className="auth-pane__brand">
-          <div className="auth-pane__brand-inner">
-            <h2 className="auth-pane__brandmark">AURA</h2>
-            <p className="auth-pane__valueprop">
-              Ask your data in plain English. Get signed, verifiable answers.
-            </p>
-          </div>
-        </div>
-      )}
-      <div className="auth-pane__form">
+    <main className="auth">
+      <header className="auth__bar">
+        <Link to="/" className="auth__mark">AURA</Link>
+        <ThemeToggle />
+      </header>
+      <section className="auth__intro">
+        <h2 className="auth__lead">
+          {isSignup ? 'Run your first audit on real data.' : 'Your audits are where you left them.'}
+        </h2>
+        <p className="auth__line">
+          Every result is sealed with an ED25519 signature, so anyone can check it without an account.
+        </p>
+        {!isSignup && (
+          <form className="auth__verify" onSubmit={verify}>
+            <label htmlFor="auth-verify-hash">Holding a certificate? Check it without signing in.</label>
+            <div className="auth__verify-row">
+              <input
+                id="auth-verify-hash"
+                className="auth-form__input"
+                value={verifyHash}
+                onChange={(e) => setVerifyHash(e.target.value)}
+                placeholder="Paste its hash"
+                spellCheck={false}
+              />
+              <Button type="submit" variant="outline">Verify</Button>
+            </div>
+          </form>
+        )}
+      </section>
+      <section className="auth__panel">
         <div data-testid="auth-form" className="auth-form">
           <h1 className="auth-form__title">
             {isSignup ? 'Create your account' : 'Welcome back'}
@@ -143,7 +172,7 @@ export function AuthForm({ mode }: { mode: Mode }) {
             )}
           </p>
         </div>
-      </div>
-    </div>
+      </section>
+    </main>
   );
 }

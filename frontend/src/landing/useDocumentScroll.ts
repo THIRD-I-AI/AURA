@@ -1,4 +1,5 @@
 import { useEffect } from 'react';
+import './docScroll.css';
 
 /** The app shell fixes html, body and #root at 100% with overflow hidden (it
  *  scrolls inside its panels), which left a long public page unscrollable for a

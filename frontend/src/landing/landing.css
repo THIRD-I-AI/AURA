@@ -25,7 +25,6 @@
   line-height: 1.5;
   overflow-x: clip;
 }
-html.doc-scroll, html.doc-scroll body, html.doc-scroll #root { height: auto; min-height: 100%; overflow: visible; overflow-x: clip; }
 
 .landing *, .landing *::before, .landing *::after { box-sizing: border-box; }
 .landing code { font-family: var(--font-mono); font-size: 0.95em; }

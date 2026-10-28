@@ -32,9 +32,11 @@ describe('AppRoutes', () => {
     // to /login rather than mount the dashboard. (An authenticated deep-link
     // mounting the right page is covered once an AuthProvider is in scope.)
     render(
-      <MemoryRouter initialEntries={['/app/chat']}>
-        <AppRoutes />
-      </MemoryRouter>,
+      <ThemeProvider>
+        <MemoryRouter initialEntries={['/app/chat']}>
+          <AppRoutes />
+        </MemoryRouter>
+      </ThemeProvider>,
     );
     await waitFor(() => expect(screen.getByTestId('auth-form')).toBeInTheDocument());
     expect(screen.queryByTestId('audit-progress')).not.toBeInTheDocument();
@@ -45,9 +47,11 @@ describe('AppRoutes', () => {
     // ProtectedRoute. With no session, /workbench redirects to /login instead
     // of mounting the cockpit (which previously had its own mock login).
     render(
-      <MemoryRouter initialEntries={['/workbench']}>
-        <AppRoutes />
-      </MemoryRouter>,
+      <ThemeProvider>
+        <MemoryRouter initialEntries={['/workbench']}>
+          <AppRoutes />
+        </MemoryRouter>
+      </ThemeProvider>,
     );
     await waitFor(() => expect(screen.getByTestId('auth-form')).toBeInTheDocument());
   });

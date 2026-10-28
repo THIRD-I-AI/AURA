@@ -3,6 +3,7 @@ import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AuthProvider } from '../AuthContext';
 import { AuthForm } from '../AuthForm';
+import { ThemeProvider } from '@/contexts/ThemeContext';
 import { AuthNav } from '../AuthNav';
 import { ProtectedRoute } from '../ProtectedRoute';
 import { UserMenu } from '../UserMenu';
@@ -19,28 +20,28 @@ describe('AuthForm', () => {
 
   it('login mode collects email + password but not a name', () => {
     render(
-      <MemoryRouter>
+      <ThemeProvider><MemoryRouter>
         <AuthProvider>
           <AuthForm mode="login" />
         </AuthProvider>
-      </MemoryRouter>,
+      </MemoryRouter></ThemeProvider>,
     );
     expect(screen.getByTestId('auth-email')).toBeTruthy();
     expect(screen.getByTestId('auth-password')).toBeTruthy();
     expect(screen.queryByTestId('auth-name')).toBeNull();
-    expect(screen.getByRole('button').textContent).toMatch(/sign in/i);
+    expect(screen.getByRole('button', { name: 'Sign in' })).toBeTruthy();
   });
 
   it('signup mode also collects a name', () => {
     render(
-      <MemoryRouter>
+      <ThemeProvider><MemoryRouter>
         <AuthProvider>
           <AuthForm mode="signup" />
         </AuthProvider>
-      </MemoryRouter>,
+      </MemoryRouter></ThemeProvider>,
     );
     expect(screen.getByTestId('auth-name')).toBeTruthy();
-    expect(screen.getByRole('button').textContent).toMatch(/create account/i);
+    expect(screen.getByRole('button', { name: 'Create account' })).toBeTruthy();
   });
 });
 

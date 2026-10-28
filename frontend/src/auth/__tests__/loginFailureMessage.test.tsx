@@ -3,17 +3,18 @@ import { MemoryRouter } from 'react-router-dom';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { AuthProvider } from '../AuthContext';
 import { AuthForm } from '../AuthForm';
+import { ThemeProvider } from '@/contexts/ThemeContext';
 import { ApiRequestError, authService } from '../../services/api';
 
 // BUG-427: every login failure used to read "Wrong email or password."
 async function failLoginWith(err: Error): Promise<string> {
   vi.spyOn(authService, 'login').mockRejectedValue(err);
   render(
-    <MemoryRouter>
+    <ThemeProvider><MemoryRouter>
       <AuthProvider>
         <AuthForm mode="login" />
       </AuthProvider>
-    </MemoryRouter>,
+    </MemoryRouter></ThemeProvider>,
   );
   fireEvent.change(screen.getByTestId('auth-email'), { target: { value: 'a@example.com' } });
   fireEvent.change(screen.getByTestId('auth-password'), { target: { value: 'correct-password' } });

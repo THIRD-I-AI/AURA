@@ -18,8 +18,8 @@ export function AppRoutes() {
   return (
     <Routes>
       <Route path="/" element={<LandingPage />} />
-      <Route path="/login" element={<PublicShell><AuthForm mode="login" /></PublicShell>} />
-      <Route path="/signup" element={<PublicShell><AuthForm mode="signup" /></PublicShell>} />
+      <Route path="/login" element={<AuthForm mode="login" />} />
+      <Route path="/signup" element={<AuthForm mode="signup" />} />
       {/* OIDC fragment handoff — gateway redirects here after SSO */}
       <Route path="/auth/sso" element={<SsoCallback />} />
       <Route path="/audit/new" element={<PublicShell><AuditWizard /></PublicShell>} />
