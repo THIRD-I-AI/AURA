@@ -62,9 +62,20 @@ def _completed(state: DARState, node: str) -> List[str]:
     return state.completed_nodes + [node]
 
 
+# BUG-528: caps rows pulled into memory from LLM-written SQL; the prompt's
+# LIMIT rule is not enforced anywhere else. Only 50 rows are stored per finding.
+_MAX_RESULT_ROWS = 1000
+
+
 def _open_duckdb(path: str) -> Any:
     import duckdb
-    return duckdb.connect(path, read_only=True)
+    con = duckdb.connect(path, read_only=True)
+    # BUG-528: read_only blocks writes only. execute_node runs LLM-written SQL
+    # (promptable via lake top_values), so read_text('/app/.env') and friends
+    # must be refused; lock_configuration stops a query from re-enabling it.
+    con.execute("SET enable_external_access=false")
+    con.execute("SET lock_configuration=true")
+    return con
 
 
 # ── Nodes ─────────────────────────────────────────────────────────────
@@ -229,7 +240,7 @@ def execute_node(state: DARState) -> Dict[str, Any]:
             try:
                 cur = con.execute(q.sql)
                 cols = [d[0] for d in cur.description]
-                rows = [[_coerce(c) for c in r] for r in cur.fetchall()]
+                rows = [[_coerce(c) for c in r] for r in cur.fetchmany(_MAX_RESULT_ROWS)]
                 results.append(QueryResult(
                     question=q.question, sql=q.sql,
                     columns=cols, rows=rows, row_count=len(rows),

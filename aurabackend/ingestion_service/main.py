@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -75,11 +76,14 @@ async def process_raw_batch_async(payload: RawIngestionPayload, system_origin: s
         normalized_entries.append(norm_entry.model_dump())
 
     try:
-        await kafka_producer.publish_with_retry(
+        outcome = await kafka_producer.publish_with_retry(
             topic="aura.ledger.ingested",
             payload={"batch_id": payload.batch_id, "entries": normalized_entries},
             partition_key=payload.tenant_id,
-            dedup_key=payload.batch_id,
+            # BUG-530: batch_id is client-chosen (often a date), so a bare
+            # batch_id let one tenant's batch suppress another's. JSON keeps
+            # the parts unambiguous when an id itself contains a separator.
+            dedup_key=json.dumps([system_origin, payload.tenant_id, payload.batch_id]),
         )
     except KafkaUnavailableError as exc:
         # The batch was already 202-accepted; the WORM trail is the
@@ -90,6 +94,28 @@ async def process_raw_batch_async(payload: RawIngestionPayload, system_origin: s
             "system_origin": system_origin,
             "entry_count": len(normalized_entries),
             "error": str(exc),
+        })
+        return
+
+    if outcome == "duplicate":
+        audit_event("ingestion_batch_duplicate_skipped", {
+            "batch_id": payload.batch_id,
+            "system_origin": system_origin,
+            "entry_count": len(normalized_entries),
+        })
+        return
+
+    if outcome != "published":
+        # BUG-531: a send error (e.g. a batch over Kafka's 1 MB request limit)
+        # leaves the batch in the DLQ at best; it was not processed.
+        logger.critical(f"Batch {payload.batch_id} NOT published to the ledger topic ({outcome})")
+        audit_event("ingestion_publish_failed", {
+            "batch_id": payload.batch_id,
+            "system_origin": system_origin,
+            "entry_count": len(normalized_entries),
+            "error": ("send failed; batch routed to DLQ" if outcome == "dead_lettered"
+                      else "send failed and DLQ routing failed; batch not stored"),
+            "dead_lettered": outcome == "dead_lettered",
         })
         return
 
