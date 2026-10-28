@@ -153,7 +153,7 @@ proto-plus==1.28.2
 protobuf==5.29.6
 psycopg2-binary==2.9.13
 py-partiql-parser==0.6.3
-pyarrow==23.0.1
+pyarrow==25.0.1
 pyasn1==0.6.4
 pyasn1-modules==0.4.2
 pybreaker==1.4.1
