@@ -165,3 +165,37 @@ async def test_bug_535_record_success_tolerates_duplicate_pattern_rows(db_sessio
     rows = (await db_session.execute(select(ExecutionPattern))).scalars().all()
     assert len(rows) == 2
     assert sorted(r.success_count for r in rows) == [1, 2]
+
+
+# ── BUG-532 review: comment-hidden and non-read statements ─────────────────
+
+@pytest.mark.parametrize("dry_run", [False, True])
+@pytest.mark.parametrize("query", [
+    "/*! DELETE FROM users */",
+    "SELECT 1 /*!50000 UPDATE t SET x=1 */",
+    "SELECT 1 /*! ; DELETE FROM t */",
+    "SELECT 1; ATTACH 'x.db' AS y",
+    "SELECT 1; COPY t TO 'x.csv'",
+    "SELECT 1; PRAGMA foo",
+    "SELECT 1; GRANT ALL ON t TO u",
+    "SELECT 1; INSTALL httpfs",
+    "SELECT 1; SET memory_limit='10GB'",
+    "REPLACE INTO t VALUES (1)",
+    "  attach 'x' as y",
+])
+def test_bug_532_executable_comments_and_non_read_statements_are_blocked(query, dry_run):
+    from safety.validator import SQLSafetyValidator
+
+    assert not SQLSafetyValidator(dry_run_only=dry_run).validate(query).is_valid
+
+
+@pytest.mark.parametrize("query", [
+    "SELECT replace(name, 'a', 'b') FROM t LIMIT 5",
+    "SELECT load, copy, call FROM t LIMIT 5",
+    "SELECT * FROM t WHERE note = 'attach it' LIMIT 5",
+    "SELECT x FROM t /* a plain comment */ LIMIT 5",
+])
+def test_bug_532_statement_keywords_inside_a_read_are_allowed(query):
+    from safety.validator import SQLSafetyValidator
+
+    assert SQLSafetyValidator().validate(query).is_valid

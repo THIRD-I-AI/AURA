@@ -45,6 +45,14 @@ class SQLSafetyValidator:
         "EXECUTE": "executes stored procedures",
     }
 
+    # Statements that are not reads but whose keyword is too common to forbid
+    # anywhere in the text (replace() is a function, load/copy are column names),
+    # so they are rejected only where they begin a statement (BUG-532 review).
+    STATEMENT_KEYWORDS = {
+        "ATTACH", "DETACH", "COPY", "PRAGMA", "GRANT", "REVOKE", "CALL", "INSTALL",
+        "LOAD", "VACUUM", "REPLACE", "SET", "USE", "IMPORT", "EXPORT",
+    }
+
     # Suspicious patterns
     SUSPICIOUS_PATTERNS = {
         r";\s*DROP": "command injection attempt",
@@ -129,6 +137,17 @@ class SQLSafetyValidator:
             errors.append(f"Security risk: {reason}")
             risk_level = QueryRiskLevel.CRITICAL
 
+        # BUG-532 review: every tokenizer drops comments, but MySQL executes the
+        # body of /*! ... */ and /*!50000 ... */, so `/*! DELETE FROM t */` passed
+        # the token scan. No read query needs one: refuse outright.
+        if "/*!" in query:
+            errors.append("Security risk: MySQL executable comment (/*! ... */)")
+            risk_level = QueryRiskLevel.CRITICAL
+
+        for keyword in self._statement_keywords(token_streams, query_upper):
+            errors.append(f"Forbidden operation: {keyword} (not a read statement)")
+            risk_level = QueryRiskLevel.CRITICAL
+
         # Check for suspicious patterns
         for pattern, reason in self.SUSPICIOUS_PATTERNS.items():
             if re.search(pattern, query_upper, re.IGNORECASE):
@@ -211,6 +230,23 @@ class SQLSafetyValidator:
             for stream in streams
             for ttype, text in stream
         )
+
+    def _statement_keywords(self, streams, query_upper: str) -> List[str]:
+        """STATEMENT_KEYWORDS that begin a statement (start of query or after ';')."""
+        if streams is None:
+            alternatives = "|".join(sorted(self.STATEMENT_KEYWORDS))
+            return sorted(set(re.findall(rf"(?:^|;)\s*({alternatives})\b", query_upper)))
+        found = set()
+        for stream in streams:
+            at_start = True
+            for ttype, text in stream:
+                if ttype == "SEMICOLON":
+                    at_start = True
+                    continue
+                if at_start and text in self.STATEMENT_KEYWORDS and not self._is_literal_token(ttype):
+                    found.add(text)
+                at_start = False
+        return sorted(found)
 
     def _procedure_call_errors(self, streams, query_upper: str) -> List[str]:
         """Flag xp_/sp_ procedures invoked as a statement (BUG-532).
