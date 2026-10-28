@@ -46,4 +46,4 @@ reportlab>=5.0.1,<6.0
 # econml isn't importable, so this dep is *required* only inside the
 # eval-gate CI job that asserts Layer 10 byte-identity against the real
 # estimator. sklearn/scipy/statsmodels are already pulled by dowhy.
-econml>=0.15,<0.17
+econml>=0.17.0,<0.18
