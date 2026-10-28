@@ -51,8 +51,19 @@ class PatternLibrary:
             .where(ExecutionPattern.intent_hash == ih)
             .where(ExecutionPattern.pattern_type == pattern_type.value)
             .where(ExecutionPattern.workspace_id == workspace_id)
+            # BUG-535: two concurrent first-time records can both INSERT (no
+            # unique constraint is possible while workspace_id may be NULL, since
+            # NULLs never collide in a unique index). scalar_one_or_none() then
+            # raised MultipleResultsFound for that intent forever; update the
+            # most-used row deterministically instead.
+            .order_by(
+                ExecutionPattern.success_count.desc(),
+                ExecutionPattern.created_at,
+                ExecutionPattern.id,
+            )
+            .limit(1)
         )
-        existing = result.scalar_one_or_none()
+        existing = result.scalars().first()
 
         if existing:
             # Update running stats
