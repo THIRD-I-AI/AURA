@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import argparse
 import hmac
+import inspect
 import json
 import logging
 import os
@@ -166,16 +167,22 @@ def _assert_select_only(sql: str) -> str:
 
 # ── Server build ──────────────────────────────────────────────────────
 
+def _ctor_takes_host() -> bool:
+    # mcp<2 reads host/port in the constructor; mcp>=2 dropped them there and takes
+    # the host per app (sse_app(host=...)), where it also picks the rebinding guard.
+    return FastMCP is not None and "host" in inspect.signature(FastMCP.__init__).parameters
+
+
 def build_server(host: str = "127.0.0.1", port: int = 8000) -> "FastMCP":
     if not _MCP_AVAILABLE:
         raise RuntimeError(_MCP_IMPORT_ERROR)
 
-    # BUG-520: FastMCP takes host/port only from its constructor (env vars set later
-    # never reach Settings), and it picks the localhost-only DNS-rebinding guard from
-    # the host given here, so both must be passed in at construction.
+    # BUG-520: on mcp<2 host/port reach Settings only through the constructor (env
+    # vars set later never do), and the localhost-only DNS-rebinding guard is chosen
+    # from the host given here.
+    listen = {"host": host, "port": port} if _ctor_takes_host() else {}
     server = FastMCP(
-        host=host,
-        port=port,
+        **listen,
         name="aura-analytics",
         instructions=(
             "AURA analytics + metadata. Prefer `metadata.search_columns` "
@@ -464,13 +471,18 @@ def main() -> None:
         if not api_key:
             raise SystemExit("AURA_MCP_API_KEY must be set to run the HTTP (SSE) transport")
         import uvicorn
-        server = build_server(host=os.getenv("FASTMCP_HOST", "0.0.0.0"), port=args.http)
+        host = os.getenv("FASTMCP_HOST", "0.0.0.0")
         uvicorn.run(
-            _require_api_key(server.sse_app(), api_key),
-            host=server.settings.host,
-            port=server.settings.port,
+            _require_api_key(sse_app(build_server(host=host, port=args.http), host), api_key),
+            host=host,
+            port=args.http,
             log_level=args.log_level.lower(),
         )
+
+
+def sse_app(server: "FastMCP", host: str) -> Any:
+    """The SSE Starlette app, with the rebinding guard chosen for ``host`` on either mcp API."""
+    return server.sse_app() if _ctor_takes_host() else server.sse_app(host=host)
 
 
 def _require_api_key(app: Any, api_key: str) -> Any:

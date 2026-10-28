@@ -46,12 +46,20 @@ def test_bug520_http_port_and_host_reach_the_listener(monkeypatch, captured_uvic
     assert cfg.host == "0.0.0.0"
 
 
+def _message_status(host_bind, host_header):
+    app = srv.sse_app(srv.build_server(host=host_bind, port=9123), host_bind)
+    with TestClient(app, base_url=f"http://{host_header}") as client:
+        return client.post("/messages/?session_id=00000000000000000000000000000000", json={}).status_code
+
+
 def test_bug520_in_cluster_host_header_is_not_rejected_by_localhost_rebinding_guard():
     # Binding 0.0.0.0 with the localhost-only DNS-rebinding allow-list would 421 every
     # in-cluster request whose Host is the service name.
-    server = srv.build_server(host="0.0.0.0", port=9123)
-    ts = server.settings.transport_security
-    assert ts is None or not ts.enable_dns_rebinding_protection
+    assert _message_status("0.0.0.0", "aura-mcp:9123") != 421
+
+
+def test_bug520_localhost_bind_keeps_the_rebinding_guard():
+    assert _message_status("127.0.0.1", "evil.example:9123") == 421
 
 
 # ── BUG-521 ──────────────────────────────────────────────────────────
