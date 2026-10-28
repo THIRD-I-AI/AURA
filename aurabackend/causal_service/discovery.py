@@ -76,12 +76,31 @@ class AttributionInputError(ValueError):
     """The request itself is unusable for attribution (the API maps this to a 400)."""
 
 
-# BUG-523: gcm.attribute_anomalies computes Shapley values per anomaly row, and the number of
-# coalitions it evaluates grows with the candidate count (measured: 1 row x 3 candidates ~7 s,
-# 5 rows ~15 s, 1 row x 8 candidates ~27 s). The work runs in a thread that cannot be cancelled
-# once the gateway gives up, so the inputs themselves must be bounded.
-_GCM_MAX_ANOMALY_ROWS = 5
-_GCM_MAX_CANDIDATES = 8
+class GcmBudgetError(AttributionInputError):
+    """The gcm attribution would exceed its compute budget even for a single anomaly row."""
+
+
+# BUG-523: the work runs in a thread that cannot be cancelled once the gateway gives up (its proxy
+# timeout is 60 s, api_gateway/routers/pipelines.py), so the work itself must be bounded. Separate
+# row and candidate caps were not enough (5 rows x 8 candidates measured ~100 s). gcm evaluates one
+# Shapley set function per coalition, and each evaluation scores every anomaly row against 3000
+# noise samples, so the cost is rows x set evaluations; one row-evaluation measured ~0.12-0.14 s
+# here (gcm n_jobs=1, linear or nonlinear mechanisms alike). Worst allowed case, measured end to end
+# on this machine: 4 candidates (5 players, exact Shapley, 32 sets) x 6 rows = 192 units, 26.4 s;
+# 7 candidates x 1 row (bound 177) 15.3 s; 2 candidates x 25 rows 22.4 s. 8 candidates is refused.
+_GCM_MAX_ROW_EVALUATIONS = 200
+
+
+def _gcm_set_evaluations(num_players: int) -> int:
+    """Upper bound on the set functions gcm's default ShapleyConfig evaluates (BUG-523).
+
+    Mirrors dowhy.gcm.shapley: AUTO is exact (every subset) up to 5 players, else permutation
+    sampling: the full and empty sets plus p - 1 prefixes per permutation, deduplicated.
+    """
+    if num_players <= 5:
+        return 2 ** num_players
+    perms = min(math.factorial(num_players), gcm.shapley.ShapleyConfig().num_permutations)
+    return min(2 ** num_players, 2 + perms * (num_players - 1))
 
 
 # ── Public engine selection ───────────────────────────────────────────
@@ -157,9 +176,18 @@ def attribute(
             )
             return [], "refused_non_stationary", warnings, verdict
 
+    attrs = None
     if chosen == "gcm":
-        attrs = _gcm_attribute(training, anomalies, target, numeric_cands, edges, warnings)
-    else:
+        try:
+            attrs = _gcm_attribute(training, anomalies, target, numeric_cands, edges, warnings)
+        except GcmBudgetError as exc:
+            # BUG-523: method='auto' with no candidate_causes uses every numeric column, so a wide
+            # table must not turn a default request into a 400; only an explicit 'gcm' is refused.
+            if method != "auto":
+                raise
+            warnings.append(f"{exc} Falling back to the correlation engine.")
+            chosen, verdict = "correlation", None
+    if attrs is None:
         attrs = _correlation_attribute(training, anomalies, target, numeric_cands, warnings)
 
     attrs.sort(key=lambda a: a.score, reverse=True)
@@ -274,13 +302,6 @@ def _gcm_attribute(
         )
         return []
 
-    if len(candidates) > _GCM_MAX_CANDIDATES:
-        raise AttributionInputError(
-            f"The gcm engine accepts at most {_GCM_MAX_CANDIDATES} candidate causes "
-            f"({len(candidates)} given). Pass a shorter candidate_causes list, or use "
-            "method='correlation'."
-        )
-
     graph = nx.DiGraph()
     graph.add_nodes_from(cols)
     if edges:
@@ -307,11 +328,21 @@ def _gcm_attribute(
         for c in candidates:
             graph.add_edge(c, target)
 
-    if len(anom_df) > _GCM_MAX_ANOMALY_ROWS:
+    # BUG-523: one joint budget on rows x Shapley set evaluations. The players are the target's
+    # noise plus every ancestor's, so cut rows first and refuse only if one row is over budget.
+    set_evals = _gcm_set_evaluations(len(nx.ancestors(graph, target)) + 1)
+    max_rows = _GCM_MAX_ROW_EVALUATIONS // set_evals
+    if max_rows < 1:
+        raise GcmBudgetError(
+            f"gcm attribution over {len(candidates)} candidate causes needs ~{set_evals} Shapley "
+            f"evaluations per anomaly row, over the budget of {_GCM_MAX_ROW_EVALUATIONS}. Pass a "
+            "shorter candidate_causes list, or use method='correlation'."
+        )
+    if len(anom_df) > max_rows:
         deviation = (anom_df[target] - train_df[target].mean()).abs()
-        anom_df = anom_df.loc[deviation.nlargest(_GCM_MAX_ANOMALY_ROWS).index]
+        anom_df = anom_df.loc[deviation.nlargest(max_rows).index]
         warnings.append(
-            f"gcm attributed the {_GCM_MAX_ANOMALY_ROWS} most anomalous of {len(deviation)} "
+            f"gcm attributed the {max_rows} most anomalous of {len(deviation)} "
             f"anomaly rows (largest |{target} - training mean|); the rest were not scored."
         )
 
@@ -336,6 +367,7 @@ def _gcm_attribute(
     for node, scores in raw.items():
         if node == target:
             continue
+        # BUG-524 residual (accepted): signed per-row contributions can cancel across rows in the mean.
         mean_score = float(_safe_mean(scores))
         if len(anom_df) < 2:
             confidence = 0.0

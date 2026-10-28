@@ -1,4 +1,6 @@
 """Audit round 10, causal area: BUG-523 .. BUG-527."""
+import time
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -12,9 +14,9 @@ from causal_service.models import CausalDiscoverRequest, DataSource
 needs_dowhy = pytest.mark.skipif(not discovery.dowhy_available(), reason="dowhy not installed")
 
 
-# The caps BUG-523 introduced, pinned here so a regression to "unbounded" fails loudly.
-ROW_CAP = 5
-CANDIDATE_CAP = 8
+# The joint gcm budget BUG-523 introduced (rows x Shapley set evaluations), pinned here so a
+# regression to "unbounded" fails loudly. With the default graph, k candidates are k + 1 players.
+BUDGET = 200
 
 
 def _training(n=500, seed=0, k=2):
@@ -83,41 +85,89 @@ def test_bug_525_single_row_confidence_is_not_reported_as_certain(single_row_res
 
 # ── BUG-523: compute is bounded ──
 
-@needs_dowhy
-@pytest.mark.asyncio
-async def test_bug_523_gcm_attributes_at_most_the_capped_number_of_anomaly_rows(monkeypatch):
-    real = discovery.gcm.attribute_anomalies
+def test_bug_523_budget_matches_dowhy_default_shapley_counts():
+    assert discovery._GCM_MAX_ROW_EVALUATIONS == BUDGET
+    # exact Shapley up to 5 players, then 25 deduplicated permutations
+    assert [discovery._gcm_set_evaluations(p) for p in (3, 5, 6, 8, 9)] == [8, 32, 64, 177, 202]
+
+
+def _spy_attribute_anomalies(monkeypatch, real=False):
     seen = []
+    original = discovery.gcm.attribute_anomalies
 
     def spy(scm, target_node, anomaly_samples, **kw):
-        seen.append(len(anomaly_samples))
-        if len(anomaly_samples) > ROW_CAP:
-            raise AssertionError(f"unbounded: {len(anomaly_samples)} anomaly rows sent to gcm")
-        return real(scm, target_node=target_node, anomaly_samples=anomaly_samples, **kw)
+        seen.append(list(anomaly_samples.index))
+        if real:
+            return original(scm, target_node=target_node, anomaly_samples=anomaly_samples, **kw)
+        return {c: np.ones(len(anomaly_samples)) for c in anomaly_samples.columns}
 
     monkeypatch.setattr(discovery.gcm, "attribute_anomalies", spy)
-    train = _training()
-    anomalies = _training(n=40, seed=7)
-    anomalies.loc[3, ["a", "y"]] = [6.0, 6.0]  # the single most anomalous row must be kept
-    res = await causal_discover(_req(train, anomalies.to_dict("records"), candidate_causes=["a", "b"]))
-    assert seen == [ROW_CAP]
-    assert any("most anomalous" in w for w in res.warnings)
-    assert res.attributions[0].cause == "a"
+    return seen
 
 
 @needs_dowhy
 @pytest.mark.asyncio
-async def test_bug_523_too_many_gcm_candidates_is_a_400_before_any_fitting(monkeypatch):
-    def boom(*a, **kw):
-        raise AssertionError("gcm ran with an unbounded candidate set")
+async def test_bug_523_rows_are_cut_to_the_budget_keeping_the_most_anomalous(monkeypatch):
+    seen = _spy_attribute_anomalies(monkeypatch)
+    train = _training()
+    anomalies = _training(n=40, seed=7)
+    anomalies.loc[3, ["a", "y"]] = [6.0, 6.0]
+    res = await causal_discover(_req(train, anomalies.to_dict("records"), candidate_causes=["a", "b"]))
+    # 2 candidates = 3 players = 8 exact set evaluations per row -> 200 // 8 = 25 rows
+    assert len(seen) == 1 and len(seen[0]) == BUDGET // 8
+    assert 3 in seen[0]
+    assert any("25 most anomalous of 40" in w for w in res.warnings)
 
+
+@needs_dowhy
+@pytest.mark.slow
+@pytest.mark.asyncio
+async def test_bug_523_worst_case_at_the_budget_boundary_finishes_well_inside_the_gateway_timeout(monkeypatch):
+    # 4 candidates = 5 players = 32 exact set evaluations per row -> 6 rows (192 of 200): the most
+    # expensive request the budget allows. Measured ~26 s locally; the gateway proxy gives up at 60 s.
+    seen = _spy_attribute_anomalies(monkeypatch, real=True)
+    train = _training(k=4)
+    anomalies = _training(n=20, seed=7, k=4)
+    anomalies["y"] += 4.0
+    t0 = time.perf_counter()
+    res = await causal_discover(_req(train, anomalies.to_dict("records")))
+    elapsed = time.perf_counter() - t0
+    assert [len(rows) for rows in seen] == [BUDGET // 32]
+    assert res.method_used == "gcm"
+    assert elapsed < 50, f"gcm worst allowed case took {elapsed:.1f}s"
+
+
+@needs_dowhy
+@pytest.mark.asyncio
+async def test_bug_523_explicit_gcm_over_budget_is_a_400_before_any_fitting(monkeypatch):
+    def boom(*a, **kw):
+        raise AssertionError("gcm ran over its compute budget")
+
+    monkeypatch.setattr(discovery.gcm.auto, "assign_causal_mechanisms", boom)
     monkeypatch.setattr(discovery.gcm, "attribute_anomalies", boom)
-    k = CANDIDATE_CAP + 2
-    train = _training(n=60, k=k)
+    train = _training(n=60, k=8)  # 9 players -> 202 set evaluations for even one row
     with pytest.raises(HTTPException) as e:
         await causal_discover(_req(train, train.head(1).to_dict("records")))
     assert e.value.status_code == 400
-    assert "candidate" in e.value.detail
+    assert "budget" in e.value.detail
+
+
+@needs_dowhy
+@pytest.mark.asyncio
+async def test_bug_523_auto_on_a_wide_table_falls_back_to_correlation(monkeypatch):
+    def boom(*a, **kw):
+        raise AssertionError("gcm ran over its compute budget")
+
+    monkeypatch.setattr(discovery.gcm, "attribute_anomalies", boom)
+    train = _training(n=200, k=12)
+    anomaly = train.head(2).copy()
+    anomaly.loc[:, "a"] += 5.0
+    anomaly.loc[:, "y"] += 5.0
+    # method='auto' and no candidate_causes: every numeric column is a candidate (12 of them)
+    res = await causal_discover(_req(train, anomaly.to_dict("records"), method="auto"))
+    assert res.method_used == "correlation"
+    assert res.attributions
+    assert any("Falling back to the correlation engine" in w for w in res.warnings)
 
 
 # ── BUG-526: user-supplied causal graph is validated ──
