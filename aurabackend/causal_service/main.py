@@ -20,7 +20,7 @@ from shared.service_factory import create_service
 from shared.sql_expression_guard import validate_sql_expression
 from shared.sql_identifiers import quote_identifier
 
-from .discovery import attribute, dowhy_available, summarise
+from .discovery import AttributionInputError, attribute, dowhy_available, summarise
 from .models import (
     Attribution,
     CausalDiscoverRequest,
@@ -132,17 +132,20 @@ async def causal_discover(req: CausalDiscoverRequest) -> CausalDiscoverResponse:
     if missing_anom:
         raise HTTPException(400, f"Candidate cause columns missing from anomaly data: {missing_anom}")
 
-    attributions, method_used, warnings, verdict = await asyncio.to_thread(
-        attribute,
-        training_df,
-        anomaly_df,
-        target=req.target_metric,
-        candidates=candidates,
-        edges=req.causal_graph_edges,
-        method=req.method,
-        top_k=req.top_k,
-        enforce_stationarity=req.enforce_stationarity,
-    )
+    try:
+        attributions, method_used, warnings, verdict = await asyncio.to_thread(
+            attribute,
+            training_df,
+            anomaly_df,
+            target=req.target_metric,
+            candidates=candidates,
+            edges=req.causal_graph_edges,
+            method=req.method,
+            top_k=req.top_k,
+            enforce_stationarity=req.enforce_stationarity,
+        )
+    except AttributionInputError as exc:
+        raise HTTPException(400, str(exc)) from exc
 
     return CausalDiscoverResponse(
         target_metric=req.target_metric,

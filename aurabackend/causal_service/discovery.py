@@ -72,6 +72,18 @@ def dowhy_available() -> bool:
     return _DOWHY_AVAILABLE
 
 
+class AttributionInputError(ValueError):
+    """The request itself is unusable for attribution (the API maps this to a 400)."""
+
+
+# BUG-523: gcm.attribute_anomalies computes Shapley values per anomaly row, and the number of
+# coalitions it evaluates grows with the candidate count (measured: 1 row x 3 candidates ~7 s,
+# 5 rows ~15 s, 1 row x 8 candidates ~27 s). The work runs in a thread that cannot be cancelled
+# once the gateway gives up, so the inputs themselves must be bounded.
+_GCM_MAX_ANOMALY_ROWS = 5
+_GCM_MAX_CANDIDATES = 8
+
+
 # ── Public engine selection ───────────────────────────────────────────
 
 def attribute(
@@ -102,6 +114,19 @@ def attribute(
 
     if not numeric_cands:
         return [], "none", warnings + ["No numeric candidate causes available."], None
+
+    # BUG-527: only the training dtypes were checked; inline anomaly rows built from CSV carry
+    # numbers as strings, and .mean() on an object column raised a TypeError (a 500).
+    anomalies = anomalies.copy()
+    for c in [*numeric_cands, target]:
+        if c in anomalies.columns and not pd.api.types.is_numeric_dtype(anomalies[c]):
+            coerced = pd.to_numeric(anomalies[c], errors="coerce")
+            bad = int((coerced.isna() & anomalies[c].notna()).sum())
+            if bad:
+                warnings.append(
+                    f"Anomaly column {c!r}: {bad} value(s) are not numeric and were treated as missing."
+                )
+            anomalies[c] = coerced
 
     # Method resolution
     chosen = method
@@ -249,22 +274,52 @@ def _gcm_attribute(
         )
         return []
 
-    if len(train_df) < 30:
-        warnings.append(
-            f"Training set has only {len(train_df)} complete rows — "
-            "gcm mechanism fits will be unstable."
+    if len(candidates) > _GCM_MAX_CANDIDATES:
+        raise AttributionInputError(
+            f"The gcm engine accepts at most {_GCM_MAX_CANDIDATES} candidate causes "
+            f"({len(candidates)} given). Pass a shorter candidate_causes list, or use "
+            "method='correlation'."
         )
 
     graph = nx.DiGraph()
     graph.add_nodes_from(cols)
     if edges:
+        # BUG-526: user edges went to gcm unchecked, so a cycle or an unknown node raised
+        # inside dowhy and surfaced as a 500.
+        unknown = sorted({n for edge in edges for n in edge} - set(cols))
+        if unknown:
+            raise AttributionInputError(
+                f"causal_graph_edges reference nodes that are not the target or a candidate: {unknown}"
+            )
         graph.add_edges_from(edges)
+        if not nx.is_directed_acyclic_graph(graph):
+            raise AttributionInputError("causal_graph_edges must form a DAG; the graph contains a cycle.")
+        unreachable = [c for c in candidates if not nx.has_path(graph, c, target)]
+        if unreachable:
+            warnings.append(
+                f"Candidates {unreachable} have no directed path to {target!r} in the supplied "
+                "graph, so their attribution is zero by construction."
+            )
     else:
         # Default: every candidate is a direct parent of the target.
         # Caller can supply a richer DAG via ``edges`` when domain
         # knowledge is available.
         for c in candidates:
             graph.add_edge(c, target)
+
+    if len(anom_df) > _GCM_MAX_ANOMALY_ROWS:
+        deviation = (anom_df[target] - train_df[target].mean()).abs()
+        anom_df = anom_df.loc[deviation.nlargest(_GCM_MAX_ANOMALY_ROWS).index]
+        warnings.append(
+            f"gcm attributed the {_GCM_MAX_ANOMALY_ROWS} most anomalous of {len(deviation)} "
+            f"anomaly rows (largest |{target} - training mean|); the rest were not scored."
+        )
+
+    if len(train_df) < 30:
+        warnings.append(
+            f"Training set has only {len(train_df)} complete rows — "
+            "gcm mechanism fits will be unstable."
+        )
 
     scm = gcm.StructuralCausalModel(graph)
     gcm.auto.assign_causal_mechanisms(scm, train_df)
@@ -273,17 +328,27 @@ def _gcm_attribute(
     raw = gcm.attribute_anomalies(scm, target_node=target, anomaly_samples=anom_df)
     # raw is dict[node_name → np.ndarray of length n_anomalies].
     out: List[Attribution] = []
+    if len(anom_df) < 2:
+        # BUG-525: one row has no spread, so 1 - std/|mean| was always 1.0 whatever the score.
+        warnings.append(
+            "Confidence is not estimable from a single anomaly row and is reported as 0."
+        )
     for node, scores in raw.items():
         if node == target:
             continue
         mean_score = float(_safe_mean(scores))
-        # Confidence: 1 − coefficient of variation, clamped to [0, 1].
-        cv = float(_safe_std(scores)) / max(abs(mean_score), 1e-9)
-        confidence = max(0.0, min(1.0, 1.0 - cv))
+        if len(anom_df) < 2:
+            confidence = 0.0
+        else:
+            # Confidence: 1 − coefficient of variation, clamped to [0, 1].
+            cv = float(_safe_std(scores)) / max(abs(mean_score), 1e-9)
+            confidence = max(0.0, min(1.0, 1.0 - cv))
         direction = _direction_from_correlation(train_df, node, target)
         out.append(Attribution(
             cause=node,
-            score=abs(mean_score),
+            # BUG-524: keep the sign. A negative Shapley contribution means the node made the
+            # target LESS anomalous; abs() ranked such a mitigator as a driver.
+            score=mean_score,
             confidence=confidence,
             direction=direction,
         ))
@@ -481,7 +546,12 @@ def summarise(attrs: List[Attribution], target: str, method: str) -> str:
     if not attrs:
         return f"No causal attributions surfaced for {target} (method={method})."
     top = attrs[0]
+    # BUG-524: a gcm score <= 0 means the cause did not push the target toward the anomaly.
+    if method == "gcm" and top.score <= 0:
+        return f"No candidate cause increased the {target} anomaly (method={method})."
     second = attrs[1] if len(attrs) > 1 else None
+    if second is not None and method == "gcm" and second.score <= 0:
+        second = None
     bits = [
         f"Top driver of the {target} anomaly is **{top.cause}** "
         f"({top.direction} effect, score={top.score:.3f}, "
