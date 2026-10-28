@@ -19,9 +19,11 @@ describe('AppRoutes', () => {
 
   it('renders the verify page at /verify/:hash', () => {
     render(
-      <MemoryRouter initialEntries={['/verify/abc123']}>
-        <AppRoutes />
-      </MemoryRouter>,
+      <ThemeProvider>
+        <MemoryRouter initialEntries={['/verify/abc123']}>
+          <AppRoutes />
+        </MemoryRouter>
+      </ThemeProvider>,
     );
     expect(screen.getByTestId('verify-page')).toBeInTheDocument();
   });

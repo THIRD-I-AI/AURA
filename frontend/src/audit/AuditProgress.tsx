@@ -2,6 +2,7 @@ import { useEffect } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { useJobPolling } from './useJobPolling';
 import type { Estimate } from './types';
+import { Button } from '@/components/ui-kit/button';
 
 /** Coerce a contract numeric (number on live path, string on replay) to fixed-dp. */
 function fmt(v: number | string | undefined, dp: number): string {
@@ -40,9 +41,9 @@ export function AuditProgress() {
   if (snapshot?.state === 'failed') {
     return (
       <div data-testid="audit-failed">
-        <h2>Audit could not complete</h2>
+        <h1 className="aud-title">Audit could not complete</h1>
         <p className="aud-scenario__desc">{snapshot.error}</p>
-        <button className="ui-btn ui-btn--secondary ui-btn--md" onClick={() => navigate('/')}>Back to scenarios</button>
+        <Button variant="outline" onClick={() => navigate('/')}>Back to scenarios</Button>
       </div>
     );
   }
@@ -52,9 +53,9 @@ export function AuditProgress() {
   if (error) {
     return (
       <div data-testid="audit-poll-error" role="alert">
-        <h2>Audit status unavailable</h2>
+        <h1 className="aud-title">Audit status unavailable</h1>
         <p className="aud-scenario__desc">{error}</p>
-        <button className="ui-btn ui-btn--secondary ui-btn--md" onClick={() => navigate('/')}>Back to scenarios</button>
+        <Button variant="outline" onClick={() => navigate('/')}>Back to scenarios</Button>
       </div>
     );
   }
@@ -73,7 +74,7 @@ export function AuditProgress() {
 
   return (
     <div data-testid="audit-progress">
-      <h2>Running audit…</h2>
+      <h1 className="aud-title">Running audit…</h1>
       <div data-testid="aud-stages" className="aud-progress__stages">
         {stages.map((s) => {
           const cls = reached(s.key)
@@ -81,7 +82,7 @@ export function AuditProgress() {
             : 'aud-stage';
           return (
             <span key={s.key} className={cls}>
-              <span aria-hidden="true">{reached(s.key) ? '●' : '○'}</span> {s.label}
+              {s.label}
             </span>
           );
         })}

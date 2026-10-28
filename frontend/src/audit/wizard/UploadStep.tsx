@@ -63,18 +63,18 @@ export function UploadStep({ file, columns, previewRows, types, uploading, error
       {uploading && <p data-testid="wizard-uploading" className="text-sm text-text-tertiary">Uploading {file?.name}…</p>}
       {error && <WizardError testId="wizard-upload-error">{error}</WizardError>}
       {columns.length > 0 && (
-        <div data-testid="wizard-preview" className="overflow-x-auto border border-border rounded-none">
+        <div data-testid="wizard-preview" className="overflow-x-auto bg-surface rounded-none">
           <table className="border-collapse text-sm w-full">
             <thead>
               <tr>{columns.map((c) => (
-                <th key={c} className="text-left p-2 border-b border-border">
+                <th key={c} className="text-left p-2 font-semibold">
                   {c} <span className="text-text-tertiary font-normal">({types[c]})</span>
                 </th>
               ))}</tr>
             </thead>
             <tbody>
               {previewRows.slice(0, 5).map((r, i) => (
-                <tr key={i}>{columns.map((_, j) => <td key={j} className="p-2 border-b border-border">{r[j]}</td>)}</tr>
+                <tr key={i}>{columns.map((_, j) => <td key={j} className="p-2 font-mono text-sm">{r[j]}</td>)}</tr>
               ))}
             </tbody>
           </table>
