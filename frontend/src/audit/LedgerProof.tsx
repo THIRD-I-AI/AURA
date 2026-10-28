@@ -25,7 +25,7 @@ type State =
   | { kind: 'error'; message: string };
 
 const ROW = 'flex flex-col gap-0.5 sm:flex-row sm:gap-3';
-const LABEL = 'w-28 shrink-0 font-mono text-2xs uppercase tracking-wider text-text-tertiary';
+const LABEL = 'w-28 shrink-0 text-sm text-text-tertiary';
 const VALUE = 'min-w-0 break-all font-mono text-xs text-text-primary';
 
 export function LedgerProof({ certHash }: { certHash: string }) {
@@ -57,9 +57,9 @@ export function LedgerProof({ certHash }: { certHash: string }) {
   const proof = state.kind === 'verified' || state.kind === 'invalid' ? state.proof : null;
 
   return (
-    <section data-testid="ledger-proof" className="mt-4 flex flex-col gap-2 border border-border-hairline p-3">
+    <section data-testid="ledger-proof" className="mt-4 flex flex-col gap-2 bg-raised p-4">
       <div className="flex items-center gap-3">
-        <h2 className="font-mono text-2xs font-semibold uppercase tracking-widest text-text-secondary">Ledger inclusion proof</h2>
+        <h2 className="text-base font-semibold text-text-primary">Ledger inclusion proof</h2>
         <div className="flex-1" />
         <Button
           type="button"
@@ -81,32 +81,32 @@ export function LedgerProof({ certHash }: { certHash: string }) {
       )}
 
       {state.kind === 'verified' && (
-        <p role="status" data-testid="ledger-proof-result" className="font-mono text-xs font-semibold text-signal">
+        <p role="status" data-testid="ledger-proof-result" className="text-sm font-semibold text-signal">
           Verified in this browser — the record hash, leaf position and proof path recompute to the root below.
         </p>
       )}
       {state.kind === 'invalid' && (
-        <p role="alert" data-testid="ledger-proof-result" className="font-mono text-xs font-semibold text-danger">
+        <p role="alert" data-testid="ledger-proof-result" className="text-sm font-semibold text-danger">
           Proof does NOT verify — the server's proof does not recompute to its own root. Treat this record as unverified.
         </p>
       )}
       {state.kind === 'wrong-cert' && (
-        <p role="alert" data-testid="ledger-proof-result" className="font-mono text-xs text-danger">
+        <p role="alert" data-testid="ledger-proof-result" className="text-sm text-danger">
           The server returned a proof for a different certificate than the one on this page, so it was not used.
         </p>
       )}
       {state.kind === 'not-chained' && (
-        <p role="note" data-testid="ledger-proof-result" className="font-mono text-xs text-warn">
+        <p role="note" data-testid="ledger-proof-result" className="text-sm text-warn">
           No ledger record certifies this hash in your tenant chain, so there is no inclusion proof to check.
         </p>
       )}
       {state.kind === 'signed-out' && (
-        <p role="alert" data-testid="ledger-proof-result" className="font-mono text-xs text-warn">
+        <p role="alert" data-testid="ledger-proof-result" className="text-sm text-warn">
           Sign in to check ledger inclusion — proofs are scoped to your organisation's chain.
         </p>
       )}
       {state.kind === 'error' && (
-        <p role="alert" data-testid="ledger-proof-result" className="font-mono text-xs text-danger">
+        <p role="alert" data-testid="ledger-proof-result" className="text-sm text-danger">
           Could not check inclusion: {state.message}
         </p>
       )}

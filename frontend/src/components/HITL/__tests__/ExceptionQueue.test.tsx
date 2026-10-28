@@ -290,7 +290,10 @@ describe('ExceptionQueue (HITL workbench)', () => {
     const loadHash = async (hash: string) => {
       const input = screen.getByLabelText(/record hash/i);
       await userEvent.clear(input);
-      await userEvent.type(input, hash);
+      // Paste, as a user does with a hash: typing 64 characters per lookup was
+      // 128 event-loop round trips and timed out under the full suite's load.
+      await userEvent.click(input);
+      await userEvent.paste(hash);
       await userEvent.click(screen.getByRole('button', { name: /load audit/i }));
     };
 

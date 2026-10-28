@@ -4,6 +4,7 @@ import { auditApi } from './auditApi';
 import { LedgerProof } from './LedgerProof';
 import { CertificateTheme } from '../ui/CertificateTheme';
 import { Badge } from '../ui/Badge';
+import { buttonVariants } from '@/components/ui-kit/button';
 import type { BadgeStatus } from '../ui/status';
 import type { Artifact, VerifyResult } from './types';
 
@@ -66,7 +67,7 @@ export function Certificate({ artifact, verifyResult, readOnly = false }: {
     <CertificateTheme>
       <div data-testid="certificate" className="aud-cert">
         <div className="aud-cert__seal">
-          <span className="aud-cert__doctype">Certificate of Audit</span>
+          <h1 className="aud-cert__title">Audit certificate</h1>
           <span data-testid="cert-signature-badge"><Badge status={badgeStatus}>{badgeText}</Badge></span>
         </div>
 
@@ -74,7 +75,6 @@ export function Certificate({ artifact, verifyResult, readOnly = false }: {
           <p data-testid="cert-degraded" className="aud-cert__verdict">Served a verified cached result.</p>
         )}
 
-        <h1 className="aud-cert__title">Audit Certificate</h1>
         {/* Prefer the backend's signed verdict (S33) so the web cert matches the
             PDF exactly; fall back to the local rule when `rendered` is absent
             (e.g. the public verify page reconstructs an artifact without it). */}
@@ -101,8 +101,8 @@ export function Certificate({ artifact, verifyResult, readOnly = false }: {
 
         {!readOnly && (
           <div className="aud-cert__actions">
-            <AuthenticatedLink data-testid="cert-download-pdf" href={auditApi.pdfUrl(artifact.audit_record_hash)} downloadAs={`audit-${artifact.audit_record_hash.slice(0, 12)}.pdf`} className="aud-cert__pdf">Download PDF</AuthenticatedLink>
-            <Link data-testid="cert-verify-link" to={`/verify/${artifact.audit_record_hash}`} className="ui-btn ui-btn--secondary ui-btn--md aud-cert__verify-link">Verify independently</Link>
+            <AuthenticatedLink data-testid="cert-download-pdf" href={auditApi.pdfUrl(artifact.audit_record_hash)} downloadAs={`audit-${artifact.audit_record_hash.slice(0, 12)}.pdf`} className={buttonVariants()}>Download PDF</AuthenticatedLink>
+            <Link data-testid="cert-verify-link" to={`/verify/${artifact.audit_record_hash}`} className={buttonVariants({ variant: 'outline' })}>Verify independently</Link>
           </div>
         )}
       </div>
@@ -115,8 +115,8 @@ export function Certificate({ artifact, verifyResult, readOnly = false }: {
         className="aud-cert__backnav flex gap-3 justify-center flex-wrap mt-5"
         aria-label="Audit navigation"
       >
-        <Link data-testid="cert-run-another" to="/" className="ui-btn ui-btn--secondary ui-btn--md">Run another audit</Link>
-        <a data-testid="cert-back-dashboard" href="/app" className="ui-btn ui-btn--primary ui-btn--md">Back to dashboard →</a>
+        <Link data-testid="cert-run-another" to="/" className={buttonVariants({ variant: 'outline' })}>Run another audit</Link>
+        <a data-testid="cert-back-dashboard" href="/app" className={buttonVariants()}>Back to dashboard</a>
       </nav>
     </CertificateTheme>
   );

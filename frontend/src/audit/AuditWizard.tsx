@@ -90,7 +90,7 @@ export function AuditWizard() {
 
   return (
     <div data-testid="audit-wizard" className="aud-wizard">
-      <h2>Audit your own data</h2>
+      <h1 className="aud-title">Audit your own data</h1>
       <div className="aud-wizard__steps">
         <Stepper steps={['Upload', 'Map', 'Review']} current={step} />
         {/* Legacy testid hooks retained for existing assertions. */}

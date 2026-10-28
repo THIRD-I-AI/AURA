@@ -2,7 +2,7 @@ import { lazy, Suspense } from 'react';
 import { Routes, Route, Navigate } from 'react-router-dom';
 
 import { PublicShell } from './audit/PublicShell';
-import { AuditFrontDoor } from './audit/AuditFrontDoor';
+import { LandingPage } from './landing/LandingPage';
 import { AuditProgress } from './audit/AuditProgress';
 import { CertificatePage } from './audit/CertificatePage';
 import { VerifyPage } from './audit/VerifyPage';
@@ -17,9 +17,9 @@ const Workbench = lazy(() => import('./workbench/Workbench'));
 export function AppRoutes() {
   return (
     <Routes>
-      <Route path="/" element={<PublicShell><AuditFrontDoor /></PublicShell>} />
-      <Route path="/login" element={<PublicShell><AuthForm mode="login" /></PublicShell>} />
-      <Route path="/signup" element={<PublicShell><AuthForm mode="signup" /></PublicShell>} />
+      <Route path="/" element={<LandingPage />} />
+      <Route path="/login" element={<AuthForm mode="login" />} />
+      <Route path="/signup" element={<AuthForm mode="signup" />} />
       {/* OIDC fragment handoff — gateway redirects here after SSO */}
       <Route path="/auth/sso" element={<SsoCallback />} />
       <Route path="/audit/new" element={<PublicShell><AuditWizard /></PublicShell>} />

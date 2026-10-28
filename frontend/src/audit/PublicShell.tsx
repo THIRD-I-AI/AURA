@@ -1,4 +1,7 @@
 import type { ReactNode } from 'react';
+import { Link } from 'react-router-dom';
+import { ThemeToggle } from '@/ui/ThemeToggle';
+import { useDocumentScroll } from '@/landing/useDocumentScroll';
 import './audit.css';
 
 /**
@@ -7,16 +10,16 @@ import './audit.css';
  * hitting /verify must reach only the verification endpoint.
  */
 export function PublicShell({ children }: { children: ReactNode }) {
+  useDocumentScroll();
   return (
     <div data-testid="public-shell" className="aud-shell">
       <header className="aud-shell__header">
-        <span className="aud-shell__brand">AURA</span>
-        <span className="aud-shell__tag">Audit Service</span>
+        <Link to="/" className="aud-shell__brand">AURA</Link>
+        <ThemeToggle />
       </header>
       <main className="aud-shell__main">{children}</main>
       <footer className="aud-shell__footer">
-        <span aria-hidden="true">⬢</span>
-        Cryptographically-verifiable compliance audits · ED25519 signed
+        Every certificate is signed with ED25519 and can be checked by anyone, without an account.
       </footer>
     </div>
   );
