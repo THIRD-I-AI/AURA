@@ -87,10 +87,15 @@ def test_bug_525_single_row_confidence_is_not_reported_as_certain(single_row_res
 
 # ── BUG-523: compute is bounded ──
 
-def test_bug_523_budget_matches_dowhy_default_shapley_counts():
+def test_bug_523_budget_counts_exact_shapley_subsets():
     assert discovery._GCM_MAX_ROW_EVALUATIONS == BUDGET
-    # exact Shapley up to 5 players, then 25 deduplicated permutations
-    assert [discovery._gcm_set_evaluations(p) for p in (3, 5, 6, 8, 9)] == [8, 32, 64, 177, 202]
+    assert [discovery._gcm_set_evaluations(p) for p in (3, 5)] == [8, 32]
+
+
+@needs_dowhy
+def test_bug_523_budget_matches_dowhy_default_permutation_counts():
+    # past 5 players gcm samples 25 permutations; the count reads dowhy's own default
+    assert [discovery._gcm_set_evaluations(p) for p in (6, 8, 9)] == [64, 177, 202]
 
 
 def _spy_attribute_anomalies(monkeypatch, real=False):
