@@ -84,11 +84,15 @@ class GcmBudgetError(AttributionInputError):
 # timeout is 60 s, api_gateway/routers/pipelines.py), so the work itself must be bounded. Separate
 # row and candidate caps were not enough (5 rows x 8 candidates measured ~100 s). gcm evaluates one
 # Shapley set function per coalition, and each evaluation scores every anomaly row against 3000
-# noise samples, so the cost is rows x set evaluations; one row-evaluation measured ~0.12-0.14 s
-# here (gcm n_jobs=1, linear or nonlinear mechanisms alike). Worst allowed case, measured end to end
-# on this machine: 4 candidates (5 players, exact Shapley, 32 sets) x 6 rows = 192 units, 26.4 s;
-# 7 candidates x 1 row (bound 177) 15.3 s; 2 candidates x 25 rows 22.4 s. 8 candidates is refused.
-_GCM_MAX_ROW_EVALUATIONS = 200
+# noise samples, so the cost is rows x set evaluations. The cost per row-evaluation depends on the
+# mechanism (linear ~0.13 s, nonlinear ~0.26 s here), so the budget is set on the slowest case:
+# nonlinear data with the default 10k-row training read, sampled to _GCM_MAX_TRAINING_ROWS (which
+# also bounds the fit, since a request may read up to 500k rows). Measured end to end at that
+# input: 4 candidates (32 sets) x 3 rows = 96 units 27.7 s; 2 candidates x 12 rows 26.6 s;
+# 5 candidates x 1 row 19.3 s. 6 or more candidates are refused (method='auto' falls back to
+# correlation instead).
+_GCM_MAX_ROW_EVALUATIONS = 100
+_GCM_MAX_TRAINING_ROWS = 2_000
 
 
 def _gcm_set_evaluations(num_players: int) -> int:
@@ -350,6 +354,13 @@ def _gcm_attribute(
         warnings.append(
             f"Training set has only {len(train_df)} complete rows — "
             "gcm mechanism fits will be unstable."
+        )
+    if len(train_df) > _GCM_MAX_TRAINING_ROWS:
+        # BUG-523 review: the per-evaluation cost grows with the training size (the
+        # request allows up to 500k rows), so the row budget only holds at a fixed size.
+        train_df = train_df.sample(n=_GCM_MAX_TRAINING_ROWS, random_state=0)
+        warnings.append(
+            f"gcm fitted its mechanisms on a sample of {_GCM_MAX_TRAINING_ROWS} training rows."
         )
 
     scm = gcm.StructuralCausalModel(graph)

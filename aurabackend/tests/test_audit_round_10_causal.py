@@ -16,15 +16,17 @@ needs_dowhy = pytest.mark.skipif(not discovery.dowhy_available(), reason="dowhy 
 
 # The joint gcm budget BUG-523 introduced (rows x Shapley set evaluations), pinned here so a
 # regression to "unbounded" fails loudly. With the default graph, k candidates are k + 1 players.
-BUDGET = 200
+BUDGET = 100
 
 
-def _training(n=500, seed=0, k=2):
-    """a, b (, c...) ~ N(0,1); y = sum of causes + small noise. True effect of each cause on y is +1."""
+def _training(n=500, seed=0, k=2, nonlinear=False):
+    """a, b (, c...) ~ N(0,1); y = sum of causes + small noise. True effect of each cause on y is +1.
+    ``nonlinear`` uses y = sum(sin(3x) + x^2), gcm's slowest mechanism fit (BUG-523 timing)."""
     rng = np.random.default_rng(seed)
     cols = ["a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l"][:k]
     df = pd.DataFrame({c: rng.normal(size=n) for c in cols})
-    df["y"] = df[cols].sum(axis=1) + rng.normal(scale=0.3, size=n)
+    signal = (np.sin(3 * df[cols]) + df[cols] ** 2).sum(axis=1) if nonlinear else df[cols].sum(axis=1)
+    df["y"] = signal + rng.normal(scale=0.3, size=n)
     return df
 
 
@@ -113,28 +115,31 @@ async def test_bug_523_rows_are_cut_to_the_budget_keeping_the_most_anomalous(mon
     anomalies = _training(n=40, seed=7)
     anomalies.loc[3, ["a", "y"]] = [6.0, 6.0]
     res = await causal_discover(_req(train, anomalies.to_dict("records"), candidate_causes=["a", "b"]))
-    # 2 candidates = 3 players = 8 exact set evaluations per row -> 200 // 8 = 25 rows
+    # 2 candidates = 3 players = 8 exact set evaluations per row -> 100 // 8 = 12 rows
     assert len(seen) == 1 and len(seen[0]) == BUDGET // 8
     assert 3 in seen[0]
-    assert any("25 most anomalous of 40" in w for w in res.warnings)
+    assert any(f"{BUDGET // 8} most anomalous of 40" in w for w in res.warnings)
 
 
 @needs_dowhy
 @pytest.mark.slow
 @pytest.mark.asyncio
 async def test_bug_523_worst_case_at_the_budget_boundary_finishes_well_inside_the_gateway_timeout(monkeypatch):
-    # 4 candidates = 5 players = 32 exact set evaluations per row -> 6 rows (192 of 200): the most
-    # expensive request the budget allows. Measured ~26 s locally; the gateway proxy gives up at 60 s.
+    # 4 candidates = 5 players = 32 exact set evaluations per row -> 3 rows (96 of 100): the most
+    # expensive request the budget allows, on its slowest input -- nonlinear mechanisms and the
+    # default 10k-row training read (sampled to the training cap). Measured ~28 s locally; the
+    # gateway proxy gives up at 60 s.
     seen = _spy_attribute_anomalies(monkeypatch, real=True)
-    train = _training(k=4)
-    anomalies = _training(n=20, seed=7, k=4)
-    anomalies["y"] += 4.0
+    train = _training(n=10_000, k=4, nonlinear=True)
+    anomalies = _training(n=20, seed=7, k=4, nonlinear=True)
+    anomalies["y"] += 8.0
     t0 = time.perf_counter()
     res = await causal_discover(_req(train, anomalies.to_dict("records")))
     elapsed = time.perf_counter() - t0
     assert [len(rows) for rows in seen] == [BUDGET // 32]
     assert res.method_used == "gcm"
-    assert elapsed < 50, f"gcm worst allowed case took {elapsed:.1f}s"
+    assert elapsed < 40, f"gcm worst allowed case took {elapsed:.1f}s"
+    assert any("sample of" in w for w in res.warnings)
 
 
 @needs_dowhy
