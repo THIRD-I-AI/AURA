@@ -29,6 +29,7 @@ from __future__ import annotations
 import json
 import os
 import posixpath
+import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -112,6 +113,19 @@ def _in_memory_bytes_per_row(schema: TableSchema) -> float:
     return max(total, 1.0)
 
 
+# BUG-537: the a-priori bytes/row guess can be several times too low (incompressible
+# data), so the first chunk is kept small and the plan is re-calibrated from its real
+# size before the bulk of the first file is written.
+_CALIBRATION_ROWS = 10_000
+
+
+def _safe_file_stem(name: str) -> str:
+    # BUG-536: the dataset name comes from the request body; '/', backslash, '..' or a drive
+    # letter in it would let posixpath.join climb out of (or replace) the confined
+    # output directory, so only a single plain path component is kept.
+    return re.sub(r"[^A-Za-z0-9._-]", "_", name) or "synthetic"
+
+
 class SyntheticDatasetWriter:
     """Chunked, calibrated, cloud-agnostic Parquet generator."""
 
@@ -187,7 +201,7 @@ class SyntheticDatasetWriter:
             if max_files is not None and file_idx >= max_files:
                 break
 
-            fname = f"{name}-{file_idx:05d}.parquet"
+            fname = f"{_safe_file_stem(name)}-{file_idx:05d}.parquet"
             fpath = posixpath.join(base, fname)
 
             file_rows = 0
@@ -195,6 +209,8 @@ class SyntheticDatasetWriter:
             with fs.open_output_stream(fpath) as sink:
                 while file_rows < rows_per_file and rows_written < total_rows_target:
                     n = min(self.chunk_rows, rows_per_file - file_rows, total_rows_target - rows_written)
+                    if measured_bpr is None and file_rows == 0:
+                        n = min(n, _CALIBRATION_ROWS)
                     chunk_seed = self._root_seed.spawn(chunk_idx + 1)[chunk_idx]
                     table = generate_chunk(self.schema, chunk_seed, n, row_offset=rows_written)
                     if writer is None:
@@ -203,6 +219,12 @@ class SyntheticDatasetWriter:
                     file_rows += n
                     rows_written += n
                     chunk_idx += 1
+                    if measured_bpr is None:
+                        # BUG-537: row groups are already flushed to the sink, so its
+                        # position is the real on-disk size so far (footer aside).
+                        plan = self.plan(target_bytes, measured_bpr=sink.tell() / file_rows)
+                        total_rows_target = plan.total_rows
+                        rows_per_file = plan.rows_per_file
                 if writer is not None:
                     writer.close()
 

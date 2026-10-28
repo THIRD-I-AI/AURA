@@ -17,6 +17,7 @@ multi-terabyte generation job is launched.
 """
 from __future__ import annotations
 
+import math
 from dataclasses import asdict, dataclass, field
 from typing import Any, Dict, List, Optional
 
@@ -134,7 +135,13 @@ def parse_size(spec: str) -> int:
     for unit in sorted(_UNITS, key=len, reverse=True):
         if s.endswith(unit):
             num = s[: -len(unit)]
-            return int(float(num) * _UNITS[unit])
+            value = float(num) * _UNITS[unit]
+            # BUG-538: 'inf' / '1e400' made int() raise OverflowError (a 500 from the
+            # routes, which only map ValueError), and a negative size slipped past the
+            # generate cap.
+            if not math.isfinite(value) or value <= 0:
+                raise ValueError(f"size {spec!r} must be a finite, positive number of bytes")
+            return int(value)
     raise ValueError(f"cannot parse size {spec!r} (use e.g. 500MB, 1TB, 2PiB)")
 
 
