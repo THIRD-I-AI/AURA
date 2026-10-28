@@ -24,6 +24,13 @@ paths:
   (`components/radar/SystemRadar.tsx` draws its rings/nodes by hand) — that's drawing
   data, not iconography. Don't mix icon sets for the same UI role.
 
+## Public pages vs the Workbench
+
+The public surfaces (landing, auth, audit wizard/progress/certificate/verify) use
+the landing direction described in `frontend/CLAUDE.md` ("Two themes, two
+surfaces"): no mono labels, no hairline rules, sentence case. The density and
+mono rules below apply to the Workbench and its panels.
+
 ## Data density & tokens
 
 - Tables, analytics, and settings favor **compact, grid-aligned density** over loose
