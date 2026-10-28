@@ -41,6 +41,11 @@ export const auditApi = {
     return getJson<LedgerProof>(`${CF}/audit/ledger/proof/${encodeURIComponent(certHash)}`);
   },
 
+  /** The ED25519 public key certificates are verified against (public route). */
+  publicKey(): Promise<{ public_key_pem: string; key_source?: string }> {
+    return getJson(`${CF}/public-key`);
+  },
+
   async verify(hash: string): Promise<VerifyResult> {
     // Two record families share /verify/:hash — counterfactual artifacts and
     // financial-audit records. The artifact store answers "unsigned" for a

@@ -1,6 +1,6 @@
-import React, { createContext, useState, useEffect } from 'react';
+import React, { createContext, useCallback, useContext, useEffect, useState } from 'react';
 
-type Theme = 'light' | 'dark';
+export type Theme = 'light' | 'dark';
 
 interface ThemeContextType {
   theme: Theme;
@@ -8,37 +8,52 @@ interface ThemeContextType {
   setTheme: (theme: Theme) => void;
 }
 
+const STORAGE_KEY = 'aura-theme';
+
 const ThemeContext = createContext<ThemeContextType | undefined>(undefined);
+
+function readSaved(): Theme | null {
+  try {
+    const saved = window.localStorage.getItem(STORAGE_KEY);
+    if (saved === 'light' || saved === 'dark') return saved;
+    // BUG-113: an unrecognised value (corrupted, stale, tampered) is dropped,
+    // never cast and written back.
+    if (saved !== null) window.localStorage.removeItem(STORAGE_KEY);
+  } catch {
+    /* storage blocked: the system setting decides */
+  }
+  return null;
+}
+
+function systemTheme(): Theme {
+  return typeof window.matchMedia === 'function'
+    && window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+}
 
 interface ThemeProviderProps {
   children: React.ReactNode;
 }
 
+/** Dark and light are both first-class. Until the visitor picks one, the
+ *  system setting decides and nothing is stored; public/theme-init.js applies
+ *  the same rule before first paint so neither theme flashes. */
 export const ThemeProvider: React.FC<ThemeProviderProps> = ({ children }) => {
-  const [theme, setThemeState] = useState<Theme>(() => {
-    // S37: the product is dark-first (Terminal Authority); 'light'
-    // remains only as a legacy saved preference.
-    // BUG-113: the stored value is an unchecked `as Theme` cast -- corrupted
-    // storage, a stale key from an older app version, or manual tampering via
-    // devtools could set it to anything, and that value would flow straight
-    // into a DOM attribute and be written right back, persisting forever.
-    const savedTheme = localStorage.getItem('aura-theme');
-    return savedTheme === 'light' || savedTheme === 'dark' ? savedTheme : 'dark';
-  });
+  const [theme, setThemeState] = useState<Theme>(() => readSaved() ?? systemTheme());
 
   useEffect(() => {
-    // Apply theme to document
     document.documentElement.setAttribute('data-theme', theme);
-    localStorage.setItem('aura-theme', theme);
   }, [theme]);
 
-  const toggleTheme = () => {
-    setThemeState(prevTheme => prevTheme === 'light' ? 'dark' : 'light');
-  };
+  const setTheme = useCallback((next: Theme) => {
+    setThemeState(next);
+    try {
+      window.localStorage.setItem(STORAGE_KEY, next);
+    } catch {
+      /* storage blocked: the choice lasts for this page only */
+    }
+  }, []);
 
-  const setTheme = (newTheme: Theme) => {
-    setThemeState(newTheme);
-  };
+  const toggleTheme = useCallback(() => setTheme(theme === 'light' ? 'dark' : 'light'), [setTheme, theme]);
 
   return (
     <ThemeContext.Provider value={{ theme, toggleTheme, setTheme }}>
@@ -46,3 +61,10 @@ export const ThemeProvider: React.FC<ThemeProviderProps> = ({ children }) => {
     </ThemeContext.Provider>
   );
 };
+
+// eslint-disable-next-line react-refresh/only-export-components -- the hook belongs with its provider
+export function useTheme(): ThemeContextType {
+  const ctx = useContext(ThemeContext);
+  if (!ctx) throw new Error('useTheme must be used inside ThemeProvider');
+  return ctx;
+}

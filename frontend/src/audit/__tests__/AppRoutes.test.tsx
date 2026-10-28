@@ -3,15 +3,18 @@ import { MemoryRouter } from 'react-router-dom';
 import { describe, expect, it } from 'vitest';
 
 import { AppRoutes } from '../../AppRoutes';
+import { ThemeProvider } from '../../contexts/ThemeContext';
 
 describe('AppRoutes', () => {
-  it('renders the public front door at /', () => {
+  it('renders the landing page at /', () => {
     render(
-      <MemoryRouter initialEntries={['/']}>
-        <AppRoutes />
-      </MemoryRouter>,
+      <ThemeProvider>
+        <MemoryRouter initialEntries={['/']}>
+          <AppRoutes />
+        </MemoryRouter>
+      </ThemeProvider>,
     );
-    expect(screen.getByTestId('audit-front-door')).toBeInTheDocument();
+    expect(screen.getByTestId('landing')).toBeInTheDocument();
   });
 
   it('renders the verify page at /verify/:hash', () => {

@@ -6,16 +6,8 @@ import '@fontsource/inter/600.css'
 import '@fontsource/inter/700.css'
 import '@fontsource/jetbrains-mono/400.css'
 import '@fontsource/jetbrains-mono/600.css'
-// Workbench display/body fonts — self-hosted (was a remote @import in
-// workbench.css that CSP style-src 'self' blocked, crashing the /workbench route).
-import '@fontsource/space-grotesk/400.css'
-import '@fontsource/space-grotesk/500.css'
-import '@fontsource/space-grotesk/600.css'
-import '@fontsource/space-grotesk/700.css'
-import '@fontsource/instrument-sans/400.css'
-import '@fontsource/instrument-sans/500.css'
-import '@fontsource/instrument-sans/600.css'
-import '@fontsource/instrument-sans/700.css'
+// Display face, self-hosted: CSP font-src 'self' forbids a remote font host.
+import '@fontsource-variable/bricolage-grotesque'
 import './styles/design-system.css'
 import './styles/components.css'
 import './styles/tokens.css'

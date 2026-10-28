@@ -139,3 +139,6 @@ CLAUDE.local.md
 # PreCompact-hook session snapshots (raw transcript tails + generated digest) —
 # per-machine runtime state, not shared conventions. .claude/hooks/*.sh IS committed.
 .claude/session-state/
+
+# taste-skill working files (inspector screenshots, direction sheet)
+.taste-skill/
