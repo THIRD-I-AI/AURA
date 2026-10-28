@@ -5059,3 +5059,187 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Root cause:** collab_socket authenticates only before websocket.accept() (lines 194-202) and does not keep the token's exp/auth_time. Neither _broadcast nor the receive loop re-validates the principal. JWTAuthMiddleware is a BaseHTTPMiddleware and never runs on WS frames, so nothing else enforces token lifetime on this long-lived connection. (The frontend has no collab client yet, but the endpoint is mounted in api_gateway/main.py:419 and reachable.)
 - **Failure scenario:** Setup: AURA_JWT_ENABLED=true, password mode. User U in org O gets a 30-minute access token and opens ws://gateway/ws/collab/q3-report?token=<jwt>. The token is decoded once, at line 196, before accept(). The receive/relay loop (lines 214-227) then runs until disconnect. It never looks at the token's exp again, and never re-checks AURA_SESSION_MAX_HOURS or whether the account still exists. uvicorn's WS ping keeps the connection alive. Now an admin deletes U or moves U to another org, or U's token was stolen and has since expired. HTTP is closed: every route returns 401, and POST /auth/refresh refuses ("Account no longer exists" / "Session too old"). The open socket still gets every Yjs update and awareness frame other org members broadcast in room O:q3-report, and frames sent on it are still relayed into their shared CRDT document. A leaked 30-minute token therefore gives write access to a live document for as long as the socket stays open, past the BUG-397 12-hour session bound.
 - **Fix:** This worktree was already on branch fix/r9-collab with commit 3c03179 from an earlier run, so I checked that work and re-ran it instead of redoing it. The fix is in aurabackend/api_gateway/routers/collab.py. The JWT is decoded at the handshake, and each socket now stores a deadline in websocket.state.collab_deadline: the earlier of the token's exp and auth_time (or iat) + AURA_SESSION_MAX_HOURS. The session cap reuses auth._session_max_seconds, the same limit /auth/refresh applies. If a frame arrives after the deadline, the socket is closed with code 1008 and the frame is not relayed. _broadcast closes any peer past its deadline (1008) and skips it, so an expired socket stops receiving other members' Yjs and awareness frames. Open/dev mode (JWT disabled) sets no deadline and behaves as before. The fake peer in tests/test_collab.py gained a .state attribute, which every real WebSocket has. Tests `aurabackend/tests/test_audit_round_9_collab.py`. Review follow-up: expired and dropped peers are closed concurrently, each bounded by the send timeout, and expired peers leave the room at once (`_close_all`), so a stalled close cannot hold up the sender; test `test_bug519_a_stalled_close_does_not_hold_up_the_sender`. Residual: a deleted or re-orged user keeps the socket until the token expires, as on HTTP.
+
+## BUG-520: `--http PORT` is ignored: the server always binds 127.0.0.1:8000, which clashes with the API gateway port
+- **Status:** open
+- **Found by:** ultracode audit round 10 (run wf_8adce598-916, mcp area; confirmed by 2 adversarial verifiers), 2026-10-28. `aurabackend/mcp_servers/aura_mcp_server.py:440`.
+- **Severity:** medium
+- **Root cause:** The host and port are passed through env vars after the server object exists. FastMCP takes host and port only as constructor arguments, so the env vars never reach the settings.
+- **Failure scenario:** Running `python -m mcp_servers.aura_mcp_server --http 9000`: main() sets FASTMCP_HOST=0.0.0.0 and FASTMCP_PORT=9000 with os.environ.setdefault after build_server() has already created FastMCP. In mcp 1.29.1, FastMCP.__init__ passes explicit host="127.0.0.1" and port=8000 into Settings, and explicit init args override env vars anyway. Checked locally: with FASTMCP_HOST=0.0.0.0 and FASTMCP_PORT=9123 set, FastMCP(name='x').settings shows 127.0.0.1 8000, with DNS-rebinding protection limited to localhost hosts. Result: in-cluster agents (the stated purpose of the SSE mode, line 439) cannot connect. On a box where the API gateway already uses 8000 (docker-compose.yml:24), the MCP server fails to bind, or one service shadows the other.
+- **Fix:** pending
+
+## BUG-521: duckdb_query rejects UNION/EXCEPT/INTERSECT and accepts a trailing ';' that then breaks the wrapped SQL
+- **Status:** open
+- **Found by:** ultracode audit round 10 (run wf_8adce598-916, mcp area; confirmed by 2 adversarial verifiers), 2026-10-28. `aurabackend/mcp_servers/aura_mcp_server.py:147`.
+- **Severity:** medium
+- **Root cause:** The isinstance allow-list (exp.Select, exp.Subquery, exp.With) leaves out exp.SetOperation (Union/Except/Intersect). The query is then interpolated into a subquery wrapper as raw text instead of being regenerated from the parsed AST, so trailing semicolons and other harmless tokens end up inside the parentheses.
+- **Failure scenario:** An MCP client calls duckdb_query("SELECT region FROM a UNION ALL SELECT region FROM b"). _assert_select_only raises 'Statement type Union not allowed; SELECT only'. The same happens for EXCEPT, INTERSECT, and a CTE whose body is a UNION. All are read-only, so valid analytics queries are refused. Going the other way, duckdb_query("SELECT 1;") passes validation, because sqlglot.parse returns a single Select. Line 237 then builds `SELECT * FROM (SELECT 1;) AS _aura_q LIMIT 50`, and DuckDB raises a raw syntax error back to the client. LLM-written SQL very often ends with ';', so common queries fail. Both cases were confirmed by running _assert_select_only locally with sqlglot 30.4.3.
+- **Fix:** pending
+
+## BUG-522: aura://config resource leaks a metadata DSN password supplied as a query parameter
+- **Status:** open
+- **Found by:** ultracode audit round 10 (run wf_8adce598-916, mcp area; confirmed by 2 adversarial verifiers), 2026-10-28. `aurabackend/mcp_servers/aura_mcp_server.py:414`.
+- **Severity:** low
+- **Root cause:** _redact_dsn only masks url.password and never looks at url.query, where libpq- and asyncpg-style DSNs can carry password/sslpassword/secret keys.
+- **Failure scenario:** With AURA_MCP_METADATA_DSN=postgresql+asyncpg://aura@db:5432/aura?password=s3cret&sslmode=require (a valid form: SQLAlchemy forwards query args as connect kwargs), reading the aura://config resource returns metadata_dsn_redacted='postgresql+asyncpg://aura@db:5432/aura?password=s3cret&sslmode=require'. The password goes to every MCP client in cleartext. Checked locally by calling _redact_dsn.
+- **Fix:** pending
+
+## BUG-523: Causal gcm attribution has no cap on anomaly rows or candidates: hours of CPU per request, and the work keeps running after the gateway times out
+- **Status:** open
+- **Found by:** ultracode audit round 10 (run wf_8adce598-916, causal-dar area; confirmed by 2 adversarial verifiers), 2026-10-28. `aurabackend/causal_service/main.py:135`.
+- **Severity:** high
+- **Root cause:** The causal_discover handler (main.py:135-145) passes anomaly_df and the candidate list to attribute()/_gcm_attribute (discovery.py:273) without limiting either. models.py:16 lets each DataSource carry up to 500k rows (10k by default), and candidate_causes is an unbounded List[str]. Nothing enforces a timeout or a compute budget. BUG-212 only moved the work off the event loop; it did not limit it.
+- **Failure scenario:** I measured this locally with the repo venv (dowhy installed) by calling discovery.attribute(method='gcm'). With 500 training rows, 3 candidates and 50 anomaly rows it took 125 s. The cost grows linearly with anomaly rows, because gcm.attribute_anomalies computes Shapley values for every sample. The default DataSource.limit is 10,000 (models.py:16) and the maximum is 500,000. Inline `rows` are bounded only by the 16 MB body limit, which is roughly 100k+ rows. So a POST /api/v1/causal/discover with anomaly_data={duckdb_table: <any lake table>} and the default limit is about 7 hours of CPU. The gateway proxy gives up after 60 s (pipelines.py:715), but the asyncio.to_thread job cannot be cancelled. Every retry adds another long-running thread. Those threads compete for the GIL with the event loop and slowly use up the default thread pool, and the service has no timeout anywhere. candidate_causes has no upper bound either, so the Shapley cost also grows with the number of candidates.
+- **Fix:** pending
+
+## BUG-524: gcm engine reports abs(mean signed Shapley contribution), so a cause that reduced the anomaly is ranked as a driver
+- **Status:** open
+- **Found by:** ultracode audit round 10 (run wf_8adce598-916, causal-dar area; confirmed by 2 adversarial verifiers), 2026-10-28. `aurabackend/causal_service/discovery.py:286`.
+- **Severity:** medium
+- **Root cause:** _gcm_attribute takes mean_score=_safe_mean(scores) over the signed per-sample contributions (line 279) and then stores score=abs(mean_score) (line 286). The sign, which says whether the node increased or decreased the anomaly, is discarded. The ranking (line 140) sorts on that absolute value. The direction field is unrelated to the contribution: it comes from the training-set correlation (line 283).
+- **Failure scenario:** I measured this. Training data: a,b ~ N(0,1), y=a+b+noise, n=500. Anomaly row a=3.5, b=-0.6, y=2.9. Raw gcm.attribute_anomalies gives a=+3.70 and b=-0.42. b's contribution is negative, meaning it made y less anomalous. The service returns b as score=0.24, confidence=1.0, direction='positive', and summarise() names it the 'Secondary driver'. With several anomaly rows the signed scores also cancel. In the run with rows (a=3,b=-1.5) and (a=3,b=0), b scored [+0.27,-0.45], which averages to about 0, so a node that drove one incident disappears. With three candidates, a strong mitigator (-0.42) outranks a real small positive cause (+0.2).
+- **Fix:** pending
+
+## BUG-525: gcm confidence is always 1.0 when the anomaly batch has a single row
+- **Status:** open
+- **Found by:** ultracode audit round 10 (run wf_8adce598-916, causal-dar area; confirmed by 2 adversarial verifiers), 2026-10-28. `aurabackend/causal_service/discovery.py:281`.
+- **Severity:** medium
+- **Root cause:** confidence = 1 - std/|mean|, and _safe_std returns 0.0 when len(xs) < 2 (lines 455-457). So with n=1 the coefficient of variation is 0 and confidence clamps to 1.0 whatever the score is.
+- **Failure scenario:** This is the common case: one anomalous observation. I reproduced it in the same run as above. With anomaly_data holding one row, every attribution came back with confidence=1.0, including b, whose score was ~0.24 against a's 3.49 and whose raw sign was negative. In an earlier run a near-zero score of 4e-05 got confidence 0.0 with 2 rows, but any score gets 1.0 with 1 row. Callers and the summary text ('confidence=1.00') then present noise-level attributions as certain.
+- **Fix:** pending
+
+## BUG-526: User-supplied causal_graph_edges are not validated: a cyclic graph or an unknown node returns a 500
+- **Status:** open
+- **Found by:** ultracode audit round 10 (run wf_8adce598-916, causal-dar area; confirmed by 2 adversarial verifiers), 2026-10-28. `aurabackend/causal_service/discovery.py:261`.
+- **Severity:** low
+- **Root cause:** graph.add_edges_from(edges) at line 261 accepts the request's edges as-is. Neither main.py nor _gcm_attribute checks that every node is in `cols`, that the graph is a DAG (nx.is_directed_acyclic_graph), or that the target is reachable.
+- **Failure scenario:** POST /causal/discover with method='gcm' and causal_graph_edges=[['a','y'],['b','y'],['y','a']]. I reproduced it: networkx.exception.NetworkXUnfeasible('Graph contains a cycle') propagates out of gcm and the request ends in an unhandled 500. An edge such as ['zzz','y'] (a node that is not a column), or an edge that leaves a candidate disconnected from the target, also fails inside gcm with a 500 instead of a 400.
+- **Fix:** pending
+
+## BUG-527: An anomaly column that is not numeric (for example string-encoded numbers in inline rows) crashes both engines with a 500
+- **Status:** open
+- **Found by:** ultracode audit round 10 (run wf_8adce598-916, causal-dar area; confirmed by 2 adversarial verifiers), 2026-10-28. `aurabackend/causal_service/discovery.py:444`.
+- **Severity:** low
+- **Root cause:** The numeric pre-filter at discovery.py:98 inspects only training[c]. Neither main.py nor attribute() checks or coerces the dtype of anomaly_df's columns. _zscore_in_anomaly (line 444) calls .mean() on whatever dtype arrives.
+- **Failure scenario:** Training rows have numeric 'a', and anomaly rows send {'a':'5','b':1,'y':6},{'a':'7','b':1,'y':8} (common when JSON comes from CSV). attribute() checks dtypes only on the training frame (line 98). The correlation engine then calls anomalies['a'].mean(), and pandas raises TypeError: Could not convert string '57' to numeric. I reproduced this. It is not caught, so the request gets a 500. The gcm path likewise passes the object-dtype anom_df to attribute_anomalies.
+- **Fix:** pending
+
+## BUG-528: DAR execute_node runs LLM-generated SQL with external file access enabled and no row cap, then persists the rows to unauthenticated /dar/insights
+- **Status:** open
+- **Found by:** ultracode audit round 10 (run wf_8adce598-916, causal-dar area; confirmed by 2 adversarial verifiers), 2026-10-28. `aurabackend/dar_service/graph.py:230`.
+- **Severity:** medium
+- **Root cause:** _open_duckdb (graph.py:65-67) opens the connection read-only without SET enable_external_access=false / lock_configuration=true. execute_node (line 230-232) executes q.sql verbatim and calls fetchall() with no LIMIT wrapper or fetchmany cap.
+- **Failure scenario:** formulate_node gives the LLM a profile_text that includes top_values taken straight from lake data (graph.py:166-172, 403). That gives ingested data a prompt-injection path into the SQL the LLM writes. DARResearchAgent accepts any string containing 'select' (dar_research_agent.py:122). execute_node runs it on duckdb.connect(path, read_only=True). read_only blocks writes only, so SELECT * FROM read_text('/app/.env') or read_csv('/etc/passwd') succeeds. Up to 50 result rows go into DARInsight.payload, and GET /dar/insights returns them with no auth dependency. Separately, cur.fetchall() has no row limit: the 'LIMIT' rule exists only in the prompt, so a generated cross join or an unlimited SELECT of a large table loads the whole result into memory. This is the same exposure BUG-197 closed in causal_service with enable_external_access=false. DAR is not currently in any compose or Helm deployment (values.yaml:152), which limits the impact today.
+- **Fix:** pending
+
+## BUG-529: Kafka bootstrap address is hardcoded to localhost:9092; the KAFKA_BOOTSTRAP_SERVERS that Helm sets is never read, so every deployed batch fails to publish
+- **Status:** open
+- **Found by:** ultracode audit round 10 (run wf_8adce598-916, ingestion-semantic area; confirmed by 2 adversarial verifiers), 2026-10-28. `aurabackend/ingestion_service/kafka_client.py:131`.
+- **Severity:** high
+- **Root cause:** kafka_client.py:131 `kafka_producer = ResilientKafkaProducer()` relies on the constructor default `bootstrap_servers: str = "localhost:9092"` (line 27) and never consults KAFKA_BOOTSTRAP_SERVERS.
+- **Failure scenario:** The Helm chart (infrastructure/helm/aura/templates/ingestion-deployment.yaml:24-28) deploys 5 replicas and sets KAFKA_BOOTSTRAP_SERVERS from aura-kafka-secret. The singleton is built as ResilientKafkaProducer() with the default "localhost:9092", and nothing in ingestion_service reads os.environ. No broker runs inside the pod, so start() fails at boot (logged and tolerated). Each later batch calls _ensure_started, fails again, and raises KafkaUnavailableError. Every NetSuite/Workday batch gets a 202 'accepted' and then ingestion_publish_failed. No ledger data reaches Kafka in any Helm deployment.
+- **Fix:** pending
+
+## BUG-530: Batch dedup key is the bare client batch_id shared across all tenants, so one tenant's batch silently suppresses another's
+- **Status:** open
+- **Found by:** ultracode audit round 10 (run wf_8adce598-916, ingestion-semantic area; confirmed by 2 adversarial verifiers), 2026-10-28. `aurabackend/ingestion_service/main.py:82`.
+- **Severity:** medium
+- **Root cause:** main.py:82 passes dedup_key=payload.batch_id without namespacing by tenant or system_origin. publish_with_retry's skip path returns normally, so the caller cannot tell a skip from a real publish.
+- **Failure scenario:** Tenant A posts batch_id="2026-10-21" (a common date-style id) and it publishes; the id is stored in _recently_published. Tenant B later posts its own real batch with batch_id="2026-10-21". publish_with_retry (kafka_client.py:93) finds the key, logs a warning and returns None. process_raw_batch_async then audits "ingestion_batch_processed" with the full entry_count (main.py:96), but tenant B's entries are never published. That is silent data loss with a false success in the audit trail. A malicious tenant can do this on purpose by posting guessed batch_ids first.
+- **Fix:** pending
+
+## BUG-531: Publish failures that fall to the DLQ, including any batch over Kafka's 1 MB request limit, are audited as 'ingestion_batch_processed', and when the DLQ also fails the whole ledger payload is logged
+- **Status:** open
+- **Found by:** ultracode audit round 10 (run wf_8adce598-916, ingestion-semantic area; confirmed by 2 adversarial verifiers), 2026-10-28. `aurabackend/ingestion_service/kafka_client.py:107`.
+- **Severity:** medium
+- **Root cause:** publish_with_retry swallows every send exception after the DLQ attempt (lines 107-109), and _route_to_dlq swallows its own failure (126-128). No outcome is propagated to the caller, so the KafkaUnavailableError branch in main.py:84 is the only failure the audit trail ever records. Nothing caps batch size or splits batches.
+- **Failure scenario:** RawIngestionPayload.entries is an unbounded list. A NetSuite batch of about 5,000 lines serializes to more than 1,048,576 bytes, which is aiokafka 0.14's default max_request_size. send_and_wait raises MessageSizeTooLargeError, which is caught at line 107 and routed to _route_to_dlq. The DLQ message wraps the same payload, so it is larger and fails the same way. Line 128 then logs the entire payload at CRITICAL (memo, department and amounts for every line), outside the HTTP-only PIIMaskingMiddleware path for anything it did not tokenize. publish_with_retry returns normally, so main.py:96 writes 'ingestion_batch_processed' with entry_count=5000 for a batch that is in neither the topic nor the DLQ. The same false success happens for any non-connection send error.
+- **Fix:** pending
+
+## BUG-532: SQLSafetyValidator's raw regex checks reject valid read-only queries: column names containing xp_/sp_, the words update/delete inside string literals, and every UNION
+- **Status:** open
+- **Found by:** ultracode audit round 10 (run wf_8adce598-916, safety-evolution area; confirmed by 2 adversarial verifiers), 2026-10-28. `aurabackend/safety/validator.py:53`.
+- **Severity:** medium
+- **Root cause:** SUSPICIOUS_PATTERNS (validator.py:49-55) matches unanchored substrings `xp_` and `sp_` and `UNION.*SELECT` against the whole upper-cased text. So any identifier like exp_date, resp_time or hosp_id matches, and so does any UNION. The FORBIDDEN_KEYWORDS loop (validator.py:105-107) runs `\bKEYWORD\b` over the raw text, string literals included, so a literal 'update' or 'delete' counts as DML.
+- **Failure scenario:** POST /api/v1/execute (the SQL editor path, frontend/src/services/api.ts:948) with `SELECT card_id, exp_date FROM cards LIMIT 10` returns 400 'Query blocked: Security risk: extended stored procedure access'. `SELECT avg(resp_time) FROM requests` is blocked as 'system stored procedure access'. `SELECT count(*) FROM audit WHERE action = 'update'` is blocked as 'Forbidden operation: UPDATE'. `SELECT region FROM east UNION SELECT region FROM west` is blocked as 'potential data exfiltration'. I confirmed all four locally against the validator. The Commander run_sql tool (agents/commander_tools.py:111) runs the same validator after its own sqlglot SELECT-only check, so the chat agent's correct queries fail the same way.
+- **Fix:** pending
+
+## BUG-533: dry_run_only mode skips the forbidden-keyword check, so a stacked destructive statement after a leading SELECT validates as safe
+- **Status:** open
+- **Found by:** ultracode audit round 10 (run wf_8adce598-916, safety-evolution area; confirmed by 2 adversarial verifiers), 2026-10-28. `aurabackend/safety/validator.py:98`.
+- **Severity:** low
+- **Root cause:** validate() puts the dry-run check and the FORBIDDEN_KEYWORDS scan in an if/else (validator.py:98-108). When dry_run_only is True, only `query_upper.startswith("SELECT")` runs and the keyword loop in the else branch is skipped, so the 'stricter' mode applies fewer checks.
+- **Failure scenario:** POST /api/v1/validate/query {"query":"SELECT 1; DELETE FROM users", "dry_run_mode": true} returns is_valid=true and risk_level 'low_risk' (confirmed locally: the validator returns True in dry-run mode and False in normal mode). A client that uses dry-run validation as the stricter pre-flight check is told that a DELETE/UPDATE/INSERT/ALTER statement is valid. Only DROP is still caught, by the separate `;\s*DROP` pattern.
+- **Fix:** pending
+
+## BUG-534: Every DAG agent run copies its full output, including up to 10k query-result rows twice, into evolution_agent_feedback with workspace_id NULL; nothing prunes it and it cannot be purged per tenant
+- **Status:** open
+- **Found by:** ultracode audit round 10 (run wf_8adce598-916, safety-evolution area; confirmed by 2 adversarial verifiers), 2026-10-28. `aurabackend/agents/executor.py:267`.
+- **Severity:** medium
+- **Root cause:** agents/executor.py:267-275 forwards the raw task output, with no size bound and no workspace, into evolution_agent_feedback. AgentFeedback.agent_output (evolution/models.py, JSON column) has no size cap, and the evolution subsystem has no retention policy.
+- **Failure scenario:** A tenant calls POST /api/v1/agent/execute. The plan includes ExecutionAgent, whose result.output holds 'records' and 'rows' (each up to AURA_QUERY_MAX_ROWS=10000 rows of the tenant's data) plus the SQL (agents/specialists/execution_agent.py:103-109). _record_in_evolution_engine passes agent_output=result.output into engine.record_feedback with no workspace_id (evolution/engine.py:389-403 stores agent_output whole; only user_prompt is truncated). Each run adds a row holding up to about 20k serialized result rows. No retention job or tenant-deletion path touches the evolution_* tables (grep finds no reference outside evolution/), and because workspace_id is NULL the rows cannot be tied back to the tenant for erasure. _analyse_failures (engine.py:167-193) then sends 300-char slices of these outputs from all tenants to the LLM. The table grows without bound and holds tenant data permanently, outside tenant scoping.
+- **Fix:** pending
+
+## BUG-535: PatternLibrary.record_success check-then-insert has no unique constraint; one concurrent duplicate makes scalar_one_or_none raise MultipleResultsFound for that intent from then on
+- **Status:** open
+- **Found by:** ultracode audit round 10 (run wf_8adce598-916, safety-evolution area; confirmed by 2 adversarial verifiers), 2026-10-28. `aurabackend/evolution/pattern_library.py:54`.
+- **Severity:** low
+- **Root cause:** record_success (pattern_library.py:47-80) does a non-atomic SELECT-then-INSERT, and ExecutionPattern (evolution/models.py) declares no UniqueConstraint on (workspace_id, pattern_type, intent_hash). The read uses scalar_one_or_none, which throws on more than one row instead of tolerating it.
+- **Failure scenario:** Two plans with the same prompt (e.g. 'show total revenue by month') finish at about the same time. The executor records both through fire_and_forget with workspace_id=None, so all tenants share the NULL bucket and common prompts collide across tenants. Both record_success calls run the SELECT, both see no row, and both INSERT an ExecutionPattern with the same (workspace_id, pattern_type, intent_hash). From then on, every record_success for that prompt raises sqlalchemy MultipleResultsFound at `result.scalar_one_or_none()`. agents/executor.py:290-291 swallows the error, so success_count/avg_duration_ms for that pattern never update again, and find_similar returns duplicate, diverging rows.
+- **Fix:** pending
+
+## BUG-536: Path traversal: schema.name is joined unchecked into the output path, so a caller can write files outside its tenant/job folder (including into other tenants' folders)
+- **Status:** open
+- **Found by:** ultracode audit round 10 (run wf_8adce598-916, synthetic-contracts area; confirmed by 2 adversarial verifiers), 2026-10-28. `aurabackend/synthetic/writer.py:199`.
+- **Severity:** high
+- **Root cause:** SchemaModel.name (api_gateway/routers/synthetic.py:133) is a free-form string with no validation. BUG-058 confined only output_uri. writer.generate uses dataset_name (= schema.name, routers/synthetic.py:222) as a path component without sanitising it and without checking containment against base.
+- **Failure scenario:** An authenticated tenant sends POST /api/v1/synthetic/generate with output_uri="x", target_size="1MB" and schema {"name": "../../../<victim_tenant_slug>/whatever/../../../uploads/<victim_slug>/evil", columns:[{name:"f"}]}. _confine_output_uri (routers/synthetic.py:56-89) only rewrites output_uri to data/synthetic/<tenant>/<job_id>/x. Inside the writer, fname = f"{name}-{file_idx:05d}.parquet" and fpath = posixpath.join(base, fname) (writer.py:198-199), so '../' segments climb out of the confined directory. On Linux, a name that starts with '/' (e.g. "/tmp/pwn") makes posixpath.join throw away base entirely, giving an absolute write anywhere the gateway process can write. I reproduced it locally: base=<tmp>/tenantA/job1/ds with name='../../../escaped' wrote <tmp>/escaped-00000.parquet, outside tenantA. The attacker controls the content (the column values) and can pick any path that ends in -NNNNN.parquet, so they can plant or overwrite parquet files in another tenant's uploads or synthetic directory. This undoes the BUG-058 confinement.
+- **Fix:** pending
+
+## BUG-537: The AURA_SYNTHETIC_MAX_BYTES cap is overshot 3-6x because the uncalibrated first file is never bounded by the byte target
+- **Status:** open
+- **Found by:** ultracode audit round 10 (run wf_8adce598-916, synthetic-contracts area; confirmed by 2 adversarial verifiers), 2026-10-28. `aurabackend/synthetic/writer.py:203`.
+- **Severity:** medium
+- **Root cause:** plan_generation's uncalibrated bytes/row uses a fixed 0.35 compression ratio (schema.py:150, 178-185), which badly underestimates incompressible data. generate() writes the whole first file (rows_per_file rows) and only calibrates afterwards (writer.py:203-226). Nothing compares bytes_written with target_bytes during the loop, so the first file alone can be a multiple of the target.
+- **Failure scenario:** POST /synthetic/generate with target_size="1GiB" (equal to the default cap, so it passes the check at routers/synthetic.py:240), file_target_bytes=1000000000 (allowed, le=10**9), and one column {dtype:"string", prefix:"", str_cardinality:10**15}. The a-priori estimate is (0+6)*0.35 = 2.1 bytes/row, so the first file's row budget is about 476M rows. That whole file is written before calibration runs, and the real size is about 13.7 bytes/row. Running the writer locally with a 10 MB target and this schema wrote 65 MB (6.5x). A single float or uuid column overshoots about 2.9x (10 MB target gave 28-29 MB). At the 1 GiB cap this is about 6.5 GB of server disk per job, so the BUG-227 disk bound is not actually enforced.
+- **Fix:** pending
+
+## BUG-538: parse_size accepts 'inf'/'1e400' and raises OverflowError, which /synthetic/plan and /synthetic/generate don't catch, so the caller gets a 500 instead of a 400; negative sizes are accepted
+- **Status:** open
+- **Found by:** ultracode audit round 10 (run wf_8adce598-916, synthetic-contracts area; confirmed by 2 adversarial verifiers), 2026-10-28. `aurabackend/synthetic/schema.py:143`.
+- **Severity:** low
+- **Root cause:** parse_size does int(float(num) * _UNITS[unit]) without checking that the float is finite and positive, and the route handlers don't catch OverflowError.
+- **Failure scenario:** POST /api/v1/synthetic/plan or /synthetic/generate with target_size="infGB" or "1e400B": int(float(num) * unit) raises OverflowError ('cannot convert float infinity to integer', confirmed locally). Both routes catch only (ValueError, TypeError) (routers/synthetic.py:182, 251), so the request ends in an unhandled 500. target_size="-5GB" parses to -5000000000, passes the `target_bytes > cap` check, and starts a job anyway (plan_generation clamps it to 1 row).
+- **Fix:** pending
+
+## BUG-539: Request-body size limits skipped for any path ending in '/upload': PATCH/PUT bodies have no limit at all, and chunked POST bodies have none either
+- **Status:** open
+- **Found by:** ultracode audit round 10 (run wf_8adce598-916, gateway-main-cross area; confirmed by 2 adversarial verifiers), 2026-10-28. `aurabackend/shared/middleware.py:573`.
+- **Severity:** high
+- **Root cause:** The upload exemption is a suffix match on the raw request path, which the caller controls through path parameters, rather than a match on the one real upload route. The exempting middleware and the upload middleware also disagree on methods: RequestBodyLimit exempts every method on a '/upload' path, while UploadBodyLimit covers only POST and only declared lengths.
+- **Failure scenario:** An authenticated user of any tenant sends PATCH /api/v1/hooks/upload (hook_id='upload') with a 500 MB JSON body, either chunked or with a matching Content-Length. RequestBodyLimitMiddleware passes it through because scope['path'].endswith('/upload'). UploadBodyLimitMiddleware (line 523) only checks POST, so neither limit applies. FastAPI reads the whole body into memory to validate HookUpdateRequest before the handler can 404. A few of these requests OOM the single gateway worker (520m container) for every tenant. I reproduced it locally with both middlewares set to max_bytes=1000: PATCH /api/v1/hooks/abc with a 50 KB body got 413, and PATCH /api/v1/hooks/upload with the same body got 200 and the full body was parsed. Any route with a trailing path parameter works the same way, and for POST a chunked body to such a path (e.g. POST /api/v1/<route>/upload) is also uncapped, because the upload middleware only checks a declared Content-Length. This sidesteps the BUG-411 fix.
+- **Fix:** pending
+
+## BUG-540: Public, unthrottled /health returns raw database and filesystem exception text to unauthenticated callers
+- **Status:** open
+- **Found by:** ultracode audit round 10 (run wf_8adce598-916, gateway-main-cross area; confirmed by 2 adversarial verifiers), 2026-10-28. `aurabackend/api_gateway/main.py:311`.
+- **Severity:** medium
+- **Root cause:** The health probes build their result strings from str(exc), and create_service puts those strings straight into the public response body. sanitize_error is not used, and nothing separates the public status from the operator-only detail.
+- **Failure scenario:** Anyone sends GET /health without credentials. /health is in _PUBLIC_PATHS and _RATE_LIMIT_EXEMPT_PATHS. When the DB or volume has a problem, the 503 body contains checks.db = 'db unreachable: OperationalError: (sqlite3.OperationalError) unable to open database file ...' or, on Postgres, the driver text such as 'password authentication failed for user "aura"' or 'Connect call failed (\'10.0.x.x\', 5432)'. checks.data_dir returns 'state dir not writable: OSError: [Errno 30] Read-only file system: \'/data\'' or 'state dir missing: <absolute path>' (lines 332/337). Any other probe exception is echoed by service_factory._run_probe as f"{type(exc).__name__}: {exc}" (service_factory.py:241, returned at 259-262). Production /health has already served '[Errno 28] No space left on device' this way (registry BUG-34x entry). This leaks internal hostnames, DB user names, filesystem layout and driver internals to unauthenticated clients, which is the CWE-209 class security.md treats as high.
+- **Fix:** pending
+
+## BUG-541: Unhandled-exception 500s carry no CORS headers and no X-Request-ID header, so cross-origin clients see an opaque network error
+- **Status:** open
+- **Found by:** ultracode audit round 10 (run wf_8adce598-916, gateway-main-cross area; confirmed by 2 adversarial verifiers), 2026-10-28. `aurabackend/shared/middleware.py:655`.
+- **Severity:** low
+- **Root cause:** _handle_unhandled builds its JSONResponse outside the middleware stack. _apply_security_headers re-applies the security headers by hand but not the CORS headers or X-Request-ID.
+- **Failure scenario:** The frontend runs on a different origin, as in the documented dev setup (VITE_API_URL=http://localhost:8000 with the UI on :5173) or any split-origin deploy. Any route raises an unexpected exception. Starlette runs the @app.exception_handler(Exception) handler in ServerErrorMiddleware, which sits outside every user middleware, so the 500 skips CORSMiddleware and RequestIDMiddleware. I reproduced it locally: GET with Origin: http://localhost:5173 returned 500 with only x-content-type-options/x-frame-options, and no Access-Control-Allow-Origin or X-Request-ID. The browser blocks the response, the frontend sees 'Failed to fetch' instead of a 500, and the request_id in the body (meant for error reports) can never be read. BUG-223 fixed this for 401/429 only.
+- **Fix:** pending
+
+## BUG-542: SSE/HTTP transport has no authentication even though the module documents an AURA_MCP_API_KEY gate
+- **Status:** open
+- **Found by:** ultracode audit round 10 (run wf_8adce598-916, mcp area; confirmed by 2 adversarial verifiers), 2026-10-28. `aurabackend/mcp_servers/aura_mcp_server.py:442`.
+- **Severity:** high
+- **Root cause:** The documented security contract was never built. main() (lines 435-442) and build_server() (lines 166-173) set up no auth for the SSE app, and nothing ever reads the AURA_MCP_API_KEY env var.
+- **Failure scenario:** An operator runs `python -m mcp_servers.aura_mcp_server --http 9000` for in-cluster agents, trusting the module docstring (lines 24-26) that says every HTTP request is gated by the AURA_MCP_API_KEY header. No code reads AURA_MCP_API_KEY: a grep of the whole backend finds the name only in that docstring. build_server() passes no auth, token_verifier or middleware to FastMCP, and main() calls server.run(transport="sse") without any check. Any client that can reach the socket can call duckdb_query and duckdb_sample_table on the whole analytics lake, plus metadata_list_sources, metadata_get_schema, metadata_search_columns and metadata_describe_table, which return every tenant's sources, schema documents and sample_values (raw first rows of uploaded files). It can also submit counterfactual jobs. BUG-??? (registry line 2153) left open whether the MCP server is reachable by a tenant; this is the reason it would be reachable with no credential. Today it is limited to local processes only because of the host bug in the next finding. Once that is fixed, or once someone passes host=0.0.0.0, the endpoint is open to the network.
+- **Fix:** pending
