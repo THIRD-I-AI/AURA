@@ -1,6 +1,7 @@
 import { type ReactNode } from 'react';
 import { Navigate, useLocation } from 'react-router-dom';
 import { useAuth } from './AuthContext';
+import { rememberReturnTo } from './returnTo';
 
 /**
  * Gate for authenticated surfaces (the `/app` dashboard). An anonymous visitor
@@ -13,7 +14,10 @@ export function ProtectedRoute({ children }: { children: ReactNode }) {
   const location = useLocation();
 
   if (!isAuthenticated) {
-    return <Navigate to="/login" state={{ from: location.pathname }} replace />;
+    // BUG-553: pathname alone dropped ?panel=… and #hash from deep links.
+    const from = location.pathname + location.search + location.hash;
+    rememberReturnTo(from);
+    return <Navigate to="/login" state={{ from }} replace />;
   }
   return <>{children}</>;
 }

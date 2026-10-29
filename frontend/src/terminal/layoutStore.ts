@@ -1,4 +1,5 @@
 import type { DockviewApi } from 'dockview-react';
+import { safeGetItem, safeRemoveItem } from '../lib/safeStorage';
 
 const KEY = (name: string) => `aura.terminal.layout.${name}`;
 
@@ -11,14 +12,14 @@ export function persistLayout(name: string, api: Pick<DockviewApi, 'toJSON'>): v
 }
 
 export function restoreLayout(name: string, api: Pick<DockviewApi, 'fromJSON'>): boolean {
-  const raw = localStorage.getItem(KEY(name));
+  const raw = safeGetItem(KEY(name));
   if (!raw) return false;
   try {
     api.fromJSON(JSON.parse(raw));
     return true;
   } catch (err) {
     console.warn('[terminal] corrupt saved layout, discarding', err);
-    localStorage.removeItem(KEY(name));
+    safeRemoveItem(KEY(name));
     return false;
   }
 }

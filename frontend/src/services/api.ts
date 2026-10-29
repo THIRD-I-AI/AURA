@@ -3,6 +3,8 @@
  * Centralized API communication layer with typed responses and error handling
  */
 
+import { safeGetItem } from '../lib/safeStorage';
+
 // =============================================================================
 // Configuration
 // =============================================================================
@@ -42,7 +44,7 @@ export const sanitizeRecordHash = (value: unknown): string | null =>
 const _ENV_BASE = import.meta.env.VITE_API_URL as string | undefined;
 const _FALLBACK_BASE = !_ENV_BASE ? '' : _ENV_BASE;
 const _RAW_BASE = sanitizeApiBase(
-  typeof localStorage !== 'undefined' ? localStorage.getItem('apiUrl') : null,
+  safeGetItem('apiUrl'),
   _FALLBACK_BASE,
 );
 export const ROOT_BASE_URL = _RAW_BASE.replace(/\/+$/, '');              // For non-versioned endpoints (e.g. /health)
@@ -55,7 +57,7 @@ const HEALTH_CHECK_INTERVAL = Number(import.meta.env.VITE_HEALTH_CHECK_INTERVAL)
 export const DEFAULT_WORKSPACE_ID = 'default';
 const WORKSPACE_STORAGE_KEY = 'aura.workspaceId';
 let _currentWorkspaceId: string =
-  (typeof localStorage !== 'undefined' && localStorage.getItem(WORKSPACE_STORAGE_KEY)) || DEFAULT_WORKSPACE_ID;
+  safeGetItem(WORKSPACE_STORAGE_KEY) || DEFAULT_WORKSPACE_ID;
 const _workspaceListeners = new Set<(id: string) => void>();
 
 // Bearer-token plumbing (S35). Role-gated endpoints (e.g. AS 1215 HITL
@@ -64,7 +66,7 @@ const _workspaceListeners = new Set<(id: string) => void>();
 // is not part of the Sec-6 taint surface.
 const AUTH_TOKEN_STORAGE_KEY = 'aura.authToken';
 let _authToken: string | null =
-  (typeof localStorage !== 'undefined' && localStorage.getItem(AUTH_TOKEN_STORAGE_KEY)) || null;
+  safeGetItem(AUTH_TOKEN_STORAGE_KEY) || null;
 
 export function setAuthToken(token: string | null): void {
   _authToken = token;

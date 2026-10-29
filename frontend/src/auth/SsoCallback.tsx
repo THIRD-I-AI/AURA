@@ -4,6 +4,7 @@
    real token in the response body, then enter the workbench. */
 import { useEffect, useState } from 'react';
 import { API_BASE_URL, setAuthToken } from '../services/api';
+import { takeReturnTo } from './returnTo';
 
 export function SsoCallback() {
   const [error, setError] = useState<string | null>(null);
@@ -22,7 +23,9 @@ export function SsoCallback() {
         if (!r.ok) throw new Error(`exchange failed (${r.status})`);
         const j = await r.json();
         setAuthToken(j.access_token);
-        window.location.replace('/workbench');
+        // BUG-553: return to the deep link ProtectedRoute saved before the
+        // OIDC redirect left the SPA.
+        window.location.replace(takeReturnTo() ?? '/workbench');
       })
       .catch((e) => setError(e instanceof Error ? e.message : 'exchange failed'));
   }, []);

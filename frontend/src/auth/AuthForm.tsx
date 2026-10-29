@@ -3,6 +3,7 @@ import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { Button } from '@/components/ui-kit/button';
 import { useViewport } from '../shell/ViewportProvider';
 import { useAuth } from './AuthContext';
+import { safeReturnTo, takeReturnTo } from './returnTo';
 import './AuthForm.css';
 
 type Mode = 'login' | 'signup';
@@ -30,7 +31,9 @@ export function AuthForm({ mode }: { mode: Mode }) {
   const location = useLocation();
   const wide = useViewport().atLeast('standard');
   // Workbench is the single front door; a deep-linked `from` still wins.
-  const from = (location.state as { from?: string } | null)?.from ?? '/workbench';
+  // BUG-553: `from` now carries a query string, so it is checked to be a
+  // same-origin path before navigate() is handed it.
+  const from = safeReturnTo((location.state as { from?: unknown } | null)?.from) ?? '/workbench';
 
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
@@ -50,6 +53,8 @@ export function AuthForm({ mode }: { mode: Mode }) {
       } else {
         await login(email.trim(), password);
       }
+      // Consumed here so a stale SSO return target cannot outlive this sign-in.
+      takeReturnTo();
       navigate(from, { replace: true });
     } catch (err) {
       setError(

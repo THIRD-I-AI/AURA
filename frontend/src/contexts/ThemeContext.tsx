@@ -1,4 +1,5 @@
 import React, { createContext, useState, useEffect } from 'react';
+import { safeGetItem, safeSetItem } from '../lib/safeStorage';
 
 type Theme = 'light' | 'dark';
 
@@ -22,14 +23,14 @@ export const ThemeProvider: React.FC<ThemeProviderProps> = ({ children }) => {
     // storage, a stale key from an older app version, or manual tampering via
     // devtools could set it to anything, and that value would flow straight
     // into a DOM attribute and be written right back, persisting forever.
-    const savedTheme = localStorage.getItem('aura-theme');
+    const savedTheme = safeGetItem('aura-theme');
     return savedTheme === 'light' || savedTheme === 'dark' ? savedTheme : 'dark';
   });
 
   useEffect(() => {
     // Apply theme to document
     document.documentElement.setAttribute('data-theme', theme);
-    localStorage.setItem('aura-theme', theme);
+    safeSetItem('aura-theme', theme);
   }, [theme]);
 
   const toggleTheme = () => {
