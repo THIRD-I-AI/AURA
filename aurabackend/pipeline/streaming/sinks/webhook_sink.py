@@ -24,7 +24,7 @@ from typing import Any, Dict, Optional
 import httpx
 
 from pipeline.streaming.models import StreamEvent, WindowState
-from pipeline.streaming.sinks.base import BaseSink
+from pipeline.streaming.sinks.base import BaseSink, StreamSinkError
 from shared import ssrf
 
 logger = logging.getLogger("aura.streaming.sink.webhook")
@@ -93,8 +93,8 @@ class WebhookSink(BaseSink):
             return
         # Re-checked per delivery: the name can be re-pointed after start().
         if not await ssrf.is_public_url_async(self._url):
-            logger.warning("Webhook sink url no longer resolves to a public address; delivery dropped")
-            return
+            # BUG-569: raise, not return -- a silently dropped delivery left the pipeline RUNNING.
+            raise StreamSinkError("Webhook url no longer resolves to a public address; delivery dropped")
         body = json.dumps(payload, default=str).encode("utf-8")
         headers = {
             "Content-Type": "application/json",
@@ -106,20 +106,31 @@ class WebhookSink(BaseSink):
             headers["X-AURA-Signature"] = f"sha256={sig}"
 
         attempts = 0
+        last_status: Optional[int] = None
+        last_exc: Optional[Exception] = None
         while attempts <= self._retries:
             attempts += 1
             try:
                 resp = await self._client.post(self._url, content=body, headers=headers)
                 if 200 <= resp.status_code < 300:
                     return
+                last_status, last_exc = resp.status_code, None
                 logger.warning(
                     "Webhook sink non-2xx (%s) attempt=%d url=%s",
                     resp.status_code, attempts, self._url,
                 )
             except Exception as exc:
+                last_status, last_exc = None, exc
                 logger.warning(
                     "Webhook sink error attempt=%d url=%s err=%s",
                     attempts, self._url, exc,
                 )
             if attempts <= self._retries:
                 await asyncio.sleep(min(10.0, 0.5 * (2 ** (attempts - 1))))
+        # BUG-569: returning here dropped the delivery with only a log line, so the
+        # engine kept the pipeline RUNNING. The URL is left out of the message on
+        # purpose: it is client-visible and URLs often carry tokens.
+        reason = f"HTTP {last_status}" if last_status is not None else "request error"
+        raise StreamSinkError(
+            f"Webhook delivery failed after {attempts} attempt(s) ({reason})"
+        ) from last_exc

@@ -19,7 +19,7 @@ import time
 from typing import Any, Dict, List, Optional
 
 from pipeline.streaming.models import StreamEvent
-from pipeline.streaming.sources.base import BaseSource
+from pipeline.streaming.sources.base import BaseSource, StreamSourceError
 from shared.kafka_client import require_allowed_brokers
 
 logger = logging.getLogger("aura.streaming.source.kafka")
@@ -84,32 +84,33 @@ class KafkaSource(BaseSource):
                 timeout_ms=500,
                 max_records=min(max_events, self._max_poll_records),
             )
-
-            for tp, messages in records.items():
-                for msg in messages:
-                    data = msg.value if isinstance(msg.value, dict) else {"raw": msg.value}
-                    event_time = (
-                        data.get("timestamp", msg.timestamp / 1000.0)
-                        if isinstance(data, dict)
-                        else msg.timestamp / 1000.0
-                    )
-
-                    key = msg.key
-                    if self._key_field and isinstance(data, dict):
-                        key = str(data.get(self._key_field, key))
-
-                    events.append(StreamEvent(
-                        timestamp=float(event_time),
-                        key=key,
-                        data=data,
-                        source=f"kafka://{self._topic}",
-                    ))
-
-                    # Track offsets for checkpointing
-                    self._offsets[f"{tp.topic}-{tp.partition}"] = msg.offset + 1
-
         except Exception as e:
-            logger.error("Kafka read_batch error: %s", e)
+            # BUG-569: this returned [], so expired credentials or a lost broker
+            # looked exactly like an idle topic and the pipeline stayed RUNNING.
+            raise StreamSourceError(f"Kafka read from topic {self._topic!r} failed") from e
+
+        for tp, messages in records.items():
+            for msg in messages:
+                data = msg.value if isinstance(msg.value, dict) else {"raw": msg.value}
+                event_time = (
+                    data.get("timestamp", msg.timestamp / 1000.0)
+                    if isinstance(data, dict)
+                    else msg.timestamp / 1000.0
+                )
+
+                key = msg.key
+                if self._key_field and isinstance(data, dict):
+                    key = str(data.get(self._key_field, key))
+
+                events.append(StreamEvent(
+                    timestamp=float(event_time),
+                    key=key,
+                    data=data,
+                    source=f"kafka://{self._topic}",
+                ))
+
+                # Track offsets for checkpointing
+                self._offsets[f"{tp.topic}-{tp.partition}"] = msg.offset + 1
 
         return events
 

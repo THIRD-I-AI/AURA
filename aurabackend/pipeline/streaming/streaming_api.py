@@ -56,7 +56,8 @@ _engines: Dict[str, StreamingEngine] = {}
 # guard tested RUNNING only, so starting a paused pipeline replaced its engine (the
 # old one then ran forever with nothing pointing at it), deleting one dropped it the
 # same way, and paused pipelines did not count against the running cap.
-_LIVE_STATUSES = (StreamPipelineStatus.RUNNING, StreamPipelineStatus.PAUSED)
+# BUG-569: a DEGRADED engine holds them too.
+_LIVE_STATUSES = (StreamPipelineStatus.RUNNING, StreamPipelineStatus.DEGRADED, StreamPipelineStatus.PAUSED)
 
 MAX_PIPELINES_PER_TENANT = 50
 MAX_RUNNING_PER_TENANT = 10
@@ -270,7 +271,7 @@ async def start_pipeline(pipeline_id: str, user: Optional[Dict[str, Any]] = Depe
     # either flips it, each spawning an engine and the second leaking the
     # first's unstoppable background tasks via a clobbered _engines entry.
     async with _start_lock_for(pipeline_id):
-        if pipe.status == StreamPipelineStatus.RUNNING:
+        if pipe.status in (StreamPipelineStatus.RUNNING, StreamPipelineStatus.DEGRADED):
             raise HTTPException(status_code=409, detail="Already running")
         if pipe.status == StreamPipelineStatus.PAUSED:
             raise HTTPException(status_code=409, detail="Pipeline is paused; resume it or stop it first")
@@ -317,6 +318,9 @@ async def pause_pipeline(pipeline_id: str, user: Optional[Dict[str, Any]] = Depe
         engine = _engines.get(pipeline_id)
         if not engine:
             raise HTTPException(status_code=404, detail="No running engine for this pipeline")
+        if engine.pipeline.status == StreamPipelineStatus.FAILED:
+            # BUG-569: its tasks are finished and its resources released; pause would only fake a status.
+            raise HTTPException(status_code=409, detail="Pipeline has failed; stop and restart it")
         await engine.pause()
     return {"status": engine.pipeline.status.value, "pipeline_id": pipeline_id}
 
@@ -328,6 +332,9 @@ async def resume_pipeline(pipeline_id: str, user: Optional[Dict[str, Any]] = Dep
         engine = _engines.get(pipeline_id)
         if not engine:
             raise HTTPException(status_code=404, detail="No running engine for this pipeline")
+        if engine.pipeline.status == StreamPipelineStatus.FAILED:
+            # BUG-569: its tasks are finished and its resources released; resume would only fake a status.
+            raise HTTPException(status_code=409, detail="Pipeline has failed; stop and restart it")
         await engine.resume()
     return {"status": engine.pipeline.status.value, "pipeline_id": pipeline_id}
 

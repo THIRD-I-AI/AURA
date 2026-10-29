@@ -54,8 +54,24 @@ from pipeline.streaming.sources.websocket_source import WebSocketSource
 from pipeline.streaming.state_manager import StateManager
 from pipeline.streaming.window_processor import WindowProcessor
 from shared.error_handler import sanitize_error
+from shared.exceptions import ConflictError
+from shared.streaming_manager import TOPIC_PIPELINE, streaming_manager
 
 logger = logging.getLogger("aura.streaming.engine")
+
+# BUG-569: a source or sink that fails on this many ticks in a row, with no
+# success in between, fails the pipeline instead of leaving it DEGRADED.
+# Counted per tick, not per window: one micro-batch can close dozens of windows
+# (one per key), and a single transient sink hiccup must not fail the pipeline.
+_MAX_CONSECUTIVE_ERRORS = 10
+# BUG-569: a failing component must be clean on this many ticks in a row before
+# DEGRADED returns to RUNNING. Without it an intermittent failure (one poison
+# window among good ones) flipped the status, and re-published STREAM_DEGRADED
+# to every webhook, on every window close.
+_RECOVERY_TICKS = 3
+# Component errors can now arrive every tick; keep only the most recent ones.
+_MAX_RECORDED_ERRORS = 50
+_ACTIVE = (StreamPipelineStatus.RUNNING, StreamPipelineStatus.DEGRADED)
 
 
 # ────────────────────────────────────────────────────────────────────
@@ -225,6 +241,13 @@ class StreamingEngine:
         self._released = False
         self._loop_stop_timeout = 5.0
         self._start_time: float = 0.0
+        # BUG-569: consecutive fully-failed ticks per component ("source",
+        # "sink[i]"). A component is present while it is unhealthy, i.e. until
+        # it has been clean for _recovery_ticks ticks in a row (_clean_ticks).
+        self._consecutive_errors: Dict[str, int] = {}
+        self._clean_ticks: Dict[str, int] = {}
+        self._max_consecutive_errors = _MAX_CONSECUTIVE_ERRORS
+        self._recovery_ticks = _RECOVERY_TICKS
 
         # Metrics
         self._metrics = StreamMetrics(pipeline_id=pipeline.id)
@@ -239,7 +262,7 @@ class StreamingEngine:
             m.watermark_position = self._window_proc.watermark
             m.active_windows = self._window_proc.active_window_count
             m.closed_windows = self._window_proc.closed_window_count
-        if self._start_time > 0 and self.pipeline.status == StreamPipelineStatus.RUNNING:
+        if self._start_time > 0 and self.pipeline.status in _ACTIVE:
             m.uptime_seconds = round(time.time() - self._start_time, 1)
         if self._backpressure:
             bp_stats = self._backpressure.stats()
@@ -261,7 +284,7 @@ class StreamingEngine:
 
     async def start(self) -> None:
         """Start the streaming pipeline."""
-        if self.pipeline.status == StreamPipelineStatus.RUNNING:
+        if self.pipeline.status in _ACTIVE:
             logger.warning("Pipeline %s already running", self.pipeline.id)
             return
 
@@ -376,8 +399,9 @@ class StreamingEngine:
         # BUG-409: FAILED too. A run-loop failure used to leave the ingest task, source
         # and sinks running, and stop() then refused to do anything about it.
         failed = self.pipeline.status == StreamPipelineStatus.FAILED
+        # BUG-569: and DEGRADED, which holds the same tasks, source and sinks as RUNNING.
         if self.pipeline.status not in (
-            StreamPipelineStatus.RUNNING,
+            *_ACTIVE,
             StreamPipelineStatus.PAUSED,
         ) and not (failed and not self._released):
             return
@@ -459,14 +483,26 @@ class StreamingEngine:
                 logger.error("Error stopping source after failure: %s", exc)
         self._released = True
 
+    def _refuse_if_failed(self, action: str) -> None:
+        # BUG-569: a FAILED engine has finished its tasks and released its source
+        # and sinks; pausing/resuming it reported PAUSED and then RUNNING/DEGRADED
+        # for a pipeline that does nothing. Only stop() or a restart applies.
+        if self.pipeline.status == StreamPipelineStatus.FAILED:
+            raise ConflictError(f"Pipeline has failed and cannot be {action}; stop and restart it")
+
     async def pause(self) -> None:
+        self._refuse_if_failed("paused")
         self._paused = True
         self.pipeline.status = StreamPipelineStatus.PAUSED
         logger.info("Pipeline %s paused", self.pipeline.id)
 
     async def resume(self) -> None:
+        self._refuse_if_failed("resumed")
         self._paused = False
-        self.pipeline.status = StreamPipelineStatus.RUNNING
+        # BUG-569: pausing does not fix a failing component; only its next success does.
+        self.pipeline.status = (
+            StreamPipelineStatus.DEGRADED if self._consecutive_errors else StreamPipelineStatus.RUNNING
+        )
         logger.info("Pipeline %s resumed", self.pipeline.id)
 
     # ── Ingest Loop ────────────────────────────────────────────────
@@ -480,7 +516,19 @@ class StreamingEngine:
                 if self._paused:
                     await asyncio.sleep(self.tick_interval)
                     continue
-                events = await self._source.read_batch(self.batch_size)
+                try:
+                    events = await self._source.read_batch(self.batch_size)
+                except Exception as e:
+                    # BUG-569: a read failure used to end this loop with only a log
+                    # line, so nothing was read again and the status stayed RUNNING.
+                    if await self._component_tick("source", [e], 0):
+                        # The run loop sees _stopping, exits and releases the source
+                        # and sinks. This task cannot: that would cancel itself.
+                        self._stopping = True
+                        return
+                    await asyncio.sleep(self.tick_interval)
+                    continue
+                await self._component_tick("source", [], 1)
                 if events:
                     await self._backpressure.put_batch(events)
                 else:
@@ -500,7 +548,13 @@ class StreamingEngine:
         except asyncio.CancelledError:
             logger.info("Ingest loop cancelled for %s", self.pipeline.id)
         except Exception as e:
-            logger.error("Ingest loop error for %s: %s", self.pipeline.id, e, exc_info=True)
+            # BUG-569: ingest is over, so the pipeline can no longer be RUNNING.
+            if self._stopping:
+                logger.error("Ingest loop error for %s: %s", self.pipeline.id, e, exc_info=True)
+                return
+            self._record_error(e, "ingest loop")
+            await self._mark_failed()
+            self._stopping = True
 
     # ── Main Loop ─────────────────────────────────────────────────
 
@@ -538,28 +592,40 @@ class StreamingEngine:
 
                     self._metrics.events_late += len(all_late)
 
+                    # BUG-569: sink write errors used to be only logged, so a lost
+                    # window left the status RUNNING. They are collected per sink and
+                    # judged once per tick (_component_tick), not once per window.
+                    sink_errors: List[List[Exception]] = [[] for _ in self._sinks]
+                    sink_writes = [0] * len(self._sinks)
+
                     # 4. Emit fired windows to sinks
                     for window in all_fired:
                         self._metrics.events_out += window.event_count
-                        for sink in self._sinks:
+                        for i, sink in enumerate(self._sinks):
                             try:
                                 await sink.emit_window(window, self.pipeline.id)
                             except Exception as e:
-                                logger.error("Sink emit error: %s", e)
+                                sink_errors[i].append(e)
+                            else:
+                                sink_writes[i] += 1
 
                     # 5. Emit late events to sinks (dead letter)
                     if self.pipeline.window.late_data_policy == LateDataPolicy.DEAD_LETTER:
                         for late_ev in all_late:
-                            for sink in self._sinks:
+                            for i, sink in enumerate(self._sinks):
+                                # Errors count, successes do not: most sinks ignore late
+                                # events (BaseSink.emit_late_event is a no-op), and counting
+                                # that as a good write reset the failure streak of a sink
+                                # whose windows were all failing (BUG-569).
                                 try:
                                     await sink.emit_late_event(late_ev, self.pipeline.id)
                                 except Exception as exc:
-                                    # Match the live-emit error handler
-                                    # above (line ~462). Sink failures
-                                    # must not block the pipeline; logging
-                                    # makes the failure visible without
-                                    # halting ingest.
-                                    logger.error("Late-event sink emit error: %s", exc)
+                                    sink_errors[i].append(exc)
+
+                    for i in range(len(self._sinks)):
+                        if await self._component_tick(f"sink[{i}]", sink_errors[i], sink_writes[i]):
+                            await self._release_after_failure()
+                            return
 
                 # 6. EPS calculation
                 elapsed = time.time() - self._start_time
@@ -592,14 +658,82 @@ class StreamingEngine:
 
                 await asyncio.sleep(self.tick_interval)
 
+            # BUG-569: the ingest loop failed the pipeline and stopped; release here.
+            if self.pipeline.status == StreamPipelineStatus.FAILED and not self._released:
+                await self._release_after_failure()
+
         except asyncio.CancelledError:
             logger.info("Engine loop cancelled for %s", self.pipeline.id)
         except Exception as e:
-            self.pipeline.status = StreamPipelineStatus.FAILED
             self._metrics.errors.append(
                 sanitize_error(e, context=f"streaming pipeline {self.pipeline.id} run loop")
             )
+            await self._mark_failed()
             await self._release_after_failure()
+
+    # ── Component health (BUG-569) ────────────────────────────────
+
+    def _record_error(self, exc: BaseException, component: str, failed: int = 1, attempts: int = 1) -> None:
+        # BUG-127: sanitized, because metrics.errors is returned to the client.
+        message = sanitize_error(exc, context=f"streaming pipeline {self.pipeline.id} {component}")
+        # One entry per tick, not per failed window, so one burst cannot flush the history.
+        suffix = f" ({failed} of {attempts} writes failed)" if attempts > 1 else ""
+        self._metrics.errors.append(f"{component}: {message}{suffix}")
+        del self._metrics.errors[:-_MAX_RECORDED_ERRORS]
+
+    async def _component_tick(self, component: str, errors: List[Exception], successes: int) -> bool:
+        """Judge one tick of a source/sink: `errors` failed reads/writes and
+        `successes` good ones. Returns True when this tick made the pipeline
+        FAILED, so the caller stops.
+
+        Only a tick on which everything failed counts toward FAILED. A partly
+        failing tick (a poison window among good ones) keeps the pipeline
+        DEGRADED but proves the component reachable, so it restarts that streak.
+        Recovery to RUNNING needs _recovery_ticks clean ticks in a row."""
+        if not errors:
+            if successes:
+                self._component_clean(component)
+            return False
+        self._record_error(errors[-1], component, failed=len(errors), attempts=len(errors) + successes)
+        self._clean_ticks.pop(component, None)
+        count = 0 if successes else self._consecutive_errors.get(component, 0) + 1
+        self._consecutive_errors[component] = count
+        if self.pipeline.status not in _ACTIVE:
+            return False  # pausing or stopping: leave that status alone
+        if count >= self._max_consecutive_errors:
+            await self._mark_failed()
+            return True
+        if self.pipeline.status == StreamPipelineStatus.RUNNING:
+            self.pipeline.status = StreamPipelineStatus.DEGRADED
+            await self._publish_error("STREAM_DEGRADED")
+        return False
+
+    def _component_clean(self, component: str) -> None:
+        if component not in self._consecutive_errors:
+            return
+        clean = self._clean_ticks.get(component, 0) + 1
+        if clean < self._recovery_ticks:
+            self._clean_ticks[component] = clean
+            return
+        del self._consecutive_errors[component]
+        self._clean_ticks.pop(component, None)
+        if not self._consecutive_errors and self.pipeline.status == StreamPipelineStatus.DEGRADED:
+            self.pipeline.status = StreamPipelineStatus.RUNNING
+
+    async def _mark_failed(self) -> None:
+        self.pipeline.status = StreamPipelineStatus.FAILED
+        await self._publish_error("STREAM_FAILED")
+
+    async def _publish_error(self, code: str) -> None:
+        # Once per status change, not once per failed read: the webhook dispatcher
+        # turns every one of these into a pipeline.failed delivery.
+        await streaming_manager.publish_error(
+            TOPIC_PIPELINE,
+            self.pipeline.id,
+            self._metrics.errors[-1] if self._metrics.errors else code,
+            code=code,
+            workspace_id=self.pipeline.tenant_id,
+        )
 
     # ── Internal helpers ──────────────────────────────────────────
 
