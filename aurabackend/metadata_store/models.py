@@ -153,7 +153,9 @@ class DARInsight(Base):
 class DatasetProfile(Base):
     __tablename__ = "dataset_profiles"
 
-    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    # 255, not 64: the BUG-145 composite id below is up to 64 + 2 + 128 chars, and
+    # Postgres rejects the longer ones outright (BUG-555, migration d0e1f2a3b4c5).
+    id: Mapped[str] = mapped_column(String(255), primary_key=True)
     file_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
     # Tenant boundary. `id` used to be the bare file_id, so two tenants
     # uploading a same-named file collided on the same row and could read

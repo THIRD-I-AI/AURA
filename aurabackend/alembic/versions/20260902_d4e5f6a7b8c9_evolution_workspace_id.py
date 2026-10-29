@@ -52,7 +52,12 @@ _TABLES = (
 
 
 def upgrade() -> None:
+    inspector = sa.inspect(op.get_bind())
     for table in _TABLES:
+        # BUG-554: a startup create_all can already have built this from the current model
+        # (see bb602a415b1a); re-adding it aborts the whole upgrade.
+        if 'workspace_id' in {c['name'] for c in inspector.get_columns(table)}:
+            continue
         op.add_column(
             table,
             sa.Column('workspace_id', sa.String(length=64), nullable=True),

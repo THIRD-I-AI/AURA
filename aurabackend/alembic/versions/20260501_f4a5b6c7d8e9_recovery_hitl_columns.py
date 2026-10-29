@@ -34,6 +34,10 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
+    # BUG-554: a startup create_all can already have built this from the current model
+    # (see bb602a415b1a); re-adding it aborts the whole upgrade.
+    if 'source_id' in {c['name'] for c in sa.inspect(op.get_bind()).get_columns('uasr_recovery_records')}:
+        return
     op.add_column('uasr_recovery_records', sa.Column('source_id', sa.String(length=128), nullable=True))
     op.add_column('uasr_recovery_records',
                   sa.Column('generation_method', sa.String(length=16), server_default='template', nullable=False))

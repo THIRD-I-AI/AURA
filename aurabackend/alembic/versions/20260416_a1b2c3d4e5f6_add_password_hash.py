@@ -21,6 +21,10 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
+    # BUG-554: a startup create_all can already have built this from the current model
+    # (see bb602a415b1a); re-adding it aborts the whole upgrade.
+    if 'password_hash' in {c['name'] for c in sa.inspect(op.get_bind()).get_columns('users')}:
+        return
     op.add_column('users', sa.Column('password_hash', sa.String(length=255), nullable=True))
     op.add_column('users', sa.Column('role', sa.String(length=32), server_default='user', nullable=False))
 

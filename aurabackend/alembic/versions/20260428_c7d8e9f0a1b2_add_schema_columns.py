@@ -20,6 +20,10 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
+    # BUG-554: a startup create_all can already have built this from the current model
+    # (see bb602a415b1a); re-adding it aborts the whole upgrade.
+    if 'schema_columns' in sa.inspect(op.get_bind()).get_table_names():
+        return
     op.create_table(
         'schema_columns',
         sa.Column('id', sa.Integer(), primary_key=True, autoincrement=True),
