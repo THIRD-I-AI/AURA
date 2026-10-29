@@ -58,6 +58,11 @@ _VOLUME_FACTOR = 100             # row-count ratio that counts as a volume fault
 _VOLUME_MIN_BASELINE_ROWS = 100  # too few baseline rows to judge volume below this
 
 
+def _is_complete_run(batch: BatchPayload) -> bool:
+    """BUG-568 review: the batch declares it carries a whole run or period."""
+    return (batch.metadata or {}).get("complete_run") is True
+
+
 class DriftDetector:
     """
     Stateful detector that compares incoming batches against stored baselines.
@@ -217,6 +222,9 @@ class DriftDetector:
                     "rows": len(batch.rows),
                     "columns": list(cols),
                     "equal_pairs": self._equal_row_pairs(batch, cols),
+                    # BUG-568 review: only a baseline that is itself a whole
+                    # run can anchor the volume check -- see _check_volume_drift.
+                    "complete_run": _is_complete_run(batch),
                 }
         else:
             distributions = distributions_or_batch
@@ -850,31 +858,29 @@ class DriftDetector:
             ),
         }
 
-    @staticmethod
-    def _baseline_row_count(st: SourceState) -> Optional[int]:
-        if st.baseline_rows:
-            return int(st.baseline_rows["rows"])
-        # A distributions-only baseline still knows its row count: every
-        # computed column carries sample_size = rows * (1 - null_rate).
-        counts = [
-            int(round(d.sample_size / (1.0 - d.null_rate)))
-            for d in (st.baseline or {}).values()
-            if d.sample_size and d.null_rate is not None and d.null_rate < 1.0
-        ]
-        return max(counts) if counts else None
-
     def _check_volume_drift(
         self, batch: BatchPayload, st: SourceState
     ) -> Optional[Dict[str, Any]]:
-        """Row count more than 100x below or above the baseline's.
+        """Row count of a whole run more than 100x below or above the baseline run's.
 
-        Micro-batch sizes legitimately vary by an order of magnitude (a
-        tenth to ten times the baseline is treated as clean), so only a gap
-        an order of magnitude past that is a volume fault -- e.g. a load
-        that normally brings 10,000 rows bringing 12, or none.
+        BUG-568 review: volume is a property of a RUN (or period), never of a
+        micro-batch. Real callers only cap batch size -- the connections
+        ingest bridge pages a table in fixed batch_size chunks, so its last
+        page is short; a quiet Kafka poll window yields a handful of rows --
+        so comparing a micro-batch with the baseline batch alarmed on clean
+        data. The check therefore runs only when BOTH the batch and the
+        baseline declare themselves a complete run
+        (``metadata["complete_run"] is True``). Anything undeclared,
+        including a distributions-only baseline whose run size is unknown,
+        is never judged: no guessing (ADR-002).
         """
-        n0 = self._baseline_row_count(st)
-        if n0 is None or n0 < _VOLUME_MIN_BASELINE_ROWS:
+        if not _is_complete_run(batch):
+            return None
+        profile = st.baseline_rows
+        if not profile or not profile.get("complete_run"):
+            return None
+        n0 = int(profile["rows"])
+        if n0 < _VOLUME_MIN_BASELINE_ROWS:
             return None
         n1 = len(batch.rows)
         if n0 <= n1 * _VOLUME_FACTOR and n1 <= n0 * _VOLUME_FACTOR:
@@ -885,7 +891,7 @@ class DriftDetector:
             "baseline_rows": n0,
             "batch_rows": n1,
             "severity": DriftSeverity.CRITICAL if n1 == 0 else DriftSeverity.HIGH,
-            "details": f"Row count {n1} vs baseline {n0} (more than {_VOLUME_FACTOR}x apart)",
+            "details": f"Run row count {n1} vs baseline run {n0} (more than {_VOLUME_FACTOR}x apart)",
         }
 
     @staticmethod

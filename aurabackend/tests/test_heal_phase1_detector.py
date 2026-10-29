@@ -165,23 +165,63 @@ def test_bug568_a_column_absent_from_the_batch_is_schema_not_null_drift():
     assert DriftType.NULL_RATE not in res.drift_types
 
 
-def test_bug568_volume_drop_and_spike():
-    rng = np.random.default_rng(6)
+def _run(rows, bid="run"):
+    """A batch that declares itself a whole run (BUG-568 review)."""
+    b = _batch(rows, bid)
+    b.metadata["complete_run"] = True
+    return b
+
+
+def test_bug568_paged_read_with_a_short_last_page_is_not_volume_drift():
+    # BUG-568 review: the connections ingest bridge registers its first page
+    # as the baseline and pages the table in fixed batch_size chunks, so the
+    # last page is short: three full pages of BASELINE_ROWS + a 7-row tail
+    # (285x below the baseline page), all clean.
+    for t in range(20):
+        rng = np.random.default_rng(20_000 + t)
+        table = _rows(rng, 3 * BASELINE_ROWS + 7)
+        pages = [table[i:i + BASELINE_ROWS] for i in range(0, len(table), BASELINE_ROWS)]
+        assert len(pages[-1]) == 7
+        det = _detector(pages[0])
+        for i, page in enumerate(pages[1:]):
+            res = det.detect(_batch(page, f"{t}-{i}"), record_state=False)
+            assert DriftType.VOLUME not in res.drift_types, (t, i, len(page))
+
+
+def test_bug568_streaming_micro_batches_of_varying_size_are_not_volume_drift():
+    # BUG-568 review: mapek_worker's Kafka poll window brings whatever arrived,
+    # from a quiet window's few rows (or none) to a burst far above the baseline.
+    rng = np.random.default_rng(21)
     det = _detector(_rows(rng, BASELINE_ROWS))
-    drop = det.detect(_batch(_rows(rng, 12)), record_state=False)
+    for i, n in enumerate((0, 1, 3, 12, 150, 2000, 20_000, 250_000)):
+        res = det.detect(_batch(_rows(rng, n), f"poll-{i}"), record_state=False)
+        assert DriftType.VOLUME not in res.drift_types, n
+
+
+def test_bug568_volume_drop_and_spike_between_complete_runs():
+    rng = np.random.default_rng(6)
+    det = DriftDetector(warmup_batches=0)
+    det.register_baseline("s", _run(_rows(rng, BASELINE_ROWS), "base"))
+    drop = det.detect(_run(_rows(rng, 12)), record_state=False)
     assert DriftType.VOLUME in drop.drift_types
     assert drop.drift_vectors["volume"]["baseline_rows"] == BASELINE_ROWS
-    empty = det.detect(_batch([]), record_state=False)
+    empty = det.detect(_run([]), record_state=False)
     assert empty.drift_type == DriftType.VOLUME and empty.severity.value == "critical"
-    # 0.1x and 10x are inside the clean range (covered by the 200-trial set).
-    assert DriftType.VOLUME not in det.detect(_batch(_rows(rng, 200)), record_state=False).drift_types
+    # 0.1x and 10x of a run are clean.
+    for n in (200, 20_000):
+        assert DriftType.VOLUME not in det.detect(_run(_rows(rng, n)), record_state=False).drift_types
+    # The same 12 rows as an undeclared micro-batch are not judged.
+    assert DriftType.VOLUME not in det.detect(_batch(_rows(rng, 12)), record_state=False).drift_types
 
 
-def test_bug568_volume_works_for_a_distributions_only_baseline():
+def test_bug568_volume_needs_a_complete_run_baseline():
+    # A micro-batch baseline (or a distributions-only one) says nothing about
+    # a run's size, so a run is never compared with it.
     rng = np.random.default_rng(7)
-    det = DriftDetector(warmup_batches=0)
+    det = _detector(_rows(rng, BASELINE_ROWS))
+    assert DriftType.VOLUME not in det.detect(_run(_rows(rng, 5)), record_state=False).drift_types
     det.register_baseline("s", det.snapshot_distributions(_batch(_rows(rng, BASELINE_ROWS))))
-    assert DriftType.VOLUME in det.detect(_batch(_rows(rng, 5)), record_state=False).drift_types
+    assert DriftType.VOLUME not in det.detect(_run(_rows(rng, 5)), record_state=False).drift_types
 
 
 def test_bug568_replayed_rows_are_duplicate_drift():
