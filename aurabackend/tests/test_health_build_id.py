@@ -6,6 +6,8 @@ import importlib.util
 import sys
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -50,3 +52,30 @@ def test_the_live_ledger_row_records_the_deployed_build(tmp_path):
     mod.append_ledger(results, "https://example", str(ledger))
     row = ledger.read_text(encoding="utf-8").strip().splitlines()[-1]
     assert "(build 0123456)" in row and "| 2/2 |" in row and "| 1/1 |" in row
+
+
+def _verifier_on(build, expect):
+    import httpx
+
+    spec = importlib.util.spec_from_file_location("verify_live", ROOT / "scripts/verify_live_deployment.py")
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules["verify_live"] = mod
+    spec.loader.exec_module(mod)
+    v = mod.Verifier(base_url="http://box", email="e", password="p", expect_build=expect)
+    v.client = httpx.Client(base_url="http://box", transport=httpx.MockTransport(
+        lambda req: httpx.Response(200, json={"status": "healthy", "environment": "production", "build": build})))
+    return mod, v
+
+
+# BUG-556: a box stuck on an old build passed every live check.
+def test_health_check_fails_when_the_box_lags_the_expected_build():
+    mod, v = _verifier_on("2292527f1339834a0765c3e3b5e458e67ce00207", "55ec051")
+    with pytest.raises(AssertionError, match="redeploy is not landing"):
+        mod.check_health(v)
+
+
+def test_health_check_passes_on_the_expected_build_and_without_one():
+    mod, v = _verifier_on("55ec051aaaa", "55ec051")
+    assert "build=55ec051aaaa" in mod.check_health(v)
+    mod, v = _verifier_on("2292527", None)
+    assert "build=2292527" in mod.check_health(v)

@@ -76,6 +76,7 @@ class Verifier:
     token: Optional[str] = field(default=None, init=False)
     results: List[CheckResult] = field(default_factory=list)
     _run_ns: str = field(default_factory=lambda: uuid.uuid4().hex[:8])
+    expect_build: Optional[str] = None
 
     def __post_init__(self) -> None:
         self.client = httpx.Client(base_url=self.base_url, timeout=30.0)
@@ -117,7 +118,12 @@ def check_health(v: Verifier) -> str:
     body = r.json()
     if body.get("status") != "healthy":
         raise AssertionError(f"unexpected /health body: {body}")
-    return f"environment={body.get('environment')} build={body.get('build', 'absent')}"
+    build = body.get("build", "absent")
+    # BUG-556: the box served one build for 10h after GHCR started refusing its pulls,
+    # and every check stayed green because none compared the build with main.
+    if v.expect_build and not str(build).startswith(v.expect_build):
+        raise AssertionError(f"box runs build {build}, expected {v.expect_build}: the redeploy is not landing")
+    return f"environment={body.get('environment')} build={build}"
 
 
 def check_login(v: Verifier) -> str:
@@ -659,6 +665,8 @@ def main() -> int:
     parser.add_argument("--out", default=None, help="Markdown report path (default: timestamped in cwd)")
     parser.add_argument("--append-log", default=None, metavar="PATH",
                         help="Append one dated summary row (incl. which fixes are live) to this ledger file")
+    parser.add_argument("--expect-build", default=os.getenv("AURA_EXPECT_BUILD"), metavar="SHA",
+                        help="Fail the health check unless /health reports this commit (e.g. $(git rev-parse origin/main))")
     args = parser.parse_args()
 
     email = os.getenv("STAGING_EMAIL")
@@ -668,7 +676,7 @@ def main() -> int:
         return 2
 
     print(f"Verifying {args.url} ...\n")
-    v = Verifier(base_url=args.url, email=email, password=password)
+    v = Verifier(base_url=args.url, email=email, password=password, expect_build=args.expect_build)
     for name, fn in CHECKS + FIX_CHECKS:
         v.run(name, lambda fn=fn: fn(v))
 
