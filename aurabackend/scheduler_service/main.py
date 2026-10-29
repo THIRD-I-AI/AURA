@@ -325,6 +325,10 @@ async def update_job(job_id: str, updates: UpdateJobRequest):
             update_dict["next_execution_time"] = next_execution
 
         updated_job = await repository.update_job(job_id, update_dict)
+        if "next_execution_time" in update_dict:
+            # BUG-544: the pending retry's due time was just overwritten.
+            await repository.cancel_pending_retries(
+                job_id, "Cancelled: the job's schedule changed before this retry ran")
 
         logger.info(f"Updated job: {job_id}")
         return updated_job
@@ -357,6 +361,9 @@ async def delete_job(job_id: str):
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="Failed to delete job"
             )
+        # BUG-544: nothing will ever run a deleted job's pending retry.
+        await repository.cancel_pending_retries(
+            job_id, "Cancelled: the job was deleted before this retry ran")
 
         logger.info(f"Deleted job: {job_id}")
 
@@ -382,6 +389,10 @@ async def pause_job(job_id: str):
             )
 
         updated_job = await repository.update_job(job_id, {"is_active": False})
+        # BUG-544: resume recomputes the next slot, so the retry is dropped either way;
+        # settle it now rather than leave a PENDING row that a later slot would adopt.
+        await repository.cancel_pending_retries(
+            job_id, "Cancelled: the job was paused before this retry ran")
         logger.info(f"Paused job: {job_id}")
         return updated_job
 
@@ -418,6 +429,10 @@ async def resume_job(job_id: str):
             job_id,
             {"is_active": True, "next_execution_time": next_execution}
         )
+        # BUG-544: also covers a retry left by an attempt that was still running when
+        # the job was paused.
+        await repository.cancel_pending_retries(
+            job_id, "Cancelled: the job was rescheduled before this retry ran")
 
         logger.info(f"Resumed job: {job_id}")
         return updated_job
