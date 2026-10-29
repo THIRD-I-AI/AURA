@@ -5389,36 +5389,36 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Fix:** ADR-001 (`docs/design/ADR-001-verified-tls-to-customer-databases.md`). New `shared/db_tls.py`: `build_ssl_context` returns None (disable), an encrypt-only context (require), or a `PinnedNameContext` (verify-full: system and certifi trust plus an optional customer CA PEM, TLS 1.2+) that verifies the certificate and sends SNI as the name the caller entered while the socket goes to the BUG-547 pinned IP. Optional client certificate for mTLS, loaded through a 0600 temp file removed straight after. `open_connector` records `tls_server_name` from `host` before pinning (never from the request body) and builds the context once so a bad CA or key pair is a 400 (`TLSConfigError` is a `ConnectorPolicyError`). Both connectors pass `ssl=`; `_stored_connector_config` carries `ssl` and the `tls_*` settings, which live in the encrypted extra settings and are never returned. `ssl: true` maps to verify-full; `ssl: false` stays plaintext, so existing connections keep working. Tests `aurabackend/tests/test_db_tls_bug560.py` (13, including a real asyncpg TLS handshake through 127.0.0.1 verified as `db.customer.test`, wrong-name and untrusted-CA refusals). Still open under ADR-001: showing the certificate fingerprint and a lock state in the UI, and the streaming sink (BUG-557).
 
 ## BUG-561: The uasr.drift webhook can never fire: nothing publishes a drift_detected event
-- **Status:** open
+- **Status:** fixed
 - **Found by:** self-healing readiness audit (run wf_37b49411-ac0, adversarially challenged; see docs/design/SELF_HEALING_READINESS_2026-10-29.md), 2026-10-29. `aurabackend/shared/webhook_dispatcher.py:135`.
 - **Severity:** medium
 - **Root cause:** webhook_dispatcher maps a uasr 'data' event to uasr.drift only when its payload has drift_detected, but the only uasr publisher, the metrics poller in api_gateway/main.py:94-127, sends just _UASR_PUBLIC_METRIC_KEYS (hu_score, totals, trend). The connector bridge (connections.py:722-731) counts drift but publishes nothing.
 - **Failure scenario:** A customer subscribes a webhook to uasr.drift. Their source drifts and UASR detects it; the webhook is never called.
-- **Fix:** pending. Suggested: Publish a per-source uasr data event with drift_detected, source_id and drift type wherever drift is detected (connector bridge, pipeline heal step).
+- **Fix:** Every ingest run that detects drift publishes one `uasr:drift` data event per (source_id, drift type), carrying the number of drifted batches, scoped to the caller's workspace; `webhook_dispatcher` maps it to `uasr.drift` for that workspace's subscribers only. Tests `aurabackend/tests/test_heal_phase1_bridge.py` (subscribed webhook fires once; another tenant gets nothing; clean runs send nothing).
 
 ## BUG-562: MonitorAgent's UASR drift check sends no Authorization header, so it gets 401 in production and reports no drift
-- **Status:** open
+- **Status:** fixed
 - **Found by:** self-healing readiness audit (run wf_37b49411-ac0, adversarially challenged; see docs/design/SELF_HEALING_READINESS_2026-10-29.md), 2026-10-29. `aurabackend/agents/specialists/monitor_agent.py:186`.
 - **Severity:** medium
 - **Root cause:** The POST to /uasr/ingest (monitor_agent.py:186-193) carries no Authorization. With AURA_JWT_ENABLED UASR's JWT middleware rejects it (no /uasr path is public, shared/middleware.py), and only status 200 is handled, so the 401 is silently ignored.
 - **Failure scenario:** An inbound hook fires the monitor agent on a drifting source; it reports no data_drift alert.
-- **Fix:** pending. Suggested: Forward the caller's token (or a service token) as the other gateway-to-UASR proxies do, and surface a non-200 as an error.
+- **Fix:** MonitorAgent's UASR call carries the originating tenant's identity (not a shared service namespace), so its batch is compared with that tenant's own baseline, and a non-200 from UASR is reported as an error alert instead of being ignored. Tests `aurabackend/tests/test_heal_phase1_monitor_livecheck.py` run against the real UASR ingest handler and tenancy: tenant A drift is detected, a clean batch is not, and tenant B's same-named source never meets tenant A's baseline.
 
 ## BUG-563: The connector ingest bridge re-registers the drift baseline on every request, so drift between runs is overwritten instead of detected
-- **Status:** open
+- **Status:** fixed
 - **Found by:** self-healing readiness audit (run wf_37b49411-ac0, adversarially challenged; see docs/design/SELF_HEALING_READINESS_2026-10-29.md), 2026-10-29. `aurabackend/api_gateway/routers/connections.py:672`.
 - **Severity:** high
 - **Root cause:** ConnectorIngestRequest.register_baseline defaults to True (agents/params.py:552) and the bridge registers the first chunk of every request as the baseline (connections.py:672-686), schema included (drift_detector.py:206-210).
 - **Failure scenario:** Monday's ingest of a table registers its baseline. On Tuesday a column is renamed upstream; Tuesday's ingest registers Tuesday's first chunk as the new baseline and the rest of the run compares against it, so the rename is never reported.
-- **Fix:** pending. Suggested: Register a baseline only when the source has none (or on explicit request), and default register_baseline to False.
+- **Fix:** `register_baseline` defaults to False and the bridge asks UASR with `only_if_absent`, so a source's baseline is seeded once and kept; explicit True still replaces it. A source with only an adopted schema keeps that schema. Tests `aurabackend/tests/test_heal_phase1_bridge.py` (Monday/Tuesday rename is now reported; the old code reported 0 drift events).
 
 ## BUG-564: Numeric drift bins each batch on its own min/max, so an identically distributed batch of a different size is reported as statistical drift
-- **Status:** open
+- **Status:** fixed
 - **Found by:** self-healing readiness audit (run wf_37b49411-ac0, adversarially challenged; see docs/design/SELF_HEALING_READINESS_2026-10-29.md), 2026-10-29. `aurabackend/uasr/drift_detector.py:889`.
 - **Severity:** high
 - **Root cause:** Histograms use per-batch equal-width bins from that batch's min and max (drift_detector.py:889-911) and are compared to the baseline index by index (780-805), so bin i covers different values in the two histograms.
 - **Failure scenario:** A baseline of 1,000 rows and a batch of 10,000 rows from the same distribution has a wider min/max range; the bins shift, KL rises above the threshold, and STATISTICAL drift is reported on clean data.
-- **Fix:** pending. Suggested: Bin every batch on the baseline's own bin edges (with overflow bins at both ends) before computing KL.
+- **Fix:** Numeric histograms are binned on the baseline's own edges with underflow and overflow bins. Tests `aurabackend/tests/test_heal_phase1_detector.py`: the same distribution at 0.1x, 1x and 10x the baseline size over 200 seeded trials reports no drift, and real shifts are still detected in every trial.
 
 ## BUG-565: The MAPE-K worker is enabled in production but has no broker, so the continuous healing loop never runs
 - **Status:** open
@@ -5429,33 +5429,33 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Fix:** pending. Suggested: Per ADR-002: replace the Kafka input with an in-process queue fed by pipeline runs, and report the worker's real state on /uasr/mapek/status.
 
 ## BUG-566: The uasr_self_heal live check approves its own fix and never checks the repaired rows, so it proves nothing about autonomous healing
-- **Status:** open
+- **Status:** fixed
 - **Found by:** self-healing readiness audit (run wf_37b49411-ac0, adversarially challenged; see docs/design/SELF_HEALING_READINESS_2026-10-29.md), 2026-10-29. `scripts/verify_live_deployment.py:347`.
 - **Severity:** medium
 - **Root cause:** check_uasr_self_heal uses the verdict-only /uasr/ingest, calls approve itself, and never compares output rows with an expected result.
 - **Failure scenario:** The live check stays green while no pipeline heals itself in production (see the readiness report).
-- **Fix:** pending. Suggested: Replace it with ADR-002's end-to-end proof: a real pipeline run that hits an injected fault and writes rows equal to a ground-truth fixture, with no approve call.
+- **Fix:** `check_uasr_self_heal` no longer approves its own fix: it seeds a fresh verify_* source, sends a batch with an unambiguous fault, calls /uasr/heal and requires the returned rows to equal the ground-truth rows exactly, failing honestly with the reason otherwise. Unit test against an httpx MockTransport in `aurabackend/tests/test_heal_phase1_monitor_livecheck.py`.
 
 ## BUG-567: UASR drift baselines and deployed fixes are held in memory in production, so a restart loses them
-- **Status:** open
+- **Status:** fixed
 - **Found by:** self-healing readiness audit (run wf_37b49411-ac0, adversarially challenged; see docs/design/SELF_HEALING_READINESS_2026-10-29.md), 2026-10-29. `aurabackend/uasr/runtime_config.py:179`.
 - **Severity:** medium
 - **Root cause:** The state store defaults to in-memory (runtime_config.py:179-184) and the free-tier compose (line 175) does not set a durable one; UASR_DUCKDB_PATH is the MAPE-K lake, not the drift state.
 - **Failure scenario:** Every redeploy (every merge) silently wipes every source's baseline, so the first batch after a deploy becomes the new baseline whatever it contains.
-- **Fix:** pending. Suggested: Use a durable SQLite or DuckDB state store on /data by default.
+- **Fix:** New `SqliteStateStore` (uasr/state_store.py); `UASR_STATE_BACKEND=sqlite` at `UASR_STATE_PATH`, which the free-tier compose sets on the data volume, separate from uasr.db and the lake. `backup.sh` now backs up `uasr_state.db`. Deployed shims were already rehydrated from RecoveryRecord at startup. Tests `aurabackend/tests/test_heal_phase1_state.py` (baselines, schema and warm-up history survive a simulated restart).
 
 ## BUG-568: Null-rate drift is computed but never compared, and an all-null column is skipped, so a null spike is never detected
-- **Status:** open
+- **Status:** fixed
 - **Found by:** self-healing readiness audit (run wf_37b49411-ac0, adversarially challenged; see docs/design/SELF_HEALING_READINESS_2026-10-29.md), 2026-10-29. `aurabackend/uasr/drift_detector.py:873`.
 - **Severity:** medium
 - **Root cause:** null_rate is computed per column (drift_detector.py:873, 881) and never compared with the baseline; a column that is entirely null is skipped (852-854). Volume (row count) and duplicate checks are absent too.
 - **Failure scenario:** An upstream bug blanks a column (100% null): no drift is reported.
-- **Fix:** pending. Suggested: Compare null rate, row count and duplicate rate with the baseline, and report every drift type found, not only the first.
+- **Fix:** Null-rate and duplicate-rate drift are compared with the baseline, and `detect` reports every drift type found (the first-hit field is kept). Volume is judged only between whole runs (`metadata.complete_run`), never per micro-batch, so a short last page or a quiet poll never alarms (ADR-002: never guess). Tests `aurabackend/tests/test_heal_phase1_detector.py`, including a paged read with a 7-row last page and streaming polls from 0 to 250,000 rows on clean data.
 
 ## BUG-569: The streaming engine swallows source and sink errors, so a broken streaming pipeline keeps reporting RUNNING
-- **Status:** open
+- **Status:** fixed
 - **Found by:** self-healing readiness audit (run wf_37b49411-ac0, adversarially challenged; see docs/design/SELF_HEALING_READINESS_2026-10-29.md), 2026-10-29. `aurabackend/pipeline/streaming/streaming_engine.py:502`.
 - **Severity:** high
 - **Root cause:** The ingest task's exception handler only logs (streaming_engine.py:502-503); sink write errors are only logged (543-548); kafka_source.py:100-114 returns [] on a read error, which looks the same as 'no data'.
 - **Failure scenario:** A streaming pipeline's source credentials expire. Every read fails, the pipeline status stays RUNNING and nothing is written, with no alert.
-- **Fix:** pending. Suggested: Record the error on the pipeline, set status DEGRADED/FAILED, publish an error event, and make kafka_source raise instead of returning [].
+- **Fix:** Sources and sinks report failures: Kafka and webhook sinks raise a typed `StreamSinkError` after their own retries, `kafka_source` raises instead of returning [] on a read error. The engine judges each component per tick (only a tick where every write failed counts toward FAILED), needs 3 clean ticks to return to RUNNING, publishes STREAM_DEGRADED once per transition, does not count no-op late-event writes as successes, and refuses pause/resume on a FAILED pipeline. Tests `aurabackend/tests/test_heal_phase1_streaming.py` (16).
