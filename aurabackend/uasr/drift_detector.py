@@ -47,6 +47,21 @@ _KIND_CHANGE_KL = -math.log(_EPS)
 # Default bins for continuous-valued histograms
 _DEFAULT_BINS = 50
 
+# BUG-564: rows of the smaller sample per merged bin when comparing a batch
+# with the baseline on the baseline's edges -- see _aligned_kl.
+_MIN_ROWS_PER_BIN = 20
+
+# BUG-568 data-quality thresholds -- see the "Data-quality drift" section.
+_DQ_Z = 5.0                      # z-score a null-rate rise must reach
+_NULL_MIN_RISE = 0.05            # ...and its minimum absolute rise
+_VOLUME_FACTOR = 100             # row-count ratio that counts as a volume fault
+_VOLUME_MIN_BASELINE_ROWS = 100  # too few baseline rows to judge volume below this
+
+
+def _is_complete_run(batch: BatchPayload) -> bool:
+    """BUG-568 review: the batch declares it carries a whole run or period."""
+    return (batch.metadata or {}).get("complete_run") is True
+
 
 class DriftDetector:
     """
@@ -189,6 +204,7 @@ class DriftDetector:
         ``BatchPayload`` (in which case distributions, schema and the
         reference embedding are computed automatically).
         """
+        baseline_rows: Optional[Dict[str, Any]] = None
         if isinstance(distributions_or_batch, BatchPayload):
             batch = distributions_or_batch
             distributions = self._compute_distributions(batch)
@@ -200,12 +216,27 @@ class DriftDetector:
             emb = self._compute_batch_embedding(batch)
             if emb:
                 self.register_reference_embedding(source_id, emb)
+            if batch.rows:
+                cols = batch.columns or list(batch.rows[0].keys())
+                baseline_rows = {
+                    "rows": len(batch.rows),
+                    "columns": list(cols),
+                    "equal_pairs": self._equal_row_pairs(batch, cols),
+                    # BUG-568 review: only a baseline that is itself a whole
+                    # run can anchor the volume check -- see _check_volume_drift.
+                    "complete_run": _is_complete_run(batch),
+                }
         else:
             distributions = distributions_or_batch
 
         with self._lock_for(source_id):
             st = self._store.load(source_id)
             st.baseline = distributions
+            # BUG-568: a distributions-only re-baseline (mapek_worker) carries
+            # no row-level facts, so the previous batch's duplicate profile is
+            # dropped rather than compared against a baseline it no longer
+            # describes (e.g. a column removed since makes rows less unique).
+            st.baseline_rows = baseline_rows
             if schema:
                 st.schema = schema
             self._store.save(source_id, st)
@@ -348,51 +379,66 @@ class DriftDetector:
                 st = replace(st, kl_history=list(st.kl_history))
             dirty = False
 
+            # BUG-568: every check runs and every finding is reported. The
+            # first-hit fields (drift_type, severity, drift_vector, details,
+            # kl_divergence, cosine_distance) keep the old precedence --
+            # schema, statistical, semantic -- so no existing caller sees a
+            # different primary drift; the data-quality checks only become
+            # primary when none of those fired.
+            findings: List[Tuple[DriftType, Dict[str, Any]]] = []
+
             # 1. Schema drift
             schema_drift, d1 = self._check_schema_drift(batch, st)
             dirty = dirty or d1
             if schema_drift:
-                result.drift_detected = True
-                result.drift_type = DriftType.SCHEMA
-                result.severity = schema_drift["severity"]
-                result.affected_columns = schema_drift["affected_columns"]
-                result.drift_vector = schema_drift
-                result.details = schema_drift.get("details", "")
-                if dirty and record_state:
-                    self._store.save(batch.source_id, st)
-                return result
+                findings.append((DriftType.SCHEMA, schema_drift))
 
-            # 2. Statistical drift (KL-Divergence)
-            stat_drift, d2 = self._check_statistical_drift(batch, st)
-            dirty = dirty or d2
+            # 2. Statistical drift (KL-Divergence). After a schema hit it runs
+            # on a copy of kl_history: the old early return never recorded a
+            # KL sample for a schema-drifted batch, and the adaptive zeta
+            # must keep learning only from batches it would have learned from.
+            stat_st = replace(st, kl_history=list(st.kl_history)) if schema_drift else st
+            stat_drift, d2 = self._check_statistical_drift(batch, stat_st)
+            if not schema_drift:
+                dirty = dirty or d2
             if stat_drift:
-                result.drift_detected = True
-                result.drift_type = DriftType.STATISTICAL
-                result.severity = stat_drift["severity"]
-                result.kl_divergence = stat_drift["max_kl"]
-                result.affected_columns = stat_drift["affected_columns"]
-                result.drift_vector = stat_drift
-                result.details = stat_drift.get("details", "")
-                if dirty and record_state:
-                    self._store.save(batch.source_id, st)
-                return result
+                findings.append((DriftType.STATISTICAL, stat_drift))
 
             # 3. Semantic drift (embedding distance) — only if embeddings registered
             sem_drift = self._check_semantic_drift(batch, st)
             if sem_drift:
-                result.drift_detected = True
-                result.drift_type = DriftType.SEMANTIC
-                result.severity = sem_drift["severity"]
-                result.cosine_distance = sem_drift["cosine_distance"]
-                result.drift_vector = sem_drift
-                result.details = sem_drift.get("details", "")
-                if dirty and record_state:
-                    self._store.save(batch.source_id, st)
-                return result
+                findings.append((DriftType.SEMANTIC, sem_drift))
+
+            # 4-6. Data-quality drift against the baseline (BUG-568).
+            for dq_type, dq_check in (
+                (DriftType.NULL_RATE, self._check_null_rate_drift),
+                (DriftType.VOLUME, self._check_volume_drift),
+                (DriftType.DUPLICATE, self._check_duplicate_drift),
+            ):
+                dq_drift = dq_check(batch, st)
+                if dq_drift:
+                    findings.append((dq_type, dq_drift))
 
             if dirty and record_state:
                 self._store.save(batch.source_id, st)
-        result.details = "No drift detected"
+
+        if not findings:
+            result.details = "No drift detected"
+            return result
+
+        primary_type, primary = findings[0]
+        result.drift_detected = True
+        result.drift_type = primary_type
+        result.severity = primary["severity"]
+        result.affected_columns = primary.get("affected_columns", [])
+        result.drift_vector = primary
+        result.details = primary.get("details", "")
+        if primary_type == DriftType.STATISTICAL:
+            result.kl_divergence = primary["max_kl"]
+        elif primary_type == DriftType.SEMANTIC:
+            result.cosine_distance = primary["cosine_distance"]
+        result.drift_types = [t for t, _ in findings]
+        result.drift_vectors = {t.value: v for t, v in findings}
         return result
 
     # ────────────────────────────────────────────────────────────────
@@ -574,7 +620,16 @@ class DriftDetector:
         if not baseline or not batch.rows:
             return None, False
 
-        batch_dists = self._compute_distributions(batch)
+        # BUG-564: bin each numeric column on the BASELINE's edges. Binning a
+        # batch on its own min/max made bin i cover different values in the
+        # two histograms, so a clean batch of another size (a wider or
+        # narrower range) read as drift, and a pure shift of the whole range
+        # read as no drift at all.
+        bin_edges = {
+            col: edges for col, dist in baseline.items()
+            if (edges := self._baseline_edges(dist.histogram)) is not None
+        }
+        batch_dists = self._compute_distributions(batch, bin_edges=bin_edges)
         drifted_cols: List[str] = []
         kl_values: Dict[str, float] = {}
         col_stats: Dict[str, Dict[str, Any]] = {}
@@ -589,7 +644,12 @@ class DriftDetector:
                 continue
 
             ref_dist = baseline[col_name]
-            kl = self._kl_divergence(batch_dist.histogram, ref_dist.histogram)
+            significant = True
+            if batch_dist.histogram.get("aligned"):
+                kl, significant = self._aligned_kl(
+                    batch_dist.histogram["counts"], ref_dist.histogram["counts"])
+            else:
+                kl = self._kl_divergence(batch_dist.histogram, ref_dist.histogram)
             kind_changed = kind_changed or kl == _KIND_CHANGE_KL
 
             # Location / scale shift: if both have mean & std, compute a
@@ -617,6 +677,7 @@ class DriftDetector:
                 # Treat a >2-sigma shift as additional KL
                 if loc_shift > 2.0:
                     kl = max(kl, loc_shift * zeta)
+                    significant = True
 
             kl_values[col_name] = round(kl, 6)
 
@@ -628,7 +689,9 @@ class DriftDetector:
                 "baseline_std": ref_dist.std,
             }
 
-            if kl > zeta:
+            # BUG-564: an aligned-histogram KL past zeta that is not
+            # significant for these sample sizes is noise (see _aligned_kl).
+            if kl > zeta and significant:
                 drifted_cols.append(col_name)
                 max_kl = max(max_kl, kl)
 
@@ -733,6 +796,166 @@ class DriftDetector:
             "severity": severity,
             "details": f"Semantic distance {min_distance:.4f} exceeds threshold {self._semantic_threshold}",
         }
+
+    # ────────────────────────────────────────────────────────────────
+    # Data-quality drift — null rate, volume, duplicates (BUG-568)
+    # ------------------------------------------------------------------
+    # Each threshold is set so sampling noise on clean data cannot reach it
+    # (ADR-002: zero false alarms on clean data), at any batch size from a
+    # tenth to ten times the baseline's: a finding needs both an effect far
+    # beyond the noise of the two sample sizes involved AND a minimum effect
+    # size, so a large batch cannot turn a negligible wobble into an alarm.
+    # ────────────────────────────────────────────────────────────────
+
+    def _check_null_rate_drift(
+        self, batch: BatchPayload, st: SourceState
+    ) -> Optional[Dict[str, Any]]:
+        """A column's null rate ROSE versus the baseline's.
+
+        Two-proportion z-test on add-one-smoothed rates, so a baseline with
+        no nulls does not make a single null in a small batch look
+        infinitely significant. Fires at z >= 5 (≈3e-7 per column on clean
+        data) with an absolute rise of at least 5 points. A column that is
+        null in every batch row counts like any other -- that is the
+        blanked-column fault this exists to catch.
+        """
+        baseline = st.baseline
+        n1 = len(batch.rows)
+        if not baseline or n1 == 0:
+            return None
+        present = set(batch.columns) if batch.columns else {k for r in batch.rows for k in r}
+        rates: Dict[str, Dict[str, float]] = {}
+        for col, dist in baseline.items():
+            # A column the batch no longer carries is schema drift, not nulls.
+            if (
+                col not in present or dist.null_rate is None or dist.null_rate >= 1.0
+                or not dist.sample_size
+            ):
+                continue
+            n0 = max(int(round(dist.sample_size / (1.0 - dist.null_rate))), dist.sample_size)
+            k0 = n0 - dist.sample_size
+            k1 = sum(1 for r in batch.rows if r.get(col) is None)
+            p0 = (k0 + 1) / (n0 + 2)
+            p1 = (k1 + 1) / (n1 + 2)
+            se = math.sqrt(p0 * (1 - p0) / (n0 + 2) + p1 * (1 - p1) / (n1 + 2))
+            rise = k1 / n1 - k0 / n0
+            if rise >= _NULL_MIN_RISE and (p1 - p0) / se >= _DQ_Z:
+                rates[col] = {
+                    "baseline_null_rate": round(k0 / n0, 6),
+                    "batch_null_rate": round(k1 / n1, 6),
+                }
+        if not rates:
+            return None
+        max_rise = max(r["batch_null_rate"] - r["baseline_null_rate"] for r in rates.values())
+        return {
+            "type": "null_rate",
+            "affected_columns": list(rates),
+            "null_rates": rates,
+            "severity": self._fraction_severity(max_rise),
+            "details": "Null rate rose in column(s): " + ", ".join(
+                f"{c} {r['baseline_null_rate']:.1%} -> {r['batch_null_rate']:.1%}"
+                for c, r in rates.items()
+            ),
+        }
+
+    def _check_volume_drift(
+        self, batch: BatchPayload, st: SourceState
+    ) -> Optional[Dict[str, Any]]:
+        """Row count of a whole run more than 100x below or above the baseline run's.
+
+        BUG-568 review: volume is a property of a RUN (or period), never of a
+        micro-batch. Real callers only cap batch size -- the connections
+        ingest bridge pages a table in fixed batch_size chunks, so its last
+        page is short; a quiet Kafka poll window yields a handful of rows --
+        so comparing a micro-batch with the baseline batch alarmed on clean
+        data. The check therefore runs only when BOTH the batch and the
+        baseline declare themselves a complete run
+        (``metadata["complete_run"] is True``). Anything undeclared,
+        including a distributions-only baseline whose run size is unknown,
+        is never judged: no guessing (ADR-002).
+        """
+        if not _is_complete_run(batch):
+            return None
+        profile = st.baseline_rows
+        if not profile or not profile.get("complete_run"):
+            return None
+        n0 = int(profile["rows"])
+        if n0 < _VOLUME_MIN_BASELINE_ROWS:
+            return None
+        n1 = len(batch.rows)
+        if n0 <= n1 * _VOLUME_FACTOR and n1 <= n0 * _VOLUME_FACTOR:
+            return None
+        return {
+            "type": "volume",
+            "affected_columns": [],
+            "baseline_rows": n0,
+            "batch_rows": n1,
+            "severity": DriftSeverity.CRITICAL if n1 == 0 else DriftSeverity.HIGH,
+            "details": f"Run row count {n1} vs baseline run {n0} (more than {_VOLUME_FACTOR}x apart)",
+        }
+
+    @staticmethod
+    def _equal_row_pairs(batch: BatchPayload, columns: Optional[List[str]] = None) -> int:
+        """Number of row pairs in the batch that are exact duplicates."""
+        cols = columns or batch.columns or (list(batch.rows[0].keys()) if batch.rows else [])
+        counts = Counter(repr(tuple(r.get(c) for c in cols)) for r in batch.rows)
+        return sum(c * (c - 1) // 2 for c in counts.values())
+
+    def _check_duplicate_drift(
+        self, batch: BatchPayload, st: SourceState
+    ) -> Optional[Dict[str, Any]]:
+        """More exact-duplicate rows than the baseline's own repeat rate explains.
+
+        Comparing duplicate RATES directly would be wrong: data with a
+        finite set of possible rows repeats more the more rows you draw, so a
+        clean 10x batch has a far higher duplicate rate than its baseline.
+        The count of equal row pairs scales exactly with n(n-1)/2 for any
+        row distribution, so the baseline's pair count -- raised to a
+        Poisson upper bound, (sqrt(k+1)+3)^2, so a lucky low baseline cannot
+        set the bar -- is scaled to the batch's size. The batch must exceed
+        twice that, plus 10 pairs.
+        """
+        profile = st.baseline_rows
+        if not profile or not profile.get("columns"):
+            return None
+        cols = list(profile["columns"])
+        present = set(batch.columns) if batch.columns else {k for r in batch.rows for k in r}
+        if not set(cols) <= present:
+            return None  # a removed column makes rows less unique: schema drift's job
+        n0, k0 = int(profile["rows"]), int(profile["equal_pairs"])
+        n1 = len(batch.rows)
+        if n0 < 2 or n1 < 2:
+            return None
+        k0_upper = (math.sqrt(k0 + 1) + 3) ** 2
+        expected_upper = k0_upper * (n1 * (n1 - 1)) / (n0 * (n0 - 1))
+        k1 = self._equal_row_pairs(batch, cols)
+        if k1 <= 2 * expected_upper + 10:
+            return None
+        distinct = len({repr(tuple(r.get(c) for c in cols)) for r in batch.rows})
+        dup_fraction = (n1 - distinct) / n1
+        return {
+            "type": "duplicate",
+            "affected_columns": [],
+            "equal_pairs": k1,
+            "expected_pairs_upper": round(expected_upper, 3),
+            "duplicate_rows": n1 - distinct,
+            "duplicate_fraction": round(dup_fraction, 6),
+            "severity": self._fraction_severity(dup_fraction),
+            "details": (
+                f"{n1 - distinct} duplicate row(s) ({dup_fraction:.1%}); {k1} equal pairs "
+                f"vs at most {expected_upper:.1f} expected from the baseline"
+            ),
+        }
+
+    @staticmethod
+    def _fraction_severity(fraction: float) -> DriftSeverity:
+        if fraction >= 0.5:
+            return DriftSeverity.CRITICAL
+        if fraction >= 0.25:
+            return DriftSeverity.HIGH
+        if fraction >= 0.1:
+            return DriftSeverity.MEDIUM
+        return DriftSeverity.LOW
 
     # ────────────────────────────────────────────────────────────────
     # KL-Divergence computation
@@ -840,8 +1063,17 @@ class DriftDetector:
     # Distribution computation from raw batch
     # ────────────────────────────────────────────────────────────────
 
-    def _compute_distributions(self, batch: BatchPayload) -> Dict[str, ColumnDistribution]:
-        """Build column-level distributions from batch rows."""
+    def _compute_distributions(
+        self,
+        batch: BatchPayload,
+        bin_edges: Optional[Dict[str, List[float]]] = None,
+    ) -> Dict[str, ColumnDistribution]:
+        """Build column-level distributions from batch rows.
+
+        ``bin_edges`` maps a column to a baseline's histogram edges; a numeric
+        column listed there is binned on those edges (see
+        ``_histogram_on_edges``) instead of its own range.
+        """
         if not batch.rows:
             return {}
 
@@ -872,7 +1104,10 @@ class DriftDetector:
                 dist.std = float(numeric_arr.std())
                 dist.null_rate = 1.0 - len(values) / max(len(batch.rows), 1)
                 dist.distinct_count = int(np.unique(numeric_arr).size)
-                dist.histogram = self._build_numeric_histogram(numeric_arr)
+                if bin_edges and col in bin_edges:
+                    dist.histogram = self._histogram_on_edges(numeric_arr, bin_edges[col])
+                else:
+                    dist.histogram = self._build_numeric_histogram(numeric_arr)
             else:
                 # Categorical distribution
                 str_vals = [str(v) for v in values]
@@ -910,6 +1145,108 @@ class DriftDetector:
         counts = np.bincount(idx, minlength=bins)[:bins].astype(int).tolist()
 
         return {"bins": bin_edges, "counts": counts}
+
+    @staticmethod
+    def _baseline_edges(hist: Dict[str, Any]) -> Optional[List[float]]:
+        """The edges of a numeric histogram built by ``_build_numeric_histogram``.
+
+        ``bins`` holds len(counts)+1 edges, or a single value for a constant
+        column. A histogram of any other shape (a caller-supplied dict) has
+        no usable edges and keeps the legacy index-wise comparison.
+        """
+        edges = hist.get("bins")
+        counts = hist.get("counts")
+        if not edges or not counts:
+            return None
+        if len(edges) == len(counts) + 1 or (len(edges) == 1 and len(counts) == 1):
+            return [float(e) for e in edges]
+        return None
+
+    @staticmethod
+    def _histogram_on_edges(values, edges: List[float]) -> Dict[str, Any]:
+        """Counts of ``values`` on a baseline's edges, plus an underflow and an
+        overflow bin (BUG-564).
+
+        Interior bins use the same ``min(int((v - lo) / width), bins - 1)``
+        rule that built the baseline, so the baseline's own rows re-bin to its
+        own counts. Values outside the baseline's range land in the end bins
+        instead of stretching the bins, which is what lets a shift or a
+        widening of the range show up as divergence. A constant baseline
+        (one edge) gets three bins: below, equal to, above that value.
+        """
+        arr = np.asarray(values, dtype=float)
+        if len(edges) == 1:
+            v = edges[0]
+            counts = [int((arr < v).sum()), int((arr == v).sum()), int((arr > v).sum())]
+            return {"bins": edges, "counts": counts, "aligned": True}
+
+        lo, hi = edges[0], edges[-1]
+        nbins = len(edges) - 1
+        width = (hi - lo) / nbins
+        # The stored top edge is lo + nbins * width in floating point, which
+        # can land a few ulps below the baseline's true max; tolerate that so
+        # the baseline's own max value is not counted as overflow.
+        hi_tol = hi + 4 * float(np.spacing(abs(hi)))
+        under = arr < lo
+        over = arr > hi_tol
+        inside = arr[~(under | over)]
+        idx = np.clip(((inside - lo) / width).astype(np.int64), 0, nbins - 1)
+        inner = np.bincount(idx, minlength=nbins)[:nbins].astype(int).tolist()
+        counts = [int(under.sum()), *inner, int(over.sum())]
+        return {"bins": edges, "counts": counts, "aligned": True}
+
+    @staticmethod
+    def _aligned_kl(p_counts: List[int], q_inner_counts: List[int]) -> Tuple[float, bool]:
+        """KL(P || Q) for a batch binned by ``_histogram_on_edges`` against the
+        baseline counts it was binned on (BUG-564), and whether that
+        divergence is statistically significant.
+
+        Three finite-sample corrections keep a clean batch of ANY size from
+        firing:
+
+        * Adjacent baseline bins are merged so each holds about
+          ``_MIN_ROWS_PER_BIN`` rows of the smaller of the two samples. The
+          plug-in KL of an n-row sample over k bins is biased upward by about
+          (k-1)/2n even when nothing changed -- ~0.25 for 100 rows over 50
+          bins, past the default zeta of 0.15 on its own.
+        * The baseline gets empty under/overflow bins and a 0.5 pseudo-count
+          in every bin. A bin the baseline happened to leave empty (a sparse
+          tail, the range just past its max) does not have probability zero;
+          with the bare 1e-10 floor used elsewhere, ONE clean value there cost
+          (1/n)·ln(1/(n·1e-10)) -- ≈0.18 at n=100.
+        * Significance: 2·n_eff·KL (the G statistic, n_eff = n0·n1/(n0+n1))
+          is ~chi-square(bins-1) when nothing changed. A KL above zeta from a
+          20-row batch is mostly noise, so the caller only lets the KL fire
+          when G is past the chi-square 1e-6 upper quantile.
+
+        Real change still diverges strongly: a 1-sd shift of a normal column
+        scores ≈0.3 or more, and mass past the baseline's range far more.
+        """
+        p = np.asarray(p_counts, dtype=float)
+        q_inner = np.asarray(q_inner_counts, dtype=float)
+        if len(p) != len(q_inner) + 2:
+            return 0.0, False
+        n1, n0 = p.sum(), q_inner.sum()
+        if n1 <= 0 or n0 <= 0:
+            return 0.0, False
+        nbins = len(q_inner)
+        groups = int(min(nbins, max(1, min(n0, n1) // _MIN_ROWS_PER_BIN)))
+        width = math.ceil(nbins / groups)
+        starts = np.arange(0, nbins, width)
+        p = np.concatenate(([p[0]], np.add.reduceat(p[1:-1], starts), [p[-1]]))
+        q_raw = np.concatenate(([0.0], np.add.reduceat(q_inner, starts), [0.0]))
+        df = max(int(np.count_nonzero((p > 0) | (q_raw > 0))) - 1, 1)
+        q = (q_raw + 0.5) / (q_raw.sum() + 0.5 * len(q_raw))
+        p = p / n1
+        nz = p > 0
+        kl = max(float(np.sum(p[nz] * np.log(p[nz] / q[nz]))), 0.0)
+        g_stat = 2.0 * kl * (n0 * n1 / (n0 + n1))
+        # Wilson-Hilferty chi-square quantile; z = 4.753 is the 1e-6 upper
+        # tail of the normal. It overstates the quantile at df=1 (27.5 vs
+        # 23.9), which errs toward not firing.
+        z = 4.753
+        crit = df * (1 - 2 / (9 * df) + z * math.sqrt(2 / (9 * df))) ** 3
+        return kl, bool(g_stat > crit)
 
     # ────────────────────────────────────────────────────────────────
     # Batch embedding (hash-projection, no external API needed)

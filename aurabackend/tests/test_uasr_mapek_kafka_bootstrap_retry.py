@@ -137,8 +137,11 @@ class _FlakyThenHealthyConsumer:
                 self.value = value
 
         rnd = random.Random(7)
-        rows = [{"v": rnd.gauss(100.0, 10.0)} for _ in range(295)]
-        rows += [{"v": 1500.0} for _ in range(5)]  # genuine outlier contamination
+        # A x100 unit bug: healed exactly by the deterministic rescale shim.
+        # (Outlier contamination used to be the example here, but BUG-564's
+        # baseline-aligned bins no longer rate 5 outliers in 300 rows as the
+        # severe drift that selected the clip shim.)
+        rows = [{"v": rnd.gauss(100.0, 10.0) * 100.0} for _ in range(300)]
         return {"tp-0": [_Msg(r) for r in rows]}
 
 
@@ -217,12 +220,12 @@ async def test_mapek_worker_recovers_from_kafka_outage_and_heals_real_drift(monk
             "but Plan/Execute never ran (the exact symptom this bug reproduced)"
         )
         assert record.status == RecoveryStatus.DEPLOYED.value, (
-            f"expected the outlier-contamination batch to auto-deploy a clip "
+            f"expected the unit-bug batch to auto-deploy a rescale "
             f"shim, got status={record.status!r}"
         )
         assert record.shim_code is not None
-        assert "_CLIP_BOUNDS" in record.shim_code, (
-            "shim was not the real deterministic clip transform -- looks vacuous"
+        assert "Unit Rescale" in record.shim_code, (
+            "shim was not the real deterministic rescale transform -- looks vacuous"
         )
     finally:
         if not bootstrap_task.done():

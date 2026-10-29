@@ -62,6 +62,12 @@ class SourceState:
     # {"added": {col: type}, "removed": [col...], "type_changes": {col: type},
     #  "expires_at": epoch_float, "note": str|None, "actor": str|None}
     schema_intent: Optional[Dict[str, Any]] = None
+    # BUG-568: row-level facts about the baseline batch that its per-column
+    # distributions cannot carry -- {"rows": n, "columns": [...],
+    # "equal_pairs": k}, where k is the number of row pairs that are exact
+    # duplicates over those columns. None when the baseline was registered
+    # from distributions instead of rows.
+    baseline_rows: Optional[Dict[str, Any]] = None
 
     def is_empty(self) -> bool:
         return (
@@ -70,6 +76,7 @@ class SourceState:
             and not self.kl_history
             and not self.embeddings
             and self.schema_intent is None
+            and self.baseline_rows is None
         )
 
     # ---- serialization (used by RedisStateStore / any wire backend) ----
@@ -85,6 +92,7 @@ class SourceState:
                 "kl_history": self.kl_history,
                 "embeddings": self.embeddings,
                 "schema_intent": self.schema_intent,
+                "baseline_rows": self.baseline_rows,
             }
         )
 
@@ -102,6 +110,7 @@ class SourceState:
             kl_history=list(d.get("kl_history") or []),
             embeddings=[list(e) for e in (d.get("embeddings") or [])],
             schema_intent=d.get("schema_intent"),
+            baseline_rows=d.get("baseline_rows"),
         )
 
 

@@ -30,6 +30,10 @@ class DriftType(str, Enum):
     STATISTICAL = "statistical" # distribution shift (KL > ζ)
     SEMANTIC = "semantic"       # embedding distance exceeds threshold
     MISSING = "missing"         # expected source not delivering
+    # BUG-568: data-quality drift, each compared with the baseline.
+    NULL_RATE = "null_rate"     # a column's null rate rose beyond sampling noise
+    VOLUME = "volume"           # row count far outside the baseline's
+    DUPLICATE = "duplicate"     # more repeated rows than the baseline explains
 
 
 class DriftSeverity(str, Enum):
@@ -260,6 +264,11 @@ class DriftDetectionResult(BaseModel):
     affected_columns: List[str] = Field(default_factory=list)
     drift_vector: Dict[str, Any] = Field(default_factory=dict)
     details: str = ""
+    # BUG-568: every drift type found, in check order. drift_type / severity /
+    # drift_vector / details above stay the FIRST hit, so existing callers see
+    # what they always saw; drift_vectors holds each finding keyed by type value.
+    drift_types: List[DriftType] = Field(default_factory=list)
+    drift_vectors: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
 
 
 class DiagnosisResult(BaseModel):
