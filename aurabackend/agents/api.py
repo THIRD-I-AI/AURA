@@ -19,13 +19,13 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from agents.base import AgentContext, AgentStatus
+from agents.base import AgentContext, AgentStatus, current_tenant
 from agents.executor import DAGExecutor
 from agents.memory import AgentMemory
 from agents.planner import PlannerAgent
 from agents.tool_registry import ToolRegistry
 from agents.tools import ingest_and_profile, register_all_tools
-from api_gateway.routers.workspaces import current_workspace_id
+from api_gateway.routers.workspaces import _request_tenant, current_workspace_id
 from shared.streaming_manager import TOPIC_AGENT, StreamEvent, streaming_manager
 
 router = APIRouter(prefix="/agent", tags=["Agentic DE"])
@@ -143,6 +143,16 @@ async def create_plan(req: AgentExecuteRequest):
 async def execute_prompt(req: AgentExecuteRequest, request: Request):
     """Plan + execute the full DAG synchronously.  Returns when done."""
     req.files = _own_upload_paths(req.files, request)
+    # BUG-562: MonitorAgent's UASR calls act as the run's tenant (agents.base.current_tenant);
+    # the verified caller's tenant, reset on return so it never outlives this request.
+    tenant_token = current_tenant.set(_request_tenant(request))
+    try:
+        return await _execute_prompt(req)
+    finally:
+        current_tenant.reset(tenant_token)
+
+
+async def _execute_prompt(req: AgentExecuteRequest) -> AgentExecuteResponse:
     registry = _make_registry()
     memory = AgentMemory()
 
@@ -183,6 +193,7 @@ async def execute_prompt(req: AgentExecuteRequest, request: Request):
 async def execute_prompt_stream(req: AgentExecuteRequest, request: Request):
     """Plan + execute with real-time SSE progress."""
     req.files = _own_upload_paths(req.files, request)
+    tenant = _request_tenant(request)  # BUG-562: read now; the body streams after the handler returns
     progress_queue: asyncio.Queue[str] = asyncio.Queue()
 
     async def _progress_cb(message: str, agent: str, pct: float) -> None:
@@ -190,6 +201,7 @@ async def execute_prompt_stream(req: AgentExecuteRequest, request: Request):
         await progress_queue.put(f"data: {event}\n\n")
 
     async def _generate():
+        current_tenant.set(tenant)  # BUG-562: Starlette streams the body in its own task context
         registry = _make_registry()
         memory = AgentMemory()
 
@@ -254,8 +266,10 @@ async def execute_prompt_async(req: AgentExecuteRequest, request: Request):
     # outlives the request and must not depend on request.state still being
     # valid by the time it runs.
     workspace_id = current_workspace_id(request)
+    tenant = _request_tenant(request)
 
     async def _run() -> None:
+        current_tenant.set(tenant)  # BUG-562: inside the task, so it never leaks into the request
         try:
             await streaming_manager.publish_progress(
                 TOPIC_AGENT, session_id, "Enriching schema", 0.02,

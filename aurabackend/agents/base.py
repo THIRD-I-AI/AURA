@@ -7,6 +7,7 @@ An agent receives an AgentContext, calls tools, and returns an AgentResult.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import os
 import time
 import uuid
@@ -14,6 +15,16 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Awaitable, Callable, Dict, List, Optional, TypedDict
+
+# BUG-562: the tenant an agent run acts for, set by the entry point that starts the run
+# from a VERIFIED source (inbound_hooks._fire_agent from the hook's owning workspace, agents/api.py from the
+# caller's JWT). A ContextVar, not an AgentContext field: DAGExecutor builds each task's
+# context from planner (LLM) output, which must never be able to name a tenant, while a
+# ContextVar set before the run flows into every task the executor spawns.
+# None means "no verified tenant" -- callers must not substitute a shared identity.
+current_tenant: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
+    "aura_agent_tenant", default=None
+)
 
 
 class AgentContextMetadata(TypedDict, total=False):

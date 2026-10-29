@@ -34,19 +34,29 @@ _TIMEOUT = 15.0
 
 
 def _uasr_service_headers() -> Dict[str, str]:
-    """A short-lived bearer token for this agent's own calls to UASR.
+    """A short-lived bearer token for this agent's calls to UASR, AS the run's tenant.
 
     BUG-562: the drift check sent no credentials, so with AURA_JWT_ENABLED (prod)
-    UASR answered 401. The agent has no caller token to forward (AgentContext carries
-    none), so it signs a service token the way the gateway does for its own UASR
-    calls (api_gateway/main.py _uasr_service_headers, BUG-465): same shared secret,
-    a subject naming the service, no user.
+    UASR answered 401. UASR scopes every source id to the caller's tenant
+    (uasr/tenancy.py caller_tenant: org_id, else sub), so the token must carry the
+    tenant the run belongs to: a service-wide identity would file every tenant's
+    batches under one namespace, never meet the user's baseline, and compare tenant
+    B's batch against tenant A's drift state (false data_drift alerts and recovery
+    runs). The tenant comes from agents.base.current_tenant, set by the entry point
+    from a verified source. With no tenant we send no credentials rather than guess:
+    an open-mode UASR does not scope, and a JWT UASR answers 401, which the caller
+    reports as drift_check_failed.
     """
     from datetime import timedelta
 
+    from agents.base import current_tenant
     from shared.auth import create_access_token
 
-    token = create_access_token({"sub": "service:monitor_agent"}, expires_delta=timedelta(minutes=5))
+    tenant = current_tenant.get()
+    if not tenant:
+        return {}
+    token = create_access_token(
+        {"sub": "service:monitor_agent", "org_id": tenant}, expires_delta=timedelta(minutes=5))
     return {"Authorization": f"Bearer {token}"}
 
 
