@@ -15,6 +15,7 @@ Contract surface (the rest of the service depends on these names):
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import functools
 import hashlib
 import logging
@@ -778,6 +779,14 @@ def _seed_for(request_hash: str, name: str) -> int:
 # Re-entrant so a nested call on the same thread cannot deadlock.
 _ENGINE_RNG_LOCK = threading.RLock()
 
+# BUG-550: estimator and refuter calls used the event loop's default executor, the
+# pool every asyncio.to_thread in the gateway shares. The compute is serialised by
+# _ENGINE_RNG_LOCK anyway, and a timed-out call keeps its thread busy, so a burst of
+# audits parked every default-pool thread and stalled unrelated requests. A small
+# pool of its own confines that to audit work.
+_ENGINE_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
+    max_workers=4, thread_name_prefix="cf-engine")
+
 
 def _iv_controls(edges, treatment: str, outcome: str, instruments) -> List[str]:
     """The controls the IV (2SLS) estimator conditions on: parents of the outcome
@@ -1233,7 +1242,7 @@ async def run_estimators(
         try:
             return await asyncio.wait_for(
                 loop.run_in_executor(
-                    None, _run_one_estimator, m, df, treatment, outcome, dag, seed,
+                    _ENGINE_EXECUTOR, _run_one_estimator, m, df, treatment, outcome, dag, seed,
                     conformal_calibration,
                 ),
                 timeout_s,
@@ -1477,7 +1486,7 @@ async def run_refuters(
         # fan-out just below, run_estimators above) so they can't freeze
         # the single-uvicorn-worker event loop for every other tenant's
         # concurrent request (.claude/rules/backend.md).
-        model, identified, baseline = await loop.run_in_executor(None, _build_baseline)
+        model, identified, baseline = await loop.run_in_executor(_ENGINE_EXECUTOR, _build_baseline)
     except Exception as exc:
         logger.warning("Baseline for refuters failed: %s", exc)
         # Same alphabetical ordering as the happy path — when CI catches
@@ -1498,7 +1507,7 @@ async def run_refuters(
         try:
             return await asyncio.wait_for(
                 loop.run_in_executor(
-                    None, _run_one_refuter, r, model, identified, baseline, seed,
+                    _ENGINE_EXECUTOR, _run_one_refuter, r, model, identified, baseline, seed,
                     float(treatment.actual) - float(treatment.counterfactual),
                 ),
                 timeout_s,

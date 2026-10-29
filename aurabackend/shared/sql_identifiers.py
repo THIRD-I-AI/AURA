@@ -31,6 +31,21 @@ def quote_identifier(name: str) -> str:
     return '"' + s.replace('"', '""') + '"'
 
 
+def quote_mysql_identifier(name: str) -> str:
+    """Quote a MySQL identifier with backticks, embedded backticks doubled.
+
+    BUG-546: under MySQL's default sql_mode (no ANSI_QUOTES) a double-quoted name
+    is a string literal, so ``DESC "orders"`` is a syntax error.
+
+    >>> quote_mysql_identifier('a`b')
+    '`a``b`'
+    """
+    s = str(name)
+    if "\x00" in s:
+        raise ValueError("identifier contains a NUL byte")
+    return "`" + s.replace("`", "``") + "`"
+
+
 def quote_literal(value: str) -> str:
     """Quote a SQL string literal safely (e.g. a file path for read_csv_auto).
 
@@ -45,4 +60,4 @@ def quote_literal(value: str) -> str:
     return "'" + s.replace("'", "''") + "'"
 
 
-__all__ = ["quote_identifier", "quote_literal"]
+__all__ = ["quote_identifier", "quote_mysql_identifier", "quote_literal"]

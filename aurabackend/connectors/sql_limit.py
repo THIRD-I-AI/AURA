@@ -5,7 +5,13 @@ import re
 # followed by a semicolon.  Anchored to the end so the word "limit" inside a
 # column name, alias or string literal is not mistaken for a row cap.
 _TRAILING_LIMIT = re.compile(
-    r"\blimit\s+(?:\d+|all)(?:\s*(?:,\s*\d+|offset\s+\d+))?\s*;?\s*$", re.IGNORECASE
+    r"\blimit\s+(?:\d+\s*,\s*)?(?P<count>\d+|all)(?:\s*offset\s+\d+)?\s*;?\s*$", re.IGNORECASE
+)
+# BUG-548: the standard ``FETCH FIRST|NEXT [n] ROW|ROWS ONLY`` clause is a row cap
+# too; a LIMIT appended after it is a second limit clause and a syntax error.
+# WITH TIES is left out on purpose: it can return more than n rows.
+_TRAILING_FETCH = re.compile(
+    r"\bfetch\s+(?:first|next)\s+(?:(?P<count>\d+)\s+)?rows?\s+only\s*;?\s*$", re.IGNORECASE
 )
 
 
@@ -39,12 +45,27 @@ def _strip_trailing_noise(query: str) -> str:
 
 
 def with_row_limit(query: str, limit: int) -> str:
-    """Return ``query`` capped at ``limit`` rows unless it already ends in a LIMIT.
+    """Return ``query`` capped at ``limit`` rows.
 
     BUG-438: the cap was concatenated onto the raw text. After a trailing semicolon
     that made two statements, which the drivers reject (and the connectors report as
     zero rows); after a trailing ``--`` comment the cap sat inside the comment and
     was never applied.
+
+    BUG-545: a trailing LIMIT used to be kept whatever it said, so ``LIMIT ALL`` or
+    ``LIMIT 999999999`` lifted the cap and the drivers' fetchall() read the whole
+    table into memory. A caller's own LIMIT / FETCH FIRST is kept only when it is
+    no larger than ``limit``; otherwise its row count is lowered to ``limit``.
     """
     core = _strip_trailing_noise(query)
-    return core if has_trailing_limit(core) else f"{core} LIMIT {limit}"
+    for clause in (_TRAILING_LIMIT, _TRAILING_FETCH):
+        match = clause.search(core)
+        if match is None:
+            continue
+        count = match.group("count")
+        if count is None:  # FETCH FIRST ROW ONLY: one row
+            return core
+        if count.lower() != "all" and int(count) <= limit:
+            return core
+        return f"{core[:match.start('count')]}{limit}{core[match.end('count'):]}"
+    return f"{core} LIMIT {limit}"

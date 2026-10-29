@@ -11,6 +11,7 @@ moving to a real queue is the Sprint 9 entry condition.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -330,6 +331,21 @@ def _evict_finished_jobs() -> None:
         del _jobs[job_id]
 
 
+# BUG-550: /jobs and /demo?fresh=true each started a live in-process audit with no
+# limit. The engine serialises the compute behind one lock, so jobs past a handful
+# only queue -- holding threads and memory while they wait. Refuse them instead.
+MAX_LIVE_AUDIT_JOBS = 4
+
+
+def _refuse_when_engine_busy() -> None:
+    live = sum(1 for j, rec in _jobs.items()
+               if j.startswith(("ca_", "demo_")) and rec.get("state") in ("queued", "running"))
+    if live >= MAX_LIVE_AUDIT_JOBS:
+        raise HTTPException(429, (
+            f"{live} live audits are already running; retry when one finishes."
+        ), headers={"Retry-After": "30"})
+
+
 # ── Endpoints ─────────────────────────────────────────────────────────
 
 @app.post("/counterfactual/jobs")
@@ -343,6 +359,7 @@ async def submit_job(query: CounterfactualQuery,
             "dataset.where and dataset.limit are not supported: the estimate is computed "
             "over every row of the source. Filter the data before uploading."
         ))
+    _refuse_when_engine_busy()
     job_id = _new_job("ca", _ledger_tenant(user))
     # Hold the Task reference inside the job record. Without this, the
     # task is eligible for garbage collection as soon as submit_job
@@ -437,6 +454,7 @@ async def run_demo(scenario_id: str, fresh: bool = False,
             f"runs as its own process).",
         )
 
+    _refuse_when_engine_busy()
     df = scenario.build_dataset()
     query = scenario.query()
     register_dataset(query.dataset.source_id, df)
@@ -620,8 +638,12 @@ def _with_verdict(art: Dict[str, Any]) -> Dict[str, Any]:
     replayed artifact had ``rendered == {}`` and the web certificate fell back to
     its own copy of the legacy v1 rule -- contradicting the signed PDF, which
     applies the rule the artifact was sealed under. Replay now carries that same
-    verdict. ``rendered`` is outside the signed bytes, so nothing re-signs."""
-    if "estimates" not in art or (art.get("rendered") or {}).get("verdict"):
+    verdict. ``rendered`` is outside the signed bytes, so nothing re-signs.
+
+    BUG-549: for that same reason a stored ``rendered.verdict`` is never trusted --
+    anyone who can write the file could change it without breaking the signature.
+    It is always recomputed from the signed estimates and verdict rule."""
+    if "estimates" not in art:
         return art
     from .verdict import rule_for, significance_verdict
 
@@ -639,6 +661,7 @@ async def get_artifact(record_hash: str,
     persisted, parsed back into a dict for the JSON response. The
     audit_record_hash in the body must equal the URL parameter.
     """
+    record_hash = _record_hash_param(record_hash)
     art = await asyncio.to_thread(persistence.read_artifact, record_hash)
     return _artifact_for_caller(art, record_hash, user)
 
@@ -659,6 +682,7 @@ async def get_artifact_pdf(record_hash: str,
     BUG-102: this read used to run synchronously on the event loop,
     unlike get_artifact above which correctly offloads via
     asyncio.to_thread."""
+    record_hash = _record_hash_param(record_hash)
     art = await asyncio.to_thread(persistence.read_artifact, record_hash)
     art = _artifact_for_caller(art, record_hash, user)
     pdf_bytes = await asyncio.to_thread(pdf_renderer.render_pdf, art)
@@ -677,6 +701,24 @@ async def get_artifact_pdf(record_hash: str,
             ),
         },
     )
+
+
+def _record_hash_param(record_hash: str) -> str:
+    """BUG-551: persistence rejects anything but lowercase hex with a ValueError, which
+    the public read/verify routes surfaced as a 500. A hash pasted in upper case is the
+    same record, so it is normalised; anything else is the caller's error."""
+    if not _RECORD_HASH.match(record_hash):
+        raise HTTPException(400, "record_hash must be 64 hex characters")
+    return record_hash.lower()
+
+
+def _binds_record_hash(payload_bytes: bytes, art_dict: Dict[str, Any], record_hash: str) -> bool:
+    """BUG-549: a valid signature only proves the bytes were signed, not that they are
+    the record the URL names. Without this, a signed artifact copied with its .sig over
+    another record's files verified as that record. The record hash is sha256 of these
+    same bytes (engine.run_job), so the content must hash back to the name."""
+    return (hashlib.sha256(payload_bytes).hexdigest() == record_hash
+            and art_dict.get("audit_record_hash") == record_hash)
 
 
 def _load_verify_inputs(
@@ -701,6 +743,7 @@ async def verify_artifact(record_hash: str) -> Dict[str, Any]:
     Auditors can run this through any HTTP client without needing the
     private key.
     """
+    record_hash = _record_hash_param(record_hash)
     art_bytes, sig_b64, art_dict = await asyncio.to_thread(
         _load_verify_inputs, record_hash
     )
@@ -731,13 +774,15 @@ async def verify_artifact(record_hash: str) -> Dict[str, Any]:
     payload = strip_for_hashing(art_dict)
     payload_bytes = canonical_dumps(payload).encode("utf-8")
 
-    ok = signing.verify_bytes(payload_bytes, sig_b64)
+    bound = _binds_record_hash(payload_bytes, art_dict, record_hash)
+    ok = bound and signing.verify_bytes(payload_bytes, sig_b64)
     return {
         "record_hash": record_hash,
         "verified": ok,
         "signature_status": sig_status,
         "signing_key_source": art_dict.get("signing_key_source"),
-        "reason": "ok" if ok else "signature did not verify",
+        "reason": ("ok" if ok else "signature did not verify" if bound
+                   else "content does not hash to this record hash"),
     }
 
 
@@ -888,7 +933,7 @@ async def financial_audit_demo() -> Dict[str, Any]:
 @app.get("/audit/financial/verify/{record_hash}")
 async def financial_audit_verify(record_hash: str) -> Dict[str, Any]:
     from .financial_report import verify_report
-    return await asyncio.to_thread(verify_report, record_hash)
+    return await asyncio.to_thread(verify_report, _record_hash_param(record_hash))
 
 
 # ── Subsystem C — durable audit ledger verification surface ──────────────
@@ -1059,7 +1104,8 @@ def _verify_one_artifact(record_hash: str) -> Dict[str, Any]:
     try:
         payload = strip_for_hashing(art_dict)
         payload_bytes = canonical_dumps(payload).encode("utf-8")
-        ok = signing.verify_bytes(payload_bytes, sig_b64)
+        ok = (_binds_record_hash(payload_bytes, art_dict, record_hash)
+              and signing.verify_bytes(payload_bytes, sig_b64))
     except Exception as exc:
         # Sec-3 #24: surface only the exception class name to the auditor
         # — interpolating str(exc) into the response leaks server-side

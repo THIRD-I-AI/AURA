@@ -7,7 +7,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
-from sqlalchemy import delete, select, update
+from sqlalchemy import and_, delete, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine
 from sqlalchemy.orm import sessionmaker
 
@@ -251,13 +251,49 @@ class SchedulerRepository:
             result = await session.execute(
                 update(JobExecution)
                 .where(
-                    JobExecution.status.in_([JobStatus.PENDING, JobStatus.RUNNING]),
-                    JobExecution.created_at <= cutoff,
+                    # BUG-543: a PENDING row with retry_count > 0 is a retry waiting for
+                    # its due time (BUG-502), not an interrupted run -- the worker resumes
+                    # it, and failing it reset the retry budget. Only a run that was
+                    # mid-attempt, or created and never started, is an orphan.
+                    or_(
+                        JobExecution.status == JobStatus.RUNNING,
+                        and_(
+                            JobExecution.status == JobStatus.PENDING,
+                            func.coalesce(JobExecution.retry_count, 0) == 0,
+                        ),
+                    ),
+                    # BUG-543: one execution spans every retry attempt (hours with long
+                    # delays), so its age is the current attempt's, not the row's.
+                    func.coalesce(JobExecution.started_at, JobExecution.created_at) <= cutoff,
                 )
                 .values(
                     status=JobStatus.FAILED,
                     completed_at=datetime.now(timezone.utc),
                     error_message="Interrupted: the scheduler stopped before this execution finished",
+                )
+            )
+            await session.commit()
+            return result.rowcount
+
+    async def cancel_pending_retries(self, job_id: str, reason: str) -> int:
+        """Settle a job's outstanding retry when its schedule is replaced (BUG-544).
+
+        The retry's due time lives only in the job's next_execution_time; once that is
+        overwritten, the PENDING row would otherwise be adopted by an unrelated later
+        slot (JobExecutor._pending_retry) with its retry budget already spent.
+        """
+        async with self.async_session() as session:
+            result = await session.execute(
+                update(JobExecution)
+                .where(
+                    JobExecution.job_id == job_id,
+                    JobExecution.status == JobStatus.PENDING,
+                    JobExecution.retry_count > 0,
+                )
+                .values(
+                    status=JobStatus.CANCELLED,
+                    completed_at=datetime.now(timezone.utc),
+                    error_message=reason,
                 )
             )
             await session.commit()

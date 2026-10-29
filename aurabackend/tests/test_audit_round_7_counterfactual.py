@@ -49,9 +49,12 @@ def test_a_legacy_artifact_keeps_its_sealed_rule():
     assert art["rendered"]["verdict"]["status"] == "not_material"
 
 
-def test_an_existing_rendered_verdict_and_non_causal_records_are_left_alone():
+def test_a_stored_verdict_is_recomputed_and_non_causal_records_are_left_alone():
+    # BUG-549: ``rendered`` is unsigned, so a stored verdict is replaced by the one
+    # the signed estimates give; the rest of the rendered block is kept.
     rendered = {"verdict": {"status": "detected", "label": "x"}, "headline": "h"}
     art = {**_stored(CURRENT_RULE, []), "rendered": rendered}
-    assert cf_main._artifact_for_caller(art, "h1", None)["rendered"] == rendered
+    out = cf_main._artifact_for_caller(art, "h1", None)["rendered"]
+    assert out["verdict"]["status"] == "empty" and out["headline"] == "h"
     financial = {"record_id": "f1", "findings": [], "rendered": {}}
     assert cf_main._artifact_for_caller(financial, "f1", None) == financial

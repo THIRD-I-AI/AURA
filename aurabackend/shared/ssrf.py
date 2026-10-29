@@ -10,7 +10,7 @@ import asyncio
 import ipaddress
 import os
 import socket
-from typing import Sequence
+from typing import Optional, Sequence
 from urllib.parse import urlparse
 
 
@@ -61,20 +61,51 @@ async def is_public_url_async(url: str, schemes: Sequence[str] = ("http", "https
     return await asyncio.to_thread(is_public_url, url, schemes)
 
 
-async def is_allowed_db_host(host: object) -> bool:
-    """May the backend open a database connection to this caller-supplied host?
+def _pin_public_address(name: str) -> Optional[str]:
+    try:
+        candidates = [ipaddress.ip_address(name)]
+    except ValueError:
+        try:
+            infos = socket.getaddrinfo(name, None)
+        except (OSError, UnicodeError):  # gaierror is an OSError; any lookup failure is a refusal, not a 500
+            return None
+        candidates = [ipaddress.ip_address(info[4][0]) for info in infos]
+    if candidates and all(_is_public_address(ip) for ip in candidates):
+        # BUG-558: pinning one address takes away the driver's own v6-to-v4 fallback,
+        # so prefer IPv4: a dual-stack name whose AAAA sorts first would otherwise
+        # fail from a container with no IPv6 route.
+        return str(next((ip for ip in candidates if ip.version == 4), candidates[0]))
+    return None
+
+
+async def resolve_allowed_db_host(host: object) -> Optional[str]:
+    """The address the backend may open a database connection to for this
+    caller-supplied host, or None if it may not.
 
     The one rule for every place that connects to a caller-named database (connector
     routes, /execute/query, pipeline sources and sinks, the streaming database sink):
     BUG-367, 377 and 404 were the same gap found in three places because each route
-    carried its own copy, or none. False for an empty host (drivers turn that into
-    the gateway's own localhost) and for any non-public address, unless the operator
-    has set AURA_CONNECTORS_ALLOW_PRIVATE_HOSTS for a private-network deployment.
+    carried its own copy, or none. None for an empty host (drivers turn that into
+    the gateway's own localhost) and for a host with any non-public address. If the
+    operator has set AURA_CONNECTORS_ALLOW_PRIVATE_HOSTS for a private-network
+    deployment, the host is returned as given.
+
+    BUG-547: a host name comes back as the IP address that was checked. A caller
+    that connects must connect to that address: handing the driver the name again
+    lets it resolve a second time, and a rebinding DNS server answers that second
+    lookup with a loopback or private address.
     """
-    if os.getenv("AURA_CONNECTORS_ALLOW_PRIVATE_HOSTS", "").strip().lower() in ("1", "true", "yes"):
-        return True
     name = str(host or "").strip()
+    if os.getenv("AURA_CONNECTORS_ALLOW_PRIVATE_HOSTS", "").strip().lower() in ("1", "true", "yes"):
+        return name
+    if name.startswith("[") and name.endswith("]"):
+        name = name[1:-1]
     if not name:
-        return False
-    target = f"[{name}]" if ":" in name and not name.startswith("[") else name
-    return await is_public_url_async(f"http://{target}/")
+        return None
+    return await asyncio.to_thread(_pin_public_address, name)
+
+
+async def is_allowed_db_host(host: object) -> bool:
+    """May the backend open a database connection to this caller-supplied host?
+    See ``resolve_allowed_db_host``, whose pinned address a caller should prefer."""
+    return await resolve_allowed_db_host(host) is not None

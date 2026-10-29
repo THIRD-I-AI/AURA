@@ -4,6 +4,7 @@ import { Button } from '@/components/ui-kit/button';
 import { ThemeToggle } from '@/ui/ThemeToggle';
 import { useDocumentScroll } from '@/landing/useDocumentScroll';
 import { useAuth } from './AuthContext';
+import { safeReturnTo, takeReturnTo } from './returnTo';
 import './AuthForm.css';
 
 type Mode = 'login' | 'signup';
@@ -30,10 +31,12 @@ export function AuthForm({ mode }: { mode: Mode }) {
   const { login, register } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
-  const state = location.state as { from?: string; email?: string; next?: string } | null;
+  const state = location.state as { from?: unknown; email?: string; next?: string } | null;
   // Workbench is the single front door; a deep-linked `from` still wins, and a
   // visitor who came from the landing page to run an audit goes back to run it.
-  const from = state?.from ?? (state?.next === 'audit' ? '/' : '/workbench');
+  // BUG-553: `from` now carries a query string, so it is checked to be a
+  // same-origin path before navigate() is handed it.
+  const from = safeReturnTo(state?.from) ?? (state?.next === 'audit' ? '/' : '/workbench');
 
   const [name, setName] = useState('');
   // The landing page hands the address over in router state, never in the URL.
@@ -61,6 +64,8 @@ export function AuthForm({ mode }: { mode: Mode }) {
       } else {
         await login(email.trim(), password);
       }
+      // Consumed here so a stale SSO return target cannot outlive this sign-in.
+      takeReturnTo();
       navigate(from, { replace: true });
     } catch (err) {
       setError(
