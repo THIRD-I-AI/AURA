@@ -17,6 +17,7 @@
     "generate:api": "openapi-typescript ../aurabackend/openapi.json -o src/types/api.generated.ts"
   },
   "dependencies": {
+    "@fontsource-variable/bricolage-grotesque": "^5.3.0",
     "@fontsource/instrument-sans": "^5.2.8",
     "@fontsource/inter": "^5.3.0",
     "@fontsource/jetbrains-mono": "^5.2.8",

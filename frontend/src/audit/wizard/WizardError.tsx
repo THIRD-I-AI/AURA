@@ -8,7 +8,7 @@ export function WizardError({ testId, children }: { testId: string; children: Re
     <p
       role="alert"
       data-testid={testId}
-      className="border border-danger/50 bg-danger/10 px-3 py-2 font-mono text-xs text-danger"
+      className="bg-danger/10 px-3 py-2 text-sm text-danger"
     >
       {children}
     </p>

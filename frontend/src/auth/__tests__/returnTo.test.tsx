@@ -3,6 +3,7 @@ import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AuthProvider } from '../AuthContext';
 import { AuthForm } from '../AuthForm';
+import { ThemeProvider } from '@/contexts/ThemeContext';
 import { ProtectedRoute } from '../ProtectedRoute';
 import { SsoCallback } from '../SsoCallback';
 import { authService, setAuthToken } from '../../services/api';
@@ -18,6 +19,7 @@ function Where() {
 
 function renderAt(entry: string | { pathname: string; state: unknown }) {
   return render(
+    <ThemeProvider>
     <MemoryRouter initialEntries={[entry]}>
       <AuthProvider>
         <Routes>
@@ -26,7 +28,8 @@ function renderAt(entry: string | { pathname: string; state: unknown }) {
           <Route path="/login" element={<AuthForm mode="login" />} />
         </Routes>
       </AuthProvider>
-    </MemoryRouter>,
+    </MemoryRouter>
+    </ThemeProvider>,
   );
 }
 

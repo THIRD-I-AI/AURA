@@ -12,10 +12,24 @@ shadcn/ui + Tailwind v4. This is non-negotiable — do not hand-roll inline
 - **Tailwind v4** — entry `src/styles/tailwind.css`. Its `@theme inline` block
   **binds every utility to a design token** in `tokens.css`, so a class like
   `bg-surface` compiles to `background-color: var(--bg-surface)` and stays
-  theme-correct (dark default + the `certificate` light island). Tailwind
+  theme-correct (dark and light themes + the `certificate` paper island). Tailwind
   utilities ARE the terminal-authority design — use them, not raw hex.
 - **`cn()`** from `@/lib/cn` (clsx + tailwind-merge) for conditional/merged
   classes. **Icons:** `lucide-react`.
+
+## Two themes, two surfaces
+
+- **Themes:** `[data-theme='dark']` (default when the system asks for dark) and
+  `[data-theme='light']`, both in `tokens.css`. `public/theme-init.js` sets the
+  attribute before first paint; `ThemeContext` + `ui/ThemeToggle` switch it. Every
+  new color goes into BOTH theme blocks — never into a component.
+- **Public pages** (`/`, `/login`, `/signup`, `/audit/*`, `/certificate/*`,
+  `/verify/*`) follow the landing direction: Bricolage Grotesque display face,
+  sentence-case labels, tonal grounds instead of hairline rules, blue accent,
+  mono ONLY for hashes, code and numbers. Long pages call `useDocumentScroll()`
+  because the app shell fixes `html/body/#root` at `overflow: hidden`.
+- **The Workbench** keeps the dense terminal-authority rules below until its own
+  pass lands.
 
 ## Rules
 
@@ -27,7 +41,7 @@ shadcn/ui + Tailwind v4. This is non-negotiable — do not hand-roll inline
    - Surfaces: `bg-base` `bg-surface` `bg-surface-2` `bg-sunken` `bg-raised` `bg-card`
    - Text: `text-text-primary` `text-text-secondary` `text-text-tertiary`
    - Borders: `border border-border-hairline` `border-border-subtle` `border-border-strong`
-   - Accents: `text-signal` / `bg-signal` (green), `text-warn` `text-danger` `text-info`
+   - Accents: `text-primary`/`bg-primary` (blue accent), `text-signal` / `bg-signal` (green, status only), `text-warn` `text-danger` `text-info`
    - Type: `font-mono` (JetBrains Mono) for data/labels, `font-display` for headings
    - Sharp corners (`rounded-none`) is the house style; mono, dense, green-signal.
 3. **`cn()` for conditionals** — `cn('base', active && 'bg-selected text-text-primary')`.

@@ -2,7 +2,7 @@ import type { ColumnMapping } from '../types';
 
 export function ReviewStep({ filename, mapping }: { filename: string | null; mapping: ColumnMapping }) {
   const row = (label: string, value: string) => (
-    <div className="flex justify-between py-2 border-b border-border">
+    <div className="flex justify-between py-2 px-3 bg-surface [&+&]:mt-0.5">
       <span className="text-text-tertiary">{label}</span>
       <span className="font-mono">{value}</span>
     </div>

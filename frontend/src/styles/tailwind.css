@@ -95,13 +95,14 @@
   --color-brand-hover: var(--accent-hover);
   --color-brand-active: var(--accent-active);
   --color-brand-dim: var(--accent-dim);
+  --color-brand-ink: var(--accent-ink);
 
   /* ── shadcn/ui semantic aliases → AURA tokens (var() = runtime themable) ──
      shadcn New-York primitives emit utilities like bg-background / text-
      foreground / bg-primary / border-border / ring-ring. We DON'T let the
      shadcn CLI write its own :root palette (that would fork the token source);
      instead we bind its semantic names to tokens.css here. Terminal-Authority
-     mapping: primary + ring = green signal; accent/muted/secondary = the
+     mapping: primary + ring = the brand accent (blueprint blue); accent/muted/secondary = the
      surface ramp; destructive = danger red. Both dark + certificate themes
      resolve live because every value is a var() into tokens.css. */
   --color-background: var(--bg-base);
@@ -109,8 +110,8 @@
   --color-card-foreground: var(--text-primary);
   --color-popover: var(--bg-elevated);
   --color-popover-foreground: var(--text-primary);
-  --color-primary: var(--signal);
-  --color-primary-foreground: var(--bg-base);
+  --color-primary: var(--accent);
+  --color-primary-foreground: var(--accent-ink);
   --color-secondary: var(--bg-surface-2);
   --color-secondary-foreground: var(--text-primary);
   --color-muted: var(--bg-surface-2);

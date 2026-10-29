@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en" data-theme="dark">
+<html lang="en">
   <head>
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/vite.svg" />
@@ -19,7 +19,10 @@
          deploy time (see ENTERPRISE.md). -->
     <meta http-equiv="Content-Security-Policy"
           content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'" />
-    <title>AURA - Enterprise Data Analytics</title>
+    <!-- Before first paint: picks the saved or system theme (see the file). -->
+    <script src="/theme-init.js"></script>
+    <meta name="description" content="AURA tests whether a protected attribute caused a regulated decision, and seals the answer in a signed certificate anyone can verify." />
+    <title>AURA — Causal audits anyone can verify</title>
   </head>
   <body>
     <div id="root"></div>
