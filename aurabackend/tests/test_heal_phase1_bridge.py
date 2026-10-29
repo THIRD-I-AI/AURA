@@ -281,3 +281,55 @@ def test_bug561_clean_ingest_publishes_no_drift_event(uasr, orders_db, dispatche
     (first, second), sent = asyncio.run(_run_with_dispatcher(dispatcher, scenario))
     assert first["drift_events"] == 0 and second["drift_events"] == 0
     assert sent == []
+
+
+def test_bug561_one_rename_sends_one_webhook_per_run_not_per_batch(uasr, orders_db, dispatcher):
+    """Review of BUG-561: after one upstream rename every batch of the run drifts, so
+    a per-batch event sent one webhook per batch (~200 for a 100k-row table). One
+    event per (source_id, drift_type) per run, carrying the drifted-batch count."""
+    dispatcher.register(TENANT, "http://hooks.test/mine", ["uasr.drift"])
+
+    async def scenario():
+        await _ingest(register_baseline=True)
+        _rename_amount(orders_db)
+        return await _ingest(batch_size=2)
+
+    out, sent = asyncio.run(_run_with_dispatcher(dispatcher, scenario))
+
+    assert out["batches"] == 5 and out["drift_events"] == 5, out
+    assert len(sent) == 1, [str(r.url) for r in sent]
+    data = json.loads(sent[0].content)["data"]
+    assert data["source_id"] == _source_id()
+    assert data["drift_type"] == "schema"
+    assert data["drifted_batches"] == 5
+
+
+def test_bug561_drift_seen_before_a_failed_batch_is_still_announced(uasr, orders_db, dispatcher, monkeypatch):
+    """Publishing once at the end of the run must not drop drift already detected
+    when a later batch fails (UASR 5xx on the 4th batch)."""
+    dispatcher.register(TENANT, "http://hooks.test/mine", ["uasr.drift"])
+    in_process = connections.httpx.AsyncClient
+    ingests = []
+
+    class _FailsFourthIngest(in_process):
+        async def post(self, url, json=None, **k):
+            if url.endswith("/uasr/ingest"):
+                ingests.append(url)
+                if len(ingests) == 4:
+                    resp = _Resp({})
+                    resp.status_code = 500
+                    return resp
+            return await super().post(url, json=json, **k)
+
+    async def scenario():
+        await _ingest(register_baseline=True)
+        _rename_amount(orders_db)
+        monkeypatch.setattr(connections.httpx, "AsyncClient", _FailsFourthIngest)
+        ingests.clear()
+        with pytest.raises(connections.HTTPException):
+            await _ingest(batch_size=2)
+
+    _, sent = asyncio.run(_run_with_dispatcher(dispatcher, scenario))
+
+    assert len(sent) == 1
+    assert json.loads(sent[0].content)["data"]["drifted_batches"] == 3

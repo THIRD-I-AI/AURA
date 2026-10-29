@@ -556,15 +556,39 @@ class ConnectorIngestRequest(BaseModel):
     register_baseline: bool = False
 
 
+_SEVERITY_RANK = {"low": 0, "medium": 1, "high": 2, "critical": 3}
+
+
+def _record_drift(drift_by_type: Dict[Any, Dict[str, Any]], result: Dict[str, Any]) -> None:
+    """Fold one drifted batch into the run's per-drift-type summary.
+
+    BUG-561 review: after one upstream rename every batch of the run drifts, so one
+    event per batch sent ~200 webhooks for a single rename of a 100k-row table. The
+    run's drift is summarised per drift_type (count, worst severity, first event id)
+    and announced once at the end.
+    """
+    entry = drift_by_type.setdefault(result.get("drift_type"), {
+        "drifted_batches": 0, "severity": None, "drift_event_id": result.get("drift_event_id"),
+    })
+    entry["drifted_batches"] += 1
+    sev = result.get("severity")
+    if sev is not None and _SEVERITY_RANK.get(sev, -1) >= _SEVERITY_RANK.get(entry["severity"], -1):
+        entry["severity"] = sev
+    if entry["drift_event_id"] is None:
+        entry["drift_event_id"] = result.get("drift_event_id")
+
+
 async def _publish_drift(
-    source_id: str, workspace_id: str, connector_type: str, table: str, result: Dict[str, Any],
+    source_id: str, workspace_id: str, connector_type: str, table: str,
+    drift_type: Any, summary: Dict[str, Any],
 ) -> None:
-    """Announce a drifted batch on the event bus.
+    """Announce one drift type seen in an ingest run on the event bus.
 
     BUG-561: the webhook dispatcher turns a uasr 'data' event whose payload has
     drift_detected into uasr.drift, but nothing published one -- the bridge only
     counted drift, so a webhook subscribed to uasr.drift never fired. The event
     carries the caller's workspace so only that workspace's subscriptions get it.
+    One event per (source_id, drift_type) per run, with the drifted-batch count.
     """
     from shared.streaming_manager import StreamEvent, streaming_manager
 
@@ -574,9 +598,10 @@ async def _publish_drift(
         payload={
             "drift_detected": True,
             "source_id": source_id,
-            "drift_type": result.get("drift_type"),
-            "severity": result.get("severity"),
-            "drift_event_id": result.get("drift_event_id"),
+            "drift_type": drift_type,
+            "severity": summary["severity"],
+            "drift_event_id": summary["drift_event_id"],
+            "drifted_batches": summary["drifted_batches"],
             "connector_type": connector_type,
             "table": table,
         },
@@ -669,6 +694,7 @@ async def ingest_connector_data(connector_type: str, req: ConnectorIngestRequest
     batch_count = 0
     total_rows = 0
     drift_events = 0
+    drift_by_type: Dict[Any, Dict[str, Any]] = {}
 
     try:
         schema = await connector.get_table_schema(req.table_name)
@@ -757,7 +783,7 @@ async def ingest_connector_data(connector_type: str, req: ConnectorIngestRequest
                 drifted = bool(result.get("drift_detected") or (result.get("drift") or {}).get("detected"))
                 if drifted:
                     drift_events += 1
-                    await _publish_drift(source_id, wsid, connector_type, req.table_name, result)
+                    _record_drift(drift_by_type, result)
                 total_rows += len(rows)
                 batch_count += 1
                 if len(batches) < _INGEST_DETAIL_LIMIT:
@@ -772,6 +798,13 @@ async def ingest_connector_data(connector_type: str, req: ConnectorIngestRequest
         truncated = req.max_rows is None and total_rows >= row_cap
     finally:
         await connector.disconnect()
+        # BUG-561 review: announced once per drift type per run, and also when a later
+        # batch failed -- the drift already detected is real and must not be dropped.
+        for drift_type, summary in drift_by_type.items():
+            try:
+                await _publish_drift(source_id, wsid, connector_type, req.table_name, drift_type, summary)
+            except Exception as e:
+                logger.warning("drift event publish failed: %s", sanitize_error(e, logger=logger, context="drift publish"))
 
     # Persist a dataset profile to the metadata store (best-effort).
     profile_recorded = False
