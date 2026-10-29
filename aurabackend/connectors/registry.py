@@ -137,6 +137,13 @@ _DB_FIELDS = [
     ConnectorField("username", "Username", "string", required=True),
     ConnectorField("password", "Password", "secret", required=True),
     ConnectorField("ssl", "Use SSL", "boolean", default=False),
+    # ADR-001: stored in the encrypted extra settings, never returned by the API.
+    ConnectorField("tls_mode", "TLS mode", "string",
+                   help="verify-full (what Use SSL means), require (encrypted, not verified) or disable; overrides Use SSL"),
+    ConnectorField("tls_ca_pem", "CA certificate (PEM)", "textarea",
+                   help="Only for a server whose certificate is signed by a private CA"),
+    ConnectorField("tls_client_cert_pem", "Client certificate (PEM)", "textarea"),
+    ConnectorField("tls_client_key_pem", "Client key (PEM)", "secret"),
 ]
 
 
