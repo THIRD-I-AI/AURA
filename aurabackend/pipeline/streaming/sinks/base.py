@@ -9,6 +9,17 @@ import abc
 from typing import Any, Dict, List
 
 from pipeline.streaming.models import StreamEvent, WindowState
+from shared.exceptions import AuraError
+
+
+class StreamSinkError(AuraError):
+    """A sink could not deliver a window or late event after its own retries.
+    BUG-569: a sink must raise this rather than log and return, or the engine
+    never learns the write failed and the pipeline keeps reporting RUNNING. The
+    message is shown to the client (sanitize_error trusts AuraError messages),
+    so it must never carry the underlying exception's text -- chain it instead."""
+
+    error_code = "STREAM_SINK_ERROR"
 
 
 class BaseSink(abc.ABC):

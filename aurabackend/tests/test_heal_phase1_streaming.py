@@ -54,11 +54,14 @@ async def _stop_engines():
 class ScriptedSource(BaseSource):
     """Each read pops the next step: an Exception is raised, a list is returned.
     Once the script runs out every read returns []. Records the pipeline status
-    seen at each read so intermediate states can be asserted without racing."""
+    seen at each read so intermediate states can be asserted without racing.
+    ``delay`` spaces out reads that return data, so each batch lands in its own
+    run-loop tick instead of all being drained by one."""
 
-    def __init__(self, steps: List[Any]):
+    def __init__(self, steps: List[Any], delay: float = 0.0):
         super().__init__({})
         self.steps = list(steps)
+        self.delay = delay
         self.reads = 0
         self.statuses: List[StreamPipelineStatus] = []
         self.stopped = False
@@ -78,6 +81,8 @@ class ScriptedSource(BaseSource):
         step = self.steps.pop(0) if self.steps else []
         if isinstance(step, Exception):
             raise step
+        if step and self.delay:
+            await asyncio.sleep(self.delay)
         return step
 
 
@@ -190,13 +195,15 @@ async def test_source_read_error_degrades_then_fails_and_releases(monkeypatch):
 
 async def test_transient_source_error_then_success_returns_to_running(monkeypatch):
     boom = ConnectionError("broker unreachable")
-    src = ScriptedSource([boom, boom, [], []])
+    src = ScriptedSource([boom, boom, [], [], []])
     eng = _engine(monkeypatch, src)
     await eng.start()
     try:
-        await _until(lambda: src.reads >= 5)
+        await _until(lambda: src.reads >= 7)
         assert src.statuses[1:3] == [StreamPipelineStatus.DEGRADED, StreamPipelineStatus.DEGRADED]
-        assert src.statuses[3] == StreamPipelineStatus.RUNNING  # read 3 succeeded
+        # Hysteresis: reads 3-5 must all succeed before the status recovers.
+        assert src.statuses[3:5] == [StreamPipelineStatus.DEGRADED, StreamPipelineStatus.DEGRADED]
+        assert src.statuses[5] == StreamPipelineStatus.RUNNING
         assert eng.pipeline.status == StreamPipelineStatus.RUNNING
         assert len(eng.metrics.errors) == 2  # the history is kept after recovery
     finally:
@@ -246,10 +253,15 @@ async def test_sink_write_error_degrades_and_recovers_on_next_success(monkeypatc
             assert [(e.payload["code"], _classify(e)) for e in mine] == [("STREAM_DEGRADED", "pipeline.failed")]
             assert "secret-dsn-detail" not in mine[0].payload["error"]
 
-            # The next window this sink writes successfully clears the degradation.
-            src.steps = [[StreamEvent(timestamp=20_000.0, key="k", data={"v": 3})]]
+            # Successful writes on enough consecutive ticks clear the degradation.
+            src.delay = 0.05
+            src.steps = [
+                [StreamEvent(timestamp=20_000.0 + 10_000.0 * n, key="k", data={"v": n})] for n in range(8)
+            ]
             await _until(lambda: sink.written)
+            assert eng.pipeline.status == StreamPipelineStatus.DEGRADED  # one clean tick is not enough
             await _until(lambda: eng.pipeline.status == StreamPipelineStatus.RUNNING)
+            assert len(sink.written) >= 3
         finally:
             await eng.stop()
     finally:
@@ -258,14 +270,189 @@ async def test_sink_write_error_degrades_and_recovers_on_next_success(monkeypatc
 
 async def test_persistently_failing_sink_fails_the_pipeline(monkeypatch):
     sink = FailingSink(fail_times=10_000)
-    src = ScriptedSource([
-        [StreamEvent(timestamp=t, key="k", data={}) for t in (100.0, 200.0, 300.0, 400.0, 500.0)],
-    ])
+    # One window closes per read, so the failures span several ticks.
+    src = ScriptedSource([[StreamEvent(timestamp=100.0 * n, key="k", data={})] for n in range(1, 40)], delay=0.05)
     eng = _engine(monkeypatch, src, sink)
     await eng.start()
     await _until(lambda: eng.pipeline.status == StreamPipelineStatus.FAILED)
-    assert sink.calls == 3
+    assert sink.calls >= 3
     await _until(lambda: sink.stopped and src.stopped)
+
+
+async def test_one_tick_of_many_failing_windows_degrades_but_does_not_fail(monkeypatch):
+    """Review fix 1: failures count per tick, not per window. One micro-batch
+    closing 20 per-key windows during a single sink hiccup used to count as 20
+    consecutive failures and FAIL the pipeline on the spot."""
+    sink = FailingSink(fail_times=20)
+    batch = [StreamEvent(timestamp=100.0, key=f"k{n}", data={}) for n in range(20)]
+    batch.append(StreamEvent(timestamp=10_000.0, key="k0", data={}))  # closes all 20
+    src = ScriptedSource([batch])
+    eng = _engine(monkeypatch, src, sink)
+    await eng.start()
+    try:
+        await _until(lambda: sink.calls >= 20)
+        await _until(lambda: eng.pipeline.status != StreamPipelineStatus.RUNNING)
+        await asyncio.sleep(0.1)
+        assert eng.pipeline.status == StreamPipelineStatus.DEGRADED
+        # One history entry for the tick, not 20.
+        assert eng.metrics.errors == ["sink[0]: Internal server error (20 of 20 writes failed)"]
+    finally:
+        await eng.stop()
+
+
+class PoisonSink(FailingSink):
+    """Always rejects one key's windows and accepts every other key's."""
+
+    async def emit_window(self, window, pipeline_id: str) -> None:
+        self.calls += 1
+        if window.window_key.startswith("poison"):
+            raise RuntimeError("payload rejected")
+        self.written.append(window)
+
+
+async def test_poison_window_does_not_flap_status_or_storm_webhooks(monkeypatch):
+    """Review fix 2: with one always-failing window among good ones, the status
+    flipped DEGRADED<->RUNNING on every window close and STREAM_DEGRADED (a
+    pipeline.failed webhook) was re-published each time."""
+    sub_id, queue = streaming_manager.subscribe("pipeline:*")
+    try:
+        sink = PoisonSink(fail_times=0)
+        steps = []
+        for n in range(1, 9):  # each read closes the previous read's two windows
+            t = 10_000.0 * n
+            steps.append([
+                StreamEvent(timestamp=t, key="poison", data={}),
+                StreamEvent(timestamp=t, key="good", data={}),
+            ])
+        src = ScriptedSource(steps, delay=0.05)
+        eng = _engine(monkeypatch, src, sink)
+        seen: List[StreamPipelineStatus] = []
+        original_tick = eng._component_tick
+
+        async def recording_tick(component, errors, successes):
+            failed = await original_tick(component, errors, successes)
+            if component.startswith("sink") and (errors or successes):
+                seen.append(eng.pipeline.status)
+            return failed
+
+        eng._component_tick = recording_tick
+        await eng.start()
+        try:
+            await _until(lambda: len([w for w in sink.written]) >= 5)
+            assert eng.pipeline.status == StreamPipelineStatus.DEGRADED
+            assert StreamPipelineStatus.RUNNING not in seen  # never flapped back
+            mine = [e for e in _drain(queue) if e.topic == f"pipeline:{eng.pipeline.id}"]
+            assert [e.payload["code"] for e in mine] == ["STREAM_DEGRADED"]
+        finally:
+            await eng.stop()
+    finally:
+        streaming_manager.unsubscribe(sub_id)
+
+
+# ── Sink adapters surface their failures ─────────────────────────────
+
+async def test_kafka_sink_raises_a_typed_error_when_a_write_fails():
+    """Review fix 3: KafkaSink only logged producer failures, so the engine
+    never saw them."""
+    from pipeline.streaming.models import WindowState
+    from pipeline.streaming.sinks.base import StreamSinkError
+    from pipeline.streaming.sinks.kafka_sink import KafkaSink
+
+    class _BrokenProducer:
+        async def send_and_wait(self, topic, value=None, key=None):
+            raise RuntimeError("SASL authentication failed: password=hunter2")
+
+    sink = KafkaSink({"topic": "out"})
+    sink._producer = _BrokenProducer()
+    window = WindowState(window_key="k|0-5", window_start=0, window_end=5)
+    with pytest.raises(StreamSinkError) as info:
+        await sink.emit_window(window, "p1")
+    assert "hunter2" not in info.value.message
+    assert isinstance(info.value.__cause__, RuntimeError)
+    with pytest.raises(StreamSinkError):
+        await sink.emit_late_event(StreamEvent(timestamp=1.0, data={}), "p1")
+
+
+async def test_webhook_sink_raises_after_its_retries_run_out(monkeypatch):
+    """Review fix 3: WebhookSink returned quietly once its retries ran out."""
+    from pipeline.streaming.models import WindowState
+    from pipeline.streaming.sinks import webhook_sink as wh
+    from pipeline.streaming.sinks.base import StreamSinkError
+
+    async def _public(_url):
+        return True
+
+    monkeypatch.setattr(wh.ssrf, "is_public_url_async", _public)
+
+    class _Resp:
+        status_code = 503
+
+    class _Client:
+        posts = 0
+
+        async def post(self, url, content=None, headers=None):
+            _Client.posts += 1
+            return _Resp()
+
+    sink = wh.WebhookSink({"url": "https://hooks.example.com/x?token=s3cret", "retries": 1})
+    sink._client = _Client()
+    window = WindowState(window_key="k|0-5", window_start=0, window_end=5)
+    with pytest.raises(StreamSinkError) as info:
+        await sink.emit_window(window, "p1")
+    assert _Client.posts == 2  # its own retry ran first
+    assert "HTTP 503" in info.value.message
+    assert "s3cret" not in info.value.message
+
+
+async def test_webhook_sink_raises_when_the_url_stops_being_public(monkeypatch):
+    from pipeline.streaming.models import WindowState
+    from pipeline.streaming.sinks import webhook_sink as wh
+    from pipeline.streaming.sinks.base import StreamSinkError
+
+    async def _private(_url):
+        return False
+
+    monkeypatch.setattr(wh.ssrf, "is_public_url_async", _private)
+
+    class _Client:
+        async def post(self, url, content=None, headers=None):
+            raise AssertionError("must not post to a non-public address")
+
+    sink = wh.WebhookSink({"url": "https://hooks.example.com/x"})
+    sink._client = _Client()
+    with pytest.raises(StreamSinkError):
+        await sink.emit_window(WindowState(window_key="k", window_start=0, window_end=5), "p1")
+
+
+# ── Pause/resume on a FAILED pipeline ────────────────────────────────
+
+async def test_pause_and_resume_refuse_a_failed_pipeline(monkeypatch):
+    """Review fix 4: a FAILED engine has finished its tasks and released its
+    resources; pause/resume flipped it to PAUSED and then RUNNING anyway."""
+    from fastapi import HTTPException
+
+    from shared.exceptions import ConflictError
+
+    src = ScriptedSource([RuntimeError("x")] * 10)
+    eng = _engine(monkeypatch, src)
+    await eng.start()
+    await _until(lambda: eng.pipeline.status == StreamPipelineStatus.FAILED)
+    await _until(lambda: eng._task.done() and eng._ingest_task.done())
+
+    with pytest.raises(ConflictError):
+        await eng.pause()
+    with pytest.raises(ConflictError):
+        await eng.resume()
+    assert eng.pipeline.status == StreamPipelineStatus.FAILED
+
+    monkeypatch.setitem(api._pipelines, eng.pipeline.id, eng.pipeline)
+    monkeypatch.setitem(api._engines, eng.pipeline.id, eng)
+    eng.pipeline.tenant_id = None
+    for call in (api.pause_pipeline, api.resume_pipeline):
+        with pytest.raises(HTTPException) as info:
+            await call(eng.pipeline.id, user=None)
+        assert info.value.status_code == 409
+    assert eng.pipeline.status == StreamPipelineStatus.FAILED
 
 
 # ── Kafka source ─────────────────────────────────────────────────────

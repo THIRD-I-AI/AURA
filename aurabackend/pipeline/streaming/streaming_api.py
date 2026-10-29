@@ -318,6 +318,9 @@ async def pause_pipeline(pipeline_id: str, user: Optional[Dict[str, Any]] = Depe
         engine = _engines.get(pipeline_id)
         if not engine:
             raise HTTPException(status_code=404, detail="No running engine for this pipeline")
+        if engine.pipeline.status == StreamPipelineStatus.FAILED:
+            # BUG-569: its tasks are finished and its resources released; pause would only fake a status.
+            raise HTTPException(status_code=409, detail="Pipeline has failed; stop and restart it")
         await engine.pause()
     return {"status": engine.pipeline.status.value, "pipeline_id": pipeline_id}
 
@@ -329,6 +332,9 @@ async def resume_pipeline(pipeline_id: str, user: Optional[Dict[str, Any]] = Dep
         engine = _engines.get(pipeline_id)
         if not engine:
             raise HTTPException(status_code=404, detail="No running engine for this pipeline")
+        if engine.pipeline.status == StreamPipelineStatus.FAILED:
+            # BUG-569: its tasks are finished and its resources released; resume would only fake a status.
+            raise HTTPException(status_code=409, detail="Pipeline has failed; stop and restart it")
         await engine.resume()
     return {"status": engine.pipeline.status.value, "pipeline_id": pipeline_id}
 
