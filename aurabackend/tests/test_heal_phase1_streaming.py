@@ -503,3 +503,20 @@ async def test_api_treats_degraded_as_live(monkeypatch):
         await api.start_pipeline(pipe.id, user=None)
     assert started.value.status_code == 409
     assert api._tenant_running_count(None, excluding="other") >= 1
+
+
+async def test_late_events_a_sink_ignores_do_not_hide_its_failing_windows(monkeypatch):
+    # BUG-569 re-review: BaseSink.emit_late_event is a no-op, so counting it as a
+    # successful write reset the failure streak and a dead sink never reached FAILED.
+    from pipeline.streaming.models import LateDataPolicy
+
+    sink = FailingSink(fail_times=10_000)
+    steps = [[StreamEvent(timestamp=100.0 * n, key="k", data={}), StreamEvent(timestamp=1.0, key="k", data={})]
+             for n in range(1, 40)]
+    src = ScriptedSource(steps, delay=0.05)
+    eng = _engine(monkeypatch, src, sink)
+    eng.pipeline.window.late_data_policy = LateDataPolicy.DEAD_LETTER
+    eng.pipeline.window.allowed_lateness_seconds = 0
+    await eng.start()
+    await _until(lambda: eng.pipeline.status == StreamPipelineStatus.FAILED)
+    await _until(lambda: sink.stopped and src.stopped)

@@ -613,12 +613,14 @@ class StreamingEngine:
                     if self.pipeline.window.late_data_policy == LateDataPolicy.DEAD_LETTER:
                         for late_ev in all_late:
                             for i, sink in enumerate(self._sinks):
+                                # Errors count, successes do not: most sinks ignore late
+                                # events (BaseSink.emit_late_event is a no-op), and counting
+                                # that as a good write reset the failure streak of a sink
+                                # whose windows were all failing (BUG-569).
                                 try:
                                     await sink.emit_late_event(late_ev, self.pipeline.id)
                                 except Exception as exc:
                                     sink_errors[i].append(exc)
-                                else:
-                                    sink_writes[i] += 1
 
                     for i in range(len(self._sinks)):
                         if await self._component_tick(f"sink[{i}]", sink_errors[i], sink_writes[i]):
