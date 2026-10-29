@@ -285,6 +285,16 @@ class DriftDetector:
         """Whether a baseline has ever been registered for this source."""
         return bool(self._store.peek(source_id).baseline)
 
+    def schema_baseline(self, source_id: str) -> Optional[Dict[str, str]]:
+        """The schema this source's batches are compared against, if any.
+
+        BUG-563: the first batch a source ever sends is adopted as its schema baseline
+        even without a registered distribution baseline (_check_schema_drift), so a
+        caller that registers one "only if absent" must keep that schema, not replace
+        it with the batch it is registering.
+        """
+        return self._store.peek(source_id).schema
+
     def register_reference_embedding(self, source_id: str, embedding: List[float]) -> None:
         """Add a reference embedding vector to the source's context matrix."""
         with self._lock_for(source_id):
