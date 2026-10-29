@@ -549,7 +549,39 @@ class ConnectorIngestRequest(BaseModel):
     source_id: Optional[str] = None
     batch_size: int = 500
     max_rows: Optional[int] = None
-    register_baseline: bool = True
+    # BUG-563: True re-registers the baseline from this run's first chunk. It used to
+    # default to True, so every run made its own data the new normal and drift since
+    # the last run was never reported. By default a baseline is seeded only for a
+    # source that has none.
+    register_baseline: bool = False
+
+
+async def _publish_drift(
+    source_id: str, workspace_id: str, connector_type: str, table: str, result: Dict[str, Any],
+) -> None:
+    """Announce a drifted batch on the event bus.
+
+    BUG-561: the webhook dispatcher turns a uasr 'data' event whose payload has
+    drift_detected into uasr.drift, but nothing published one -- the bridge only
+    counted drift, so a webhook subscribed to uasr.drift never fired. The event
+    carries the caller's workspace so only that workspace's subscriptions get it.
+    """
+    from shared.streaming_manager import StreamEvent, streaming_manager
+
+    await streaming_manager.publish(StreamEvent(
+        topic="uasr:drift",
+        event_type="data",
+        payload={
+            "drift_detected": True,
+            "source_id": source_id,
+            "drift_type": result.get("drift_type"),
+            "severity": result.get("severity"),
+            "drift_event_id": result.get("drift_event_id"),
+            "connector_type": connector_type,
+            "table": table,
+        },
+        workspace_id=workspace_id,
+    ))
 
 
 async def _paged_batches(connector: Any, query: str, batch_size: int, row_cap: int):
@@ -676,7 +708,7 @@ async def ingest_connector_data(connector_type: str, req: ConnectorIngestRequest
 
                 columns = list(rows[0].keys())
 
-                if first and req.register_baseline:
+                if first:
                     try:
                         base_resp = await client.post(
                             f"{_UASR_URL}/uasr/baseline",
@@ -685,6 +717,9 @@ async def ingest_connector_data(connector_type: str, req: ConnectorIngestRequest
                                 "columns": columns,
                                 "rows": rows,
                                 "schema_snapshot": schema_snapshot,
+                                # BUG-563: UASR keeps an existing baseline unless the
+                                # caller explicitly asked to replace it.
+                                "only_if_absent": not req.register_baseline,
                             },
                         )
                         if base_resp.status_code >= 400:
@@ -722,6 +757,7 @@ async def ingest_connector_data(connector_type: str, req: ConnectorIngestRequest
                 drifted = bool(result.get("drift_detected") or (result.get("drift") or {}).get("detected"))
                 if drifted:
                     drift_events += 1
+                    await _publish_drift(source_id, wsid, connector_type, req.table_name, result)
                 total_rows += len(rows)
                 batch_count += 1
                 if len(batches) < _INGEST_DETAIL_LIMIT:

@@ -484,6 +484,10 @@ class BaselineRequest(BaseModel):
     columns: List[str] = Field(default_factory=list)
     rows: List[Dict[str, Any]] = Field(default_factory=list)
     schema_snapshot: Optional[Dict[str, Any]] = None
+    # BUG-563: the connector ingest bridge sends this on every run. Re-registering a
+    # source's baseline from today's rows makes today's drift the new normal, so a
+    # bridge run only seeds a baseline for a source that has none.
+    only_if_absent: bool = False
 
 
 class RollbackRequest(BaseModel):
@@ -854,9 +858,25 @@ async def register_baseline(req: BaselineRequest, request: Request):
         schema_snapshot=req.schema_snapshot,
     )
 
+    # BUG-563: with only_if_absent an existing baseline is kept, so the rows of this
+    # run are compared against it instead of replacing it. A source with only an
+    # adopted schema (its first batch was ingested without a baseline) gets its
+    # distributions registered but keeps that schema, which a rename since then
+    # must still be detected against.
+    existing_schema = None
+    if req.only_if_absent:
+        if await asyncio.to_thread(_detector.has_baseline, batch.source_id):
+            return {
+                "status": "exists",
+                "source_id": req.source_id,
+                "row_count": 0,
+                "columns": batch.columns,
+            }
+        existing_schema = await asyncio.to_thread(_detector.schema_baseline, batch.source_id)
+
     # register_baseline() may hit a blocking Redis round-trip under the
     # distributed/redis UASR backends -- offload it (backend.md).
-    await asyncio.to_thread(_detector.register_baseline, batch.source_id, batch)
+    await asyncio.to_thread(_detector.register_baseline, batch.source_id, batch, existing_schema)
     version_id = _gateway.register_baseline(batch, desc="manual-baseline")
 
     # DSR-009: this manual one-shot path is the other place a baseline can
