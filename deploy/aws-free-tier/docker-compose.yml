@@ -129,9 +129,9 @@ services:
   # heavier, so it reuses the SAME base image rather than needing its own.
   #
   # Single-node on purpose. The prod compose runs redis + postgres for
-  # distributed repair admission; runtime_config's defaults (state=memory,
-  # repair=local) have no redis dependency at all, which is what makes a
-  # 1 GB box viable.
+  # distributed repair admission; this box runs state=sqlite, repair=local,
+  # which have no redis dependency at all, which is what makes a 1 GB box
+  # viable.
   uasr_service:
     image: *image
     restart: unless-stopped
@@ -165,14 +165,19 @@ services:
       # run concurrently on this single-box deployment, so one noisy
       # source's drift storm can't starve every other source's budget.
       UASR_REPAIR_MAX_PER_SOURCE: "2"
-      # Single node today: memory state + local repair admission, no redis.
+      # Single node today: SQLite drift state on the volume + local repair
+      # admission, no redis. BUG-567: memory state was wiped on every
+      # redeploy, so the first batch after a deploy became the new baseline
+      # whatever it held. Its own file, not uasr.db above, so the detector's
+      # sync writes never contend with the async SQLAlchemy engine's lock.
       # With 2+ replicas these MUST become redis/distributed or each replica
       # keeps its own drift state and its own repair scheduler — both would
       # detect the same drift and both would repair it, concurrently.
       # Flip by setting these in .env and starting the `scale` profile:
       #   UASR_STATE_BACKEND=redis  UASR_REPAIR_BACKEND=distributed
       #   docker compose --profile scale up -d
-      UASR_STATE_BACKEND: ${UASR_STATE_BACKEND:-memory}
+      UASR_STATE_BACKEND: ${UASR_STATE_BACKEND:-sqlite}
+      UASR_STATE_PATH: /data/state/uasr_state.db
       UASR_REPAIR_BACKEND: ${UASR_REPAIR_BACKEND:-local}
       UASR_REDIS_URL: ${UASR_REDIS_URL:-redis://redis:6379/0}
     volumes:
