@@ -13,7 +13,10 @@ try:
 except ImportError:  # pragma: no cover - exercised only when driver absent
     asyncpg = None
 
+import asyncio
+
 from connectors.sql_limit import with_row_limit  # noqa: E402
+from shared.db_tls import build_ssl_context
 from shared.sql_identifiers import quote_identifier
 
 from .base import BaseConnector, ConnectorConfig
@@ -35,8 +38,10 @@ class PostgreSQLConnector(BaseConnector):
                 "PostgreSQL connector requires the 'asyncpg' driver, which is "
                 "not installed. Install it with: pip install asyncpg"
             )
+        ssl_ctx = await asyncio.to_thread(build_ssl_context, self.config)
         try:
             self.pool = await asyncpg.create_pool(
+                ssl=ssl_ctx,
                 user=self.config.username or "postgres",
                 password=self.config.password or "",
                 database=self.config.database or "postgres",

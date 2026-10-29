@@ -16,6 +16,7 @@ if any other code constructs one.
 """
 from __future__ import annotations
 
+import asyncio
 import os
 from typing import Any, Callable, Optional
 
@@ -89,6 +90,16 @@ async def open_connector(
     conn_type = conn_type.lower()
     pinned = await require_allowed_host(conn_type, getattr(config, "host", None))
     if conn_type in NETWORK_HOST_CONNECTORS:
+        if hasattr(config, "tls_mode"):
+            from shared.db_tls import build_ssl_context
+
+            # ADR-001: TLS verifies the certificate as the name the caller entered,
+            # taken here from `host` before it is pinned (never from the request body).
+            config.tls_server_name = str(getattr(config, "host", "") or "").strip().strip("[]") or None
+
+            # Built once here so a bad CA bundle or key pair is a 400 now, not a
+            # connection that quietly reports "failed" later.
+            await asyncio.to_thread(build_ssl_context, config)
         # BUG-547: the driver gets the address that was checked, not the name, so
         # it cannot resolve again and be rebound to an internal address.
         config.host = pinned

@@ -167,6 +167,9 @@ def _validated_extra(spec: Any, extra: Dict[str, Any]) -> Dict[str, Any]:
     return extra
 
 
+_TLS_FIELDS = ("tls_mode", "tls_ca_pem", "tls_client_cert_pem", "tls_client_key_pem")
+
+
 def _stored_connector_config(conn: Dict[str, Any], password: Optional[str], extra: Dict[str, Any]) -> ConnectorConfig:
     """ConnectorConfig for a saved connection, including its decrypted extra settings."""
     extra = dict(extra)
@@ -175,11 +178,15 @@ def _stored_connector_config(conn: Dict[str, Any], password: Optional[str], extr
     # `project_id`. This used to put the project id into `database`, so a saved BigQuery
     # connection queried <project>.<PROJECT>.<table> (BUG-201).
     database = conn.get("database") or extra.pop("dataset", None) or ""
+    # ADR-001 / BUG-560: the TLS settings live in the encrypted extra settings; the
+    # stored `ssl` switch used to be read back and then dropped here.
+    tls = {k: extra.pop(k) for k in _TLS_FIELDS if k in extra}
     return ConnectorConfig(
         source_type=SourceType(conn["type"]), name=conn["name"],
         host=conn.get("host") or "", port=conn.get("port") or 5432,
         username=conn.get("username") or "", password=password or "",
         database=database, credentials_json=credentials, extra_params=extra or None,
+        ssl=bool(conn.get("ssl")), **tls,
     )
 
 

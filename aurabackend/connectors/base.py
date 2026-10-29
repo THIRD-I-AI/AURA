@@ -40,6 +40,15 @@ class ConnectorConfig:
     database: Optional[str] = None
     credentials_json: Optional[Dict[str, Any]] = None
     extra_params: Optional[Dict[str, Any]] = None
+    # ADR-001 / BUG-560. `ssl` is the connection form's old boolean switch; tls_mode
+    # (disable | require | verify-full) wins when set. tls_server_name is the name the
+    # caller entered, kept by open_connector before `host` is pinned to an IP.
+    ssl: bool = False
+    tls_mode: Optional[str] = None
+    tls_server_name: Optional[str] = None
+    tls_ca_pem: Optional[str] = None
+    tls_client_cert_pem: Optional[str] = None
+    tls_client_key_pem: Optional[str] = None
 
 
 class ConnectorMetadata:

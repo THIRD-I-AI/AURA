@@ -2,6 +2,7 @@
 MySQL connector for AURA
 """
 
+import asyncio
 import logging
 from datetime import datetime
 from typing import Any, Dict, List, Optional
@@ -9,6 +10,7 @@ from typing import Any, Dict, List, Optional
 import aiomysql
 
 from connectors.sql_limit import with_row_limit  # noqa: E402
+from shared.db_tls import build_ssl_context
 from shared.sql_identifiers import quote_mysql_identifier  # BUG-546: not the ANSI "x" quoter
 
 from .base import BaseConnector, ConnectorConfig
@@ -25,8 +27,10 @@ class MySQLConnector(BaseConnector):
 
     async def connect(self) -> bool:
         """Establish connection to MySQL"""
+        ssl_ctx = await asyncio.to_thread(build_ssl_context, self.config)
         try:
             self.pool = await aiomysql.create_pool(
+                ssl=ssl_ctx,
                 host=self.config.host or "localhost",
                 port=self.config.port or 3306,
                 user=self.config.username or "root",
