@@ -290,7 +290,9 @@ describe('ExceptionQueue (HITL workbench)', () => {
     const loadHash = async (hash: string) => {
       const input = screen.getByLabelText(/record hash/i);
       await userEvent.clear(input);
-      await userEvent.type(input, hash);
+      // Typing 64 characters one keystroke at a time outran the 5s timeout under full-suite load.
+      await userEvent.click(input);
+      await userEvent.paste(hash);
       await userEvent.click(screen.getByRole('button', { name: /load audit/i }));
     };
 
