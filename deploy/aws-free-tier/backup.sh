@@ -31,7 +31,9 @@ BACKUP_ROOT="${AURA_BACKUP_ROOT:-$(pwd)/backups}"
 RETENTION_DAYS="${AURA_BACKUP_RETENTION_DAYS:-7}"
 SERVICE="api_gateway"
 STAGE="/data/_backup_stage"
-SQLITE_DBS="gateway.db ledger.db metadata.db uasr.db"
+# uasr_state.db is the durable drift-state store (BUG-567). It holds every
+# source's learned baseline; losing it makes the next batch the new "normal".
+SQLITE_DBS="gateway.db ledger.db metadata.db uasr.db uasr_state.db"
 FILE_DIRS="keys uploads audit artifacts uasr_parquet"
 
 die() { echo "FAILED: $*" >&2; exit 1; }

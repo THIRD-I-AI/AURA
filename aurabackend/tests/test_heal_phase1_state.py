@@ -142,3 +142,22 @@ def test_bug567_free_tier_compose_defaults_uasr_state_to_sqlite_on_the_data_volu
     assert any(v.split(":")[1] == "/data" for v in svc["volumes"])
     # Not the SQLAlchemy file (two writers on one SQLite file) nor the DuckDB lake.
     assert path not in (env["METADATA_DATABASE_URL"].split("////", 1)[-1], env["UASR_DUCKDB_PATH"])
+
+
+_BACKUP_SH = _COMPOSE.parent / "backup.sh"
+
+
+def test_bug567_backup_script_includes_the_durable_drift_state_db():
+    # A durable store that the nightly backup skips is lost on a volume loss,
+    # which is the same wiped-baseline failure BUG-567 fixed for redeploys.
+    import re
+    import shlex
+
+    m = re.search(r'^SQLITE_DBS="([^"]*)"', _BACKUP_SH.read_text(encoding="utf-8"), re.M)
+    assert m, "SQLITE_DBS not found in backup.sh"
+    dbs = shlex.split(m.group(1))
+    env = yaml.safe_load(_COMPOSE.read_text(encoding="utf-8"))["services"]["uasr_service"]["environment"]
+    path = env["UASR_STATE_PATH"]
+    # restore copies /restore/state/*.db into /data/state, so the file must live there.
+    assert path.startswith("/data/state/") and path.endswith(".db")
+    assert path.rsplit("/", 1)[-1] in dbs
