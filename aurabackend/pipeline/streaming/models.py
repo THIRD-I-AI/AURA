@@ -62,6 +62,8 @@ class StreamPipelineStatus(str, Enum):
     DRAFT = "draft"
     STARTING = "starting"
     RUNNING = "running"
+    # BUG-569: still running, but a source or sink is currently failing.
+    DEGRADED = "degraded"
     PAUSED = "paused"
     STOPPING = "stopping"
     STOPPED = "stopped"
