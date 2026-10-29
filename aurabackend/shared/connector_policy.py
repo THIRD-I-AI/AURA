@@ -19,7 +19,7 @@ from __future__ import annotations
 import os
 from typing import Any, Callable, Optional
 
-from shared.ssrf import is_allowed_db_host
+from shared.ssrf import resolve_allowed_db_host
 
 # Connector types that open a network connection to a caller-named host.
 NETWORK_HOST_CONNECTORS = frozenset({"postgresql", "mysql"})
@@ -31,9 +31,14 @@ class ConnectorPolicyError(ValueError):
     """The requested connector target is not one the caller may reach."""
 
 
-async def require_allowed_host(conn_type: str, host: Any) -> None:
-    if conn_type in NETWORK_HOST_CONNECTORS and not await is_allowed_db_host(host):
+async def require_allowed_host(conn_type: str, host: Any) -> Any:
+    """Return the address to connect to for ``host`` (see shared.ssrf, BUG-547)."""
+    if conn_type not in NETWORK_HOST_CONNECTORS:
+        return host
+    pinned = await resolve_allowed_db_host(host)
+    if pinned is None:
         raise ConnectorPolicyError(f"{conn_type} host must be a public address")
+    return pinned
 
 
 def confine_file_paths(conn_type: str, config: Any, files_root: Optional[str]) -> None:
@@ -82,7 +87,11 @@ async def open_connector(
     None for an unknown or unavailable connector type, as the registry does.
     """
     conn_type = conn_type.lower()
-    await require_allowed_host(conn_type, getattr(config, "host", None))
+    pinned = await require_allowed_host(conn_type, getattr(config, "host", None))
+    if conn_type in NETWORK_HOST_CONNECTORS:
+        # BUG-547: the driver gets the address that was checked, not the name, so
+        # it cannot resolve again and be rebound to an internal address.
+        config.host = pinned
     confine_file_paths(conn_type, config, files_root)
     if build is not None:
         return build(config)
