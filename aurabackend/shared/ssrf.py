@@ -67,11 +67,14 @@ def _pin_public_address(name: str) -> Optional[str]:
     except ValueError:
         try:
             infos = socket.getaddrinfo(name, None)
-        except (socket.gaierror, UnicodeError):
+        except (OSError, UnicodeError):  # gaierror is an OSError; any lookup failure is a refusal, not a 500
             return None
         candidates = [ipaddress.ip_address(info[4][0]) for info in infos]
     if candidates and all(_is_public_address(ip) for ip in candidates):
-        return str(candidates[0])
+        # BUG-558: pinning one address takes away the driver's own v6-to-v4 fallback,
+        # so prefer IPv4: a dual-stack name whose AAAA sorts first would otherwise
+        # fail from a container with no IPv6 route.
+        return str(next((ip for ip in candidates if ip.version == 4), candidates[0]))
     return None
 
 

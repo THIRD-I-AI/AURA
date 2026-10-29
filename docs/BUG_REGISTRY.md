@@ -5365,12 +5365,12 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Fix:** pending. Suggested: Connect to the address returned by shared.ssrf.resolve_allowed_db_host (BUG-547).
 
 ## BUG-558: BUG-547's pinned address is the first getaddrinfo answer, so a dual-stack DB host fails where IPv6 has no route
-- **Status:** open
+- **Status:** fixed
 - **Found by:** review of the round-11 fixes (run wf_537c191c-df7), 2026-10-29. `aurabackend/shared/ssrf.py:64`.
 - **Severity:** low
 - **Root cause:** _pin_public_address pins candidates[0]. When that is an AAAA record and the container has no IPv6 route, the connection fails, where before the driver fell back to the A record. Only gaierror and UnicodeError are caught, so another OSError from getaddrinfo reaches open_connector as a 500 instead of a policy 400.
 - **Failure scenario:** A connector to a dual-stack managed Postgres whose AAAA sorts first fails to connect from a v4-only container.
-- **Fix:** pending. Suggested: Prefer an IPv4 vetted address, or try each vetted address in turn; map other OSErrors to the policy error.
+- **Fix:** shared/ssrf.py `_pin_public_address` now pins an IPv4 address when the name has one (falling back to the first address for an IPv6-only name), so pinning no longer drops the driver's own v6-to-v4 fallback; any OSError from getaddrinfo is a policy refusal instead of a 500. Tests `aurabackend/tests/test_audit_round_11_connectors.py::test_a_dual_stack_host_is_pinned_to_its_ipv4_address, ::test_a_lookup_os_error_is_a_refusal_not_a_crash` (fail on the old code), `::test_an_ipv6_only_host_is_still_pinned` (guard).
 
 ## BUG-559: Demo-artifact preload re-check verifies the signature but not BUG-549's record-hash binding
 - **Status:** open

@@ -183,3 +183,40 @@ async def test_an_operator_allowed_private_host_is_passed_through_unchanged(monk
     config = ConnectorConfig(source_type=SourceType.POSTGRESQL, name="p", host="db.internal")
     built = await open_connector("postgresql", config, files_root=None, build=lambda cfg: cfg)
     assert built.host == "db.internal"
+
+
+# BUG-558: pinning one address dropped the driver's own IPv6-to-IPv4 fallback.
+@pytest.mark.asyncio
+async def test_a_dual_stack_host_is_pinned_to_its_ipv4_address(monkeypatch):
+    from shared.ssrf import resolve_allowed_db_host
+
+    monkeypatch.delenv("AURA_CONNECTORS_ALLOW_PRIVATE_HOSTS", raising=False)
+    monkeypatch.setattr(socket, "getaddrinfo", lambda *a, **k: [
+        (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("2606:4700:4700::1111", 0, 0, 0)),
+        (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("8.8.8.8", 0)),
+    ])
+    assert await resolve_allowed_db_host("db.dual.example") == "8.8.8.8"
+
+
+@pytest.mark.asyncio
+async def test_an_ipv6_only_host_is_still_pinned(monkeypatch):
+    from shared.ssrf import resolve_allowed_db_host
+
+    monkeypatch.delenv("AURA_CONNECTORS_ALLOW_PRIVATE_HOSTS", raising=False)
+    monkeypatch.setattr(socket, "getaddrinfo", lambda *a, **k: [
+        (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("2606:4700:4700::1111", 0, 0, 0)),
+    ])
+    assert await resolve_allowed_db_host("db.v6.example") == "2606:4700:4700::1111"
+
+
+@pytest.mark.asyncio
+async def test_a_lookup_os_error_is_a_refusal_not_a_crash(monkeypatch):
+    from shared.ssrf import resolve_allowed_db_host
+
+    monkeypatch.delenv("AURA_CONNECTORS_ALLOW_PRIVATE_HOSTS", raising=False)
+
+    def broken(*a, **k):
+        raise OSError("resolver unavailable")
+
+    monkeypatch.setattr(socket, "getaddrinfo", broken)
+    assert await resolve_allowed_db_host("db.example") is None
