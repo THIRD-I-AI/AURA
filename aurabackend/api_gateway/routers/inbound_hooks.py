@@ -305,7 +305,7 @@ async def _fire_agent(
     pass_payload_as: Optional[str],
     workspace_id: Optional[str] = None,
 ) -> Dict[str, Any]:
-    from agents.base import AgentContext, AgentStatus
+    from agents.base import AgentContext, AgentStatus, current_tenant
     from agents.executor import DAGExecutor
     from agents.memory import AgentMemory
     from agents.planner import PlannerAgent
@@ -322,6 +322,11 @@ async def _fire_agent(
     memory = AgentMemory()
 
     async def _run() -> None:
+        # BUG-562: agents that call UASR (MonitorAgent) must act as the hook OWNER's
+        # tenant, recovered from its workspace like _fire_pipeline does (BUG-035).
+        # Set inside the task so it never leaks into the request's own context.
+        from .workspaces import tenant_from_workspace_id
+        current_tenant.set(tenant_from_workspace_id(workspace_id))
         try:
             async def _cb(message: str, agent: str, pct: float) -> None:
                 await streaming_manager.publish_progress(
