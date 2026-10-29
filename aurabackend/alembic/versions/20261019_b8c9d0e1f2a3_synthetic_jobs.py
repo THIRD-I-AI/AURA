@@ -27,6 +27,12 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
+    # BUG-554: api_gateway/persistence.py's create_all runs on every gateway start
+    # (and as the fallback of a worker whose migration failed), so this table can
+    # already exist. An unguarded CREATE aborts the whole upgrade and leaves the
+    # database stuck at the previous revision for good.
+    if 'gateway_synthetic_jobs' in sa.inspect(op.get_bind()).get_table_names():
+        return
     op.create_table(
         'gateway_synthetic_jobs',
         sa.Column('job_id', sa.String(length=32), nullable=False),

@@ -46,6 +46,10 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
+    # BUG-554: a startup create_all can already have built this from the current model
+    # (see bb602a415b1a); re-adding it aborts the whole upgrade.
+    if 'workspace_id' in {c['name'] for c in sa.inspect(op.get_bind()).get_columns('semantic_models')}:
+        return
     op.add_column(
         'semantic_models',
         sa.Column('workspace_id', sa.String(length=64), nullable=True),

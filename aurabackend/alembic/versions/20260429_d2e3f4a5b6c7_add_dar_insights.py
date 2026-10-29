@@ -20,6 +20,10 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
+    # BUG-554: a startup create_all can already have built this from the current model
+    # (see bb602a415b1a); re-adding it aborts the whole upgrade.
+    if 'dar_insights' in sa.inspect(op.get_bind()).get_table_names():
+        return
     op.create_table(
         'dar_insights',
         sa.Column('id', sa.String(length=64), primary_key=True),
