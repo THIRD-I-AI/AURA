@@ -354,3 +354,12 @@ def test_the_late_webhook_reaches_only_the_owning_tenant(env, tmp_path, monkeypa
         _run(scenario)
     finally:
         server.shutdown()
+
+
+def test_query_late_is_in_the_webhook_event_catalog():
+    # The UI's event picker (WebhooksPanel) is built from GET /webhooks/events,
+    # so a tenant can only subscribe to query.late directly if it is listed.
+    from api_gateway.routers import webhooks
+
+    body = asyncio.run(webhooks.list_known_events())
+    assert "query.late" in body["events"]

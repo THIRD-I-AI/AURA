@@ -11,7 +11,7 @@ vi.mock('../../../services/api', () => ({
   },
 }));
 
-import { savedQueryService } from '../../../services/api';
+import { savedQueryService, type SavedQueryRun } from '../../../services/api';
 import SchedulerPanel from '../SchedulerPanel';
 
 const list = savedQueryService.list as ReturnType<typeof vi.fn>;
@@ -60,6 +60,21 @@ describe('SchedulerPanel', () => {
     await user.click(screen.getByRole('button', { name: /show runs/i }));
     await waitFor(() => expect(listRuns).toHaveBeenCalledWith('q1'));
     expect(await screen.findByText(/12 rows · 45ms/)).toBeInTheDocument();
+  });
+
+  it('shows a run the freshness check marked late as LATE in the history', async () => {
+    // The gateway writes status 'late' into run history when a slot is missed.
+    const lateRun: SavedQueryRun = {
+      id: 'r-late', started_at: '2026-07-30T10:00:00Z', completed_at: '2026-07-30T10:00:00Z',
+      status: 'late', row_count: 0, execution_time_ms: 0, error: 'missed slot',
+    };
+    list.mockResolvedValue([scheduled]);
+    listRuns.mockResolvedValue([lateRun]);
+    render(<SchedulerPanel />);
+    const user = userEvent.setup();
+    await waitFor(() => expect(screen.getByText('Daily revenue')).toBeInTheDocument());
+    await user.click(screen.getByRole('button', { name: /show runs/i }));
+    expect(await screen.findByText('LATE')).toBeInTheDocument();
   });
 
   it('BUG-327: re-opening a job and clicking Refresh fetch fresh run history', async () => {
