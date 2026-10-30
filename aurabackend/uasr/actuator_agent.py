@@ -13,14 +13,21 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import os
+import re
 import sys
 import textwrap
-from typing import Any, Dict, Optional, cast
+from collections import Counter
+from decimal import Decimal
+from typing import Any, Dict, List, Optional, Tuple, cast
+
+import numpy as np
 
 from agents.base import AgentContext, AgentResult, AgentStatus, BaseAgent, Severity
 from agents.params import ActuatorAgentParams
-from uasr.models import DiagnosisResult, DriftType, ShimResult
+from uasr.drift_detector import DriftDetector
+from uasr.models import ColumnDistribution, DiagnosisResult, DriftType, ShimResult
 
 logger = logging.getLogger("uasr.actuator")
 
@@ -83,6 +90,16 @@ class SynthesisActuatorAgent(BaseAgent):
             if escalation_reason:
                 generation_method = "escalation"
                 shim_code = self._escalation_shim(diagnosis, escalation_reason)
+        if shim_code and not escalation_reason:
+            # ADR-002 phase 2a: none of these templates is proven on the data. Dropping a
+            # new column, casting a failed value to None, defaulting a removed column to
+            # None, renaming by list order, clipping, and rescaling by a mean ratio are all
+            # guesses. They stay as proposals in the approval queue; the only automatic
+            # repairs are the per-batch proven rules (prove_* below, RecoveryLoop.prove_repairs).
+            escalation_reason = (
+                f"ADR-002: the {_template_name(shim_code)} template is not a proven repair; "
+                "it is proposed for review and never applied automatically"
+            )
 
         if not shim_code:
             await self._report("Using LLM for shim generation…", 50)
@@ -512,6 +529,11 @@ def _doc_safe(text: Any) -> str:
     return " ".join(str(text).replace("\\", "/").replace('"', "'").split())
 
 
+def _template_name(shim_code: str) -> str:
+    first = shim_code.split("\n", 1)[0]
+    return first.replace('"""UASR Shim - ', "").replace('"""UASR Shim — ', "").strip() or "generated"
+
+
 def _python_cast(dtype: str) -> str:
     """Map a dtype string to a Python type constructor name."""
     dtype_lower = dtype.lower()
@@ -522,3 +544,320 @@ def _python_cast(dtype: str) -> str:
     if "bool" in dtype_lower:
         return "bool"
     return "str"
+
+
+# ────────────────────────────────────────────────────────────────────
+# Proven repairs (ADR-002, "What proven means for each repair")
+# --------------------------------------------------------------------
+# Pure functions over one batch and the source's baseline profile. Each either
+# returns a repair with the evidence that its rule was met, or says why it cannot
+# be proven -- it never picks the likeliest answer. The caller
+# (RecoveryLoop.prove_repairs) quarantines whatever is not proven.
+# ────────────────────────────────────────────────────────────────────
+
+_RENAME_MATCH = 0.99            # ADR-002: >= 99% of values fit the baseline column
+_RENAME_CLOSE = 0.90            # a second candidate this good makes a match ambiguous
+_MIN_FINGERPRINT_VALUES = 20    # fewer values cannot tell two columns apart
+_SCALE_INSIDE = 0.999           # ADR-002: >= 99.9% of values back inside the baseline range
+_SCALE_POWERS = tuple(n for n in range(-9, 10) if n != 0)
+_SCALE_NEIGHBOURS = (0.5, 0.8, 1.25, 2.0)  # factors a proven power of ten must beat
+# The baseline's range is the min/max of a finite sample, so clean values land past it
+# (about 2n/(n0+1) of n values -- more than 0.1% for any batch of real size): widen it
+# by half its span on each side. A wrong power of ten still lands far outside, and the
+# moments, histogram and neighbour checks carry the discrimination.
+_RANGE_MARGIN = 0.5
+
+_INT_TYPES = {"int", "integer", "int8", "int16", "int32", "int64", "bigint", "smallint", "tinyint", "long"}
+_FLOAT_TYPES = {"float", "double", "float32", "float64", "real", "double precision"}
+_BOOL_TYPES = {"bool", "boolean"}
+_STR_TYPES = {"str", "string", "text", "varchar", "char", "object"}
+_INT_LITERAL = re.compile(r"[+-]?\d+")
+_DECIMAL_LITERAL = re.compile(r"[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?")
+
+
+def _is_number(v: Any) -> bool:
+    if isinstance(v, bool):
+        return False
+    if isinstance(v, int):
+        return True
+    return isinstance(v, float) and math.isfinite(v)
+
+
+def _normalised_name(name: str) -> str:
+    return "".join(ch for ch in str(name).lower() if ch.isalnum())
+
+
+def _baseline_range(dist: ColumnDistribution) -> Optional[Tuple[float, float]]:
+    edges = DriftDetector._baseline_edges(dist.histogram or {})
+    if edges is None or dist.mean is None:
+        return None
+    lo, hi = edges[0], edges[-1]
+    margin = _RANGE_MARGIN * (hi - lo) or 1e-9 * max(1.0, abs(lo))
+    return lo - margin, hi + margin
+
+
+def _moments_match(values: List[float], dist: ColumnDistribution) -> bool:
+    """Mean and spread agree with the baseline's within five standard errors of the
+    two samples, so a correct repair fails this about once in a million batches."""
+    n = len(values)
+    n0 = max(int(dist.sample_size or 0), 1)
+    mu, sigma = float(dist.mean or 0.0), float(dist.std or 0.0)
+    arr = np.asarray(values, dtype=float)
+    mean = float(arr.mean())
+    if sigma <= 1e-12:
+        return abs(mean - mu) <= 1e-9 * max(1.0, abs(mu))
+    if abs(mean - mu) > 5 * sigma * math.sqrt(1 / n + 1 / n0):
+        return False
+    if n < 2:
+        return True
+    ratio = float(arr.std()) / sigma
+    t = 5 * math.sqrt(1 / (2 * n) + 1 / (2 * n0)) + 0.05
+    return 1 / (1 + t) <= ratio <= 1 + t
+
+
+def _fits_baseline(values: List[float], dist: ColumnDistribution) -> Tuple[float, bool]:
+    """(share inside the baseline's range, whether the values are indistinguishable
+    from the baseline: >= 99.9% inside, same moments, and the detector's own
+    aligned-histogram G test finds no difference)."""
+    bounds = _baseline_range(dist)
+    edges = DriftDetector._baseline_edges(dist.histogram or {})
+    if bounds is None or edges is None or not values:
+        return 0.0, False
+    arr = np.asarray(values, dtype=float)
+    inside = float(((arr >= bounds[0]) & (arr <= bounds[1])).mean())
+    if inside < _SCALE_INSIDE or not _moments_match(values, dist):
+        return inside, False
+    _, significant = DriftDetector._aligned_kl(
+        DriftDetector._histogram_on_edges(arr, edges)["counts"], dist.histogram["counts"])
+    return inside, not significant
+
+
+def fingerprint(values: List[Any], dist: Optional[ColumnDistribution]) -> Tuple[float, bool]:
+    """(share of values that fit the baseline column, whether their distribution matches it).
+
+    "Fit" means the same kind -- numeric against a numeric baseline, text against a
+    categorical one -- and inside its support: the baseline's range, or its set of
+    categories. The distribution test is the detector's own aligned-histogram G test,
+    so a column matches only when the drift check itself would call it unchanged.
+    """
+    if not values or dist is None:
+        return 0.0, False
+    hist = dist.histogram or {}
+    edges = DriftDetector._baseline_edges(hist)
+    bounds = _baseline_range(dist)
+    if edges is not None and bounds is not None:
+        lo, hi = bounds
+        nums = [float(v) for v in values if _is_number(v)]
+        support = sum(1 for v in nums if lo <= v <= hi) / len(values)
+        if len(nums) != len(values):
+            return support, False
+        _, significant = DriftDetector._aligned_kl(
+            DriftDetector._histogram_on_edges(nums, edges)["counts"], hist["counts"])
+        return support, not significant and _moments_match(nums, dist)
+    cats = hist.get("categories")
+    if isinstance(cats, dict) and cats:
+        keys = list(cats)
+        counts = Counter(str(v) for v in values if not _is_number(v))
+        inside = sum(counts.get(k, 0) for k in keys)
+        _, significant = DriftDetector._aligned_kl(
+            [0, *(counts.get(k, 0) for k in keys), len(values) - inside], [cats[k] for k in keys])
+        return inside / len(values), not significant
+    return 0.0, False
+
+
+def prove_renames(
+    added: List[str],
+    removed: List[str],
+    rows: List[Dict[str, Any]],
+    baseline: Dict[str, ColumnDistribution],
+) -> Tuple[Dict[str, Tuple[str, Dict[str, Any]]], List[str]]:
+    """Pair new columns with removed ones, only where ADR-002's rename rule is met.
+
+    New column ``a`` is renamed back to removed column ``r`` when ``a`` matches ``r``
+    -- by normalised name, or by value fingerprint (>= 99% of values fit ``r`` and the
+    distribution matches) -- and nothing else comes close: ``a`` matches no other
+    removed column, no other new column matches ``r``, and no column on either side
+    fits >= 90%. Returns ``({new: (old, proof)}, reasons)``, one reason per removed
+    column left unpaired. A new column left unpaired is simply a new column.
+    """
+    values = {a: [r.get(a) for r in rows if r.get(a) is not None] for a in added}
+    matches: Dict[str, Dict[str, Dict[str, Any]]] = {a: {} for a in added}
+    close: Dict[str, set] = {a: set() for a in added}
+    for a in added:
+        for r in removed:
+            by_name = bool(_normalised_name(a)) and _normalised_name(a) == _normalised_name(r)
+            ratio, dist_ok = 0.0, False
+            if len(values[a]) >= _MIN_FINGERPRINT_VALUES and r in baseline:
+                ratio, dist_ok = fingerprint(values[a], baseline[r])
+            if by_name or (ratio >= _RENAME_MATCH and dist_ok):
+                matches[a][r] = {
+                    "rule": "normalised_name" if by_name else "value_fingerprint",
+                    "from": a,
+                    "match_ratio": round(ratio, 6),
+                    "distribution_match": dist_ok,
+                }
+            elif ratio >= _RENAME_CLOSE:
+                close[a].add(r)
+
+    renames: Dict[str, Tuple[str, Dict[str, Any]]] = {}
+    reasons: List[str] = []
+    for r in removed:
+        claimants = sorted(a for a in added if r in matches[a] or r in close[a])
+        if len(claimants) == 1:
+            a = claimants[0]
+            if r in matches[a] and len(matches[a]) == 1 and not close[a]:
+                renames[a] = (r, matches[a][r])
+                continue
+        if not claimants:
+            reasons.append(
+                f"column '{r}' is missing from the batch and no new column matches it by name "
+                "or by values; restoring it would be a guess")
+        else:
+            reasons.append(
+                f"column '{r}' is missing and its rename is ambiguous (candidates {claimants}); "
+                "ADR-002 needs exactly one match with no close second")
+    return renames, reasons
+
+
+def canonical_type(dtype: Any) -> Optional[str]:
+    """The cast target for a baseline type name, or None when no lossless cast is defined."""
+    d = str(dtype).strip().lower()
+    if d in _INT_TYPES:
+        return "int"
+    if d in _FLOAT_TYPES:
+        return "float"
+    if d == "number":
+        return "number"
+    if d in _BOOL_TYPES:
+        return "bool"
+    if d in _STR_TYPES:
+        return "str"
+    return None
+
+
+def _exact_float(s: str) -> Optional[float]:
+    if not _DECIMAL_LITERAL.fullmatch(s):
+        return None
+    x = float(s)
+    # repr(x) is the shortest text that round-trips x, so equal decimal values mean
+    # the text held no digit the float cannot carry ("0.10000000000000001" fails).
+    if not math.isfinite(x) or Decimal(repr(x)) != Decimal(s):
+        return None
+    return x
+
+
+def cast_losslessly(value: Any, target: str) -> Tuple[bool, Any]:
+    """Cast ``value`` back to ``target`` only if the cast round-trips exactly (ADR-002).
+
+    Returns ``(True, cast_value)`` or ``(False, None)``. None stays None: a missing
+    value is the null-rate check's business, not a cast. Text with more than one
+    reading ("yes" or "1" for a bool, "007" or "+5" for an int) does not round-trip,
+    so it is never cast.
+    """
+    if value is None:
+        return True, None
+    if target == "int":
+        if _is_number(value) and isinstance(value, int):
+            return True, value
+        if isinstance(value, float) and math.isfinite(value) and value.is_integer():
+            return True, int(value)
+        if isinstance(value, str) and _INT_LITERAL.fullmatch(value) and str(int(value)) == value:
+            return True, int(value)
+        return False, None
+    if target in ("float", "number"):
+        if isinstance(value, float):
+            return (True, value) if math.isfinite(value) else (False, None)
+        if _is_number(value):
+            if target == "number":
+                return True, value
+            return (True, float(value)) if int(float(value)) == value else (False, None)
+        if isinstance(value, str):
+            if target == "number" and _INT_LITERAL.fullmatch(value) and str(int(value)) == value:
+                return True, int(value)
+            x = _exact_float(value)
+            return (True, x) if x is not None else (False, None)
+        return False, None
+    if target == "bool":
+        if isinstance(value, bool):
+            return True, value
+        if isinstance(value, str) and value in ("true", "false", "True", "False"):
+            return True, value.lower() == "true"
+        return False, None
+    if target == "str":
+        if isinstance(value, str):
+            return True, value
+        if isinstance(value, bool) or _is_number(value):
+            return True, repr(value) if isinstance(value, float) else str(value)
+        return False, None
+    return False, None
+
+
+def restore_scaled(value: Any, power: int) -> Optional[float]:
+    """The value that, scaled by 10**power, gives exactly ``value`` -- or None.
+
+    Floating-point scaling is not exactly reversible (0.07 * 100 is 7.000000000000001),
+    so the plain quotient can miss the original by an ulp. The shortest decimal near
+    the quotient is tried first, and a candidate is accepted only if re-applying the
+    fault reproduces ``value`` bit for bit.
+    """
+    factor = 10 ** abs(power)
+    if isinstance(value, int):
+        if power < 0:
+            return value * factor
+        q, rem = divmod(value, factor)
+        if rem == 0:
+            return q
+    approx = value / factor if power > 0 else value * factor
+    for cand in (float(f"{approx:.15g}"), approx):
+        forward = (cand * factor,) if power > 0 else (cand / factor, cand * 10.0 ** power)
+        if value in forward:
+            return cand
+    return None
+
+
+def in_baseline_range(value: float, dist: ColumnDistribution) -> bool:
+    bounds = _baseline_range(dist)
+    return bounds is not None and bounds[0] <= value <= bounds[1]
+
+
+def prove_scale(values: List[Any], dist: Optional[ColumnDistribution]) -> Tuple[Optional[int], Dict[str, Any]]:
+    """Find the one power of ten that explains a drifted numeric column (ADR-002).
+
+    Returns ``(power, proof)`` when exactly one factor 10**n (n = -9..9, n != 0) brings
+    >= 99.9% of the values inside the baseline's range with the baseline's mean,
+    spread and histogram; the unscaled values do not fit; and no factor near it
+    (``_SCALE_NEIGHBOURS``) fits either. Otherwise ``(None, {"reason": ...})``.
+    """
+    if dist is None or _baseline_range(dist) is None:
+        return None, {"reason": "the baseline column is not numeric, so no unit factor applies"}
+    if not values or not all(_is_number(v) for v in values):
+        return None, {"reason": "the column holds non-numeric values, so no unit factor applies"}
+    nums = np.asarray([float(v) for v in values], dtype=float)
+
+    def fit(factor: float) -> Tuple[float, bool]:
+        return _fits_baseline(list(nums / factor), dist)
+
+    if fit(1.0)[1]:
+        return None, {"reason": "the values already fit the baseline unscaled, so the drift is not a unit error"}
+    results = {n: fit(10.0 ** n) for n in _SCALE_POWERS}
+    passing = [n for n, (_, ok) in results.items() if ok]
+    if len(passing) != 1:
+        return None, {"reason": (
+            "no power of ten brings the values back inside the baseline" if not passing
+            else f"more than one factor fits ({[10.0 ** n for n in passing]}), so the scale is ambiguous"
+        )}
+    n = passing[0]
+    # "No other factor does": a batch that also fits at 0.8x or 1.25x the factor does
+    # not pin the factor down -- a x7 or x12 fault would pass as x10 (ADR-002).
+    near = [m for m in _SCALE_NEIGHBOURS if fit(10.0 ** n * m)[1]]
+    if near:
+        return None, {"reason": (
+            f"factor {10.0 ** n:g} fits, but so do {[10.0 ** n * m for m in near]}; "
+            "the values do not pin the scale down")}
+    return n, {
+        "rule": "unit_scale",
+        "factor": 10.0 ** n,
+        "inside_ratio": round(results[n][0], 6),
+        "runner_up_inside_ratio": round(max(r for m, (r, _) in results.items() if m != n), 6),
+        "neighbours_rejected": [10.0 ** n * m for m in _SCALE_NEIGHBOURS],
+    }

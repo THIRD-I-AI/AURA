@@ -178,21 +178,35 @@ async def mark_shim_rolled_back(source_id: str, shim_code: Optional[str]) -> Opt
         return rec.id
 
 
+def standing_shim_filter() -> tuple:
+    """The conditions a DEPLOYED record must meet for its shim to run on every batch.
+
+    ADR-002 phase 2a: a standing shim is applied before detection and its output is
+    returned as healed, so only a shim a human approved may stand. Before phase 2a,
+    AUTO mode deployed the unproven templates (drop a new column, cast a failure to
+    None, default a removed column to None, rename by list order, mean-ratio rescale)
+    on its own; those records are still DEPLOYED but have no ``decided_by``. They are
+    left in the database for an operator to review and are never reloaded.
+    """
+    return (
+        RecoveryRecord.status == RecoveryStatus.DEPLOYED.value,
+        RecoveryRecord.shim_code.isnot(None),
+        RecoveryRecord.decided_by.isnot(None),
+    )
+
+
 async def load_deployed_shims(source_id: str) -> List[str]:
-    """The source's DEPLOYED shim codes in deploy-record order, as startup hydrates them.
+    """The source's standing (human-approved, DEPLOYED) shim codes in deploy-record order.
 
     BUG-467: with several UASR replicas the DB is the only registry they share, so a
-    replica re-reads this before applying or rolling back a source's shims.
+    replica re-reads this before applying or rolling back a source's shims. Startup
+    hydration uses the same ``standing_shim_filter``.
     """
     async with get_session_factory()() as db:
         rows = (await db.execute(
             select(RecoveryRecord.shim_code)
             .join(DriftEvent, RecoveryRecord.drift_event_id == DriftEvent.id)
-            .where(
-                DriftEvent.source_id == source_id,
-                RecoveryRecord.status == RecoveryStatus.DEPLOYED.value,
-                RecoveryRecord.shim_code.isnot(None),
-            )
+            .where(DriftEvent.source_id == source_id, *standing_shim_filter())
             .order_by(RecoveryRecord.created_at.asc())
         )).scalars().all()
     return [code for code in rows if code]

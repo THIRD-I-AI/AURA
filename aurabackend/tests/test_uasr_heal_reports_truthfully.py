@@ -135,16 +135,18 @@ async def test_new_drift_that_was_not_deployed_is_not_healed_even_with_a_standin
 
 
 @pytest.mark.asyncio
-async def test_a_newly_deployed_shim_does_not_re_run_the_standing_ones(monkeypatch):
+async def test_standing_shims_run_once_and_a_recovery_shim_never_touches_the_rows(monkeypatch):
     # BUG-344: after a new shim deployed, the whole chain ran again on rows the standing
     # shims had already transformed, so a rescale shim scaled twice (1 -> 10 -> 100 -> 101).
+    # ADR-002 phase 2a: a shim from the recovery loop is no longer applied to the rows at
+    # all; only proven repairs are. An unprovable drift quarantines the rows as the
+    # standing shims left them -- scaled once.
     source = f"src_{uuid.uuid4().hex[:6]}"
     rescale = "def transform(rows):\n    return [{**r, 'v': r['v'] * 10} for r in rows]\n"
     service._loop.hydrate_deployed_shims({source: [rescale]})
     _stub_detection(monkeypatch, drift_detected=True)
 
     async def _recovery_deployed(drift, batch):
-        service._loop._deployed_shims[source].append(GOOD_SHIM)
         return types.SimpleNamespace(
             status=RecoveryStatus.DEPLOYED, recovery_id=f"r_{uuid.uuid4().hex[:8]}", diagnosis=None,
             shim=types.SimpleNamespace(shim_code=GOOD_SHIM, generation_method="template",
@@ -156,5 +158,5 @@ async def test_a_newly_deployed_shim_does_not_re_run_the_standing_ones(monkeypat
 
     out = await _heal(source)
 
-    assert out["rows"] == [{"v": 11}]
-    assert out["healed"] is True
+    assert out["rows"] == [] and out["healed"] is False
+    assert [q["row"] for q in out["quarantined_rows"]] == [{"v": 10}]

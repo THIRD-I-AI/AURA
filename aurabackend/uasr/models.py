@@ -284,8 +284,9 @@ class ShimResult(BaseModel):
     shim_code: str = ""
     language: str = "python"
     # S41: which generator produced the shim — drives the risk gate.
-    # "template" = deterministic (rename/coerce/rescale, auto-deployable);
-    # "llm" / "fallback" = always held for human approval.
+    # "template" = deterministic; the actuator's own templates are not proven on
+    # the data, so it marks them requires_human_review (ADR-002 phase 2a).
+    # "llm" / "fallback" / "cross_source_borrowed" = never deployed automatically.
     generation_method: str = "template"
     validation_passed: bool = False
     post_kl_divergence: Optional[float] = None
@@ -298,6 +299,45 @@ class ShimResult(BaseModel):
     # actuator_agent._location_shift_reason.
     requires_human_review: bool = False
     escalation_reason: Optional[str] = None
+
+
+class QuarantinedRow(BaseModel):
+    """ADR-002: a row held aside, exactly as it arrived, because no proven rule covers it."""
+    index: int          # position in the batch, so returned + quarantined rows account for every row
+    row: Dict[str, Any]
+    reason: str
+
+
+class ProvenRepair(BaseModel):
+    """ADR-002: a repair applied because the data proved it; ``proof`` is that evidence."""
+    type: str           # rename | retype | new_column | rescale
+    column: str
+    proof: Dict[str, Any] = Field(default_factory=dict)
+
+
+class ProvenHealPlan(BaseModel):
+    """What the proven-repair rules did to one batch (ADR-002, phase 2a item 1).
+
+    ``rows`` and ``quarantined_rows`` partition the batch: each input row is in exactly
+    one of them. ``unproven`` lists the batch-level faults no rule could prove; when it
+    is non-empty every row is quarantined. ``alerts`` are the detection-only findings
+    (null spike, volume, duplicates), which change no row but leave the run degraded.
+    """
+    rows: List[Dict[str, Any]] = Field(default_factory=list)
+    quarantined_rows: List[QuarantinedRow] = Field(default_factory=list)
+    repairs: List[ProvenRepair] = Field(default_factory=list)
+    alerts: List[Dict[str, Any]] = Field(default_factory=list)
+    unproven: List[str] = Field(default_factory=list)
+
+    @property
+    def healed(self) -> bool:
+        # An empty result is not a heal: a batch whose every row was held aside healed nothing.
+        has_rows = bool(self.rows) or not self.quarantined_rows
+        return not self.unproven and not self.alerts and has_rows
+
+    @property
+    def degraded(self) -> bool:
+        return bool(self.quarantined_rows or self.alerts or self.unproven)
 
 
 class RecoveryLoopResult(BaseModel):
