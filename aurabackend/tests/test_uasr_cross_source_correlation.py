@@ -190,7 +190,9 @@ class TestRunWithCandidateShim:
         assert result.shim.generation_method == "cross_source_borrowed"
 
     @pytest.mark.asyncio
-    async def test_validation_success_deploys_when_risk_tiered_off(self):
+    async def test_validation_success_is_held_even_when_risk_tiered_off(self):
+        # ADR-002: a borrowed shim is a proposal for this source, never applied on its
+        # own. This used to deploy with risk_tiered off.
         loop = RecoveryLoop(
             detector=MagicMock(),
             config=RecoveryLoopConfig(auto_deploy=True, risk_tiered=False),
@@ -200,8 +202,8 @@ class TestRunWithCandidateShim:
             result = await loop.run_with_candidate_shim(
                 _drift(), _batch(), "return rows", "s_sibling",
             )
-        assert result.status == RecoveryStatus.DEPLOYED
-        assert "return rows" in loop.get_deployed_shims("s_failing")
+        assert result.status == RecoveryStatus.PENDING_APPROVAL
+        assert loop.get_deployed_shims("s_failing") == []
 
     @pytest.mark.asyncio
     async def test_validation_success_holds_for_approval_when_risk_tiered(self):

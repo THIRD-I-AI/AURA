@@ -18,6 +18,7 @@ Runs on port 8009 and exposes:
 from __future__ import annotations
 
 import asyncio
+import copy
 import os
 import uuid
 from contextlib import asynccontextmanager
@@ -41,13 +42,16 @@ from .models import (
     BatchPayload,
     DriftEvent,
     HealingMetric,
+    ProvenHealPlan,
+    QuarantinedRow,
+    RecoveryLoopResult,
     RecoveryMode,
     RecoveryRecord,
     RecoveryStatus,
     set_transformed_rows,
 )
 from .recovery_loop import RecoveryLoop, RecoveryLoopConfig
-from .recovery_persistence import load_deployed_shims, mark_shim_rolled_back
+from .recovery_persistence import load_deployed_shims, mark_shim_rolled_back, standing_shim_filter
 from .runtime_config import (
     approval_timeout_seconds,
     build_redis_client,
@@ -290,14 +294,8 @@ async def _approval_reaper_loop(timeout_seconds: float, poll_seconds: float = 30
 # Lifespan — DB init + MAPE-K worker (opt-in)
 # ────────────────────────────────────────────────────────────────────
 
-@asynccontextmanager
-async def _lifespan(_):
-    global _mapek_worker, _mapek_bootstrap_task
-    await init_uasr_db()
-    logger.info("UASR database tables initialised")
-    logger.info("UASR deployment mode: %s", deployment_summary())
-
-    # Restore shims that were live before this process started.
+async def _restore_standing_shims() -> None:
+    """Restore shims that were live before this process started."""
     #
     # _deployed_shims is process-local, and apply_shims() consults it on every
     # batch the MAPE-K worker handles. Without this, a restart (or a second
@@ -305,19 +303,33 @@ async def _lifespan(_):
     # through untransformed — the self-healing layer stopped healing and said
     # nothing. Only DEPLOYED records are selected, so a shim a human rolled back
     # via /uasr/rollback (which persists status=ROLLED_BACK) stays rolled back.
+    # ADR-002 phase 2a: and only human-approved ones (standing_shim_filter) -- a
+    # template AUTO mode deployed on its own before phase 2a is not proven and must
+    # not keep rewriting the source's rows on every batch.
     try:
         rows = []
+        unapproved = 0
         async for session in get_session():
             rows = (await session.execute(
                 select(DriftEvent.source_id, RecoveryRecord.shim_code)
                 .join(DriftEvent, RecoveryRecord.drift_event_id == DriftEvent.id)
-                .where(
-                    RecoveryRecord.status == RecoveryStatus.DEPLOYED.value,
-                    RecoveryRecord.shim_code.isnot(None),
-                )
+                .where(*standing_shim_filter())
                 .order_by(RecoveryRecord.created_at.asc())
             )).all()
+            unapproved = len((await session.execute(
+                select(RecoveryRecord.id).where(
+                    RecoveryRecord.status == RecoveryStatus.DEPLOYED.value,
+                    RecoveryRecord.shim_code.isnot(None),
+                    RecoveryRecord.decided_by.is_(None),
+                )
+            )).all())
             break
+        if unapproved:
+            logger.warning(
+                "UASR skipped %d DEPLOYED shim(s) no human approved (ADR-002: unproven "
+                "auto-deployed templates are not reloaded; review them in the recovery log)",
+                unapproved,
+            )
         by_source: Dict[str, List[str]] = {}
         for source_id, shim_code in rows:
             if source_id and shim_code:
@@ -336,6 +348,16 @@ async def _lifespan(_):
             "INACTIVE for previously-healed sources until they are redeployed",
             type(exc).__name__, exc,
         )
+
+
+@asynccontextmanager
+async def _lifespan(_):
+    global _mapek_worker, _mapek_bootstrap_task
+    await init_uasr_db()
+    logger.info("UASR database tables initialised")
+    logger.info("UASR deployment mode: %s", deployment_summary())
+
+    await _restore_standing_shims()
 
     # MAPE-K worker is opt-in because it requires a reachable Kafka
     # cluster — turning it on by default would break every dev box that
@@ -591,6 +613,37 @@ async def _attempt_cross_source_heal(
     )
 
 
+async def _prove_or_propose(drift_result, batch: BatchPayload):
+    """ADR-002: apply only proven repairs; anything unproven gets a proposal, not a fix.
+
+    The recovery loop (diagnosis, templates, LLM) runs only when some fault could not
+    be proven, and what it produces is held for review -- it is never applied. A batch
+    the proven rules fully explain needs no proposal, so no LLM call is made for it.
+    """
+    plan = await _loop.prove_repairs(drift_result, batch)
+    if plan.unproven:
+        return plan, await _loop.run(drift_result, batch)
+    return plan, RecoveryLoopResult(
+        drift_event_id=batch.batch_id,
+        recovery_id=uuid.uuid4().hex[:16],
+        status=RecoveryStatus.DEPLOYED if plan.repairs else RecoveryStatus.DETECTED,
+    )
+
+
+def _generation_method(plan: ProvenHealPlan, loop_result) -> str:
+    if not plan.unproven:
+        return "proven"
+    return loop_result.shim.generation_method if loop_result.shim else "template"
+
+
+def _plan_summary(plan: ProvenHealPlan) -> Dict[str, Any]:
+    return {
+        "repairs": [r.model_dump() for r in plan.repairs],
+        "alerts": plan.alerts,
+        "degraded": plan.degraded,
+    }
+
+
 @app.post("/uasr/ingest")
 async def ingest_batch(req: IngestRequest, request: Request, db: AsyncSession = Depends(get_db)):
     """
@@ -641,8 +694,8 @@ async def ingest_batch(req: IngestRequest, request: Request, db: AsyncSession = 
     # (LLM calls, sandbox), so every other writer failed with 'database is locked'.
     await db.commit()
 
-    # Run recovery loop
-    loop_result = await _loop.run(drift_result, batch)
+    # The same proof /uasr/heal applies, so the verdict here is the one heal would act on.
+    plan, loop_result = await _prove_or_propose(drift_result, batch)
 
     # Persist recovery record
     recovery_rec = RecoveryRecord(
@@ -652,7 +705,7 @@ async def ingest_batch(req: IngestRequest, request: Request, db: AsyncSession = 
         status=loop_result.status.value,
         diagnosis=loop_result.diagnosis.hypothesis if loop_result.diagnosis else None,
         shim_code=loop_result.shim.shim_code if loop_result.shim else None,
-        generation_method=loop_result.shim.generation_method if loop_result.shim else "template",
+        generation_method=_generation_method(plan, loop_result),
         validation_passed=loop_result.shim.validation_passed if loop_result.shim else None,
         post_kl_divergence=loop_result.shim.post_kl_divergence if loop_result.shim else None,
         latency_seconds=loop_result.total_latency_seconds,
@@ -686,6 +739,38 @@ async def ingest_batch(req: IngestRequest, request: Request, db: AsyncSession = 
         "latency_seconds": round(loop_result.total_latency_seconds, 3),
         "gate": gate_decision.to_dict(),
         "cross_source_healed": cross_healed,
+        # A verdict, not rows: how many rows /uasr/heal would hold aside for this batch.
+        "quarantined_row_count": len(plan.quarantined_rows),
+        **_plan_summary(plan),
+    }
+
+
+def _standing_shim_changed_row_count(
+    batch: BatchPayload, sent_rows: List[Dict[str, Any]], shim_rows: Any, standing: int,
+) -> Dict[str, Any]:
+    """/uasr/heal's answer when the standing shims returned a different number of rows."""
+    got = len(shim_rows) if isinstance(shim_rows, list) else type(shim_rows).__name__
+    reason = (
+        f"the deployed shim(s) for this source turned {len(sent_rows)} row(s) into {got}; "
+        "a shim must not drop, add or merge rows, so the batch is held aside as sent"
+    )
+    logger.error("UASR heal: source=%s %s", batch.source_id, reason)
+    return {
+        "status": "quarantined",
+        "healed": False,
+        "degraded": True,
+        "shims_applied": 0,
+        "standing_shims": standing,
+        "reason": reason,
+        "drift_detected": None,
+        "rows": [],
+        "quarantined_rows": [
+            QuarantinedRow(index=i, row=row, reason=reason).model_dump()
+            for i, row in enumerate(sent_rows)
+        ],
+        "repairs": [],
+        "alerts": [],
+        "batch_id": batch.batch_id,
     }
 
 
@@ -710,13 +795,21 @@ async def heal_batch(req: IngestRequest, request: Request, db: AsyncSession = De
     or a Spark job cannot execute one, but every pipeline on earth can POST JSON
     and read JSON back. Returning data keeps the integration language-agnostic.
 
-    The response always carries `rows`. On the clean path they are the input
-    rows with any standing shims applied; on the drift path they are the rows
-    after a freshly deployed shim; and when recovery does NOT deploy -- it
-    failed, or a location shift was routed to the human approval queue -- the
-    rows come back UNHEALED with ``healed: false`` and a reason. That case is
-    the one to read carefully: quietly returning unhealed data as though it were
-    fixed is precisely the failure this layer exists to prevent.
+    ADR-002 (phase 2a): on the drift path only PROVEN repairs touch the rows --
+    a rename, retype or unit fix whose rule the batch itself satisfies, re-proven
+    on every batch (``RecoveryLoop.prove_repairs``). A new column is kept. Rows no
+    rule covers are never altered: they come back in ``quarantined_rows`` exactly
+    as they were sent (after any standing shims), each with its reason, and a
+    batch-level fault no rule can prove quarantines the whole batch. ``rows`` plus
+    ``quarantined_rows`` hold every row the caller sent exactly once; ``index`` is a
+    quarantined row's position in it. Standing shims are only those a human approved
+    (``standing_shim_filter``); one that changes the row count quarantines the whole
+    batch as sent. ``repairs`` lists what was applied and the
+    evidence (``proof``). ``healed`` is true only when every returned row is clean
+    or repaired by a proven rule; ``degraded`` is true when anything was held
+    aside or a detection-only fault (null spike, volume, duplicates) was found.
+    Whatever the recovery loop proposes for an unproven fault waits for review
+    and never reaches these rows.
     """
     # BUG-263: the id is placed inside the caller's tenant, never trusted as sent.
     req.source_id = scoped_source(caller_tenant(request), req.source_id)
@@ -735,7 +828,15 @@ async def heal_batch(req: IngestRequest, request: Request, db: AsyncSession = De
     standing = len(_loop.get_deployed_shims(batch.source_id))
     standing_applied = 0
     if standing:
+        # A shim may change its input in place; keep the rows as sent.
+        sent_rows = copy.deepcopy(batch.rows)
         healed_rows, standing_applied, _ = await _loop.apply_shims_counted_async(batch.source_id, batch.rows)
+        if not isinstance(healed_rows, list) or len(healed_rows) != len(sent_rows):
+            # ADR-002: rows + quarantined_rows account for every row the caller SENT.
+            # A standing shim that dropped, added or merged rows breaks that, and no
+            # index into its output can name the caller's row, so the whole batch is
+            # held aside exactly as sent.
+            return _standing_shim_changed_row_count(batch, sent_rows, healed_rows, standing)
         set_transformed_rows(batch, healed_rows)
     # BUG-271: a standing shim that raised used to be invisible here.
     standing_failed = standing_applied < standing
@@ -745,20 +846,26 @@ async def heal_batch(req: IngestRequest, request: Request, db: AsyncSession = De
     # Redis-blocking detect() call off the single uvicorn worker.
     drift_result = await asyncio.to_thread(_detector.detect, batch)
 
+    standing_reason = "a deployed shim failed to apply; rows may be only partly transformed"
     if not drift_result.drift_detected:
+        # ADR-002 phase 2a: clean rows are healed rows -- a pipeline that writes only
+        # healed batches must not stall on a clean one just because nothing needed fixing.
         return {
             "status": "clean",
-            "healed": bool(standing) and not standing_failed,
+            "healed": not standing_failed,
+            "degraded": standing_failed,
             "shims_applied": standing_applied,
-            "reason": "a deployed shim failed to apply; rows may be only partly transformed"
-            if standing_failed else None,
+            "reason": standing_reason if standing_failed else None,
             "drift_detected": False,
             "rows": batch.rows,
+            "quarantined_rows": [],
+            "repairs": [],
+            "alerts": [],
             "batch_id": batch.batch_id,
             "gate": gate_decision.to_dict(),
         }
 
-    # 2. New drift: persist the event, then let the recovery loop plan a fix.
+    # 2. New drift: persist the event, then repair what is proven.
     event_id = uuid.uuid4().hex[:16]
     db.add(DriftEvent(
         id=event_id,
@@ -775,7 +882,7 @@ async def heal_batch(req: IngestRequest, request: Request, db: AsyncSession = De
     ))
     await db.commit()  # BUG-347: see ingest_batch
 
-    loop_result = await _loop.run(drift_result, batch)
+    plan, loop_result = await _prove_or_propose(drift_result, batch)
 
     recovery_rec = RecoveryRecord(
         id=loop_result.recovery_id,
@@ -784,7 +891,7 @@ async def heal_batch(req: IngestRequest, request: Request, db: AsyncSession = De
         status=loop_result.status.value,
         diagnosis=loop_result.diagnosis.hypothesis if loop_result.diagnosis else None,
         shim_code=loop_result.shim.shim_code if loop_result.shim else None,
-        generation_method=loop_result.shim.generation_method if loop_result.shim else "template",
+        generation_method=_generation_method(plan, loop_result),
         validation_passed=loop_result.shim.validation_passed if loop_result.shim else None,
         post_kl_divergence=loop_result.shim.post_kl_divergence if loop_result.shim else None,
         latency_seconds=loop_result.total_latency_seconds,
@@ -804,45 +911,39 @@ async def heal_batch(req: IngestRequest, request: Request, db: AsyncSession = De
             loop_result = healed
             cross_healed = True
 
-    # 3. Only a DEPLOYED shim may touch the caller's data. Anything else
-    #    (failed, or held for human approval) returns the rows untransformed
-    #    and says so -- see the docstring.
-    deployed = loop_result.status == RecoveryStatus.DEPLOYED
-    applied, total = standing_applied, standing
-    if deployed and loop_result.shim is not None:
-        healed_rows, ok = await _loop.apply_new_shim_async(
-            batch.source_id, loop_result.shim.shim_code, batch.rows)
-        applied, total = standing_applied + ok, standing + 1
-        set_transformed_rows(batch, healed_rows)
-    apply_failed = applied < total
-
-    # BUG-271: this was `deployed or bool(standing)`, so a source with ANY earlier shim
-    # reported healed even when the new drift's recovery failed or was held for
-    # approval -- contradicting the docstring above. Only a recovery that deployed, and
-    # whose shims all applied, healed these rows.
-    healed = deployed and not apply_failed
+    # 3. Only the proven plan touches the caller's data. A shim the recovery loop
+    #    proposed is held for review (ADR-002) and is not applied here.
+    # BUG-271: a standing shim that raised leaves the rows only partly transformed,
+    # so nothing built on them is healed.
+    healed = plan.healed and not standing_failed
     return {
         "status": loop_result.status.value,
         "healed": healed,
-        "shims_applied": applied,
+        "degraded": plan.degraded or standing_failed,
+        "shims_applied": standing_applied,
         "standing_shims": standing,
         "drift_detected": True,
         "drift_type": drift_result.drift_type.value if drift_result.drift_type else None,
         "severity": drift_result.severity.value if drift_result.severity else None,
         "drift_event_id": event_id,
         "recovery_id": loop_result.recovery_id,
-        "shim_deployed": deployed,
+        "shim_deployed": False,
         "post_kl": loop_result.shim.post_kl_divergence if loop_result.shim else None,
         "reason": (
             None if healed
-            else "a deployed shim failed to apply; rows may be only partly transformed" if deployed
-            else loop_result.diagnosis.hypothesis if loop_result.diagnosis
-            else "recovery did not deploy a shim; rows returned unchanged"
+            else standing_reason if standing_failed
+            else "; ".join(plan.unproven) if plan.unproven
+            else "detection-only fault(s), nothing to repair: "
+            + "; ".join(a["details"] for a in plan.alerts) if plan.alerts
+            else "every row was quarantined"
         ),
-        "rows": batch.rows,
+        "rows": plan.rows,
+        "quarantined_rows": [q.model_dump() for q in plan.quarantined_rows],
         "latency_seconds": round(loop_result.total_latency_seconds, 3),
         "gate": gate_decision.to_dict(),
         "cross_source_healed": cross_healed,
+        "repairs": [r.model_dump() for r in plan.repairs],
+        "alerts": plan.alerts,
     }
 
 

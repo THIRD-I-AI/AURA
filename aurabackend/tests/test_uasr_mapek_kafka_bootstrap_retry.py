@@ -201,8 +201,8 @@ async def test_mapek_worker_recovers_from_kafka_outage_and_heals_real_drift(monk
         )
 
         # 2) Prove Monitor -> Analyze -> Plan -> Execute actually ran end to
-        #    end once connected: a real RecoveryRecord for source "src",
-        #    DEPLOYED with a real (non-vacuous) clip shim.
+        #    end once connected: a real RecoveryRecord for source "src"
+        #    carrying a real (non-vacuous) rescale proposal.
         record: RecoveryRecord | None = None
         for _ in range(400):
             async for session in get_session():
@@ -219,9 +219,10 @@ async def test_mapek_worker_recovers_from_kafka_outage_and_heals_real_drift(monk
             "no RecoveryRecord was persisted -- drift reached Monitor/Analyze "
             "but Plan/Execute never ran (the exact symptom this bug reproduced)"
         )
-        assert record.status == RecoveryStatus.DEPLOYED.value, (
-            f"expected the unit-bug batch to auto-deploy a rescale "
-            f"shim, got status={record.status!r}"
+        # ADR-002 phase 2a: the mean-ratio rescale template is not a proven repair, so
+        # the loop files it as a proposal held for review instead of deploying it.
+        assert record.status == RecoveryStatus.PENDING_APPROVAL.value, (
+            f"expected the unit-bug batch to file a rescale proposal, got status={record.status!r}"
         )
         assert record.shim_code is not None
         assert "Unit Rescale" in record.shim_code, (

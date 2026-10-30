@@ -20,16 +20,27 @@ import logging
 import time
 import types
 import uuid
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from agents.base import AgentContext
 
-from .actuator_agent import SynthesisActuatorAgent
+from .actuator_agent import (
+    SynthesisActuatorAgent,
+    canonical_type,
+    cast_losslessly,
+    in_baseline_range,
+    prove_renames,
+    prove_scale,
+    restore_scaled,
+)
 from .drift_detector import DriftDetector
 from .models import (
     BatchPayload,
     DriftDetectionResult,
     DriftType,
+    ProvenHealPlan,
+    ProvenRepair,
+    QuarantinedRow,
     RecoveryLoopResult,
     RecoveryMode,
     RecoveryStatus,
@@ -39,6 +50,27 @@ from .models import (
 from .reflector_agent import DiagnosticReflectorAgent
 
 logger = logging.getLogger("uasr.recovery_loop")
+
+# ADR-002: null spikes, volume faults and duplicates are detected and alerted on, never
+# repaired -- there is nothing in the data to put back.
+_DETECTION_ONLY = {DriftType.NULL_RATE.value, DriftType.VOLUME.value, DriftType.DUPLICATE.value}
+# Drift that, still present after the proven repairs, means the batch is not proven clean.
+_BLOCKING = (DriftType.SCHEMA.value, DriftType.STATISTICAL.value, DriftType.SEMANTIC.value)
+
+
+def _short(value: Any, limit: int = 80) -> str:
+    text = repr(value)
+    return text if len(text) <= limit else text[:limit] + "..."
+
+
+def _alert(drift_type: str, vector: Dict[str, Any]) -> Dict[str, Any]:
+    severity = vector.get("severity")
+    return {
+        "type": drift_type,
+        "severity": getattr(severity, "value", severity),
+        "affected_columns": list(vector.get("affected_columns") or []),
+        "details": vector.get("details", ""),
+    }
 
 
 class RecoveryLoopConfig:
@@ -297,7 +329,7 @@ class RecoveryLoop:
                 # ── Deploy or hold for approval (S41 risk gate) ─────
                 if self._should_deploy(shim, drift_result):
                     self._deploy_shim(loop_result, shim, drift_result, recovery_id, validation)
-                elif self._config.risk_tiered:
+                elif self._must_hold(shim):
                     self._hold_for_approval(loop_result, shim, drift_result, recovery_id)
                 else:
                     loop_result.status = RecoveryStatus.VALIDATING
@@ -329,7 +361,7 @@ class RecoveryLoop:
                         loop_result, winner_shim, drift_result,
                         recovery_id, winner_val,
                     )
-                elif self._config.risk_tiered:
+                elif self._must_hold(winner_shim):
                     self._hold_for_approval(
                         loop_result, winner_shim, drift_result, recovery_id,
                     )
@@ -395,7 +427,7 @@ class RecoveryLoop:
             )
         elif self._should_deploy(shim, drift_result):
             self._deploy_shim(loop_result, shim, drift_result, recovery_id, validation)
-        elif self._config.risk_tiered:
+        elif self._must_hold(shim):
             self._hold_for_approval(loop_result, shim, drift_result, recovery_id)
         else:
             loop_result.status = RecoveryStatus.VALIDATING
@@ -403,6 +435,206 @@ class RecoveryLoop:
 
         loop_result.total_latency_seconds = time.perf_counter() - start_time
         return loop_result
+
+    # ────────────────────────────────────────────────────────────────
+    # ADR-002 proven repairs (phase 2a item 1)
+    # ────────────────────────────────────────────────────────────────
+
+    async def prove_repairs(
+        self, drift_result: DriftDetectionResult, batch: BatchPayload,
+    ) -> ProvenHealPlan:
+        """Repair what the data proves, quarantine the rest, change nothing else.
+
+        This, not ``run``, is the automatic path for a drifted batch. Each repair is
+        proven on THIS batch against the baseline, every time: a standing shim would
+        apply last week's proof to today's data, which is how a fix outlives the
+        fault it fixed (a rescale left in place after upstream corrects its units
+        divides good values). Order: renames, then retypes, then unit fixes, each
+        found by re-running the detector on the rows the previous step produced;
+        then the same checks once more on the final rows (ADR-002 safety net step 1,
+        the sandbox). Anything still drifting quarantines the batch.
+        """
+        # detect() can block on Redis under the fleet state backend, and the rules
+        # are a few passes over every row: keep both off the event loop.
+        return await asyncio.to_thread(self._prove_repairs, drift_result, batch)
+
+    @staticmethod
+    def _findings(drift: DriftDetectionResult) -> Dict[str, Dict[str, Any]]:
+        vectors = dict(getattr(drift, "drift_vectors", None) or {})
+        if not vectors and getattr(drift, "drift_detected", False) and drift.drift_type is not None:
+            vectors = {DriftType(drift.drift_type).value: dict(drift.drift_vector or {})}
+        return vectors
+
+    def _probe(
+        self, batch: BatchPayload, rows: List[Dict[str, Any]], alive: List[int],
+        columns: List[str], snapshot: Optional[Dict[str, Any]],
+    ) -> Tuple[Dict[str, Dict[str, Any]], str]:
+        """Run the drift checks on the kept rows, seen through the baseline's columns.
+
+        A kept new column is projected out: the destination gains it (ADR-002 "New
+        column"), and it must not read as schema drift against a baseline that never
+        had it. record_state=False -- a proof must not feed the adaptive threshold.
+        """
+        probe = BatchPayload(
+            source_id=batch.source_id,
+            batch_id=f"{batch.batch_id}_proof",
+            columns=columns,
+            rows=[{c: rows[i][c] for c in columns if c in rows[i]} for i in alive],
+            schema_snapshot=(
+                {c: snapshot.get(c, "unknown") for c in columns} if snapshot is not None else None
+            ),
+            metadata=batch.metadata,
+        )
+        result = self._detector.detect(probe, record_state=False)
+        return self._findings(result), getattr(result, "details", "")
+
+    def _prove_repairs(self, drift: DriftDetectionResult, batch: BatchPayload) -> ProvenHealPlan:
+        source = batch.source_id
+        schema = self._detector.schema_baseline(source) or {}
+        baseline = self._detector.baseline_distributions(source)
+        # Shallow copies: a repair replaces a value, never mutates one, so batch.rows
+        # stays exactly as it arrived and is what a quarantined row reports.
+        rows = [dict(r) for r in batch.rows]
+        alive = list(range(len(rows)))
+        held: Dict[int, str] = {}
+        repairs: List[ProvenRepair] = []
+        unproven: List[str] = []
+        snapshot = dict(batch.schema_snapshot) if batch.schema_snapshot else None
+        findings = self._findings(drift)
+        alerts = {t: v for t, v in findings.items() if t in _DETECTION_ONLY}
+
+        def keep_alive() -> List[int]:
+            return [i for i in alive if i not in held]
+
+        # 1. Renames and new columns.
+        change = findings.get(DriftType.SCHEMA.value) or {}
+        if change.get("type") == "schema_change":
+            added = sorted(change.get("added") or [])
+            renames, reasons = prove_renames(added, sorted(change.get("removed") or []), rows, baseline)
+            unproven.extend(reasons)
+            for new, (old, proof) in renames.items():
+                rows = [{(old if k == new else k): v for k, v in r.items()} for r in rows]
+                if snapshot is not None and new in snapshot:
+                    snapshot[old] = snapshot.pop(new)
+                repairs.append(ProvenRepair(type="rename", column=old, proof=proof))
+            for col in added:
+                if col not in renames:
+                    repairs.append(ProvenRepair(type="new_column", column=col, proof={
+                        "rule": "schema_evolves", "kept": True,
+                        "rows_with_value": sum(1 for r in rows if r.get(col) is not None),
+                    }))
+
+        columns = list(schema) if schema else list(batch.columns)
+        final: Optional[Dict[str, Dict[str, Any]]] = None
+        final_details = ""
+        if not unproven:
+            # 2. Retypes: every value casts back exactly, or its row is quarantined.
+            first, first_details = self._probe(batch, rows, alive, columns, snapshot)
+            vec = first.get(DriftType.SCHEMA.value) or {}
+            if vec.get("type") == "type_change":
+                for col, old_t in sorted((vec.get("old_types") or {}).items()):
+                    new_t = (vec.get("new_types") or {}).get(col)
+                    target = canonical_type(old_t)
+                    if target is None:
+                        unproven.append(
+                            f"column '{col}' changed type from {old_t!r} to {new_t!r} and no "
+                            f"lossless cast back to {old_t!r} is defined")
+                        continue
+                    cast = failed = 0
+                    for i in alive:
+                        if col not in rows[i]:
+                            continue
+                        value = rows[i][col]
+                        ok, out = cast_losslessly(value, target)
+                        if not ok:
+                            failed += 1
+                            held.setdefault(i, (
+                                f"column '{col}': value {_short(value)} does not cast losslessly "
+                                f"back to {old_t}"))
+                        elif type(out) is not type(value) or out != value:
+                            cast += 1
+                            rows[i] = {**rows[i], col: out}
+                    alive = keep_alive()
+                    if snapshot is not None:
+                        snapshot[col] = old_t
+                    repairs.append(ProvenRepair(type="retype", column=col, proof={
+                        "rule": "lossless_round_trip", "from": new_t, "to": old_t,
+                        "values_cast": cast, "rows_quarantined": failed,
+                    }))
+                second, second_details = self._probe(batch, rows, alive, columns, snapshot)
+            elif vec:
+                unproven.append(f"schema still differs from the baseline: {first_details}")
+                second, second_details = first, first_details
+            else:
+                second, second_details = first, first_details
+
+            if not unproven:
+                if DriftType.SCHEMA.value in second:
+                    unproven.append(f"schema still differs after the proven repairs: {second_details}")
+                if DriftType.SEMANTIC.value in second:
+                    unproven.append(
+                        "semantic drift has no proven repair; LLM-written fixes are never "
+                        "applied automatically (ADR-002)")
+                # 3. Unit or scale faults, one column at a time.
+                stat = second.get(DriftType.STATISTICAL.value) or {}
+                for col in sorted(stat.get("affected_columns") or []):
+                    dist = baseline.get(col)
+                    values = [rows[i][col] for i in alive if rows[i].get(col) is not None]
+                    power, proof = prove_scale(values, dist)
+                    if power is None or dist is None:
+                        unproven.append(
+                            f"column '{col}' drifted statistically and no proven repair applies: "
+                            f"{proof['reason']}")
+                        continue
+                    restored = {i: restore_scaled(rows[i][col], power)
+                                for i in alive if rows[i].get(col) is not None}
+                    # A real x10**n fault is exactly invertible for every value; one that
+                    # is not is evidence the factor is wrong (a x7 fault "fitting" x10),
+                    # so it voids the proof for the whole column, not just that row.
+                    inexact = [i for i, v in restored.items() if v is None]
+                    if inexact:
+                        unproven.append(
+                            f"column '{col}': {len(inexact)} value(s) are not exactly "
+                            f"{10.0 ** power:g} times any number, so the unit factor is not proven")
+                        continue
+                    outside = 0
+                    for i, value in restored.items():
+                        if in_baseline_range(value, dist):
+                            rows[i] = {**rows[i], col: value}
+                        else:
+                            outside += 1
+                            held.setdefault(i, (
+                                f"column '{col}': {_short(rows[i][col])} scaled back by "
+                                f"{10.0 ** power:g} is still outside the baseline range"))
+                    alive = keep_alive()
+                    repairs.append(ProvenRepair(
+                        type="rescale", column=col, proof={**proof, "rows_quarantined": outside}))
+                final, final_details = (
+                    self._probe(batch, rows, alive, columns, snapshot) if stat else (second, second_details))
+
+        # 4. The sandbox: the repaired rows must pass the same checks.
+        if final is not None and not unproven:
+            still = [t for t in _BLOCKING if t in final]
+            if still:
+                unproven.append(
+                    f"the repaired rows still fail the drift check ({', '.join(still)}): {final_details}")
+        if final is not None:
+            alerts.update({t: v for t, v in final.items() if t in _DETECTION_ONLY})
+
+        if unproven:
+            reason = "; ".join(unproven)
+            for i in alive:
+                held[i] = reason
+            alive, repairs = [], []
+        return ProvenHealPlan(
+            rows=[rows[i] for i in alive],
+            quarantined_rows=[
+                QuarantinedRow(index=i, row=batch.rows[i], reason=held[i]) for i in sorted(held)
+            ],
+            repairs=repairs,
+            alerts=[_alert(t, v) for t, v in alerts.items()],
+            unproven=unproven,
+        )
 
     # ────────────────────────────────────────────────────────────────
     # Internal steps
@@ -643,17 +875,25 @@ class RecoveryLoop:
         under AUTO mode only deterministic ``template`` shims at low/medium
         severity self-deploy; SUPERVISED/MONITOR_ONLY always hold, and
         LLM/fallback shims or high/critical severity always hold.
+
+        ADR-002: whatever risk_tiered says, only a ``template`` shim may deploy
+        without a human. An LLM-written, fallback or borrowed shim is a proposal: it
+        is never applied automatically, only held for review.
         """
         if not self._config.auto_deploy:
+            return False
+        if (shim.generation_method or "template") != "template":
             return False
         if not self._config.risk_tiered:
             return True
         if self._config.mode != RecoveryMode.AUTO:
             return False
-        if (shim.generation_method or "template") != "template":
-            return False
         severity = (drift_result.severity or "medium").lower()
         return severity in ("low", "medium")
+
+    def _must_hold(self, shim: ShimResult) -> bool:
+        """A validated shim that may not deploy goes to the approval queue, not limbo."""
+        return self._config.risk_tiered or (shim.generation_method or "template") != "template"
 
     def _hold_for_approval(
         self,

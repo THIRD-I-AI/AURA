@@ -284,8 +284,10 @@ async def _deployed_on_peer(source: str, status: RecoveryStatus = RecoveryStatus
     rec_id = f"r467_{uuid.uuid4().hex[:8]}"
     async with get_session_factory()() as db:
         db.add(DriftEvent(id=rec_id + "_drift", source_id=source, drift_type="schema"))
+        # decided_by: a peer's /approve records the approver; ADR-002 phase 2a reloads
+        # only human-approved shims as standing shims.
         db.add(RecoveryRecord(id=rec_id, drift_event_id=rec_id + "_drift", source_id=source,
-                              status=status.value, shim_code=SHIM))
+                              status=status.value, shim_code=SHIM, decided_by="peer-approver"))
         await db.commit()
     return rec_id
 

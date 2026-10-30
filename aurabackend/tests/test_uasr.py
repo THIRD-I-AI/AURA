@@ -403,9 +403,10 @@ class TestRecoveryLoopIntegration:
         batch = _make_batch("src1", BASELINE_COLS, BASELINE_ROWS)
 
         result = asyncio.run(loop.run(drift, batch))
-        # Result should be either DEPLOYED or FAILED depending on agent availability
+        # Depends on agent availability. A generated shim is never deployed by the loop
+        # on its own (ADR-002), so a validated one is held for approval.
         assert result.status in (
-            RecoveryStatus.DEPLOYED,
+            RecoveryStatus.PENDING_APPROVAL,
             RecoveryStatus.FAILED,
             RecoveryStatus.VALIDATING,
         )
