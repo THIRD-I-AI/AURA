@@ -439,3 +439,92 @@ async def test_heal_never_applies_a_shim_the_recovery_loop_proposes(monkeypatch)
     assert out["status"] == RecoveryStatus.PENDING_APPROVAL.value
     assert service._loop.get_deployed_shims(source) == []
     _accounted(out, sent)
+
+
+# ── Standing shims (review of ea53a59) ─────────────────────────────────────────
+
+# What the pre-ADR-002 Column Filter template did to a new column: drop it.
+_LEGACY_COLUMN_FILTER = (
+    "# UASR Shim - Column Filter\n"
+    "def transform(rows):\n"
+    "    return [{k: v for k, v in r.items() if k != 'coupon'} for r in rows]\n"
+)
+
+
+async def _deployed_record(source: str, shim: str, decided_by: str | None) -> None:
+    from uasr.models import DriftEvent, RecoveryRecord
+    rec_id = uuid.uuid4().hex[:16]
+    async with get_session_factory()() as db:
+        db.add(DriftEvent(id=rec_id + "_d", source_id=source, drift_type="schema"))
+        db.add(RecoveryRecord(
+            id=rec_id, drift_event_id=rec_id + "_d", source_id=source,
+            status=RecoveryStatus.DEPLOYED.value, shim_code=shim, decided_by=decided_by,
+        ))
+        await db.commit()
+
+
+@pytest.mark.asyncio
+async def test_a_legacy_auto_deployed_template_is_not_reloaded_as_a_standing_shim():
+    from uasr.recovery_persistence import load_deployed_shims
+    legacy, approved = _source(), _source()
+    approved_shim = "def transform(rows):\n    return rows\n"
+    await _deployed_record(legacy, _LEGACY_COLUMN_FILTER, decided_by=None)
+    await _deployed_record(approved, approved_shim, decided_by="alice")
+    try:
+        await service._restore_standing_shims()
+        assert service._loop.get_deployed_shims(legacy) == []
+        assert service._loop.get_deployed_shims(approved) == [approved_shim]
+        # The shared-registry path (BUG-467) reads the same filter.
+        assert await load_deployed_shims(legacy) == []
+        assert await load_deployed_shims(approved) == [approved_shim]
+
+        # So the new column survives and the batch is honestly reported.
+        _register(legacy, _rows(400, 40))
+        sent = _rows(300, 41, coupon=lambda rnd: rnd.choice(["A", "B", "C"]))
+        out = await _heal(legacy, copy.deepcopy(sent))
+        assert all("coupon" in r for r in out["rows"])
+        assert out.get("shims_applied", 0) == 0
+    finally:
+        service._loop.set_deployed_shims(legacy, [])
+        service._loop.set_deployed_shims(approved, [])
+
+
+@pytest.mark.parametrize("shim", [
+    # a dedupe / filter shim that drops rows (and edits its input in place)
+    "def transform(rows):\n"
+    "    for r in rows:\n"
+    "        r['amount'] = 0.0\n"
+    "    return rows[5:]\n",
+    # one that adds rows
+    "def transform(rows):\n    return rows + rows[:3]\n",
+])
+@pytest.mark.asyncio
+async def test_a_standing_shim_that_changes_the_row_count_quarantines_the_batch_as_sent(shim):
+    source = _source()
+    _register(source, _rows(400, 42))
+    sent = _rows(300, 43)
+    service._loop.set_deployed_shims(source, [shim])
+    try:
+        out = await _heal(source, copy.deepcopy(sent))
+    finally:
+        service._loop.set_deployed_shims(source, [])
+
+    assert out["healed"] is False and out["degraded"] is True
+    assert out["rows"] == [] and len(out["quarantined_rows"]) == len(sent)
+    _accounted(out, sent)
+    assert "row(s) into" in out["quarantined_rows"][0]["reason"]
+
+
+@pytest.mark.asyncio
+async def test_a_standing_shim_that_keeps_the_row_count_is_still_applied():
+    source = _source()
+    _register(source, _rows(400, 44))
+    sent = _rows(300, 45)
+    service._loop.set_deployed_shims(source, ["def transform(rows):\n    return list(rows)\n"])
+    try:
+        out = await _heal(source, copy.deepcopy(sent))
+    finally:
+        service._loop.set_deployed_shims(source, [])
+
+    assert out["healed"] is True and out["shims_applied"] == 1
+    assert out["rows"] == sent
