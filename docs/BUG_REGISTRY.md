@@ -5459,3 +5459,11 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Root cause:** The ingest task's exception handler only logs (streaming_engine.py:502-503); sink write errors are only logged (543-548); kafka_source.py:100-114 returns [] on a read error, which looks the same as 'no data'.
 - **Failure scenario:** A streaming pipeline's source credentials expire. Every read fails, the pipeline status stays RUNNING and nothing is written, with no alert.
 - **Fix:** Sources and sinks report failures: Kafka and webhook sinks raise a typed `StreamSinkError` after their own retries, `kafka_source` raises instead of returning [] on a read error. The engine judges each component per tick (only a tick where every write failed counts toward FAILED), needs 3 clean ticks to return to RUNNING, publishes STREAM_DEGRADED once per transition, does not count no-op late-event writes as successes, and refuses pause/resume on a FAILED pipeline. Tests `aurabackend/tests/test_heal_phase1_streaming.py` (16).
+
+## BUG-570: /uasr/heal drops a newly added column and reports healed=true, so data loss is returned as a successful repair
+- **Status:** open
+- **Found by:** the rewritten live check `uasr_self_heal` (BUG-566) against production build 5cefcbd, 2026-10-29: `healed=true but rows differ from ground truth: 10 rows with columns ['amount', 'status', 'user_id'], expected 10 rows with columns ['amount', 'region', 'status', 'user_id']`. `aurabackend/uasr/actuator_agent.py:214`.
+- **Severity:** high
+- **Root cause:** The template repair for an added column removes it (`actuator_agent.py:214-229`). The schema change is MEDIUM severity, so it auto-deploys (`recovery_loop.py:655`), and `/uasr/heal` returns the stripped rows with `healed: true`.
+- **Failure scenario:** An upstream system starts sending a new `region` field. Every pipeline healed by UASR silently loses that column's data from then on, and every signal says the repair succeeded.
+- **Fix:** pending, in ADR-002 phase 2a item 1 (proven repairs): a new column is kept and the schema evolves; nothing is dropped.
