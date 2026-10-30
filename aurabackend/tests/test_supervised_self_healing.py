@@ -106,10 +106,18 @@ def test_s41_model_surface() -> None:
 
 @pytest.mark.asyncio
 async def test_no_regression_greedy_deploy_when_risk_tiered_off() -> None:
-    # Even an LLM shim at HIGH severity deploys when risk_tiered is off.
+    # risk_tiered off still deploys a template shim at any severity.
+    cfg = RecoveryLoopConfig(risk_tiered=False, auto_deploy=True)
+    result = await _run(cfg, _shim("template"), _drift("high"))
+    assert result.status == RecoveryStatus.DEPLOYED
+
+
+@pytest.mark.asyncio
+async def test_llm_shim_is_never_auto_deployed_even_with_risk_tiered_off() -> None:
+    # ADR-002: LLM-written fixes are proposals only. This used to deploy.
     cfg = RecoveryLoopConfig(risk_tiered=False, auto_deploy=True)
     result = await _run(cfg, _shim("llm"), _drift("high"))
-    assert result.status == RecoveryStatus.DEPLOYED
+    assert result.status == RecoveryStatus.PENDING_APPROVAL and not result.shim.deployed
 
 
 # ── Risk-tiered AUTO mode ──────────────────────────────────────────

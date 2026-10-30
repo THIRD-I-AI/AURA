@@ -295,6 +295,10 @@ class DriftDetector:
         """
         return self._store.peek(source_id).schema
 
+    def baseline_distributions(self, source_id: str) -> Dict[str, ColumnDistribution]:
+        """The per-column baseline profile, the evidence ADR-002's proven repairs check against."""
+        return dict(self._store.peek(source_id).baseline or {})
+
     def register_reference_embedding(self, source_id: str, embedding: List[float]) -> None:
         """Add a reference embedding vector to the source's context matrix."""
         with self._lock_for(source_id):
