@@ -76,3 +76,39 @@ times, across random seeds. It measures:
    - Remove the approval gate for proven fixes.
    - The 8-step end-to-end proof from the readiness report, added to
      `scripts/verify_live_deployment.py` against production.
+
+## Phase 2 contract (2026-10-29)
+
+Order matters. The repairs that exist today include two that the accuracy rule forbids: dropping
+a new column (`actuator_agent.py`) and nulling values that fail a cast. Wiring the healer into
+real pipelines first would push guessed fixes into customer data. So phase 2 has two parts:
+
+**2a (now), in parallel:**
+
+1. **Proven repairs and quarantine** (`uasr/actuator_agent.py`, `uasr/recovery_loop.py`, the
+   `/uasr/heal` response). Every repair follows the table above.
+   - `/uasr/heal` gains `quarantined_rows: [{row, reason}]` and `repairs: [{type, column, proof}]`.
+   - `healed` is true only if every returned row is either clean or repaired by a proven rule.
+   - A repair that cannot be proven quarantines the affected rows, or the batch for
+     batch-level faults. It never alters the rows.
+   - Template repairs that are not provable are removed from the auto-apply path.
+2. **Accuracy benchmark** (`aurabackend/tests/accuracy/`), built on 2a.1's contract.
+   - Inputs: seeded clean datasets with ground truth; every fault type injected across at least
+     500 trials.
+   - Measured: precision of applied repairs, recall, and false alarms on clean data.
+   - CI lane fails if precision is below 99.9% or any clean-data false alarm occurs.
+3. **In-process MAPE-K queue** (BUG-565). UASR consumes an asyncio queue fed by `/uasr/heal` and
+   `/uasr/ingest`, in place of Kafka.
+   - The Kafka bootstrap runs only when `UASR_KAFKA_SERVERS` is set.
+   - `/uasr/mapek/status` reports the real consumer state.
+   - Post-heal validation (the canary over the next N batches, with auto-rollback) runs on this
+     queue.
+4. **Freshness.** A pipeline with a schedule records its last successful run. A periodic check
+   marks a late or missing run, alerts through webhooks, and re-runs it once.
+
+**2b (after 2a's benchmark passes):**
+- A heal step in `pipeline/engine.py` after each source load, paged within the box's memory.
+- A heal step in streaming, per micro-batch.
+- Quarantined rows go to a per-pipeline quarantine table, never to the sink. The run reports
+  DEGRADED.
+- Whole-run batches carry `metadata.complete_run` so the volume check runs.
