@@ -14,7 +14,7 @@ import secrets
 import threading
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -38,7 +38,7 @@ from shared.connector_policy import open_connector
 from shared.error_handler import sanitize_error
 from shared.logging_config import get_logger
 from shared.public_routes import public_route
-from shared.streaming_manager import TOPIC_QUERY, streaming_manager
+from shared.streaming_manager import TOPIC_QUERY, StreamEvent, streaming_manager
 
 logger = get_logger("aura.api_gateway.queries")
 
@@ -81,6 +81,27 @@ _SAVED_QUERY_RUN_RETENTION = 50  # per saved query
 _scheduler_task: Optional[asyncio.Task] = None
 _scheduler_stop: Optional[asyncio.Event] = None
 _SCHEDULER_INTERVAL_SEC = 30
+
+
+def _utcnow() -> datetime:
+    """The scheduler's clock; tests replace it to move time."""
+    return datetime.now(timezone.utc)
+
+
+# ── Freshness (ADR-002 phase 2a item 4) ───────────────────────────────
+# The upper bound between two slots of each interval. A slot is late once
+# now > reference + period + grace, so it can only fire after the real slot plus grace.
+_SCHEDULE_PERIODS = {
+    "hourly": timedelta(hours=1),
+    "daily": timedelta(days=1),
+    "weekly": timedelta(days=7),
+}
+_MIN_FRESHNESS_GRACE = timedelta(minutes=5)
+
+
+def _freshness_grace(period: timedelta) -> timedelta:
+    return max(period / 2, _MIN_FRESHNESS_GRACE)
+
 
 # ── PostgreSQL connection pool registry (finding #6) ──────────────────
 # One asyncpg pool per unique DB config, shared across all requests so
@@ -842,6 +863,9 @@ async def set_saved_query_schedule(query_id: str, payload: SavedQuerySchedule, r
         {
             "schedule": schedule,
             "next_run_at": next_run,
+            # Restarts the freshness clock: a query re-enabled after a long pause has not
+            # missed anything yet (ADR-002: zero false alarms).
+            "schedule_set_at": _utcnow().isoformat(),
             "updated_at": datetime.now().isoformat(),
         },
     )
@@ -947,32 +971,78 @@ async def _record_run(query_id: str, entry: Dict[str, Any]) -> None:
             del runs[_SAVED_QUERY_RUN_RETENTION:]
 
 
-async def _fire_due_saved_queries() -> None:
-    """Iterate saved queries and fire any whose next_run_at has passed.
+async def _scheduled_saved_queries() -> List[Dict[str, Any]]:
+    """Every saved query that has a schedule, across all workspaces.
 
     Sprint P-1: pulls the candidate set from the DB instead of an
-    in-memory list scan. Each workspace's saved queries are returned
-    via the indexed list; the schedule filter happens in Python (a
-    future optimisation could push it into SQL via a partial index)."""
-    from datetime import timezone
+    in-memory list scan. For the current scale (< 500 per workspace)
+    this is cheap; if scheduling grows we'll switch to a global SELECT
+    with a WHERE on schedule JSON predicates."""
+    from sqlalchemy import select
 
     from api_gateway import persistence
-    now = datetime.now(timezone.utc)
-    # Pull all schedulable records across known workspaces. For the
-    # current scale (< 500 per workspace) this is cheap; if scheduling
-    # grows we'll switch to a global SELECT with a WHERE on schedule
-    # JSON predicates.
     async with persistence.session_scope() as s:
-        from sqlalchemy import select
         rows = (await s.execute(
             select(persistence.SavedQueryRow).where(
                 persistence.SavedQueryRow.schedule_json.is_not(None),
             ),
         )).scalars().all()
-        candidates = [persistence._row_to_saved_query_dict(r) for r in rows]
+        return [persistence._row_to_saved_query_dict(r) for r in rows]
 
+
+async def _run_scheduled_query(record: Dict[str, Any], trigger: Optional[str] = None) -> Dict[str, Any]:
+    """Run one saved query, record it in the run history, and stamp the row."""
+    from api_gateway import persistence
+    query_id = record["id"]
+    started = datetime.now().isoformat()
+    try:
+        result = await _execute_saved_query_sql(record.get("sql", ""), record.get("workspace_id"))
+        entry = {
+            "id": f"run_{int(time.time() * 1000)}",
+            "started_at": started,
+            "completed_at": datetime.now().isoformat(),
+            "status": "success" if result.get("success") else "failed",
+            "row_count": result.get("row_count", 0),
+            "execution_time_ms": result.get("execution_time_ms", 0),
+            "error": None,
+        }
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Scheduled saved-query execution failed: %s", query_id)
+        entry = {
+            "id": f"run_{int(time.time() * 1000)}",
+            "started_at": started,
+            "completed_at": datetime.now().isoformat(),
+            "status": "failed",
+            "row_count": 0,
+            "execution_time_ms": 0,
+            "error": str(exc),
+        }
+    if trigger:
+        entry["trigger"] = trigger
+    await _record_run(query_id, entry)
+
+    # BUG-471: next_run_at was already advanced by the claim; writing it again
+    # from the pre-run schedule overwrote a schedule the user changed mid-run.
+    fields: Dict[str, Any] = {
+        "last_run_at": entry["completed_at"],
+        "updated_at": datetime.now().isoformat(),
+    }
+    if entry["status"] == "success":
+        # ADR-002 freshness reference, in UTC from the scheduler clock: last_run_at is
+        # naive local time and moves on failed runs too.
+        fields["last_success_at"] = _utcnow().isoformat()
+    await persistence.update_saved_query(
+        query_id, record.get("workspace_id") or DEFAULT_WORKSPACE_ID, fields,
+    )
+    return entry
+
+
+async def _fire_due_saved_queries() -> None:
+    """Fire every saved query whose next_run_at has passed."""
+    from api_gateway import persistence
+    now = _utcnow()
     due: List[Dict[str, Any]] = []
-    for record in candidates:
+    for record in await _scheduled_saved_queries():
         schedule = record.get("schedule")
         if not schedule or not schedule.get("enabled", True):
             continue
@@ -987,48 +1057,101 @@ async def _fire_due_saved_queries() -> None:
             due.append(record)
 
     for record in due:
-        query_id = record["id"]
-        sql = record.get("sql", "")
         # BUG-368: every uvicorn worker runs this tick (--workers 4 in prod), and
         # next_run_at only moved after the run finished, so a due query ran once per
         # worker. Claim it first; a worker that loses the race skips it.
-        new_next = _compute_next_run(record.get("schedule") or {})
-        if not await persistence.claim_saved_query_run(query_id, record["next_run_at"], new_next):
+        new_next = _compute_next_run(record.get("schedule") or {}, now=_utcnow())
+        if not await persistence.claim_saved_query_run(record["id"], record["next_run_at"], new_next):
             continue
-        started = datetime.now().isoformat()
-        try:
-            result = await _execute_saved_query_sql(sql, record.get("workspace_id"))
-            entry = {
-                "id": f"run_{int(time.time() * 1000)}",
-                "started_at": started,
-                "completed_at": datetime.now().isoformat(),
-                "status": "success" if result.get("success") else "failed",
-                "row_count": result.get("row_count", 0),
-                "execution_time_ms": result.get("execution_time_ms", 0),
-                "error": None,
-            }
-        except Exception as exc:  # noqa: BLE001
-            logger.exception("Scheduled saved-query execution failed: %s", query_id)
-            entry = {
-                "id": f"run_{int(time.time() * 1000)}",
-                "started_at": started,
-                "completed_at": datetime.now().isoformat(),
-                "status": "failed",
-                "row_count": 0,
-                "execution_time_ms": 0,
-                "error": str(exc),
-            }
-        await _record_run(query_id, entry)
+        await _run_scheduled_query(record)
 
-        # BUG-471: next_run_at was already advanced by the claim above; writing it again
-        # from the pre-run schedule overwrote a schedule the user changed mid-run.
-        await persistence.update_saved_query(
-            query_id, record.get("workspace_id") or DEFAULT_WORKSPACE_ID,
-            {
-                "last_run_at": entry["completed_at"],
-                "updated_at": datetime.now().isoformat(),
-            },
-        )
+
+def _parse_utc(value: Optional[str]) -> Optional[datetime]:
+    """An aware timestamp, or None. The freshness columns are only ever written as aware
+    UTC, so anything else is not a reference lateness can be proven from."""
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo is not None else None
+
+
+def _latest_missed_slot(reference: datetime, period: timedelta, now: datetime) -> Optional[datetime]:
+    """The latest slot reference + k*period (k >= 1) with now > slot + grace, or None."""
+    overdue = now - reference - _freshness_grace(period)
+    k = (overdue - timedelta(microseconds=1)) // period
+    return reference + k * period if k >= 1 else None
+
+
+async def _check_saved_query_freshness() -> None:
+    """ADR-002 phase 2a item 4: mark a missed scheduled run late, alert, re-run it once.
+
+    A slot is late when now > last success + interval + grace, so a query that keeps
+    succeeding on time never alerts. A paused query, or one with no schedule, is never
+    checked. Each missed slot is claimed in the database before anything happens, so
+    the alert and the single re-run survive restarts and never repeat across workers.
+    A crash between the claim and the re-run loses that re-run (at most once, never
+    twice).
+    """
+    from api_gateway import persistence
+    now = _utcnow()
+    for record in await _scheduled_saved_queries():
+        schedule = record.get("schedule")
+        if not schedule or not schedule.get("enabled", True):
+            continue
+        period = _SCHEDULE_PERIODS.get(schedule.get("interval"))
+        if period is None:
+            continue
+        query_id = record["id"]
+        references = [t for t in (_parse_utc(record.get("last_success_at")),
+                                  _parse_utc(record.get("schedule_set_at"))) if t is not None]
+        if not references:
+            await persistence.start_freshness_clock(query_id, now.isoformat())
+            continue
+        slot = _latest_missed_slot(max(references), period, now)
+        if slot is None:
+            continue
+        previous = record.get("late_slot_at")
+        previous_slot = _parse_utc(previous)
+        if previous_slot is not None and previous_slot >= slot:
+            continue
+        if not await persistence.claim_late_slot(query_id, previous, slot.isoformat()):
+            continue
+
+        deadline = slot + _freshness_grace(period)
+        late = {
+            "saved_query_id": query_id,
+            "name": record.get("name"),
+            "interval": schedule.get("interval"),
+            "slot": slot.isoformat(),
+            "deadline": deadline.isoformat(),
+            "last_success_at": record.get("last_success_at"),
+            "detected_at": now.isoformat(),
+        }
+        logger.warning("Scheduled saved query %s is late: slot %s passed its deadline %s",
+                       query_id, late["slot"], late["deadline"])
+        await _record_run(query_id, {
+            "id": f"late_{int(time.time() * 1000)}",
+            "started_at": now.isoformat(),
+            "completed_at": now.isoformat(),
+            "status": "late",
+            "row_count": 0,
+            "execution_time_ms": 0,
+            "error": f"no successful run by {late['deadline']}",
+            "slot": late["slot"],
+            "deadline": late["deadline"],
+        })
+        # workspace_id is NOT NULL on the row and must stay set on the event: the bus and
+        # the webhook dispatcher treat an untenanted event as everyone's (BUG-309).
+        await streaming_manager.publish(StreamEvent(
+            topic=f"{TOPIC_QUERY}:{query_id}",
+            event_type="late",
+            payload=late,
+            workspace_id=record["workspace_id"],
+        ))
+        await _run_scheduled_query(record, trigger="freshness_rerun")
 
 
 async def _scheduler_loop(stop: asyncio.Event) -> None:
@@ -1038,6 +1161,11 @@ async def _scheduler_loop(stop: asyncio.Event) -> None:
             await _fire_due_saved_queries()
         except Exception:
             logger.exception("Saved-query scheduler tick failed")
+        # After firing due runs, so a catch-up run that succeeds is not reported late.
+        try:
+            await _check_saved_query_freshness()
+        except Exception:
+            logger.exception("Saved-query freshness check failed")
         try:
             await asyncio.wait_for(stop.wait(), timeout=_SCHEDULER_INTERVAL_SEC)
         except asyncio.TimeoutError:

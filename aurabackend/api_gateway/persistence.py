@@ -133,6 +133,14 @@ class SavedQueryRow(Base):
     schedule_json = Column(Text, nullable=True)
     next_run_at = Column(String(64), nullable=True)
     last_run_at = Column(String(64), nullable=True)
+    # ADR-002 phase 2a freshness. All three are UTC ISO strings. last_run_at cannot serve:
+    # it moves on failed runs too. schedule_set_at restarts the clock whenever the
+    # schedule is (re)set, so re-enabling a long-paused query is not instantly "late".
+    # late_slot_at is the last missed slot already alerted and re-run; persisting it is
+    # what keeps that re-run to once per slot across restarts and workers.
+    last_success_at = Column(String(64), nullable=True)
+    schedule_set_at = Column(String(64), nullable=True)
+    late_slot_at = Column(String(64), nullable=True)
 
     __table_args__ = (
         # Composite index drives the ORDER BY starred DESC, created_ts DESC
@@ -597,8 +605,9 @@ def _row_to_saved_query_dict(row: SavedQueryRow) -> Dict[str, Any]:
             )
     if row.next_run_at is not None:
         out["next_run_at"] = row.next_run_at
-    if row.last_run_at is not None:
-        out["last_run_at"] = row.last_run_at
+    for key in ("last_run_at", "last_success_at", "schedule_set_at", "late_slot_at"):
+        if getattr(row, key) is not None:
+            out[key] = getattr(row, key)
     return out
 
 
@@ -697,6 +706,9 @@ async def insert_saved_query(record: Dict[str, Any]) -> Dict[str, Any]:
             ),
             next_run_at=record.get("next_run_at"),
             last_run_at=record.get("last_run_at"),
+            last_success_at=record.get("last_success_at"),
+            schedule_set_at=record.get("schedule_set_at"),
+            late_slot_at=record.get("late_slot_at"),
         )
         s.add(row)
         await s.flush()
@@ -761,6 +773,34 @@ async def claim_saved_query_run(query_id: str, due_next_run_at: str, new_next_ru
         return result.rowcount == 1
 
 
+async def claim_late_slot(query_id: str, previous_slot: Optional[str], slot: str) -> bool:
+    """Atomically record that ``slot`` was found late, True only for the one caller that
+    did. Same compare-and-set as claim_saved_query_run: under several workers, or after
+    a restart, the alert and the re-run for a slot happen once (ADR-002 phase 2a)."""
+    column = SavedQueryRow.late_slot_at
+    async with session_scope() as s:
+        result = await s.execute(
+            update(SavedQueryRow)
+            .where(SavedQueryRow.id == query_id)
+            .where(column.is_(None) if previous_slot is None else column == previous_slot)
+            .values(late_slot_at=slot)
+        )
+        return result.rowcount == 1
+
+
+async def start_freshness_clock(query_id: str, at: str) -> None:
+    """Give a scheduled query that predates freshness tracking a reference time. It has
+    no recorded success, and alerting on it from nothing would be a guess."""
+    async with session_scope() as s:
+        await s.execute(
+            update(SavedQueryRow)
+            .where(SavedQueryRow.id == query_id)
+            .where(SavedQueryRow.schedule_set_at.is_(None))
+            .where(SavedQueryRow.last_success_at.is_(None))
+            .values(schedule_set_at=at)
+        )
+
+
 async def update_saved_query(
     query_id: str, workspace_id: str, fields: Dict[str, Any],
 ) -> Optional[Dict[str, Any]]:
@@ -775,7 +815,8 @@ async def update_saved_query(
         row = (await s.execute(stmt)).scalar_one_or_none()
         if row is None:
             return None
-        for key in ("name", "starred", "schedule", "next_run_at", "last_run_at"):
+        for key in ("name", "starred", "schedule", "next_run_at", "last_run_at",
+                    "last_success_at", "schedule_set_at"):
             if key in fields:
                 if key == "schedule":
                     v = fields[key]
