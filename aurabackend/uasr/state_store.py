@@ -25,6 +25,8 @@ backends:
   coldest source's *entire* state atomically, capping memory at O(N).
 * :class:`RedisStateStore` — shared across replicas; a baseline registered
   on any worker is visible to all, resolving the cold-miss.
+* :class:`SqliteStateStore` — single-node and durable; state survives a
+  process restart or redeploy (BUG-567).
 
 The eviction / sharing unit is the **source**: a source's baseline, KL
 history, schema baseline and reference embeddings live and die together in
@@ -33,9 +35,12 @@ one :class:`SourceState` record.
 from __future__ import annotations
 
 import json
+import sqlite3
+import threading
 from abc import ABC, abstractmethod
 from collections import OrderedDict
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from .models import ColumnDistribution
@@ -57,6 +62,12 @@ class SourceState:
     # {"added": {col: type}, "removed": [col...], "type_changes": {col: type},
     #  "expires_at": epoch_float, "note": str|None, "actor": str|None}
     schema_intent: Optional[Dict[str, Any]] = None
+    # BUG-568: row-level facts about the baseline batch that its per-column
+    # distributions cannot carry -- {"rows": n, "columns": [...],
+    # "equal_pairs": k}, where k is the number of row pairs that are exact
+    # duplicates over those columns. None when the baseline was registered
+    # from distributions instead of rows.
+    baseline_rows: Optional[Dict[str, Any]] = None
 
     def is_empty(self) -> bool:
         return (
@@ -65,6 +76,7 @@ class SourceState:
             and not self.kl_history
             and not self.embeddings
             and self.schema_intent is None
+            and self.baseline_rows is None
         )
 
     # ---- serialization (used by RedisStateStore / any wire backend) ----
@@ -80,6 +92,7 @@ class SourceState:
                 "kl_history": self.kl_history,
                 "embeddings": self.embeddings,
                 "schema_intent": self.schema_intent,
+                "baseline_rows": self.baseline_rows,
             }
         )
 
@@ -97,6 +110,7 @@ class SourceState:
             kl_history=list(d.get("kl_history") or []),
             embeddings=[list(e) for e in (d.get("embeddings") or [])],
             schema_intent=d.get("schema_intent"),
+            baseline_rows=d.get("baseline_rows"),
         )
 
 
@@ -273,3 +287,66 @@ class RedisStateStore(StateStore):
                 k = k.decode("utf-8")
             out.append(k[len(self._prefix):])
         return out
+
+
+# ────────────────────────────────────────────────────────────────────
+# SQLite backend — durable, single node
+# ────────────────────────────────────────────────────────────────────
+class SqliteStateStore(StateStore):
+    """Durable process-local state store backed by one SQLite file.
+
+    BUG-567: in-memory state was wiped by every redeploy, so the first batch
+    after a deploy silently became the new baseline whatever it held. Each
+    ``save`` is a committed single-row upsert, so a crash or restart keeps
+    every write that returned. Same JSON wire format as ``RedisStateStore``.
+
+    One node only: two replicas on one file would each run their own repair
+    loop on the same drift. Use ``RedisStateStore`` for a fleet.
+    """
+
+    def __init__(self, path: str) -> None:
+        self._path = str(path)
+        Path(self._path).parent.mkdir(parents=True, exist_ok=True)
+        # The detector calls in from asyncio.to_thread worker threads, so the
+        # one connection is shared across threads and serialised by our lock.
+        self._conn = sqlite3.connect(self._path, check_same_thread=False, isolation_level=None)
+        self._lock = threading.Lock()
+        with self._lock:
+            self._conn.execute(
+                "CREATE TABLE IF NOT EXISTS uasr_source_state ("
+                "source_id TEXT PRIMARY KEY, state TEXT NOT NULL)"
+            )
+
+    @property
+    def path(self) -> str:
+        return self._path
+
+    def load(self, source_id: str) -> SourceState:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT state FROM uasr_source_state WHERE source_id = ?", (source_id,)
+            ).fetchone()
+        return SourceState() if row is None else SourceState.from_json(row[0])
+
+    def save(self, source_id: str, state: SourceState) -> None:
+        payload = state.to_json()
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO uasr_source_state (source_id, state) VALUES (?, ?) "
+                "ON CONFLICT(source_id) DO UPDATE SET state = excluded.state",
+                (source_id, payload),
+            )
+
+    def contains(self, source_id: str) -> bool:
+        with self._lock:
+            return self._conn.execute(
+                "SELECT 1 FROM uasr_source_state WHERE source_id = ?", (source_id,)
+            ).fetchone() is not None
+
+    def delete(self, source_id: str) -> None:
+        with self._lock:
+            self._conn.execute("DELETE FROM uasr_source_state WHERE source_id = ?", (source_id,))
+
+    def source_ids(self) -> List[str]:
+        with self._lock:
+            return [r[0] for r in self._conn.execute("SELECT source_id FROM uasr_source_state")]

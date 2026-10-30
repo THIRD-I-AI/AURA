@@ -33,6 +33,43 @@ _GATEWAY_URL = settings.api_gateway_url
 _TIMEOUT = 15.0
 
 
+def _uasr_service_headers() -> Dict[str, str]:
+    """A short-lived bearer token for this agent's calls to UASR, AS the run's tenant.
+
+    BUG-562: the drift check sent no credentials, so with AURA_JWT_ENABLED (prod)
+    UASR answered 401. UASR scopes every source id to the caller's tenant
+    (uasr/tenancy.py caller_tenant: org_id, else sub), so the token must carry the
+    tenant the run belongs to: a service-wide identity would file every tenant's
+    batches under one namespace, never meet the user's baseline, and compare tenant
+    B's batch against tenant A's drift state (false data_drift alerts and recovery
+    runs). The tenant comes from agents.base.current_tenant, set by the entry point
+    from a verified source. With no tenant we send no credentials rather than guess:
+    an open-mode UASR does not scope, and a JWT UASR answers 401, which the caller
+    reports as drift_check_failed.
+    """
+    from datetime import timedelta
+
+    from agents.base import current_tenant
+    from shared.auth import create_access_token
+
+    tenant = current_tenant.get()
+    if not tenant:
+        return {}
+    token = create_access_token(
+        {"sub": "service:monitor_agent", "org_id": tenant}, expires_delta=timedelta(minutes=5))
+    return {"Authorization": f"Bearer {token}"}
+
+
+def _uasr_check_failed(source_id: str, message: str) -> Dict[str, Any]:
+    return {
+        "type": "drift_check_failed",
+        "source_id": source_id,
+        "severity": "high",
+        "message": f"{message} for '{source_id}'; drift was not checked",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+
+
 class MonitorAgent(BaseAgent):
     """
     Multi-purpose health monitor.
@@ -191,9 +228,15 @@ class MonitorAgent(BaseAgent):
                             "columns": columns,
                             "rows": rows[:500],  # cap to 500 rows for speed
                         },
+                        headers=_uasr_service_headers(),
                         timeout=20.0,
                     )
-                    if resp.status_code == 200:
+                    if resp.status_code != 200:
+                        # BUG-562: a non-200 (a 401 above all) used to be dropped, so the
+                        # agent reported "no drift" for a check that never ran.
+                        alerts.append(_uasr_check_failed(
+                            source_id, f"UASR drift check returned HTTP {resp.status_code}"))
+                    else:
                         data = resp.json()
                         if data.get("drift_detected"):
                             alerts.append({
@@ -212,6 +255,9 @@ class MonitorAgent(BaseAgent):
                             })
                 except Exception as exc:
                     logger.warning("UASR ingest failed for %s: %s", source_id, exc)
+                    # BUG-562: same as a non-200 -- the drift check did not run, say so.
+                    alerts.append(_uasr_check_failed(
+                        source_id, f"UASR drift check failed: {type(exc).__name__}"))
 
         return alerts
 

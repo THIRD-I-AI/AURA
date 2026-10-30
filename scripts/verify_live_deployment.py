@@ -345,54 +345,56 @@ def check_ledger_proof(v: Verifier) -> str:
 
 
 def check_uasr_self_heal(v: Verifier) -> str:
-    """Regression check for the exact bug fixed in fix/uasr-schema-
-    validation-false-reject: identical values, only a column renamed --
-    must be detected and healed, same as verified manually 2026-08-31.
+    """Prove UASR heals a batch on its own and returns the right rows.
 
-    DSR-015 (2026-09-14) flipped UASR_RISK_TIERED's default to true, so a
-    validated shim is now held `pending_approval` rather than
-    auto-deployed (default-safe: human approval, not the old default-
-    unsafe auto-deploy). This drives the full path -- ingest -> pending
-    approval -> POST /uasr/recovery/{id}/approve -> deployed -- so the
-    check still proves the feature actually heals, not just that it
-    pauses (see docs/BUG_REGISTRY.md BUG-049)."""
+    BUG-566: this used to call the verdict-only /uasr/ingest, approve its own
+    recovery and never look at a row, so it stayed green while no pipeline healed
+    itself. Now it never approves anything: it registers a baseline for a fresh
+    verify_* source, sends one batch with a single known fault through /uasr/heal
+    (the endpoint that returns rows), and passes only when the response says
+    healed AND its rows equal the ground truth exactly.
+
+    The fault is an added column, the one fault whose correct repair is not a
+    judgement call: per docs/design/ADR-002 ("New column: Kept: the schema
+    evolves, nothing is dropped") the destination must receive every row with
+    every value, the new column included. Dropping it -- or holding the batch
+    for approval -- is reported as a FAIL with the reason, never as a pass.
+    """
+    # Keep the "uasr" label: scripts/cleanup_verify_resources.py matches exactly verify_<hex8>_uasr.
     source_id = v.ns("uasr")
-    rows = [{"user_id": i, "amount": round(10 + i * 0.37, 2), "status": "active"} for i in range(1, 11)]
+    baseline = [{"user_id": i, "amount": round(10 + i * 0.37, 2), "status": "active"} for i in range(1, 11)]
     r = v.client.post(
         f"{V1}/uasr/baseline", headers=v._auth_headers(),
-        json={"source_id": source_id, "rows": rows},
+        json={"source_id": source_id, "rows": baseline},
     )
     r.raise_for_status()
 
-    drifted = [{"user_id": i, "total_amount": round(10 + i * 0.37, 2), "status": "active"} for i in range(1, 11)]
+    # Same values as the baseline plus one new column, so the only drift is the schema change.
+    batch = [{**row, "region": "eu" if row["user_id"] % 2 else "us"} for row in baseline]
+    # Built independently of `batch`, so a check that mutated its input could not pass itself.
+    expected = [
+        {"user_id": i, "amount": round(10 + i * 0.37, 2), "status": "active", "region": "eu" if i % 2 else "us"}
+        for i in range(1, 11)
+    ]
     r2 = v.client.post(
-        f"{V1}/uasr/ingest", headers=v._auth_headers(),
-        json={"source_id": source_id, "rows": drifted},
+        f"{V1}/uasr/heal", headers=v._auth_headers(),
+        json={"source_id": source_id, "rows": batch},
     )
     r2.raise_for_status()
     body = r2.json()
-    status = body.get("status")
 
-    if status == "deployed":
-        return f"drift detected + shim auto-deployed (post_kl={body.get('post_kl')})"
-
-    if status != "pending_approval":
-        raise AssertionError(f"expected deployed or pending_approval, got status={status!r}: {body}")
-
-    recovery_id = body.get("recovery_id")
-    if not recovery_id:
-        raise AssertionError(f"pending_approval response has no recovery_id: {body}")
-
-    r3 = v.client.post(
-        f"{V1}/uasr/recovery/{recovery_id}/approve", headers=v._auth_headers(),
-        json={"approver": "verify_live_deployment"},
-    )
-    r3.raise_for_status()
-    approved = r3.json()
-    recovery_status = approved.get("recovery", {}).get("status")
-    if recovery_status != "deployed":
-        raise AssertionError(f"expected approval to deploy the shim, got status={recovery_status!r}: {approved}")
-    return f"drift detected -> held for approval -> approved -> deployed (recovery_id={recovery_id})"
+    if body.get("healed") is not True:
+        raise AssertionError(
+            f"not healed autonomously: status={body.get('status')!r} reason={body.get('reason')!r}"
+        )
+    rows = body.get("rows")
+    if rows != expected:
+        got_cols = sorted({c for row in rows or [] for c in row})
+        raise AssertionError(
+            f"healed=true but rows differ from ground truth: {len(rows or [])} rows with columns "
+            f"{got_cols}, expected {len(expected)} rows with columns {sorted(expected[0])}"
+        )
+    return f"added column healed autonomously; {len(rows)} rows equal ground truth (status={body.get('status')})"
 
 
 # ── Fix-verification probes ─────────────────────────────────────────────

@@ -11,6 +11,8 @@ Two axes, each independently switchable:
   * ``memory`` (default) — :class:`InMemoryStateStore`.  Optionally bounded via
     ``UASR_STATE_CAPACITY`` (LRU eviction) for a fixed memory ceiling under many
     sources; unbounded and bit-identical to the legacy detector when unset.
+  * ``sqlite`` — :class:`SqliteStateStore` at ``UASR_STATE_PATH``.  Durable on
+    a single node: baselines survive a restart or redeploy (BUG-567).
   * ``redis`` — :class:`RedisStateStore` at ``UASR_REDIS_URL``.  Detector state
     lives in Redis, so any replica can serve any source and a cold replica sees
     baselines written by its peers (the cross-replica cold-miss fix).
@@ -36,7 +38,7 @@ from __future__ import annotations
 import os
 from typing import Any, Optional
 
-from .state_store import InMemoryStateStore, RedisStateStore, StateStore
+from .state_store import InMemoryStateStore, RedisStateStore, SqliteStateStore, StateStore
 
 
 def _env(name: str, default: str) -> str:
@@ -176,6 +178,12 @@ def build_redis_client(url: Optional[str] = None) -> Any:
 # State backend
 # ────────────────────────────────────────────────────────────────────
 
+def _state_path() -> str:
+    # Same relative-to-cwd default as UASR_DUCKDB_PATH; a deployment sets an
+    # absolute path on its data volume (BUG-567).
+    return _env("UASR_STATE_PATH", "data/uasr_state.db")
+
+
 def build_state_store(redis_client: Any = None) -> StateStore:
     """Build the detector's :class:`StateStore` from environment config."""
     backend = _env("UASR_STATE_BACKEND", "memory").lower()
@@ -188,7 +196,9 @@ def build_state_store(redis_client: Any = None) -> StateStore:
         ttl = _env_int("UASR_STATE_TTL_SECONDS", None)
         url = _env("UASR_REDIS_URL", "redis://localhost:6379/0")
         return RedisStateStore(url=url, prefix=prefix, ttl_seconds=ttl, client=client)
-    raise ValueError(f"Unknown UASR_STATE_BACKEND={backend!r} (expected memory|redis)")
+    if backend == "sqlite":
+        return SqliteStateStore(_state_path())
+    raise ValueError(f"Unknown UASR_STATE_BACKEND={backend!r} (expected memory|sqlite|redis)")
 
 
 # ────────────────────────────────────────────────────────────────────
@@ -267,6 +277,8 @@ def deployment_summary() -> dict:
     ) = correlation_flags()
     if state_backend == "redis" or repair_backend in ("distributed", "redis", "fleet"):
         summary["redis_url"] = _env("UASR_REDIS_URL", "redis://localhost:6379/0")
+    if state_backend == "sqlite":
+        summary["state_path"] = _state_path()
     if state_backend == "memory":
         summary["state_capacity"] = _env_int("UASR_STATE_CAPACITY", None)
     if repair_backend == "local":

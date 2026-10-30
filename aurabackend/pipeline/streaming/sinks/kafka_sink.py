@@ -17,7 +17,7 @@ import logging
 from typing import Any, Dict
 
 from pipeline.streaming.models import StreamEvent, WindowState
-from pipeline.streaming.sinks.base import BaseSink
+from pipeline.streaming.sinks.base import BaseSink, StreamSinkError
 from shared.kafka_client import require_allowed_brokers
 
 logger = logging.getLogger("aura.streaming.sink.kafka")
@@ -91,7 +91,8 @@ class KafkaSink(BaseSink):
             await self._producer.send_and_wait(self._topic, value=payload, key=key)
             logger.debug("Kafka sink: sent window %s to %s", window.window_key, self._topic)
         except Exception as e:
-            logger.error("Kafka sink emit error: %s", e)
+            # BUG-569: was only logged, so the engine never saw the lost window.
+            raise StreamSinkError(f"Kafka write to topic {self._topic!r} failed") from e
 
     async def emit_late_event(self, event: StreamEvent, pipeline_id: str) -> None:
         if not self._producer:
@@ -113,4 +114,7 @@ class KafkaSink(BaseSink):
                 key=event.key,
             )
         except Exception as e:
-            logger.error("Kafka sink late event error: %s", e)
+            # BUG-569: same as emit_window -- surface the failure to the engine.
+            raise StreamSinkError(
+                f"Kafka dead-letter write to topic {self._topic + '.dead_letter'!r} failed"
+            ) from e

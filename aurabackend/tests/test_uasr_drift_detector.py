@@ -464,15 +464,26 @@ class TestColdStartWarmup:
         assert r.severity == DriftSeverity.CRITICAL
 
     def test_warmup_zero_restores_original_behaviour(self):
+        # BUG-564: healthy batches binned on the baseline's edges no longer
+        # false-alarm at all, so the suppression is shown on a real but mild
+        # drift instead: a +1 sd shift (location moved < 2 sigma) that warmup
+        # hides and warmup_batches=0 reports.
+        def shifted(sid):
+            rnd = self._random.Random(f"{sid}:shift")
+            return BatchPayload(
+                source_id=sid, batch_id="shift",
+                rows=[{"amount": rnd.gauss(55.0, 5.0)} for _ in range(500)],
+            )
+
+        warm = DriftDetector(default_zeta=0.15, warmup_batches=5)
+        warm.register_baseline("s", self._healthy("s", "base", seed=99))
+        assert warm.detect(shifted("s")).drift_detected is False
+
         det = DriftDetector(default_zeta=0.15, warmup_batches=0)
         det.register_baseline("s", self._healthy("s", "base", seed=99))
-        # with warmup off, at least one of the first healthy batches false-alarms
-        # (the raw cold-start transient this feature exists to remove)
-        fired = any(
-            det.detect(self._healthy("s", b, seed=b)).drift_detected
-            for b in range(1, 6)
-        )
-        assert fired is True
+        for b in range(1, 6):
+            assert det.detect(self._healthy("s", b, seed=b)).drift_detected is False
+        assert det.detect(shifted("s")).drift_type == DriftType.STATISTICAL
 
     def test_steady_state_drift_fires_after_warmup(self):
         det = DriftDetector(default_zeta=0.15, warmup_batches=3)

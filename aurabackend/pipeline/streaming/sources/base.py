@@ -10,6 +10,16 @@ import abc
 from typing import Any, Dict, List
 
 from pipeline.streaming.models import StreamEvent
+from shared.exceptions import AuraError
+
+
+class StreamSourceError(AuraError):
+    """A source could not read. BUG-569: a source must raise this rather than
+    return [], which the engine cannot tell apart from "no data yet". The
+    message is shown to the client (sanitize_error trusts AuraError messages),
+    so it must never carry the underlying exception's text -- chain it instead."""
+
+    error_code = "STREAM_SOURCE_ERROR"
 
 
 class BaseSource(abc.ABC):

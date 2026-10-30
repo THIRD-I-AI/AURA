@@ -71,7 +71,11 @@ class TestOutlierClipShimHeals:
         healed_rows = transform([dict(r) for r in drifted.rows])
         healed_batch = BatchPayload(source_id="src", columns=["v"], rows=healed_rows)
         post_result = det.detect(healed_batch, record_state=False)
-        post_kl = post_result.kl_divergence if post_result.drift_detected else 0.0
+        # BUG-568: the primary drift can now be a non-statistical type (the
+        # clipped rows collapse onto one value and read as DUPLICATE), which
+        # carries no KL -- read it the way RecoveryLoop._validate_shim does.
+        assert DriftType.STATISTICAL not in post_result.drift_types
+        post_kl = post_result.kl_divergence or 0.0
 
         assert post_kl < pre_kl * 0.5, (
             f"clip shim did not materially reduce KL: pre={pre_kl:.4f} post={post_kl:.4f}"
@@ -114,9 +118,12 @@ class TestDriftTypeRoutesRepair:
     actuator_agent._location_shift_reason / recovery_loop
     ShimResult.requires_human_review.
 
-    Genuine outlier contamination (a handful of extreme values, but the
-    batch mean stays close to baseline) must keep auto-clipping exactly as
-    before -- this is the regression guard for that change.
+    Outlier contamination (a handful of extreme values, but the batch mean
+    stays close to baseline) is detected but no longer auto-clipped (BUG-564).
+    Its "severe" KL came from binning the batch on its own stretched range;
+    on the baseline's edges, 5 outliers in 300 rows are 1.7% of the mass in
+    the overflow bin, and the values clipping writes (mean +/- 3 std) are
+    still outside the baseline's range, so the clip proves nothing.
     """
 
     @staticmethod
@@ -158,32 +165,25 @@ class TestDriftTypeRoutesRepair:
         assert "location shift" in result.shim.escalation_reason
 
     @pytest.mark.asyncio
-    async def test_outlier_contamination_still_auto_clips_and_reduces_divergence(self):
+    async def test_outlier_contamination_is_detected_but_not_auto_rewritten(self):
         det, rnd = self._baseline_detector()
-        # 295 baseline-like rows + 5 fixed extreme outliers: individually far
-        # from baseline (strong histogram-shape KL), but only ~2.3
-        # baseline-sigmas of pull on the batch MEAN -- genuine outlier
-        # contamination, not a location shift.
+        # 295 baseline-like rows + 5 fixed extreme outliers: ~2.3
+        # baseline-sigmas of pull on the batch MEAN -- outlier contamination,
+        # not a location shift.
         drifted_rows = [{"v": rnd.gauss(100.0, 10.0)} for _ in range(295)]
         drifted_rows += [{"v": 1500.0} for _ in range(5)]
         drifted = BatchPayload(source_id="src", batch_id="b2", columns=["v"], rows=drifted_rows)
 
         drift_result = det.detect(drifted, record_state=False)
         assert drift_result.drift_detected
-        pre_kl = drift_result.kl_divergence
+        assert drift_result.drift_type == DriftType.STATISTICAL
 
         loop = RecoveryLoop(detector=det)
         result = await loop.run(drift_result, drifted)
 
-        assert result.status == RecoveryStatus.DEPLOYED
-        assert result.shim is not None
-        assert result.shim.requires_human_review is False
-        assert result.shim.deployed is True
-        assert result.shim.post_kl_divergence is not None
-        assert result.shim.post_kl_divergence < pre_kl * 0.5, (
-            f"clip shim did not materially reduce KL: pre={pre_kl:.4f} "
-            f"post={result.shim.post_kl_divergence:.4f}"
-        )
+        # No shim that failed to restore the baseline distribution may deploy.
+        assert result.status != RecoveryStatus.DEPLOYED
+        assert result.shim is None or result.shim.deployed is False
 
 
 class TestDetectRecordStateFalseDoesNotPoisonHistory:

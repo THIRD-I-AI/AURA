@@ -6,6 +6,7 @@ from __future__ import annotations
 import httpx
 import pytest
 
+from pipeline.streaming.sinks.base import StreamSinkError
 from pipeline.streaming.sinks.webhook_sink import WebhookSink
 from pipeline.streaming.sources.websocket_source import WebSocketSource
 from shared import ssrf
@@ -62,7 +63,9 @@ async def test_a_url_that_turns_internal_after_start_is_not_posted_to(monkeypatc
     sink._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     try:
         await sink._post({"n": 1})
-        await sink._post({"n": 2})
+        # BUG-569: the dropped delivery is raised to the engine, not just logged.
+        with pytest.raises(StreamSinkError):
+            await sink._post({"n": 2})
     finally:
         await sink.stop()
 
