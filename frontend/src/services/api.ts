@@ -990,7 +990,7 @@ export interface SavedQueryRun {
   id: string;
   started_at: string;
   completed_at: string;
-  status: 'success' | 'failed';
+  status: 'success' | 'failed' | 'late';
   row_count: number;
   execution_time_ms: number;
   error?: string | null;

@@ -65,7 +65,7 @@ _KNOWN_EVENTS = [
     "pipeline.complete", "pipeline.failed",
     "agent.complete", "agent.failed",
     "etl.complete", "etl.failed",
-    "query.complete", "query.failed",
+    "query.complete", "query.failed", "query.late",
     "upload.complete", "upload.failed",
     "uasr.drift", "uasr.recovered",
     "system.degraded",

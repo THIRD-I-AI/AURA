@@ -127,6 +127,9 @@ def _classify(event: StreamEvent) -> Optional[str]:
             return f"{ns}.complete"
         if et == "error":
             return f"{ns}.failed"
+        # ADR-002 phase 2a: a scheduled run that missed its slot plus grace.
+        if et == "late":
+            return f"{ns}.late"
         # Skip progress / data / heartbeat — too noisy for webhooks
         return None
 
