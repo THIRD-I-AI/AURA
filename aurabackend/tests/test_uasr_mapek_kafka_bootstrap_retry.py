@@ -257,6 +257,8 @@ async def test_lifespan_starts_cleanly_with_mapek_enabled(monkeypatch):
     itself -- not just _mapek_worker_bootstrap() in isolation -- must be
     driven end to end."""
     monkeypatch.setenv("UASR_MAPEK_ENABLED", "true")
+    # BUG-565: the Kafka bootstrap only starts when a broker is configured.
+    monkeypatch.setenv("UASR_KAFKA_SERVERS", "broker:9092")
     monkeypatch.setattr(service, "_repair_scheduler", None)
     monkeypatch.setattr(service, "_APPROVAL_TIMEOUT_SECONDS", 0)
 

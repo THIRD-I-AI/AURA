@@ -29,6 +29,16 @@ preserved). The recovery deploys a shim into ``RecoveryLoop._deployed_shims``;
 on resume, future batches pass through ``loop.apply_shims`` before drift
 detection so the same drift never re-fires.
 
+Input. ADR-002 decision 3 / BUG-565: the free-tier box has no broker, so by
+default the worker consumes an in-process ``asyncio.Queue`` that ``/uasr/heal``
+and ``/uasr/ingest`` feed (``start_queue`` / ``submit``) instead of Kafka. Those
+handlers already ran Monitor/Analyze/Plan/Execute on the batch, because the caller
+needs its rows back, and they already decided and persisted the post-heal canary
+(``repair_canary``) under the source's lock. A queue item is that outcome, so a
+lagging or overflowing queue loses an announcement, never a fault (the drift event
+is in the DB) or a rollback (the ROLLED_BACK row is in the DB). Kafka (``start``) is
+used only when ``UASR_KAFKA_SERVERS`` is set.
+
 Atomic DuckDB writes: each batch is staged to a Parquet temp file, then
 ``read_parquet → INSERT`` runs inside a single DuckDB transaction. If the
 connection or process dies mid-write the transaction rolls back — readers
@@ -188,6 +198,26 @@ class MAPEKConfig:
 ProgressCb = Callable[[str, str, Dict[str, Any]], Awaitable[None]]
 
 
+# BUG-565: bounded so a stalled worker cannot grow memory without limit on the 1 GB
+# box. An item is a verdict, not the rows, so 1000 of them is small.
+QUEUE_MAXSIZE = 1000
+
+
+@dataclass(frozen=True)
+class QueueItem:
+    """One batch an HTTP handler already processed, handed to the worker.
+
+    ``source_id`` is the tenant-scoped id (BUG-263) the handler resolved.
+    ``rolled_back`` lists the canary rollbacks the handler already persisted for it.
+    """
+
+    kind: str  # "heal" | "ingest"
+    source_id: str
+    batch_id: str
+    drift: DriftDetectionResult
+    rolled_back: tuple = ()
+
+
 def _numeric_column_samples(batch: BatchPayload) -> Dict[str, List[float]]:
     """Extract per-column numeric sample lists from a batch's rows.
 
@@ -325,6 +355,13 @@ class MAPEKWorker:
 
         self._task: Optional[asyncio.Task] = None
 
+        # BUG-565: what feeds this worker and what it has done, for an honest
+        # /uasr/mapek/status. "kafka" until start_queue() switches it.
+        self._input = "kafka"
+        self._queue: Optional[asyncio.Queue] = None
+        self._processed = 0
+        self._dropped = 0
+
     # ── Lifecycle ─────────────────────────────────────────────────────
 
     async def start(self) -> None:
@@ -384,7 +421,10 @@ class MAPEKWorker:
             return
         self._running = False
         self._stop_signal.set()
-        if self._task:
+        # A task that already ended has nothing to wait for, and awaiting a cancelled
+        # one would raise CancelledError into the caller's shutdown as if the caller
+        # itself had been cancelled.
+        if self._task and not self._task.done():
             # BUG-268: a loop task that ended with an exception (or did not finish in
             # time) used to re-raise here, skipping the consumer / DuckDB cleanup below.
             try:
@@ -393,6 +433,10 @@ class MAPEKWorker:
                 raise
             except Exception as exc:
                 logger.warning("MAPE-K loop did not end cleanly on stop: %r", exc)
+        elif self._task and not self._task.cancelled() and self._task.exception() is not None:
+            # Retrieve a dead loop's exception, or it is lost (asyncio only warns
+            # "never retrieved" at garbage collection).
+            logger.warning("MAPE-K loop had already died: %r", self._task.exception())
         if self._consumer:
             await self._consumer.stop()
         if self._duckdb_con is not None:
@@ -401,6 +445,53 @@ class MAPEKWorker:
             except Exception as exc:
                 logger.debug("duckdb close on shutdown failed: %s", exc)
         await self._emit("stopped", "MAPE-K worker shut down", {})
+
+    async def start_queue(self, maxsize: int = QUEUE_MAXSIZE) -> None:
+        """Consume the in-process queue instead of Kafka (ADR-002 decision 3).
+
+        Opens no consumer and no DuckDB lake: the HTTP caller is the sink for its own
+        rows, and copying every tenant's rows into one shared lake table would mix
+        tenants for no reader.
+        """
+        if self._running:
+            return
+        self._input = "queue"
+        self._queue = asyncio.Queue(maxsize=maxsize)
+        self._running = True
+        self._stop_signal.clear()
+        self._task = asyncio.create_task(self._run_queue_forever(), name="uasr-mapek-queue")
+        await self._emit("started", "MAPE-K worker online (in-process queue)", {})
+
+    def submit(self, item: QueueItem) -> None:
+        """Enqueue without ever blocking the request that produced ``item``.
+
+        When the queue is full the OLDEST item is dropped and counted: a request must
+        never wait on the worker (BUG-565), and everything an item reports is already
+        durable, so dropping one loses only its announcement.
+        """
+        if self._queue is None or not self._running:
+            return
+        if self._queue.full():
+            self._queue.get_nowait()
+            self._dropped += 1
+            logger.warning("MAPE-K queue full (%d); dropped the oldest item", self._queue.maxsize)
+        self._queue.put_nowait(item)
+
+    @property
+    def input(self) -> str:
+        return self._input
+
+    def status(self) -> Dict[str, Any]:
+        """The worker's real state: the task must be alive, not just started."""
+        return {
+            "input": self._input,
+            "running": self._running and self._task is not None and not self._task.done(),
+            "paused": self.is_paused,
+            "depth": self._queue.qsize() if self._queue is not None else None,
+            "processed": self._processed,
+            "dropped": self._dropped,
+            "last_error": self._last_error,
+        }
 
     def pause(self, reason: str = "") -> None:
         if self._paused.is_set():
@@ -458,6 +549,55 @@ class MAPEKWorker:
                     await self._emit("worker_error", "MAPE-K loop error; consumer paused", {"error": type(exc).__name__})
                 except Exception:
                     logger.debug("could not emit worker_error", exc_info=True)
+
+    async def _next_queue_item(self) -> Optional[QueueItem]:
+        """The next item, or None once the worker is stopped."""
+        assert self._queue is not None
+        if not await self._wait_until_runnable():
+            return None
+        got = asyncio.ensure_future(self._queue.get())
+        stopped = asyncio.ensure_future(self._stop_signal.wait())
+        try:
+            await asyncio.wait({got, stopped}, return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            stopped.cancel()
+        if got.done():
+            return got.result()
+        got.cancel()
+        return None
+
+    async def _run_queue_forever(self) -> None:
+        """Queue consumer. One bad item is logged and recorded in ``last_error``; it
+        never stops the loop, because a stopped consumer would only fill and drop."""
+        while True:
+            item = await self._next_queue_item()
+            if item is None:
+                return
+            try:
+                await self._process_queue_item(item)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.exception("MAPE-K queue item failed: source=%s batch=%s", item.source_id, item.batch_id)
+                self._last_error = type(exc).__name__  # the traceback is in the log above
+            finally:
+                self._processed += 1
+
+    async def _process_queue_item(self, item: QueueItem) -> None:
+        """Announce one HTTP batch's outcome. Nothing here decides or persists
+        anything: the handler did both before answering (see the module docstring)."""
+        await self._emit(
+            "analyze",
+            f"{item.kind}: drift={item.drift.drift_detected} type={item.drift.drift_type}",
+            {"batch_id": item.batch_id, "source_id": item.source_id},
+        )
+        for watch in item.rolled_back:
+            await self._emit(
+                "auto_rollback",
+                f"post-heal canary rolled back the {watch['type']} repair on "
+                f"'{watch['column']}' for {item.source_id}",
+                {"batch_id": item.batch_id, **watch},
+            )
 
     async def _run_loop(self) -> None:
         try:
@@ -703,6 +843,7 @@ class MAPEKWorker:
                     await self._knowledge_update(batch, drift, None)
 
                 await self._commit_offsets()
+                self._processed += 1
         except asyncio.CancelledError:
             raise
         except Exception:

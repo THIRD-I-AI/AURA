@@ -23,7 +23,7 @@ import os
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
-from typing import Annotated, Any, AsyncGenerator, Dict, List, Optional
+from typing import Annotated, Any, AsyncGenerator, Dict, List, Optional, Tuple
 
 from fastapi import Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
@@ -36,10 +36,11 @@ from shared.service_factory import create_service
 from .cross_source_heal import attempt_cross_source_heal
 from .db import get_session, init_uasr_db
 from .drift_detector import DriftDetector
-from .mapek_worker import MAPEKConfig, MAPEKWorker, _numeric_column_samples
+from .mapek_worker import MAPEKConfig, MAPEKWorker, QueueItem, _numeric_column_samples
 from .metrics import HealingMetricTracker
 from .models import (
     BatchPayload,
+    DriftDetectionResult,
     DriftEvent,
     HealingMetric,
     ProvenHealPlan,
@@ -52,6 +53,7 @@ from .models import (
 )
 from .recovery_loop import RecoveryLoop, RecoveryLoopConfig
 from .recovery_persistence import load_deployed_shims, mark_shim_rolled_back, standing_shim_filter
+from .repair_canary import RepairCanary, load_watches
 from .runtime_config import (
     approval_timeout_seconds,
     build_redis_client,
@@ -168,8 +170,13 @@ _loop = RecoveryLoop(
     ),
 )
 
-# Set once the Kafka bootstrap below succeeds. Held at module scope so
-# /uasr/mapek/status and shutdown can reach it.
+# ADR-002 safety net step 2: the canary over the next N batches of every proven
+# repair /uasr/heal applies. Hydrated from uasr_repair_watches at startup.
+_canary = RepairCanary(_POST_HEAL_VALIDATION_BATCHES)
+
+# Set once the worker is up (the queue at startup, Kafka once its bootstrap below
+# succeeds). Held at module scope so the handlers, /uasr/mapek/status and shutdown
+# can reach it.
 _mapek_worker: Optional[MAPEKWorker] = None
 # The retry loop itself, held so shutdown can cancel it if Kafka never came up.
 _mapek_bootstrap_task: Optional[Any] = None
@@ -224,6 +231,61 @@ async def _mapek_worker_bootstrap() -> None:
             worker._cfg.topic, worker._cfg.group_id,
         )
         return
+
+
+def _mapek_input() -> str:
+    """What feeds the MAPE-K worker: "queue", "kafka" or "none".
+
+    BUG-565: the worker used to default to Kafka at localhost:9092, and the free-tier
+    box has no broker, so it retried forever and consumed nothing while
+    UASR_MAPEK_ENABLED=true said it was on. ADR-002 decision 3: the input is the
+    in-process queue; Kafka only when a broker is actually configured.
+    """
+    if os.getenv("UASR_MAPEK_ENABLED", "false").lower() != "true":
+        return "none"
+    return "kafka" if os.getenv("UASR_KAFKA_SERVERS", "").strip() else "queue"
+
+
+async def _start_mapek() -> None:
+    """Start the worker on its input. Called from the lifespan."""
+    global _mapek_worker, _mapek_bootstrap_task
+    mode = _mapek_input()
+    if mode == "queue":
+        worker = MAPEKWorker(
+            _mapek_config(),
+            detector=_detector,
+            recovery_loop=_loop,
+            metrics=_tracker,
+            shared_shim_registry=_SHARED_SHIM_REGISTRY,
+        )
+        await worker.start_queue()
+        _mapek_worker = worker
+        logger.info("MAPE-K worker started (input=queue)")
+    elif mode == "kafka":
+        # Only the Kafka loop plans recoveries itself, so only it needs the
+        # repair-admission pump (local RepairScheduler); on the queue the HTTP
+        # handler already did.
+        if _repair_scheduler is not None and hasattr(_repair_scheduler, "start"):
+            await _repair_scheduler.start()
+        # Bootstrap in the background with retry: a Kafka outage at startup must not
+        # crash the rest of the service, and must not disable healing for the
+        # process's lifetime. /uasr/mapek/status reports it as not running until the
+        # retry loop lands a working connection.
+        _mapek_bootstrap_task = asyncio.create_task(
+            _mapek_worker_bootstrap(), name="uasr-mapek-bootstrap",
+        )
+
+
+def _enqueue_for_mapek(
+    kind: str, batch: BatchPayload, drift: Optional[DriftDetectionResult], rolled_back: List[Dict[str, Any]],
+) -> None:
+    """Hand a processed batch to the queue worker; never blocks (BUG-565)."""
+    if _mapek_worker is not None and _mapek_worker.input == "queue":
+        _mapek_worker.submit(QueueItem(
+            kind=kind, source_id=batch.source_id, batch_id=batch.batch_id,
+            drift=drift or DriftDetectionResult(source_id=batch.source_id, batch_id=batch.batch_id),
+            rolled_back=tuple(rolled_back),
+        ))
 
 
 async def _reap_stale_approvals(timeout_seconds: float) -> int:
@@ -350,6 +412,20 @@ async def _restore_standing_shims() -> None:
         )
 
 
+async def _restore_repair_watches() -> None:
+    """Reload the canary's watches, kept repairs and rollbacks (ADR-002 safety net
+    step 3). A failure is logged, not fatal, like _restore_standing_shims: until it
+    succeeds the canary starts empty and a rolled-back repair could be proven again,
+    which is why the error names the risk."""
+    try:
+        _canary.hydrate(await load_watches())
+    except Exception as exc:
+        logger.error(
+            "UASR could not reload post-heal canary state (%s: %s); repairs rolled back "
+            "before this restart are not blocked until it loads", type(exc).__name__, exc,
+        )
+
+
 @asynccontextmanager
 async def _lifespan(_):
     global _mapek_worker, _mapek_bootstrap_task
@@ -358,24 +434,10 @@ async def _lifespan(_):
     logger.info("UASR deployment mode: %s", deployment_summary())
 
     await _restore_standing_shims()
+    await _restore_repair_watches()
 
-    # MAPE-K worker is opt-in because it requires a reachable Kafka
-    # cluster — turning it on by default would break every dev box that
-    # runs the UASR service for its HTTP API only.
-    if os.getenv("UASR_MAPEK_ENABLED", "false").lower() == "true":
-        # Start the repair-admission backend if it needs a background
-        # pump (local RepairScheduler). The distributed coordinator polls
-        # inside submit() and has no start()/stop().
-        if _repair_scheduler is not None and hasattr(_repair_scheduler, "start"):
-            await _repair_scheduler.start()
-        # Bootstrap in the background with retry: a Kafka outage at startup
-        # must not crash the rest of the service, AND must not permanently
-        # disable healing for the process's lifetime the way a single
-        # try/except used to. /uasr/mapek/status reports disabled (honestly)
-        # until this task's retry loop lands a working connection.
-        _mapek_bootstrap_task = asyncio.create_task(
-            _mapek_worker_bootstrap(), name="uasr-mapek-bootstrap",
-        )
+    # MAPE-K worker is opt-in (UASR_MAPEK_ENABLED); see _mapek_input for its input.
+    await _start_mapek()
 
     global _approval_reaper_task
     if _APPROVAL_TIMEOUT_SECONDS > 0:
@@ -481,6 +543,14 @@ app = create_service(
 async def _sync_shims(source_id: str) -> None:
     if _SHARED_SHIM_REGISTRY:
         _loop.set_deployed_shims(source_id, await load_deployed_shims(source_id))
+
+
+async def _sync_canary(source_id: str) -> None:
+    """Bring one source's canary state up to date. Call under ``_canary.lock``."""
+    await _canary.retry_unpersisted(source_id)
+    if _SHARED_SHIM_REGISTRY:
+        # BUG-467: another replica may have opened, kept or rolled back a watch.
+        _canary.hydrate(await load_watches(source_id), source_id)
 
 
 async def get_db() -> AsyncGenerator[AsyncSession, None]:
@@ -619,8 +689,9 @@ async def _prove_or_propose(drift_result, batch: BatchPayload):
     The recovery loop (diagnosis, templates, LLM) runs only when some fault could not
     be proven, and what it produces is held for review -- it is never applied. A batch
     the proven rules fully explain needs no proposal, so no LLM call is made for it.
+    A repair the canary rolled back for this source is not proven again.
     """
-    plan = await _loop.prove_repairs(drift_result, batch)
+    plan = await _loop.prove_repairs(drift_result, batch, _canary.blocked(batch.source_id))
     if plan.unproven:
         return plan, await _loop.run(drift_result, batch)
     return plan, RecoveryLoopResult(
@@ -667,6 +738,8 @@ async def ingest_batch(req: IngestRequest, request: Request, db: AsyncSession = 
     # distributed/redis UASR backends (state_store.py); the sole uvicorn
     # worker must not stall on it (backend.md async-safety rule).
     drift_result = await asyncio.to_thread(_detector.detect, batch)
+    # A verdict only: /uasr/ingest returns no rows, so it opens or judges no canary.
+    _enqueue_for_mapek("ingest", batch, drift_result, [])
 
     if not drift_result.drift_detected:
         return {
@@ -810,6 +883,11 @@ async def heal_batch(req: IngestRequest, request: Request, db: AsyncSession = De
     aside or a detection-only fault (null spike, volume, duplicates) was found.
     Whatever the recovery loop proposes for an unproven fault waits for review
     and never reaches these rows.
+
+    ``canary`` reports the post-heal canary (ADR-002 safety net step 2,
+    ``repair_canary``): the watches this batch opened for repairs new to the
+    source, kept after N clean batches, or rolled back. A rolled-back repair is
+    never applied to this source again; a batch it would fix is quarantined.
     """
     # BUG-263: the id is placed inside the caller's tenant, never trusted as sent.
     req.source_id = scoped_source(caller_tenant(request), req.source_id)
@@ -821,7 +899,20 @@ async def heal_batch(req: IngestRequest, request: Request, db: AsyncSession = De
         schema_snapshot=req.schema_snapshot,
         metadata=req.metadata,
     )
+    # ADR-002 canary: one heal per source at a time, from reading its watches to
+    # persisting what this batch did to them, so a concurrent heal for the same
+    # source can never act on a watch this one has changed (review of 9180b5b,
+    # finding 1). Other sources are not serialised.
+    async with _canary.lock(batch.source_id):
+        out, drift_result = await _heal_locked(batch, db)
+    _enqueue_for_mapek("heal", batch, drift_result, out.get("canary", {}).get("rolled_back", []))
+    return out
 
+
+async def _heal_locked(
+    batch: BatchPayload, db: AsyncSession,
+) -> Tuple[Dict[str, Any], Optional[DriftDetectionResult]]:
+    await _sync_canary(batch.source_id)
     # 1. Apply shims already deployed for this source, so drift that was
     #    resolved earlier does not re-fire on every batch.
     await _sync_shims(batch.source_id)
@@ -836,7 +927,7 @@ async def heal_batch(req: IngestRequest, request: Request, db: AsyncSession = De
             # A standing shim that dropped, added or merged rows breaks that, and no
             # index into its output can name the caller's row, so the whole batch is
             # held aside exactly as sent.
-            return _standing_shim_changed_row_count(batch, sent_rows, healed_rows, standing)
+            return _standing_shim_changed_row_count(batch, sent_rows, healed_rows, standing), None
         set_transformed_rows(batch, healed_rows)
     # BUG-271: a standing shim that raised used to be invisible here.
     standing_failed = standing_applied < standing
@@ -848,6 +939,8 @@ async def heal_batch(req: IngestRequest, request: Request, db: AsyncSession = De
 
     standing_reason = "a deployed shim failed to apply; rows may be only partly transformed"
     if not drift_result.drift_detected:
+        # A batch with no drift is a clean batch for every watched repair.
+        outcome = await _canary.observe(batch.source_id, None, None, [])
         # ADR-002 phase 2a: clean rows are healed rows -- a pipeline that writes only
         # healed batches must not stall on a clean one just because nothing needed fixing.
         return {
@@ -861,9 +954,10 @@ async def heal_batch(req: IngestRequest, request: Request, db: AsyncSession = De
             "quarantined_rows": [],
             "repairs": [],
             "alerts": [],
+            "canary": outcome.to_dict(),
             "batch_id": batch.batch_id,
             "gate": gate_decision.to_dict(),
-        }
+        }, drift_result
 
     # 2. New drift: persist the event, then repair what is proven.
     event_id = uuid.uuid4().hex[:16]
@@ -883,6 +977,12 @@ async def heal_batch(req: IngestRequest, request: Request, db: AsyncSession = De
     await db.commit()  # BUG-347: see ingest_batch
 
     plan, loop_result = await _prove_or_propose(drift_result, batch)
+    # The canary judges its watches on this batch's evidence, then watches the
+    # repairs it applied that are new to the source. A repair it rolls back here is
+    # never in plan.repairs: a regression means the repair's column failed (so the
+    # plan quarantined the batch) or the repair was not proven on it.
+    outcome = await _canary.observe(
+        batch.source_id, plan.canary_evidence, loop_result.recovery_id, plan.repairs)
 
     recovery_rec = RecoveryRecord(
         id=loop_result.recovery_id,
@@ -944,7 +1044,8 @@ async def heal_batch(req: IngestRequest, request: Request, db: AsyncSession = De
         "cross_source_healed": cross_healed,
         "repairs": [r.model_dump() for r in plan.repairs],
         "alerts": plan.alerts,
-    }
+        "canary": outcome.to_dict(),
+    }, drift_result
 
 
 @app.post("/uasr/baseline")
@@ -1439,25 +1540,34 @@ async def list_sources(request: Request, db: AsyncSession = Depends(get_db)):
 
 
 @app.get("/uasr/mapek/status")
-async def mapek_status() -> Dict[str, Any]:
-    """Surface whether the Kafka-fed MAPE-K self-healing loop is running.
+async def mapek_status(request: Request) -> Dict[str, Any]:
+    """Surface the MAPE-K worker's real state and the caller's canary (BUG-565).
 
-    Returns ``running=False`` (with the reason) when ``UASR_MAPEK_ENABLED``
-    is unset, when aiokafka isn't installed, or when the broker was
-    unreachable at startup. Operators rely on this to confirm the worker
-    actually came up after a deploy — service ``/health`` only proves the
-    HTTP layer is alive, not that the background consumer is.
+    ``input`` is queue | kafka | none, and ``running`` is true only while the
+    consumer task is alive -- not merely because UASR_MAPEK_ENABLED is set.
+    Operators rely on this to confirm the worker actually came up after a deploy;
+    service ``/health`` only proves the HTTP layer is alive. ``canary`` lists the
+    watched and rolled-back repairs of the caller's own sources only (BUG-263).
     """
+    mode = _mapek_input()
+    common = {
+        "post_heal_validation_batches": _canary.batches_required,
+        "canary": _canary.visible(caller_tenant(request)),
+    }
     if _mapek_worker is None:
-        if os.getenv("UASR_MAPEK_ENABLED", "false").lower() != "true":
-            return {"running": False, "reason": "UASR_MAPEK_ENABLED not set"}
-        return {"running": False, "reason": "worker failed to start (see service logs)"}
+        reason = (
+            "UASR_MAPEK_ENABLED not set" if mode == "none"
+            else "Kafka worker not connected yet (see service logs)" if mode == "kafka"
+            else "worker failed to start (see service logs)"
+        )
+        return {"input": mode, "running": False, "paused": False, "depth": None, "processed": 0,
+                "dropped": 0, "last_error": None, "reason": reason, **common}
+    status = {**_mapek_worker.status(), **common}
+    if _mapek_worker.input == "queue":
+        return status
     cfg = _mapek_worker._cfg
     return {
-        "running": _mapek_worker._running,
-        "paused": _mapek_worker.is_paused,
-        # Set when the loop paused itself on an unexpected error (BUG-268).
-        "last_error": _mapek_worker._last_error,
+        **status,
         "config": {
             "topic": cfg.topic,
             "group_id": cfg.group_id,
