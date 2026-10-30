@@ -389,7 +389,10 @@ async def test_queue_lag_and_drop_oldest_lose_no_fault_and_no_rollback():
     assert service._canary.blocked(source) == frozenset({RESCALE})
     status = await service.mapek_status(_as(None))
     assert status["paused"] is True
-    assert [w["column"] for w in status["canary"]["rolled_back"]] == ["amount"]
+    # The canary loads every source's state on its first batch, so earlier tests'
+    # sources (same untenanted caller) are listed too; this source's is the one asked.
+    mine = [w for w in status["canary"]["rolled_back"] if w["source_id"] == source]
+    assert [w["column"] for w in mine] == ["amount"]
 
     worker.resume()
     st = await _drained(1)
@@ -466,6 +469,101 @@ async def test_a_rollback_whose_write_failed_still_holds_and_is_retried():
     assert service._canary.unpersisted(source) == []
     (row,) = await _watch_rows(source)
     assert row.status == "rolled_back"
+
+
+# ── review of 2ce9d08: a failed startup load, two replicas on one watch ────
+
+async def test_a_failed_startup_load_fails_closed_until_the_canary_loads(monkeypatch):
+    """Finding 1: the startup load failed, so the canary started empty, and nothing
+    ever loaded it again: a repair rolled back before the restart was proven and
+    applied to callers' rows again. Now /uasr/heal retries the load before each batch
+    and answers 503 while it cannot read it."""
+    from fastapi import HTTPException
+
+    source = _source()
+    _register(source)
+    await _deploy_rescale(source)
+    await _heal(source, _shifted_x100(_rows(300, 210)))
+    assert service._canary.blocked(source) == frozenset({RESCALE})
+
+    real_load = repair_canary.load_watches
+
+    async def db_down(source_id=None):
+        raise RuntimeError("database is locked")
+
+    # A restart whose startup read of the canary state fails.
+    monkeypatch.setattr(service, "_canary", RepairCanary(N))
+    monkeypatch.setattr(repair_canary, "load_watches", db_down)
+    await service._restore_repair_watches()
+
+    sent = _x100(_rows(300, 211))
+    with pytest.raises(HTTPException) as err:
+        await _heal(source, sent)
+    assert err.value.status_code == 503
+
+    # The DB is back: the next batch loads the state first, and the rollback holds.
+    monkeypatch.setattr(repair_canary, "load_watches", real_load)
+    out = await _heal(source, sent)
+    assert out["rows"] == [] and out["repairs"] == [] and out["healed"] is False
+    _accounted(out, sent)
+    assert out["canary"]["opened"] == []
+    rows = await _watch_rows(source)
+    assert [r.status for r in rows] == ["rolled_back"]
+
+
+REGRESSED_EVIDENCE = {"failed_columns": ["amount"], "proven": set(), "columns": list(SCHEMA),
+                      "retype_seen": None, "scale_seen": None}
+
+
+@pytest.mark.parametrize("clean_before", [0, N - 1])
+async def test_a_replica_that_judged_clean_cannot_overwrite_another_replicas_rollback(clean_before):
+    """Finding 2: with the shared registry two replicas can hydrate the same watching
+    row. A rolls it back; B, on its own batch, judges it clean and used to merge
+    'watching' (or 'deployed' at N) over the rollback, so the DB, B and every later
+    reload brought the rolled-back repair back. The rollback must win."""
+    source = _source()
+    _register(source)
+    await _deploy_rescale(source)
+    for i in range(clean_before):
+        await _heal(source, _x100(_rows(300, 220 + i)))
+
+    replica_a, replica_b = RepairCanary(N), RepairCanary(N)
+    for replica in (replica_a, replica_b):
+        replica.hydrate(await load_watches())
+        assert [w.signature for w in replica.watches(source)] == [RESCALE]
+
+    async with replica_a.lock(source):
+        assert len((await replica_a.observe(source, REGRESSED_EVIDENCE, None, [])).rolled_back) == 1
+    async with replica_b.lock(source):
+        await replica_b.observe(source, None, None, [])
+
+    (row,) = await _watch_rows(source)
+    assert row.status == "rolled_back"
+    # B lost the compare-and-set and reloaded: it blocks the repair too.
+    assert replica_b.blocked(source) == frozenset({RESCALE}) and replica_b.watches(source) == []
+    reloaded = RepairCanary(N)
+    reloaded.hydrate(await load_watches())
+    assert reloaded.blocked(source) == frozenset({RESCALE})
+
+
+async def test_a_stale_replica_cannot_turn_a_watchs_progress_back():
+    source = _source()
+    _register(source)
+    await _deploy_rescale(source)
+    stale = RepairCanary(N)
+    stale.hydrate(await load_watches())
+    await _heal(source, _x100(_rows(300, 230)))
+    await _heal(source, _rows(300, 231))
+    (row,) = await _watch_rows(source)
+    assert row.batches_seen == 2
+
+    # The stale replica counts its own clean batch from 0: it must not write 1 over 2.
+    async with stale.lock(source):
+        await stale.observe(source, None, None, [])
+    (row,) = await _watch_rows(source)
+    assert row.batches_seen == 2 and row.status == "watching"
+    (watch,) = stale.watches(source)
+    assert watch.batches_seen == 2
 
 
 # ── tenant isolation ───────────────────────────────────────────────────────

@@ -36,7 +36,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Dict, FrozenSet, List, Optional, Set, Tuple
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from .db import get_session_factory
 from .models import RecoveryStatus, RepairWatch
@@ -142,6 +142,15 @@ class RepairCanary:
         # Rollbacks in force in memory whose ROLLED_BACK row could not be written yet.
         self._unpersisted: Dict[str, List[Watch]] = {}
         self._locks: Dict[str, asyncio.Lock] = {}
+        # False until the durable state of every source has been loaded once. Until
+        # then no rollback from before this start is known, so ``sync`` fails closed
+        # (review of 2ce9d08: a failed startup load used to leave the canary empty
+        # for the life of the process).
+        self.hydrated = False
+        self._hydrate_lock = asyncio.Lock()
+        # Sources whose memory a lost compare-and-set showed to be behind the DB and
+        # that could not be reloaded at once; ``sync`` reloads them first.
+        self._stale: Set[str] = set()
 
     def lock(self, source_id: str) -> asyncio.Lock:
         return self._locks.setdefault(source_id, asyncio.Lock())
@@ -164,11 +173,32 @@ class RepairCanary:
                 len(ws) for sid, ws in self._unpersisted.items() if owns_source(tenant, sid)),
         }
 
+    async def ensure_hydrated(self) -> None:
+        """Load every source's durable state once; raises while the DB cannot be read."""
+        if self.hydrated:
+            return
+        async with self._hydrate_lock:
+            if not self.hydrated:
+                self.hydrate(await load_watches())
+
+    async def sync(self, source_id: str, shared: bool) -> None:
+        """Bring one source's state up to date before a batch is proven against it.
+        Call under ``lock(source_id)``. Raises (the caller must not prove the batch)
+        while the state its blocked set depends on cannot be read."""
+        await self.ensure_hydrated()
+        await self.retry_unpersisted(source_id)
+        if shared or source_id in self._stale:
+            # BUG-467: another replica may have opened, kept or rolled back a watch.
+            self.hydrate(await load_watches(source_id), source_id)
+            self._stale.discard(source_id)
+
     def hydrate(self, rows: List[RepairWatch], source_id: Optional[str] = None) -> None:
         """Load the durable state (all sources at startup, or one source's shared view).
 
         A rollback is never undone by a reload: memory may only be ahead of the DB on
         the side of caution, by a rollback whose write is still pending."""
+        if source_id is None:
+            self.hydrated = True
         if source_id is not None:
             self._watches.pop(source_id, None)
         for row in rows:
@@ -181,6 +211,7 @@ class RepairCanary:
             )
             if w.status == ROLLED_BACK:
                 self._watches.get(w.source_id, {}).pop(w.signature, None)
+                self._kept.get(w.source_id, set()).discard(w.signature)
                 self._rolled_back.setdefault(w.source_id, {})[w.signature] = w
             elif w.signature in self._rolled_back.get(w.source_id, {}):
                 continue
@@ -222,7 +253,7 @@ class RepairCanary:
             # the repair back. If the write fails the rollback still takes effect here
             # (re-applying a repair the canary rejected would be the worse error) and
             # the write is retried before this source's next batch.
-            if not await _persist(out.rolled_back):
+            if await _persist(out.rolled_back) is None:
                 self._unpersisted.setdefault(source_id, []).extend(out.rolled_back)
         for w in out.rolled_back:
             self._watches[source_id].pop(w.signature, None)
@@ -247,36 +278,77 @@ class RepairCanary:
         if out.kept or out.advanced or out.opened:
             # Progress, unlike a rollback, may lag the DB safely: a restart then re-runs
             # part of a watch, it never skips one.
-            await _persist(out.kept + out.advanced + out.opened)
+            lost = await _persist(out.kept + out.advanced + out.opened)
+            if lost:
+                # Another replica moved these watches on (above all: rolled one back)
+                # after this one read them. The DB wins; reload the source from it.
+                try:
+                    self.hydrate(await load_watches(source_id), source_id)
+                except Exception as exc:
+                    logger.error("could not reload canary state of %s after a lost write: %s",
+                                 source_id, exc)
+                    self._stale.add(source_id)
         return out
 
     async def retry_unpersisted(self, source_id: str) -> None:
         pending = self._unpersisted.get(source_id)
-        if pending and await _persist(pending):
+        if pending and await _persist(pending) is not None:
             del self._unpersisted[source_id]
 
     def unpersisted(self, source_id: str) -> List[Watch]:
         return list(self._unpersisted.get(source_id, []))
 
 
-async def _persist(watches: List[Watch]) -> bool:
-    """Upsert the watches in one transaction; False (logged) when the write failed."""
+# The states a write may move a stored watch out of. A watch's status only ever moves
+# forward (watching -> deployed | rolled_back, deployed -> rolled_back), and a rollback
+# is final: no write may overwrite it (review of 2ce9d08: with the shared registry two
+# replicas can judge the same watch, and a blind merge let the one that judged it
+# clean write "watching" over the other's ROLLED_BACK, resurrecting the repair).
+_WRITABLE_FROM = {
+    WATCHING: (WATCHING,),
+    KEPT: (WATCHING, KEPT),
+    ROLLED_BACK: (WATCHING, KEPT),
+}
+
+
+async def _persist(watches: List[Watch]) -> Optional[List[Watch]]:
+    """Write the watches in one transaction, each as a compare-and-set on its stored
+    state. Returns the watches whose write lost to a newer stored state (the caller
+    must reload them), or None (logged) when the write failed."""
     try:
+        lost: List[Watch] = []
         async with get_session_factory()() as db:
             for w in watches:
                 kind, column, param = w.signature
-                await db.merge(RepairWatch(
-                    id=w.id, source_id=w.source_id, recovery_id=w.recovery_id,
+                values = dict(
+                    source_id=w.source_id, recovery_id=w.recovery_id,
                     repair_type=kind, column_name=column, param=param, proof=w.proof,
                     status=w.status, batches_seen=w.batches_seen,
                     batches_required=w.batches_required, reason=w.reason,
                     decided_at=w.decided_at,
-                ))
+                )
+                guard = [RepairWatch.id == w.id, RepairWatch.status.in_(_WRITABLE_FROM[w.status])]
+                if w.status == WATCHING:
+                    # Progress never goes backwards either: a replica that read an
+                    # older count reloads instead of erasing another's clean batches.
+                    guard.append(RepairWatch.batches_seen <= w.batches_seen)
+                res = await db.execute(
+                    update(RepairWatch).where(*guard).values(**values)
+                    .execution_options(synchronize_session=False))
+                if res.rowcount:
+                    continue
+                stored = (await db.execute(
+                    select(RepairWatch.status).where(RepairWatch.id == w.id))).scalar_one_or_none()
+                if stored is None:
+                    db.add(RepairWatch(id=w.id, **values))
+                    await db.flush()
+                elif not (w.status == ROLLED_BACK and stored == ROLLED_BACK):
+                    lost.append(w)
             await db.commit()
-        return True
+        return lost
     except Exception as exc:
         logger.error("could not persist %d repair watch(es): %s", len(watches), exc)
-        return False
+        return None
 
 
 async def load_watches(source_id: Optional[str] = None) -> List[RepairWatch]:

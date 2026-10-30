@@ -53,7 +53,7 @@ from .models import (
 )
 from .recovery_loop import RecoveryLoop, RecoveryLoopConfig
 from .recovery_persistence import load_deployed_shims, mark_shim_rolled_back, standing_shim_filter
-from .repair_canary import RepairCanary, load_watches
+from .repair_canary import RepairCanary
 from .runtime_config import (
     approval_timeout_seconds,
     build_redis_client,
@@ -414,15 +414,16 @@ async def _restore_standing_shims() -> None:
 
 async def _restore_repair_watches() -> None:
     """Reload the canary's watches, kept repairs and rollbacks (ADR-002 safety net
-    step 3). A failure is logged, not fatal, like _restore_standing_shims: until it
-    succeeds the canary starts empty and a rolled-back repair could be proven again,
-    which is why the error names the risk."""
+    step 3). A failure is logged, not fatal, like _restore_standing_shims, but the
+    canary fails closed until it loads: /uasr/heal retries the load before every
+    batch and answers 503 while it cannot, so a rolled-back repair is never proven
+    again just because the startup read failed (review of 2ce9d08)."""
     try:
-        _canary.hydrate(await load_watches())
+        await _canary.ensure_hydrated()
     except Exception as exc:
         logger.error(
-            "UASR could not reload post-heal canary state (%s: %s); repairs rolled back "
-            "before this restart are not blocked until it loads", type(exc).__name__, exc,
+            "UASR could not reload post-heal canary state (%s: %s); /uasr/heal answers "
+            "503 until it loads", type(exc).__name__, exc,
         )
 
 
@@ -546,11 +547,20 @@ async def _sync_shims(source_id: str) -> None:
 
 
 async def _sync_canary(source_id: str) -> None:
-    """Bring one source's canary state up to date. Call under ``_canary.lock``."""
-    await _canary.retry_unpersisted(source_id)
-    if _SHARED_SHIM_REGISTRY:
-        # BUG-467: another replica may have opened, kept or rolled back a watch.
-        _canary.hydrate(await load_watches(source_id), source_id)
+    """Bring one source's canary state up to date. Call under ``_canary.lock``.
+
+    Fails closed: while the rollbacks this batch must respect cannot be read, the
+    batch is not healed at all (503) rather than proven against a partial blocked set."""
+    try:
+        await _canary.sync(source_id, shared=_SHARED_SHIM_REGISTRY)
+    except Exception as exc:
+        logger.error("UASR canary state unavailable for %s (%s: %s); refusing to heal",
+                     source_id, type(exc).__name__, exc)
+        raise HTTPException(
+            status_code=503,
+            detail="post-heal canary state is unavailable, so rolled-back repairs cannot "
+                   "be ruled out; the batch was not healed, retry later",
+        ) from exc
 
 
 async def get_db() -> AsyncGenerator[AsyncSession, None]:
