@@ -1549,6 +1549,31 @@ async def list_sources(request: Request, db: AsyncSession = Depends(get_db)):
     }
 
 
+class ClearRepairBlockRequest(BaseModel):
+    source_id: str
+    type: str
+    column: str
+    param: str
+
+
+@app.post("/uasr/repairs/clear")
+async def clear_repair_block(req: ClearRepairBlockRequest, request: Request) -> Dict[str, Any]:
+    """End a canary rollback's block early, for a rollback that was a false alarm.
+
+    Blocks also expire on their own (``repair_canary.BLOCK_BACKOFF``); this is only for
+    not waiting. Clearing applies nothing: the repair must still be proven on the next
+    batch and passes the N-batch canary again. Scoped to the caller's own sources."""
+    tenant = caller_tenant(request)
+    source_id = scoped_source(tenant, req.source_id)
+    sig = (req.type, req.column, req.param)
+    async with _canary.lock(source_id):
+        await _sync_canary(source_id)
+        if _canary.block_until(source_id, sig) is None:
+            raise HTTPException(status_code=404, detail="no rolled-back repair matches that source, type, column and param")
+        cleared = await _canary.clear(source_id, sig, by=tenant or "anonymous")
+    return {"source_id": source_id, "cleared": cleared}
+
+
 @app.get("/uasr/mapek/status")
 async def mapek_status(request: Request) -> Dict[str, Any]:
     """Surface the MAPE-K worker's real state and the caller's canary (BUG-565).

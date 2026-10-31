@@ -659,3 +659,102 @@ def test_post_heal_validation_defaults_to_three_batches(monkeypatch):
 
     monkeypatch.delenv("UASR_POST_HEAL_VALIDATION_BATCHES", raising=False)
     assert rc.post_heal_validation_batches() == 3
+
+
+# ── a rollback's block expires, and can be cleared (no human gate, ADR-002) ──
+
+async def _age_rollbacks(source: str, hours: float) -> None:
+    """Move the source's rollbacks `hours` into the past, in the DB and in memory."""
+    from datetime import timedelta
+
+    from sqlalchemy import update
+    shift = timedelta(hours=hours)
+    async with get_session_factory()() as db:
+        for row in await load_watches(source):
+            if row.status == "rolled_back":
+                await db.execute(update(RepairWatch).where(RepairWatch.id == row.id).values(
+                    decided_at=row.decided_at - shift, created_at=row.created_at - shift))
+        await db.commit()
+    reloaded = RepairCanary(N)
+    reloaded.hydrate(await load_watches())
+    service._canary = reloaded
+
+
+async def _roll_back_rescale(source: str, seed: int) -> None:
+    out = await _heal(source, _shifted_x100(_rows(300, seed)))
+    assert [w["type"] for w in out["canary"]["rolled_back"]] == ["rescale"]
+
+
+async def test_a_block_expires_and_the_repair_must_pass_the_canary_again():
+    source = _source()
+    _register(source)
+    await _deploy_rescale(source)
+    await _roll_back_rescale(source, 300)
+
+    await _age_rollbacks(source, 0.5)
+    assert service._canary.blocked(source) == frozenset({RESCALE})  # 1 h block still holds
+    held = await _heal(source, _x100(_rows(300, 301)))
+    assert held["rows"] == [] and held["repairs"] == []
+
+    await _age_rollbacks(source, 1.0)  # now 1.5 h ago
+    assert service._canary.blocked(source) == frozenset()
+    out = await _heal(source, _x100(_rows(300, 302)))
+    assert out["healed"] is True and [r["type"] for r in out["repairs"]] == ["rescale"]
+    # Expiry applied nothing by itself: the repair was proven again and is watched again.
+    assert [(w["type"], w["column"], w["param"]) for w in out["canary"]["opened"]] == [RESCALE]
+
+
+async def test_repeated_rollbacks_back_off_to_longer_blocks():
+    source = _source()
+    _register(source)
+    await _deploy_rescale(source)
+    await _roll_back_rescale(source, 310)
+    await _age_rollbacks(source, 2)
+    await _deploy_rescale(source, seed=311)
+    await _roll_back_rescale(source, 312)
+
+    await _age_rollbacks(source, 2)
+    assert service._canary.blocked(source) == frozenset({RESCALE})  # second rollback: 6 h
+    await _age_rollbacks(source, 5)  # 7 h
+    assert service._canary.blocked(source) == frozenset()
+
+
+async def test_a_reload_after_expiry_keeps_the_new_watch_and_drops_the_block():
+    source = _source()
+    _register(source)
+    await _deploy_rescale(source)
+    await _roll_back_rescale(source, 320)
+    await _age_rollbacks(source, 2)
+    await _heal(source, _x100(_rows(300, 321)))  # proven again: a new watch opens
+
+    reloaded = RepairCanary(N)
+    reloaded.hydrate(await load_watches())
+    assert reloaded.blocked(source) == frozenset()
+    assert [w.signature for w in reloaded.watches(source)] == [RESCALE]
+
+
+async def test_clearing_a_block_is_scoped_logged_and_still_needs_proof(caplog):
+    raw = _source()
+    source = f"tenantA::{raw}"
+    _register(source)
+    assert (await _heal(raw, _x100(_rows(300, 330)), tenant="tenantA"))["healed"] is True
+    await _heal(raw, _shifted_x100(_rows(300, 331)), tenant="tenantA")
+    assert service._canary.blocked(source) == frozenset({RESCALE})
+    kind, column, param = RESCALE
+    req = service.ClearRepairBlockRequest(source_id=raw, type=kind, column=column, param=param)
+
+    with pytest.raises(service.HTTPException) as exc:
+        await service.clear_repair_block(req, _as("tenantB"))  # another tenant's source
+    assert exc.value.status_code == 404
+    assert service._canary.blocked(source) == frozenset({RESCALE})
+
+    with caplog.at_level("WARNING", logger="uasr.repair_canary"):
+        assert (await service.clear_repair_block(req, _as("tenantA")))["cleared"] == 1
+    assert "cleared by tenantA" in caplog.text
+    assert [r.status for r in await load_watches(source) if r.status != "watching"] == ["cleared"]
+
+    reloaded = RepairCanary(N)
+    reloaded.hydrate(await load_watches())
+    assert reloaded.blocked(source) == frozenset()
+    out = await _heal(raw, _x100(_rows(300, 332)), tenant="tenantA")
+    assert out["healed"] is True and [w["type"] for w in out["canary"]["opened"]] == ["rescale"]

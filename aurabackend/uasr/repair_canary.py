@@ -18,7 +18,12 @@ the source is evidence for or against it:
 
 N clean batches (``UASR_POST_HEAL_VALIDATION_BATCHES``, default 3) keep the repair;
 one regression rolls it back: the repair is blocked for the source, so a batch it
-would apply to is quarantined instead, and its rows never reach a caller again. Drift
+would apply to is quarantined instead. The block expires (``BLOCK_BACKOFF``: 1 h, then
+6 h, then 24 h for repeated rollbacks within ``BACKOFF_WINDOW``), because one false
+rollback must not leave a source needing a person for good (ADR-002: no human gate).
+Expiry applies nothing by itself: the repair must be proven again on a fresh batch and
+opens a new watch, so it passes the N-batch canary again. ``clear`` ends a block early
+and is logged. Drift
 on other columns is not the repair's regression and never rolls it back; the proof
 handles it on its own (quarantine, alert).
 
@@ -33,7 +38,7 @@ import asyncio
 import logging
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, FrozenSet, List, Optional, Set, Tuple
 
 from sqlalchemy import select, update
@@ -50,6 +55,18 @@ CLEAN, REGRESSED, INCONCLUSIVE = "clean", "regressed", "inconclusive"
 WATCHING = "watching"
 KEPT = RecoveryStatus.DEPLOYED.value
 ROLLED_BACK = RecoveryStatus.ROLLED_BACK.value
+# A rollback an operator declared a false alarm: it no longer blocks or counts.
+CLEARED = "cleared"
+
+BLOCK_BACKOFF = (timedelta(hours=1), timedelta(hours=6), timedelta(hours=24))
+BACKOFF_WINDOW = timedelta(days=7)
+
+
+def _utc(ts: Optional[datetime]) -> Optional[datetime]:
+    # NaiveUTCDateTime columns load naive; compare everything as aware UTC.
+    if ts is None:
+        return None
+    return ts if ts.tzinfo else ts.replace(tzinfo=timezone.utc)
 
 
 def repair_signature(repair_type: str, column: str, proof: Dict[str, Any]) -> Optional[Signature]:
@@ -139,6 +156,8 @@ class RepairCanary:
         self._watches: Dict[str, Dict[Signature, Watch]] = {}
         self._kept: Dict[str, Set[Signature]] = {}
         self._rolled_back: Dict[str, Dict[Signature, Watch]] = {}
+        # When each repair was rolled back for each source (not cleared), for the backoff.
+        self._rollback_times: Dict[str, Dict[Signature, List[datetime]]] = {}
         # Rollbacks in force in memory whose ROLLED_BACK row could not be written yet.
         self._unpersisted: Dict[str, List[Watch]] = {}
         self._locks: Dict[str, asyncio.Lock] = {}
@@ -155,8 +174,32 @@ class RepairCanary:
     def lock(self, source_id: str) -> asyncio.Lock:
         return self._locks.setdefault(source_id, asyncio.Lock())
 
-    def blocked(self, source_id: str) -> FrozenSet[Signature]:
-        return frozenset(self._rolled_back.get(source_id, {}))
+    def block_until(self, source_id: str, sig: Signature) -> Optional[datetime]:
+        """When the block on ``sig`` for the source ends, or None if it is not blocked."""
+        w = self._rolled_back.get(source_id, {}).get(sig)
+        decided = _utc(w.decided_at) if w else None
+        if decided is None:
+            return None if w is None else datetime.max.replace(tzinfo=timezone.utc)
+        recent = [t for t in self._rollback_times.get(source_id, {}).get(sig, [decided])
+                  if t > decided - BACKOFF_WINDOW]
+        step = BLOCK_BACKOFF[min(max(len(recent), 1), len(BLOCK_BACKOFF)) - 1]
+        return decided + step
+
+    def is_blocked(self, source_id: str, sig: Signature, now: Optional[datetime] = None) -> bool:
+        until = self.block_until(source_id, sig)
+        return until is not None and (now or datetime.now(timezone.utc)) < until
+
+    def blocked(self, source_id: str, now: Optional[datetime] = None) -> FrozenSet[Signature]:
+        now = now or datetime.now(timezone.utc)
+        return frozenset(sig for sig in self._rolled_back.get(source_id, {})
+                         if self.is_blocked(source_id, sig, now))
+
+    def _note_rollback(self, w: Watch) -> None:
+        self._rolled_back.setdefault(w.source_id, {})[w.signature] = w
+        times = self._rollback_times.setdefault(w.source_id, {}).setdefault(w.signature, [])
+        decided = _utc(w.decided_at)
+        if decided is not None and decided not in times:
+            times.append(decided)
 
     def watches(self, source_id: str) -> List[Watch]:
         return list(self._watches.get(source_id, {}).values())
@@ -166,9 +209,19 @@ class RepairCanary:
         def own(by_source: Dict[str, Dict[Signature, Watch]]) -> List[Dict[str, Any]]:
             return [w.to_dict() for sid, ws in by_source.items() if owns_source(tenant, sid)
                     for w in ws.values()]
+        def blocks() -> List[Dict[str, Any]]:
+            out = []
+            for sid, ws in self._rolled_back.items():
+                if not owns_source(tenant, sid):
+                    continue
+                for sig, w in ws.items():
+                    until = self.block_until(sid, sig)
+                    out.append({**w.to_dict(), "blocked_until": until.isoformat() if until else None,
+                                "blocked": self.is_blocked(sid, sig)})
+            return out
         return {
             "watching": own(self._watches),
-            "rolled_back": own(self._rolled_back),
+            "rolled_back": blocks(),
             "unpersisted_rollbacks": sum(
                 len(ws) for sid, ws in self._unpersisted.items() if owns_source(tenant, sid)),
         }
@@ -201,6 +254,8 @@ class RepairCanary:
             self.hydrated = True
         if source_id is not None:
             self._watches.pop(source_id, None)
+            self._rolled_back.pop(source_id, None)
+            self._rollback_times.pop(source_id, None)
         for row in rows:
             w = Watch(
                 id=row.id, source_id=row.source_id, recovery_id=row.recovery_id,
@@ -209,11 +264,17 @@ class RepairCanary:
                 batches_seen=row.batches_seen, status=row.status, reason=row.reason,
                 decided_at=row.decided_at,
             )
+            if w.status == CLEARED:
+                continue
             if w.status == ROLLED_BACK:
                 self._watches.get(w.source_id, {}).pop(w.signature, None)
                 self._kept.get(w.source_id, set()).discard(w.signature)
-                self._rolled_back.setdefault(w.source_id, {})[w.signature] = w
-            elif w.signature in self._rolled_back.get(w.source_id, {}):
+                self._note_rollback(w)
+            elif w.signature in self._rolled_back.get(w.source_id, {}) and not (
+                    _utc(row.created_at) is not None
+                    and _utc(row.created_at) >= self.block_until(w.source_id, w.signature)):
+                # A watch for a rolled-back repair counts only if it was opened after the
+                # block expired; one opened earlier (another replica's) must not bypass it.
                 continue
             elif w.status == KEPT:
                 self._kept.setdefault(w.source_id, set()).add(w.signature)
@@ -257,15 +318,17 @@ class RepairCanary:
                 self._unpersisted.setdefault(source_id, []).extend(out.rolled_back)
         for w in out.rolled_back:
             self._watches[source_id].pop(w.signature, None)
-            self._rolled_back.setdefault(source_id, {})[w.signature] = w
+            self._note_rollback(w)
             logger.warning("post-heal canary rolled back %s for %s: %s", w.signature, source_id, w.reason)
         for w in out.kept:
             self._watches[source_id].pop(w.signature, None)
             self._kept.setdefault(source_id, set()).add(w.signature)
 
         if self.batches_required > 0 and recovery_id is not None:
+            # An expired block is not known: the repair was proven again on this batch,
+            # so it opens a new watch and goes through the canary again.
             known = (set(self._watches.get(source_id, {})) | self._kept.get(source_id, set())
-                     | set(self._rolled_back.get(source_id, {})))
+                     | self.blocked(source_id, now))
             for r in repairs:
                 sig = repair_signature(r.type, r.column, r.proof)
                 if sig is None or sig in known:
@@ -289,6 +352,25 @@ class RepairCanary:
                                  source_id, exc)
                     self._stale.add(source_id)
         return out
+
+    async def clear(self, source_id: str, sig: Signature, by: str) -> int:
+        """End a block early (an operator's call that the rollback was a false alarm).
+        Call under ``lock(source_id)``. Marks the source's rollbacks of ``sig`` CLEARED in
+        the DB first, then forgets them; returns how many were cleared."""
+        async with get_session_factory()() as db:
+            res = await db.execute(
+                update(RepairWatch).where(
+                    RepairWatch.source_id == source_id, RepairWatch.status == ROLLED_BACK,
+                    RepairWatch.repair_type == sig[0], RepairWatch.column_name == sig[1],
+                    RepairWatch.param == sig[2],
+                ).values(status=CLEARED, reason=f"block cleared by {by}")
+                .execution_options(synchronize_session=False))
+            await db.commit()
+        self._rolled_back.get(source_id, {}).pop(sig, None)
+        self._rollback_times.get(source_id, {}).pop(sig, None)
+        self._unpersisted[source_id] = [w for w in self._unpersisted.get(source_id, []) if w.signature != sig]
+        logger.warning("repair block %s for %s cleared by %s (%d rollback(s))", sig, source_id, by, res.rowcount)
+        return int(res.rowcount or 0)
 
     async def retry_unpersisted(self, source_id: str) -> None:
         pending = self._unpersisted.get(source_id)
