@@ -138,6 +138,30 @@ class RecoveryRecord(Base):
     completed_at: Mapped[Optional[datetime]] = mapped_column(NaiveUTCDateTime, nullable=True)
 
 
+class RepairWatch(Base):
+    """The post-heal canary of one proven repair deployed for one source (ADR-002
+    safety net steps 2 and 3: the watch state is durable, so a restart can neither
+    forget a watch nor bring back a repair the canary rolled back)."""
+    __tablename__ = "uasr_repair_watches"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: uuid.uuid4().hex[:16])
+    source_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    # The RecoveryRecord of the batch that first applied the repair.
+    recovery_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    repair_type: Mapped[str] = mapped_column(String(16), nullable=False)
+    column_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    # What pins the repair down beyond its column: the old name, "from->to" types, the factor.
+    param: Mapped[str] = mapped_column(Text, nullable=False)
+    proof: Mapped[Dict[str, Any]] = mapped_column(JSON, default=dict)
+    # watching | deployed (kept after N clean batches) | rolled_back
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="watching")
+    batches_seen: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    batches_required: Mapped[int] = mapped_column(Integer, nullable=False)
+    reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(NaiveUTCDateTime, default=lambda: datetime.now(timezone.utc))
+    decided_at: Mapped[Optional[datetime]] = mapped_column(NaiveUTCDateTime, nullable=True)
+
+
 class DistributionSnapshot(Base):
     """Column-level distribution baseline for drift comparison."""
     __tablename__ = "uasr_distribution_snapshots"
@@ -328,6 +352,8 @@ class ProvenHealPlan(BaseModel):
     repairs: List[ProvenRepair] = Field(default_factory=list)
     alerts: List[Dict[str, Any]] = Field(default_factory=list)
     unproven: List[str] = Field(default_factory=list)
+    # What the post-heal canary reads (uasr/repair_canary.py); internal, never serialised.
+    canary_evidence: Dict[str, Any] = Field(default_factory=dict, exclude=True)
 
     @property
     def healed(self) -> bool:

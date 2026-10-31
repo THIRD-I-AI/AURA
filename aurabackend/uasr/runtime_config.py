@@ -99,14 +99,15 @@ def s18_1_flags() -> tuple[bool, bool, bool]:
 
 
 def post_heal_validation_batches() -> int:
-    """Resolve ``UASR_POST_HEAL_VALIDATION_BATCHES`` -- 0 (default) is off.
+    """Resolve ``UASR_POST_HEAL_VALIDATION_BATCHES`` -- 3 by default, 0 turns it off.
 
-    When > 0, RecoveryLoop re-checks an auto-deployed shim's drift_type on
-    the next N batches and auto-reverts it if that drift is still firing.
-    Off by default: a bad heal reverting itself is new behaviour an operator
-    should opt into, same posture as every other UASR_* opt-in here.
+    The post-heal canary (``uasr/repair_canary.py``): each proven repair a source
+    gets is judged on its next N batches and rolled back on a regression. ADR-002
+    "Safety net" step 2 makes it part of every applied fix with N = 3; it used to be
+    off by default, so no deployed fix was ever re-checked (readiness report gap 4).
+    The same N still drives RecoveryLoop's watch of an auto-deployed shim.
     """
-    return _env_int("UASR_POST_HEAL_VALIDATION_BATCHES", 0)
+    return _env_int("UASR_POST_HEAL_VALIDATION_BATCHES", 3)
 
 
 def approval_timeout_seconds() -> int:

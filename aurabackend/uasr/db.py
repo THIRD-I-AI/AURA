@@ -15,6 +15,7 @@ from .models import (  # noqa: F401
     DriftEvent,
     HealingMetric,
     RecoveryRecord,
+    RepairWatch,
 )
 
 
