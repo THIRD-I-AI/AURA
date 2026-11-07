@@ -529,10 +529,15 @@ class RecoveryLoop:
         def keep_alive() -> List[int]:
             return [i for i in alive if i not in held]
 
+        refused: set = set()
+
         def refuse_blocked(sig: Signature) -> bool:
             if sig not in blocked:
                 return False
-            failed_columns.add(sig[1])
+            # Not a failed column: the batch is quarantined through `unproven`, and
+            # counting it as a failure rolled back every other watch on the column
+            # (review of 342dd7f: a blocked x100 rolled back a correct x1000).
+            refused.add(sig)
             unproven.append(
                 f"the {sig[0]} repair on column '{sig[1]}' was rolled back by the post-heal "
                 "canary for this source, so it is not applied again (ADR-002 safety net step 2)")
@@ -676,6 +681,7 @@ class RecoveryLoop:
             # again is still evidence it holds, whatever else the batch got wrong.
             "proven": {s for s in (repair_signature(r.type, r.column, r.proof) for r in repairs) if s},
             "failed_columns": failed_columns,
+            "refused": refused,
             "retype_seen": retype_seen,
             "scale_seen": scale_seen,
             "columns": set(batch.columns).union(*(r.keys() for r in batch.rows)),

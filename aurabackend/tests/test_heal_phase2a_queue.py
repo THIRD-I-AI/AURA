@@ -276,6 +276,72 @@ async def test_unrelated_drift_does_not_roll_back_a_correct_repair():
     assert service._canary.blocked(source) == frozenset()
 
 
+async def test_a_different_proven_rescale_on_the_column_does_not_roll_back_the_watched_one():
+    """Review of bb2bbac, finding 1, case 1: a x100 rescale is watched and upstream
+    switches to x1000. The batch is healed exactly by a proven x1000 rescale, so the
+    column is back on the baseline: that is not the x100 repair's regression. It used
+    to roll the x100 back, and the x1000 when upstream went back to cents, until both
+    factors were blocked for good and every provable batch was quarantined."""
+    source = _source()
+    _register(source)
+    await _deploy_rescale(source)
+
+    truth = _rows(300, 160)
+    out = await _heal(source, [{**r, "amount": r["amount"] * 1000} for r in truth])
+    assert out["healed"] is True and out["rows"] == truth
+    assert [(r["type"], float(r["proof"]["factor"])) for r in out["repairs"]] == [("rescale", 1000.0)]
+    assert out["canary"]["rolled_back"] == []
+    assert [w["param"] for w in out["canary"]["opened"]] == ["1000.0"]
+
+    # Back to cents: the x100 proves again, and the x1000 is not blamed either.
+    truth = _rows(300, 161)
+    out = await _heal(source, _x100(truth))
+    assert out["healed"] is True and out["rows"] == truth and out["canary"]["rolled_back"] == []
+    assert service._canary.blocked(source) == frozenset()
+    assert {r.status for r in await _watch_rows(source)} == {"watching"}
+
+    # A batch that did not exercise a repair is not counted as clean for it either.
+    by_param = {w.signature[2]: w.batches_seen for w in service._canary.watches(source)}
+    assert by_param == {"100.0": 1, "1000.0": 0}
+
+
+async def test_a_different_proven_retype_on_the_column_does_not_roll_back_the_watched_one():
+    """Review of bb2bbac, finding 1, case 2: a str->int retype is watched and upstream
+    sends customer_id as float. float->int is proven and the rows come back exactly."""
+    source = _source()
+    _register(source)
+    truth = _rows(300, 162)
+    out = await _heal(source, [{**r, "customer_id": str(r["customer_id"])} for r in truth],
+                      schema={**SCHEMA, "customer_id": "str"})
+    assert out["healed"] is True and out["rows"] == truth
+    assert [(w["type"], w["param"]) for w in out["canary"]["opened"]] == [("retype", "str->int")]
+
+    truth = _rows(300, 163)
+    out = await _heal(source, [{**r, "customer_id": float(r["customer_id"])} for r in truth],
+                      schema={**SCHEMA, "customer_id": "float"})
+    assert out["healed"] is True and out["rows"] == truth
+    assert all(type(r["customer_id"]) is int for r in out["rows"])
+    assert out["canary"]["rolled_back"] == [] and service._canary.blocked(source) == frozenset()
+
+
+def test_the_watched_repair_still_regresses_when_no_proven_repair_restores_its_column():
+    """The other side of the rule: a column still off the baseline, or re-firing with
+    no proven repair of its own, is a regression whatever else the batch proved."""
+    judge = repair_canary.judge
+    restored = {"failed_columns": set(), "proven": {("rescale", "amount", "1000.0")},
+                "columns": set(SCHEMA), "retype_seen": {}, "scale_seen": ["amount"]}
+    assert judge(RESCALE, restored) == repair_canary.INCONCLUSIVE
+    assert judge(RESCALE, {**restored, "proven": set()}) == repair_canary.REGRESSED
+    assert judge(RESCALE, {**restored, "failed_columns": {"amount"}}) == repair_canary.REGRESSED
+    elsewhere = {**restored, "proven": {("rescale", "customer_id", "1000.0")}}
+    assert judge(RESCALE, elsewhere) == repair_canary.REGRESSED
+    retype = ("retype", "customer_id", "str->int")
+    seen = {**restored, "retype_seen": {"customer_id": "float"}, "scale_seen": []}
+    assert judge(retype, {**seen, "proven": {("retype", "customer_id", "float->int")}}) \
+        == repair_canary.INCONCLUSIVE
+    assert judge(retype, {**seen, "proven": set()}) == repair_canary.REGRESSED
+
+
 # ── concurrency: the watch is read and acted on under the source's lock ────
 
 async def test_concurrent_clean_heals_for_one_source_each_count_once():
@@ -444,7 +510,15 @@ async def test_a_watch_survives_a_reload_with_its_progress():
     assert watch.signature == RESCALE and watch.batches_seen == 1
 
 
-async def test_a_rollback_whose_write_failed_still_holds_and_is_retried():
+async def test_a_rollback_whose_write_failed_fails_closed_until_it_is_written():
+    """Review of 2ce9d08, finding 2: a rollback whose ROLLED_BACK write failed used to
+    take effect in memory only and the batch was answered as usual, while the DB
+    still said 'watching'. A restart, or another replica on the shared registry,
+    then proved and applied the rejected repair again. Now the source fails closed
+    (503) until the row is written: no caller is answered on a decision the DB does
+    not hold."""
+    from fastapi import HTTPException
+
     source = _source()
     _register(source)
     await _deploy_rescale(source)
@@ -452,23 +526,57 @@ async def test_a_rollback_whose_write_failed_still_holds_and_is_retried():
         await db.execute(text("ALTER TABLE uasr_repair_watches RENAME TO uasr_repair_watches_away"))
         await db.commit()
     try:
-        verdict = await _heal(source, _shifted_x100(_rows(300, 200)))
-        assert len(verdict["canary"]["rolled_back"]) == 1
-        # Not in the DB yet, but in force: re-applying a rejected repair is the worse error.
+        with pytest.raises(HTTPException) as err:
+            await _heal(source, _shifted_x100(_rows(300, 200)))
+        assert err.value.status_code == 503
+        # In force here, and pending: re-applying a rejected repair is the worse error.
         assert service._canary.blocked(source) == frozenset({RESCALE})
         assert len(service._canary.unpersisted(source)) == 1
-        out = await _heal(source, _x100(_rows(300, 201)))
-        assert out["rows"] == [] and out["repairs"] == []
+        # Every later batch of the source is refused while the write keeps failing,
+        # even one the repair would prove.
+        with pytest.raises(HTTPException) as err:
+            await _heal(source, _x100(_rows(300, 201)))
+        assert err.value.status_code == 503
     finally:
         async with get_session_factory()() as db:
             await db.execute(text("ALTER TABLE uasr_repair_watches_away RENAME TO uasr_repair_watches"))
             await db.commit()
 
-    # The next batch for the source writes the rollback first.
-    await _heal(source, _rows(300, 202))
+    # The next batch for the source writes the rollback first, then is answered.
+    sent = _x100(_rows(300, 202))
+    out = await _heal(source, sent)
     assert service._canary.unpersisted(source) == []
+    assert out["rows"] == [] and out["repairs"] == []
+    _accounted(out, sent)
     (row,) = await _watch_rows(source)
     assert row.status == "rolled_back"
+
+
+async def test_a_failed_rollback_write_does_not_count_the_batch_for_other_watches():
+    """The refused batch is evidence for nothing: a second watch on the source is not
+    advanced by it."""
+    from fastapi import HTTPException
+
+    source = _source()
+    _register(source)
+    await _deploy_rescale(source)
+    retyped = {**SCHEMA, "customer_id": "str"}
+    out = await _heal(source, [{**r, "customer_id": str(r["customer_id"])} for r in _x100(_rows(300, 205))],
+                      schema=retyped)
+    assert [(w["type"], w["column"]) for w in out["canary"]["opened"]] == [("retype", "customer_id")]
+
+    async with get_session_factory()() as db:
+        await db.execute(text("ALTER TABLE uasr_repair_watches RENAME TO uasr_repair_watches_away"))
+        await db.commit()
+    try:
+        with pytest.raises(HTTPException):
+            await _heal(source, _shifted_x100(_rows(300, 206)))
+    finally:
+        async with get_session_factory()() as db:
+            await db.execute(text("ALTER TABLE uasr_repair_watches_away RENAME TO uasr_repair_watches"))
+            await db.commit()
+    (retype,) = service._canary.watches(source)
+    assert retype.signature[0] == "retype" and retype.batches_seen == 0
 
 
 # ── review of 2ce9d08: a failed startup load, two replicas on one watch ────
@@ -564,6 +672,108 @@ async def test_a_stale_replica_cannot_turn_a_watchs_progress_back():
     assert row.batches_seen == 2 and row.status == "watching"
     (watch,) = stale.watches(source)
     assert watch.batches_seen == 2
+
+
+# ── an operator can lift a rollback ────────────────────────────────────────
+
+async def test_an_operator_can_clear_a_rollback_and_the_repair_is_watched_again():
+    """Review of bb2bbac, finding 1: a rolled-back signature could never be cleared,
+    so a false rollback quarantined the source's batches for good."""
+    from fastapi import HTTPException
+
+    source = _source()
+    _register(source)
+    await _deploy_rescale(source)
+    await _heal(source, _shifted_x100(_rows(300, 240)))
+    assert service._canary.blocked(source) == frozenset({RESCALE})
+    replica = RepairCanary(N)
+    replica.hydrate(await load_watches())
+    assert replica.blocked(source) == frozenset({RESCALE})
+
+    req = service.CanaryClearRequest(type="rescale", column="amount", param="100.0",
+                                     approver="ops", note="upstream fixed its units")
+    cleared = await service.clear_canary_rollback(source, req, _as(None))
+    assert cleared["cleared"]["status"] == "cleared" and "ops" in cleared["cleared"]["reason"]
+    assert service._canary.blocked(source) == frozenset()
+
+    # Another replica on the shared registry drops it on its next sync, and a restart
+    # never brings it back.
+    async with replica.lock(source):
+        await replica.sync(source, shared=True)
+    assert replica.blocked(source) == frozenset()
+    fresh = RepairCanary(N)
+    fresh.hydrate(await load_watches())
+    assert fresh.blocked(source) == frozenset()
+
+    # The repair is proven again and gets a fresh watch; the cleared row stays as audit.
+    truth = _rows(300, 241)
+    out = await _heal(source, _x100(truth))
+    assert out["healed"] is True and out["rows"] == truth
+    assert [(w["type"], w["param"]) for w in out["canary"]["opened"]] == [("rescale", "100.0")]
+    assert sorted(r.status for r in await _watch_rows(source)) == ["cleared", "watching"]
+
+    with pytest.raises(HTTPException) as err:
+        await service.clear_canary_rollback(source, req, _as(None))
+    assert err.value.status_code == 404
+
+
+async def test_a_tenant_cannot_clear_another_tenants_rollback():
+    from fastapi import HTTPException
+
+    raw = _source()
+    _register(f"tenantC::{raw}")
+    await _heal(raw, _x100(_rows(300, 250)), tenant="tenantC")
+    await _heal(raw, _shifted_x100(_rows(300, 251)), tenant="tenantC")
+    assert service._canary.blocked(f"tenantC::{raw}") == frozenset({RESCALE})
+    req = service.CanaryClearRequest(type="rescale", column="amount", param="100.0", approver="x")
+    with pytest.raises(HTTPException) as err:
+        await service.clear_canary_rollback(raw, req, _as("tenantD"))
+    assert err.value.status_code == 404
+    assert service._canary.blocked(f"tenantC::{raw}") == frozenset({RESCALE})
+
+
+# ── /uasr/ingest: enqueue after the commit, judge on the synced canary ──────
+
+async def test_ingest_enqueues_only_after_its_drift_event_is_committed(monkeypatch):
+    """Review of bb2bbac, finding 6: the queue item was submitted before the
+    DriftEvent commit, so a failed commit left an announcement for a fault the DB
+    never recorded (the worker docstring promises the drift event is in the DB)."""
+    submitted = []
+    monkeypatch.setattr(service, "_enqueue_for_mapek", lambda *a, **k: submitted.append(a))
+    source = _source()
+    _register(source)
+
+    class CommitFails:
+        def add(self, _):
+            pass
+
+        async def commit(self):
+            raise RuntimeError("database is locked")
+
+    with pytest.raises(RuntimeError):
+        await service.ingest_batch(
+            service.IngestRequest(source_id=source, rows=_x100(_rows(300, 260))), _as(None), db=CommitFails())
+    assert submitted == []
+    assert (await _ingest(source, _x100(_rows(300, 261))))["drift_detected"] is True
+    assert len(submitted) == 1
+
+
+async def test_ingest_gives_the_verdict_heal_would_in_shared_mode(monkeypatch):
+    """Review of bb2bbac, finding 6: ingest read the blocked set without syncing, so
+    with the shared registry it reported a repair another replica had rolled back."""
+    monkeypatch.setattr(service, "_SHARED_SHIM_REGISTRY", True)
+    source = _source()
+    _register(source)
+    await _deploy_rescale(source)
+    other = RepairCanary(N)
+    other.hydrate(await load_watches())
+    async with other.lock(source):
+        assert (await other.observe(source, REGRESSED_EVIDENCE, None, [])).rolled_back
+
+    out = await _ingest(source, _x100(_rows(300, 262)))
+    assert out["repairs"] == [] and out["quarantined_row_count"] == 300
+    heal = await _heal(source, _x100(_rows(300, 263)))
+    assert heal["repairs"] == [] and heal["rows"] == []
 
 
 # ── tenant isolation ───────────────────────────────────────────────────────
@@ -733,28 +943,17 @@ async def test_a_reload_after_expiry_keeps_the_new_watch_and_drops_the_block():
     assert [w.signature for w in reloaded.watches(source)] == [RESCALE]
 
 
-async def test_clearing_a_block_is_scoped_logged_and_still_needs_proof(caplog):
-    raw = _source()
-    source = f"tenantA::{raw}"
+async def test_a_blocked_repair_does_not_roll_back_another_watch_on_its_column():
+    # Review of 342dd7f: a refused (rolled-back) x100 counted as a failure on 'amount',
+    # so a correct x1000 watch on the same column was rolled back too.
+    source = _source()
     _register(source)
-    assert (await _heal(raw, _x100(_rows(300, 330)), tenant="tenantA"))["healed"] is True
-    await _heal(raw, _shifted_x100(_rows(300, 331)), tenant="tenantA")
-    assert service._canary.blocked(source) == frozenset({RESCALE})
-    kind, column, param = RESCALE
-    req = service.ClearRepairBlockRequest(source_id=raw, type=kind, column=column, param=param)
+    await _deploy_rescale(source)
+    await _roll_back_rescale(source, 340)
+    x1000 = [{**r, "amount": r["amount"] * 1000} for r in _rows(300, 341)]
+    out = await _heal(source, x1000)
+    assert out["healed"] is True and [w["param"] for w in out["canary"]["opened"]] == ["1000.0"]
 
-    with pytest.raises(service.HTTPException) as exc:
-        await service.clear_repair_block(req, _as("tenantB"))  # another tenant's source
-    assert exc.value.status_code == 404
-    assert service._canary.blocked(source) == frozenset({RESCALE})
-
-    with caplog.at_level("WARNING", logger="uasr.repair_canary"):
-        assert (await service.clear_repair_block(req, _as("tenantA")))["cleared"] == 1
-    assert "cleared by tenantA" in caplog.text
-    assert [r.status for r in await load_watches(source) if r.status != "watching"] == ["cleared"]
-
-    reloaded = RepairCanary(N)
-    reloaded.hydrate(await load_watches())
-    assert reloaded.blocked(source) == frozenset()
-    out = await _heal(raw, _x100(_rows(300, 332)), tenant="tenantA")
-    assert out["healed"] is True and [w["type"] for w in out["canary"]["opened"]] == ["rescale"]
+    held = await _heal(source, _x100(_rows(300, 342)))  # the blocked fault again
+    assert held["rows"] == [] and held["canary"]["rolled_back"] == []
+    assert [w.signature[2] for w in service._canary.watches(source)] == ["1000.0"]

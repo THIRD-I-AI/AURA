@@ -10,34 +10,35 @@ keyed by its signature (type, column, what pins it down), and every later batch 
 the source is evidence for or against it:
 
 * clean -- the batch proved the same repair again, or the fault it fixes is gone;
-* regressed -- the batch drifted on the repair's own column and the repair does not
-  bring it back: its rename is contradicted, its type change re-fires and it is not
-  proven, the column is still off-baseline after it;
+* regressed -- the batch drifted on the repair's own column and no proven repair
+  brings it back: its rename is contradicted, its type change re-fires with no proven
+  cast back, the column is still off-baseline after the repairs;
 * inconclusive -- an earlier fault the batch could not prove stopped the proof before
-  the repair's stage, so the batch says nothing about it.
+  the repair's stage, or a different proven repair of the same kind restored the
+  column (upstream switched from cents to mills: the x1000 rescale fixed the batch,
+  so the x100 was neither wrong nor exercised), so the batch says nothing about it.
 
 N clean batches (``UASR_POST_HEAL_VALIDATION_BATCHES``, default 3) keep the repair;
 one regression rolls it back: the repair is blocked for the source, so a batch it
-would apply to is quarantined instead. The block expires (``BLOCK_BACKOFF``: 1 h, then
-6 h, then 24 h for repeated rollbacks within ``BACKOFF_WINDOW``), because one false
-rollback must not leave a source needing a person for good (ADR-002: no human gate).
-Expiry applies nothing by itself: the repair must be proven again on a fresh batch and
-opens a new watch, so it passes the N-batch canary again. ``clear`` ends a block early
-and is logged. Drift
+would apply to is quarantined instead, and its rows never reach a caller again. Drift
 on other columns is not the repair's regression and never rolls it back; the proof
 handles it on its own (quarantine, alert).
 
 One watch per repair, not per source: a second repair for the source opens its own
 watch and leaves the first one's running. The watch, the rollback and the kept repair
-live in ``uasr_repair_watches``; a rollback is written there before it takes effect
-in memory, so a restart can never bring a rolled-back repair back.
+live in ``uasr_repair_watches``. A rollback is written there before the batch that
+caused it, or any later batch of the source, is answered: if the write fails the
+source fails closed (``RollbackNotPersisted``, a 503) until it succeeds, so no caller
+is answered on a decision the DB does not hold, and a restart or another replica
+cannot bring a rolled-back repair back. Only an operator lifts a rollback (``clear``):
+its row becomes ``cleared`` and the repair may be proven and watched afresh.
 """
 from __future__ import annotations
 
 import asyncio
 import logging
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, FrozenSet, List, Optional, Set, Tuple
 
@@ -55,9 +56,13 @@ CLEAN, REGRESSED, INCONCLUSIVE = "clean", "regressed", "inconclusive"
 WATCHING = "watching"
 KEPT = RecoveryStatus.DEPLOYED.value
 ROLLED_BACK = RecoveryStatus.ROLLED_BACK.value
-# A rollback an operator declared a false alarm: it no longer blocks or counts.
+# An operator lifted the rollback; the row stays as the audit trail and blocks nothing.
 CLEARED = "cleared"
 
+# A rollback blocks its repair for a while, not for good: one false rollback must not
+# leave a source needing a person (ADR-002: no human gate). Repeated rollbacks of the
+# same repair within BACKOFF_WINDOW block it longer. Expiry applies nothing by itself:
+# the repair has to be proven again on a fresh batch and passes the canary again.
 BLOCK_BACKOFF = (timedelta(hours=1), timedelta(hours=6), timedelta(hours=24))
 BACKOFF_WINDOW = timedelta(days=7)
 
@@ -67,6 +72,11 @@ def _utc(ts: Optional[datetime]) -> Optional[datetime]:
     if ts is None:
         return None
     return ts if ts.tzinfo else ts.replace(tzinfo=timezone.utc)
+
+
+class RollbackNotPersisted(RuntimeError):
+    """A rollback is in force in memory but its ROLLED_BACK row is not written yet;
+    the source must not be answered until it is."""
 
 
 def repair_signature(repair_type: str, column: str, proof: Dict[str, Any]) -> Optional[Signature]:
@@ -91,6 +101,10 @@ def judge(sig: Signature, evidence: Optional[Dict[str, Any]]) -> str:
     kind, column, param = sig
     if column in evidence["failed_columns"]:
         return REGRESSED
+    if any(r[0] == kind and r[1] == column for r in evidence.get("refused", ())):
+        # The batch carried the fault of a rolled-back repair of this kind on this
+        # column; it was quarantined and says nothing about this watch.
+        return INCONCLUSIVE
     if sig in evidence["proven"]:
         return CLEAN
     if kind == "rename":
@@ -101,7 +115,16 @@ def judge(sig: Signature, evidence: Optional[Dict[str, Any]]) -> str:
     seen = evidence["retype_seen"] if kind == "retype" else evidence["scale_seen"]
     if seen is None:
         return INCONCLUSIVE
-    return REGRESSED if column in seen else CLEAN
+    if column not in seen:
+        return CLEAN
+    # The column drifted again in this repair's stage but is not in failed_columns, so
+    # the sandbox passed on it. If a proven repair of the same kind (another factor, a
+    # cast from another type) is what restored it, upstream changed the fault and the
+    # watched repair was not applied: it neither failed nor held (review of bb2bbac:
+    # blaming it rolled back correct repairs until none was left).
+    if any(p[0] == kind and p[1] == column for p in evidence["proven"]):
+        return INCONCLUSIVE
+    return REGRESSED
 
 
 @dataclass
@@ -156,7 +179,7 @@ class RepairCanary:
         self._watches: Dict[str, Dict[Signature, Watch]] = {}
         self._kept: Dict[str, Set[Signature]] = {}
         self._rolled_back: Dict[str, Dict[Signature, Watch]] = {}
-        # When each repair was rolled back for each source (not cleared), for the backoff.
+        # When each repair was rolled back for each source (cleared ones excluded).
         self._rollback_times: Dict[str, Dict[Signature, List[datetime]]] = {}
         # Rollbacks in force in memory whose ROLLED_BACK row could not be written yet.
         self._unpersisted: Dict[str, List[Watch]] = {}
@@ -175,29 +198,26 @@ class RepairCanary:
         return self._locks.setdefault(source_id, asyncio.Lock())
 
     def block_until(self, source_id: str, sig: Signature) -> Optional[datetime]:
-        """When the block on ``sig`` for the source ends, or None if it is not blocked."""
+        """When the rollback's block on ``sig`` ends, or None if there is no rollback."""
         w = self._rolled_back.get(source_id, {}).get(sig)
-        decided = _utc(w.decided_at) if w else None
-        if decided is None:
-            return None if w is None else datetime.max.replace(tzinfo=timezone.utc)
-        recent = [t for t in self._rollback_times.get(source_id, {}).get(sig, [decided])
-                  if t > decided - BACKOFF_WINDOW]
-        step = BLOCK_BACKOFF[min(max(len(recent), 1), len(BLOCK_BACKOFF)) - 1]
-        return decided + step
-
-    def is_blocked(self, source_id: str, sig: Signature, now: Optional[datetime] = None) -> bool:
-        until = self.block_until(source_id, sig)
-        return until is not None and (now or datetime.now(timezone.utc)) < until
+        if w is None:
+            return None
+        decided = _utc(w.decided_at)
+        if decided is None:  # a pending rollback with no time: keep it blocked
+            return datetime.max.replace(tzinfo=timezone.utc)
+        times = self._rollback_times.get(source_id, {}).get(sig) or [decided]
+        recent = sum(1 for t in times if decided - BACKOFF_WINDOW < t <= decided)
+        return decided + BLOCK_BACKOFF[min(max(recent, 1), len(BLOCK_BACKOFF)) - 1]
 
     def blocked(self, source_id: str, now: Optional[datetime] = None) -> FrozenSet[Signature]:
         now = now or datetime.now(timezone.utc)
         return frozenset(sig for sig in self._rolled_back.get(source_id, {})
-                         if self.is_blocked(source_id, sig, now))
+                         if now < self.block_until(source_id, sig))
 
     def _note_rollback(self, w: Watch) -> None:
         self._rolled_back.setdefault(w.source_id, {})[w.signature] = w
-        times = self._rollback_times.setdefault(w.source_id, {}).setdefault(w.signature, [])
         decided = _utc(w.decided_at)
+        times = self._rollback_times.setdefault(w.source_id, {}).setdefault(w.signature, [])
         if decided is not None and decided not in times:
             times.append(decided)
 
@@ -209,19 +229,14 @@ class RepairCanary:
         def own(by_source: Dict[str, Dict[Signature, Watch]]) -> List[Dict[str, Any]]:
             return [w.to_dict() for sid, ws in by_source.items() if owns_source(tenant, sid)
                     for w in ws.values()]
-        def blocks() -> List[Dict[str, Any]]:
-            out = []
-            for sid, ws in self._rolled_back.items():
-                if not owns_source(tenant, sid):
-                    continue
-                for sig, w in ws.items():
-                    until = self.block_until(sid, sig)
-                    out.append({**w.to_dict(), "blocked_until": until.isoformat() if until else None,
-                                "blocked": self.is_blocked(sid, sig)})
-            return out
+        now = datetime.now(timezone.utc)
+        rolled = [{**w.to_dict(), "blocked_until": self.block_until(sid, sig).isoformat(),
+                   "blocked": now < self.block_until(sid, sig)}
+                  for sid, ws in self._rolled_back.items() if owns_source(tenant, sid)
+                  for sig, w in ws.items()]
         return {
             "watching": own(self._watches),
-            "rolled_back": blocks(),
+            "rolled_back": rolled,
             "unpersisted_rollbacks": sum(
                 len(ws) for sid, ws in self._unpersisted.items() if owns_source(tenant, sid)),
         }
@@ -248,15 +263,26 @@ class RepairCanary:
     def hydrate(self, rows: List[RepairWatch], source_id: Optional[str] = None) -> None:
         """Load the durable state (all sources at startup, or one source's shared view).
 
-        A rollback is never undone by a reload: memory may only be ahead of the DB on
-        the side of caution, by a rollback whose write is still pending."""
+        The reloaded sources are rebuilt from the DB, so a rollback an operator cleared
+        on another replica is lifted here too. Memory may only be ahead of the DB on the
+        side of caution: a rollback whose write is still pending stays in force."""
         if source_id is None:
             self.hydrated = True
-        if source_id is not None:
-            self._watches.pop(source_id, None)
-            self._rolled_back.pop(source_id, None)
-            self._rollback_times.pop(source_id, None)
+            reloaded = set(self._watches) | set(self._kept) | set(self._rolled_back)
+        else:
+            reloaded = {source_id}
+        for sid in reloaded:
+            self._watches.pop(sid, None)
+            self._kept.pop(sid, None)
+            self._rolled_back.pop(sid, None)
+            self._rollback_times.pop(sid, None)
+        for sid, pending in self._unpersisted.items():
+            if source_id is None or sid == source_id:
+                for w in pending:
+                    self._note_rollback(w)
         for row in rows:
+            if row.status == CLEARED:
+                continue
             w = Watch(
                 id=row.id, source_id=row.source_id, recovery_id=row.recovery_id,
                 signature=(row.repair_type, row.column_name, row.param),
@@ -264,8 +290,6 @@ class RepairCanary:
                 batches_seen=row.batches_seen, status=row.status, reason=row.reason,
                 decided_at=row.decided_at,
             )
-            if w.status == CLEARED:
-                continue
             if w.status == ROLLED_BACK:
                 self._watches.get(w.source_id, {}).pop(w.signature, None)
                 self._kept.get(w.source_id, set()).discard(w.signature)
@@ -273,8 +297,8 @@ class RepairCanary:
             elif w.signature in self._rolled_back.get(w.source_id, {}) and not (
                     _utc(row.created_at) is not None
                     and _utc(row.created_at) >= self.block_until(w.source_id, w.signature)):
-                # A watch for a rolled-back repair counts only if it was opened after the
-                # block expired; one opened earlier (another replica's) must not bypass it.
+                # Only a watch opened after the block expired counts; one opened while
+                # it held (another replica's) must not bypass it.
                 continue
             elif w.status == KEPT:
                 self._kept.setdefault(w.source_id, set()).add(w.signature)
@@ -294,39 +318,47 @@ class RepairCanary:
         """
         out = Outcome()
         now = datetime.now(timezone.utc)
-        for w in self.watches(source_id):
-            verdict = judge(w.signature, evidence)
-            if verdict == REGRESSED:
-                w.status, w.decided_at = ROLLED_BACK, now
-                w.reason = (
-                    f"batch {w.batches_seen + 1} after the repair drifted on column "
-                    f"'{w.signature[1]}' and the repair did not bring it back to the baseline")
-                out.rolled_back.append(w)
-            elif verdict == CLEAN:
-                w.batches_seen += 1
-                if w.batches_seen >= w.batches_required:
-                    w.status, w.decided_at = KEPT, now
-                    out.kept.append(w)
-                else:
-                    out.advanced.append(w)
+        verdicts = [(w, judge(w.signature, evidence)) for w in self.watches(source_id)]
+        out.rolled_back = [
+            replace(w, status=ROLLED_BACK, decided_at=now, reason=(
+                f"batch {w.batches_seen + 1} after the repair drifted on column "
+                f"'{w.signature[1]}' and no proven repair brought it back to the baseline"))
+            for w, verdict in verdicts if verdict == REGRESSED]
+        lost_rollbacks: List[Watch] = []
         if out.rolled_back:
-            # The DB says ROLLED_BACK before memory acts on it, so no reload can bring
-            # the repair back. If the write fails the rollback still takes effect here
-            # (re-applying a repair the canary rejected would be the worse error) and
-            # the write is retried before this source's next batch.
-            if await _persist(out.rolled_back) is None:
+            written = await _persist(out.rolled_back)
+            # In force here whatever the write did: re-applying a repair the canary
+            # rejected would be the worse error.
+            for w in out.rolled_back:
+                self._watches[source_id].pop(w.signature, None)
+                self._note_rollback(w)
+                logger.warning("post-heal canary rolled back %s for %s: %s", w.signature, source_id, w.reason)
+            if written is None:
+                # Review of 2ce9d08: the DB still says 'watching', so a restart or
+                # another replica would apply the repair again. Nothing about this
+                # source is answered until the row is written (sync retries it first),
+                # and this batch counts for no other watch.
                 self._unpersisted.setdefault(source_id, []).extend(out.rolled_back)
-        for w in out.rolled_back:
-            self._watches[source_id].pop(w.signature, None)
-            self._note_rollback(w)
-            logger.warning("post-heal canary rolled back %s for %s: %s", w.signature, source_id, w.reason)
+                raise RollbackNotPersisted(
+                    f"the rollback of {len(out.rolled_back)} repair(s) for {source_id} "
+                    "could not be written")
+            lost_rollbacks = written
+        for w, verdict in verdicts:
+            if verdict != CLEAN:
+                continue
+            w.batches_seen += 1
+            if w.batches_seen >= w.batches_required:
+                w.status, w.decided_at = KEPT, now
+                out.kept.append(w)
+            else:
+                out.advanced.append(w)
         for w in out.kept:
             self._watches[source_id].pop(w.signature, None)
             self._kept.setdefault(source_id, set()).add(w.signature)
 
         if self.batches_required > 0 and recovery_id is not None:
             # An expired block is not known: the repair was proven again on this batch,
-            # so it opens a new watch and goes through the canary again.
+            # so it opens a new watch and passes the canary again.
             known = (set(self._watches.get(source_id, {})) | self._kept.get(source_id, set())
                      | self.blocked(source_id, now))
             for r in repairs:
@@ -338,44 +370,56 @@ class RepairCanary:
                 self._watches.setdefault(source_id, {})[sig] = w
                 known.add(sig)
                 out.opened.append(w)
+        lost = list(lost_rollbacks)
         if out.kept or out.advanced or out.opened:
             # Progress, unlike a rollback, may lag the DB safely: a restart then re-runs
             # part of a watch, it never skips one.
-            lost = await _persist(out.kept + out.advanced + out.opened)
-            if lost:
-                # Another replica moved these watches on (above all: rolled one back)
-                # after this one read them. The DB wins; reload the source from it.
-                try:
-                    self.hydrate(await load_watches(source_id), source_id)
-                except Exception as exc:
-                    logger.error("could not reload canary state of %s after a lost write: %s",
-                                 source_id, exc)
-                    self._stale.add(source_id)
+            lost += await _persist(out.kept + out.advanced + out.opened) or []
+        if lost:
+            # Another replica moved these watches on (above all: rolled one back, or an
+            # operator cleared a rollback) after this one read them. The DB wins;
+            # reload the source from it.
+            try:
+                self.hydrate(await load_watches(source_id), source_id)
+            except Exception as exc:
+                logger.error("could not reload canary state of %s after a lost write: %s",
+                             source_id, exc)
+                self._stale.add(source_id)
         return out
 
-    async def clear(self, source_id: str, sig: Signature, by: str) -> int:
-        """End a block early (an operator's call that the rollback was a false alarm).
-        Call under ``lock(source_id)``. Marks the source's rollbacks of ``sig`` CLEARED in
-        the DB first, then forgets them; returns how many were cleared."""
-        async with get_session_factory()() as db:
-            res = await db.execute(
-                update(RepairWatch).where(
-                    RepairWatch.source_id == source_id, RepairWatch.status == ROLLED_BACK,
-                    RepairWatch.repair_type == sig[0], RepairWatch.column_name == sig[1],
-                    RepairWatch.param == sig[2],
-                ).values(status=CLEARED, reason=f"block cleared by {by}")
-                .execution_options(synchronize_session=False))
-            await db.commit()
-        self._rolled_back.get(source_id, {}).pop(sig, None)
-        self._rollback_times.get(source_id, {}).pop(sig, None)
-        self._unpersisted[source_id] = [w for w in self._unpersisted.get(source_id, []) if w.signature != sig]
-        logger.warning("repair block %s for %s cleared by %s (%d rollback(s))", sig, source_id, by, res.rowcount)
-        return int(res.rowcount or 0)
-
     async def retry_unpersisted(self, source_id: str) -> None:
+        """Write the source's pending rollbacks; raises while they cannot be written."""
         pending = self._unpersisted.get(source_id)
-        if pending and await _persist(pending) is not None:
-            del self._unpersisted[source_id]
+        if not pending:
+            return
+        if await _persist(pending) is None:
+            raise RollbackNotPersisted(
+                f"the rollback of {len(pending)} repair(s) for {source_id} is still not written")
+        del self._unpersisted[source_id]
+
+    async def clear(
+        self, source_id: str, signature: Signature, by: str, note: Optional[str],
+    ) -> Optional[Watch]:
+        """An operator lifts a rollback: its row becomes ``cleared`` (kept as the audit
+        trail) and the repair may be proven, and watched, afresh. Call under
+        ``lock(source_id)`` after ``sync``. Returns None when the source has no such
+        rollback in the DB; raises when the DB cannot be written (the rollback stays)."""
+        w = self._rolled_back.get(source_id, {}).get(signature)
+        if w is None:
+            return None
+        cleared = replace(w, status=CLEARED, decided_at=datetime.now(timezone.utc),
+                          reason=f"{w.reason}; rollback cleared by {by}" + (f": {note}" if note else ""))
+        lost = await _persist([cleared])
+        if lost is None:
+            raise RuntimeError(f"could not write the cleared rollback of {signature} for {source_id}")
+        if lost:
+            # The DB no longer says ROLLED_BACK (another replica cleared it first): it wins.
+            self.hydrate(await load_watches(source_id), source_id)
+            return None
+        del self._rolled_back[source_id][signature]
+        self._rollback_times.get(source_id, {}).pop(signature, None)
+        logger.warning("post-heal canary rollback of %s for %s cleared by %s", signature, source_id, by)
+        return cleared
 
     def unpersisted(self, source_id: str) -> List[Watch]:
         return list(self._unpersisted.get(source_id, []))
@@ -390,6 +434,7 @@ _WRITABLE_FROM = {
     WATCHING: (WATCHING,),
     KEPT: (WATCHING, KEPT),
     ROLLED_BACK: (WATCHING, KEPT),
+    CLEARED: (ROLLED_BACK,),
 }
 
 

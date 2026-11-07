@@ -53,7 +53,7 @@ from .models import (
 )
 from .recovery_loop import RecoveryLoop, RecoveryLoopConfig
 from .recovery_persistence import load_deployed_shims, mark_shim_rolled_back, standing_shim_filter
-from .repair_canary import RepairCanary
+from .repair_canary import RepairCanary, RollbackNotPersisted
 from .runtime_config import (
     approval_timeout_seconds,
     build_redis_client,
@@ -556,11 +556,27 @@ async def _sync_canary(source_id: str) -> None:
     except Exception as exc:
         logger.error("UASR canary state unavailable for %s (%s: %s); refusing to heal",
                      source_id, type(exc).__name__, exc)
-        raise HTTPException(
-            status_code=503,
-            detail="post-heal canary state is unavailable, so rolled-back repairs cannot "
-                   "be ruled out; the batch was not healed, retry later",
-        ) from exc
+        raise _canary_unavailable() from exc
+
+
+def _canary_unavailable() -> HTTPException:
+    return HTTPException(
+        status_code=503,
+        detail="post-heal canary state is unavailable, so rolled-back repairs cannot "
+               "be ruled out; the batch was not healed, retry later",
+    )
+
+
+async def _observe_canary(source_id: str, *args) -> Any:
+    """``_canary.observe`` that fails closed: a rollback whose ROLLED_BACK row could not
+    be written is not announced as decided, the batch is answered 503 (review of
+    2ce9d08: the DB kept 'watching', so a restart or another replica re-applied it)."""
+    try:
+        return await _canary.observe(source_id, *args)
+    except RollbackNotPersisted as exc:
+        logger.error("UASR canary rollback for %s not persisted (%s); refusing to answer",
+                     source_id, exc)
+        raise _canary_unavailable() from exc
 
 
 async def get_db() -> AsyncGenerator[AsyncSession, None]:
@@ -623,6 +639,16 @@ class RejectionRequest(BaseModel):
     """S41: a human rejecting a held recovery (escalates it)."""
     approver: str
     reason: str
+
+
+class CanaryClearRequest(BaseModel):
+    """An operator lifting a post-heal canary rollback: the repair it names (as
+    /uasr/mapek/status lists it) may be proven and watched again for the source."""
+    type: str
+    column: str
+    param: str
+    approver: str
+    note: Optional[str] = None
 
 
 class GateCheckRequest(BaseModel):
@@ -748,10 +774,10 @@ async def ingest_batch(req: IngestRequest, request: Request, db: AsyncSession = 
     # distributed/redis UASR backends (state_store.py); the sole uvicorn
     # worker must not stall on it (backend.md async-safety rule).
     drift_result = await asyncio.to_thread(_detector.detect, batch)
-    # A verdict only: /uasr/ingest returns no rows, so it opens or judges no canary.
-    _enqueue_for_mapek("ingest", batch, drift_result, [])
 
     if not drift_result.drift_detected:
+        # A verdict only: /uasr/ingest returns no rows, so it opens or judges no canary.
+        _enqueue_for_mapek("ingest", batch, drift_result, [])
         return {
             "status": "clean",
             "drift_detected": False,
@@ -776,9 +802,15 @@ async def ingest_batch(req: IngestRequest, request: Request, db: AsyncSession = 
     # deployed SQLite DB it held the write lock through the whole recovery loop
     # (LLM calls, sandbox), so every other writer failed with 'database is locked'.
     await db.commit()
+    # After the commit: the queue item announces a fault the DB holds (review of bb2bbac).
+    _enqueue_for_mapek("ingest", batch, drift_result, [])
 
-    # The same proof /uasr/heal applies, so the verdict here is the one heal would act on.
-    plan, loop_result = await _prove_or_propose(drift_result, batch)
+    # The same proof /uasr/heal applies, against the same synced blocked set, so the
+    # verdict here is the one heal would act on (review of bb2bbac: ingest read the
+    # blocked set unsynced, so in shared mode it could differ).
+    async with _canary.lock(batch.source_id):
+        await _sync_canary(batch.source_id)
+        plan, loop_result = await _prove_or_propose(drift_result, batch)
 
     # Persist recovery record
     recovery_rec = RecoveryRecord(
@@ -950,7 +982,7 @@ async def _heal_locked(
     standing_reason = "a deployed shim failed to apply; rows may be only partly transformed"
     if not drift_result.drift_detected:
         # A batch with no drift is a clean batch for every watched repair.
-        outcome = await _canary.observe(batch.source_id, None, None, [])
+        outcome = await _observe_canary(batch.source_id, None, None, [])
         # ADR-002 phase 2a: clean rows are healed rows -- a pipeline that writes only
         # healed batches must not stall on a clean one just because nothing needed fixing.
         return {
@@ -991,7 +1023,7 @@ async def _heal_locked(
     # repairs it applied that are new to the source. A repair it rolls back here is
     # never in plan.repairs: a regression means the repair's column failed (so the
     # plan quarantined the batch) or the repair was not proven on it.
-    outcome = await _canary.observe(
+    outcome = await _observe_canary(
         batch.source_id, plan.canary_evidence, loop_result.recovery_id, plan.repairs)
 
     recovery_rec = RecoveryRecord(
@@ -1549,29 +1581,29 @@ async def list_sources(request: Request, db: AsyncSession = Depends(get_db)):
     }
 
 
-class ClearRepairBlockRequest(BaseModel):
-    source_id: str
-    type: str
-    column: str
-    param: str
+@app.post("/uasr/canary/{source_id}/clear")
+async def clear_canary_rollback(source_id: str, req: CanaryClearRequest, request: Request) -> Dict[str, Any]:
+    """Lift a rollback the post-heal canary made for one of the caller's sources.
 
-
-@app.post("/uasr/repairs/clear")
-async def clear_repair_block(req: ClearRepairBlockRequest, request: Request) -> Dict[str, Any]:
-    """End a canary rollback's block early, for a rollback that was a false alarm.
-
-    Blocks also expire on their own (``repair_canary.BLOCK_BACKOFF``); this is only for
-    not waiting. Clearing applies nothing: the repair must still be proven on the next
-    batch and passes the N-batch canary again. Scoped to the caller's own sources."""
-    tenant = caller_tenant(request)
-    source_id = scoped_source(tenant, req.source_id)
-    sig = (req.type, req.column, req.param)
+    A rollback is otherwise final, so a false one (a regression verdict that later
+    turns out wrong) would quarantine every batch the repair could prove, for good
+    (review of bb2bbac). The row is kept as ``cleared`` with who cleared it; the repair
+    is then proven again on the next batch and watched afresh. 404 when the source
+    has no such rollback (or is another tenant's: BUG-263)."""
+    source_id = scoped_source(caller_tenant(request), source_id)
     async with _canary.lock(source_id):
         await _sync_canary(source_id)
-        if _canary.block_until(source_id, sig) is None:
-            raise HTTPException(status_code=404, detail="no rolled-back repair matches that source, type, column and param")
-        cleared = await _canary.clear(source_id, sig, by=tenant or "anonymous")
-    return {"source_id": source_id, "cleared": cleared}
+        try:
+            cleared = await _canary.clear(
+                source_id, (req.type, req.column, req.param),
+                _decision_maker(request, req.approver), req.note)
+        except Exception as exc:
+            logger.error("UASR could not clear canary rollback for %s (%s: %s)",
+                         source_id, type(exc).__name__, exc)
+            raise HTTPException(status_code=503, detail="the rollback could not be cleared, retry later") from exc
+    if cleared is None:
+        raise HTTPException(status_code=404, detail="no such rolled-back repair for this source")
+    return {"source_id": source_id, "cleared": cleared.to_dict()}
 
 
 @app.get("/uasr/mapek/status")

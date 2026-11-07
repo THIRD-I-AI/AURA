@@ -620,11 +620,9 @@ async def uasr_rollback(req: Dict[str, Any], request: Request):
     return await _uasr("POST", "/uasr/rollback", 15, request, json=req)
 
 
-@router.post("/uasr/repairs/clear")
-async def uasr_clear_repair_block(req: Dict[str, Any], request: Request):
-    """Proxy: end a post-heal canary rollback's block early (ADR-002). UASR scopes it
-    to the caller's own sources and still requires the repair to be proven again."""
-    return await _uasr("POST", "/uasr/repairs/clear", 15, request, json=req)
+@router.post("/uasr/canary/{source_id}/clear")
+async def uasr_clear_canary_rollback(source_id: str, req: Dict[str, Any], request: Request):
+    return await _uasr("POST", f"/uasr/canary/{source_id}/clear", 15, request, json=req)
 
 
 @router.get("/uasr/shims/{source_id}")
