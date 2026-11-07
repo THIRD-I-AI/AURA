@@ -5467,3 +5467,19 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Root cause:** The template repair for an added column removes it (`actuator_agent.py:214-229`). The schema change is MEDIUM severity, so it auto-deploys (`recovery_loop.py:655`), and `/uasr/heal` returns the stripped rows with `healed: true`.
 - **Failure scenario:** An upstream system starts sending a new `region` field. Every pipeline healed by UASR silently loses that column's data from then on, and every signal says the repair succeeded.
 - **Fix:** ADR-002 phase 2a, proven repairs: a new column is kept (the schema evolves) and never dropped; renames, retypes and unit fixes are applied only when proven on the data (`uasr/actuator_agent.py` prove_renames, cast_losslessly, prove_scale; `RecoveryLoop.prove_repairs`); anything unproven is returned in `quarantined_rows` exactly as received, with `healed=false`. The old drop-column, cast-to-None, list-order rename, clip and mean-ratio templates are proposals held for review only, and LLM, fallback and borrowed shims are never auto-applied. Tests `aurabackend/tests/test_heal_phase2a_repairs.py`. The live check `uasr_self_heal` (BUG-566) is the end-to-end evidence once deployed.
+
+## BUG-571: The drift detector misses a column divided by 10 or 1000, so /uasr/heal returns the wrong values as clean with healed=true
+- **Status:** open
+- **Found by:** review of the ADR-002 phase 2a proven repairs (run wf_d6f7a39a-781), reproduced by hand against the real DriftDetector on 2026-11-07. `aurabackend/uasr/drift_detector.py`.
+- **Severity:** high
+- **Root cause:** Not yet located. Reproduction: baseline 400 rows with amount uniform 10-500; a batch of 300 rows with amount/10 or amount/1000 reports drift_detected=False, while amount*10 is detected as STATISTICAL. The asymmetry points at how values below the baseline range are binned or scored (the BUG-564 under/overflow bins, the location-shift test, or the dynamic threshold).
+- **Failure scenario:** Upstream starts sending amounts in thousands instead of units. Every batch passes as clean, /uasr/heal returns healed=true, and pipelines write values 1000x too small. This is a precision failure of the healed=true claim, which ADR-002 counts against the 99.9% target.
+- **Fix:** pending (ADR-002 phase 2a detection fix; the accuracy benchmark counts a missed fault as a failure).
+
+## BUG-572: Integer columns arriving as decimals are not detected when the batch carries no schema snapshot
+- **Status:** open
+- **Found by:** review of the ADR-002 phase 2a proven repairs (run wf_d6f7a39a-781), reproduced by hand against the real DriftDetector on 2026-11-07. `aurabackend/uasr/drift_detector.py`.
+- **Severity:** medium
+- **Root cause:** Not yet located. Reproduction: baseline with customer_id int (schema snapshot); a batch where every customer_id is a float (5.0) and no schema_snapshot reports drift_detected=False. The retype check only runs when the caller supplies a snapshot (drift_detector.py type_change path), and value-kind inference does not distinguish int from float.
+- **Failure scenario:** An upstream export starts writing IDs as 123.0. UASR passes the batch, and joins or lookups on the ID silently fail downstream.
+- **Fix:** pending (ADR-002 phase 2a detection fix; the accuracy benchmark counts a missed fault as a failure).
