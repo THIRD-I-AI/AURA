@@ -484,25 +484,42 @@ class DriftDetector:
         removed = baseline_cols - current_cols
 
         if not added and not removed:
-            # Check type changes if schema_snapshot provided
+            # column -> (baseline type, batch type)
+            changed: Dict[str, Tuple[str, str]] = {}
             if batch.schema_snapshot:
-                type_changes = []
                 for col, dtype in batch.schema_snapshot.items():
                     if col in baseline_schema and not schema_types_match(baseline_schema[col], dtype):
-                        type_changes.append(col)
-                if type_changes:
-                    type_changed_types = {c: batch.schema_snapshot[c] for c in type_changes}
-                    if self._schema_intent_covers(st, {}, set(), type_changed_types):
-                        self._adopt_schema_from_intent(batch, st)
-                        return None, True
-                    return {
-                        "type": "type_change",
-                        "affected_columns": type_changes,
-                        "severity": DriftSeverity.MEDIUM,
-                        "details": f"Type changed in columns: {type_changes}",
-                        "old_types": {c: baseline_schema[c] for c in type_changes},
-                        "new_types": {c: batch.schema_snapshot[c] for c in type_changes},
-                    }, False
+                        changed[col] = (baseline_schema[col], dtype)
+            # BUG-572: the declared types are not the only evidence. Without a
+            # snapshot (or with one that says only "number") an int column whose
+            # values now arrive as 5.0 matched every check above.
+            kind_changes = self._value_kind_changes(batch, st.baseline, baseline_schema)
+            for col, kinds in kind_changes.items():
+                changed.setdefault(col, kinds)
+            if changed:
+                type_changes = list(changed)
+                type_changed_types = {c: new for c, (_, new) in changed.items()}
+                if self._schema_intent_covers(st, {}, set(), type_changed_types):
+                    self._adopt_schema_from_intent(batch, st)
+                    # The sanctioned kind becomes the baseline's, or the change
+                    # alarms again the moment the intent expires. A new dict:
+                    # under record_state=False st.baseline is shared with the store.
+                    if kind_changes and st.baseline:
+                        st.baseline = {
+                            **st.baseline,
+                            **{c: st.baseline[c].model_copy(update={"value_kind": new})
+                               for c, (_, new) in kind_changes.items()},
+                        }
+                    return None, True
+                return {
+                    "type": "type_change",
+                    "affected_columns": type_changes,
+                    "severity": DriftSeverity.MEDIUM,
+                    "details": f"Type changed in columns: {type_changes}",
+                    "old_types": {c: old for c, (old, _) in changed.items()},
+                    "new_types": type_changed_types,
+                }, False
+            if batch.schema_snapshot:
                 # A column the baseline only ever saw as null gets its type from the
                 # first batch that carries a value, so later retypes are detectable.
                 learned = {
@@ -533,6 +550,78 @@ class DriftDetector:
             "severity": severity,
             "details": f"Added: {list(added)}, Removed: {list(removed)}",
         }, False
+
+    @staticmethod
+    def _value_kind(values: List[Any]) -> Optional[str]:
+        """The kind of a column's non-null values, from the values themselves (BUG-572).
+
+        None and NaN are missing values and are skipped.
+        A mix of ints and floats is "float": a float column legitimately carries
+        whole numbers, and a JSON client may send them as 5. Any other mix is
+        "mixed", which has no stable kind and is never compared. numpy scalars
+        (rows from a DataFrame) count as the Python kind they stand for.
+        """
+        kinds = set()
+        for v in values:
+            # NaN is how pandas writes a missing value, in an int column too; it
+            # says nothing about the column's kind, any more than None does.
+            if v is None or (isinstance(v, (float, np.floating)) and v != v):
+                continue
+            if isinstance(v, (bool, np.bool_)):
+                kinds.add("bool")
+            elif isinstance(v, (int, np.integer)):
+                kinds.add("int")
+            elif isinstance(v, (float, np.floating)):
+                kinds.add("float")
+            elif isinstance(v, str):
+                kinds.add("str")
+            else:
+                kinds.add(type(v).__name__)
+        if not kinds:
+            return None
+        if kinds == {"int", "float"}:
+            return "float"
+        return kinds.pop() if len(kinds) == 1 else "mixed"
+
+    # Declared snapshot type names for a float column ("number" and "unknown" are
+    # not: they leave the recorded kind standing).
+    _DECLARED_FLOAT = frozenset({"float", "double", "float32", "float64", "real"})
+
+    def _value_kind_changes(
+        self,
+        batch: BatchPayload,
+        baseline: Optional[Dict[str, ColumnDistribution]],
+        baseline_schema: Optional[Dict[str, str]] = None,
+    ) -> Dict[str, Tuple[str, str]]:
+        """Columns whose value kind differs from the baseline's kind.
+
+        Kinds are compared, never values: a float column whose baseline happened to
+        hold only whole numbers was still recorded as "float" (its values were 5.0),
+        so a batch of whole-number floats matches it. The one tolerated difference
+        is int values in a float column -- lossless, and how JSON writes 5.0.
+
+        The baseline's kind is the declared one where the baseline schema names a
+        kind its values fit: a declared float column whose baseline arrived as JSON
+        ints (10.0 written as 10) was recorded as "int", but it is a float column,
+        and its fractional values are not a retype. Where the declaration does not
+        fit the baseline's own values (declared int, sent as 5.0) the values are
+        what the source really sends, and the recorded kind stands.
+        """
+        if not baseline or not batch.rows:
+            return {}
+        out: Dict[str, Tuple[str, str]] = {}
+        for col, dist in baseline.items():
+            old = dist.value_kind
+            if old is None or old == "mixed":
+                continue
+            declared = str((baseline_schema or {}).get(col, "")).lower()
+            if old == "int" and declared in self._DECLARED_FLOAT:
+                old = "float"
+            new = self._value_kind([r.get(col) for r in batch.rows])
+            if new is None or new == old or (old == "float" and new == "int"):
+                continue
+            out[col] = (old, new)
+        return out
 
     def _schema_intent_covers(
         self,
@@ -650,6 +739,10 @@ class DriftDetector:
         max_kl = 0.0
         max_loc_shift = 0.0
         kind_changed = False
+        # BUG-571: a numeric column binned on the baseline's edges whose KL passed
+        # zeta AND the G-test (see _aligned_kl) -- a finding that already carries
+        # its own finite-sample protection, so the warmup must not hide it.
+        aligned_fired = False
 
         zeta = self._dynamic_threshold(st.kl_history)
 
@@ -659,7 +752,8 @@ class DriftDetector:
 
             ref_dist = baseline[col_name]
             significant = True
-            if batch_dist.histogram.get("aligned"):
+            aligned = bool(batch_dist.histogram.get("aligned"))
+            if aligned:
                 kl, significant = self._aligned_kl(
                     batch_dist.histogram["counts"], ref_dist.histogram["counts"])
             else:
@@ -708,6 +802,7 @@ class DriftDetector:
             if kl > zeta and significant:
                 drifted_cols.append(col_name)
                 max_kl = max(max_kl, kl)
+                aligned_fired = aligned_fired or aligned
 
         # Record for dynamic threshold adaptation. BUG-417: not when a column's
         # location moved by more than 2 sigma. That batch's score is the surrogate
@@ -716,8 +811,12 @@ class DriftDetector:
         # histogram can produce, hiding shape drift for the next 200 batches.
         # A column that changed kind is likewise a fault, not a sample of this
         # source's ordinary noise.
+        # BUG-571: nor when an aligned column fired. A scale-down moves the mean by
+        # less than 2 sigma (it can never move it further than |mean|/sigma), so
+        # the BUG-417 guard let its KL of 2-7 into the window and zeta rose past
+        # any KL the next batches could produce.
         mutated = False
-        if kl_values and max_loc_shift <= 2.0 and not kind_changed:
+        if kl_values and max_loc_shift <= 2.0 and not kind_changed and not aligned_fired:
             avg_kl = sum(kl_values.values()) / len(kl_values)
             st.kl_history.append(avg_kl)
             # Keep last 200 samples
@@ -749,11 +848,22 @@ class DriftDetector:
         # robust location/scale statistic over the noisy per-bin KL while the
         # histogram is under-sampled.  Steady-state drift fires normally once
         # the window fills.  Set warmup_batches=0 to restore original behaviour.
+        #
+        # BUG-571: the warmup predates the BUG-564 aligned histograms. Their KL
+        # is merged to >= 20 rows a bin, smoothed, and fires only past a 1e-6
+        # G-test, so it is not the under-sampled noise this guards against
+        # (tests/test_heal_phase1_detector.py runs it with no warmup and sees
+        # zero false alarms). Gating it on the >2 sigma location shift hid every
+        # scale-down -- /10 of uniform 10-500 moves the mean only 1.6 sigma --
+        # and every rescale of a column centred on 0, which moves it not at all.
+        # /uasr/heal judges each batch against a fresh window, so there it hid
+        # them always. The warmup now only covers the legacy and categorical KL.
         if (
             self._warmup_batches
             and len(st.kl_history) <= self._warmup_batches
             and max_loc_shift <= 2.0
             and not kind_changed
+            and not aligned_fired
         ):
             return None, mutated
 
@@ -1099,7 +1209,8 @@ class DriftDetector:
             if not values:
                 continue
 
-            dist = ColumnDistribution(column_name=col, sample_size=len(values))
+            dist = ColumnDistribution(
+                column_name=col, sample_size=len(values), value_kind=self._value_kind(values))
 
             # Numeric vs categorical: attempt a single vectorized float cast.
             # np.asarray(..., dtype=float) raises if ANY value is non-numeric,

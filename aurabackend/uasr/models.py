@@ -219,6 +219,10 @@ class ColumnDistribution(BaseModel):
     null_rate: Optional[float] = None
     distinct_count: Optional[int] = None
     sample_size: Optional[int] = None
+    # BUG-572: the Python kind of the column's values ("int", "float", "str",
+    # "bool", ... or "mixed"), so a retype is visible without a schema snapshot.
+    # None on a baseline recorded before it existed: never compared.
+    value_kind: Optional[str] = None
 
 
 class BatchPayload(BaseModel):
