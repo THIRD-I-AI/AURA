@@ -493,7 +493,7 @@ class DriftDetector:
             # BUG-572: the declared types are not the only evidence. Without a
             # snapshot (or with one that says only "number") an int column whose
             # values now arrive as 5.0 matched every check above.
-            kind_changes = self._value_kind_changes(batch, st.baseline)
+            kind_changes = self._value_kind_changes(batch, st.baseline, baseline_schema)
             for col, kinds in kind_changes.items():
                 changed.setdefault(col, kinds)
             if changed:
@@ -555,6 +555,7 @@ class DriftDetector:
     def _value_kind(values: List[Any]) -> Optional[str]:
         """The kind of a column's non-null values, from the values themselves (BUG-572).
 
+        None and NaN are missing values and are skipped.
         A mix of ints and floats is "float": a float column legitimately carries
         whole numbers, and a JSON client may send them as 5. Any other mix is
         "mixed", which has no stable kind and is never compared. numpy scalars
@@ -562,7 +563,9 @@ class DriftDetector:
         """
         kinds = set()
         for v in values:
-            if v is None:
+            # NaN is how pandas writes a missing value, in an int column too; it
+            # says nothing about the column's kind, any more than None does.
+            if v is None or (isinstance(v, (float, np.floating)) and v != v):
                 continue
             if isinstance(v, (bool, np.bool_)):
                 kinds.add("bool")
@@ -580,15 +583,29 @@ class DriftDetector:
             return "float"
         return kinds.pop() if len(kinds) == 1 else "mixed"
 
+    # Declared snapshot type names for a float column ("number" and "unknown" are
+    # not: they leave the recorded kind standing).
+    _DECLARED_FLOAT = frozenset({"float", "double", "float32", "float64", "real"})
+
     def _value_kind_changes(
-        self, batch: BatchPayload, baseline: Optional[Dict[str, ColumnDistribution]],
+        self,
+        batch: BatchPayload,
+        baseline: Optional[Dict[str, ColumnDistribution]],
+        baseline_schema: Optional[Dict[str, str]] = None,
     ) -> Dict[str, Tuple[str, str]]:
-        """Columns whose value kind differs from the kind the baseline recorded.
+        """Columns whose value kind differs from the baseline's kind.
 
         Kinds are compared, never values: a float column whose baseline happened to
         hold only whole numbers was still recorded as "float" (its values were 5.0),
         so a batch of whole-number floats matches it. The one tolerated difference
         is int values in a float column -- lossless, and how JSON writes 5.0.
+
+        The baseline's kind is the declared one where the baseline schema names a
+        kind its values fit: a declared float column whose baseline arrived as JSON
+        ints (10.0 written as 10) was recorded as "int", but it is a float column,
+        and its fractional values are not a retype. Where the declaration does not
+        fit the baseline's own values (declared int, sent as 5.0) the values are
+        what the source really sends, and the recorded kind stands.
         """
         if not baseline or not batch.rows:
             return {}
@@ -597,6 +614,9 @@ class DriftDetector:
             old = dist.value_kind
             if old is None or old == "mixed":
                 continue
+            declared = str((baseline_schema or {}).get(col, "")).lower()
+            if old == "int" and declared in self._DECLARED_FLOAT:
+                old = "float"
             new = self._value_kind([r.get(col) for r in batch.rows])
             if new is None or new == old or (old == "float" and new == "int"):
                 continue

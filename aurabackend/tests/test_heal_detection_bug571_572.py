@@ -176,6 +176,48 @@ def test_bug572_whole_number_floats_in_a_float_column_never_alarm():
                                            rows=as_ints)).drift_detected
 
 
+@pytest.mark.parametrize("declared", ["float", "double", "FLOAT64"])
+def test_bug572_a_declared_float_column_sent_as_json_ints_is_still_float(declared):
+    """Review of f9cee99: a baseline whose whole-number floats arrived as JSON ints
+    was recorded as kind "int", overriding the declared float, and every later batch
+    of ordinary fractional prices raised a type_change int -> float."""
+    rnd = random.Random(8)
+    det = _kind_detector([{"price": rnd.randint(10, 50)} for _ in range(400)], {"price": declared})
+    for i in range(20):
+        frac = [{"price": round(rnd.uniform(10, 50), 2)} for _ in range(300)]
+        for snap in ({"price": declared}, None):
+            r = det.detect(BatchPayload(source_id="s", batch_id=f"f{i}", columns=["price"],
+                                        rows=frac, schema_snapshot=snap))
+            assert DriftType.SCHEMA not in r.drift_types, r.details
+
+
+def test_bug572_an_undeclared_or_number_baseline_of_ints_still_detects_floats():
+    """The declared float is what tolerates fractional values; without it an int
+    baseline keeps its kind (BUG-572), and a declared int is not loosened."""
+    for schema in (None, {"customer_id": "number", "status": "str"},
+                   {"customer_id": "int", "status": "str"}):
+        rnd = random.Random(9)
+        det = _kind_detector(_ids(rnd, 400), schema)
+        r = det.detect(BatchPayload(source_id="s", columns=["customer_id", "status"],
+                                    rows=_ids(rnd, 300, as_float=True)))
+        assert r.drift_vector.get("type") == "type_change", (schema, r.details)
+
+
+def test_bug572_nan_is_a_missing_value_not_a_float():
+    k = DriftDetector._value_kind
+    assert k([1, float("nan"), 3]) == "int"
+    assert k([1, np.float64("nan"), None]) == "int"
+    assert k([float("nan")]) is None
+    assert k([1.5, float("nan")]) == "float"
+    rnd = random.Random(10)
+    det = _kind_detector(_ids(rnd, 400), {"customer_id": "int", "status": "str"})
+    rows = _ids(rnd, 300)
+    for i in range(0, 300, 7):
+        rows[i]["customer_id"] = float("nan")
+    r = det.detect(BatchPayload(source_id="s", columns=["customer_id", "status"], rows=rows))
+    assert DriftType.SCHEMA not in r.drift_types, r.details
+
+
 def test_bug572_value_kind_inference():
     k = DriftDetector._value_kind
     assert k([1, 2, None]) == "int"
@@ -358,3 +400,19 @@ async def test_heal_fractional_floats_in_an_int_column_are_quarantined_not_round
     assert {q["index"] for q in out["quarantined_rows"]} == fractional
     assert out["rows"] == [r for i, r in enumerate(truth) if i not in fractional]
     assert all(type(r["customer_id"]) is int for r in out["rows"])
+
+
+@pytest.mark.asyncio
+async def test_heal_fractional_prices_in_a_declared_float_column_sent_as_ints_pass_untouched(_heal_db):
+    """Review of f9cee99, end to end: the declared-float baseline arrived as JSON
+    ints; ordinary fractional amounts must not be retyped to int and quarantined."""
+    source = _source()
+    base = [{**r, "amount": int(round(r["amount"]))} for r in _rows(400, 37)]
+    service._detector.register_baseline(source, BatchPayload(
+        source_id=source, columns=list(SCHEMA), rows=base, schema_snapshot=SCHEMA))
+    sent = _rows(300, 38)
+
+    out = await _heal(source, copy.deepcopy(sent))
+
+    assert out["quarantined_rows"] == [] and out["rows"] == sent, out.get("repairs")
+    assert "schema" not in [str(t).lower() for t in out.get("drift_types", [])]
