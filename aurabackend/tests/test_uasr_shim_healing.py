@@ -71,11 +71,15 @@ class TestOutlierClipShimHeals:
         healed_rows = transform([dict(r) for r in drifted.rows])
         healed_batch = BatchPayload(source_id="src", columns=["v"], rows=healed_rows)
         post_result = det.detect(healed_batch, record_state=False)
-        # BUG-568: the primary drift can now be a non-statistical type (the
-        # clipped rows collapse onto one value and read as DUPLICATE), which
-        # carries no KL -- read it the way RecoveryLoop._validate_shim does.
-        assert DriftType.STATISTICAL not in post_result.drift_types
-        post_kl = post_result.kl_divergence or 0.0
+        # BUG-571: the clipped rows still pile 5% of the batch onto the clip
+        # bound, which the aligned KL reports now that the cold-start warmup no
+        # longer hides it -- the clip is a guess, held for review only (BUG-570),
+        # and its output rightly fails the sandbox. What this test pins is that
+        # baseline-derived bounds cut the divergence, not that they remove it.
+        # BUG-568: the primary drift can also be a non-statistical type
+        # (DUPLICATE), which carries no KL, so read the statistical finding.
+        stat = post_result.drift_vectors.get(DriftType.STATISTICAL.value) or {}
+        post_kl = stat.get("max_kl") or post_result.kl_divergence or 0.0
 
         assert post_kl < pre_kl * 0.5, (
             f"clip shim did not materially reduce KL: pre={pre_kl:.4f} post={post_kl:.4f}"
