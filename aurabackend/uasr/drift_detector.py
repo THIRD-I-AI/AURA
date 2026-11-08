@@ -24,6 +24,7 @@ import time
 import zlib
 from collections import Counter
 from dataclasses import replace
+from decimal import Decimal
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
@@ -48,6 +49,11 @@ _KIND_CHANGE_KL = -math.log(_EPS)
 
 # Default bins for continuous-valued histograms
 _DEFAULT_BINS = 50
+
+# BUG-575: a numeric column whose values have at most this many decimal places is
+# recorded to a fixed precision (money, a rounded measurement); past it they carry a
+# float's full digits and the precision pins nothing down.
+_RECORDED_DECIMALS = 6
 
 # BUG-564: rows of the smaller sample per merged bin when comparing a batch
 # with the baseline on the baseline's edges -- see _aligned_kl.
@@ -658,6 +664,34 @@ class DriftDetector:
         if kinds == {"int", "float"}:
             return "float"
         return kinds.pop() if len(kinds) == 1 else "mixed"
+
+    @staticmethod
+    def _decimal_places(value: Any) -> int:
+        """Decimal places of a number in its shortest written form (170.3 -> 1, 5 -> 0)."""
+        if isinstance(value, (bool, np.bool_)):
+            return 0
+        if isinstance(value, (int, np.integer)):
+            return 0
+        f = float(value)
+        if not math.isfinite(f):
+            return 0
+        return max(0, -int(Decimal(repr(f)).as_tuple().exponent))
+
+    @classmethod
+    def _recorded_decimals(cls, distinct: np.ndarray) -> Optional[int]:
+        """The precision a numeric column is recorded to (BUG-575), or None.
+
+        The most decimal places of any of its distinct values; None past
+        ``_RECORDED_DECIMALS``, where the values carry a float's full digits and no
+        fixed precision. Whole values have none, so only the others are written out.
+        """
+        most = 0
+        for v in distinct[distinct != np.floor(distinct)].tolist():
+            places = cls._decimal_places(v)
+            if places > _RECORDED_DECIMALS:
+                return None
+            most = max(most, places)
+        return most
 
     # Declared snapshot type names for a float column ("number" and "unknown" are
     # not: they leave the recorded kind standing).
@@ -1536,7 +1570,9 @@ class DriftDetector:
                 dist.mean = float(numeric_arr.mean())
                 dist.std = float(numeric_arr.std())
                 dist.null_rate = 1.0 - len(values) / max(len(batch.rows), 1)
-                dist.distinct_count = int(np.unique(numeric_arr).size)
+                distinct = np.unique(numeric_arr)
+                dist.distinct_count = int(distinct.size)
+                dist.decimals = self._recorded_decimals(distinct)
                 if bin_edges and col in bin_edges:
                     dist.histogram = self._histogram_on_edges(numeric_arr, bin_edges[col])
                 else:

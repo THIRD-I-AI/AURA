@@ -615,6 +615,67 @@ def _moments_match(values: List[float], dist: ColumnDistribution) -> bool:
     return 1 / (1 + t) <= ratio <= 1 + t
 
 
+# BUG-575: a batch whose rank-sum statistic against the baseline is past this many
+# standard errors is shifted. 5.0 is a two-sided tail of about 6e-7 per column; over
+# 14,000 clean columns of the benchmark's shapes the largest |z| was 3.96.
+_SHIFT_Z = 5.0
+# ...and the shift must matter: a new value beats a baseline value at least 60% (or at
+# most 40%) of the time. A batch of 100,000 rows makes any trivial wobble significant;
+# a moved factor clears it (x2.5 on a heavy tail: 0.67 or more in the benchmark).
+_SHIFT_EFFECT = 0.1
+
+
+def location_shift(values: List[Any], dist: Optional[ColumnDistribution]) -> Optional[Tuple[float, float]]:
+    """(z, P(new > baseline)) when the values sit significantly and materially above or
+    below the numeric baseline, else None.
+
+    BUG-575: the sandbox's check on every numeric column of the rows to be returned.
+    The detector's aligned histogram merges bins to >= 20 rows of the smaller sample,
+    so a heavy-tailed column (lognormal, nearly all its mass in the first bins) keeps
+    a x2.5 fault inside one merged bin and moves no count; its mean moves under the
+    2-sigma location rule. A mean test needs the spread, which a heavy tail's sample
+    estimates badly (a clean lognormal batch reached 5.3 standard errors). The
+    Mann-Whitney rank-sum test needs neither: on the baseline's own 50 bins (the
+    under- and overflow bins at the ends) both samples are exchangeable when nothing
+    changed, ties are corrected for, and its null is the standard normal whatever the
+    column's shape.
+
+    A unique int column is an identifier, which carries no distribution to compare
+    (BUG-573): a sequential key moves past the baseline every batch, so it never
+    counts as shifted here.
+    """
+    if dist is None or dist.mean is None:
+        return None
+    edges = DriftDetector._baseline_edges(dist.histogram or {})
+    if edges is None:
+        return None
+    n0 = int(dist.sample_size or 0)
+    if dist.value_kind == "int" and n0 > 1 and dist.distinct_count == n0:
+        return None
+    nums = [float(v) for v in values if isinstance(v, (int, float)) and math.isfinite(float(v))]
+    if len(nums) < 2 or len(nums) != len(values):
+        return None
+    p = np.asarray(DriftDetector._histogram_on_edges(nums, edges)["counts"], dtype=float)
+    q = np.concatenate(([0.0], np.asarray(dist.histogram["counts"], dtype=float), [0.0]))
+    if len(p) != len(q):
+        return None
+    n1, n0f = float(p.sum()), float(q.sum())
+    total = n1 + n0f
+    if n1 < 2 or n0f < 2:
+        return None
+    tied = p + q
+    midrank = np.cumsum(tied) - tied + (tied + 1) / 2
+    u = float((p * midrank).sum()) - n1 * (n1 + 1) / 2
+    var = n0f * n1 / 12 * ((total + 1) - float((tied ** 3 - tied).sum()) / (total * (total - 1)))
+    if var <= 0:
+        return None
+    z = (u - n0f * n1 / 2) / math.sqrt(var)
+    effect = u / (n0f * n1)
+    if abs(z) > _SHIFT_Z and abs(effect - 0.5) >= _SHIFT_EFFECT:
+        return z, effect
+    return None
+
+
 def _fits_baseline(values: List[float], dist: ColumnDistribution) -> Tuple[float, bool]:
     """(share inside the baseline's range, whether the values are indistinguishable
     from the baseline: >= 99.9% inside, same moments, and the detector's own
@@ -792,14 +853,51 @@ def cast_losslessly(value: Any, target: str) -> Tuple[bool, Any]:
     return False, None
 
 
-def restore_scaled(value: Any, power: int) -> Optional[float]:
+def restore_scaled(
+    value: Any, power: int, kind: Optional[str] = None, decimals: Optional[int] = None,
+) -> Optional[float]:
     """The value that, scaled by 10**power, gives exactly ``value`` -- or None.
 
     Floating-point scaling is not exactly reversible (0.07 * 100 is 7.000000000000001),
     so the plain quotient can miss the original by an ulp. The shortest decimal near
     the quotient is tried first, and a candidate is accepted only if re-applying the
     fault reproduces ``value`` bit for bit.
+
+    ``kind`` is the baseline column's value kind. BUG-575: the restored value must be
+    of that kind, because the destination's truth is. An int column scaled up by 10
+    holds multiples of 10; 407 is not one, and restoring it as 40.7 put a float in an
+    int column (a x11 fault "explained" as x10). Such a value is not exactly 10**power
+    times any value of the column, so it has no restoration: None. A float column's
+    value restores as a float even when it arrived as a JSON int (500 -> 50.0).
+
+    ``decimals`` is the most decimal places any baseline value of the column has
+    (``ColumnDistribution.decimals``). BUG-575: a value the column records to one
+    decimal (170.3) that a x1050 fault sent as 178815.0 "restores" by x1000 to 178.815,
+    exactly, and a 5% factor hides inside a wide column's spread; but no value of that
+    column has three decimals, so it is not 10**power times any of its values: None.
+    A correct restoration is the truth, recorded to the column's own precision.
     """
+    restored = _restore_scaled(value, power)
+    if restored is None:
+        return None
+    if decimals is not None and DriftDetector._decimal_places(restored) > decimals:
+        return None
+    if kind not in ("int", "float"):
+        return restored
+    if kind == "float":
+        return float(restored)
+    if isinstance(restored, int):
+        return restored
+    if not restored.is_integer():
+        return None
+    # Accepted only if the integer itself reproduces the value sent, bit for bit.
+    whole = int(restored)
+    factor = 10 ** abs(power)
+    forward = (whole * factor,) if power > 0 else (whole / factor, whole * 10.0 ** power)
+    return whole if value in forward else None
+
+
+def _restore_scaled(value: Any, power: int) -> Optional[float]:
     factor = 10 ** abs(power)
     if isinstance(value, int):
         if power < 0:

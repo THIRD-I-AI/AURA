@@ -239,6 +239,11 @@ class ColumnDistribution(BaseModel):
     # but cannot be told apart from a wide integer measure by its values alone, so
     # a value far past the baseline's range (a x10**n unit bug) still alarms.
     value_bound: Optional[float] = None
+    # BUG-575: the most decimal places any value of a numeric column has (170.3 -> 1),
+    # when the column is recorded to a fixed precision; None when its values carry a
+    # float's full digits (more than _RECORDED_DECIMALS), which pins nothing down. A
+    # rescale must restore values of the column's own precision.
+    decimals: Optional[int] = None
 
 
 class BatchPayload(BaseModel):
