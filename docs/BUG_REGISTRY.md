@@ -5485,25 +5485,25 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Fix:** The detector records each column's value kind (int, float, str, bool) at baseline and flags a change from the values themselves, without a schema snapshot; a declared float column whose baseline arrived as JSON ints is not flagged for fractional values. Tests `aurabackend/tests/test_heal_detection_bug571_572.py`; benchmark: int_as_float 0 WRONG (119 before), retype_lossless 0 WRONG (102 before).
 
 ## BUG-573: Clean batches raise drift on sequential ids, dates and text ids: 604 of 1000 clean batches are false alarms
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ADR-002 accuracy benchmark (`aurabackend/tests/accuracy/`, 500 trials per fault type, 1000 clean batches) on the detection fix, 2026-11-07. `aurabackend/uasr/drift_detector.py`.
 - **Severity:** high
 - **Root cause:** Identifier and date columns are checked like measurements. A sequential int id or a date moves past the baseline's range on every new batch, so it reads as statistical drift ('no power of ten brings the values back inside the baseline'); text ids such as ORD-0001234 read as semantic drift through the categorical embedding. Columns of that kind carry no distribution to compare.
 - **Failure scenario:** Once pipelines heal through UASR (ADR-002 phase 2b), about 60% of good batches would be quarantined; today every such batch is reported as drift and its faults elsewhere are quarantined instead of repaired (recall 0.26).
-- **Fix:** pending.
+- **Fix:** Each column's role (identifier, date, measure) is inferred once from the baseline's values and declared type and stored with the baseline. Identifier and date columns skip statistical and semantic drift and get the checks that fit them: value-kind change, format change (value shapes such as A-9 or 9999-99-99), new nulls, loss of uniqueness, and for wide keyed integer ids a magnitude bound so a x10^n unit bug still alarms. Tests `aurabackend/tests/test_heal_accuracy_bug573_574.py` (41). Accuracy benchmark, 500 trials per fault type: clean false alarms 0/1000 (604 before), recall 0.684 (0.259 before).
 
 ## BUG-574: A small number of exact duplicate rows is not alerted, so the batch is returned as healed
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ADR-002 accuracy benchmark (`aurabackend/tests/accuracy/`, 500 trials per fault type, 1000 clean batches) on the detection fix, 2026-11-07. `aurabackend/uasr/drift_detector.py`.
 - **Severity:** medium
 - **Root cause:** The duplicate-rate floor (about (sqrt(k0+1)+3)^2 expected pairs, scaled to batch size) sits above small injections: 12 to 18 exact copies in a 256 to 390 row batch whose baseline has no duplicates raise no alert.
 - **Failure scenario:** An upstream retry writes 15 rows twice; healed=true with no duplicate alert, and the copies reach the destination.
-- **Fix:** pending.
+- **Fix:** When the baseline has no exact duplicates on its key (declared key, else an identifier column), any exact duplicate in a batch is an alert; otherwise a bound with ~0 false alarms on clean data is used. Duplicates stay alert-only (ADR-002). Tests `aurabackend/tests/test_heal_accuracy_bug573_574.py`; benchmark: duplicates 0 WRONG (39 before), 500/500 correct.
 
 ## BUG-575: Residual wrong results in the accuracy benchmark: decoy x2.5 and combined faults
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ADR-002 accuracy benchmark (`aurabackend/tests/accuracy/`, 500 trials per fault type, 1000 clean batches) on the detection fix, 2026-11-07. `aurabackend/uasr/actuator_agent.py`.
 - **Severity:** medium
 - **Root cause:** 1 WRONG of 500 for the x2.5 decoy and 3 WRONG of 500 for two-fault combinations after the detection fix; replay with `tests/accuracy/faults.build_trial(fault, seed)` from the benchmark report's not_correct list.
 - **Failure scenario:** A value off by a factor that is not a power of ten, or a second fault behind a first repair, is returned as healed.
-- **Fix:** pending.
+- **Fix:** `location_shift` and a whole-batch re-check after the proven repairs push a value off by a non-power-of-ten factor, or a second fault behind a first repair, to quarantine; `restore_scaled` restores the column's own value kind and recorded precision (`ColumnDistribution.decimals`) or refuses. Tests `aurabackend/tests/test_heal_accuracy_bug575.py` (18). Benchmark on the combined branch, 7000 fault trials: 0 WRONG, precision 1.0.
