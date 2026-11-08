@@ -223,6 +223,11 @@ class ColumnDistribution(BaseModel):
     # "bool", ... or "mixed"), so a retype is visible without a schema snapshot.
     # None on a baseline recorded before it existed: never compared.
     value_kind: Optional[str] = None
+    # BUG-575: the most decimal places any value of a numeric column has (170.3 -> 1),
+    # when the column is recorded to a fixed precision; None when its values carry a
+    # float's full digits (more than _RECORDED_DECIMALS), which pins nothing down. A
+    # rescale must restore values of the column's own precision.
+    decimals: Optional[int] = None
 
 
 class BatchPayload(BaseModel):

@@ -978,6 +978,12 @@ async def _heal_locked(
     # See ingest_batch's identical comment: offload the potentially
     # Redis-blocking detect() call off the single uvicorn worker.
     drift_result = await asyncio.to_thread(_detector.detect, batch)
+    # BUG-575: rows the detector passes are returned as healed, so they get the
+    # sandbox's rank test too; a column it finds moved becomes a statistical finding
+    # that the proven repairs must explain, or the batch is quarantined (ADR-002).
+    shifted = await asyncio.to_thread(_loop.unexplained_shift, drift_result, batch)
+    if shifted is not None:
+        drift_result = shifted
 
     standing_reason = "a deployed shim failed to apply; rows may be only partly transformed"
     if not drift_result.drift_detected:
