@@ -606,6 +606,10 @@ class BaselineRequest(BaseModel):
     # source's baseline from today's rows makes today's drift the new normal, so a
     # bridge run only seeds a baseline for a source that has none.
     only_if_absent: bool = False
+    # ADR-002 phase 2b: a pipeline's first run registers its baseline from a page of a
+    # larger load and declares the whole run here (complete_run, run_rows), so the
+    # volume check of later runs compares runs, not pages.
+    metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
 class RollbackRequest(BaseModel):
@@ -1106,6 +1110,7 @@ async def register_baseline(req: BaselineRequest, request: Request):
         columns=req.columns or (list(req.rows[0].keys()) if req.rows else []),
         rows=req.rows,
         schema_snapshot=req.schema_snapshot,
+        metadata=req.metadata,
     )
 
     # BUG-563: with only_if_absent an existing baseline is kept, so the rows of this

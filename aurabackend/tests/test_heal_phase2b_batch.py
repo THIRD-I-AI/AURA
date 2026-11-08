@@ -1,0 +1,504 @@
+"""ADR-002 phase 2b: the heal step of batch pipeline runs (pipeline/engine.py, pipeline/heal.py).
+
+Every source a run loads goes through UASR /uasr/heal as the pipeline's tenant before
+any transform sees it; healed rows replace the source rows, quarantined rows go to the
+per-pipeline ``_aura_quarantine_<pipeline_id>`` table and never to the sink, and a run
+UASR could not check is FAILED with its sink untouched.
+
+The real PipelineEngine with a DuckDB-file source and a DuckDB sink, and the real
+/uasr/baseline and /uasr/heal handlers in-process behind the real JWTAuthMiddleware
+(as tests/test_heal_phase1_monitor_livecheck.py does), on an isolated SQLite file. The
+faults and their ground truth come from the phase-2a benchmark (tests/accuracy). No
+FastAPI lifespan is driven and nothing leaves the process.
+"""
+from __future__ import annotations
+
+import json
+import os
+import random
+import uuid
+from typing import Any, Dict, List, Optional
+
+import duckdb
+import httpx
+import pytest
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
+
+import metadata_store.db as _metadata_db
+from pipeline import engine as engine_module
+from pipeline import heal as heal_module
+from pipeline.engine import DUCKDB_SINK_FILE, PipelineEngine, _typed_arrow_table
+from pipeline.models import (
+    Pipeline,
+    PipelineSink,
+    PipelineSource,
+    PipelineStatus,
+    ProcessingStep,
+    SinkType,
+    SourceType,
+    StepType,
+)
+from shared.auth import decode_access_token
+from shared.middleware import JWTAuthMiddleware
+from shared.storage.base import tenant_slug
+from tests.accuracy.datasets import make_dataset, sample, strict_equal
+from tests.accuracy.faults import build_trial
+from uasr import service
+from uasr.actuator_agent import SynthesisActuatorAgent
+from uasr.db import get_session_factory, init_uasr_db
+from uasr.reflector_agent import DiagnosticReflectorAgent
+
+pytestmark = pytest.mark.pipeline_heal
+
+_REAL_CLIENT = httpx.AsyncClient
+
+
+async def _no_llm(self, *a, **k):
+    return None
+
+
+class _Uasr:
+    """The real UASR handlers, recording each call; ``fail_heal_at`` answers the
+    n-th /uasr/heal call (0-based) with a 503 instead."""
+
+    def __init__(self) -> None:
+        self.calls: List[Dict[str, Any]] = []
+        self.fail_heal_at: Optional[int] = None
+        app = FastAPI()
+        app.add_middleware(JWTAuthMiddleware)
+
+        @app.post("/uasr/baseline")
+        async def baseline(request: Request):
+            body = await request.json()
+            self._record("baseline", request, body)
+            return await service.register_baseline(service.BaselineRequest(**body), request)
+
+        @app.post("/uasr/heal")
+        async def heal(request: Request):
+            body = await request.json()
+            self._record("heal", request, body)
+            if self.fail_heal_at is not None and len(self.heals()) - 1 >= self.fail_heal_at:
+                return JSONResponse({"detail": "canary state unavailable"}, status_code=503)
+            async with get_session_factory()() as db:
+                return await service.heal_batch(service.IngestRequest(**body), request, db=db)
+
+        self.app = app
+
+    def _record(self, path: str, request: Request, body: Dict[str, Any]) -> None:
+        self.calls.append({
+            "path": path, "tenant": (request.state.user or {}).get("org_id"),
+            "source_id": body["source_id"], "rows": len(body.get("rows") or []),
+            "metadata": body.get("metadata") or {},
+            "authorization": request.headers.get("authorization"),
+        })
+
+    def heals(self, source_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        return [c for c in self.calls if c["path"] == "heal" and (source_id is None or c["source_id"] == source_id)]
+
+
+@pytest.fixture
+async def uasr(tmp_path, monkeypatch):
+    monkeypatch.setenv("AURA_UPLOADS_ROOT", str(tmp_path / "uploads"))
+    monkeypatch.delenv("AURA_STORAGE_BACKEND", raising=False)
+    monkeypatch.setattr(engine_module, "OUTPUT_DIR", str(tmp_path / "processed"))
+    from shared.storage import reset_storage_backend
+    reset_storage_backend()
+    # No LLM in CI: the proposal path an unproven fault takes would reach the network.
+    monkeypatch.setattr(SynthesisActuatorAgent, "_llm_shim", _no_llm)
+    monkeypatch.setattr(DiagnosticReflectorAgent, "_llm_diagnosis", _no_llm)
+    original = (_metadata_db.DATABASE_URL, _metadata_db._engine, _metadata_db._session_factory)
+    _metadata_db.DATABASE_URL = f"sqlite+aiosqlite:///{tmp_path / 'uasr.db'}"
+    _metadata_db._engine = None
+    _metadata_db._session_factory = None
+    await init_uasr_db()
+
+    u = _Uasr()
+    monkeypatch.setattr(heal_module.httpx, "AsyncClient",
+                        lambda **kw: _REAL_CLIENT(transport=httpx.ASGITransport(app=u.app), **kw))
+    yield u
+    if _metadata_db._engine is not None:
+        await _metadata_db._engine.dispose()  # BUG-008: an undisposed aiosqlite engine hangs pytest
+    _metadata_db.DATABASE_URL, _metadata_db._engine, _metadata_db._session_factory = original
+    reset_storage_backend()
+
+
+# ── helpers ────────────────────────────────────────────────────────────────────
+
+def _columns(rows: List[Dict[str, Any]]) -> List[str]:
+    return list(dict.fromkeys(k for r in rows for k in r))
+
+
+def _put_source(tmp_path, tenant: str, name: str, rows: List[Dict[str, Any]], sql: Optional[str] = None) -> None:
+    """A tenant's uploaded .duckdb file holding table ``t`` -- built from ``rows``, or by ``sql``."""
+    from shared.storage import get_storage_backend
+
+    path = tmp_path / f"build_{uuid.uuid4().hex[:8]}.duckdb"
+    con = duckdb.connect(str(path))
+    try:
+        if sql is not None:
+            con.execute(f"CREATE TABLE t AS {sql}")
+        else:
+            con.register("src_rows", _typed_arrow_table(_columns(rows), rows))
+            con.execute("CREATE TABLE t AS SELECT * FROM src_rows")
+    finally:
+        con.close()
+    get_storage_backend().write(tenant, name, path.read_bytes())
+
+
+def _pipeline(pid: str, source: str = "src.duckdb", steps: Optional[List[ProcessingStep]] = None) -> Pipeline:
+    return Pipeline(
+        id=pid, name="heal test",
+        source=PipelineSource(type=SourceType.DUCKDB, connection={"database": source}, table="t"),
+        steps=steps or [],
+        sink=PipelineSink(type=SinkType.DUCKDB, table="out"),
+    )
+
+
+def _db_path(tmp_path, tenant: str) -> str:
+    return os.path.join(str(tmp_path / "processed"), tenant_slug(tenant), DUCKDB_SINK_FILE)
+
+
+def _read(tmp_path, tenant: str, table: str) -> Optional[List[Dict[str, Any]]]:
+    path = _db_path(tmp_path, tenant)
+    if not os.path.exists(path):
+        return None
+    con = duckdb.connect(path, read_only=True)
+    try:
+        exists = con.execute("SELECT 1 FROM information_schema.tables WHERE table_name = ?", [table]).fetchone()
+        if not exists:
+            return None
+        cur = con.execute(f'SELECT * FROM "{table}"')
+        names = [d[0] for d in cur.description]
+        return [dict(zip(names, r)) for r in cur.fetchall()]
+    finally:
+        con.close()
+
+
+def _types(tmp_path, tenant: str, table: str) -> Dict[str, str]:
+    con = duckdb.connect(_db_path(tmp_path, tenant), read_only=True)
+    try:
+        return {r[0]: r[1] for r in con.execute(f'DESCRIBE "{table}"').fetchall()}
+    finally:
+        con.close()
+
+
+async def _run(pipeline: Pipeline, tenant: str):
+    return await PipelineEngine().execute(pipeline, tenant=tenant)
+
+
+async def _baseline_then(tmp_path, uasr, tenant: str, baseline: List[Dict[str, Any]], batch: List[Dict[str, Any]]):
+    """Run 1 registers the source's baseline; run 2 loads ``batch`` and is healed."""
+    pid = f"pipe_{uuid.uuid4().hex[:8]}"
+    _put_source(tmp_path, tenant, "src.duckdb", baseline)
+    first = await _run(_pipeline(pid), tenant)
+    assert first.status == PipelineStatus.SUCCESS, first.error
+    _put_source(tmp_path, tenant, "src.duckdb", batch)
+    uasr.calls.clear()
+    return pid, await _run(_pipeline(pid), tenant)
+
+
+def _trial(fault: str, seed: int):
+    t = build_trial(fault, seed)
+    t.snapshot = None  # a pipeline source declares no schema snapshot
+    return t
+
+
+# ── clean data ─────────────────────────────────────────────────────────────────
+
+async def test_clean_run_flows_through_unchanged(tmp_path, uasr):
+    ds = make_dataset(11)
+    pid, run = await _baseline_then(tmp_path, uasr, "acme", ds.baseline, ds.truth)
+
+    assert run.status == PipelineStatus.SUCCESS, run.error
+    src = run.heal.sources[0]
+    assert (src.mode, src.rows_in, src.rows_out, src.rows_quarantined, src.repairs, src.alerts) == (
+        "healed", len(ds.truth), len(ds.truth), 0, [], [])
+    assert strict_equal(_read(tmp_path, "acme", "out"), ds.truth)
+    assert _read(tmp_path, "acme", f"_aura_quarantine_{pid}") is None
+    assert run.heal.quarantine_table is None
+
+
+async def test_clean_typed_source_keeps_its_types_and_values(tmp_path, uasr):
+    # DATE, TIMESTAMP and DECIMAL travel to UASR as text or numbers, but a page UASR
+    # returns unchanged keeps its original DuckDB rows: the sink gets the source exactly.
+    sql = ("SELECT range AS id, DATE '2024-01-01' + CAST(range % 300 AS INTEGER) AS day, "
+           "TIMESTAMP '2024-01-01 08:00:00' + to_minutes(CAST(range * 7 % 900 AS BIGINT)) AS at, "
+           "CAST(10 + (range * 37 % 1000) / 7.0 AS DECIMAL(12, 2)) AS price, "
+           "CASE WHEN range % 3 = 0 THEN 'eu' WHEN range % 3 = 1 THEN 'us' ELSE 'apac' END AS region "
+           "FROM range({n})")
+    tenant, pid = "acme", f"pipe_{uuid.uuid4().hex[:8]}"
+    _put_source(tmp_path, tenant, "src.duckdb", [], sql=sql.format(n=900))
+    assert (await _run(_pipeline(pid), tenant)).status == PipelineStatus.SUCCESS
+    _put_source(tmp_path, tenant, "src.duckdb", [], sql=sql.format(n=600))
+    run = await _run(_pipeline(pid), tenant)
+
+    assert run.status == PipelineStatus.SUCCESS, (run.error, run.heal)
+    assert run.heal.sources[0].mode == "healed"
+    assert _types(tmp_path, tenant, "out") == {
+        "id": "BIGINT", "day": "DATE", "at": "TIMESTAMP", "price": "DECIMAL(12,2)", "region": "VARCHAR"}
+    con = duckdb.connect()
+    expected = con.execute(sql.format(n=600)).fetchall()
+    got = [tuple(r.values()) for r in _read(tmp_path, tenant, "out")]
+    assert got == expected
+
+
+async def test_first_run_registers_the_baseline_instead_of_healing(tmp_path, uasr):
+    ds = make_dataset(12)
+    pid = f"pipe_{uuid.uuid4().hex[:8]}"
+    _put_source(tmp_path, "acme", "src.duckdb", ds.baseline)
+    run = await _run(_pipeline(pid), "acme")
+
+    assert run.status == PipelineStatus.SUCCESS, run.error
+    assert run.heal.sources[0].mode == "baseline_registered"
+    assert [c["path"] for c in uasr.calls] == ["baseline"]
+    assert uasr.calls[0]["metadata"] == {"complete_run": True, "run_rows": len(ds.baseline)}
+    assert strict_equal(_read(tmp_path, "acme", "out"), ds.baseline)
+    # The registered baseline is kept: run 2 is healed against it, not re-registered.
+    run2 = await _run(_pipeline(pid), "acme")
+    assert run2.heal.sources[0].mode == "healed"
+
+
+async def test_preview_is_not_healed(tmp_path, uasr):
+    ds = make_dataset(13)
+    _put_source(tmp_path, "acme", "src.duckdb", ds.baseline)
+    run = await PipelineEngine().execute(_pipeline(f"pipe_{uuid.uuid4().hex[:8]}"), preview_only=True, tenant="acme")
+    assert run.status == PipelineStatus.SUCCESS and run.heal is None
+    assert uasr.calls == []
+
+
+# ── repairs and quarantine ─────────────────────────────────────────────────────
+
+# Seeds whose fault the proven rules repair end to end through a pipeline.
+@pytest.mark.parametrize("fault,seed,repair", [
+    ("rename", 3, "rename"),
+    ("retype_lossless", 1, "retype"),
+    ("scale_up", 0, "rescale"),
+])
+async def test_repaired_source_column_reaches_the_sink_as_ground_truth(tmp_path, uasr, fault, seed, repair):
+    t = _trial(fault, seed)
+    pid, run = await _baseline_then(tmp_path, uasr, "acme", t.dataset.baseline, t.sent)
+
+    assert run.status == PipelineStatus.SUCCESS, (run.error, run.heal)
+    src = run.heal.sources[0]
+    assert repair in [r["type"] for r in src.repairs], src
+    assert src.rows_quarantined == 0 and all(e is not None for e in t.expected)
+    assert strict_equal(_read(tmp_path, "acme", "out"), t.expected)
+
+
+def _quarantine(tmp_path, tenant: str, pid: str) -> List[Dict[str, Any]]:
+    return _read(tmp_path, tenant, f"_aura_quarantine_{pid}") or []
+
+
+@pytest.mark.parametrize("fault,seed", [("decoy_x7", 0), ("retype_lossy", 2)])
+async def test_unprovable_fault_is_quarantined_and_never_reaches_the_sink(tmp_path, uasr, fault, seed):
+    t = _trial(fault, seed)
+    pid, run = await _baseline_then(tmp_path, uasr, "acme", t.dataset.baseline, t.sent)
+
+    assert run.status == PipelineStatus.DEGRADED, (run.error, run.heal)
+    held = _quarantine(tmp_path, "acme", pid)
+    sink = _read(tmp_path, "acme", "out")
+    must_hold = {i for i, e in enumerate(t.expected) if e is None}
+    assert must_hold, "the trial has no unprovable row"
+
+    # Row accounting: every source row is in the sink or in quarantine, exactly once.
+    idx = [q["row_index"] for q in held]
+    assert len(idx) == len(set(idx)) and len(sink) + len(idx) == len(t.sent)
+    # Every row that has no correct value is held aside, unchanged, with its reason.
+    assert must_hold <= set(idx)
+    for q in held:
+        assert q["run_id"] == run.run_id and q["source"] == "source_data" and q["reason"]
+        assert q["quarantined_at"] is not None
+        assert strict_equal(json.loads(q["original_row"]), t.sent[q["row_index"]])
+    # And the sink holds only ground truth, in source order.
+    returned = [i for i in range(len(t.sent)) if i not in set(idx)]
+    assert strict_equal(sink, [t.expected[i] for i in returned])
+
+    assert run.heal.rows_quarantined == len(idx) == run.heal.sources[0].rows_quarantined
+    assert run.heal.quarantine_table == f"_aura_quarantine_{pid}"
+    assert run.model_dump()["heal"]["rows_quarantined"] == len(idx)  # surfaced in the run API
+
+
+async def test_detection_only_fault_alerts_and_degrades_without_holding_rows(tmp_path, uasr):
+    t = _trial("null_spike", 0)
+    pid, run = await _baseline_then(tmp_path, uasr, "acme", t.dataset.baseline, t.sent)
+
+    assert run.status == PipelineStatus.DEGRADED, (run.error, run.heal)
+    assert "null_rate" in {a.get("type") for a in run.heal.sources[0].alerts}
+    assert run.heal.alerts >= 1
+    assert strict_equal(_read(tmp_path, "acme", "out"), t.expected)
+
+
+# ── many runs ──────────────────────────────────────────────────────────────────
+
+async def test_many_runs_clean_then_a_standing_rename(tmp_path, uasr):
+    # Not just the first run after a baseline: fresh clean loads of the same process
+    # raise no alarm run after run, and a rename that persists across runs (the
+    # post-heal canary's watched batches) is repaired to ground truth every time.
+    t = _trial("rename", 3)
+    old = next(k for k in t.expected[0] if k not in t.sent[0])
+    new = next(k for k in t.sent[0] if k not in t.expected[0])
+    tenant, pid = "acme", f"pipe_{uuid.uuid4().hex[:8]}"
+    _put_source(tmp_path, tenant, "src.duckdb", t.dataset.baseline)
+    assert (await _run(_pipeline(pid), tenant)).heal.sources[0].mode == "baseline_registered"
+
+    ordinal = len(t.dataset.baseline)
+    for k in range(6):
+        truth = sample(t.dataset.columns, 300 + 37 * k, random.Random(f"run:{k}"), ordinal)
+        ordinal += len(truth)
+        sent = truth if k < 3 else [{(new if c == old else c): v for c, v in r.items()} for r in truth]
+        _put_source(tmp_path, tenant, "src.duckdb", sent)
+        run = await _run(_pipeline(pid), tenant)
+        assert run.status == PipelineStatus.SUCCESS, (k, run.error, run.heal)
+        assert run.heal.rows_quarantined == 0 and run.heal.alerts == 0, (k, run.heal)
+        assert ("rename" in [r["type"] for r in run.heal.sources[0].repairs]) == (k >= 3), (k, run.heal)
+        assert strict_equal(_read(tmp_path, tenant, "out"), truth), k
+
+
+# ── fail closed ────────────────────────────────────────────────────────────────
+
+async def _sink_untouched_after(tmp_path, uasr, break_uasr) -> None:
+    ds = make_dataset(14)
+    pid = f"pipe_{uuid.uuid4().hex[:8]}"
+    _put_source(tmp_path, "acme", "src.duckdb", ds.baseline)
+    assert (await _run(_pipeline(pid), "acme")).status == PipelineStatus.SUCCESS
+    before = _read(tmp_path, "acme", "out")
+    _put_source(tmp_path, "acme", "src.duckdb", ds.truth)
+    break_uasr()
+    run = await _run(_pipeline(pid), "acme")
+
+    assert run.status == PipelineStatus.FAILED
+    assert "UASR" in run.error and "no rows were written" in run.error
+    assert _read(tmp_path, "acme", "out") == before
+    assert _quarantine(tmp_path, "acme", pid) == []
+
+
+async def test_unreachable_uasr_fails_the_run_and_leaves_the_sink_untouched(tmp_path, uasr, monkeypatch):
+    def refuse(request):
+        raise httpx.ConnectError("refused", request=request)
+
+    def down():
+        monkeypatch.setattr(heal_module.httpx, "AsyncClient",
+                            lambda **kw: _REAL_CLIENT(transport=httpx.MockTransport(refuse), **kw))
+
+    await _sink_untouched_after(tmp_path, uasr, down)
+
+
+async def test_uasr_error_mid_run_fails_the_run_and_leaves_the_sink_untouched(tmp_path, uasr, monkeypatch):
+    # Page 0 heals, page 1 is answered 503: no page of the load may reach the sink.
+    monkeypatch.setattr(heal_module, "PAGE_MAX_ROWS", 100)
+
+    def fail_second_page():
+        uasr.fail_heal_at = 1
+
+    await _sink_untouched_after(tmp_path, uasr, fail_second_page)
+    assert len(uasr.heals()) == 2
+
+
+async def test_heal_answer_that_loses_a_row_fails_closed(tmp_path, uasr, monkeypatch):
+    real = service.heal_batch
+
+    async def drops_a_row(req, request, db):
+        out = await real(req, request, db=db)
+        out["rows"] = out["rows"][1:]
+        return out
+
+    monkeypatch.setattr(service, "heal_batch", drops_a_row)
+    await _sink_untouched_after(tmp_path, uasr, lambda: None)
+
+
+async def test_rows_a_failed_standing_shim_left_unproven_fail_closed(tmp_path, uasr, monkeypatch):
+    # BUG-271: a deployed shim that raised leaves rows only partly transformed; UASR
+    # returns them with healed=false. They were never checked, so none may be written.
+    real = service.heal_batch
+
+    async def shim_failed(req, request, db):
+        out = await real(req, request, db=db)
+        out.update(healed=False, degraded=True, shims_applied=0, standing_shims=1,
+                   reason="a deployed shim failed to apply; rows may be only partly transformed")
+        return out
+
+    monkeypatch.setattr(service, "heal_batch", shim_failed)
+    await _sink_untouched_after(tmp_path, uasr, lambda: None)
+
+
+# ── tenancy ────────────────────────────────────────────────────────────────────
+
+async def test_source_ids_baselines_and_quarantine_are_per_tenant(tmp_path, uasr):
+    t = _trial("decoy_x7", 0)
+    pid = f"pipe_{uuid.uuid4().hex[:8]}"
+    # Tenant A registers a baseline and then sends a faulted load.
+    _put_source(tmp_path, "orgA", "src.duckdb", t.dataset.baseline)
+    assert (await _run(_pipeline(pid), "orgA")).heal.sources[0].mode == "baseline_registered"
+    # Tenant B runs a pipeline with the same id: it meets no baseline of A's and
+    # registers its own, from the very load A's baseline would have flagged.
+    _put_source(tmp_path, "orgB", "src.duckdb", t.sent)
+    run_b = await _run(_pipeline(pid), "orgB")
+    assert run_b.heal.sources[0].mode == "baseline_registered" and run_b.status == PipelineStatus.SUCCESS
+    _put_source(tmp_path, "orgA", "src.duckdb", t.sent)
+    run_a = await _run(_pipeline(pid), "orgA")
+    assert run_a.status == PipelineStatus.DEGRADED
+
+    for call in uasr.calls:
+        assert call["source_id"] == f"pipeline:{pid}:source_data"
+        assert decode_access_token(call["authorization"][7:])["org_id"] == call["tenant"]
+    assert {c["tenant"] for c in uasr.calls} == {"orgA", "orgB"}
+    assert _quarantine(tmp_path, "orgA", pid)
+    assert _quarantine(tmp_path, "orgB", pid) == []
+
+
+# ── paging and whole runs ──────────────────────────────────────────────────────
+
+async def test_large_source_is_paged_and_every_row_accounted_for(tmp_path, uasr, monkeypatch):
+    monkeypatch.setattr(heal_module, "PAGE_MAX_ROWS", 250)
+    ds = make_dataset(15, baseline_rows=1000, batch_rows=900)
+    pid, run = await _baseline_then(tmp_path, uasr, "acme", ds.baseline, ds.truth)
+
+    heals = uasr.heals()
+    assert len(heals) == 4 and max(c["rows"] for c in heals) <= 250, heals
+    assert sum(c["rows"] for c in heals) == len(ds.truth)
+    assert run.status == PipelineStatus.SUCCESS, (run.error, run.heal)
+    assert run.heal.sources[0].pages == 4
+    assert strict_equal(_read(tmp_path, "acme", "out"), ds.truth)
+
+
+async def test_page_is_bounded_by_cells_for_a_wide_table(tmp_path, uasr, monkeypatch):
+    monkeypatch.setattr(heal_module, "PAGE_MAX_CELLS", 1000)
+    cols = ", ".join(f"(range * {k} % 97) AS c{k}" for k in range(1, 21))
+    tenant, pid = "acme", f"pipe_{uuid.uuid4().hex[:8]}"
+    _put_source(tmp_path, tenant, "src.duckdb", [], sql=f"SELECT range AS id, {cols} FROM range(400)")
+    await _run(_pipeline(pid), tenant)
+    uasr.calls.clear()
+    await _run(_pipeline(pid), tenant)
+    heals = uasr.heals()
+    assert heals and max(c["rows"] for c in heals) <= 1000 // 21
+    assert sum(c["rows"] for c in heals) == 400
+
+
+async def test_complete_run_is_sent_once_per_source_on_its_last_call(tmp_path, uasr, monkeypatch):
+    monkeypatch.setattr(heal_module, "PAGE_MAX_ROWS", 200)
+    ds = make_dataset(16, baseline_rows=800, batch_rows=700)
+    left = ds.columns[0].name
+    # The join source's tag alternates row by row: pages strided by rowid once
+    # aliased with it (every page all "a" or all "b") and quarantined clean data.
+    regions =[{"key": r[left], "tag": "a" if i % 2 else "b"} for i, r in enumerate(ds.truth)]
+    tenant, pid = "acme", f"pipe_{uuid.uuid4().hex[:8]}"
+    steps = [ProcessingStep(id="j1", type=StepType.JOIN,
+                            config={"join_type": "LEFT", "left_key": left, "right_key": "key"},
+                            join_source={"type": "duckdb", "connection": {"database": "tags.duckdb"},
+                                         "table": "t"})]
+    _put_source(tmp_path, tenant, "src.duckdb", ds.baseline)
+    _put_source(tmp_path, tenant, "tags.duckdb", regions)
+    await _run(_pipeline(pid, steps=steps), tenant)
+    _put_source(tmp_path, tenant, "src.duckdb", ds.truth)
+    uasr.calls.clear()
+    run = await _run(_pipeline(pid, steps=steps), tenant)
+
+    assert run.status == PipelineStatus.SUCCESS, (run.error, run.heal)
+    assert [s.source for s in run.heal.sources] == ["source_data", "join_src_j1"]
+    for source, n in ((f"pipeline:{pid}:source_data", len(ds.truth)), (f"pipeline:{pid}:join_src_j1", len(regions))):
+        heals = uasr.heals(source)
+        complete = [i for i, c in enumerate(heals) if c["metadata"].get("complete_run")]
+        assert complete == [len(heals) - 1], (source, heals)
+        assert heals[-1]["metadata"]["run_rows"] == n
+        assert sum(c["rows"] for c in heals) == n

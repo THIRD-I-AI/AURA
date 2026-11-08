@@ -77,6 +77,32 @@ def _reset_rate_limit_counters():
     yield
 
 
+@pytest.fixture(autouse=True)
+def _pipeline_heal_passthrough(request, monkeypatch):
+    """ADR-002 phase 2b: a batch pipeline run heals every source through UASR and fails
+    closed when UASR is absent. The suite's pipeline tests are about loading, steps and
+    sinks and run with no UASR, so their sources pass through unhealed. Tests marked
+    ``pipeline_heal`` (tests/test_heal_phase2b_batch.py) run the real heal step against
+    the real /uasr handlers."""
+    if request.node.get_closest_marker("pipeline_heal"):
+        yield
+        return
+    try:
+        from pipeline import heal
+        from pipeline.models import SourceHealSummary
+    except Exception:
+        yield
+        return
+
+    async def _passthrough(self, table, source):
+        summary = SourceHealSummary(source=source, source_id=self.source_id(source), mode="not_healed_in_tests")
+        self.sources.append(summary)
+        return summary
+
+    monkeypatch.setattr(heal.RunHealer, "heal_table", _passthrough)
+    yield
+
+
 def pytest_sessionfinish(session, exitstatus):
     """Shut down joblib/loky's reusable process pool explicitly.
 
