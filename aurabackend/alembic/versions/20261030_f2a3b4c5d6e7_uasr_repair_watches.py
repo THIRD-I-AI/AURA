@@ -37,12 +37,12 @@ def upgrade() -> None:
         sa.Column('repair_type', sa.String(length=16), nullable=False),
         sa.Column('column_name', sa.String(length=255), nullable=False),
         sa.Column('param', sa.Text(), nullable=False),
-        sa.Column('proof', sa.JSON(), nullable=True),
+        sa.Column('proof', sa.JSON(), nullable=False),
         sa.Column('status', sa.String(length=32), nullable=False),
         sa.Column('batches_seen', sa.Integer(), nullable=False),
         sa.Column('batches_required', sa.Integer(), nullable=False),
         sa.Column('reason', sa.Text(), nullable=True),
-        sa.Column('created_at', sa.DateTime(), nullable=True),
+        sa.Column('created_at', sa.DateTime(), nullable=False),
         sa.Column('decided_at', sa.DateTime(), nullable=True),
     )
     op.create_index('ix_uasr_repair_watches_source_id', 'uasr_repair_watches', ['source_id'], unique=False)
