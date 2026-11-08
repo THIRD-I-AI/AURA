@@ -18,6 +18,7 @@ from __future__ import annotations
 import datetime as _dt
 import logging
 import math
+import re
 import threading
 import time
 import zlib
@@ -70,6 +71,18 @@ _MAX_FORMATS = 3            # more shapes than this is no stable format
 _DATE_KINDS = frozenset({"datetime", "date", "Timestamp", "datetime64"})
 _DECLARED_DATE = frozenset({"date", "datetime", "timestamp", "timestamptz", "datetime64", "datetime64[ns]"})
 _DECLARED_NOT_ID = frozenset({"float", "double", "float32", "float64", "real", "bool", "boolean"})
+# heal-acc1 review: a keyed id needs evidence beyond its values -- a declared key,
+# an id-like declared type, or a name whose last word names a key.
+_DECLARED_ID = frozenset({"id", "identifier", "key", "uuid", "guid", "serial", "bigserial", "smallserial"})
+_ID_NAME_WORDS = frozenset({"id", "ids", "key", "pk", "fk", "uuid", "guid", "no", "nr", "num", "number"})
+_NAME_WORD = re.compile(r"[A-Z]+(?![a-z])|[A-Z]?[a-z]+|\d+")
+
+
+def _id_like_name(name: Any) -> bool:
+    """The column's last name word names a key: customer_id, CustomerID, userId,
+    order_no, account_key -- not population, bytes or revenue_cents."""
+    words = _NAME_WORD.findall(str(name or ""))
+    return bool(words) and words[-1].lower() in _ID_NAME_WORDS
 
 
 def _is_complete_run(batch: BatchPayload) -> bool:
@@ -229,10 +242,11 @@ class DriftDetector:
             # BUG-573: roles first -- the reference embedding must leave out the same
             # identifier and date columns every later batch's embedding leaves out.
             declared = batch.schema_snapshot or schema or {}
+            declared_key = set((batch.metadata or {}).get("key_columns") or [])
             for col, dist in distributions.items():
                 values = [r.get(col) for r in batch.rows]
                 dist.role, dist.value_format, dist.value_bound = self._infer_role(
-                    values, dist, declared.get(col))
+                    values, dist, declared.get(col), name=col, keyed=col in declared_key)
             # Also register a reference embedding so semantic drift works
             emb = self._compute_batch_embedding(batch, exclude=self._no_distribution_columns(distributions))
             if emb:
@@ -750,6 +764,7 @@ class DriftDetector:
 
     def _infer_role(
         self, values: List[Any], dist: ColumnDistribution, declared: Any = None,
+        name: Any = None, keyed: bool = False,
     ) -> Tuple[str, Optional[List[str]], Optional[float]]:
         """``(role, value_format, value_bound)`` of a column, from its baseline values
         and declared type (BUG-573).
@@ -761,9 +776,14 @@ class DriftDetector:
           - integers: uniqueness no measurement has by chance -- a smooth density
             over the same range would have shown >= 10 equal pairs (a sequence);
           - or integers unique over >= 100 values on a sparse range (a keyed id).
-            Values alone cannot tell that from a wide integer measure, so it also
-            gets ``value_bound``: a value past 4x the baseline's largest magnitude
-            (a x10**n unit bug on a measure taken for an id) is a format change.
+            Values alone cannot tell that from a wide integer measure (population,
+            byte counts, cents), which would then go unchecked but for a 4x bound,
+            so it also needs evidence beyond the values: the column is in the
+            batch's declared ``key_columns``, its declared type names a key
+            (``id``, ``uuid``, ``serial``...), or its name ends in an id word
+            (customer_id, CustomerID, order_no, account_key). It still gets
+            ``value_bound``: a value past 4x the baseline's largest magnitude is a
+            format change.
           Floats and booleans are never identifiers.
         * measure -- everything else: compared statistically, as before.
         """
@@ -791,7 +811,7 @@ class DriftDetector:
         ints = [int(v) for v in present]
         if self._expected_int_collisions(ints) >= _ID_COLLISION_EVIDENCE:
             return ROLE_IDENTIFIER, None, None
-        if len(ints) >= _SPARSE_ID_MIN_VALUES:
+        if len(ints) >= _SPARSE_ID_MIN_VALUES and (keyed or decl in _DECLARED_ID or _id_like_name(name)):
             return ROLE_IDENTIFIER, None, float(_SPARSE_ID_BOUND * max(abs(v) for v in ints))
         return ROLE_MEASURE, None, None
 
@@ -1162,6 +1182,7 @@ class DriftDetector:
             return None
         present = set(batch.columns) if batch.columns else {k for r in batch.rows for k in r}
         rates: Dict[str, Dict[str, float]] = {}
+        declared_key = set((st.baseline_rows or {}).get("key_columns") or [])
         for col, dist in baseline.items():
             # A column the batch no longer carries is schema drift, not nulls.
             if (
@@ -1174,7 +1195,13 @@ class DriftDetector:
             k1 = sum(1 for r in batch.rows if r.get(col) is None)
             # BUG-573: an identifier is null-free by construction (_infer_role), so a
             # null in one is a fault however few: no sampling noise explains it.
-            exact = dist.role == ROLE_IDENTIFIER and k0 == 0 and k1 > 0
+            # heal-acc1 review: only where the values prove it is an id (a sequence
+            # or a stable text code) or it is a declared key; a keyed id known by
+            # its name alone may be an optional reference, so it gets the z-test.
+            exact = (
+                dist.role == ROLE_IDENTIFIER and k0 == 0 and k1 > 0
+                and (dist.value_bound is None or col in declared_key)
+            )
             p0 = (k0 + 1) / (n0 + 2)
             p1 = (k1 + 1) / (n1 + 2)
             se = math.sqrt(p0 * (1 - p0) / (n0 + 2) + p1 * (1 - p1) / (n1 + 2))

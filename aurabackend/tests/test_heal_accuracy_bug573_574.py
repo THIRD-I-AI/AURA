@@ -328,3 +328,87 @@ async def test_bug574_heal_reports_the_duplicate_alert_and_leaves_rows_untouched
     assert out["healed"] is False and out["degraded"] is True
     assert [a["type"] for a in out["alerts"]] == ["duplicate"]
     assert len(out["rows"]) == len(trial.sent) and not out["quarantined_rows"]
+
+
+# ── heal-acc1 review: a wide integer measure is not a keyed id ──────────────────
+# Unique, null-free ints over a wide range (population, byte counts, cents) look
+# exactly like a keyed id by value. 224f709 called them identifiers, so a x2 or
+# x1.5 unit fault, or a shift inside the range, went unchecked (caught 0/20), and
+# one null was an exact alarm.
+
+
+def _pop_rows(rnd: random.Random, n: int = 500):
+    return [{"pop": rnd.randint(1000, 10_000_000), "amount": round(rnd.uniform(5.0, 900.0), 2)}
+            for _ in range(n)]
+
+
+def _pop_detector(seed=0, metadata=None, snapshot=None, rename=None):
+    rnd = random.Random(seed)
+    rows = _pop_rows(rnd)
+    if rename:
+        rows = [{(rename if k == "pop" else k): v for k, v in r.items()} for r in rows]
+    det = DriftDetector()
+    det.register_baseline("s", _payload(rows, "base", snapshot=snapshot, metadata=metadata))
+    return det, rnd
+
+
+def test_review_a_wide_integer_measure_is_not_taken_for_a_keyed_id():
+    det, _ = _pop_detector()
+    base = det.baseline_distributions("s")
+    assert base["pop"].role == "measure" and base["pop"].value_bound is None
+
+
+@pytest.mark.parametrize("fault", [
+    lambda rnd, v: v * 2,                              # x2 unit fault
+    lambda rnd, v: int(v * 1.5),                       # x1.5 scale fault
+    lambda rnd, v: rnd.randint(5_000_000, 10_000_000),  # shift inside the range
+])
+def test_review_faults_in_a_wide_integer_measure_are_caught(fault):
+    det, rnd = _pop_detector()
+    caught = 0
+    for t in range(20):
+        rows = [{**r, "pop": fault(rnd, r["pop"])} for r in _pop_rows(rnd)]
+        r = det.detect(_payload(rows, f"f{t}"), record_state=False)
+        caught += bool(r.drift_detected) and "pop" in r.affected_columns
+    assert caught >= 19, caught
+
+
+def test_review_clean_batches_of_a_wide_integer_measure_raise_nothing():
+    det, rnd = _pop_detector()
+    alarms = [t for t in range(20)
+              if det.detect(_payload(_pop_rows(rnd), f"c{t}"), record_state=False).drift_detected]
+    assert alarms == []
+
+
+def test_review_one_null_in_a_wide_integer_measure_is_no_alarm():
+    det, rnd = _pop_detector()
+    rows = _pop_rows(rnd)
+    rows[17]["pop"] = None
+    r = det.detect(_payload(rows, "one-null"), record_state=False)
+    assert not r.drift_detected, r.details
+
+
+@pytest.mark.parametrize("how", ["key_columns", "declared_type", "name"])
+def test_review_a_keyed_id_with_evidence_beyond_its_values_is_still_an_id(how):
+    kw = {"key_columns": dict(metadata={"key_columns": ["pop"]}),
+          "declared_type": dict(snapshot={"pop": "uuid", "amount": "float"}),
+          "name": dict(rename="CustomerID")}[how]
+    det, _ = _pop_detector(**kw)
+    col = "CustomerID" if how == "name" else "pop"
+    d = det.baseline_distributions("s")[col]
+    assert d.role == "identifier" and d.value_bound is not None
+
+
+def test_review_one_null_in_a_keyed_id_known_by_name_only_is_no_exact_alarm():
+    # customer_id may be an optional reference: a null in it gets the z-test, a
+    # null in a declared key stays an exact alert.
+    det, rnd = _pop_detector(rename="customer_id")
+    rows = [{("customer_id" if k == "pop" else k): v for k, v in r.items()} for r in _pop_rows(rnd)]
+    rows[17]["customer_id"] = None
+    assert not det.detect(_payload(rows, "one-null"), record_state=False).drift_detected
+
+    det, rnd = _pop_detector(metadata={"key_columns": ["pop"]})
+    rows = _pop_rows(rnd)
+    rows[17]["pop"] = None
+    r = det.detect(_payload(rows, "one-null", metadata={"key_columns": ["pop"]}), record_state=False)
+    assert r.drift_types == [DriftType.NULL_RATE] and r.affected_columns == ["pop"], r.details
