@@ -223,6 +223,22 @@ class ColumnDistribution(BaseModel):
     # "bool", ... or "mixed"), so a retype is visible without a schema snapshot.
     # None on a baseline recorded before it existed: never compared.
     value_kind: Optional[str] = None
+    # BUG-573: what the column IS, inferred once from the baseline's own values
+    # (and its declared type): "identifier", "date" or "measure". Identifiers and
+    # dates carry no distribution to compare -- a sequential id or a date moves past
+    # the baseline's range on every batch -- so they skip statistical and semantic
+    # drift and get the checks that fit them instead. None on a distribution not
+    # built from a registered baseline: treated as a measure, as before.
+    role: Optional[str] = None
+    # BUG-573: the value shapes (e.g. "A-9" for ORD-0001234, "9999-99-99" for a date)
+    # an identifier or date column's baseline holds; a batch value of any other shape
+    # is a format change. None when the baseline shows no stable format.
+    value_format: Optional[List[str]] = None
+    # BUG-573: for an integer identifier spread thinly over a large range (a keyed
+    # customer id), the largest magnitude a value may take. Such a column is unique
+    # but cannot be told apart from a wide integer measure by its values alone, so
+    # a value far past the baseline's range (a x10**n unit bug) still alarms.
+    value_bound: Optional[float] = None
 
 
 class BatchPayload(BaseModel):
