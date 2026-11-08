@@ -15,6 +15,7 @@ Dynamic threshold ζ adapts based on historical variance of D_KL values.
 """
 from __future__ import annotations
 
+import datetime as _dt
 import logging
 import math
 import threading
@@ -56,6 +57,19 @@ _DQ_Z = 5.0                      # z-score a null-rate rise must reach
 _NULL_MIN_RISE = 0.05            # ...and its minimum absolute rise
 _VOLUME_FACTOR = 100             # row-count ratio that counts as a volume fault
 _VOLUME_MIN_BASELINE_ROWS = 100  # too few baseline rows to judge volume below this
+
+
+# BUG-573 column roles -- see _infer_role.
+ROLE_IDENTIFIER, ROLE_DATE, ROLE_MEASURE = "identifier", "date", "measure"
+_NO_DISTRIBUTION = frozenset({ROLE_IDENTIFIER, ROLE_DATE})
+_ROLE_MIN_VALUES = 20       # fewer baseline values are no evidence of a role
+_ID_COLLISION_EVIDENCE = 10.0  # expected equal pairs a measure would show (P(none) ~ 5e-5)
+_SPARSE_ID_MIN_VALUES = 100  # unique ints on a sparse range need more values to count
+_SPARSE_ID_BOUND = 4.0       # x the baseline's largest magnitude a keyed id may reach
+_MAX_FORMATS = 3            # more shapes than this is no stable format
+_DATE_KINDS = frozenset({"datetime", "date", "Timestamp", "datetime64"})
+_DECLARED_DATE = frozenset({"date", "datetime", "timestamp", "timestamptz", "datetime64", "datetime64[ns]"})
+_DECLARED_NOT_ID = frozenset({"float", "double", "float32", "float64", "real", "bool", "boolean"})
 
 
 def _is_complete_run(batch: BatchPayload) -> bool:
@@ -212,16 +226,40 @@ class DriftDetector:
                 schema = batch.schema_snapshot or (
                     {c: "unknown" for c in batch.columns} if batch.columns else None
                 )
+            # BUG-573: roles first -- the reference embedding must leave out the same
+            # identifier and date columns every later batch's embedding leaves out.
+            declared = batch.schema_snapshot or schema or {}
+            for col, dist in distributions.items():
+                values = [r.get(col) for r in batch.rows]
+                dist.role, dist.value_format, dist.value_bound = self._infer_role(
+                    values, dist, declared.get(col))
             # Also register a reference embedding so semantic drift works
-            emb = self._compute_batch_embedding(batch)
+            emb = self._compute_batch_embedding(batch, exclude=self._no_distribution_columns(distributions))
             if emb:
                 self.register_reference_embedding(source_id, emb)
             if batch.rows:
                 cols = batch.columns or list(batch.rows[0].keys())
+                key = [c for c in ((batch.metadata or {}).get("key_columns") or []) if c in cols]
+                dedupe = key or list(cols)
+                pairs, triples = self._equal_row_tuples(batch, dedupe)
                 baseline_rows = {
                     "rows": len(batch.rows),
                     "columns": list(cols),
-                    "equal_pairs": self._equal_row_pairs(batch, cols),
+                    # BUG-574: ADR-002 judges duplicates on the declared key, else on
+                    # the full row.
+                    "key_columns": key,
+                    "equal_pairs": pairs,
+                    "equal_triples": triples,
+                    # BUG-574: an identifier column (BUG-573) makes every row unique
+                    # by construction, so with no duplicate in the baseline any
+                    # duplicate in a batch is a fault. A measure that merely happened
+                    # to be distinct across the baseline (a coarse float) does not
+                    # count: at ten times the rows it repeats by chance, and ADR-002
+                    # allows no false alarm on clean data.
+                    "unique_columns": [
+                        c for c in cols
+                        if (d := distributions.get(c)) is not None and d.role == ROLE_IDENTIFIER
+                    ],
                     # BUG-568 review: only a baseline that is itself a whole
                     # run can anchor the volume check -- see _check_volume_drift.
                     "complete_run": _is_complete_run(batch),
@@ -231,6 +269,14 @@ class DriftDetector:
 
         with self._lock_for(source_id):
             st = self._store.load(source_id)
+            # BUG-573: a distributions-only re-baseline (mapek_worker) carries no rows
+            # to infer roles from; a column keeps the role it was given, so a sequential
+            # id does not turn back into a measure that drifts on every batch.
+            for col, dist in distributions.items():
+                prev = (st.baseline or {}).get(col)
+                if dist.role is None and prev is not None and prev.role and prev.value_kind == dist.value_kind:
+                    dist.role, dist.value_format, dist.value_bound = (
+                        prev.role, prev.value_format, prev.value_bound)
             st.baseline = distributions
             # BUG-568: a distributions-only re-baseline (mapek_worker) carries
             # no row-level facts, so the previous batch's duplicate profile is
@@ -519,6 +565,22 @@ class DriftDetector:
                     "old_types": {c: old for c, (old, _) in changed.items()},
                     "new_types": type_changed_types,
                 }, False
+            # BUG-573: an identifier or a date has no distribution to drift, but its
+            # format can break (ORD-0001234 arriving as 1234, 2024-01-05 as 01/05/2024)
+            # -- a contract change, not a value to repair, so no rule restores it.
+            formats = self._format_changes(batch, st.baseline)
+            if formats:
+                return {
+                    "type": "format_change",
+                    "affected_columns": sorted(formats),
+                    "severity": DriftSeverity.MEDIUM,
+                    "details": "Value format changed in columns: " + ", ".join(
+                        f"{c} {f['baseline_formats']} -> {f['new_formats']}" if "new_formats" in f
+                        else f"{c} has {f['values_over_bound']} value(s) past {f['value_bound']:g} "
+                             f"(e.g. {f['example']!r})"
+                        for c, f in sorted(formats.items())),
+                    "formats": formats,
+                }, False
             if batch.schema_snapshot:
                 # A column the baseline only ever saw as null gets its type from the
                 # first batch that carries a value, so later retypes are detectable.
@@ -621,6 +683,149 @@ class DriftDetector:
             if new is None or new == old or (old == "float" and new == "int"):
                 continue
             out[col] = (old, new)
+        return out
+
+    # ────────────────────────────────────────────────────────────────
+    # Column roles (BUG-573)
+    # ────────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _shape(text: str, collapse: bool) -> str:
+        """A value's format: digits as 9, letters as A, everything else as itself.
+
+        ``collapse`` merges runs (identifiers: ORD-12 and ORD-0001234 are both
+        "A-9"); dates keep every position, since 2024-01-05 and 01-05-2024 differ
+        only in where the digits sit.
+        """
+        out: List[str] = []
+        for ch in text:
+            c = "9" if ch.isdigit() else "A" if ch.isalpha() else ch
+            if collapse and out and out[-1] == c and c in "9A":
+                continue
+            out.append(c)
+        return "".join(out)
+
+    @staticmethod
+    def _is_iso_date(text: str) -> bool:
+        # A separator is required: fromisoformat also reads bare digit strings
+        # (20240105), which are as likely to be codes as dates.
+        if not any(sep in text for sep in "-:/T"):
+            return False
+        try:
+            _dt.datetime.fromisoformat(text)
+            return True
+        except ValueError:
+            return False
+
+    @classmethod
+    def _formats(cls, values: List[str], collapse: bool) -> Optional[List[str]]:
+        shapes = sorted({cls._shape(v, collapse) for v in values})
+        return shapes if len(shapes) <= _MAX_FORMATS else None
+
+    @staticmethod
+    def _expected_int_collisions(ints: List[int]) -> float:
+        """Equal pairs ``len(ints)`` independent draws from a smooth density shaped
+        like these values would show: C(n,2) * sum of p_bin^2 / bin width, on the
+        values' own grid (their gcd, so ids stepping by 10 are counted per step).
+
+        Averaging the density over bins can only lower the sum (Jensen), so this
+        understates the collisions a measure would show: a column called an
+        identifier on it is unique beyond what chance gives a measurement.
+        """
+        n = len(ints)
+        lo = min(ints)
+        try:
+            offsets = np.asarray([v - lo for v in ints], dtype=np.int64)
+        except OverflowError:
+            return 0.0
+        grid = int(np.gcd.reduce(offsets)) or 1
+        units = offsets // grid
+        span = int(units.max()) + 1
+        nbins = int(max(1, min(_DEFAULT_BINS, n // 5, span)))
+        idx = np.minimum((units.astype(float) * nbins / span).astype(np.int64), nbins - 1)
+        counts = np.bincount(idx, minlength=nbins).astype(float)
+        widths = np.full(nbins, span / nbins)
+        sum_p2 = float(np.sum(counts * (counts - 1) / widths)) / (n * (n - 1))
+        return n * (n - 1) / 2 * sum_p2
+
+    def _infer_role(
+        self, values: List[Any], dist: ColumnDistribution, declared: Any = None,
+    ) -> Tuple[str, Optional[List[str]], Optional[float]]:
+        """``(role, value_format, value_bound)`` of a column, from its baseline values
+        and declared type (BUG-573).
+
+        * date -- datetime values, or text that is all ISO dates/timestamps;
+        * identifier -- no nulls, at least 20 values, every value distinct, and
+          - text: a stable format with digits in it (at most three shapes;
+            ORD-0001234 is "A-9"), which free text such as names does not have;
+          - integers: uniqueness no measurement has by chance -- a smooth density
+            over the same range would have shown >= 10 equal pairs (a sequence);
+          - or integers unique over >= 100 values on a sparse range (a keyed id).
+            Values alone cannot tell that from a wide integer measure, so it also
+            gets ``value_bound``: a value past 4x the baseline's largest magnitude
+            (a x10**n unit bug on a measure taken for an id) is a format change.
+          Floats and booleans are never identifiers.
+        * measure -- everything else: compared statistically, as before.
+        """
+        present = [v for v in values if v is not None and not (isinstance(v, float) and v != v)]
+        kind = dist.value_kind
+        decl = str(declared or "").strip().lower()
+        if not present:
+            return ROLE_MEASURE, None, None
+        if kind in _DATE_KINDS:
+            return ROLE_DATE, None, None
+        if kind == "str" and all(self._is_iso_date(v) for v in present):
+            if len(present) >= _ROLE_MIN_VALUES or decl in _DECLARED_DATE:
+                return ROLE_DATE, self._formats(present, collapse=False), None
+        if (
+            kind not in ("str", "int")
+            or len(present) < _ROLE_MIN_VALUES or len(present) != len(values)
+            or decl in _DECLARED_NOT_ID or len(set(present)) != len(present)
+        ):
+            return ROLE_MEASURE, None, None
+        if kind == "str":
+            fmt = self._formats(present, collapse=True)
+            if fmt is not None and all("9" in f for f in fmt):
+                return ROLE_IDENTIFIER, fmt, None
+            return ROLE_MEASURE, None, None
+        ints = [int(v) for v in present]
+        if self._expected_int_collisions(ints) >= _ID_COLLISION_EVIDENCE:
+            return ROLE_IDENTIFIER, None, None
+        if len(ints) >= _SPARSE_ID_MIN_VALUES:
+            return ROLE_IDENTIFIER, None, float(_SPARSE_ID_BOUND * max(abs(v) for v in ints))
+        return ROLE_MEASURE, None, None
+
+    @staticmethod
+    def _no_distribution_columns(baseline: Optional[Dict[str, ColumnDistribution]]) -> set:
+        return {c for c, d in (baseline or {}).items() if d.role in _NO_DISTRIBUTION}
+
+    def _format_changes(
+        self, batch: BatchPayload, baseline: Optional[Dict[str, ColumnDistribution]],
+    ) -> Dict[str, Dict[str, Any]]:
+        """Identifier and date columns holding a value of a shape their baseline never
+        had, or a keyed id's value past its ``value_bound``."""
+        out: Dict[str, Dict[str, Any]] = {}
+        for col, dist in (baseline or {}).items():
+            if dist.role not in _NO_DISTRIBUTION:
+                continue
+            if dist.value_bound is not None:
+                over = [v for r in batch.rows
+                        if isinstance(v := r.get(col), (int, float, np.integer, np.floating))
+                        and not isinstance(v, (bool, np.bool_)) and abs(v) > dist.value_bound]
+                if over:
+                    out[col] = {"value_bound": dist.value_bound, "values_over_bound": len(over),
+                                "example": over[0]}
+                continue
+            if not dist.value_format:
+                continue
+            allowed = set(dist.value_format)
+            collapse = dist.role == ROLE_IDENTIFIER
+            new = sorted({
+                self._shape(v, collapse) for r in batch.rows
+                if isinstance(v := r.get(col), str)
+            } - allowed)
+            if new:
+                out[col] = {"baseline_formats": list(dist.value_format), "new_formats": new[:5]}
         return out
 
     def _schema_intent_covers(
@@ -751,6 +956,11 @@ class DriftDetector:
                 continue
 
             ref_dist = baseline[col_name]
+            # BUG-573: an identifier or date carries no distribution -- a sequential
+            # id lies past the baseline's range on every new batch. _check_schema_drift
+            # checks what can go wrong with them instead.
+            if ref_dist.role in _NO_DISTRIBUTION:
+                continue
             significant = True
             aligned = bool(batch_dist.histogram.get("aligned"))
             if aligned:
@@ -892,7 +1102,10 @@ class DriftDetector:
         if not refs:
             return None
 
-        batch_emb = self._compute_batch_embedding(batch)
+        # BUG-573: the same columns the baseline's reference embedding left out --
+        # unique ids and dates make every row a new token, so they read as drift.
+        batch_emb = self._compute_batch_embedding(
+            batch, exclude=self._no_distribution_columns(st.baseline))
         if not batch_emb:
             return None
 
@@ -959,11 +1172,14 @@ class DriftDetector:
             n0 = max(int(round(dist.sample_size / (1.0 - dist.null_rate))), dist.sample_size)
             k0 = n0 - dist.sample_size
             k1 = sum(1 for r in batch.rows if r.get(col) is None)
+            # BUG-573: an identifier is null-free by construction (_infer_role), so a
+            # null in one is a fault however few: no sampling noise explains it.
+            exact = dist.role == ROLE_IDENTIFIER and k0 == 0 and k1 > 0
             p0 = (k0 + 1) / (n0 + 2)
             p1 = (k1 + 1) / (n1 + 2)
             se = math.sqrt(p0 * (1 - p0) / (n0 + 2) + p1 * (1 - p1) / (n1 + 2))
             rise = k1 / n1 - k0 / n0
-            if rise >= _NULL_MIN_RISE and (p1 - p0) / se >= _DQ_Z:
+            if exact or (rise >= _NULL_MIN_RISE and (p1 - p0) / se >= _DQ_Z):
                 rates[col] = {
                     "baseline_null_rate": round(k0 / n0, 6),
                     "batch_null_rate": round(k1 / n1, 6),
@@ -1019,56 +1235,121 @@ class DriftDetector:
         }
 
     @staticmethod
-    def _equal_row_pairs(batch: BatchPayload, columns: Optional[List[str]] = None) -> int:
-        """Number of row pairs in the batch that are exact duplicates."""
+    def _equal_row_tuples(batch: BatchPayload, columns: Optional[List[str]] = None) -> Tuple[int, int]:
+        """Row pairs and row triples in the batch that are exact duplicates over ``columns``."""
         cols = columns or batch.columns or (list(batch.rows[0].keys()) if batch.rows else [])
         counts = Counter(repr(tuple(r.get(c) for c in cols)) for r in batch.rows)
-        return sum(c * (c - 1) // 2 for c in counts.values())
+        pairs = sum(c * (c - 1) // 2 for c in counts.values())
+        triples = sum(c * (c - 1) * (c - 2) // 6 for c in counts.values())
+        return pairs, triples
+
+    @classmethod
+    def _equal_row_pairs(cls, batch: BatchPayload, columns: Optional[List[str]] = None) -> int:
+        """Number of row pairs in the batch that are exact duplicates."""
+        return cls._equal_row_tuples(batch, columns)[0]
+
+    @staticmethod
+    def _expected_pairs_bound(n0: int, k0: int, t0: int, n1: int) -> float:
+        """An upper bound on the equal row pairs a clean ``n1``-row batch shows, given
+        a baseline of ``n0`` rows with ``k0`` equal pairs and ``t0`` equal triples
+        (BUG-574).
+
+        Equal pairs are a U-statistic: with s2 = sum p^2 and s3 = sum p^3 over the
+        row distribution, E[K] = C(n,2)*s2 and
+        Var[K] = C(n,2)*s2*(1-s2) + 6*C(n,3)*(s3 - s2^2). The second term is why a
+        Poisson bound is not enough: on low-cardinality rows one common value makes
+        thousands of pairs at once, so K is overdispersed by D = (1-s2) +
+        2(n-2)(s3-s2^2)/s2. The baseline's own s2 and s3 (unbiased, from k0 and t0)
+        give D for both samples; k0 is raised by a Poisson upper bound plus five
+        overdispersed standard deviations, scaled to the batch's size, and five
+        more of the batch's own standard deviations are added on top.
+
+        On a handful of distinct rows K is a scaled chi-square with few degrees of
+        freedom, whose upper tail is far longer than five normal deviations, so the
+        bound never drops below the BUG-568 floor (twice the scaled Poisson bound,
+        plus 10 pairs): that floor sits past the 1e-6 chi-square tail down to one
+        degree of freedom (tests/test_heal_accuracy_bug573_574.py measures it).
+        """
+        m0, m1 = n0 * (n0 - 1) / 2, n1 * (n1 - 1) / 2
+        s2 = k0 / m0
+        s3 = t0 / (n0 * (n0 - 1) * (n0 - 2) / 6) if n0 >= 3 else 0.0
+
+        def dispersion(n: int) -> float:
+            if s2 <= 0:
+                return 1.0
+            return max(1.0, (1 - s2) + 2 * (n - 2) * max(s3 - s2 * s2, 0.0) / s2)
+
+        poisson_upper = (math.sqrt(k0 + 1) + 3) ** 2
+        expected = (poisson_upper + 5 * math.sqrt(k0 * (dispersion(n0) - 1))) * m1 / m0
+        return max(expected + 5 * math.sqrt(expected * dispersion(n1)), 2 * poisson_upper * m1 / m0 + 10)
 
     def _check_duplicate_drift(
         self, batch: BatchPayload, st: SourceState
     ) -> Optional[Dict[str, Any]]:
-        """More exact-duplicate rows than the baseline's own repeat rate explains.
+        """Exact-duplicate rows (on the declared key, else the full row) the baseline
+        does not explain, or a repeated value in an identifier column (BUG-574).
 
-        Comparing duplicate RATES directly would be wrong: data with a
-        finite set of possible rows repeats more the more rows you draw, so a
-        clean 10x batch has a far higher duplicate rate than its baseline.
-        The count of equal row pairs scales exactly with n(n-1)/2 for any
-        row distribution, so the baseline's pair count -- raised to a
-        Poisson upper bound, (sqrt(k+1)+3)^2, so a lucky low baseline cannot
-        set the bar -- is scaled to the batch's size. The batch must exceed
-        twice that, plus 10 pairs.
+        * The baseline had no duplicate and its rows are unique by construction (a
+          declared key, or an identifier column):
+          any duplicate in a batch is a fault -- exact, with no statistical floor,
+          which let 15 copies in 300 rows through.
+        * An identifier column (BUG-573) repeats a value: the same, exactly.
+        * Otherwise the batch's equal-pair count must exceed what the baseline's
+          own repeat rate explains at the batch's size (_expected_pairs_bound).
+          Comparing duplicate RATES directly would be wrong: data with a finite
+          set of possible rows repeats more the more rows you draw, so a clean 10x
+          batch has a far higher duplicate rate than its baseline.
+
+        Detection only (ADR-002): no row is dropped or changed.
         """
         profile = st.baseline_rows
         if not profile or not profile.get("columns"):
             return None
-        cols = list(profile["columns"])
         present = set(batch.columns) if batch.columns else {k for r in batch.rows for k in r}
-        if not set(cols) <= present:
-            return None  # a removed column makes rows less unique: schema drift's job
-        n0, k0 = int(profile["rows"]), int(profile["equal_pairs"])
         n1 = len(batch.rows)
-        if n0 < 2 or n1 < 2:
+        repeated_ids: Dict[str, int] = {}
+        for col, dist in (st.baseline or {}).items():
+            # A keyed id (value_bound set) is unique in the baseline but could be a
+            # wide measure that repeats by chance; its duplicated rows still alarm.
+            if dist.role == ROLE_IDENTIFIER and dist.value_bound is None and col in present:
+                values = [repr(v) for r in batch.rows if (v := r.get(col)) is not None]
+                if len(set(values)) < len(values):
+                    repeated_ids[col] = len(values) - len(set(values))
+        cols = list(profile.get("key_columns") or profile["columns"])
+        k1, rows_fault, expected_upper = 0, False, None
+        # A removed column makes rows less unique: schema drift's job.
+        if set(cols) <= present and n1 >= 2:
+            n0, k0 = int(profile["rows"]), int(profile["equal_pairs"])
+            k1 = self._equal_row_pairs(batch, cols)
+            if k0 == 0 and (profile.get("key_columns") or profile.get("unique_columns")):
+                expected_upper = 0.0
+            elif n0 >= 2:
+                expected_upper = self._expected_pairs_bound(
+                    n0, k0, int(profile.get("equal_triples") or 0), n1)
+            rows_fault = expected_upper is not None and k1 > expected_upper
+        if not rows_fault and not repeated_ids:
             return None
-        k0_upper = (math.sqrt(k0 + 1) + 3) ** 2
-        expected_upper = k0_upper * (n1 * (n1 - 1)) / (n0 * (n0 - 1))
-        k1 = self._equal_row_pairs(batch, cols)
-        if k1 <= 2 * expected_upper + 10:
-            return None
-        distinct = len({repr(tuple(r.get(c) for c in cols)) for r in batch.rows})
-        dup_fraction = (n1 - distinct) / n1
+        dup_rows = n1 - len({repr(tuple(r.get(c) for c in cols)) for r in batch.rows}) if rows_fault else 0
+        dup_fraction = dup_rows / n1
+        id_fraction = max(repeated_ids.values(), default=0) / n1
+        parts = []
+        if rows_fault:
+            parts.append(
+                f"{dup_rows} duplicate row(s) ({dup_fraction:.1%}); {k1} equal pairs vs at most "
+                f"{expected_upper:.1f} expected from the baseline")
+        if repeated_ids:
+            parts.append("repeated values in identifier column(s): " + ", ".join(
+                f"{c} ({k} repeat(s))" for c, k in sorted(repeated_ids.items())))
         return {
             "type": "duplicate",
-            "affected_columns": [],
+            "affected_columns": sorted(repeated_ids),
             "equal_pairs": k1,
-            "expected_pairs_upper": round(expected_upper, 3),
-            "duplicate_rows": n1 - distinct,
+            "expected_pairs_upper": round(expected_upper, 3) if expected_upper is not None else None,
+            "duplicate_rows": dup_rows,
             "duplicate_fraction": round(dup_fraction, 6),
-            "severity": self._fraction_severity(dup_fraction),
-            "details": (
-                f"{n1 - distinct} duplicate row(s) ({dup_fraction:.1%}); {k1} equal pairs "
-                f"vs at most {expected_upper:.1f} expected from the baseline"
-            ),
+            "repeated_identifiers": repeated_ids,
+            "severity": self._fraction_severity(max(dup_fraction, id_fraction)),
+            "details": "; ".join(parts),
         }
 
     @staticmethod
@@ -1408,7 +1689,9 @@ class DriftDetector:
                 categorical.append(col)
         return categorical
 
-    def _compute_batch_embedding(self, batch: BatchPayload, dim: int = 256) -> Optional[List[float]]:
+    def _compute_batch_embedding(
+        self, batch: BatchPayload, dim: int = 256, exclude: Optional[set] = None,
+    ) -> Optional[List[float]]:
         """
         Compute a lightweight embedding for the entire batch using
         feature hashing (random projection). No external model needed.
@@ -1426,7 +1709,7 @@ class DriftDetector:
         if not batch.rows:
             return None
 
-        categorical_cols = self._categorical_columns(batch)
+        categorical_cols = [c for c in self._categorical_columns(batch) if c not in (exclude or ())]
         if not categorical_cols:
             return None
 
