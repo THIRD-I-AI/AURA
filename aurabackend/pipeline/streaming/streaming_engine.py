@@ -3,7 +3,8 @@ Streaming Engine
 =================
 The main runtime loop for a streaming pipeline:
 
-  Source → [Transform] → Window Processor → Sinks
+  Source → Heal (UASR, ADR-002) → [Transform] → Window Processor → Sinks
+                 ↘ quarantine table
                 ↕
           State Manager (checkpoint / recovery)
 
@@ -20,10 +21,12 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+import uuid
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional
 
 from pipeline.streaming.backpressure import BackpressureManager, BackpressureStrategy
+from pipeline.streaming.heal import MicroBatchHealer, QuarantineStore, StreamHealError
 from pipeline.streaming.models import (
     LateDataPolicy,
     StreamEvent,
@@ -72,6 +75,12 @@ _RECOVERY_TICKS = 3
 # Component errors can now arrive every tick; keep only the most recent ones.
 _MAX_RECORDED_ERRORS = 50
 _ACTIVE = (StreamPipelineStatus.RUNNING, StreamPipelineStatus.DEGRADED)
+# ADR-002 phase 2b: a source with no baseline registers one from its first rows. One
+# micro-batch can be a handful of events, too few to describe the source, so the
+# first rows are gathered (held, not emitted) until there are this many or this
+# much time has passed, then registered and released unchanged.
+_BASELINE_MIN_EVENTS = 200
+_BASELINE_MAX_WAIT_SECONDS = 10.0
 
 
 # ────────────────────────────────────────────────────────────────────
@@ -113,6 +122,10 @@ def _create_sink(sink_def, pipeline: StreamPipeline) -> BaseSink:
     if t == "webhook":
         return WebhookSink(cfg)
     raise ValueError(f"Unsupported sink type: {t}")
+
+
+def _create_healer(pipeline: StreamPipeline) -> MicroBatchHealer:
+    return MicroBatchHealer(pipeline)
 
 
 # ────────────────────────────────────────────────────────────────────
@@ -249,6 +262,17 @@ class StreamingEngine:
         self._max_consecutive_errors = _MAX_CONSECUTIVE_ERRORS
         self._recovery_ticks = _RECOVERY_TICKS
 
+        # ADR-002 phase 2b heal step. _held is the micro-batch UASR has not yet
+        # answered for: nothing in it reaches a transform or sink until it does, and
+        # while it is held no new events are taken, so it stays one micro-batch big.
+        self._healer: Optional[MicroBatchHealer] = None
+        self._quarantine: Optional[QuarantineStore] = None
+        self._held: List[StreamEvent] = []
+        self._held_since: float = 0.0
+        self._batch_seq = 0
+        self._baseline_min_events = _BASELINE_MIN_EVENTS
+        self._baseline_max_wait = _BASELINE_MAX_WAIT_SECONDS
+
         # Metrics
         self._metrics = StreamMetrics(pipeline_id=pipeline.id)
 
@@ -295,6 +319,10 @@ class StreamingEngine:
             # Create source adapter
             self._source = _create_source(self.pipeline)
             await self._source.start()
+
+            self._healer = _create_healer(self.pipeline)
+            self._quarantine = QuarantineStore(self.pipeline, run_id=f"{self.pipeline.id}:{uuid.uuid4().hex[:12]}")
+            self._held = []
 
             # Create sink adapters
             self._sinks = [_create_sink(s, self.pipeline) for s in self.pipeline.sinks]
@@ -413,6 +441,10 @@ class StreamingEngine:
         await self._cancel_loop_task(self._ingest_task, "ingest loop")
         await self._cancel_loop_task(self._task, "processing loop")
 
+        await self._quarantine_held("not checked: the pipeline stopped before UASR answered for it")
+        if self._healer:
+            await self._healer.aclose()
+
         # Flush backpressure buffer
         if self._backpressure:
             await self._backpressure.flush()
@@ -471,6 +503,9 @@ class StreamingEngine:
         which otherwise kept running with nothing left to consume them or stop them."""
         self._stopping = True
         await self._cancel_loop_task(self._ingest_task, "ingest loop")
+        await self._quarantine_held("not checked: the pipeline failed before UASR answered for it")
+        if self._healer:
+            await self._healer.aclose()
         for sink in self._sinks:
             try:
                 await sink.stop()
@@ -568,8 +603,12 @@ class StreamingEngine:
                     await asyncio.sleep(self.tick_interval)
                     continue
 
-                # 1. Read micro-batch from backpressure buffer
-                events = await self._backpressure.get_batch(self.batch_size)
+                # 1. Read a micro-batch from the backpressure buffer and heal it
+                #    (ADR-002 phase 2b). Only what UASR returned goes on.
+                events = await self._heal_step()
+                if events is None:
+                    await self._release_after_failure()
+                    return
 
                 if events:
                     # 2. Apply transforms
@@ -579,7 +618,6 @@ class StreamingEngine:
                         if result is not None:
                             transformed.append(result)
 
-                    self._metrics.events_in += len(events)
                     self._metrics.events_dropped += len(events) - len(transformed)
 
                     # 3. Window processing
@@ -670,6 +708,94 @@ class StreamingEngine:
             )
             await self._mark_failed()
             await self._release_after_failure()
+
+    # ── Heal step (ADR-002 phase 2b) ──────────────────────────────
+
+    def _baseline_ready(self) -> bool:
+        return (
+            len(self._held) >= self._baseline_min_events
+            or time.monotonic() - self._held_since >= self._baseline_max_wait
+        )
+
+    async def _heal_step(self) -> Optional[List[StreamEvent]]:
+        """The events that may go on to transforms and sinks this tick, or None when
+        this tick made the pipeline FAILED.
+
+        Fail closed: a micro-batch UASR has not answered for stays in _held, is
+        retried on the next tick, and never reaches a sink. Each unanswered tick is a
+        failed tick of the "heal" component, so BUG-569's DEGRADED/FAILED judging
+        applies unchanged; on FAILED (and on stop) the held events are quarantined
+        as unchecked, never dropped."""
+        gathering = self._healer.needs_baseline and self._held and not self._baseline_ready()
+        if not self._held or gathering:
+            want = self.batch_size
+            if self._healer.needs_baseline:
+                want = max(1, min(want, self._baseline_min_events - len(self._held)))
+            fresh = await self._backpressure.get_batch(want)
+            if fresh and not self._held:
+                self._held_since = time.monotonic()
+            self._held.extend(fresh)
+        if not self._held or (self._healer.needs_baseline and not self._baseline_ready()):
+            return []
+
+        batch = self._held
+        self._batch_seq += 1
+        batch_id = f"{self._quarantine.run_id}:{self._batch_seq}"
+        try:
+            outcome = await self._healer.heal(batch)
+            # Written before anything is released: a quarantined event that is in
+            # neither the sink input nor the table would be lost.
+            await self._quarantine.write(batch_id, outcome.quarantined)
+        except Exception as exc:
+            self._metrics.events_held = len(self._held)
+            if await self._component_tick("heal", [exc], 0):
+                return None
+            return []
+
+        self._held = []
+        self._metrics.events_held = 0
+        self._metrics.events_in += len(batch)
+        self._metrics.events_quarantined += len(outcome.quarantined)
+        self._metrics.heal_repairs += len(outcome.repairs)
+        if outcome.quarantined or outcome.degraded:
+            await self._heal_degraded(outcome, len(batch))
+        else:
+            await self._component_tick("heal", [], 1)
+        return outcome.events
+
+    async def _heal_degraded(self, outcome, sent: int) -> None:
+        """ADR-002: quarantined rows or a detection-only fault make the pipeline
+        DEGRADED. The heal step answered, so this is not a failed tick: the streak
+        toward FAILED restarts, and _recovery_ticks clean micro-batches in a row
+        return the pipeline to RUNNING, as for any BUG-569 component."""
+        alerts = sorted({str(a.get("type")) for a in outcome.alerts if isinstance(a, dict)})
+        detail = f"{len(outcome.quarantined)} of {sent} events quarantined"
+        if alerts:
+            detail += f"; alerts: {', '.join(alerts)}"
+        self._record_error(StreamHealError(detail), "heal")
+        self._clean_ticks.pop("heal", None)
+        self._consecutive_errors["heal"] = 0
+        if self.pipeline.status == StreamPipelineStatus.RUNNING:
+            self.pipeline.status = StreamPipelineStatus.DEGRADED
+            await self._publish_error("STREAM_DEGRADED")
+
+    async def _quarantine_held(self, reason: str) -> None:
+        """The events read from the source that no sink received and UASR never
+        checked -- the held micro-batch and the backpressure buffer -- go to the
+        quarantine table, so a stop or a failure loses none of them."""
+        pending = self._held + (self._backpressure.drain_nowait() if self._backpressure else [])
+        self._held = []
+        self._metrics.events_held = 0
+        if not pending or self._quarantine is None:
+            return
+        try:
+            written = await self._quarantine.write(
+                f"{self._quarantine.run_id}:unchecked", [(ev, reason) for ev in pending], skip_written=True)
+        except Exception as exc:
+            logger.critical("Streaming pipeline %s: %d unchecked events could not be quarantined: %s",
+                            self.pipeline.id, len(pending), exc, exc_info=True)
+            return
+        self._metrics.events_quarantined += written
 
     # ── Component health (BUG-569) ────────────────────────────────
 

@@ -307,6 +307,11 @@ class StreamMetrics(BaseModel):
     events_out: int = 0
     events_late: int = 0
     events_dropped: int = 0
+    # ADR-002 phase 2b heal step: events held aside in the quarantine table, events
+    # waiting for UASR to answer (never emitted meanwhile), and proven repairs applied.
+    events_quarantined: int = 0
+    events_held: int = 0
+    heal_repairs: int = 0
     events_per_second: float = 0.0
     watermark_position: float = 0.0     # current watermark (epoch seconds)
     active_windows: int = 0

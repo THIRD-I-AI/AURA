@@ -47,17 +47,10 @@ def _uasr_service_headers() -> Dict[str, str]:
     an open-mode UASR does not scope, and a JWT UASR answers 401, which the caller
     reports as drift_check_failed.
     """
-    from datetime import timedelta
-
     from agents.base import current_tenant
-    from shared.auth import create_access_token
+    from shared.auth import tenant_service_headers
 
-    tenant = current_tenant.get()
-    if not tenant:
-        return {}
-    token = create_access_token(
-        {"sub": "service:monitor_agent", "org_id": tenant}, expires_delta=timedelta(minutes=5))
-    return {"Authorization": f"Bearer {token}"}
+    return tenant_service_headers(current_tenant.get(), "monitor_agent")
 
 
 def _uasr_check_failed(source_id: str, message: str) -> Dict[str, Any]:

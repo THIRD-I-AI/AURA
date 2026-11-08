@@ -147,6 +147,21 @@ class BackpressureManager:
         self._update_pressure_state()
         return events
 
+    def drain_nowait(self) -> List[StreamEvent]:
+        """Take every buffered event without waiting. ADR-002 phase 2b: on stop or
+        failure these were read from the source but never checked, so the engine
+        quarantines them instead of letting them vanish with the buffer."""
+        events: List[StreamEvent] = []
+        while True:
+            try:
+                event = self._buffer.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+            if event is not None:
+                events.append(event)
+        self._update_pressure_state()
+        return events
+
     async def flush(self) -> None:
         """Signal shutdown — put sentinel to unblock get_batch."""
         try:

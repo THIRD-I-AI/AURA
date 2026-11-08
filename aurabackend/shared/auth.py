@@ -60,6 +60,24 @@ def create_access_token(
     return jwt.encode(to_encode, settings.secret_key, algorithm=settings.jwt_algorithm)
 
 
+def tenant_service_headers(tenant: Optional[str], service: str) -> Dict[str, str]:
+    """A short-lived bearer token for a gateway component's call to another service AS ``tenant``.
+
+    BUG-562: UASR scopes every source id to the caller's tenant (uasr/tenancy.py
+    caller_tenant: org_id, else sub), so a background caller -- MonitorAgent, a
+    streaming pipeline's heal step (ADR-002 phase 2b) -- must carry the tenant the
+    work belongs to. A service-wide identity would file every tenant's batches under
+    one namespace and compare tenant B's batch against tenant A's baseline. With no
+    tenant no credentials are sent rather than a guessed identity: an open-mode
+    service does not scope, and a JWT service answers 401, which the caller reports.
+    """
+    if not tenant:
+        return {}
+    token = create_access_token(
+        {"sub": f"service:{service}", "org_id": tenant}, expires_delta=timedelta(minutes=5))
+    return {"Authorization": f"Bearer {token}"}
+
+
 # ── Token validation ────────────────────────────────────────────────────
 
 def decode_access_token(token: str) -> Dict[str, Any]:
