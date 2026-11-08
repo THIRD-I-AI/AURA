@@ -620,6 +620,11 @@ async def uasr_rollback(req: Dict[str, Any], request: Request):
     return await _uasr("POST", "/uasr/rollback", 15, request, json=req)
 
 
+@router.post("/uasr/canary/{source_id}/clear")
+async def uasr_clear_canary_rollback(source_id: str, req: Dict[str, Any], request: Request):
+    return await _uasr("POST", f"/uasr/canary/{source_id}/clear", 15, request, json=req)
+
+
 @router.get("/uasr/shims/{source_id}")
 async def uasr_list_shims(source_id: str, request: Request):
     return await _uasr("GET", f"/uasr/shims/{source_id}", 15, request)

@@ -20,7 +20,7 @@ import logging
 import time
 import types
 import uuid
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, FrozenSet, List, Optional, Tuple
 
 from agents.base import AgentContext
 
@@ -48,6 +48,7 @@ from .models import (
     set_transformed_rows,
 )
 from .reflector_agent import DiagnosticReflectorAgent
+from .repair_canary import Signature, repair_signature
 
 logger = logging.getLogger("uasr.recovery_loop")
 
@@ -61,6 +62,13 @@ _BLOCKING = (DriftType.SCHEMA.value, DriftType.STATISTICAL.value, DriftType.SEMA
 def _short(value: Any, limit: int = 80) -> str:
     text = repr(value)
     return text if len(text) <= limit else text[:limit] + "..."
+
+
+def _finding_columns(vector: Dict[str, Any]) -> set:
+    """Every column a drift finding names, whichever shape the finding has."""
+    cols = set(vector.get("affected_columns") or [])
+    cols.update(vector.get("added") or [], vector.get("removed") or [], vector.get("old_types") or {})
+    return cols
 
 
 def _alert(drift_type: str, vector: Dict[str, Any]) -> Dict[str, Any]:
@@ -442,6 +450,7 @@ class RecoveryLoop:
 
     async def prove_repairs(
         self, drift_result: DriftDetectionResult, batch: BatchPayload,
+        blocked: FrozenSet[Signature] = frozenset(),
     ) -> ProvenHealPlan:
         """Repair what the data proves, quarantine the rest, change nothing else.
 
@@ -453,10 +462,16 @@ class RecoveryLoop:
         found by re-running the detector on the rows the previous step produced;
         then the same checks once more on the final rows (ADR-002 safety net step 1,
         the sandbox). Anything still drifting quarantines the batch.
+
+        ``blocked`` holds the repairs the post-heal canary rolled back for this source
+        (ADR-002 safety net step 2, ``repair_canary``): one the batch would prove again
+        is not applied, and the batch is quarantined with that reason. The plan's
+        ``canary_evidence`` says, per stage, what the batch showed, so the canary can
+        tell a repair that failed on its own column from drift elsewhere.
         """
         # detect() can block on Redis under the fleet state backend, and the rules
         # are a few passes over every row: keep both off the event loop.
-        return await asyncio.to_thread(self._prove_repairs, drift_result, batch)
+        return await asyncio.to_thread(self._prove_repairs, drift_result, batch, blocked)
 
     @staticmethod
     def _findings(drift: DriftDetectionResult) -> Dict[str, Dict[str, Any]]:
@@ -488,7 +503,10 @@ class RecoveryLoop:
         result = self._detector.detect(probe, record_state=False)
         return self._findings(result), getattr(result, "details", "")
 
-    def _prove_repairs(self, drift: DriftDetectionResult, batch: BatchPayload) -> ProvenHealPlan:
+    def _prove_repairs(
+        self, drift: DriftDetectionResult, batch: BatchPayload,
+        blocked: FrozenSet[Signature] = frozenset(),
+    ) -> ProvenHealPlan:
         source = batch.source_id
         schema = self._detector.schema_baseline(source) or {}
         baseline = self._detector.baseline_distributions(source)
@@ -502,17 +520,40 @@ class RecoveryLoop:
         snapshot = dict(batch.schema_snapshot) if batch.schema_snapshot else None
         findings = self._findings(drift)
         alerts = {t: v for t, v in findings.items() if t in _DETECTION_ONLY}
+        # What the canary reads (repair_canary.judge). A stage the batch never reached,
+        # because an earlier fault was not proven, stays None: it showed nothing.
+        failed_columns: set = set()
+        retype_seen: Optional[Dict[str, Any]] = None
+        scale_seen: Optional[List[str]] = None
 
         def keep_alive() -> List[int]:
             return [i for i in alive if i not in held]
+
+        refused: set = set()
+
+        def refuse_blocked(sig: Signature) -> bool:
+            if sig not in blocked:
+                return False
+            # Not a failed column: the batch is quarantined through `unproven`, and
+            # counting it as a failure rolled back every other watch on the column
+            # (review of 342dd7f: a blocked x100 rolled back a correct x1000).
+            refused.add(sig)
+            unproven.append(
+                f"the {sig[0]} repair on column '{sig[1]}' was rolled back by the post-heal "
+                "canary for this source, so it is not applied again (ADR-002 safety net step 2)")
+            return True
 
         # 1. Renames and new columns.
         change = findings.get(DriftType.SCHEMA.value) or {}
         if change.get("type") == "schema_change":
             added = sorted(change.get("added") or [])
-            renames, reasons = prove_renames(added, sorted(change.get("removed") or []), rows, baseline)
+            removed = sorted(change.get("removed") or [])
+            renames, reasons = prove_renames(added, removed, rows, baseline)
             unproven.extend(reasons)
+            failed_columns.update(set(removed) - {old for old, _ in renames.values()})
             for new, (old, proof) in renames.items():
+                if refuse_blocked(repair_signature("rename", old, proof)):
+                    continue
                 rows = [{(old if k == new else k): v for k, v in r.items()} for r in rows]
                 if snapshot is not None and new in snapshot:
                     snapshot[old] = snapshot.pop(new)
@@ -531,11 +572,15 @@ class RecoveryLoop:
             # 2. Retypes: every value casts back exactly, or its row is quarantined.
             first, first_details = self._probe(batch, rows, alive, columns, snapshot)
             vec = first.get(DriftType.SCHEMA.value) or {}
+            retype_seen = dict(vec.get("new_types") or {}) if vec.get("type") == "type_change" else {}
             if vec.get("type") == "type_change":
                 for col, old_t in sorted((vec.get("old_types") or {}).items()):
                     new_t = (vec.get("new_types") or {}).get(col)
                     target = canonical_type(old_t)
+                    if refuse_blocked(repair_signature("retype", col, {"from": new_t, "to": old_t})):
+                        continue
                     if target is None:
+                        failed_columns.add(col)
                         unproven.append(
                             f"column '{col}' changed type from {old_t!r} to {new_t!r} and no "
                             f"lossless cast back to {old_t!r} is defined")
@@ -563,6 +608,7 @@ class RecoveryLoop:
                     }))
                 second, second_details = self._probe(batch, rows, alive, columns, snapshot)
             elif vec:
+                failed_columns.update(_finding_columns(vec))
                 unproven.append(f"schema still differs from the baseline: {first_details}")
                 second, second_details = first, first_details
             else:
@@ -570,18 +616,24 @@ class RecoveryLoop:
 
             if not unproven:
                 if DriftType.SCHEMA.value in second:
+                    failed_columns.update(_finding_columns(second[DriftType.SCHEMA.value]))
                     unproven.append(f"schema still differs after the proven repairs: {second_details}")
                 if DriftType.SEMANTIC.value in second:
+                    failed_columns.update(_finding_columns(second[DriftType.SEMANTIC.value]))
                     unproven.append(
                         "semantic drift has no proven repair; LLM-written fixes are never "
                         "applied automatically (ADR-002)")
                 # 3. Unit or scale faults, one column at a time.
                 stat = second.get(DriftType.STATISTICAL.value) or {}
-                for col in sorted(stat.get("affected_columns") or []):
+                scale_seen = sorted(stat.get("affected_columns") or [])
+                for col in scale_seen:
                     dist = baseline.get(col)
                     values = [rows[i][col] for i in alive if rows[i].get(col) is not None]
                     power, proof = prove_scale(values, dist)
+                    if power is not None and refuse_blocked(repair_signature("rescale", col, proof)):
+                        continue
                     if power is None or dist is None:
+                        failed_columns.add(col)
                         unproven.append(
                             f"column '{col}' drifted statistically and no proven repair applies: "
                             f"{proof['reason']}")
@@ -593,6 +645,7 @@ class RecoveryLoop:
                     # so it voids the proof for the whole column, not just that row.
                     inexact = [i for i, v in restored.items() if v is None]
                     if inexact:
+                        failed_columns.add(col)
                         unproven.append(
                             f"column '{col}': {len(inexact)} value(s) are not exactly "
                             f"{10.0 ** power:g} times any number, so the unit factor is not proven")
@@ -615,18 +668,31 @@ class RecoveryLoop:
         # 4. The sandbox: the repaired rows must pass the same checks.
         if final is not None and not unproven:
             still = [t for t in _BLOCKING if t in final]
+            for t in still:
+                failed_columns.update(_finding_columns(final[t]))
             if still:
                 unproven.append(
                     f"the repaired rows still fail the drift check ({', '.join(still)}): {final_details}")
         if final is not None:
             alerts.update({t: v for t, v in final.items() if t in _DETECTION_ONLY})
 
+        evidence = {
+            # Recorded before a fault elsewhere voids the batch: a repair that proved
+            # again is still evidence it holds, whatever else the batch got wrong.
+            "proven": {s for s in (repair_signature(r.type, r.column, r.proof) for r in repairs) if s},
+            "failed_columns": failed_columns,
+            "refused": refused,
+            "retype_seen": retype_seen,
+            "scale_seen": scale_seen,
+            "columns": set(batch.columns).union(*(r.keys() for r in batch.rows)),
+        }
         if unproven:
             reason = "; ".join(unproven)
             for i in alive:
                 held[i] = reason
             alive, repairs = [], []
         return ProvenHealPlan(
+            canary_evidence=evidence,
             rows=[rows[i] for i in alive],
             quarantined_rows=[
                 QuarantinedRow(index=i, row=batch.rows[i], reason=held[i]) for i in sorted(held)

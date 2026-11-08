@@ -5421,12 +5421,12 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Fix:** Numeric histograms are binned on the baseline's own edges with underflow and overflow bins. Tests `aurabackend/tests/test_heal_phase1_detector.py`: the same distribution at 0.1x, 1x and 10x the baseline size over 200 seeded trials reports no drift, and real shifts are still detected in every trial.
 
 ## BUG-565: The MAPE-K worker is enabled in production but has no broker, so the continuous healing loop never runs
-- **Status:** open
+- **Status:** fixed
 - **Found by:** self-healing readiness audit (run wf_37b49411-ac0, adversarially challenged; see docs/design/SELF_HEALING_READINESS_2026-10-29.md), 2026-10-29. `aurabackend/uasr/mapek_worker.py:111`.
 - **Severity:** medium
 - **Root cause:** deploy/aws-free-tier/docker-compose.yml:154 sets UASR_MAPEK_ENABLED=true, but no compose file or .env.example sets UASR_KAFKA_SERVERS, the free-tier stack has no broker, and the worker defaults to localhost:9092. The bootstrap (uasr/service.py:180-221) retries forever without failing or reporting.
 - **Failure scenario:** Production reports the MAPE-K worker as enabled while no event is ever consumed and no source is ever monitored continuously.
-- **Fix:** pending. Suggested: Per ADR-002: replace the Kafka input with an in-process queue fed by pipeline runs, and report the worker's real state on /uasr/mapek/status.
+- **Fix:** ADR-002 phase 2a item 3: UASR consumes a bounded in-process asyncio queue fed by /uasr/heal and /uasr/ingest (drop-oldest, never blocks a request); the Kafka bootstrap starts only when UASR_KAFKA_SERVERS is set; /uasr/mapek/status reports the real input, consumer state, depth, processed, dropped, rollbacks and last error. Each proven repair gets its own N-batch canary (UASR_POST_HEAL_VALIDATION_BATCHES, default 3), persisted in uasr_repair_watches (migration f2a3b4c5d6e7), decided under a per-source lock; drift on the columns it changed rolls it back and the ROLLED_BACK state is written before reload can resurrect it. Tests `aurabackend/tests/test_heal_phase2a_queue.py`.
 
 ## BUG-566: The uasr_self_heal live check approves its own fix and never checks the repaired rows, so it proves nothing about autonomous healing
 - **Status:** fixed
