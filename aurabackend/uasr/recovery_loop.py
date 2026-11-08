@@ -29,6 +29,7 @@ from .actuator_agent import (
     canonical_type,
     cast_losslessly,
     in_baseline_range,
+    location_shift,
     prove_renames,
     prove_scale,
     restore_scaled,
@@ -37,6 +38,7 @@ from .drift_detector import DriftDetector
 from .models import (
     BatchPayload,
     DriftDetectionResult,
+    DriftSeverity,
     DriftType,
     ProvenHealPlan,
     ProvenRepair,
@@ -62,6 +64,10 @@ _BLOCKING = (DriftType.SCHEMA.value, DriftType.STATISTICAL.value, DriftType.SEMA
 def _short(value: Any, limit: int = 80) -> str:
     text = repr(value)
     return text if len(text) <= limit else text[:limit] + "..."
+
+
+def _precision(decimals: Optional[int]) -> str:
+    return "full float digits" if decimals is None else f"{decimals} decimal place(s)"
 
 
 def _finding_columns(vector: Dict[str, Any]) -> set:
@@ -503,6 +509,106 @@ class RecoveryLoop:
         result = self._detector.detect(probe, record_state=False)
         return self._findings(result), getattr(result, "details", "")
 
+    @staticmethod
+    def _shifted_columns(
+        rows: List[Dict[str, Any]], columns: List[str], baseline: Dict[str, Any],
+    ) -> Dict[str, Tuple[float, float]]:
+        """Each numeric column whose values ``location_shift`` finds moved from the
+        baseline's, with (z, P(new > baseline)) (BUG-575)."""
+        shifted: Dict[str, Tuple[float, float]] = {}
+        for col in columns:
+            values = [r.get(col) for r in rows if r.get(col) is not None]
+            if values and (found := location_shift(values, baseline.get(col))) is not None:
+                shifted[col] = found
+        return shifted
+
+    @staticmethod
+    def _shift_reason(shifted: Dict[str, Tuple[float, float]]) -> str:
+        moved = ", ".join(
+            f"'{c}' (rank z={z:+.1f}, P(new > baseline)={p:.2f})" for c, (z, p) in sorted(shifted.items()))
+        return (f"column(s) {moved} moved from the baseline's distribution, and no proven "
+                "repair explains it")
+
+    def unexplained_shift(
+        self, drift: DriftDetectionResult, batch: BatchPayload,
+    ) -> Optional[DriftDetectionResult]:
+        """A statistical finding for a batch the detector passed whose numeric columns
+        have moved (BUG-575), or None.
+
+        /uasr/heal returns a batch with no drift as healed, so the detector's verdict
+        alone decided it; but a x2.5 fault on a heavy-tailed column moves no count of
+        its merged histogram bins and its mean by under 2 sigma (benchmark decoy_x2.5,
+        seed 146: 156 rows of basket_value x2.5 returned healed=true). ADR-002 gives
+        every returned row the sandbox's checks, so the clean batch gets the rank test
+        the repaired rows get. The finding goes through ``prove_repairs`` like any
+        other, which has no rule for it and quarantines the batch.
+        """
+        if drift.drift_detected or not batch.rows:
+            return None
+        source = batch.source_id
+        baseline = self._detector.baseline_distributions(source)
+        if not baseline:
+            return None
+        columns = list(self._detector.schema_baseline(source) or batch.columns)
+        shifted = self._shifted_columns(batch.rows, columns, baseline)
+        if not shifted:
+            return None
+        cols = sorted(shifted)
+        vector = {
+            "type": "statistical", "rule": "rank_location", "affected_columns": cols,
+            "rank_z": {c: round(shifted[c][0], 3) for c in cols},
+            "details": self._shift_reason(shifted),
+        }
+        return drift.model_copy(update={
+            "drift_detected": True,
+            "drift_type": DriftType.STATISTICAL,
+            "severity": DriftSeverity.HIGH,
+            "affected_columns": cols,
+            "drift_vector": vector,
+            "details": vector["details"],
+            "drift_types": [DriftType.STATISTICAL],
+            "drift_vectors": {DriftType.STATISTICAL.value: vector},
+        })
+
+    def _whole_batch_check(
+        self, batch: BatchPayload, rows: List[Dict[str, Any]], held: Dict[int, str],
+        repaired: set, columns: List[str], snapshot: Optional[Dict[str, Any]],
+        baseline: Dict[str, Any],
+    ) -> Tuple[set, Optional[str]]:
+        """The sandbox's check of the batch's columns on EVERY row (BUG-575).
+
+        The re-check above sees only the kept rows. When a repair holds rows aside, the
+        kept rows are the ones its rule selected, not a sample of the batch: a /10**4
+        fault on an int column fails the int cast on all but its missing values, and the
+        few rows left carried a x2.5 fault on another column past every check, returned
+        as healed. A held row's untouched cells are still the batch's evidence about
+        their columns, so they are judged on all rows; a cell of a column a retype or
+        rescale changed is left out of a held row, whose value there is not the repaired
+        one. Then every numeric column takes the rank test (``location_shift``): a
+        heavy-tailed column x2.5 behind a proven rename passed the detector's histogram
+        re-check. Returns (failed columns, reason or None).
+        """
+        indices = range(len(rows))
+        probe_rows = [
+            {**rows[i], **{c: None for c in repaired if c in rows[i]}} if i in held else rows[i]
+            for i in indices
+        ]
+        failed: set = set()
+        details = ""
+        if held:
+            found, details = self._probe(batch, probe_rows, list(indices), columns, snapshot)
+            for t in _BLOCKING:
+                if t in found:
+                    failed.update(_finding_columns(found[t]))
+        shifted = self._shifted_columns(probe_rows, [c for c in columns if c not in failed], baseline)
+        parts = []
+        if failed:
+            parts.append(f"the batch's rows, held ones included, fail the drift check: {details}")
+        if shifted:
+            parts.append(self._shift_reason(shifted))
+        failed.update(shifted)
+        return failed, "; ".join(parts) or None
+
     def _prove_repairs(
         self, drift: DriftDetectionResult, batch: BatchPayload,
         blocked: FrozenSet[Signature] = frozenset(),
@@ -638,7 +744,7 @@ class RecoveryLoop:
                             f"column '{col}' drifted statistically and no proven repair applies: "
                             f"{proof['reason']}")
                         continue
-                    restored = {i: restore_scaled(rows[i][col], power)
+                    restored = {i: restore_scaled(rows[i][col], power, dist.value_kind, dist.decimals)
                                 for i in alive if rows[i].get(col) is not None}
                     # A real x10**n fault is exactly invertible for every value; one that
                     # is not is evidence the factor is wrong (a x7 fault "fitting" x10),
@@ -648,7 +754,9 @@ class RecoveryLoop:
                         failed_columns.add(col)
                         unproven.append(
                             f"column '{col}': {len(inexact)} value(s) are not exactly "
-                            f"{10.0 ** power:g} times any number, so the unit factor is not proven")
+                            f"{10.0 ** power:g} times any {dist.value_kind or 'number'} recorded "
+                            f"to the column's precision ({_precision(dist.decimals)}), so the "
+                            "unit factor is not proven")
                         continue
                     outside = 0
                     for i, value in restored.items():
@@ -673,6 +781,13 @@ class RecoveryLoop:
             if still:
                 unproven.append(
                     f"the repaired rows still fail the drift check ({', '.join(still)}): {final_details}")
+            else:
+                cols, reason = self._whole_batch_check(
+                    batch, rows, held, {r.column for r in repairs if r.type in ("retype", "rescale")},
+                    columns, snapshot, baseline)
+                failed_columns.update(cols)
+                if reason:
+                    unproven.append(reason)
         if final is not None:
             alerts.update({t: v for t, v in final.items() if t in _DETECTION_ONLY})
 

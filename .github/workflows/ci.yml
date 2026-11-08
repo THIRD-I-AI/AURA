@@ -418,6 +418,57 @@ jobs:
         run: |
           python -m pytest tests/test_scheduler_distributed.py tests/test_scheduler_worker_integration.py tests/test_pipeline_pg_sink_transaction.py -v --tb=short
 
+  # ── ADR-002 heal accuracy benchmark (full run) ───────────────────────────
+  # tests/accuracy injects every fault type into seeded clean datasets with
+  # known ground truth and scores the real /uasr/heal handler: precision of
+  # applied repairs >= 99.9% per fault type and overall (a missed fault that
+  # comes back as healed counts as wrong), zero false alarms on clean data,
+  # and row accounting on every trial. The base backend-test lane runs the
+  # same file at 50 trials per fault type; this lane runs the ADR-002 bar of
+  # 500 per type (~7,000 fault trials + 1,000 clean batches, under 10 min),
+  # so a rare wrong repair cannot hide in the small sample. The JSON report
+  # lists every non-correct trial with the seed that replays it.
+  heal-accuracy:
+    name: Heal Accuracy (ADR-002 benchmark, 500 trials per fault)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      PYTHONUNBUFFERED: "1"
+
+    defaults:
+      run:
+        working-directory: aurabackend
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: aurabackend/requirements*.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -c constraints.txt
+          pip install pytest pytest-asyncio
+
+      - name: Run the full heal accuracy benchmark
+        env:
+          AURA_HEAL_BENCH_TRIALS: "500"
+          AURA_HEAL_BENCH_REPORT: heal_accuracy_report.json
+        run: python -m pytest tests/accuracy -m heal_accuracy -v -s --tb=short -p no:logging
+
+      - name: Upload the benchmark report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: heal-accuracy-report
+          path: aurabackend/heal_accuracy_report.json
+          if-no-files-found: ignore
+
   # ── Storage S3 integration (S3-compatible server required) ─────────────────────────────
   # Sprint S45: tests/test_storage_s3_duckdb.py is a Tier-B test that
   # proves DuckDB reads CSVs from a real S3-compatible store end-to-end.

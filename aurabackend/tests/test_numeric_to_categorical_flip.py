@@ -22,8 +22,12 @@ def _detector() -> DriftDetector:
 def test_text_in_a_numeric_column_is_reported_as_drift():
     corrupted = _batch(1, lambda rng, i: "N/A" if i % 2 else rng.gauss(100, 10) * 1000)
     result = _detector().detect(corrupted)
-    assert result.drift_detected and result.drift_type == DriftType.STATISTICAL
-    assert "amount" in result.affected_columns
+    # BUG-572: the column's value kind changed (float -> mixed), so the first hit
+    # is now a type change; the statistical score this test pins is still reported.
+    assert result.drift_detected and result.drift_type == DriftType.SCHEMA
+    assert result.drift_vector["new_types"] == {"amount": "mixed"}
+    assert DriftType.STATISTICAL in result.drift_types
+    assert "amount" in result.drift_vectors[DriftType.STATISTICAL.value]["affected_columns"]
 
 
 def test_the_flip_does_not_move_the_adaptive_threshold():

@@ -465,9 +465,10 @@ class TestColdStartWarmup:
 
     def test_warmup_zero_restores_original_behaviour(self):
         # BUG-564: healthy batches binned on the baseline's edges no longer
-        # false-alarm at all, so the suppression is shown on a real but mild
-        # drift instead: a +1 sd shift (location moved < 2 sigma) that warmup
-        # hides and warmup_batches=0 reports.
+        # false-alarm at all. BUG-571: so the warmup no longer hides a real
+        # but mild drift on them either -- a +1 sd shift (location moved
+        # < 2 sigma) is reported with or without it. Hiding it was how every
+        # scale-down of a column passed /uasr/heal as clean.
         def shifted(sid):
             rnd = self._random.Random(f"{sid}:shift")
             return BatchPayload(
@@ -477,7 +478,7 @@ class TestColdStartWarmup:
 
         warm = DriftDetector(default_zeta=0.15, warmup_batches=5)
         warm.register_baseline("s", self._healthy("s", "base", seed=99))
-        assert warm.detect(shifted("s")).drift_detected is False
+        assert warm.detect(shifted("s")).drift_type == DriftType.STATISTICAL
 
         det = DriftDetector(default_zeta=0.15, warmup_batches=0)
         det.register_baseline("s", self._healthy("s", "base", seed=99))
