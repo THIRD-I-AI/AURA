@@ -23,6 +23,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
@@ -38,6 +39,18 @@ from shared.sql_identifiers import quote_identifier
 
 _TIMEOUT_SECONDS = 30.0
 QUARANTINE_FILE = "_aura_quarantine.duckdb"
+
+# One lock per quarantine file. A stop or failure sweep can run while a micro-batch's
+# write is still in its thread (asyncio.to_thread cannot be cancelled); unserialised,
+# the two raced DuckDB's CREATE TABLE (catalog write-write conflict) and the sweep's
+# read-then-insert, so an event landed twice (ADR-002: accounted for exactly once).
+_FILE_LOCKS: Dict[str, threading.Lock] = {}
+_FILE_LOCKS_GUARD = threading.Lock()
+
+
+def _file_lock(path: str) -> threading.Lock:
+    with _FILE_LOCKS_GUARD:
+        return _FILE_LOCKS.setdefault(os.path.abspath(path), threading.Lock())
 
 
 class StreamHealError(AuraError):
@@ -181,10 +194,10 @@ class QuarantineStore:
     async def write(self, batch_id: str, quarantined: List[Tuple[StreamEvent, str]], *,
                     skip_written: bool = False) -> int:
         """``skip_written`` leaves out events this run has already quarantined. The
-        engine's stop/failure sweep needs it: a stop that cancels the run loop while
-        a micro-batch's write is running in its thread cannot tell whether that write
-        landed, and writing the batch again would count its rows twice (ADR-002:
-        every row accounted for exactly once)."""
+        engine's stop/failure sweep needs it: the held micro-batch it sweeps may have
+        been written just before the stop, and writing it again would count its rows
+        twice (ADR-002: every row accounted for exactly once). The engine waits for an
+        in-flight write before sweeping, and the per-file lock serialises the rest."""
         if not quarantined:
             return 0
         now = datetime.now(timezone.utc).replace(tzinfo=None)
@@ -201,20 +214,29 @@ class QuarantineStore:
 
         os.makedirs(os.path.dirname(self.path), exist_ok=True)
         table = quote_identifier(self.table)
-        con = duckdb.connect(self.path)
-        try:
-            con.execute(
-                f"CREATE TABLE IF NOT EXISTS {table} ("
-                "run_id VARCHAR, batch_id VARCHAR, source_id VARCHAR, event_id VARCHAR, "
-                "event_time DOUBLE, reason VARCHAR, row_json VARCHAR, quarantined_at TIMESTAMP)"
-            )
-            if skip_written:
-                written = {row[0] for row in con.execute(
-                    f"SELECT event_id FROM {table} WHERE run_id = ?", [self.run_id]).fetchall()}
-                records = [r for r in records if r[3] not in written]
-                if not records:
-                    return 0
-            con.executemany(f"INSERT INTO {table} VALUES (?, ?, ?, ?, ?, ?, ?, ?)", records)
-            return len(records)
-        finally:
-            con.close()
+        with _file_lock(self.path):
+            con = duckdb.connect(self.path)
+            try:
+                # One transaction: DuckDB autocommits each executemany row, so a write
+                # that failed part way left rows behind, and the retry of the whole
+                # batch quarantined them a second time.
+                con.begin()
+                try:
+                    con.execute(
+                        f"CREATE TABLE IF NOT EXISTS {table} ("
+                        "run_id VARCHAR, batch_id VARCHAR, source_id VARCHAR, event_id VARCHAR, "
+                        "event_time DOUBLE, reason VARCHAR, row_json VARCHAR, quarantined_at TIMESTAMP)"
+                    )
+                    if skip_written:
+                        written = {row[0] for row in con.execute(
+                            f"SELECT event_id FROM {table} WHERE run_id = ?", [self.run_id]).fetchall()}
+                        records = [r for r in records if r[3] not in written]
+                    if records:
+                        con.executemany(f"INSERT INTO {table} VALUES (?, ?, ?, ?, ?, ?, ?, ?)", records)
+                    con.commit()
+                except BaseException:
+                    con.rollback()
+                    raise
+                return len(records)
+            finally:
+                con.close()

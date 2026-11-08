@@ -243,6 +243,9 @@ def _quarantine(pipeline: StreamPipeline) -> List[Dict[str, Any]]:
         return []
     con = duckdb.connect(path, read_only=True)
     try:
+        if not con.execute("SELECT 1 FROM duckdb_tables() WHERE table_name = ?",
+                           [f"_aura_quarantine_{pipeline.id}"]).fetchall():
+            return []  # a rolled-back first write leaves no table
         cur = con.execute(f'SELECT event_id, reason, row_json, source_id FROM "_aura_quarantine_{pipeline.id}"')
         return [{"event_id": e, "reason": r, "row": json.loads(j), "source_id": s} for e, r, j, s in cur.fetchall()]
     finally:
@@ -453,9 +456,10 @@ async def test_a_pipeline_without_a_tenant_is_held_not_sent_as_a_shared_identity
 
 
 async def test_stop_sweep_does_not_quarantine_an_already_written_batch_twice():
-    # A stop can cancel the run loop while a micro-batch's quarantine write runs in its
-    # thread; that batch is still held, so the stop sweep sees it again. It must land
-    # in the table once (ADR-002: every row accounted for exactly once).
+    # A micro-batch's quarantine write that finished before the stop: that batch is
+    # still held, so the stop sweep sees it again. It must land in the table once
+    # (ADR-002: every row accounted for exactly once). A write still in flight is
+    # test_stop_while_a_micro_batch_quarantine_write_is_in_flight_writes_each_event_once.
     from pipeline.streaming.heal import QuarantineStore
 
     pipe = _pipeline("tenant_a")
@@ -469,3 +473,149 @@ async def test_stop_sweep_does_not_quarantine_an_already_written_batch_twice():
     # Another run of the same pipeline is not this run's write: its events are written.
     other = QuarantineStore(pipe, run_id=f"{pipe.id}:r2")
     assert await other.write("unchecked", [(events[0], "not checked")], skip_written=True) == 1
+
+
+# ── Review of 39061b0: the quarantine write under stop, failure and races ───────
+
+def _records(store, events, reason: str = "unprovable"):
+    return [(store.run_id, "b", store.source_id, ev.event_id, ev.timestamp, reason, json.dumps(ev.data), None)
+            for ev in events]
+
+
+async def test_stop_while_a_micro_batch_quarantine_write_is_in_flight_writes_each_event_once(monkeypatch):
+    # The stop cancels the run loop while the micro-batch's write is still running in
+    # its thread. Before the fix the sweep wrote the held batch alongside it: the same
+    # events landed twice, or the sweep died on DuckDB's CREATE conflict and dropped
+    # everything pending (ADR-002: every row accounted for exactly once).
+    import threading
+
+    from pipeline.streaming.heal import QuarantineStore
+
+    trial = build_trial("retype_lossy", 0)
+    pipe = _pipeline("tenant_a")
+    base, faulty = _events(trial.dataset.baseline), _events(trial.sent, t0=50_000.0)
+    entered, gate = threading.Event(), threading.Event()
+    real = QuarantineStore._write_sync
+
+    def slow_first_write(self, records, skip_written=False):
+        if not skip_written and not entered.is_set():
+            entered.set()
+            gate.wait(10)
+        return real(self, records, skip_written)
+
+    monkeypatch.setattr(QuarantineStore, "_write_sync", slow_first_write)
+    run = await _start(monkeypatch, pipe, base + faulty, baseline_rows=len(base))
+    await _until(entered.is_set)
+    stopping = asyncio.create_task(run.engine.stop())
+    await asyncio.sleep(0.3)  # the stop is now past cancelling the run loop
+    gate.set()
+    await stopping
+
+    quarantined = _quarantine(pipe)
+    _accounted(run, quarantined, run.source.produced)
+    assert run.engine.metrics.events_quarantined == len(quarantined)
+    assert not any("could not be quarantined" in e for e in run.engine.metrics.errors)
+
+
+def test_concurrent_first_writes_neither_conflict_nor_duplicate():
+    # Two sweeps of one run racing on a table that does not exist yet: DuckDB raised a
+    # catalog write-write conflict on CREATE, and the read-then-insert of skip_written
+    # let both insert. Serialised per file, each event lands once.
+    from concurrent.futures import ThreadPoolExecutor
+
+    from pipeline.streaming.heal import QuarantineStore
+
+    pipe = _pipeline("tenant_a")
+    store = QuarantineStore(pipe, run_id=f"{pipe.id}:r1")
+    records = _records(store, _events([{"a": i} for i in range(3000)]))
+    with ThreadPoolExecutor(4) as pool:
+        written = list(pool.map(lambda _: store._write_sync(records, True), range(4)))
+    assert sum(written) == 3000
+    rows = _quarantine(pipe)
+    assert len(rows) == 3000 and len({r["event_id"] for r in rows}) == 3000
+
+
+def test_a_write_that_fails_part_way_leaves_nothing_behind():
+    # A failed micro-batch write is retried in full later; rows a failed attempt had
+    # already autocommitted would then be quarantined twice.
+    from pipeline.streaming.heal import QuarantineStore
+
+    pipe = _pipeline("tenant_a")
+    store = QuarantineStore(pipe, run_id=f"{pipe.id}:r1")
+    records = _records(store, _events([{"a": i} for i in range(5)]))
+    records[3] = records[3][:4] + ("not a number",) + records[3][5:]  # event_time is DOUBLE
+    with pytest.raises(Exception):
+        store._write_sync(records)
+    assert _quarantine(pipe) == []
+
+
+async def test_stop_sweep_retries_a_failed_quarantine_write(monkeypatch):
+    # A transient failure of the sweep's write used to drop every pending event
+    # (only a log line); it is retried, and lands exactly once.
+    from pipeline.streaming.heal import QuarantineStore
+
+    ds = make_dataset(5, batch_rows=150)
+    pipe = _pipeline("tenant_a")
+    events = _events(ds.baseline[:200] + ds.truth)
+    run = await _start(monkeypatch, pipe, events, baseline_rows=200, transport=FlakyTransport(None, failures=10**9))
+    await _until(lambda: run.engine.metrics.events_held > 0)
+    real, calls = QuarantineStore._write_sync, []
+
+    def fails_once(self, records, skip_written=False):
+        calls.append(len(records))
+        if len(calls) == 1:
+            raise OSError("disk briefly unavailable")
+        return real(self, records, skip_written)
+
+    monkeypatch.setattr(QuarantineStore, "_write_sync", fails_once)
+    await run.engine.stop()
+    assert len(calls) == 2
+    _accounted(run, _quarantine(pipe), run.source.produced)
+    assert run.engine._held == []
+
+
+async def test_events_the_sweep_cannot_quarantine_are_kept_and_withhold_the_checkpoint(monkeypatch):
+    from pipeline.streaming.heal import QuarantineStore
+
+    ds = make_dataset(5, batch_rows=150)
+    pipe = _pipeline("tenant_a")
+    events = _events(ds.baseline[:200] + ds.truth)
+    run = await _start(monkeypatch, pipe, events, baseline_rows=200, transport=FlakyTransport(None, failures=10**9))
+    await _until(lambda: run.engine.metrics.events_held > 0)
+
+    def always_fails(self, records, skip_written=False):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(QuarantineStore, "_write_sync", always_fails)
+    checkpoints: List[int] = []
+    monkeypatch.setattr(run.engine._state_mgr, "create_checkpoint", lambda **kw: checkpoints.append(1))
+    await run.engine.stop()
+
+    kept = run.engine._held
+    assert len(kept) == run.source.produced and len({e.event_id for e in kept}) == len(kept)
+    assert run.engine.metrics.events_held == len(kept)
+    assert any("could not be quarantined" in e for e in run.engine.metrics.errors)
+    assert run.emitted == [] and _quarantine(pipe) == []
+    assert checkpoints == []  # the source offsets must not move past events nobody kept on disk
+
+
+async def test_no_checkpoint_while_a_micro_batch_is_held(monkeypatch):
+    # The source offsets in a checkpoint would pass events UASR never checked; a crash
+    # during the outage would then lose them on restart.
+    ds = make_dataset(5, batch_rows=150)
+    pipe = _pipeline("tenant_a")
+    pipe.checkpoint_interval_seconds = 0
+    events = _events(ds.baseline[:200] + ds.truth)
+    run = await _start(monkeypatch, pipe, events, baseline_rows=200,
+                       transport=FlakyTransport(None, failures=10**9), max_errors=10**6)
+    taken_while_held: List[int] = []
+    real = run.engine._state_mgr.create_checkpoint
+
+    def spy(**kw):
+        taken_while_held.append(len(run.engine._held))
+        return real(**kw)
+
+    monkeypatch.setattr(run.engine._state_mgr, "create_checkpoint", spy)
+    await _until(lambda: run.engine.metrics.events_held > 0)
+    await asyncio.sleep(0.3)  # many ticks of the outage
+    assert [n for n in taken_while_held if n] == []

@@ -81,6 +81,9 @@ _ACTIVE = (StreamPipelineStatus.RUNNING, StreamPipelineStatus.DEGRADED)
 # much time has passed, then registered and released unchanged.
 _BASELINE_MIN_EVENTS = 200
 _BASELINE_MAX_WAIT_SECONDS = 10.0
+# The stop/failure sweep retries its quarantine write this many times before it keeps
+# the events in memory and withholds the checkpoint (ADR-002: never dropped).
+_SWEEP_ATTEMPTS = 3
 
 
 # ────────────────────────────────────────────────────────────────────
@@ -270,6 +273,9 @@ class StreamingEngine:
         self._held: List[StreamEvent] = []
         self._held_since: float = 0.0
         self._batch_seq = 0
+        # The micro-batch's quarantine write, kept so a stop or failure sweep can wait
+        # for it: cancelling the run loop does not stop the thread doing the write.
+        self._quarantine_write: Optional[asyncio.Task] = None
         self._baseline_min_events = _BASELINE_MIN_EVENTS
         self._baseline_max_wait = _BASELINE_MAX_WAIT_SECONDS
 
@@ -744,9 +750,15 @@ class StreamingEngine:
         try:
             outcome = await self._healer.heal(batch)
             # Written before anything is released: a quarantined event that is in
-            # neither the sink input nor the table would be lost.
-            await self._quarantine.write(batch_id, outcome.quarantined)
+            # neither the sink input nor the table would be lost. Shielded, so a stop
+            # that cancels this loop leaves the write a task _quarantine_held can await
+            # before it sweeps the same held batch (else rows were written twice).
+            self._quarantine_write = asyncio.ensure_future(
+                self._quarantine.write(batch_id, outcome.quarantined))
+            await asyncio.shield(self._quarantine_write)
+            self._quarantine_write = None
         except Exception as exc:
+            self._quarantine_write = None
             self._metrics.events_held = len(self._held)
             if await self._component_tick("heal", [exc], 0):
                 return None
@@ -779,23 +791,52 @@ class StreamingEngine:
             self.pipeline.status = StreamPipelineStatus.DEGRADED
             await self._publish_error("STREAM_DEGRADED")
 
-    async def _quarantine_held(self, reason: str) -> None:
+    async def _quarantine_held(self, reason: str) -> bool:
         """The events read from the source that no sink received and UASR never
         checked -- the held micro-batch and the backpressure buffer -- go to the
-        quarantine table, so a stop or a failure loses none of them."""
+        quarantine table, so a stop or a failure loses none of them.
+
+        Returns False when they could not be written: they are then kept in _held,
+        reported, and the checkpoint is withheld (_checkpoint) so a restart re-reads
+        them from the source, never dropped (ADR-002: every row accounted for)."""
+        in_flight = self._quarantine_write
+        if in_flight is not None:
+            # The micro-batch's own write may still be running in its thread; the
+            # sweep's skip_written can only see a write that has finished.
+            await asyncio.wait({in_flight})
+            # Its batch is still held (the run loop never got to release it), so the
+            # sweep below covers it; only the rows it did write are counted here. A
+            # failed write rolled back and is simply swept.
+            if not in_flight.cancelled() and in_flight.exception() is None:
+                self._metrics.events_quarantined += in_flight.result()
+            self._quarantine_write = None
         pending = self._held + (self._backpressure.drain_nowait() if self._backpressure else [])
         self._held = []
         self._metrics.events_held = 0
         if not pending or self._quarantine is None:
-            return
-        try:
-            written = await self._quarantine.write(
-                f"{self._quarantine.run_id}:unchecked", [(ev, reason) for ev in pending], skip_written=True)
-        except Exception as exc:
-            logger.critical("Streaming pipeline %s: %d unchecked events could not be quarantined: %s",
-                            self.pipeline.id, len(pending), exc, exc_info=True)
-            return
-        self._metrics.events_quarantined += written
+            return True
+        batch = [(ev, reason) for ev in pending]
+        batch_id = f"{self._quarantine.run_id}:unchecked"
+        for attempt in range(_SWEEP_ATTEMPTS):
+            try:
+                # skip_written also makes a retry safe: a failed attempt rolled back.
+                written = await self._quarantine.write(batch_id, batch, skip_written=True)
+            except Exception as exc:
+                logger.error("Streaming pipeline %s: quarantine sweep attempt %d failed: %s",
+                             self.pipeline.id, attempt + 1, exc, exc_info=True)
+                if attempt + 1 < _SWEEP_ATTEMPTS:
+                    await asyncio.sleep(0.1 * 2 ** attempt)
+                continue
+            self._metrics.events_quarantined += written
+            return True
+        self._held = pending
+        self._metrics.events_held = len(pending)
+        self._record_error(StreamHealError(
+            f"{len(pending)} unchecked events could not be quarantined; kept in memory "
+            "and the checkpoint is withheld"), "quarantine")
+        logger.critical("Streaming pipeline %s: %d unchecked events could not be quarantined",
+                        self.pipeline.id, len(pending))
+        return False
 
     # ── Component health (BUG-569) ────────────────────────────────
 
@@ -896,6 +937,11 @@ class StreamingEngine:
 
     async def _checkpoint(self) -> None:
         if not self._state_mgr or not self._window_proc:
+            return
+        if self._held:
+            # Its source offsets would pass the held events UASR has not checked (an
+            # outage holds them for up to ~10 ticks x the 30 s heal timeout); a crash
+            # then lost them on restart. The next checkpoint after release covers them.
             return
         try:
             window_states = self._window_proc.get_state()
