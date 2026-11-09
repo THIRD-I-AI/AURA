@@ -39,6 +39,10 @@ from shared.webhook_dispatcher import _classify
 @pytest.fixture(autouse=True)
 def _isolated_cwd(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)  # checkpoints land in a throwaway dir
+    # ADR-002 phase 2b: the engine fails closed without UASR; BUG-569's source and
+    # sink health is tested with every micro-batch passing through the heal step.
+    from tests import _stream_heal_stub
+    _stream_heal_stub.install(monkeypatch, tmp_path)
 
 
 _started: List[StreamingEngine] = []

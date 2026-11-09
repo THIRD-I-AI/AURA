@@ -163,6 +163,38 @@ _PIVOT_AGG_FUNCTIONS = frozenset({
 from shared.storage.base import tenant_slug  # noqa: E402
 
 
+def quarantine_table_name(pipeline_id: str) -> str:
+    """ADR-002 phase 2b: the per-pipeline table that holds a run's quarantined rows."""
+    return f"_aura_quarantine_{_sanitize_id(pipeline_id)}"
+
+
+def write_quarantine(conn: Any, pipeline_id: str, tenant: Optional[str]) -> None:
+    """Append this run's quarantined rows to ``_aura_quarantine_<pipeline_id>``.
+
+    The table lives in the tenant's own pipeline_tables.duckdb (BUG-279), next to
+    the DuckDB sink's tables, so one tenant can never see another's held rows. The
+    rows are streamed in record batches, never materialised whole.
+    """
+    from pipeline.heal import QUARANTINE_STAGE
+    from shared.duckdb_factory import new_connection
+
+    table = quarantine_table_name(pipeline_id)
+    tenant_dir = os.path.join(OUTPUT_DIR, tenant_slug(tenant))
+    os.makedirs(tenant_dir, exist_ok=True)
+    reader = conn.execute(f"SELECT * FROM {QUARANTINE_STAGE}").to_arrow_reader(10_000)
+    with _duckdb_sink_lock:
+        out = new_connection(os.path.join(tenant_dir, DUCKDB_SINK_FILE))
+        try:
+            out.execute(
+                f"CREATE TABLE IF NOT EXISTS {_q(table)} (run_id VARCHAR, source VARCHAR, "
+                "row_index BIGINT, reason VARCHAR, original_row VARCHAR, quarantined_at TIMESTAMP)")
+            out.register("aura_quarantined_rows", reader)
+            out.execute(f"INSERT INTO {_q(table)} SELECT * FROM aura_quarantined_rows")
+        finally:
+            out.close()
+    logger.info("[Pipeline:%s] Quarantined rows written to %s", pipeline_id, table)
+
+
 class PipelineEngine:
     """Executes Pipeline definitions using DuckDB.
 
@@ -214,6 +246,7 @@ class PipelineEngine:
         _active_runs[tenant] = _active_runs.get(tenant, 0) + 1
 
         conn = new_connection()
+        healer = None
 
         try:
             if len(pipeline.steps) > MAX_PIPELINE_STEPS:
@@ -238,6 +271,13 @@ class PipelineEngine:
             )).description]
             run.columns_in = src_cols
 
+            # ADR-002 phase 2b: every source is healed after it loads and before any
+            # transform reads it. A preview writes no sink, and must not register a
+            # baseline or count as a batch for the post-heal canary, so it is not healed.
+            if not preview_only:
+                healer = self._new_healer(conn, pipeline, run, tenant)
+                await healer.heal_table(source_table, source_table)
+
             # ── 2. LOAD JOIN SOURCES (BUG-084) ────────────────────────
             # A JOIN step's second source must be loaded into the same
             # connection under its own table name before the CTE chain
@@ -251,6 +291,8 @@ class PipelineEngine:
                     join_tables[step.id] = await self._load_source(
                         conn, join_source, tenant=tenant, table_name=join_table_name,
                     )
+                    if healer is not None:
+                        await healer.heal_table(join_tables[step.id], join_tables[step.id])
 
             # BUG-276: every table the run needs is now materialised in `conn`, and what
             # runs next is step SQL written by the caller or an LLM. The expression
@@ -305,17 +347,27 @@ class PipelineEngine:
 
             # ── 3. WRITE SINK (unless preview_only) ───────────────────
             if not preview_only:
+                # Quarantined rows are kept before the sink is written, so a sink
+                # failure cannot lose the record of what was held aside (ADR-002).
+                if healer is not None and healer.quarantined:
+                    await asyncio.to_thread(self._write_quarantine, conn, pipeline.id, tenant)
+                    healer.quarantine_table = quarantine_table_name(pipeline.id)
                 await self._write_sink(conn, final_table, pipeline.sink, run, tenant)
             else:
                 logger.info(f"[Pipeline:{pipeline.id}] Preview-only, skipping sink write")
 
-            run.status = PipelineStatus.SUCCESS
+            run.status = (
+                PipelineStatus.DEGRADED if healer is not None and healer.degraded
+                else PipelineStatus.SUCCESS
+            )
 
         except Exception as exc:
             logger.error(f"[Pipeline:{pipeline.id}] Execution failed: {exc}", exc_info=True)
             run.status = PipelineStatus.FAILED
             run.error = _client_error(exc)
         finally:
+            if healer is not None:
+                run.heal = healer.summary()
             run.duration_ms = (time.perf_counter() - t0) * 1000
             from datetime import datetime, timezone
             run.finished_at = datetime.now(timezone.utc).isoformat()
@@ -326,6 +378,20 @@ class PipelineEngine:
                 _active_runs[tenant] -= 1
 
         return run
+
+    # ── Heal (ADR-002 phase 2b) ───────────────────────────────────────
+
+    @staticmethod
+    def _new_healer(conn: Any, pipeline: Pipeline, run: PipelineRun, tenant: Optional[str]) -> Any:
+        from pipeline.heal import RunHealer
+
+        # BUG-562's mechanism: UASR is called AS the pipeline's tenant, so its baselines,
+        # drift state and canary watches are that tenant's alone.
+        return RunHealer.for_tenant(conn, tenant, "service:pipeline_engine",
+                                    pipeline_id=pipeline.id, run_id=run.run_id)
+
+    def _write_quarantine(self, conn: Any, pipeline_id: str, tenant: Optional[str]) -> None:
+        write_quarantine(conn, pipeline_id, tenant)
 
     # ── Source Loading ────────────────────────────────────────────────
 

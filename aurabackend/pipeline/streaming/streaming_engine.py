@@ -3,7 +3,8 @@ Streaming Engine
 =================
 The main runtime loop for a streaming pipeline:
 
-  Source → [Transform] → Window Processor → Sinks
+  Source → Heal (UASR, ADR-002) → [Transform] → Window Processor → Sinks
+                 ↘ quarantine table
                 ↕
           State Manager (checkpoint / recovery)
 
@@ -20,10 +21,13 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+import uuid
+from collections import deque
 from datetime import datetime, timezone
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Deque, Dict, List, Optional
 
 from pipeline.streaming.backpressure import BackpressureManager, BackpressureStrategy
+from pipeline.streaming.heal import MicroBatchHealer, QuarantineStore, StreamHealError
 from pipeline.streaming.models import (
     LateDataPolicy,
     StreamEvent,
@@ -72,6 +76,16 @@ _RECOVERY_TICKS = 3
 # Component errors can now arrive every tick; keep only the most recent ones.
 _MAX_RECORDED_ERRORS = 50
 _ACTIVE = (StreamPipelineStatus.RUNNING, StreamPipelineStatus.DEGRADED)
+# ADR-002 phase 2b: a source with no baseline registers one from its first rows. One
+# micro-batch can be a handful of events, too few to describe the source, so the
+# first rows are gathered (held, not emitted) until there are this many or this
+# much time has passed, then registered and released unchanged.
+_BASELINE_MIN_EVENTS = 200
+_BASELINE_MAX_WAIT_SECONDS = 10.0
+# The stop/failure sweep retries its quarantine write this many times before it keeps
+# the events in memory and withholds the checkpoint (ADR-002: never dropped).
+_SWEEP_ATTEMPTS = 3
+_SWEEP_BACKOFF_SECONDS = 0.1
 
 
 # ────────────────────────────────────────────────────────────────────
@@ -113,6 +127,10 @@ def _create_sink(sink_def, pipeline: StreamPipeline) -> BaseSink:
     if t == "webhook":
         return WebhookSink(cfg)
     raise ValueError(f"Unsupported sink type: {t}")
+
+
+def _create_healer(pipeline: StreamPipeline) -> MicroBatchHealer:
+    return MicroBatchHealer(pipeline)
 
 
 # ────────────────────────────────────────────────────────────────────
@@ -249,6 +267,31 @@ class StreamingEngine:
         self._max_consecutive_errors = _MAX_CONSECUTIVE_ERRORS
         self._recovery_ticks = _RECOVERY_TICKS
 
+        # ADR-002 phase 2b heal step. _held is the micro-batch UASR has not yet
+        # answered for: nothing in it reaches a transform or sink until it does, and
+        # while it is held no new events are taken, so it stays one micro-batch big.
+        self._healer: Optional[MicroBatchHealer] = None
+        self._quarantine: Optional[QuarantineStore] = None
+        self._held: List[StreamEvent] = []
+        self._held_since: float = 0.0
+        self._batch_seq = 0
+        # The micro-batch's quarantine write, kept so a stop or failure sweep can wait
+        # for it: cancelling the run loop does not stop the thread doing the write.
+        self._quarantine_write: Optional[asyncio.Task] = None
+        self._baseline_min_events = _BASELINE_MIN_EVENTS
+        self._baseline_max_wait = _BASELINE_MAX_WAIT_SECONDS
+        # Events the ingest loop has read from the source (offsets advanced) and not
+        # yet put in the backpressure buffer. An engine attribute, not a local, so a
+        # stop that cancels the put still finds them for its sweep; each one leaves
+        # only once the buffer has taken (or refused) it.
+        self._pending_put: Deque[StreamEvent] = deque()
+        # Events the buffer refused (a dropping strategy, or a BLOCK timeout): never
+        # checked, so they are quarantined as unchecked, never just counted.
+        self._overflow: List[StreamEvent] = []
+        # How many of the buffer's dropped_count are quarantined or held for the
+        # sweep; a checkpoint never passes a drop that is not (_checkpoint).
+        self._drops_accounted = 0
+
         # Metrics
         self._metrics = StreamMetrics(pipeline_id=pipeline.id)
 
@@ -296,6 +339,13 @@ class StreamingEngine:
             self._source = _create_source(self.pipeline)
             await self._source.start()
 
+            self._healer = _create_healer(self.pipeline)
+            self._quarantine = QuarantineStore(self.pipeline, run_id=f"{self.pipeline.id}:{uuid.uuid4().hex[:12]}")
+            self._held = []
+            self._pending_put = deque()
+            self._overflow = []
+            self._drops_accounted = 0
+
             # Create sink adapters
             self._sinks = [_create_sink(s, self.pipeline) for s in self.pipeline.sinks]
             for sink in self._sinks:
@@ -342,6 +392,11 @@ class StreamingEngine:
                 use_pid_control=self._use_pid,
                 pid_target_utilization=self._pid_target_utilization,
                 pid_kp=self._pid_kp, pid_ki=self._pid_ki, pid_kd=self._pid_kd,
+                # ADR-002: BLOCK waits for space instead of dropping after 5 s. While
+                # UASR has not answered for a held micro-batch the run loop takes
+                # nothing from the buffer, so a timed-out put dropped every further
+                # event of an outage; waiting pauses the source instead.
+                block_timeout=None,
             )
 
             # S20.1: lazy-construct BarrierAligner for snapshot-aligned
@@ -413,6 +468,10 @@ class StreamingEngine:
         await self._cancel_loop_task(self._ingest_task, "ingest loop")
         await self._cancel_loop_task(self._task, "processing loop")
 
+        await self._quarantine_held("not checked: the pipeline stopped before UASR answered for it")
+        if self._healer:
+            await self._healer.aclose()
+
         # Flush backpressure buffer
         if self._backpressure:
             await self._backpressure.flush()
@@ -471,6 +530,9 @@ class StreamingEngine:
         which otherwise kept running with nothing left to consume them or stop them."""
         self._stopping = True
         await self._cancel_loop_task(self._ingest_task, "ingest loop")
+        await self._quarantine_held("not checked: the pipeline failed before UASR answered for it")
+        if self._healer:
+            await self._healer.aclose()
         for sink in self._sinks:
             try:
                 await sink.stop()
@@ -513,7 +575,9 @@ class StreamingEngine:
         last_tick = time.time()
         try:
             while not self._stopping:
-                if self._paused:
+                if self._paused or self._overflow:
+                    # Refused events wait for the run loop to quarantine them; the
+                    # source is not read meanwhile, which keeps them one batch big.
                     await asyncio.sleep(self.tick_interval)
                     continue
                 try:
@@ -530,7 +594,8 @@ class StreamingEngine:
                     continue
                 await self._component_tick("source", [], 1)
                 if events:
-                    await self._backpressure.put_batch(events)
+                    self._pending_put.extend(events)
+                    await self._buffer_pending()
                 else:
                     await asyncio.sleep(self.tick_interval)
 
@@ -556,6 +621,19 @@ class StreamingEngine:
             await self._mark_failed()
             self._stopping = True
 
+    async def _buffer_pending(self) -> None:
+        """Put the read-but-unbuffered events in the buffer, one at a time. Each stays
+        in _pending_put until the buffer has taken (or refused) it: a put cancelled
+        while it waits has not enqueued its event, so a stop's sweep finds every
+        event either in the buffer or here, never in both or neither."""
+        bp = self._backpressure
+        while self._pending_put:
+            accepted = await bp.put_one(self._pending_put[0])
+            event = self._pending_put.popleft()
+            if not accepted:
+                self._overflow.append(event)
+        bp.update_pressure_state()
+
     # ── Main Loop ─────────────────────────────────────────────────
 
     async def _run_loop(self) -> None:
@@ -568,8 +646,17 @@ class StreamingEngine:
                     await asyncio.sleep(self.tick_interval)
                     continue
 
-                # 1. Read micro-batch from backpressure buffer
-                events = await self._backpressure.get_batch(self.batch_size)
+                # 0. Events the buffer refused are quarantined as unchecked.
+                if await self._quarantine_overflow():
+                    await self._release_after_failure()
+                    return
+
+                # 1. Read a micro-batch from the backpressure buffer and heal it
+                #    (ADR-002 phase 2b). Only what UASR returned goes on.
+                events = await self._heal_step()
+                if events is None:
+                    await self._release_after_failure()
+                    return
 
                 if events:
                     # 2. Apply transforms
@@ -579,7 +666,6 @@ class StreamingEngine:
                         if result is not None:
                             transformed.append(result)
 
-                    self._metrics.events_in += len(events)
                     self._metrics.events_dropped += len(events) - len(transformed)
 
                     # 3. Window processing
@@ -670,6 +756,200 @@ class StreamingEngine:
             )
             await self._mark_failed()
             await self._release_after_failure()
+
+    # ── Heal step (ADR-002 phase 2b) ──────────────────────────────
+
+    def _baseline_ready(self) -> bool:
+        return (
+            len(self._held) >= self._baseline_min_events
+            or time.monotonic() - self._held_since >= self._baseline_max_wait
+        )
+
+    async def _heal_step(self) -> Optional[List[StreamEvent]]:
+        """The events that may go on to transforms and sinks this tick, or None when
+        this tick made the pipeline FAILED.
+
+        Fail closed: a micro-batch UASR has not answered for stays in _held, is
+        retried on the next tick, and never reaches a sink. Each unanswered tick is a
+        failed tick of the "heal" component, so BUG-569's DEGRADED/FAILED judging
+        applies unchanged; on FAILED (and on stop) the held events are quarantined
+        as unchecked, never dropped."""
+        gathering = self._healer.needs_baseline and self._held and not self._baseline_ready()
+        if not self._held or gathering:
+            want = self.batch_size
+            if self._healer.needs_baseline:
+                want = max(1, min(want, self._baseline_min_events - len(self._held)))
+            fresh = await self._backpressure.get_batch(want)
+            if fresh and not self._held:
+                self._held_since = time.monotonic()
+            self._held.extend(fresh)
+        if not self._held or (self._healer.needs_baseline and not self._baseline_ready()):
+            return []
+
+        batch = self._held
+        self._batch_seq += 1
+        batch_id = f"{self._quarantine.run_id}:{self._batch_seq}"
+        try:
+            outcome = await self._healer.heal(batch)
+            # Written before anything is released: a quarantined event that is in
+            # neither the sink input nor the table would be lost. Shielded, so a stop
+            # that cancels this loop leaves the write a task _quarantine_held can await
+            # before it sweeps the same held batch (else rows were written twice).
+            self._quarantine_write = asyncio.ensure_future(
+                self._quarantine.write(batch_id, outcome.quarantined))
+            await asyncio.shield(self._quarantine_write)
+            self._quarantine_write = None
+        except Exception as exc:
+            self._quarantine_write = None
+            self._metrics.events_held = len(self._held)
+            if await self._component_tick("heal", [exc], 0):
+                return None
+            return []
+
+        self._metrics.events_in += len(batch)
+        self._metrics.events_quarantined += len(outcome.quarantined)
+        self._metrics.heal_repairs += len(outcome.repairs)
+        if outcome.quarantined or outcome.degraded:
+            await self._heal_degraded(outcome, len(batch))
+        else:
+            await self._component_tick("heal", [], 1)
+        # Released only now: a stop that cancels the awaits above would otherwise lose
+        # the healed events, which are neither in _held nor yet in the window processor
+        # (what the checkpoint covers). Still held, the stop sweep quarantines them,
+        # skipping the rows the write above already did. No await follows until the run
+        # loop has handed them to the window processor.
+        self._held = []
+        self._metrics.events_held = 0
+        return outcome.events
+
+    async def _heal_degraded(self, outcome, sent: int) -> None:
+        """ADR-002: quarantined rows or a detection-only fault make the pipeline
+        DEGRADED. The heal step answered, so this is not a failed tick: the streak
+        toward FAILED restarts, and _recovery_ticks clean micro-batches in a row
+        return the pipeline to RUNNING, as for any BUG-569 component."""
+        alerts = sorted({str(a.get("type")) for a in outcome.alerts if isinstance(a, dict)})
+        detail = f"{len(outcome.quarantined)} of {sent} events quarantined"
+        if alerts:
+            detail += f"; alerts: {', '.join(alerts)}"
+        self._record_error(StreamHealError(detail), "heal")
+        self._clean_ticks.pop("heal", None)
+        self._consecutive_errors["heal"] = 0
+        if self.pipeline.status == StreamPipelineStatus.RUNNING:
+            self.pipeline.status = StreamPipelineStatus.DEGRADED
+            await self._publish_error("STREAM_DEGRADED")
+
+    async def _quarantine_overflow(self) -> bool:
+        """Quarantine the events the backpressure buffer refused: read from the source
+        and never checked, so they may reach no sink, and dropping them would lose
+        them (ADR-002: every row accounted for). Returns True when a failing write
+        made the pipeline FAILED; until a write succeeds they stay in _overflow, the
+        source is not read, and the checkpoint is withheld."""
+        if not self._overflow:
+            if "overflow" in self._consecutive_errors:
+                self._component_clean("overflow")
+            return False
+        if self._quarantine is None:
+            return False
+        pending = list(self._overflow)
+        self._batch_seq += 1
+        batch_id = f"{self._quarantine.run_id}:overflow:{self._batch_seq}"
+        reason = "not checked: the backpressure buffer was full and refused it"
+        try:
+            # Shielded and kept in _quarantine_write like the micro-batch's write, so a
+            # stop's sweep waits for it; skip_written there leaves out what it wrote.
+            self._quarantine_write = asyncio.ensure_future(
+                self._quarantine.write(batch_id, [(ev, reason) for ev in pending], skip_written=True))
+            written = await asyncio.shield(self._quarantine_write)
+        except Exception as exc:
+            self._quarantine_write = None
+            return await self._component_tick("overflow", [exc], 0)
+        self._quarantine_write = None
+        self._metrics.events_quarantined += written
+        swept = {id(ev) for ev in pending}
+        self._overflow = [ev for ev in self._overflow if id(ev) not in swept]
+        self._drops_accounted += len(pending)
+        # Quarantined rows make the pipeline DEGRADED, as the heal step's do; clean
+        # ticks with nothing refused bring it back (_component_clean).
+        self._record_error(StreamHealError(
+            f"{len(pending)} events quarantined unchecked: the backpressure buffer refused them"), "overflow")
+        self._clean_ticks.pop("overflow", None)
+        self._consecutive_errors["overflow"] = 0
+        if self.pipeline.status == StreamPipelineStatus.RUNNING:
+            self.pipeline.status = StreamPipelineStatus.DEGRADED
+            await self._publish_error("STREAM_DEGRADED")
+        return False
+
+    async def _quarantine_held(self, reason: str) -> bool:
+        """The events read from the source that no sink received and UASR never
+        checked -- the held micro-batch and the backpressure buffer -- go to the
+        quarantine table, so a stop or a failure loses none of them.
+
+        Returns False when they could not be written: they are then kept in _held,
+        reported, and the checkpoint is withheld (_checkpoint) so a restart re-reads
+        them from the source, never dropped (ADR-002: every row accounted for)."""
+        in_flight = self._quarantine_write
+        if in_flight is not None:
+            # A micro-batch's write, or a cancelled sweep's, may still be running in its
+            # thread; the sweep's skip_written can only see a write that has finished.
+            await asyncio.wait({in_flight})
+            # Its events are still held (nothing released them), so the sweep below
+            # covers them; only the rows it did write are counted here. A
+            # failed write rolled back and is simply swept.
+            if not in_flight.cancelled() and in_flight.exception() is None:
+                self._metrics.events_quarantined += in_flight.result()
+            self._quarantine_write = None
+        # The events stay in _held until a write of them has succeeded. A stop can
+        # cancel this sweep at any await below (it runs in the run loop after a
+        # failure); events moved to a local list were then lost, stop()'s own sweep
+        # found nothing, and the checkpoint went past them. Left in _held, stop()
+        # sweeps them again -- skip_written and the per-file lock make that safe --
+        # and _checkpoint withholds the offsets until then.
+        # So does every other event read and not yet checked: those the buffer
+        # refused, and those a cancelled put still had in hand (ingest is stopped).
+        if self._overflow:
+            self._held.extend(self._overflow)
+            self._drops_accounted += len(self._overflow)
+            self._overflow = []
+        if self._pending_put:
+            self._held.extend(self._pending_put)
+            self._pending_put.clear()
+        if self._backpressure:
+            self._held.extend(self._backpressure.drain_nowait())
+        self._metrics.events_held = len(self._held)
+        if not self._held or self._quarantine is None:
+            return True
+        pending = list(self._held)
+        batch = [(ev, reason) for ev in pending]
+        batch_id = f"{self._quarantine.run_id}:unchecked"
+        for attempt in range(_SWEEP_ATTEMPTS):
+            try:
+                # skip_written also makes a retry safe: a failed attempt rolled back.
+                # Shielded and kept in _quarantine_write for the same reason as the
+                # micro-batch's write: a cancelled sweep's thread still writes, and the
+                # next sweep must wait for it and count what it wrote.
+                self._quarantine_write = asyncio.ensure_future(
+                    self._quarantine.write(batch_id, batch, skip_written=True))
+                written = await asyncio.shield(self._quarantine_write)
+            except Exception as exc:
+                self._quarantine_write = None
+                logger.error("Streaming pipeline %s: quarantine sweep attempt %d failed: %s",
+                             self.pipeline.id, attempt + 1, exc, exc_info=True)
+                if attempt + 1 < _SWEEP_ATTEMPTS:
+                    await asyncio.sleep(_SWEEP_BACKOFF_SECONDS * 2 ** attempt)
+                continue
+            self._quarantine_write = None
+            self._metrics.events_quarantined += written
+            swept = {id(ev) for ev in pending}
+            self._held = [ev for ev in self._held if id(ev) not in swept]
+            self._metrics.events_held = len(self._held)
+            return True
+        self._metrics.events_held = len(pending)
+        self._record_error(StreamHealError(
+            f"{len(pending)} unchecked events could not be quarantined; kept in memory "
+            "and the checkpoint is withheld"), "quarantine")
+        logger.critical("Streaming pipeline %s: %d unchecked events could not be quarantined",
+                        self.pipeline.id, len(pending))
+        return False
 
     # ── Component health (BUG-569) ────────────────────────────────
 
@@ -770,6 +1050,18 @@ class StreamingEngine:
 
     async def _checkpoint(self) -> None:
         if not self._state_mgr or not self._window_proc:
+            return
+        if self._held:
+            # Its source offsets would pass the held events UASR has not checked (an
+            # outage holds them for up to ~10 ticks x the 30 s heal timeout); a crash
+            # then lost them on restart. The next checkpoint after release covers them.
+            return
+        if self._overflow or (
+            self._backpressure is not None
+            and self._backpressure.dropped_count > self._drops_accounted
+        ):
+            # Likewise events the buffer refused: not on disk yet, or dropped without
+            # being quarantined at all. The offsets must not pass them.
             return
         try:
             window_states = self._window_proc.get_state()

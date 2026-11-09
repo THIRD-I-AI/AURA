@@ -112,3 +112,29 @@ real pipelines first would push guessed fixes into customer data. So phase 2 has
 - Quarantined rows go to a per-pipeline quarantine table, never to the sink. The run reports
   DEGRADED.
 - Whole-run batches carry `metadata.complete_run` so the volume check runs.
+
+## Phase 2b contract (2026-11-07)
+
+Phase 2a ended with the benchmark green: 0 WRONG of 7000 fault trials, 0 false alarms in 1000
+clean batches, recall 0.68. Phase 2b connects the healer to the pipelines that actually move
+data.
+
+- **Where:** after each source load in `pipeline/engine.py` (scheduled and manual runs, ETL),
+  and per micro-batch in the streaming engine, before any transform or sink sees the rows.
+- **How:** the gateway calls UASR `/uasr/heal` over HTTP as the pipeline's tenant (the
+  BUG-562 mechanism).
+  - Rows go in pages that fit the 1 GB box. Healed rows replace the source rows.
+  - The source id is `pipeline:<pipeline_id>:<source>`, scoped to the tenant.
+- **First run:** the source's clean first load registers the baseline (`only_if_absent`); it
+  is not healed against itself.
+- **Whole runs:** the run's last call carries `metadata.complete_run` with the row count, so
+  the volume check runs per run, never per page.
+- **Quarantine:** quarantined rows are never written to a sink.
+  - They go to a per-pipeline DuckDB table `_aura_quarantine_<pipeline_id>`, with run id,
+    reason and the original row.
+  - The run reports DEGRADED with counts, repairs and alerts.
+- **Fail closed:** if UASR cannot be reached or answers an error, no rows from that load
+  reach a sink. The run is FAILED with that reason, and the scheduler's retry and freshness
+  re-run cover it. Writing unchecked data would be a guess.
+- **Accuracy:** the phase-2a benchmark stays green. Pipeline tests reuse its fault injectors
+  end to end.

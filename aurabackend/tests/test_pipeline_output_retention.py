@@ -61,6 +61,7 @@ def _outputs(tmp_path, tenant: str) -> set:
     return set(os.listdir(os.path.join(str(tmp_path / "processed"), tenant_slug(tenant))))
 
 
+@pytest.mark.uasr_unreachable  # no UASR in this test: sources pass the heal step unhealed (tests/conftest.py)
 @pytest.mark.asyncio
 async def test_only_the_newest_auto_named_outputs_are_kept(tmp_path):
     names = []
@@ -75,6 +76,7 @@ async def test_only_the_newest_auto_named_outputs_are_kept(tmp_path):
     assert names[-1] in _outputs(tmp_path, "acme"), "the run that just finished must keep its file"
 
 
+@pytest.mark.uasr_unreachable  # no UASR in this test: sources pass the heal step unhealed (tests/conftest.py)
 @pytest.mark.asyncio
 async def test_files_the_caller_named_are_never_pruned(tmp_path):
     await _run("acme", file_name="quarterly_report")
@@ -84,6 +86,7 @@ async def test_files_the_caller_named_are_never_pruned(tmp_path):
     assert "quarterly_report.csv" in _outputs(tmp_path, "acme")
 
 
+@pytest.mark.uasr_unreachable  # no UASR in this test: sources pass the heal step unhealed (tests/conftest.py)
 @pytest.mark.asyncio
 async def test_pruning_does_not_touch_another_tenant(tmp_path):
     theirs = await _run("globex")

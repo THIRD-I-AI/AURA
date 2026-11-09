@@ -57,6 +57,7 @@ def _saved(tmp_path, tenant: str, table: str):
         con.close()
 
 
+@pytest.mark.uasr_unreachable  # no UASR in this test: sources pass the heal step unhealed (tests/conftest.py)
 @pytest.mark.asyncio
 async def test_duckdb_sink_table_outlives_the_run(tmp_path):
     run = await _run()
@@ -67,6 +68,7 @@ async def test_duckdb_sink_table_outlives_the_run(tmp_path):
     assert _saved(tmp_path, "acme", "clean_orders") == [(1, 10), (2, 20)]
 
 
+@pytest.mark.uasr_unreachable  # no UASR in this test: sources pass the heal step unhealed (tests/conftest.py)
 @pytest.mark.asyncio
 async def test_replace_overwrites_and_append_adds(tmp_path):
     await _run()
@@ -78,6 +80,7 @@ async def test_replace_overwrites_and_append_adds(tmp_path):
     assert _saved(tmp_path, "acme", "clean_orders") == [(3, 30), (4, 40)]
 
 
+@pytest.mark.uasr_unreachable  # no UASR in this test: sources pass the heal step unhealed (tests/conftest.py)
 @pytest.mark.asyncio
 async def test_if_exists_fail_does_not_touch_an_existing_table(tmp_path):
     await _run()
@@ -88,6 +91,7 @@ async def test_if_exists_fail_does_not_touch_an_existing_table(tmp_path):
     assert _saved(tmp_path, "acme", "clean_orders") == [(1, 10), (2, 20)]
 
 
+@pytest.mark.uasr_unreachable  # no UASR in this test: sources pass the heal step unhealed (tests/conftest.py)
 @pytest.mark.asyncio
 async def test_each_tenant_has_its_own_database(tmp_path):
     await _run(tenant="acme")

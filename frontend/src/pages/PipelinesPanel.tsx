@@ -13,6 +13,7 @@ import {
   type PipelineDef,
   type PipelineRunResult,
   type PipelineListItem,
+  type PipelineHealSummary,
 } from '../services/api';
 import PipelineMonitor, { type PipelineRunSummary } from '../components/PipelineMonitor';
 import { Button } from '@/components/ui-kit/button';
@@ -152,15 +153,29 @@ const TEMPLATE_CARD = 'flex flex-col gap-2 rounded-none border border-border bg-
 
 function resultStatusClass(status: string | null): string {
   if (status === 'success') return 'text-signal';
-  if (status === 'error') return 'text-danger';
+  // ADR-002 phase 2b: a degraded run wrote its sink but held rows aside or raised an alert.
+  if (status === 'degraded') return 'text-warn';
+  if (status === 'error' || status === 'failed') return 'text-danger';
   return 'text-card-foreground';
+}
+
+/** A degraded run wrote its sink: it is not a failure, and re-running it into an
+ *  append sink would write its rows twice. */
+function runTitle(status: string | undefined, previewOnly = false): string {
+  if (previewOnly) return 'Preview Result';
+  if (status === 'success') return 'Pipeline Complete';
+  if (status === 'degraded') return 'Pipeline Complete — Needs Review';
+  return 'Pipeline Failed';
 }
 
 function savedStatusClass(status: string): string {
   switch (status) {
-    case 'active': return 'border-signal/40 bg-signal/10 text-signal';
-    case 'inactive': return 'border-warn/40 bg-warn/10 text-warn';
-    case 'error': return 'border-danger/40 bg-danger/10 text-danger';
+    case 'active':
+    case 'success': return 'border-signal/40 bg-signal/10 text-signal';
+    case 'inactive':
+    case 'degraded': return 'border-warn/40 bg-warn/10 text-warn';
+    case 'error':
+    case 'failed': return 'border-danger/40 bg-danger/10 text-danger';
     default: return 'border-border bg-card text-text-tertiary';
   }
 }
@@ -855,8 +870,9 @@ const PipelinesPanel: React.FC<PipelinesPanelProps> = () => {
           {/* ── AI Run Result ── */}
           {aiRun && (
             <PipelineResultCard
-              title={aiRun.status === 'success' ? 'Pipeline Complete' : 'Pipeline Failed'}
+              title={runTitle(aiRun.status)}
               error={aiRun.error}
+              heal={aiRun.heal}
               sourceRows={aiRun.rows_read}
               outputRows={aiRun.rows_written}
               statsLabel={`${aiRun.steps_executed} steps · ${aiRun.duration_ms.toFixed(0)}ms`}
@@ -1079,7 +1095,8 @@ const PipelinesPanel: React.FC<PipelinesPanelProps> = () => {
       {/* ── Result ── */}
       {result && (
         <PipelineResultCard
-          title={result.preview_only ? 'Preview Result' : 'Pipeline Complete'}
+          title={runTitle(result.status, result.preview_only)}
+          heal={result.heal}
           sourceRows={result.source.row_count}
           outputRows={result.output.row_count}
           statsLabel={`${result.transforms_applied} transform${result.transforms_applied !== 1 ? 's' : ''} · ${result.execution_time_ms.toFixed(0)}ms`}
@@ -1231,6 +1248,24 @@ const PipelinesPanel: React.FC<PipelinesPanelProps> = () => {
    blocks were near-identical ~70-line JSX structures).
    ================================================================ */
 
+const HealNotice: React.FC<{ heal: PipelineHealSummary }> = ({ heal }) => (
+  <div role="status" data-testid="heal-notice" className="m-4 flex flex-col gap-1 rounded-none border border-warn/40 bg-warn/10 px-3 py-2 text-xs text-warn">
+    {heal.rows_quarantined > 0 && (
+      <span>
+        {heal.rows_quarantined.toLocaleString()} row{heal.rows_quarantined !== 1 ? 's' : ''} could not be verified
+        and {heal.rows_quarantined !== 1 ? 'were' : 'was'} held in quarantine, not written to the output
+        {heal.quarantine_table ? <> (table <code className="font-mono">{heal.quarantine_table}</code>)</> : null}.
+      </span>
+    )}
+    {heal.alerts > 0 && (
+      <span>
+        {heal.alerts} data-quality alert{heal.alerts !== 1 ? 's' : ''} raised on this load; the output was written
+        and should be reviewed.
+      </span>
+    )}
+  </div>
+);
+
 interface PipelineResultColumn {
   name: string;
   type?: string;
@@ -1239,6 +1274,7 @@ interface PipelineResultColumn {
 interface PipelineResultCardProps {
   title: string;
   error?: string;
+  heal?: PipelineHealSummary | null;
   sourceRows: number;
   outputRows: number;
   statsLabel: React.ReactNode;
@@ -1252,6 +1288,7 @@ interface PipelineResultCardProps {
 const PipelineResultCard: React.FC<PipelineResultCardProps> = ({
   title,
   error,
+  heal,
   sourceRows,
   outputRows,
   statsLabel,
@@ -1279,6 +1316,8 @@ const PipelineResultCard: React.FC<PipelineResultCardProps> = ({
     {error && (
       <div className={cn(ERROR_BANNER, 'm-4')}>{error}</div>
     )}
+
+    {heal && (heal.rows_quarantined > 0 || heal.alerts > 0) && <HealNotice heal={heal} />}
 
     {/* Output columns */}
     {columns.length > 0 && (

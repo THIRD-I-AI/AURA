@@ -46,6 +46,14 @@ from pipeline.streaming.models import (
 from pipeline.streaming.sinks.sse_sink import SSESink
 from pipeline.streaming.sources.websocket_source import WebSocketSource
 
+
+@pytest.fixture(autouse=True)
+def _pass_through_heal_step(monkeypatch, tmp_path):
+    # ADR-002 phase 2b: the engine fails closed without UASR; these tests are about
+    # the engine itself, so every micro-batch passes through (tests/_stream_heal_stub.py).
+    from tests import _stream_heal_stub
+    _stream_heal_stub.install(monkeypatch, tmp_path)
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Helpers
 # ──────────────────────────────────────────────────────────────────────────────

@@ -114,6 +114,8 @@ faulthandler_timeout = 1200
 markers = [
     "slow: takes more than ~20 s (e.g. the BUG-523 gcm worst-case timing test)",
     "heal_accuracy: ADR-002 fault-injection accuracy benchmark of /uasr/heal (tests/accuracy; full run in the heal-accuracy CI lane)",
+    "pipeline_heal: runs a batch pipeline's real ADR-002 heal step against in-process /uasr handlers (tests/test_heal_phase2b_batch.py)",
+    "uasr_unreachable: the test's pipeline/ETL runs have no UASR to reach, so their sources pass through the heal step unhealed (tests/conftest.py); unmarked runs heal for real",
 ]
 
 [tool.coverage.run]
