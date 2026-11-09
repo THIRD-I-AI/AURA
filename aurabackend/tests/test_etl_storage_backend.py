@@ -19,6 +19,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import pytest  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
 from api_gateway.main import app  # noqa: E402
@@ -126,6 +127,7 @@ def test_etl_natural_language_runs_blocking_calls_off_the_event_loop(tmp_path, m
     )
 
 
+@pytest.mark.uasr_unreachable  # no UASR in this test: sources pass the heal step unhealed (tests/conftest.py)
 def test_etl_execute_runs_blocking_calls_off_the_event_loop(tmp_path, monkeypatch):
     """Single-uvicorn-worker constraint (see .claude/rules/backend.md "Async
     safety"): /etl/execute's smart_load_file, transform materialization

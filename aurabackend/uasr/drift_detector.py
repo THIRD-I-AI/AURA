@@ -96,6 +96,20 @@ def _is_complete_run(batch: BatchPayload) -> bool:
     return (batch.metadata or {}).get("complete_run") is True
 
 
+def _run_rows(batch: BatchPayload) -> int:
+    """The row count of the run a complete-run batch closes.
+
+    ADR-002 phase 2b: a pipeline pages a large load through /uasr/heal and only its
+    last page declares ``complete_run``, so that page's own length is not the run's
+    size; it declares the whole run's in ``metadata["run_rows"]``. A batch that
+    declares nothing is the whole run itself.
+    """
+    n = (batch.metadata or {}).get("run_rows")
+    if isinstance(n, int) and not isinstance(n, bool) and n >= 0:
+        return n
+    return len(batch.rows)
+
+
 class DriftDetector:
     """
     Stateful detector that compares incoming batches against stored baselines.
@@ -283,6 +297,9 @@ class DriftDetector:
                     # BUG-568 review: only a baseline that is itself a whole
                     # run can anchor the volume check -- see _check_volume_drift.
                     "complete_run": _is_complete_run(batch),
+                    # ADR-002 phase 2b: the run's size, which a paged baseline's
+                    # ``rows`` (the page it was registered from) is not.
+                    "run_rows": _run_rows(batch),
                 }
         else:
             distributions = distributions_or_batch
@@ -1280,10 +1297,11 @@ class DriftDetector:
         profile = st.baseline_rows
         if not profile or not profile.get("complete_run"):
             return None
-        n0 = int(profile["rows"])
+        # ADR-002 phase 2b: run sizes, never page sizes (``_run_rows``).
+        n0 = int(profile.get("run_rows", profile["rows"]))
         if n0 < _VOLUME_MIN_BASELINE_ROWS:
             return None
-        n1 = len(batch.rows)
+        n1 = _run_rows(batch)
         if n0 <= n1 * _VOLUME_FACTOR and n1 <= n0 * _VOLUME_FACTOR:
             return None
         return {

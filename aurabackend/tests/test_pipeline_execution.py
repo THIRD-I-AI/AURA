@@ -453,6 +453,7 @@ async def test_pg_sink_quotes_table_name_containing_double_quote(monkeypatch):
     )
 
 
+@pytest.mark.uasr_unreachable  # no UASR in this test: sources pass the heal step unhealed (tests/conftest.py)
 @pytest.mark.asyncio
 async def test_file_sink_write_offloaded_to_thread(tmp_path, monkeypatch):
     """_write_sink's FILE branch calls the synchronous _write_file_sink,
@@ -495,6 +496,7 @@ async def test_file_sink_write_offloaded_to_thread(tmp_path, monkeypatch):
     )
 
 
+@pytest.mark.uasr_unreachable  # no UASR in this test: sources pass the heal step unhealed (tests/conftest.py)
 @pytest.mark.asyncio
 async def test_file_sink_output_is_namespaced_per_tenant(tmp_path, monkeypatch):
     """BUG-051: two tenants running pipelines with the SAME sink file_name
@@ -537,6 +539,7 @@ async def test_file_sink_output_is_namespaced_per_tenant(tmp_path, monkeypatch):
     assert not os.path.exists(os.path.join(str(tmp_path), "export.csv"))
 
 
+@pytest.mark.uasr_unreachable  # no UASR in this test: sources pass the heal step unhealed (tests/conftest.py)
 @pytest.mark.asyncio
 async def test_duckdb_sink_write_offloaded_to_thread(tmp_path, monkeypatch):
     """_write_sink's DUCKDB branch calls the synchronous _write_duckdb_sink,

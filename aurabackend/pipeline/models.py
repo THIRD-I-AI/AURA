@@ -64,6 +64,9 @@ class PipelineStatus(str, Enum):
     READY = "ready"
     RUNNING = "running"
     SUCCESS = "success"
+    # ADR-002 phase 2b: the run wrote its sink, but the heal step held rows aside in
+    # the pipeline's quarantine table or raised an alert (null spike, volume, ...).
+    DEGRADED = "degraded"
     FAILED = "failed"
 
 
@@ -156,6 +159,32 @@ class Pipeline(BaseModel):
 # Pipeline Run (execution record)
 # ────────────────────────────────────────────────────────────────────
 
+class SourceHealSummary(BaseModel):
+    """What the heal step (ADR-002 phase 2b) did to one source table of a run."""
+    source: str                     # the table name the run loaded it as
+    source_id: str                  # pipeline:<pipeline_id>:<source> (etl:<stem>:<stem> for /etl/execute); UASR scopes it to the tenant
+    # baseline_registered: the source's first run, which registered the baseline and was
+    # not healed against itself. healed: every row went through /uasr/heal. empty: no rows.
+    mode: str
+    rows_in: int = 0
+    rows_out: int = 0
+    rows_quarantined: int = 0
+    pages: int = 0
+    repairs: List[Dict[str, Any]] = Field(default_factory=list)
+    alerts: List[Dict[str, Any]] = Field(default_factory=list)
+
+
+class PipelineHealSummary(BaseModel):
+    """The heal step's record on a run, for the UI and the run API."""
+    sources: List[SourceHealSummary] = Field(default_factory=list)
+    rows_quarantined: int = 0
+    repairs: int = 0
+    alerts: int = 0
+    # The per-pipeline DuckDB table (in the tenant's pipeline_tables.duckdb) that holds
+    # this run's quarantined rows; None when nothing was quarantined.
+    quarantine_table: Optional[str] = None
+
+
 class PipelineRun(BaseModel):
     """Record of a single pipeline execution."""
     run_id: str = Field(default_factory=lambda: f"run_{uuid.uuid4().hex[:8]}")
@@ -177,3 +206,4 @@ class PipelineRun(BaseModel):
     preview_data: Optional[List[Dict[str, Any]]] = None
     error: Optional[str] = None
     duration_ms: float = 0.0
+    heal: Optional[PipelineHealSummary] = None
