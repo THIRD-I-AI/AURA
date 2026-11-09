@@ -46,6 +46,13 @@ _TIMEOUT_SECONDS = 120.0
 _MAX_ALERTS_KEPT = 50
 
 QUARANTINE_STAGE = "__aura_quarantine_stage"
+# The private row id a run gives each source row while it heals the table. DuckDB's
+# ``rowid`` pseudo-column cannot be the id: a source column named ``rowid`` (SQLite
+# exports, many CSVs) hides it, so ``rowid`` reads the user's values, duplicates and
+# all, and rows were paged twice or never (review of ADR-002 phase 2b).
+ROW_ID = "__aura_rid"
+_RESERVED = {ROW_ID, "__aura_row"}
+_HIDDEN_ROWID = "__aura_source_rowid"
 
 # DuckDB types whose Python value JSON carries exactly. Every other type goes to UASR
 # as DuckDB's own text for the value, which CAST restores exactly (DATE, TIMESTAMP,
@@ -157,7 +164,20 @@ class RunHealer:
             # neither register a baseline nor be compared with one.
             summary.mode = "empty"
             return summary
+        clash = [c for c, _ in columns if c.lower() in _RESERVED | {_HIDDEN_ROWID}]
+        if clash:
+            raise HealUnavailable(
+                f"source '{source}' has a column named {clash[0]!r}, a name the heal step "
+                "reserves for its own row ids; no rows were written")
+        await asyncio.to_thread(self._key, table, columns)
+        try:
+            return await self._heal_keyed(table, source, columns, total, summary)
+        finally:
+            await asyncio.to_thread(self._unkey, table)
 
+    async def _heal_keyed(self, table: str, source: str, columns: List[Tuple[str, str]], total: int,
+                          summary: SourceHealSummary) -> SourceHealSummary:
+        source_id = summary.source_id
         page_rows = max(1, min(PAGE_MAX_ROWS, PAGE_MAX_CELLS // max(1, len(columns))))
         pages = math.ceil(total / page_rows)
         complete = {"complete_run": True, "run_rows": total}
@@ -218,6 +238,15 @@ class RunHealer:
         finally:
             await asyncio.to_thread(self._drop, page_map)
         summary.rows_out = total - summary.rows_quarantined
+        # Every source row is in the healed table or in quarantine, exactly once
+        # (ADR-002). A count that disagrees means rows were lost or doubled: nothing
+        # from this load may reach a sink.
+        held = await asyncio.to_thread(self._count, table)
+        if held != summary.rows_out:
+            raise HealUnavailable(
+                f"the healed rows of source '{source}' do not account for the load "
+                f"({held} healed + {summary.rows_quarantined} quarantined != {total}); "
+                "no rows were written")
         return summary
 
     # ── UASR ───────────────────────────────────────────────────────────
@@ -261,12 +290,39 @@ class RunHealer:
         total = self.conn.execute(f"SELECT COUNT(*) FROM {_q(table)}").fetchone()[0]
         return columns, int(total)
 
+    def _count(self, table: str) -> int:
+        return int(self.conn.execute(f"SELECT COUNT(*) FROM {_q(table)}").fetchone()[0])
+
+    def _key(self, table: str, columns: List[Tuple[str, str]]) -> None:
+        """Give every row of ``table`` its private id ``ROW_ID``, the row's position.
+
+        The id is read from DuckDB's ``rowid`` pseudo-column, which a source column
+        called ``rowid`` (any case) hides; that column is renamed for the copy and
+        given back its name in it, so the id is always the real position, and the
+        user's column keeps its name, values and place.
+        """
+        hidden = [c for c, _ in columns if c.lower() == "rowid"]
+        if hidden:
+            self.conn.execute(f"ALTER TABLE {_q(table)} RENAME COLUMN {_q(hidden[0])} TO {_q(_HIDDEN_ROWID)}")
+        select = ", ".join(f"{_q(_HIDDEN_ROWID)} AS {_q(c)}" if c in hidden else _q(c) for c, _ in columns)
+        keyed = f"__aura_keyed_{table}"
+        self.conn.execute(
+            f"CREATE TABLE {_q(keyed)} AS SELECT rowid AS {ROW_ID}, {select} FROM {_q(table)}")
+        self.conn.execute(f"DROP TABLE {_q(table)}")
+        self.conn.execute(f"ALTER TABLE {_q(keyed)} RENAME TO {_q(table)}")
+
+    def _unkey(self, table: str) -> None:
+        """Drop the private id, if the table still has it (a rebuilt table does not)."""
+        names = {r[0] for r in self.conn.execute(f"DESCRIBE {_q(table)}").fetchall()}
+        if ROW_ID in names:
+            self.conn.execute(f"ALTER TABLE {_q(table)} DROP COLUMN {ROW_ID}")
+
     def _build_page_map(self, table: str, page_rows: int) -> str:
         """Assign every row of ``table`` to a page, in a pseudo-random but fixed order.
 
-        Pages are slices of the rows ordered by a hash of their rowid, so each page is
+        Pages are slices of the rows ordered by a hash of their row id, so each page is
         a sample of the whole load. A contiguous slice of a source sorted by date or id
-        holds one end of the range, and a strided one (rowid % pages) aliases with any
+        holds one end of the range, and a strided one (row id % pages) aliases with any
         periodic pattern in the rows (alternating categories): either way a page of
         clean data would drift from the baseline, a false alarm ADR-002 forbids. The
         order is deterministic, so the first run's baseline page is a stable sample.
@@ -274,8 +330,8 @@ class RunHealer:
         """
         page_map = f"__aura_pages_{table}"
         self.conn.execute(
-            f"CREATE TABLE {_q(page_map)} AS SELECT rowid AS rid, "
-            f"(row_number() OVER (ORDER BY hash(rowid), rowid) - 1) // {int(page_rows)} AS page "
+            f"CREATE TABLE {_q(page_map)} AS SELECT {ROW_ID} AS rid, "
+            f"(row_number() OVER (ORDER BY hash({ROW_ID}), {ROW_ID}) - 1) // {int(page_rows)} AS page "
             f"FROM {_q(table)}")
         return page_map
 
@@ -284,12 +340,12 @@ class RunHealer:
 
     def _fetch_page(self, table: str, page_map: str, columns: List[Tuple[str, str]], k: int
                     ) -> Tuple[List[int], List[Dict[str, Any]]]:
-        """Page ``k`` of the page map: its rowids and its rows as sent to UASR."""
+        """Page ``k`` of the page map: its row ids and its rows as sent to UASR."""
         names = [c for c, _ in columns]
         select = ", ".join(_send_expr(c, t) for c, t in columns)
         cur = self.conn.execute(
-            f"SELECT rowid, {select} FROM {_q(table)} "
-            f"WHERE rowid IN (SELECT rid FROM {_q(page_map)} WHERE page = {int(k)}) ORDER BY rowid")
+            f"SELECT {ROW_ID}, {select} FROM {_q(table)} "
+            f"WHERE {ROW_ID} IN (SELECT rid FROM {_q(page_map)} WHERE page = {int(k)}) ORDER BY {ROW_ID}")
         rowids: List[int] = []
         rows: List[Dict[str, Any]] = []
         for rec in cur.fetchall():
@@ -366,11 +422,11 @@ class RunHealer:
         if keep:
             held = ""
             if self._stage_ready:
-                held = (f" AND rowid NOT IN (SELECT row_index FROM {QUARANTINE_STAGE} "
+                held = (f" AND {ROW_ID} NOT IN (SELECT row_index FROM {QUARANTINE_STAGE} "
                         "WHERE run_id = $run AND source = $source)")
                 params = {"run": self.run_id, "source": source}
             parts.append(
-                f"SELECT rowid AS __aura_row, * FROM {_q(table)} WHERE rowid IN "
+                f"SELECT {ROW_ID} AS __aura_row, * EXCLUDE ({ROW_ID}) FROM {_q(table)} WHERE {ROW_ID} IN "
                 f"(SELECT rid FROM {_q(page_map)} WHERE page IN ({', '.join(str(k) for k in keep)})){held}")
         existing = {r[0] for r in self.conn.execute("SELECT table_name FROM duckdb_tables()").fetchall()}
         parts += [f"SELECT * FROM {_q(_page_table(table, k))}" for k in sorted(rewritten)
@@ -382,7 +438,7 @@ class RunHealer:
                 + " UNION ALL BY NAME ".join(parts) + ") ORDER BY __aura_row", params)
         else:
             # Every row was quarantined: the transforms see the source's columns, empty.
-            self.conn.execute(f"CREATE TABLE {_q(healed)} AS SELECT * FROM {_q(table)} LIMIT 0")
+            self.conn.execute(f"CREATE TABLE {_q(healed)} AS SELECT * EXCLUDE ({ROW_ID}) FROM {_q(table)} LIMIT 0")
         for k in rewritten:
             self.conn.execute(f"DROP TABLE IF EXISTS {_q(_page_table(table, k))}")
         self.conn.execute(f"DROP TABLE {_q(table)}")

@@ -22,11 +22,17 @@ vi.mock('../../services/api', () => ({
   },
 }));
 
-// Mock the PipelineMonitor sub-component
-vi.mock('../../components/PipelineMonitor', () => ({
-  default: () => <div data-testid="pipeline-monitor">Monitor</div>,
-  PipelineMonitor: () => <div data-testid="pipeline-monitor">Monitor</div>,
-}));
+// Mock the PipelineMonitor sub-component. A test sets ``monitor.result`` to have the
+// monitor report that run summary as its SSE 'complete' event.
+const monitor = vi.hoisted(() => ({ result: null as Record<string, unknown> | null }));
+vi.mock('../../components/PipelineMonitor', async () => {
+  const { useEffect } = await import('react');
+  const Monitor = ({ onComplete }: { onComplete?: (r: Record<string, unknown>) => void }) => {
+    useEffect(() => { if (monitor.result) onComplete?.(monitor.result); }, [onComplete]);
+    return <div data-testid="pipeline-monitor">Monitor</div>;
+  };
+  return { default: Monitor, PipelineMonitor: Monitor };
+});
 
 import PipelinesPanel from '../PipelinesPanel';
 import { uploadService } from '../../services/api';
@@ -142,5 +148,98 @@ describe('PipelinesPanel Edit in Visual Builder (BUG-426)', () => {
     fireEvent.click(await screen.findByText('Edit in Visual Builder'));
 
     expect(await screen.findByText('2 steps')).toBeInTheDocument();
+  });
+});
+
+// ADR-002 phase 2b: a 'degraded' run wrote its sink but held rows aside or raised an
+// alert. It was titled 'Pipeline Failed' (inviting a re-run that doubles an append
+// sink), and an ETL run said 'Pipeline Complete' with no word of its quarantined rows.
+describe('PipelinesPanel degraded runs (ADR-002 phase 2b)', () => {
+  const heal = {
+    sources: [], rows_quarantined: 3, repairs: 0, alerts: 1,
+    quarantine_table: '_aura_quarantine_pipe_1',
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    monitor.result = null;
+  });
+
+  it('shows a degraded pipeline run as complete, with its quarantined rows', async () => {
+    const { pipelineService } = await import('../../services/api');
+    const { fireEvent } = await import('@testing-library/react');
+    (pipelineService.generate as ReturnType<typeof vi.fn>).mockResolvedValue({
+      status: 'success',
+      pipeline: { name: 'p', source: { type: 'file', file_name: 'a.csv' }, steps: [], sink: { format: 'csv' } },
+    });
+    (pipelineService.executeAsync as ReturnType<typeof vi.fn>).mockResolvedValue({ status: 'success', run_id: 'run_1' });
+    monitor.result = {
+      run_id: 'run_1', pipeline_id: 'pipe_1', status: 'degraded', rows_read: 10, rows_written: 7,
+      columns_in: ['v'], columns_out: ['v'], steps_executed: 0, steps_skipped: 0, duration_ms: 5, heal,
+    };
+
+    renderPanel();
+    fireEvent.change(await screen.findByPlaceholderText(/Read products\.csv/), { target: { value: 'x' } });
+    fireEvent.click(screen.getByText('Generate Pipeline'));
+    fireEvent.click(await screen.findByText('Execute Pipeline'));
+
+    expect(await screen.findByText('Pipeline Complete — Needs Review')).toBeInTheDocument();
+    expect(screen.queryByText('Pipeline Failed')).not.toBeInTheDocument();
+    const notice = screen.getByTestId('heal-notice');
+    expect(notice).toHaveTextContent('3 rows could not be verified');
+    expect(notice).toHaveTextContent('_aura_quarantine_pipe_1');
+    expect(notice).toHaveTextContent('1 data-quality alert');
+    expect(screen.getByText('Degraded')).toHaveClass('text-warn');
+  });
+
+  it('still titles a failed pipeline run as failed', async () => {
+    const { pipelineService } = await import('../../services/api');
+    const { fireEvent } = await import('@testing-library/react');
+    (pipelineService.generate as ReturnType<typeof vi.fn>).mockResolvedValue({
+      status: 'success',
+      pipeline: { name: 'p', source: { type: 'file', file_name: 'a.csv' }, steps: [], sink: { format: 'csv' } },
+    });
+    (pipelineService.executeAsync as ReturnType<typeof vi.fn>).mockResolvedValue({ status: 'success', run_id: 'run_2' });
+    monitor.result = {
+      run_id: 'run_2', pipeline_id: 'pipe_1', status: 'failed', rows_read: 0, rows_written: 0,
+      columns_in: [], columns_out: [], steps_executed: 0, steps_skipped: 0, duration_ms: 5, error: 'boom',
+    };
+
+    renderPanel();
+    fireEvent.change(await screen.findByPlaceholderText(/Read products\.csv/), { target: { value: 'x' } });
+    fireEvent.click(screen.getByText('Generate Pipeline'));
+    fireEvent.click(await screen.findByText('Execute Pipeline'));
+
+    expect(await screen.findByText('Pipeline Failed')).toBeInTheDocument();
+    expect(screen.queryByTestId('heal-notice')).not.toBeInTheDocument();
+  });
+
+  it('tells the user a degraded ETL run held rows in quarantine', async () => {
+    const { etlService } = await import('../../services/api');
+    const { fireEvent } = await import('@testing-library/react');
+    (uploadService.getUploadedFiles as ReturnType<typeof vi.fn>).mockResolvedValue([{ filename: 'a.csv' }]);
+    (etlService.previewSource as ReturnType<typeof vi.fn>).mockResolvedValue({
+      table_name: 'a', columns: [{ name: 'v', type: 'INT' }], row_count: 10, preview: [],
+    });
+    (etlService.execute as ReturnType<typeof vi.fn>).mockResolvedValue({
+      status: 'degraded', pipeline_name: 'p',
+      source: { file: 'a.csv', row_count: 10, columns: [{ name: 'v', type: 'INT' }] },
+      output: { row_count: 7, columns: [{ name: 'v', type: 'INT' }], file: 'a.parquet', format: 'parquet' },
+      transform_sql: 'SELECT 1', transforms_applied: 0, preview: [], execution_time_ms: 5,
+      preview_only: false, heal: { ...heal, alerts: 0 },
+    });
+
+    renderPanel();
+    fireEvent.click(screen.getByText('Visual Builder'));
+    const select = await screen.findByDisplayValue('Select an uploaded file…');
+    await screen.findByRole('option', { name: 'a.csv' });
+    fireEvent.change(select, { target: { value: 'a.csv' } });
+    fireEvent.click(await screen.findByText('Execute Pipeline'));
+
+    expect(await screen.findByText('Pipeline Complete — Needs Review')).toBeInTheDocument();
+    const notice = screen.getByTestId('heal-notice');
+    expect(notice).toHaveTextContent('3 rows could not be verified');
+    expect(notice).toHaveTextContent('_aura_quarantine_pipe_1');
+    expect(notice).not.toHaveTextContent('alert');
   });
 });

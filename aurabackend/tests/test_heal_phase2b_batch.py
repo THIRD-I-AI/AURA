@@ -727,3 +727,110 @@ async def test_inbound_hook_run_is_healed_as_the_pipelines_tenant(tmp_path, uasr
     assert heals and {c["tenant"] for c in heals} == {tenant}
     assert {c["source_id"] for c in heals} == {f"pipeline:{pid}:source_data"}
     assert strict_equal(_read(tmp_path, tenant, "out"), t.expected)
+
+
+# ── row identity ───────────────────────────────────────────────────────────────
+
+def _drop_first_of_each_page(rewrite: bool):
+    """A UASR stand-in that holds the first row of each page aside (and, with
+    ``rewrite``, reports a repair so the page is rebuilt from its answer)."""
+    sent: List[List[Dict[str, Any]]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        if request.url.path == "/uasr/baseline":
+            return httpx.Response(200, json={"status": "exists"})
+        rows = body["rows"]
+        sent.append(rows)
+        return httpx.Response(200, json={
+            "healed": True, "rows": rows[1:], "alerts": [],
+            "quarantined_rows": [{"index": 0, "reason": "held", "row": rows[0]}],
+            "repairs": [{"type": "rescale", "column": "v"}] if rewrite else [],
+        })
+
+    return handler, sent
+
+
+@pytest.mark.parametrize("column", ["rowid", "RowID"])
+@pytest.mark.parametrize("rewrite", [False, True])
+async def test_a_source_column_named_rowid_does_not_lose_or_double_rows(monkeypatch, column, rewrite):
+    # A source column called rowid hides DuckDB's rowid pseudo-column. The heal step
+    # used rowid as each row's id, so rows with a repeated value were paged twice and
+    # others never, and only 3 of 10 rows reached the healed table (review of ADR-002
+    # phase 2b). Every row must be sent once and land in the table or quarantine once.
+    handler, sent = _drop_first_of_each_page(rewrite)
+    monkeypatch.setattr(heal_module, "PAGE_MAX_ROWS", 4)
+    monkeypatch.setattr(heal_module.httpx, "AsyncClient",
+                        lambda **kw: _REAL_CLIENT(transport=httpx.MockTransport(handler), **kw))
+    con = duckdb.connect()
+    con.execute(f'CREATE TABLE src AS SELECT (i % 3) AS "{column}", i AS v FROM range(10) t(i)')
+    healer = heal_module.RunHealer(con, base_url="http://uasr", auth_headers=dict,
+                                   pipeline_id="p", run_id="r")
+    summary = await healer.heal_table("src", "src")
+
+    assert sorted(r["v"] for page in sent for r in page) == list(range(10))
+    held = con.execute(f"SELECT row_index, original_row FROM {heal_module.QUARANTINE_STAGE}").fetchall()
+    healed = con.execute("SELECT * FROM src").fetchall()
+    assert sorted([json.loads(o)["v"] for _, o in held] + [v for _, v in healed]) == list(range(10))
+    assert [i for i, _ in held] == [json.loads(o)["v"] for _, o in held]  # row_index is the row's position
+    assert healed == sorted(healed, key=lambda r: r[1]) and all(r == (r[1] % 3, r[1]) for r in healed)
+    assert [r[0] for r in con.execute("DESCRIBE src").fetchall()] == [column, "v"]
+    assert (summary.rows_in, summary.rows_out, summary.rows_quarantined) == (10, len(healed), len(held))
+    con.close()
+
+
+async def test_clean_source_with_a_rowid_column_keeps_its_rows_and_columns(monkeypatch):
+    sent: List[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        if request.url.path == "/uasr/baseline":
+            return httpx.Response(200, json={"status": "exists"})
+        sent.extend(r["v"] for r in body["rows"])
+        return httpx.Response(200, json={"healed": True, "rows": body["rows"], "alerts": [],
+                                         "quarantined_rows": [], "repairs": []})
+
+    monkeypatch.setattr(heal_module, "PAGE_MAX_ROWS", 4)
+    monkeypatch.setattr(heal_module.httpx, "AsyncClient",
+                        lambda **kw: _REAL_CLIENT(transport=httpx.MockTransport(handler), **kw))
+    con = duckdb.connect()
+    con.execute("CREATE TABLE src AS SELECT 7 AS rowid, i AS v FROM range(10) t(i)")
+    before = con.execute("SELECT * FROM src").fetchall()
+    healer = heal_module.RunHealer(con, base_url="http://uasr", auth_headers=dict,
+                                   pipeline_id="p", run_id="r")
+    await healer.heal_table("src", "src")
+    assert sorted(sent) == list(range(10))  # every row checked once, none twice
+    assert con.execute("SELECT * FROM src").fetchall() == before
+    assert [r[0] for r in con.execute("DESCRIBE src").fetchall()] == ["rowid", "v"]
+    con.close()
+
+
+async def test_healed_table_that_does_not_account_for_the_load_fails_closed(monkeypatch):
+    handler, _ = _drop_first_of_each_page(rewrite=False)
+    monkeypatch.setattr(heal_module, "PAGE_MAX_ROWS", 4)
+    monkeypatch.setattr(heal_module.httpx, "AsyncClient",
+                        lambda **kw: _REAL_CLIENT(transport=httpx.MockTransport(handler), **kw))
+    real = heal_module.RunHealer._rebuild
+
+    def loses_a_row(self, table, *a):
+        real(self, table, *a)
+        self.conn.execute(f'DELETE FROM "{table}" WHERE v = (SELECT max(v) FROM "{table}")')
+
+    monkeypatch.setattr(heal_module.RunHealer, "_rebuild", loses_a_row)
+    con = duckdb.connect()
+    con.execute("CREATE TABLE src AS SELECT i AS v FROM range(10) t(i)")
+    healer = heal_module.RunHealer(con, base_url="http://uasr", auth_headers=dict,
+                                   pipeline_id="p", run_id="r")
+    with pytest.raises(heal_module.HealUnavailable, match="do not account for the load"):
+        await healer.heal_table("src", "src")
+    con.close()
+
+
+async def test_a_source_column_with_a_reserved_name_fails_closed(monkeypatch):
+    con = duckdb.connect()
+    con.execute("CREATE TABLE src AS SELECT i AS __aura_rid FROM range(3) t(i)")
+    healer = heal_module.RunHealer(con, base_url="http://uasr", auth_headers=dict,
+                                   pipeline_id="p", run_id="r")
+    with pytest.raises(heal_module.HealUnavailable, match="reserves"):
+        await healer.heal_table("src", "src")
+    con.close()

@@ -1295,6 +1295,24 @@ export interface ETLSourcePreview {
   error?: string;
 }
 
+/** What the heal step (ADR-002 phase 2b) did to a run's sources. A run whose heal
+ *  held rows aside or raised an alert has status 'degraded': its sink was written,
+ *  minus the quarantined rows. */
+export interface PipelineHealSummary {
+  sources: Array<{
+    source: string;
+    mode: string;
+    rows_in: number;
+    rows_out: number;
+    rows_quarantined: number;
+    alerts: Array<Record<string, unknown>>;
+  }>;
+  rows_quarantined: number;
+  repairs: number;
+  alerts: number;
+  quarantine_table?: string | null;
+}
+
 export interface ETLExecutionResult {
   status: string;
   pipeline_name: string;
@@ -1314,6 +1332,7 @@ export interface ETLExecutionResult {
   preview: Array<Record<string, any>>;
   execution_time_ms: number;
   preview_only: boolean;
+  heal?: PipelineHealSummary | null;
   error?: string;
 }
 
@@ -1431,6 +1450,7 @@ export interface PipelineRunResult {
   steps_executed: number;
   steps_skipped: number;
   preview_data?: Array<Record<string, any>>;
+  heal?: PipelineHealSummary | null;
   error?: string;
   duration_ms: number;
 }
