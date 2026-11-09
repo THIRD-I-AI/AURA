@@ -20,6 +20,8 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
+from pipeline.engine import quarantine_table_name, write_quarantine
+from pipeline.heal import HealUnavailable, RunHealer
 from shared.error_handler import sanitize_error
 from shared.logging_config import get_logger
 from shared.storage import get_storage_backend
@@ -99,6 +101,18 @@ def _serialize_value(val: Any) -> Any:
 from shared.sql_expression_guard import validate_sql_expression as _validate_custom_sql  # noqa: E402
 from shared.sql_identifiers import quote_identifier as _q  # noqa: E402
 from shared.sql_identifiers import quote_literal  # noqa: E402
+
+
+def etl_quarantine_id(table_name: str) -> str:
+    """The id an /etl/execute run's quarantined rows are filed under (ADR-002 phase 2b).
+
+    An ETL run has no saved pipeline, so its source file is its identity: every run
+    of the same file heals against one baseline (``etl:<stem>:<stem>`` in UASR,
+    scoped to the tenant) and holds rows aside in one table,
+    ``_aura_quarantine_etl_<stem>``, in the tenant's own pipeline_tables.duckdb.
+    """
+    return f"etl_{table_name}"
+
 
 # BUG-500: the source table is named after the file stem, which the stem
 # sanitizer reduces to [A-Za-z0-9_]. A '-' keeps the pipeline's own table out of
@@ -468,8 +482,10 @@ async def etl_execute(pipeline: ETLPipelineRequest, request: Request):
         # in-line here blocks every other tenant's requests for the full ETL
         # run. Offload the whole load→transform→COPY sequence to a thread,
         # mirroring dashboards.py's `_run_tile` pattern.
-        def _run_pipeline():
-            file_info = smart_load_file(con, duckdb_uri, table_name, use_llm=True)
+        def _load_source():
+            return smart_load_file(con, duckdb_uri, table_name, use_llm=True)
+
+        def _run_pipeline(file_info, healer):
             source_count = file_info["row_count"]
             source_columns = file_info["columns"]
 
@@ -504,6 +520,12 @@ async def etl_execute(pipeline: ETLPipelineRequest, request: Request):
                 if fmt not in ("csv", "parquet", "json"):
                     raise HTTPException(status_code=400, detail=f"Unsupported destination format: {fmt}")
 
+                # ADR-002 phase 2b: the rows UASR held aside are kept before the
+                # destination is written, so a failed COPY cannot lose the record of them.
+                if healer is not None and healer.quarantined:
+                    write_quarantine(con, etl_quarantine_id(table_name), tenant)
+                    healer.quarantine_table = quarantine_table_name(etl_quarantine_id(table_name))
+
                 out = new_connection()
                 try:
                     out.register(_ETL_OUTPUT, con.execute(f"SELECT * FROM {_q(_ETL_OUTPUT)}").arrow())
@@ -530,10 +552,21 @@ async def etl_execute(pipeline: ETLPipelineRequest, request: Request):
             }
 
         con = new_connection()
+        healer = None
         try:
             await streaming_manager.publish_progress(TOPIC_ETL, run_id, f"Loading source file '{pipeline.source_file}'", 0.2, workspace_id=workspace_id)
+            file_info = await asyncio.to_thread(_load_source)
+            # ADR-002 phase 2b ("scheduled and manual runs, ETL"): the loaded source goes
+            # through UASR /uasr/heal as the caller's tenant before any transform reads
+            # it, exactly as a pipeline run's sources do. HealUnavailable propagates out
+            # of here, so a load UASR could not check never reaches the COPY below (fail
+            # closed). A preview writes no file and is not healed, like a pipeline preview.
+            if not pipeline.preview_only:
+                healer = RunHealer.for_tenant(con, tenant, "service:etl", kind="etl",
+                                              pipeline_id=table_name, run_id=run_id)
+                await healer.heal_table(table_name, table_name)
             await streaming_manager.publish_progress(TOPIC_ETL, run_id, f"Applying {len(pipeline.transforms)} transform(s)", 0.5, workspace_id=workspace_id)
-            result = await asyncio.to_thread(_run_pipeline)
+            result = await asyncio.to_thread(_run_pipeline, file_info, healer)
         finally:
             con.close()
 
@@ -554,16 +587,24 @@ async def etl_execute(pipeline: ETLPipelineRequest, request: Request):
             "execution_time_ms": round(elapsed_ms, 1),
         }, workspace_id=workspace_id)
 
+        degraded = healer is not None and healer.degraded
         return {
-            "status": "success", "pipeline_name": pipeline.name, "run_id": run_id,
+            # ADR-002: rows held aside or an alert make the run DEGRADED, not a success.
+            "status": "degraded" if degraded else "success", "pipeline_name": pipeline.name, "run_id": run_id,
             "source": {"file": pipeline.source_file, "row_count": source_count, "columns": source_columns},
             "output": {"row_count": output_count, "columns": output_columns, "file": download_filename, "format": pipeline.destination_format},
             "transform_sql": transform_sql, "transforms_applied": len(pipeline.transforms),
             "preview": preview_records, "execution_time_ms": round(elapsed_ms, 1),
             "preview_only": pipeline.preview_only,
+            "heal": healer.summary().model_dump() if healer is not None else None,
         }
     except HTTPException:
         raise
+    except HealUnavailable as e:
+        # Our own fail-closed message ("UASR answered HTTP 503 ...; no rows were
+        # written"): it carries no internals and tells the caller why nothing was written.
+        await streaming_manager.publish_error(TOPIC_ETL, run_id, str(e), workspace_id=workspace_id)
+        return {"status": "error", "run_id": run_id, "error": str(e), "transform_sql": "", "preview": []}
     except Exception as e:
         # Sec-2 #16-#19: don't echo raw exception text to client OR
         # SSE stream — log + send a sanitized message. The full

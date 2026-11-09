@@ -168,6 +168,33 @@ def quarantine_table_name(pipeline_id: str) -> str:
     return f"_aura_quarantine_{_sanitize_id(pipeline_id)}"
 
 
+def write_quarantine(conn: Any, pipeline_id: str, tenant: Optional[str]) -> None:
+    """Append this run's quarantined rows to ``_aura_quarantine_<pipeline_id>``.
+
+    The table lives in the tenant's own pipeline_tables.duckdb (BUG-279), next to
+    the DuckDB sink's tables, so one tenant can never see another's held rows. The
+    rows are streamed in record batches, never materialised whole.
+    """
+    from pipeline.heal import QUARANTINE_STAGE
+    from shared.duckdb_factory import new_connection
+
+    table = quarantine_table_name(pipeline_id)
+    tenant_dir = os.path.join(OUTPUT_DIR, tenant_slug(tenant))
+    os.makedirs(tenant_dir, exist_ok=True)
+    reader = conn.execute(f"SELECT * FROM {QUARANTINE_STAGE}").to_arrow_reader(10_000)
+    with _duckdb_sink_lock:
+        out = new_connection(os.path.join(tenant_dir, DUCKDB_SINK_FILE))
+        try:
+            out.execute(
+                f"CREATE TABLE IF NOT EXISTS {_q(table)} (run_id VARCHAR, source VARCHAR, "
+                "row_index BIGINT, reason VARCHAR, original_row VARCHAR, quarantined_at TIMESTAMP)")
+            out.register("aura_quarantined_rows", reader)
+            out.execute(f"INSERT INTO {_q(table)} SELECT * FROM aura_quarantined_rows")
+        finally:
+            out.close()
+    logger.info("[Pipeline:%s] Quarantined rows written to %s", pipeline_id, table)
+
+
 class PipelineEngine:
     """Executes Pipeline definitions using DuckDB.
 
@@ -357,42 +384,14 @@ class PipelineEngine:
     @staticmethod
     def _new_healer(conn: Any, pipeline: Pipeline, run: PipelineRun, tenant: Optional[str]) -> Any:
         from pipeline.heal import RunHealer
-        from shared.auth import uasr_tenant_headers
-        from shared.config import settings
 
         # BUG-562's mechanism: UASR is called AS the pipeline's tenant, so its baselines,
         # drift state and canary watches are that tenant's alone.
-        return RunHealer(
-            conn, base_url=settings.uasr_url,
-            headers=uasr_tenant_headers(tenant, "service:pipeline_engine"),
-            pipeline_id=pipeline.id, run_id=run.run_id,
-        )
+        return RunHealer.for_tenant(conn, tenant, "service:pipeline_engine",
+                                    pipeline_id=pipeline.id, run_id=run.run_id)
 
     def _write_quarantine(self, conn: Any, pipeline_id: str, tenant: Optional[str]) -> None:
-        """Append this run's quarantined rows to ``_aura_quarantine_<pipeline_id>``.
-
-        The table lives in the tenant's own pipeline_tables.duckdb (BUG-279), next to
-        the DuckDB sink's tables, so one tenant can never see another's held rows. The
-        rows are streamed in record batches, never materialised whole.
-        """
-        from pipeline.heal import QUARANTINE_STAGE
-        from shared.duckdb_factory import new_connection
-
-        table = quarantine_table_name(pipeline_id)
-        tenant_dir = os.path.join(OUTPUT_DIR, tenant_slug(tenant))
-        os.makedirs(tenant_dir, exist_ok=True)
-        reader = conn.execute(f"SELECT * FROM {QUARANTINE_STAGE}").to_arrow_reader(10_000)
-        with _duckdb_sink_lock:
-            out = new_connection(os.path.join(tenant_dir, DUCKDB_SINK_FILE))
-            try:
-                out.execute(
-                    f"CREATE TABLE IF NOT EXISTS {_q(table)} (run_id VARCHAR, source VARCHAR, "
-                    "row_index BIGINT, reason VARCHAR, original_row VARCHAR, quarantined_at TIMESTAMP)")
-                out.register("aura_quarantined_rows", reader)
-                out.execute(f"INSERT INTO {_q(table)} SELECT * FROM aura_quarantined_rows")
-            finally:
-                out.close()
-        logger.info("[Pipeline:%s] Quarantined rows written to %s", pipeline_id, table)
+        write_quarantine(conn, pipeline_id, tenant)
 
     # ── Source Loading ────────────────────────────────────────────────
 

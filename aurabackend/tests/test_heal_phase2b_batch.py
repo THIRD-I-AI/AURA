@@ -16,7 +16,10 @@ from __future__ import annotations
 import json
 import os
 import random
+import shutil
 import uuid
+from datetime import timedelta
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import duckdb
@@ -502,3 +505,225 @@ async def test_complete_run_is_sent_once_per_source_on_its_last_call(tmp_path, u
         assert complete == [len(heals) - 1], (source, heals)
         assert heals[-1]["metadata"]["run_rows"] == n
         assert sum(c["rows"] for c in heals) == n
+
+
+# ── token lifetime (review of 4bd908e) ─────────────────────────────────────────
+
+async def test_a_run_longer_than_the_token_lifetime_still_heals_every_page(tmp_path, uasr, monkeypatch):
+    # The tenant token lives 5 minutes and UASR checks it on every call. A token
+    # minted once at the start of a run expired part-way through any load whose heal
+    # calls took longer, so a large source answered 401 on a later page and the run
+    # always FAILED. The clock both mints and checks tokens; each page moves it on
+    # past a token's whole lifetime.
+    import jwt.api_jwt as jwt_api
+
+    import shared.auth as auth_module
+
+    real_datetime = auth_module.datetime
+
+    class _Shifted(real_datetime):
+        offset = timedelta(0)
+
+        @classmethod
+        def now(cls, tz=None):
+            moved = real_datetime.now(tz) + cls.offset
+            return cls.fromtimestamp(moved.timestamp(), tz)
+
+    monkeypatch.setattr(auth_module, "datetime", _Shifted)
+    monkeypatch.setattr(jwt_api, "datetime", _Shifted)
+    monkeypatch.setattr(heal_module, "PAGE_MAX_ROWS", 100)
+    real = service.heal_batch
+
+    async def slow_page(req, request, db):
+        out = await real(req, request, db=db)
+        _Shifted.offset += timedelta(minutes=6)
+        return out
+
+    ds = make_dataset(17, baseline_rows=600, batch_rows=400)
+    pid = f"pipe_{uuid.uuid4().hex[:8]}"
+    _put_source(tmp_path, "acme", "src.duckdb", ds.baseline)
+    assert (await _run(_pipeline(pid), "acme")).status == PipelineStatus.SUCCESS
+    _put_source(tmp_path, "acme", "src.duckdb", ds.truth)
+    monkeypatch.setattr(service, "heal_batch", slow_page)
+    uasr.calls.clear()
+    run = await _run(_pipeline(pid), "acme")
+
+    assert run.status == PipelineStatus.SUCCESS, (run.error, run.heal)
+    heals = uasr.heals()
+    assert len(heals) == 4 and _Shifted.offset >= timedelta(minutes=24)
+    assert len({c["authorization"] for c in heals}) == 4  # a fresh token per call
+    assert strict_equal(_read(tmp_path, "acme", "out"), ds.truth)
+
+
+# ── ETL (/etl/execute) ─────────────────────────────────────────────────────────
+# ADR-002 phase 2b puts ETL in scope ("scheduled and manual runs, ETL"). /etl/execute
+# used to COPY its source straight to the destination file without ever calling UASR.
+
+@pytest.fixture
+def etl_tenant():
+    """A tenant of its own: /etl/execute writes under aurabackend/data/processed/<tenant>."""
+    from api_gateway.routers import etl as etl_router
+
+    tenant = f"etl{uuid.uuid4().hex[:8]}"
+    out = Path(etl_router.__file__).resolve().parents[2] / "data" / "processed" / tenant_slug(tenant)
+    yield tenant, out
+    shutil.rmtree(out, ignore_errors=True)
+
+
+def _put_parquet(tmp_path, tenant: str, name: str, rows: List[Dict[str, Any]]) -> None:
+    from shared.storage import get_storage_backend
+
+    path = tmp_path / f"build_{uuid.uuid4().hex[:8]}.parquet"
+    con = duckdb.connect()
+    try:
+        con.register("src_rows", _typed_arrow_table(_columns(rows), rows))
+        con.execute(f"COPY (SELECT * FROM src_rows) TO '{path.as_posix()}' (FORMAT PARQUET)")
+    finally:
+        con.close()
+    get_storage_backend().write(tenant, name, path.read_bytes())
+
+
+async def _etl(tenant: str, dest: str, preview_only: bool = False) -> Dict[str, Any]:
+    """POST /etl/execute through the real JWTAuthMiddleware, as ``tenant``."""
+    from api_gateway.routers import etl as etl_router
+    from shared.auth import create_access_token
+
+    app = FastAPI()
+    app.add_middleware(JWTAuthMiddleware)
+    app.include_router(etl_router.router)
+    token = create_access_token({"sub": f"user@{tenant}", "org_id": tenant})
+    async with _REAL_CLIENT(transport=httpx.ASGITransport(app=app), base_url="http://gateway") as c:
+        r = await c.post("/etl/execute", headers={"Authorization": f"Bearer {token}"}, json={
+            "source_file": "sales.parquet", "destination_format": "parquet",
+            "destination_filename": dest, "preview_only": preview_only})
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+def _parquet_rows(path: Path) -> List[Dict[str, Any]]:
+    con = duckdb.connect()
+    try:
+        cur = con.execute(f"SELECT * FROM read_parquet('{path.as_posix()}')")
+        names = [d[0] for d in cur.description]
+        return [dict(zip(names, r)) for r in cur.fetchall()]
+    finally:
+        con.close()
+
+
+async def _etl_baseline_then(tmp_path, uasr, tenant: str, baseline, batch) -> Dict[str, Any]:
+    _put_parquet(tmp_path, tenant, "sales.parquet", baseline)
+    first = await _etl(tenant, "first")
+    assert first["status"] == "success", first
+    assert first["heal"]["sources"][0]["mode"] == "baseline_registered"
+    _put_parquet(tmp_path, tenant, "sales.parquet", batch)
+    uasr.calls.clear()
+    return await _etl(tenant, "second")
+
+
+async def test_etl_clean_load_is_healed_and_written_unchanged(tmp_path, uasr, etl_tenant):
+    tenant, out = etl_tenant
+    ds = make_dataset(18)
+    body = await _etl_baseline_then(tmp_path, uasr, tenant, ds.baseline, ds.truth)
+
+    assert body["status"] == "success", body
+    src = body["heal"]["sources"][0]
+    assert (src["mode"], src["source_id"], src["rows_out"]) == ("healed", "etl:sales:sales", len(ds.truth))
+    heals = uasr.heals()
+    assert heals and all(c["tenant"] == tenant and c["source_id"] == "etl:sales:sales" for c in heals)
+    assert sum(c["rows"] for c in heals) == len(ds.truth)
+    assert strict_equal(_parquet_rows(out / "second.parquet"), ds.truth)
+
+
+@pytest.mark.parametrize("fault,seed,repair", [
+    ("rename", 3, "rename"),
+    ("retype_lossless", 1, "retype"),
+    ("scale_up", 0, "rescale"),
+])
+async def test_etl_repaired_fault_reaches_the_destination_as_ground_truth(tmp_path, uasr, etl_tenant, fault, seed, repair):
+    tenant, out = etl_tenant
+    t = _trial(fault, seed)
+    body = await _etl_baseline_then(tmp_path, uasr, tenant, t.dataset.baseline, t.sent)
+
+    assert body["status"] == "success", body
+    src = body["heal"]["sources"][0]
+    assert repair in [r["type"] for r in src["repairs"]], src
+    assert src["rows_quarantined"] == 0 and all(e is not None for e in t.expected)
+    assert strict_equal(_parquet_rows(out / "second.parquet"), t.expected)
+
+
+async def test_etl_unprovable_rows_are_quarantined_and_never_written(tmp_path, uasr, etl_tenant):
+    tenant, out = etl_tenant
+    t = _trial("decoy_x7", 0)
+    body = await _etl_baseline_then(tmp_path, uasr, tenant, t.dataset.baseline, t.sent)
+
+    assert body["status"] == "degraded", body
+    held = _read(tmp_path, tenant, "_aura_quarantine_etl_sales") or []
+    written = _parquet_rows(out / "second.parquet")
+    idx = [q["row_index"] for q in held]
+    must_hold = {i for i, e in enumerate(t.expected) if e is None}
+    assert must_hold and must_hold <= set(idx)
+    # Every source row is in the destination or in quarantine, exactly once.
+    assert len(idx) == len(set(idx)) and len(written) + len(idx) == len(t.sent)
+    assert all(q["run_id"] == body["run_id"] and q["source"] == "sales" for q in held)
+    returned = [i for i in range(len(t.sent)) if i not in set(idx)]
+    assert strict_equal(written, [t.expected[i] for i in returned])
+    assert body["heal"]["quarantine_table"] == "_aura_quarantine_etl_sales"
+    assert body["heal"]["rows_quarantined"] == len(idx)
+
+
+async def test_etl_fails_closed_when_uasr_cannot_check_the_load(tmp_path, uasr, etl_tenant):
+    tenant, out = etl_tenant
+    ds = make_dataset(19)
+    uasr.fail_heal_at = 0
+    body = await _etl_baseline_then(tmp_path, uasr, tenant, ds.baseline, ds.truth)
+
+    assert body["status"] == "error", body
+    assert "UASR" in body["error"] and "no rows were written" in body["error"]
+    assert not (out / "second.parquet").exists()
+    assert _read(tmp_path, tenant, "_aura_quarantine_etl_sales") is None
+
+
+async def test_etl_preview_is_not_healed(tmp_path, uasr, etl_tenant):
+    tenant, _ = etl_tenant
+    _put_parquet(tmp_path, tenant, "sales.parquet", make_dataset(20).baseline)
+    body = await _etl(tenant, "preview", preview_only=True)
+    assert body["status"] == "success" and body["heal"] is None
+    assert uasr.calls == []
+
+
+# ── inbound hook trigger ───────────────────────────────────────────────────────
+
+async def test_inbound_hook_run_is_healed_as_the_pipelines_tenant(tmp_path, uasr, monkeypatch):
+    # A pipeline fired by an inbound hook (api_gateway/routers/inbound_hooks.py) runs
+    # in the background with no request: it must still heal its source as the
+    # pipeline's own tenant, and a repaired column reaches the sink as ground truth.
+    import api_gateway.persistence as persistence
+    import shared.tasks as tasks
+    from api_gateway.routers import inbound_hooks
+
+    t = _trial("rename", 3)
+    tenant, pid = "acme", f"pipe_{uuid.uuid4().hex[:8]}"
+    _put_source(tmp_path, tenant, "src.duckdb", t.dataset.baseline)
+    assert (await _run(_pipeline(pid), tenant)).heal.sources[0].mode == "baseline_registered"
+    _put_source(tmp_path, tenant, "src.duckdb", t.sent)
+    uasr.calls.clear()
+
+    async def get_pipeline(pipeline_id, workspace_id=None):
+        assert (pipeline_id, workspace_id) == (pid, tenant)
+        return _pipeline(pid).model_dump()
+
+    async def get_pipeline_workspace_id(pipeline_id):
+        return tenant
+
+    fired = []
+    monkeypatch.setattr(persistence, "get_pipeline", get_pipeline)
+    monkeypatch.setattr(persistence, "get_pipeline_workspace_id", get_pipeline_workspace_id)
+    monkeypatch.setattr(tasks, "fire_and_forget", lambda coro, name=None: fired.append(coro))
+    answer = await inbound_hooks._fire_pipeline(pid, {}, tenant)
+    assert answer["status"] == "success" and len(fired) == 1
+    await fired[0]
+
+    heals = uasr.heals()
+    assert heals and {c["tenant"] for c in heals} == {tenant}
+    assert {c["source_id"] for c in heals} == {f"pipeline:{pid}:source_data"}
+    assert strict_equal(_read(tmp_path, tenant, "out"), t.expected)

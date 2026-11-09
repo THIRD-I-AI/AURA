@@ -82,6 +82,7 @@ async def test_ordinary_step_sql_still_runs(tmp_path, monkeypatch):
     assert run.preview_data == [{"id": 2, "doubled": 40}]
 
 
+@pytest.mark.uasr_unreachable  # no UASR in this test: sources pass the heal step unhealed (tests/conftest.py)
 @pytest.mark.asyncio
 @pytest.mark.parametrize("fmt,ext", [("csv", ".csv"), ("parquet", ".parquet"), ("json", ".json")])
 async def test_file_sink_still_writes_from_the_locked_down_run(tmp_path, monkeypatch, fmt, ext):
@@ -142,6 +143,7 @@ async def test_etl_custom_sql_cannot_read_another_tenants_file(tmp_path, monkeyp
     assert SECRET not in str(out)
 
 
+@pytest.mark.uasr_unreachable  # no UASR in this test: sources pass the heal step unhealed (tests/conftest.py)
 @pytest.mark.asyncio
 @pytest.mark.parametrize("fmt", ["csv", "parquet", "json"])
 async def test_etl_still_transforms_and_writes_its_output(tmp_path, monkeypatch, fmt):

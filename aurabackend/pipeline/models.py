@@ -162,7 +162,7 @@ class Pipeline(BaseModel):
 class SourceHealSummary(BaseModel):
     """What the heal step (ADR-002 phase 2b) did to one source table of a run."""
     source: str                     # the table name the run loaded it as
-    source_id: str                  # pipeline:<pipeline_id>:<source>; UASR scopes it to the tenant
+    source_id: str                  # pipeline:<pipeline_id>:<source> (etl:<stem>:<stem> for /etl/execute); UASR scopes it to the tenant
     # baseline_registered: the source's first run, which registered the baseline and was
     # not healed against itself. healed: every row went through /uasr/heal. empty: no rows.
     mode: str

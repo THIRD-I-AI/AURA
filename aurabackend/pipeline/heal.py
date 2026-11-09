@@ -28,7 +28,7 @@ import logging
 import math
 import re
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 import httpx
 
@@ -87,11 +87,18 @@ def _ordered_columns(rows: List[Dict[str, Any]]) -> List[str]:
 class RunHealer:
     """Heals the source tables of one pipeline run, on the run's connection."""
 
-    def __init__(self, conn: Any, *, base_url: str, headers: Dict[str, str],
-                 pipeline_id: str, run_id: str) -> None:
+    def __init__(self, conn: Any, *, base_url: str, auth_headers: Callable[[], Dict[str, str]],
+                 pipeline_id: str, run_id: str, kind: str = "pipeline") -> None:
+        if kind not in ("pipeline", "etl"):
+            raise ValueError(f"unknown heal source kind {kind!r}")
         self.conn = conn
+        self.kind = kind
         self.base_url = base_url.rstrip("/")
-        self.headers = headers
+        # Called for every request, not once per run: UASR checks the bearer token on
+        # each call and the tenant token lives 5 minutes, so one token minted at the
+        # start of a large run expired part-way and failed every big load (review of
+        # ADR-002 phase 2b). A fresh token per call keeps the lifetime short.
+        self.auth_headers = auth_headers
         self.pipeline_id = pipeline_id
         self.run_id = run_id
         self.sources: List[SourceHealSummary] = []
@@ -102,13 +109,30 @@ class RunHealer:
         # UASR's own "degraded": e.g. a standing shim failed to apply to a page.
         self._uasr_degraded = False
 
+    @classmethod
+    def for_tenant(cls, conn: Any, tenant: Optional[str], service: str, *,
+                   pipeline_id: str, run_id: str, kind: str = "pipeline") -> "RunHealer":
+        """A healer that calls UASR AS ``tenant`` (BUG-562), with a token per call.
+
+        The token is minted inside each request (``auth_headers``), so it is never
+        older than one call however long the run takes.
+        """
+        from shared.auth import uasr_tenant_headers
+        from shared.config import settings
+
+        return cls(conn, base_url=settings.uasr_url,
+                   auth_headers=lambda: uasr_tenant_headers(tenant, service),
+                   pipeline_id=pipeline_id, run_id=run_id, kind=kind)
+
     # ── public ─────────────────────────────────────────────────────────
 
     def source_id(self, source: str) -> str:
         # UASR places the id inside the caller's tenant (uasr/tenancy.py), so two
         # tenants' pipelines never share a baseline; the "pipeline:" prefix keeps an id
         # a client chose from ever reading as another tenant's "<tenant>::" namespace.
-        return f"pipeline:{_safe(self.pipeline_id)}:{source}"
+        # An /etl/execute run is "etl:<id>:<source>", so an ETL never shares a
+        # baseline with a saved pipeline whatever either is called.
+        return f"{self.kind}:{_safe(self.pipeline_id)}:{source}"
 
     def summary(self) -> PipelineHealSummary:
         return PipelineHealSummary(
@@ -143,7 +167,7 @@ class RunHealer:
         page_map = await asyncio.to_thread(self._build_page_map, table, page_rows)
 
         try:
-            async with httpx.AsyncClient(timeout=_TIMEOUT_SECONDS, headers=self.headers) as client:
+            async with httpx.AsyncClient(timeout=_TIMEOUT_SECONDS) as client:
                 first = await asyncio.to_thread(self._fetch_page, table, page_map, columns, 0)
                 base = await self._post(client, "/uasr/baseline", {
                     "source_id": source_id, "columns": [c for c, _ in columns], "rows": first[1],
@@ -202,7 +226,7 @@ class RunHealer:
         body = await asyncio.to_thread(lambda: json.dumps(payload).encode("utf-8"))
         try:
             resp = await client.post(f"{self.base_url}{path}", content=body,
-                                     headers={"Content-Type": "application/json"})
+                                     headers={"Content-Type": "application/json", **self.auth_headers()})
         except httpx.HTTPError as exc:
             raise HealUnavailable(
                 f"UASR could not be reached to check source '{source}' ({type(exc).__name__}); "

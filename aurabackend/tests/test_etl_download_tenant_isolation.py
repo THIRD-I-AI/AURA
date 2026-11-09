@@ -68,6 +68,7 @@ def _run_etl(client, org_id: str, dest_name: str = "export"):
     )
 
 
+@pytest.mark.uasr_unreachable  # no UASR in this test: sources pass the heal step unhealed (tests/conftest.py)
 def test_two_tenants_colliding_on_the_same_filename_get_separate_outputs(client):
     r_a = _run_etl(client, "bug052-tenant-a")
     assert r_a.status_code == 200, r_a.text
@@ -90,6 +91,7 @@ def test_two_tenants_colliding_on_the_same_filename_get_separate_outputs(client)
     assert b"N,100" not in dl_b.content
 
 
+@pytest.mark.uasr_unreachable  # no UASR in this test: sources pass the heal step unhealed (tests/conftest.py)
 def test_tenant_cannot_download_by_guessing_before_running_their_own_etl(client):
     """A caller who never ran a matching ETL job at all must get 404, not
     another tenant's file, purely by guessing a common filename."""
