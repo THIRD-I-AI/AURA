@@ -24,6 +24,12 @@ from pipeline.streaming.models import StreamEvent
 
 logger = logging.getLogger("aura.streaming.backpressure")
 
+# BLOCK's default put timeout: a put still waiting after this long drops the event.
+# A caller that must not lose events (the streaming engine, ADR-002) passes
+# block_timeout=None and waits for space instead.
+_BLOCK_PUT_TIMEOUT_SECONDS = 5.0
+_DEFAULT = object()
+
 
 class BackpressureStrategy(str, Enum):
     BLOCK = "block"
@@ -51,8 +57,12 @@ class BackpressureManager:
         pid_kp: float = 0.5,
         pid_ki: float = 0.1,
         pid_kd: float = 0.05,
+        block_timeout: Any = _DEFAULT,
     ):
         self._max_size = max_buffer_size
+        # BLOCK only: seconds a put waits for space before dropping the event, or
+        # None to wait for as long as it takes (the source is then simply not read).
+        self._block_timeout = block_timeout
         self._strategy = strategy
         self._sample_rate = max(1, sample_rate)
         self._high_wm = high_watermark
@@ -112,13 +122,22 @@ class BackpressureManager:
         """
         enqueued = 0
         for event in events:
-            self._event_count += 1
-            accepted = await self._put_one(event)
-            if accepted:
+            if await self.put_one(event):
                 enqueued += 1
 
         self._update_pressure_state()
         return enqueued
+
+    async def put_one(self, event: StreamEvent) -> bool:
+        """Add one event, applying the strategy. True when it was enqueued, False
+        when it was dropped (counted in dropped_count). A put cancelled while it
+        waits leaves the event out of the buffer, so a caller that keeps it until
+        this returns always knows where it is."""
+        self._event_count += 1
+        return await self._put_one(event)
+
+    def update_pressure_state(self) -> None:
+        self._update_pressure_state()
 
     async def get_batch(self, max_events: int = 100, timeout: float = 0.5) -> List[StreamEvent]:
         """
@@ -172,8 +191,12 @@ class BackpressureManager:
     async def _put_one(self, event: StreamEvent) -> bool:
         """Enqueue a single event using the configured strategy."""
         if self._strategy == BackpressureStrategy.BLOCK:
+            timeout = _BLOCK_PUT_TIMEOUT_SECONDS if self._block_timeout is _DEFAULT else self._block_timeout
+            if timeout is None:
+                await self._buffer.put(event)
+                return True
             try:
-                await asyncio.wait_for(self._buffer.put(event), timeout=5.0)
+                await asyncio.wait_for(self._buffer.put(event), timeout=timeout)
                 return True
             except asyncio.TimeoutError:
                 self._dropped_count += 1

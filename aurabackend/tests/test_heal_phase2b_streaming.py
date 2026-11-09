@@ -204,13 +204,13 @@ class Run:
 
 async def _start(monkeypatch, pipeline: StreamPipeline, events: List[StreamEvent], *,
                  baseline_rows: int, transport: Optional[httpx.AsyncBaseTransport] = None,
-                 max_errors: Optional[int] = None) -> Run:
+                 max_errors: Optional[int] = None, **engine_kw: Any) -> Run:
     transport = transport or httpx.ASGITransport(app=_uasr_app())
     source, sink = ListSource(_chunks(events)), RecordingSink()
     monkeypatch.setattr(engine_mod, "_create_source", lambda _p: source)
     monkeypatch.setattr(engine_mod, "_create_sink", lambda _d, _p: sink)
     monkeypatch.setattr(engine_mod, "_create_healer", lambda p: MicroBatchHealer(p, transport=transport))
-    eng = StreamingEngine(pipeline, batch_size=BATCH, tick_interval=0.01)
+    eng = StreamingEngine(pipeline, batch_size=BATCH, tick_interval=0.01, **engine_kw)
     eng._baseline_min_events = baseline_rows
     eng._baseline_max_wait = 60.0
     if max_errors is not None:
@@ -763,3 +763,117 @@ async def test_stop_while_publishing_degraded_after_a_heal_loses_nothing(monkeyp
     assert run.engine.metrics.events_quarantined == len(quarantined)
     assert len(quarantined) < run.source.produced  # not everything was unchecked
     assert unaccounted[-1] == 0  # stop()'s checkpoint; earlier periodic ones are not under test
+
+
+# ── Review of f6b48cd: the backpressure buffer while a micro-batch is held ──────
+# While UASR has not answered, the run loop takes nothing from the buffer, but the
+# ingest loop kept reading the source: the buffer filled, BLOCK timed out and dropped
+# each further event (counted in dropped_count only), and the next checkpoint passed
+# them. The source must be paused instead, and anything a buffer does drop accounted
+# for (quarantined) before a checkpoint moves past it.
+
+async def test_short_uasr_outage_with_a_full_buffer_loses_no_event(monkeypatch):
+    from pipeline.streaming import backpressure as bp_mod
+
+    # Any put that times out drops; 0.05 s instead of 5 s so it shows quickly.
+    monkeypatch.setattr(bp_mod, "_BLOCK_PUT_TIMEOUT_SECONDS", 0.05)
+    ds = make_dataset(7, batch_rows=500)
+    pipe = _pipeline("tenant_a")
+    pipe.checkpoint_interval_seconds = 0
+    base, rest = _events(ds.baseline), _events(ds.truth, t0=50_000.0)
+    flaky = FlakyTransport(httpx.ASGITransport(app=_uasr_app()), failures=0)
+    run = await _start(monkeypatch, pipe, base, baseline_rows=len(base), transport=flaky,
+                       max_errors=100, backpressure_buffer=50)
+    await _until(lambda: run.engine.metrics.events_in == len(base))
+
+    flaky.failures = flaky.calls + 20  # the next twenty calls are refused
+    run.source.chunks = _chunks(rest)
+    await _until(lambda: run.engine.pipeline.status == StreamPipelineStatus.DEGRADED)
+    # Before the fix: produced 700, emitted 650, quarantined 2, 48 dropped, and the
+    # pipeline recovered to RUNNING as if nothing had happened.
+    await _until(lambda: run.source.produced == len(base) + len(rest) and not run.engine._held
+                 and run.engine._backpressure.buffer_depth == 0 and not run.engine._pending_put,
+                 timeout=30)
+    await run.engine.stop()
+
+    assert run.engine._backpressure.dropped_count == 0
+    quarantined = _quarantine(pipe)
+    _accounted(run, quarantined, len(base) + len(rest))
+    assert not [q for q in quarantined if q["reason"].startswith("not checked")]
+
+
+async def test_drop_tail_overflow_during_an_outage_is_quarantined_not_lost(monkeypatch):
+    # An operator-chosen dropping strategy still may not lose a row silently: what the
+    # buffer refuses is quarantined as unchecked, and no checkpoint passes it first.
+    ds = make_dataset(7, batch_rows=500)
+    pipe = _pipeline("tenant_a")
+    pipe.checkpoint_interval_seconds = 0
+    base, rest = _events(ds.baseline), _events(ds.truth, t0=50_000.0)
+    # UASR is down from the start; the buffer refuses events at once.
+    flaky = FlakyTransport(httpx.ASGITransport(app=_uasr_app()), failures=20)
+    run = await _start(monkeypatch, pipe, base + rest, baseline_rows=50, transport=flaky,
+                       max_errors=100, backpressure_buffer=50, backpressure_strategy="drop_tail")
+    taken: List[int] = []
+    real = run.engine._state_mgr.create_checkpoint
+
+    def spy(**kw):
+        bp = run.engine._backpressure
+        taken.append(bp.dropped_count - run.engine._drops_accounted)
+        return real(**kw)
+
+    monkeypatch.setattr(run.engine._state_mgr, "create_checkpoint", spy)
+    sent = len(base) + len(rest)
+    await _until(lambda: run.source.produced == sent and not run.engine._overflow
+                 and run.engine._backpressure.buffer_depth == 0 and not run.engine._held
+                 and not run.engine._pending_put, timeout=60)
+    await run.engine.stop()
+
+    quarantined = _quarantine(pipe)
+    assert run.engine._backpressure.dropped_count > 0  # the scenario did overflow
+    _accounted(run, quarantined, sent)
+    refused = [q for q in quarantined if "backpressure buffer" in q["reason"]]
+    assert len(refused) == run.engine._backpressure.dropped_count
+    assert all(q["reason"].startswith("not checked") for q in refused)
+    assert run.engine.metrics.events_quarantined == len(quarantined)
+    assert [n for n in taken if n] == []  # never checkpointed past an unaccounted drop
+
+
+async def test_no_checkpoint_after_a_drop_not_yet_accounted_for(monkeypatch):
+    ds = make_dataset(5, batch_rows=60)
+    pipe = _pipeline("tenant_a")
+    events = _events(ds.truth)
+    run = await _start(monkeypatch, pipe, events, baseline_rows=len(events))
+    await _drain(run, len(events))
+    taken: List[int] = []
+    monkeypatch.setattr(run.engine._state_mgr, "create_checkpoint", lambda **kw: taken.append(1))
+    await run.engine._checkpoint()
+    assert taken == [1]
+    run.engine._backpressure._dropped_count += 1  # a drop nothing quarantined
+    await run.engine._checkpoint()
+    assert taken == [1]
+
+
+async def test_stop_while_ingest_is_blocked_on_a_full_buffer_loses_nothing(monkeypatch):
+    # UASR down: the held micro-batch fills, the 50-event buffer fills, and the ingest
+    # loop waits in put with the rest of a batch it already read from the source. The
+    # stop cancels it there; those events were in a local list only, so the sweep
+    # never saw them and the final checkpoint passed them.
+    ds = make_dataset(5, batch_rows=150)
+    pipe = _pipeline("tenant_a")
+    events = _events(ds.baseline[:200] + ds.truth)
+    run = await _start(monkeypatch, pipe, events, baseline_rows=200,
+                       transport=FlakyTransport(None, failures=10**9), max_errors=10**6,
+                       backpressure_buffer=50)
+    unaccounted = _checkpoint_spy(monkeypatch, run, pipe)
+    await _until(lambda: len(run.engine._held) == 200
+                 and run.engine._backpressure.buffer_depth == 50 and run.source.produced == 300)
+    await asyncio.sleep(0.1)  # the ingest loop is waiting in put with 50 events in hand
+    await asyncio.wait_for(run.engine.stop(), 20)
+
+    assert run.emitted == []
+    quarantined = _quarantine(pipe)
+    _accounted(run, quarantined, run.source.produced)
+    assert run.source.produced == 300
+    assert run.engine.metrics.events_quarantined == len(quarantined)
+    assert run.engine._backpressure.dropped_count == 0
+    assert unaccounted == [0]
