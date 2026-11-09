@@ -619,3 +619,147 @@ async def test_no_checkpoint_while_a_micro_batch_is_held(monkeypatch):
     await _until(lambda: run.engine.metrics.events_held > 0)
     await asyncio.sleep(0.3)  # many ticks of the outage
     assert [n for n in taken_while_held if n] == []
+
+
+# ── A stop that cancels the held/quarantine paths at an await ────────────────────
+# stop() cancels the run loop wherever it is suspended. Every event read from the
+# source must still end up emitted or quarantined exactly once, and no checkpoint may
+# be taken past events that are neither (ADR-002: never lose an event).
+
+def _gated_sweep_write(monkeypatch, *, fail_first: bool):
+    """The first sweep write (skip_written) fails, or blocks until the gate opens."""
+    import threading
+
+    from pipeline.streaming.heal import QuarantineStore
+
+    real, calls = QuarantineStore._write_sync, []
+    entered, gate = threading.Event(), threading.Event()
+
+    def write(self, records, skip_written=False):
+        if skip_written:
+            calls.append(len(records))
+            if len(calls) == 1:
+                entered.set()
+                if fail_first:
+                    raise OSError("disk briefly unavailable")
+                gate.wait(10)
+        return real(self, records, skip_written)
+
+    monkeypatch.setattr(QuarantineStore, "_write_sync", write)
+    return calls, entered, gate
+
+
+def _checkpoint_spy(monkeypatch, run: Run, pipe: StreamPipeline) -> List[int]:
+    """Records, for every checkpoint taken, how many produced events were then neither
+    emitted nor in the quarantine table."""
+    unaccounted: List[int] = []
+    real = run.engine._state_mgr.create_checkpoint
+
+    def spy(**kw):
+        done = {e.event_id for e in run.emitted} | {q["event_id"] for q in _quarantine(pipe)}
+        unaccounted.append(run.source.produced - len(done))
+        return real(**kw)
+
+    monkeypatch.setattr(run.engine._state_mgr, "create_checkpoint", spy)
+    return unaccounted
+
+
+async def test_stop_during_the_failure_sweep_retry_loses_nothing(monkeypatch):
+    # Reproduces the loss: UASR down, max errors 1 so the first failed tick fails the
+    # pipeline, the failure sweep's first write fails, and stop() lands during its retry
+    # backoff. The sweep had already moved every event out of _held into a local list;
+    # the cancellation dropped that list, stop()'s own sweep found nothing, and the
+    # checkpoint was taken past all of them (produced 350, emitted 0, quarantined 0).
+    monkeypatch.setattr(engine_mod, "_SWEEP_BACKOFF_SECONDS", 30.0)  # stop lands in it
+    ds = make_dataset(5, batch_rows=150)
+    pipe = _pipeline("tenant_a")
+    events = _events(ds.baseline[:200] + ds.truth)
+    calls, entered, _gate = _gated_sweep_write(monkeypatch, fail_first=True)
+    run = await _start(monkeypatch, pipe, events, baseline_rows=200,
+                       transport=FlakyTransport(None, failures=10**9), max_errors=1)
+    unaccounted = _checkpoint_spy(monkeypatch, run, pipe)
+    await _until(entered.is_set)
+    await asyncio.sleep(0.1)  # the failed attempt is back on the loop, in its backoff
+    assert run.engine.pipeline.status == StreamPipelineStatus.FAILED and not run.engine._released
+    await asyncio.wait_for(run.engine.stop(), 20)
+
+    assert run.engine.pipeline.status == StreamPipelineStatus.STOPPED
+    assert run.emitted == []
+    quarantined = _quarantine(pipe)
+    _accounted(run, quarantined, run.source.produced)
+    assert run.source.produced == len(events)
+    assert run.engine.metrics.events_quarantined == len(quarantined)
+    assert run.engine._held == [] and run.engine.metrics.events_held == 0
+    assert unaccounted == [0]
+
+
+async def test_stop_while_the_failure_sweep_write_is_in_flight_writes_each_event_once(monkeypatch):
+    # Cancelled inside the sweep's own write: the thread finishes it anyway, so stop()'s
+    # sweep must wait for it and count it, then write only what it did not.
+    ds = make_dataset(5, batch_rows=150)
+    pipe = _pipeline("tenant_a")
+    events = _events(ds.baseline[:200] + ds.truth)
+    calls, entered, gate = _gated_sweep_write(monkeypatch, fail_first=False)
+    run = await _start(monkeypatch, pipe, events, baseline_rows=200,
+                       transport=FlakyTransport(None, failures=10**9), max_errors=1)
+    unaccounted = _checkpoint_spy(monkeypatch, run, pipe)
+    await _until(entered.is_set)
+    stopping = asyncio.create_task(run.engine.stop())
+    await asyncio.sleep(0.3)  # the stop is past cancelling the run loop
+    gate.set()
+    await asyncio.wait_for(stopping, 20)
+
+    quarantined = _quarantine(pipe)
+    _accounted(run, quarantined, run.source.produced)
+    assert run.engine.metrics.events_quarantined == len(quarantined)
+    assert run.engine._held == [] and unaccounted == [0]
+
+
+async def test_stop_while_uasr_has_not_answered_quarantines_the_held_batch(monkeypatch):
+    answered = asyncio.Event()
+
+    class Hanging(httpx.AsyncBaseTransport):
+        async def handle_async_request(self, request):
+            await answered.wait()  # never set: UASR accepted the call and never answers
+            raise AssertionError("unreachable")
+
+    ds = make_dataset(5, batch_rows=150)
+    pipe = _pipeline("tenant_a")
+    events = _events(ds.baseline[:200] + ds.truth)
+    run = await _start(monkeypatch, pipe, events, baseline_rows=200, transport=Hanging())
+    unaccounted = _checkpoint_spy(monkeypatch, run, pipe)
+    await _until(lambda: len(run.engine._held) >= 200 and run.source.produced == len(events))
+    await asyncio.sleep(0.1)  # the heal call is in flight
+    await asyncio.wait_for(run.engine.stop(), 20)
+
+    quarantined = _quarantine(pipe)
+    assert run.emitted == []
+    _accounted(run, quarantined, len(events))
+    assert all(q["reason"].startswith("not checked") for q in quarantined)
+    assert unaccounted == [0]
+
+
+async def test_stop_while_publishing_degraded_after_a_heal_loses_nothing(monkeypatch):
+    # UASR answered (some rows quarantined, the rest healed) and the pipeline is
+    # publishing STREAM_DEGRADED when the stop lands. The healed events had already
+    # left _held and were not yet in the window processor: they were lost.
+    trial = build_trial("retype_lossy", 0)
+    pipe = _pipeline("tenant_a")
+    base, faulty = _events(trial.dataset.baseline), _events(trial.sent, t0=50_000.0)
+    run = await _start(monkeypatch, pipe, base + faulty, baseline_rows=len(base))
+    unaccounted = _checkpoint_spy(monkeypatch, run, pipe)
+    publishing, never = asyncio.Event(), asyncio.Event()
+
+    async def hanging_publish(code):
+        publishing.set()
+        await never.wait()
+
+    run.engine._publish_error = hanging_publish
+    await _until(publishing.is_set)
+    await asyncio.wait_for(run.engine.stop(), 20)
+
+    quarantined = _quarantine(pipe)
+    _accounted(run, quarantined, run.source.produced)
+    assert run.engine.metrics.events_quarantined == len(quarantined)
+    assert len(quarantined) < run.source.produced  # not everything was unchecked
+    assert unaccounted[-1] == 0  # stop()'s checkpoint; earlier periodic ones are not under test

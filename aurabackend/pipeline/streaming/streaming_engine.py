@@ -84,6 +84,7 @@ _BASELINE_MAX_WAIT_SECONDS = 10.0
 # The stop/failure sweep retries its quarantine write this many times before it keeps
 # the events in memory and withholds the checkpoint (ADR-002: never dropped).
 _SWEEP_ATTEMPTS = 3
+_SWEEP_BACKOFF_SECONDS = 0.1
 
 
 # ────────────────────────────────────────────────────────────────────
@@ -764,8 +765,6 @@ class StreamingEngine:
                 return None
             return []
 
-        self._held = []
-        self._metrics.events_held = 0
         self._metrics.events_in += len(batch)
         self._metrics.events_quarantined += len(outcome.quarantined)
         self._metrics.heal_repairs += len(outcome.repairs)
@@ -773,6 +772,13 @@ class StreamingEngine:
             await self._heal_degraded(outcome, len(batch))
         else:
             await self._component_tick("heal", [], 1)
+        # Released only now: a stop that cancels the awaits above would otherwise lose
+        # the healed events, which are neither in _held nor yet in the window processor
+        # (what the checkpoint covers). Still held, the stop sweep quarantines them,
+        # skipping the rows the write above already did. No await follows until the run
+        # loop has handed them to the window processor.
+        self._held = []
+        self._metrics.events_held = 0
         return outcome.events
 
     async def _heal_degraded(self, outcome, sent: int) -> None:
@@ -801,35 +807,51 @@ class StreamingEngine:
         them from the source, never dropped (ADR-002: every row accounted for)."""
         in_flight = self._quarantine_write
         if in_flight is not None:
-            # The micro-batch's own write may still be running in its thread; the
-            # sweep's skip_written can only see a write that has finished.
+            # A micro-batch's write, or a cancelled sweep's, may still be running in its
+            # thread; the sweep's skip_written can only see a write that has finished.
             await asyncio.wait({in_flight})
-            # Its batch is still held (the run loop never got to release it), so the
-            # sweep below covers it; only the rows it did write are counted here. A
+            # Its events are still held (nothing released them), so the sweep below
+            # covers them; only the rows it did write are counted here. A
             # failed write rolled back and is simply swept.
             if not in_flight.cancelled() and in_flight.exception() is None:
                 self._metrics.events_quarantined += in_flight.result()
             self._quarantine_write = None
-        pending = self._held + (self._backpressure.drain_nowait() if self._backpressure else [])
-        self._held = []
-        self._metrics.events_held = 0
-        if not pending or self._quarantine is None:
+        # The events stay in _held until a write of them has succeeded. A stop can
+        # cancel this sweep at any await below (it runs in the run loop after a
+        # failure); events moved to a local list were then lost, stop()'s own sweep
+        # found nothing, and the checkpoint went past them. Left in _held, stop()
+        # sweeps them again -- skip_written and the per-file lock make that safe --
+        # and _checkpoint withholds the offsets until then.
+        if self._backpressure:
+            self._held.extend(self._backpressure.drain_nowait())
+        self._metrics.events_held = len(self._held)
+        if not self._held or self._quarantine is None:
             return True
+        pending = list(self._held)
         batch = [(ev, reason) for ev in pending]
         batch_id = f"{self._quarantine.run_id}:unchecked"
         for attempt in range(_SWEEP_ATTEMPTS):
             try:
                 # skip_written also makes a retry safe: a failed attempt rolled back.
-                written = await self._quarantine.write(batch_id, batch, skip_written=True)
+                # Shielded and kept in _quarantine_write for the same reason as the
+                # micro-batch's write: a cancelled sweep's thread still writes, and the
+                # next sweep must wait for it and count what it wrote.
+                self._quarantine_write = asyncio.ensure_future(
+                    self._quarantine.write(batch_id, batch, skip_written=True))
+                written = await asyncio.shield(self._quarantine_write)
             except Exception as exc:
+                self._quarantine_write = None
                 logger.error("Streaming pipeline %s: quarantine sweep attempt %d failed: %s",
                              self.pipeline.id, attempt + 1, exc, exc_info=True)
                 if attempt + 1 < _SWEEP_ATTEMPTS:
-                    await asyncio.sleep(0.1 * 2 ** attempt)
+                    await asyncio.sleep(_SWEEP_BACKOFF_SECONDS * 2 ** attempt)
                 continue
+            self._quarantine_write = None
             self._metrics.events_quarantined += written
+            swept = {id(ev) for ev in pending}
+            self._held = [ev for ev in self._held if id(ev) not in swept]
+            self._metrics.events_held = len(self._held)
             return True
-        self._held = pending
         self._metrics.events_held = len(pending)
         self._record_error(StreamHealError(
             f"{len(pending)} unchecked events could not be quarantined; kept in memory "
