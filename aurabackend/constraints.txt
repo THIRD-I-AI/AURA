@@ -150,7 +150,7 @@ pluggy==1.6.0
 prometheus-client==0.26.0
 prometheus-fastapi-instrumentator==8.1.0
 proto-plus==1.28.2
-protobuf==5.29.6
+protobuf==7.36.2
 psycopg2-binary==2.9.13
 py-partiql-parser==0.6.3
 pyarrow==23.0.1
