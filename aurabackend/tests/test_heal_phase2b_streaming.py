@@ -1,0 +1,879 @@
+"""ADR-002 phase 2b: the heal step of a streaming pipeline, per micro-batch.
+
+A real StreamingEngine streams rows from the phase-2a benchmark's datasets and fault
+injectors (tests/accuracy) through the real /uasr/heal and /uasr/baseline handlers,
+behind the real JWTAuthMiddleware and reached over HTTP (httpx.ASGITransport, no
+lifespan), as the pipeline's tenant. What reaches the window processor -- the input
+of every sink -- is recorded and compared with the injector's ground truth:
+
+* a clean stream flows through unchanged, with nothing quarantined;
+* a repairable fault is repaired before any sink sees it;
+* rows no rule can prove are quarantined to ``_aura_quarantine_<pipeline_id>`` and
+  never emitted;
+* with UASR unreachable nothing is emitted: the micro-batch is held, the pipeline
+  goes DEGRADED then FAILED on BUG-569's thresholds, and every event read ends up in
+  the quarantine table; a transient outage releases the held events exactly once;
+* each tenant's stream is healed against its own baseline only.
+
+Row accounting is checked throughout: every event the source produced is emitted or
+quarantined, exactly once.
+"""
+from __future__ import annotations
+
+import asyncio
+import json
+import os
+import tempfile
+import uuid
+from typing import Any, Callable, Dict, List, Optional
+
+import duckdb
+import httpx
+import pytest
+from fastapi import FastAPI, Request
+
+import metadata_store.db as _metadata_db
+from pipeline.streaming import path_confinement
+from pipeline.streaming import streaming_engine as engine_mod
+from pipeline.streaming.heal import QUARANTINE_FILE, MicroBatchHealer, source_id_for
+from pipeline.streaming.models import (
+    StreamEvent,
+    StreamPipeline,
+    StreamPipelineStatus,
+    StreamSink,
+    StreamSinkType,
+    StreamSource,
+    StreamSourceType,
+    WindowConfig,
+    WindowType,
+)
+from pipeline.streaming.sinks.base import BaseSink
+from pipeline.streaming.sources.base import BaseSource
+from pipeline.streaming.streaming_engine import StreamingEngine
+from shared.middleware import JWTAuthMiddleware
+from shared.streaming_manager import streaming_manager
+from tests.accuracy.datasets import make_dataset, strict_equal
+from tests.accuracy.faults import build_trial
+from uasr import service
+from uasr.actuator_agent import SynthesisActuatorAgent
+from uasr.db import get_session_factory, init_uasr_db
+
+BATCH = 100
+
+
+# ── Fixtures ─────────────────────────────────────────────────────────────────
+
+@pytest.fixture(scope="module", autouse=True)
+def _isolated_metadata_db():
+    original = (_metadata_db.DATABASE_URL, _metadata_db._engine, _metadata_db._session_factory)
+    path = os.path.join(tempfile.gettempdir(), f"aura_heal2b_stream_{uuid.uuid4().hex[:8]}.db")
+    _metadata_db.DATABASE_URL = f"sqlite+aiosqlite:///{path}"
+    _metadata_db._engine = None
+    _metadata_db._session_factory = None
+    yield
+    leaked = _metadata_db._engine  # BUG-008: dispose before restoring, or pytest hangs at exit
+    if leaked is not None:
+        loop = asyncio.new_event_loop()
+        try:
+            loop.run_until_complete(leaked.dispose())
+        finally:
+            loop.close()
+    _metadata_db.DATABASE_URL, _metadata_db._engine, _metadata_db._session_factory = original
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+
+
+async def _no_llm(self, *a, **k):
+    return None
+
+
+@pytest.fixture(autouse=True)
+async def _env(tmp_path, monkeypatch):
+    await init_uasr_db()
+    # No LLM in CI: an unproven fault's proposal path falls back to templates.
+    monkeypatch.setattr(SynthesisActuatorAgent, "_llm_shim", _no_llm)
+    monkeypatch.chdir(tmp_path)  # checkpoints
+    monkeypatch.setattr(path_confinement, "STREAMING_OUTPUT_ROOT", str(tmp_path / "streaming_output"))
+    yield
+    while _started:
+        await _started.pop().stop()
+
+
+def _uasr_app() -> FastAPI:
+    """The real UASR heal/baseline handlers and tenancy behind the real JWT middleware,
+    as tests/test_heal_phase1_monitor_livecheck.py builds it."""
+    app = FastAPI()
+    app.add_middleware(JWTAuthMiddleware)
+
+    @app.post("/uasr/baseline")
+    async def baseline(request: Request):
+        return await service.register_baseline(service.BaselineRequest(**await request.json()), request)
+
+    @app.post("/uasr/heal")
+    async def heal(request: Request):
+        async with get_session_factory()() as db:
+            return await service.heal_batch(service.IngestRequest(**await request.json()), request, db=db)
+
+    return app
+
+
+class FlakyTransport(httpx.AsyncBaseTransport):
+    """Refuses the first ``failures`` connections, then reaches ``inner``: UASR down."""
+
+    def __init__(self, inner: Optional[httpx.AsyncBaseTransport], failures: int):
+        self.inner = inner
+        self.failures = failures
+        self.calls = 0
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        self.calls += 1
+        if self.inner is None or self.calls <= self.failures:
+            raise httpx.ConnectError("connection refused", request=request)
+        return await self.inner.handle_async_request(request)
+
+
+class ListSource(BaseSource):
+    """Hands out the scripted micro-batches, then nothing."""
+
+    def __init__(self, chunks: List[List[StreamEvent]]):
+        super().__init__({})
+        self.chunks = list(chunks)
+        self.produced = 0
+
+    async def start(self) -> None:
+        self._running = True
+
+    async def stop(self) -> None:
+        self._running = False
+
+    async def read_batch(self, max_events: int = 100) -> List[StreamEvent]:
+        if not self.chunks:
+            return []
+        chunk = self.chunks.pop(0)
+        self.produced += len(chunk)
+        return chunk
+
+
+class RecordingSink(BaseSink):
+    def __init__(self):
+        super().__init__({})
+        self.windows = 0
+
+    async def start(self) -> None:
+        self._running = True
+
+    async def stop(self) -> None:
+        self._running = False
+
+    async def emit_window(self, window, pipeline_id: str) -> None:
+        self.windows += 1
+
+
+_started: List[StreamingEngine] = []
+
+
+def _pipeline(tenant: Optional[str], pipeline_id: Optional[str] = None) -> StreamPipeline:
+    kw: Dict[str, Any] = {"id": pipeline_id} if pipeline_id else {}
+    return StreamPipeline(
+        name="heal-2b",
+        source=StreamSource(type=StreamSourceType.SIMULATED, config={}),
+        window=WindowConfig(type=WindowType.TUMBLING, size_seconds=5),
+        sinks=[StreamSink(type=StreamSinkType.CONSOLE)],
+        watermark_delay_seconds=0,
+        checkpoint_interval_seconds=3600,
+        tenant_id=tenant,
+        **kw,
+    )
+
+
+def _events(rows: List[Dict[str, Any]], t0: float = 1_000.0) -> List[StreamEvent]:
+    return [StreamEvent(timestamp=t0 + i, key="k", data=dict(r)) for i, r in enumerate(rows)]
+
+
+def _chunks(events: List[StreamEvent]) -> List[List[StreamEvent]]:
+    return [events[i:i + BATCH] for i in range(0, len(events), BATCH)]
+
+
+class Run:
+    def __init__(self, engine: StreamingEngine, source: ListSource, sink: RecordingSink):
+        self.engine, self.source, self.sink = engine, source, sink
+        self.emitted: List[StreamEvent] = []
+
+
+async def _start(monkeypatch, pipeline: StreamPipeline, events: List[StreamEvent], *,
+                 baseline_rows: int, transport: Optional[httpx.AsyncBaseTransport] = None,
+                 max_errors: Optional[int] = None, **engine_kw: Any) -> Run:
+    transport = transport or httpx.ASGITransport(app=_uasr_app())
+    source, sink = ListSource(_chunks(events)), RecordingSink()
+    monkeypatch.setattr(engine_mod, "_create_source", lambda _p: source)
+    monkeypatch.setattr(engine_mod, "_create_sink", lambda _d, _p: sink)
+    monkeypatch.setattr(engine_mod, "_create_healer", lambda p: MicroBatchHealer(p, transport=transport))
+    eng = StreamingEngine(pipeline, batch_size=BATCH, tick_interval=0.01, **engine_kw)
+    eng._baseline_min_events = baseline_rows
+    eng._baseline_max_wait = 60.0
+    if max_errors is not None:
+        eng._max_consecutive_errors = max_errors
+    _started.append(eng)
+    run = Run(eng, source, sink)
+    await eng.start()
+    real = eng._window_proc.process_event
+
+    def spy(ev):  # the window processor's input is every sink's input
+        run.emitted.append(ev)
+        return real(ev)
+
+    eng._window_proc.process_event = spy
+    return run
+
+
+async def _until(cond: Callable[[], bool], timeout: float = 60.0) -> None:
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while not cond():
+        if loop.time() > deadline:
+            raise AssertionError("condition not reached in time")
+        await asyncio.sleep(0.01)
+
+
+def _quarantine(pipeline: StreamPipeline) -> List[Dict[str, Any]]:
+    path = os.path.join(path_confinement.tenant_output_dir(pipeline.tenant_id, pipeline.id), QUARANTINE_FILE)
+    if not os.path.exists(path):
+        return []
+    con = duckdb.connect(path, read_only=True)
+    try:
+        if not con.execute("SELECT 1 FROM duckdb_tables() WHERE table_name = ?",
+                           [f"_aura_quarantine_{pipeline.id}"]).fetchall():
+            return []  # a rolled-back first write leaves no table
+        cur = con.execute(f'SELECT event_id, reason, row_json, source_id FROM "_aura_quarantine_{pipeline.id}"')
+        return [{"event_id": e, "reason": r, "row": json.loads(j), "source_id": s} for e, r, j, s in cur.fetchall()]
+    finally:
+        con.close()
+
+
+def _accounted(run: Run, quarantined: List[Dict[str, Any]], sent: int) -> None:
+    ids = [e.event_id for e in run.emitted] + [q["event_id"] for q in quarantined]
+    assert len(ids) == sent == run.source.produced, (len(run.emitted), len(quarantined), sent)
+    assert len(set(ids)) == sent, "an event was emitted or quarantined twice"
+
+
+async def _drain(run: Run, sent: int) -> None:
+    eng = run.engine
+    await _until(lambda: eng.metrics.events_in == sent)
+    await eng.stop()
+
+
+# ── Clean data ───────────────────────────────────────────────────────────────
+
+async def test_clean_stream_flows_through_unchanged(monkeypatch):
+    ds = make_dataset(11, batch_rows=500)
+    pipe = _pipeline("tenant_a")
+    events = _events(ds.baseline + ds.truth)
+    run = await _start(monkeypatch, pipe, events, baseline_rows=len(ds.baseline))
+    await _until(lambda: run.engine.metrics.events_in == len(events))
+    assert run.engine.pipeline.status == StreamPipelineStatus.RUNNING
+    assert run.engine.metrics.errors == []
+    await run.engine.stop()
+
+    # The first rows registered the baseline, as this tenant's source.
+    assert service._detector.has_baseline(service.scoped_source("tenant_a", source_id_for(pipe)))
+    assert [e.event_id for e in run.emitted] == [e.event_id for e in events]  # order kept
+    assert all(strict_equal(e.data, r) for e, r in zip(run.emitted, ds.baseline + ds.truth))
+    assert _quarantine(pipe) == []
+    assert run.engine.metrics.events_quarantined == 0 and run.engine.metrics.heal_repairs == 0
+
+
+# ── Repaired before the sink ─────────────────────────────────────────────────
+
+async def test_repairable_fault_in_micro_batches_is_repaired_before_the_sink(monkeypatch):
+    trial = build_trial("rename", 3)
+    pipe = _pipeline("tenant_a")
+    base, faulty = _events(trial.dataset.baseline), _events(trial.sent, t0=50_000.0)
+    run = await _start(monkeypatch, pipe, base + faulty, baseline_rows=len(base))
+    await _drain(run, len(base) + len(faulty))
+
+    quarantined = _quarantine(pipe)
+    _accounted(run, quarantined, len(base) + len(faulty))
+    by_id = {e.event_id: e for e in run.emitted}
+    restored = 0
+    for ev, want in zip(faulty, trial.expected):
+        if ev.event_id in by_id:
+            # Never a wrong value at the sink: what is emitted is the ground truth.
+            assert want is not None and strict_equal(by_id[ev.event_id].data, want), trial.detail
+            restored += 1
+    assert restored == len(faulty), f"{trial.detail}: only {restored}/{len(faulty)} restored"
+    assert run.engine.metrics.heal_repairs > 0
+
+
+# ── Unprovable: quarantined, never emitted ───────────────────────────────────
+
+async def test_unprovable_fault_is_quarantined_and_never_emitted(monkeypatch):
+    sub_id, queue = streaming_manager.subscribe("pipeline:*")
+    try:
+        trial = build_trial("retype_lossy", 0)
+        pipe = _pipeline("tenant_a")
+        base, faulty = _events(trial.dataset.baseline), _events(trial.sent, t0=50_000.0)
+        run = await _start(monkeypatch, pipe, base + faulty, baseline_rows=len(base))
+        await _until(lambda: run.engine.metrics.events_in == len(base) + len(faulty))
+        assert run.engine.pipeline.status == StreamPipelineStatus.DEGRADED
+        await run.engine.stop()
+
+        quarantined = _quarantine(pipe)
+        _accounted(run, quarantined, len(base) + len(faulty))
+        must_hold = {ev.event_id for ev, want in zip(faulty, trial.expected) if want is None}
+        assert must_hold, trial.detail
+        held = {q["event_id"] for q in quarantined}
+        assert must_hold <= held, trial.detail
+        assert not must_hold & {e.event_id for e in run.emitted}
+        sent_by_id = {ev.event_id: ev.data for ev in faulty}
+        for q in quarantined:  # held aside exactly as read, with the reason and the source
+            assert strict_equal(q["row"], sent_by_id[q["event_id"]]) and q["reason"]
+            assert q["source_id"] == source_id_for(pipe)
+        for ev, want in zip(faulty, trial.expected):
+            match = [e for e in run.emitted if e.event_id == ev.event_id]
+            if match:
+                assert want is not None and strict_equal(match[0].data, want)
+        assert run.engine.metrics.events_quarantined == len(quarantined)
+        mine = [e for e in _drain_queue(queue) if e.topic == f"pipeline:{pipe.id}"]
+        assert [e.payload["code"] for e in mine] == ["STREAM_DEGRADED"]
+    finally:
+        streaming_manager.unsubscribe(sub_id)
+
+
+def _drain_queue(queue: asyncio.Queue) -> List[Any]:
+    out = []
+    while not queue.empty():
+        out.append(queue.get_nowait())
+    return out
+
+
+# ── UASR unreachable: fail closed ────────────────────────────────────────────
+
+async def test_uasr_down_holds_the_stream_then_fails_and_loses_nothing(monkeypatch):
+    sub_id, queue = streaming_manager.subscribe("pipeline:*")
+    try:
+        ds = make_dataset(5, batch_rows=150)
+        pipe = _pipeline("tenant_a")
+        events = _events(ds.baseline[:200] + ds.truth)
+        flaky = FlakyTransport(None, failures=10**9)
+        run = await _start(monkeypatch, pipe, events, baseline_rows=200, transport=flaky)
+        seen: List[StreamPipelineStatus] = []
+        original_tick = run.engine._component_tick
+
+        async def recording_tick(component, errors, successes):
+            failed = await original_tick(component, errors, successes)
+            if component == "heal":
+                seen.append(run.engine.pipeline.status)
+            return failed
+
+        run.engine._component_tick = recording_tick
+        await _until(lambda: run.engine.pipeline.status == StreamPipelineStatus.FAILED)
+        await _until(lambda: run.engine._released)
+
+        # BUG-569 thresholds, unchanged: DEGRADED on the first failed tick, FAILED on the 10th.
+        assert seen[0] == StreamPipelineStatus.DEGRADED
+        assert seen[-1] == StreamPipelineStatus.FAILED
+        assert len(seen) == engine_mod._MAX_CONSECUTIVE_ERRORS
+        assert flaky.calls == engine_mod._MAX_CONSECUTIVE_ERRORS
+        assert run.emitted == [] and run.sink.windows == 0  # nothing unchecked reached a sink
+        assert all(e.startswith("heal: UASR /uasr/baseline unreachable") for e in run.engine.metrics.errors)
+
+        quarantined = _quarantine(pipe)
+        _accounted(run, quarantined, len(events))
+        assert all(q["reason"].startswith("not checked") for q in quarantined)
+        mine = [e for e in _drain_queue(queue) if e.topic == f"pipeline:{pipe.id}"]
+        assert [e.payload["code"] for e in mine] == ["STREAM_DEGRADED", "STREAM_FAILED"]
+    finally:
+        streaming_manager.unsubscribe(sub_id)
+
+
+async def test_transient_uasr_outage_releases_held_events_exactly_once(monkeypatch):
+    ds = make_dataset(7, batch_rows=300)
+    pipe = _pipeline("tenant_a")
+    base, rest = _events(ds.baseline), _events(ds.truth, t0=50_000.0)
+    flaky = FlakyTransport(httpx.ASGITransport(app=_uasr_app()), failures=0)
+    run = await _start(monkeypatch, pipe, base, baseline_rows=len(base), transport=flaky)
+    await _until(lambda: run.engine.metrics.events_in == len(base))
+    await _until(lambda: run.engine.pipeline.status == StreamPipelineStatus.RUNNING)
+
+    flaky.failures = flaky.calls + 3  # the next three calls are refused
+    run.source.chunks = _chunks(rest)
+    await _until(lambda: run.engine.pipeline.status == StreamPipelineStatus.DEGRADED)
+    assert run.engine.metrics.events_held > 0
+    assert len(run.emitted) == len(base)  # held, not emitted
+    await _until(lambda: run.engine.metrics.events_in == len(base) + len(rest))
+    await _until(lambda: run.engine.pipeline.status == StreamPipelineStatus.RUNNING)  # 3 clean ticks
+    await run.engine.stop()
+
+    assert _quarantine(pipe) == []
+    _accounted(run, [], len(base) + len(rest))
+    assert all(strict_equal(e.data, r) for e, r in zip(run.emitted, ds.baseline + ds.truth))
+
+
+# ── Tenant isolation ─────────────────────────────────────────────────────────
+
+async def test_each_tenant_is_healed_against_its_own_baseline(monkeypatch):
+    trial = build_trial("rename", 3)
+    shared_id = f"spipe_{uuid.uuid4().hex[:8]}"  # the same pipeline id and source in both tenants
+
+    # Tenant A registers the clean baseline.
+    pipe_a = _pipeline("tenant_a", shared_id)
+    base = _events(trial.dataset.baseline)
+    run_a = await _start(monkeypatch, pipe_a, base, baseline_rows=len(base))
+    await _drain(run_a, len(base))
+
+    # Tenant B streams renamed rows under the same ids. They must not meet A's
+    # baseline (they would be "repaired" into A's column names): B has no baseline,
+    # so its first rows register B's own and pass unchanged.
+    pipe_b = _pipeline("tenant_b", shared_id)
+    faulty = _events(trial.sent)
+    run_b = await _start(monkeypatch, pipe_b, faulty, baseline_rows=len(faulty))
+    await _drain(run_b, len(faulty))
+    assert all(strict_equal(e.data, r) for e, r in zip(run_b.emitted, trial.sent))
+    assert len(run_b.emitted) == len(faulty) and run_b.engine.metrics.heal_repairs == 0
+
+    sid = source_id_for(pipe_a)
+    assert service._detector.has_baseline(service.scoped_source("tenant_a", sid))
+    assert service._detector.has_baseline(service.scoped_source("tenant_b", sid))
+    # Each tenant's quarantine lives in its own directory.
+    assert path_confinement.tenant_output_dir("tenant_a", shared_id) != \
+        path_confinement.tenant_output_dir("tenant_b", shared_id)
+
+
+async def test_a_pipeline_without_a_tenant_is_held_not_sent_as_a_shared_identity(monkeypatch):
+    # BUG-562: no verified tenant -> no credentials, so the JWT UASR answers 401 and
+    # the stream is held (fail closed) instead of being healed in some shared namespace.
+    ds = make_dataset(13, batch_rows=60)
+    pipe = _pipeline(None)
+    events = _events(ds.truth)
+    run = await _start(monkeypatch, pipe, events, baseline_rows=len(events), max_errors=3)
+    await _until(lambda: run.engine.pipeline.status == StreamPipelineStatus.FAILED)
+    await _until(lambda: run.engine._released)
+    assert run.emitted == []
+    assert run.engine.metrics.errors[-1] == "heal: UASR /uasr/baseline returned HTTP 401"
+    _accounted(run, _quarantine(pipe), len(events))
+
+
+async def test_stop_sweep_does_not_quarantine_an_already_written_batch_twice():
+    # A micro-batch's quarantine write that finished before the stop: that batch is
+    # still held, so the stop sweep sees it again. It must land in the table once
+    # (ADR-002: every row accounted for exactly once). A write still in flight is
+    # test_stop_while_a_micro_batch_quarantine_write_is_in_flight_writes_each_event_once.
+    from pipeline.streaming.heal import QuarantineStore
+
+    pipe = _pipeline("tenant_a")
+    store = QuarantineStore(pipe, run_id=f"{pipe.id}:r1")
+    events = _events([{"a": i} for i in range(5)])
+    assert await store.write("b1", [(ev, "unprovable") for ev in events[:3]]) == 3
+    swept = await store.write("unchecked", [(ev, "not checked") for ev in events], skip_written=True)
+    assert swept == 2
+    rows = _quarantine(pipe)
+    assert sorted(r["event_id"] for r in rows) == sorted(ev.event_id for ev in events)
+    # Another run of the same pipeline is not this run's write: its events are written.
+    other = QuarantineStore(pipe, run_id=f"{pipe.id}:r2")
+    assert await other.write("unchecked", [(events[0], "not checked")], skip_written=True) == 1
+
+
+# ── Review of 39061b0: the quarantine write under stop, failure and races ───────
+
+def _records(store, events, reason: str = "unprovable"):
+    return [(store.run_id, "b", store.source_id, ev.event_id, ev.timestamp, reason, json.dumps(ev.data), None)
+            for ev in events]
+
+
+async def test_stop_while_a_micro_batch_quarantine_write_is_in_flight_writes_each_event_once(monkeypatch):
+    # The stop cancels the run loop while the micro-batch's write is still running in
+    # its thread. Before the fix the sweep wrote the held batch alongside it: the same
+    # events landed twice, or the sweep died on DuckDB's CREATE conflict and dropped
+    # everything pending (ADR-002: every row accounted for exactly once).
+    import threading
+
+    from pipeline.streaming.heal import QuarantineStore
+
+    trial = build_trial("retype_lossy", 0)
+    pipe = _pipeline("tenant_a")
+    base, faulty = _events(trial.dataset.baseline), _events(trial.sent, t0=50_000.0)
+    entered, gate = threading.Event(), threading.Event()
+    real = QuarantineStore._write_sync
+
+    def slow_first_write(self, records, skip_written=False):
+        if not skip_written and not entered.is_set():
+            entered.set()
+            gate.wait(10)
+        return real(self, records, skip_written)
+
+    monkeypatch.setattr(QuarantineStore, "_write_sync", slow_first_write)
+    run = await _start(monkeypatch, pipe, base + faulty, baseline_rows=len(base))
+    await _until(entered.is_set)
+    stopping = asyncio.create_task(run.engine.stop())
+    await asyncio.sleep(0.3)  # the stop is now past cancelling the run loop
+    gate.set()
+    await stopping
+
+    quarantined = _quarantine(pipe)
+    _accounted(run, quarantined, run.source.produced)
+    assert run.engine.metrics.events_quarantined == len(quarantined)
+    assert not any("could not be quarantined" in e for e in run.engine.metrics.errors)
+
+
+def test_concurrent_first_writes_neither_conflict_nor_duplicate():
+    # Two sweeps of one run racing on a table that does not exist yet: DuckDB raised a
+    # catalog write-write conflict on CREATE, and the read-then-insert of skip_written
+    # let both insert. Serialised per file, each event lands once.
+    from concurrent.futures import ThreadPoolExecutor
+
+    from pipeline.streaming.heal import QuarantineStore
+
+    pipe = _pipeline("tenant_a")
+    store = QuarantineStore(pipe, run_id=f"{pipe.id}:r1")
+    records = _records(store, _events([{"a": i} for i in range(3000)]))
+    with ThreadPoolExecutor(4) as pool:
+        written = list(pool.map(lambda _: store._write_sync(records, True), range(4)))
+    assert sum(written) == 3000
+    rows = _quarantine(pipe)
+    assert len(rows) == 3000 and len({r["event_id"] for r in rows}) == 3000
+
+
+def test_a_write_that_fails_part_way_leaves_nothing_behind():
+    # A failed micro-batch write is retried in full later; rows a failed attempt had
+    # already autocommitted would then be quarantined twice.
+    from pipeline.streaming.heal import QuarantineStore
+
+    pipe = _pipeline("tenant_a")
+    store = QuarantineStore(pipe, run_id=f"{pipe.id}:r1")
+    records = _records(store, _events([{"a": i} for i in range(5)]))
+    records[3] = records[3][:4] + ("not a number",) + records[3][5:]  # event_time is DOUBLE
+    with pytest.raises(Exception):
+        store._write_sync(records)
+    assert _quarantine(pipe) == []
+
+
+async def test_stop_sweep_retries_a_failed_quarantine_write(monkeypatch):
+    # A transient failure of the sweep's write used to drop every pending event
+    # (only a log line); it is retried, and lands exactly once.
+    from pipeline.streaming.heal import QuarantineStore
+
+    ds = make_dataset(5, batch_rows=150)
+    pipe = _pipeline("tenant_a")
+    events = _events(ds.baseline[:200] + ds.truth)
+    run = await _start(monkeypatch, pipe, events, baseline_rows=200, transport=FlakyTransport(None, failures=10**9))
+    await _until(lambda: run.engine.metrics.events_held > 0)
+    real, calls = QuarantineStore._write_sync, []
+
+    def fails_once(self, records, skip_written=False):
+        calls.append(len(records))
+        if len(calls) == 1:
+            raise OSError("disk briefly unavailable")
+        return real(self, records, skip_written)
+
+    monkeypatch.setattr(QuarantineStore, "_write_sync", fails_once)
+    await run.engine.stop()
+    assert len(calls) == 2
+    _accounted(run, _quarantine(pipe), run.source.produced)
+    assert run.engine._held == []
+
+
+async def test_events_the_sweep_cannot_quarantine_are_kept_and_withhold_the_checkpoint(monkeypatch):
+    from pipeline.streaming.heal import QuarantineStore
+
+    ds = make_dataset(5, batch_rows=150)
+    pipe = _pipeline("tenant_a")
+    events = _events(ds.baseline[:200] + ds.truth)
+    run = await _start(monkeypatch, pipe, events, baseline_rows=200, transport=FlakyTransport(None, failures=10**9))
+    await _until(lambda: run.engine.metrics.events_held > 0)
+
+    def always_fails(self, records, skip_written=False):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(QuarantineStore, "_write_sync", always_fails)
+    checkpoints: List[int] = []
+    monkeypatch.setattr(run.engine._state_mgr, "create_checkpoint", lambda **kw: checkpoints.append(1))
+    await run.engine.stop()
+
+    kept = run.engine._held
+    assert len(kept) == run.source.produced and len({e.event_id for e in kept}) == len(kept)
+    assert run.engine.metrics.events_held == len(kept)
+    assert any("could not be quarantined" in e for e in run.engine.metrics.errors)
+    assert run.emitted == [] and _quarantine(pipe) == []
+    assert checkpoints == []  # the source offsets must not move past events nobody kept on disk
+
+
+async def test_no_checkpoint_while_a_micro_batch_is_held(monkeypatch):
+    # The source offsets in a checkpoint would pass events UASR never checked; a crash
+    # during the outage would then lose them on restart.
+    ds = make_dataset(5, batch_rows=150)
+    pipe = _pipeline("tenant_a")
+    pipe.checkpoint_interval_seconds = 0
+    events = _events(ds.baseline[:200] + ds.truth)
+    run = await _start(monkeypatch, pipe, events, baseline_rows=200,
+                       transport=FlakyTransport(None, failures=10**9), max_errors=10**6)
+    taken_while_held: List[int] = []
+    real = run.engine._state_mgr.create_checkpoint
+
+    def spy(**kw):
+        taken_while_held.append(len(run.engine._held))
+        return real(**kw)
+
+    monkeypatch.setattr(run.engine._state_mgr, "create_checkpoint", spy)
+    await _until(lambda: run.engine.metrics.events_held > 0)
+    await asyncio.sleep(0.3)  # many ticks of the outage
+    assert [n for n in taken_while_held if n] == []
+
+
+# ── A stop that cancels the held/quarantine paths at an await ────────────────────
+# stop() cancels the run loop wherever it is suspended. Every event read from the
+# source must still end up emitted or quarantined exactly once, and no checkpoint may
+# be taken past events that are neither (ADR-002: never lose an event).
+
+def _gated_sweep_write(monkeypatch, *, fail_first: bool):
+    """The first sweep write (skip_written) fails, or blocks until the gate opens."""
+    import threading
+
+    from pipeline.streaming.heal import QuarantineStore
+
+    real, calls = QuarantineStore._write_sync, []
+    entered, gate = threading.Event(), threading.Event()
+
+    def write(self, records, skip_written=False):
+        if skip_written:
+            calls.append(len(records))
+            if len(calls) == 1:
+                entered.set()
+                if fail_first:
+                    raise OSError("disk briefly unavailable")
+                gate.wait(10)
+        return real(self, records, skip_written)
+
+    monkeypatch.setattr(QuarantineStore, "_write_sync", write)
+    return calls, entered, gate
+
+
+def _checkpoint_spy(monkeypatch, run: Run, pipe: StreamPipeline) -> List[int]:
+    """Records, for every checkpoint taken, how many produced events were then neither
+    emitted nor in the quarantine table."""
+    unaccounted: List[int] = []
+    real = run.engine._state_mgr.create_checkpoint
+
+    def spy(**kw):
+        done = {e.event_id for e in run.emitted} | {q["event_id"] for q in _quarantine(pipe)}
+        unaccounted.append(run.source.produced - len(done))
+        return real(**kw)
+
+    monkeypatch.setattr(run.engine._state_mgr, "create_checkpoint", spy)
+    return unaccounted
+
+
+async def test_stop_during_the_failure_sweep_retry_loses_nothing(monkeypatch):
+    # Reproduces the loss: UASR down, max errors 1 so the first failed tick fails the
+    # pipeline, the failure sweep's first write fails, and stop() lands during its retry
+    # backoff. The sweep had already moved every event out of _held into a local list;
+    # the cancellation dropped that list, stop()'s own sweep found nothing, and the
+    # checkpoint was taken past all of them (produced 350, emitted 0, quarantined 0).
+    monkeypatch.setattr(engine_mod, "_SWEEP_BACKOFF_SECONDS", 30.0)  # stop lands in it
+    ds = make_dataset(5, batch_rows=150)
+    pipe = _pipeline("tenant_a")
+    events = _events(ds.baseline[:200] + ds.truth)
+    calls, entered, _gate = _gated_sweep_write(monkeypatch, fail_first=True)
+    run = await _start(monkeypatch, pipe, events, baseline_rows=200,
+                       transport=FlakyTransport(None, failures=10**9), max_errors=1)
+    unaccounted = _checkpoint_spy(monkeypatch, run, pipe)
+    await _until(entered.is_set)
+    await asyncio.sleep(0.1)  # the failed attempt is back on the loop, in its backoff
+    assert run.engine.pipeline.status == StreamPipelineStatus.FAILED and not run.engine._released
+    await asyncio.wait_for(run.engine.stop(), 20)
+
+    assert run.engine.pipeline.status == StreamPipelineStatus.STOPPED
+    assert run.emitted == []
+    quarantined = _quarantine(pipe)
+    _accounted(run, quarantined, run.source.produced)
+    assert run.source.produced == len(events)
+    assert run.engine.metrics.events_quarantined == len(quarantined)
+    assert run.engine._held == [] and run.engine.metrics.events_held == 0
+    assert unaccounted == [0]
+
+
+async def test_stop_while_the_failure_sweep_write_is_in_flight_writes_each_event_once(monkeypatch):
+    # Cancelled inside the sweep's own write: the thread finishes it anyway, so stop()'s
+    # sweep must wait for it and count it, then write only what it did not.
+    ds = make_dataset(5, batch_rows=150)
+    pipe = _pipeline("tenant_a")
+    events = _events(ds.baseline[:200] + ds.truth)
+    calls, entered, gate = _gated_sweep_write(monkeypatch, fail_first=False)
+    run = await _start(monkeypatch, pipe, events, baseline_rows=200,
+                       transport=FlakyTransport(None, failures=10**9), max_errors=1)
+    unaccounted = _checkpoint_spy(monkeypatch, run, pipe)
+    await _until(entered.is_set)
+    stopping = asyncio.create_task(run.engine.stop())
+    await asyncio.sleep(0.3)  # the stop is past cancelling the run loop
+    gate.set()
+    await asyncio.wait_for(stopping, 20)
+
+    quarantined = _quarantine(pipe)
+    _accounted(run, quarantined, run.source.produced)
+    assert run.engine.metrics.events_quarantined == len(quarantined)
+    assert run.engine._held == [] and unaccounted == [0]
+
+
+async def test_stop_while_uasr_has_not_answered_quarantines_the_held_batch(monkeypatch):
+    answered = asyncio.Event()
+
+    class Hanging(httpx.AsyncBaseTransport):
+        async def handle_async_request(self, request):
+            await answered.wait()  # never set: UASR accepted the call and never answers
+            raise AssertionError("unreachable")
+
+    ds = make_dataset(5, batch_rows=150)
+    pipe = _pipeline("tenant_a")
+    events = _events(ds.baseline[:200] + ds.truth)
+    run = await _start(monkeypatch, pipe, events, baseline_rows=200, transport=Hanging())
+    unaccounted = _checkpoint_spy(monkeypatch, run, pipe)
+    await _until(lambda: len(run.engine._held) >= 200 and run.source.produced == len(events))
+    await asyncio.sleep(0.1)  # the heal call is in flight
+    await asyncio.wait_for(run.engine.stop(), 20)
+
+    quarantined = _quarantine(pipe)
+    assert run.emitted == []
+    _accounted(run, quarantined, len(events))
+    assert all(q["reason"].startswith("not checked") for q in quarantined)
+    assert unaccounted == [0]
+
+
+async def test_stop_while_publishing_degraded_after_a_heal_loses_nothing(monkeypatch):
+    # UASR answered (some rows quarantined, the rest healed) and the pipeline is
+    # publishing STREAM_DEGRADED when the stop lands. The healed events had already
+    # left _held and were not yet in the window processor: they were lost.
+    trial = build_trial("retype_lossy", 0)
+    pipe = _pipeline("tenant_a")
+    base, faulty = _events(trial.dataset.baseline), _events(trial.sent, t0=50_000.0)
+    run = await _start(monkeypatch, pipe, base + faulty, baseline_rows=len(base))
+    unaccounted = _checkpoint_spy(monkeypatch, run, pipe)
+    publishing, never = asyncio.Event(), asyncio.Event()
+
+    async def hanging_publish(code):
+        publishing.set()
+        await never.wait()
+
+    run.engine._publish_error = hanging_publish
+    await _until(publishing.is_set)
+    await asyncio.wait_for(run.engine.stop(), 20)
+
+    quarantined = _quarantine(pipe)
+    _accounted(run, quarantined, run.source.produced)
+    assert run.engine.metrics.events_quarantined == len(quarantined)
+    assert len(quarantined) < run.source.produced  # not everything was unchecked
+    assert unaccounted[-1] == 0  # stop()'s checkpoint; earlier periodic ones are not under test
+
+
+# ── Review of f6b48cd: the backpressure buffer while a micro-batch is held ──────
+# While UASR has not answered, the run loop takes nothing from the buffer, but the
+# ingest loop kept reading the source: the buffer filled, BLOCK timed out and dropped
+# each further event (counted in dropped_count only), and the next checkpoint passed
+# them. The source must be paused instead, and anything a buffer does drop accounted
+# for (quarantined) before a checkpoint moves past it.
+
+async def test_short_uasr_outage_with_a_full_buffer_loses_no_event(monkeypatch):
+    from pipeline.streaming import backpressure as bp_mod
+
+    # Any put that times out drops; 0.05 s instead of 5 s so it shows quickly.
+    monkeypatch.setattr(bp_mod, "_BLOCK_PUT_TIMEOUT_SECONDS", 0.05)
+    ds = make_dataset(7, batch_rows=500)
+    pipe = _pipeline("tenant_a")
+    pipe.checkpoint_interval_seconds = 0
+    base, rest = _events(ds.baseline), _events(ds.truth, t0=50_000.0)
+    flaky = FlakyTransport(httpx.ASGITransport(app=_uasr_app()), failures=0)
+    run = await _start(monkeypatch, pipe, base, baseline_rows=len(base), transport=flaky,
+                       max_errors=100, backpressure_buffer=50)
+    await _until(lambda: run.engine.metrics.events_in == len(base))
+
+    flaky.failures = flaky.calls + 20  # the next twenty calls are refused
+    run.source.chunks = _chunks(rest)
+    await _until(lambda: run.engine.pipeline.status == StreamPipelineStatus.DEGRADED)
+    # Before the fix: produced 700, emitted 650, quarantined 2, 48 dropped, and the
+    # pipeline recovered to RUNNING as if nothing had happened.
+    await _until(lambda: run.source.produced == len(base) + len(rest) and not run.engine._held
+                 and run.engine._backpressure.buffer_depth == 0 and not run.engine._pending_put,
+                 timeout=30)
+    await run.engine.stop()
+
+    assert run.engine._backpressure.dropped_count == 0
+    quarantined = _quarantine(pipe)
+    _accounted(run, quarantined, len(base) + len(rest))
+    assert not [q for q in quarantined if q["reason"].startswith("not checked")]
+
+
+async def test_drop_tail_overflow_during_an_outage_is_quarantined_not_lost(monkeypatch):
+    # An operator-chosen dropping strategy still may not lose a row silently: what the
+    # buffer refuses is quarantined as unchecked, and no checkpoint passes it first.
+    ds = make_dataset(7, batch_rows=500)
+    pipe = _pipeline("tenant_a")
+    pipe.checkpoint_interval_seconds = 0
+    base, rest = _events(ds.baseline), _events(ds.truth, t0=50_000.0)
+    # UASR is down from the start; the buffer refuses events at once.
+    flaky = FlakyTransport(httpx.ASGITransport(app=_uasr_app()), failures=20)
+    run = await _start(monkeypatch, pipe, base + rest, baseline_rows=50, transport=flaky,
+                       max_errors=100, backpressure_buffer=50, backpressure_strategy="drop_tail")
+    taken: List[int] = []
+    real = run.engine._state_mgr.create_checkpoint
+
+    def spy(**kw):
+        bp = run.engine._backpressure
+        taken.append(bp.dropped_count - run.engine._drops_accounted)
+        return real(**kw)
+
+    monkeypatch.setattr(run.engine._state_mgr, "create_checkpoint", spy)
+    sent = len(base) + len(rest)
+    await _until(lambda: run.source.produced == sent and not run.engine._overflow
+                 and run.engine._backpressure.buffer_depth == 0 and not run.engine._held
+                 and not run.engine._pending_put, timeout=60)
+    await run.engine.stop()
+
+    quarantined = _quarantine(pipe)
+    assert run.engine._backpressure.dropped_count > 0  # the scenario did overflow
+    _accounted(run, quarantined, sent)
+    refused = [q for q in quarantined if "backpressure buffer" in q["reason"]]
+    assert len(refused) == run.engine._backpressure.dropped_count
+    assert all(q["reason"].startswith("not checked") for q in refused)
+    assert run.engine.metrics.events_quarantined == len(quarantined)
+    assert [n for n in taken if n] == []  # never checkpointed past an unaccounted drop
+
+
+async def test_no_checkpoint_after_a_drop_not_yet_accounted_for(monkeypatch):
+    ds = make_dataset(5, batch_rows=60)
+    pipe = _pipeline("tenant_a")
+    events = _events(ds.truth)
+    run = await _start(monkeypatch, pipe, events, baseline_rows=len(events))
+    await _drain(run, len(events))
+    taken: List[int] = []
+    monkeypatch.setattr(run.engine._state_mgr, "create_checkpoint", lambda **kw: taken.append(1))
+    await run.engine._checkpoint()
+    assert taken == [1]
+    run.engine._backpressure._dropped_count += 1  # a drop nothing quarantined
+    await run.engine._checkpoint()
+    assert taken == [1]
+
+
+async def test_stop_while_ingest_is_blocked_on_a_full_buffer_loses_nothing(monkeypatch):
+    # UASR down: the held micro-batch fills, the 50-event buffer fills, and the ingest
+    # loop waits in put with the rest of a batch it already read from the source. The
+    # stop cancels it there; those events were in a local list only, so the sweep
+    # never saw them and the final checkpoint passed them.
+    ds = make_dataset(5, batch_rows=150)
+    pipe = _pipeline("tenant_a")
+    events = _events(ds.baseline[:200] + ds.truth)
+    run = await _start(monkeypatch, pipe, events, baseline_rows=200,
+                       transport=FlakyTransport(None, failures=10**9), max_errors=10**6,
+                       backpressure_buffer=50)
+    unaccounted = _checkpoint_spy(monkeypatch, run, pipe)
+    await _until(lambda: len(run.engine._held) == 200
+                 and run.engine._backpressure.buffer_depth == 50 and run.source.produced == 300)
+    await asyncio.sleep(0.1)  # the ingest loop is waiting in put with 50 events in hand
+    await asyncio.wait_for(run.engine.stop(), 20)
+
+    assert run.emitted == []
+    quarantined = _quarantine(pipe)
+    _accounted(run, quarantined, run.source.produced)
+    assert run.source.produced == 300
+    assert run.engine.metrics.events_quarantined == len(quarantined)
+    assert run.engine._backpressure.dropped_count == 0
+    assert unaccounted == [0]
