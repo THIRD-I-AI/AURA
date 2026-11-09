@@ -7,7 +7,7 @@
 # `.path`, which breaks the gateway's in-process counterfactual mount route
 # resolution (tests/test_audit_endpoint.py::test_audit_reachable_through_gateway).
 # Revisit as a deliberate upgrade (likely needs a lockstep starlette bump).
-fastapi>=0.115,<0.137
+fastapi>=0.115,<0.142
 uvicorn[standard]>=0.30,<1.0
 pydantic>=2.7,<3.0
 pydantic-settings>=2.3,<3.0
