@@ -573,13 +573,30 @@ class TestNearConstantColumnFeedbackOverflow:
 # every load-mutate-save call site a per-source threading.Lock.
 
 class TestPerSourceLocking:
-    def test_lock_for_returns_the_same_lock_object_for_the_same_source(self):
+    def test_a_second_user_of_the_same_source_waits_for_the_one_lock(self):
+        import threading
+
         det = DriftDetector()
-        assert det._lock_for("src_a") is det._lock_for("src_a")
+        entered = threading.Event()
+
+        def second():
+            with det._lock_for("src_a"):
+                entered.set()
+
+        with det._lock_for("src_a"):
+            t = threading.Thread(target=second)
+            t.start()
+            assert not entered.wait(0.2)
+        assert entered.wait(5)
+        t.join()
+        # BUG-578: the lock is dropped once nobody holds or waits for it.
+        assert det._source_locks == {}
 
     def test_lock_for_returns_different_locks_for_different_sources(self):
         det = DriftDetector()
-        assert det._lock_for("src_a") is not det._lock_for("src_b")
+        with det._lock_for("src_a"), det._lock_for("src_b"):
+            a, b = det._source_locks["src_a"][0], det._source_locks["src_b"][0]
+            assert a is not b and a.locked() and b.locked()
 
     def test_same_source_id_is_strictly_serialized_across_threads(self):
         """The defining property of the fix: N threads racing the SAME

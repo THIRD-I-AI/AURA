@@ -204,13 +204,15 @@ class Run:
 
 async def _start(monkeypatch, pipeline: StreamPipeline, events: List[StreamEvent], *,
                  baseline_rows: int, transport: Optional[httpx.AsyncBaseTransport] = None,
-                 max_errors: Optional[int] = None, **engine_kw: Any) -> Run:
+                 max_errors: Optional[int] = None,
+                 chunks: Optional[List[List[StreamEvent]]] = None, batch: int = BATCH,
+                 **engine_kw: Any) -> Run:
     transport = transport or httpx.ASGITransport(app=_uasr_app())
-    source, sink = ListSource(_chunks(events)), RecordingSink()
+    source, sink = ListSource(_chunks(events) if chunks is None else chunks), RecordingSink()
     monkeypatch.setattr(engine_mod, "_create_source", lambda _p: source)
     monkeypatch.setattr(engine_mod, "_create_sink", lambda _d, _p: sink)
     monkeypatch.setattr(engine_mod, "_create_healer", lambda p: MicroBatchHealer(p, transport=transport))
-    eng = StreamingEngine(pipeline, batch_size=BATCH, tick_interval=0.01, **engine_kw)
+    eng = StreamingEngine(pipeline, batch_size=batch, tick_interval=0.01, **engine_kw)
     eng._baseline_min_events = baseline_rows
     eng._baseline_max_wait = 60.0
     if max_errors is not None:
@@ -282,6 +284,28 @@ async def test_clean_stream_flows_through_unchanged(monkeypatch):
     assert all(strict_equal(e.data, r) for e, r in zip(run.emitted, ds.baseline + ds.truth))
     assert _quarantine(pipe) == []
     assert run.engine.metrics.events_quarantined == 0 and run.engine.metrics.heal_repairs == 0
+
+
+@pytest.mark.parametrize("size", [1, 2, 5, 10, 20])
+async def test_clean_stream_in_small_micro_batches_quarantines_nothing(monkeypatch, size):
+    """BUG-579: a quiet stream reads a few events per tick. Its micro-batches are too
+    small for a distribution check to reach a verdict, so the checks abstain; before
+    the fix a 5-row batch of a clean label or boolean column was quarantined about
+    once in three. Seeds 4 and 6 carry the label and boolean columns that fired."""
+    for seed in (4, 6):
+        ds = make_dataset(seed, baseline_rows=300, batch_rows=60)
+        pipe = _pipeline("tenant_a")
+        base, rest = _events(ds.baseline), _events(ds.truth, t0=50_000.0)
+        chunks = [base] + [rest[i:i + size] for i in range(0, len(rest), size)]
+        run = await _start(monkeypatch, pipe, base + rest, baseline_rows=len(base), chunks=chunks,
+                           batch=size)
+        await _drain(run, len(base) + len(rest))
+        assert run.engine._batch_seq >= len(rest) // size  # healed size rows at a time
+
+        assert _quarantine(pipe) == []
+        assert run.engine.metrics.events_quarantined == 0
+        assert [e.event_id for e in run.emitted] == [e.event_id for e in base + rest]
+        assert all(strict_equal(e.data, r) for e, r in zip(run.emitted, ds.baseline + ds.truth))
 
 
 # ── Repaired before the sink ─────────────────────────────────────────────────

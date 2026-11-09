@@ -23,9 +23,10 @@ import threading
 import time
 import zlib
 from collections import Counter
+from contextlib import contextmanager
 from dataclasses import replace
 from decimal import Decimal
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 import numpy as np
 
@@ -58,6 +59,11 @@ _RECORDED_DECIMALS = 6
 # BUG-564: rows of the smaller sample per merged bin when comparing a batch
 # with the baseline on the baseline's edges -- see _aligned_kl.
 _MIN_ROWS_PER_BIN = 20
+
+# BUG-579: the normal upper-tail z of the 1e-6 significance every distribution check
+# fires at (_chi2_crit). A finding that cannot reach it on the batch's rows abstains.
+_SIG_Z = 4.753
+_SIG_P = 1e-6
 
 # BUG-568 data-quality thresholds -- see the "Data-quality drift" section.
 _DQ_Z = 5.0                      # z-score a null-rate rise must reach
@@ -108,6 +114,22 @@ def _run_rows(batch: BatchPayload) -> int:
     if isinstance(n, int) and not isinstance(n, bool) and n >= 0:
         return n
     return len(batch.rows)
+
+
+def _chi2_crit(df: int) -> float:
+    """The chi-square upper 1e-6 quantile (Wilson-Hilferty, z = _SIG_Z). It overstates
+    the quantile at df=1 (27.5 vs 23.9), which errs toward not firing."""
+    return df * (1 - 2 / (9 * df) + _SIG_Z * math.sqrt(2 / (9 * df))) ** 3
+
+
+def _chi2_sf(x: float, df: int) -> float:
+    """Upper tail of chi-square(df) at x, by the same Wilson-Hilferty normal
+    approximation as _chi2_crit."""
+    if x <= 0:
+        return 1.0
+    h = 2 / (9 * df)
+    z = ((x / df) ** (1 / 3) - (1 - h)) / math.sqrt(h)
+    return 0.5 * math.erfc(z / math.sqrt(2))
 
 
 class DriftDetector:
@@ -179,15 +201,28 @@ class DriftDetector:
         # other. The lock dict itself is guarded so two threads creating a
         # lock for the same brand-new source_id at once can't each get a
         # different Lock object.
-        self._source_locks: Dict[str, threading.Lock] = {}
+        # BUG-578: an entry lives only while a thread holds or waits for its lock
+        # ([lock, users], users counted under the guard before acquiring), so one
+        # lock per source ever seen no longer accumulates, and a lock is never
+        # dropped while a thread still waits on it.
+        self._source_locks: Dict[str, List[Any]] = {}
         self._source_locks_guard = threading.Lock()
 
-    def _lock_for(self, source_id: str) -> threading.Lock:
-        lock = self._source_locks.get(source_id)
-        if lock is None:
+    @contextmanager
+    def _lock_for(self, source_id: str) -> Iterator[None]:
+        with self._source_locks_guard:
+            entry = self._source_locks.get(source_id)
+            if entry is None:
+                entry = self._source_locks[source_id] = [threading.Lock(), 0]
+            entry[1] += 1
+        try:
+            with entry[0]:
+                yield
+        finally:
             with self._source_locks_guard:
-                lock = self._source_locks.setdefault(source_id, threading.Lock())
-        return lock
+                entry[1] -= 1
+                if entry[1] == 0:
+                    del self._source_locks[source_id]
 
     # ────────────────────────────────────────────────────────────────
     # Back-compat read-only views
@@ -1014,6 +1049,7 @@ class DriftDetector:
         col_stats: Dict[str, Dict[str, Any]] = {}
         max_kl = 0.0
         max_loc_shift = 0.0
+        max_sig_shift = 0.0  # BUG-579: the largest shift the batch's rows establish
         kind_changed = False
         # BUG-571: a numeric column binned on the baseline's edges whose KL passed
         # zeta AND the G-test (see _aligned_kl) -- a finding that already carries
@@ -1035,10 +1071,27 @@ class DriftDetector:
             significant = True
             aligned = bool(batch_dist.histogram.get("aligned"))
             if aligned:
-                kl, significant = self._aligned_kl(
+                kl, _ = self._aligned_kl(
                     batch_dist.histogram["counts"], ref_dist.histogram["counts"])
+                # BUG-579: whether the rows establish the difference is decided by
+                # _aligned_drift_p, not by the G statistic's chi-square tail, which a
+                # handful of rows past the baseline's range reaches by chance.
+                significant = self._aligned_drift_p(
+                    batch_dist.histogram["counts"], ref_dist.histogram["counts"]) < _SIG_P
             else:
                 kl = self._kl_divergence(batch_dist.histogram, ref_dist.histogram)
+                if (kl != _KIND_CHANGE_KL and "categories" in batch_dist.histogram
+                        and "categories" in ref_dist.histogram):
+                    # BUG-579: the plug-in KL of a few labels is mostly sampling
+                    # noise (one 'pending' row of a 3-label column scores ~1, past
+                    # any zeta), so a label mix must also pass a 1e-6 G-test.
+                    significant = self._categorical_significant(
+                        batch_dist.histogram["categories"], ref_dist.histogram["categories"])
+                elif kl != _KIND_CHANGE_KL:
+                    # BUG-579: a caller-supplied numeric histogram with no edges is
+                    # compared bin index to bin index, with no test at all; below one
+                    # bin's worth of rows that comparison is noise.
+                    significant = (batch_dist.sample_size or 0) >= _MIN_ROWS_PER_BIN
             kind_changed = kind_changed or kl == _KIND_CHANGE_KL
 
             # Location / scale shift: if both have mean & std, compute a
@@ -1063,10 +1116,20 @@ class DriftDetector:
                 scale = ref_dist.std if ref_dist.std > _EPS else 1.0
                 loc_shift = abs(batch_dist.mean - ref_dist.mean) / scale
                 max_loc_shift = max(max_loc_shift, loc_shift)
-                # Treat a >2-sigma shift as additional KL
+                # Treat a >2-sigma shift as additional KL. BUG-579: only a shift the
+                # batch's rows establish. It used to force the finding outright, so
+                # one clean row 2 sigma out (a True in a 15% boolean, a lognormal's
+                # tail) quarantined a micro-batch. The mean of a few rows says
+                # nothing on its own; values further out than the baseline's own
+                # spread can explain do (_outlier_p).
                 if loc_shift > 2.0:
-                    kl = max(kl, loc_shift * zeta)
-                    significant = True
+                    if not significant and ref_dist.std > _EPS:
+                        values = [float(v) for r in batch.rows
+                                  if isinstance((v := r.get(col_name)), (int, float))]
+                        significant = self._outlier_p(values, ref_dist.mean, ref_dist.std) < _SIG_P
+                    if significant:
+                        kl = max(kl, loc_shift * zeta)
+                        max_sig_shift = max(max_sig_shift, loc_shift)
 
             kl_values[col_name] = round(kl, 6)
 
@@ -1096,8 +1159,13 @@ class DriftDetector:
         # less than 2 sigma (it can never move it further than |mean|/sigma), so
         # the BUG-417 guard let its KL of 2-7 into the window and zeta rose past
         # any KL the next batches could produce.
+        # BUG-579: nor from a batch too small to hold one histogram bin's worth of
+        # rows. Its KL measures how few rows it has, not the source's noise (a
+        # 1-row batch of a 3-label column scores ~1), and a stream of such
+        # micro-batches lifted zeta until real drift in a full batch passed.
         mutated = False
-        if kl_values and max_loc_shift <= 2.0 and not kind_changed and not aligned_fired:
+        if (kl_values and max_loc_shift <= 2.0 and not kind_changed and not aligned_fired
+                and len(batch.rows) >= _MIN_ROWS_PER_BIN):
             avg_kl = sum(kl_values.values()) / len(kl_values)
             st.kl_history.append(avg_kl)
             # Keep last 200 samples
@@ -1142,7 +1210,7 @@ class DriftDetector:
         if (
             self._warmup_batches
             and len(st.kl_history) <= self._warmup_batches
-            and max_loc_shift <= 2.0
+            and max_sig_shift <= 2.0
             and not kind_changed
             and not aligned_fired
         ):
@@ -1188,6 +1256,8 @@ class DriftDetector:
 
         if min_distance <= self._semantic_threshold:
             return None
+        if not self._labels_moved(batch, st.baseline):
+            return None
 
         severity = DriftSeverity.LOW
         if min_distance > self._semantic_threshold * 3:
@@ -1204,6 +1274,31 @@ class DriftDetector:
             "severity": severity,
             "details": f"Semantic distance {min_distance:.4f} exceeds threshold {self._semantic_threshold}",
         }
+
+    def _labels_moved(
+        self, batch: BatchPayload, baseline: Optional[Dict[str, ColumnDistribution]],
+    ) -> bool:
+        """BUG-579: whether the label counts the batch embedding summarises differ from
+        the baseline's beyond sampling noise.
+
+        The embedding is a hashed count of a batch's labels, so its cosine distance
+        from the reference shrinks only as the batch grows: a 5-row batch of a clean
+        6-label column sits ~0.3 away, past the 0.25 threshold. The threshold says how
+        far is far, never whether the batch's rows show it, so a distance counts only
+        when some embedded column's labels pass the 1e-6 G-test against the baseline
+        (``_categorical_significant``). A source with no baseline label counts to test
+        against abstains: no verdict is better than a guess (ADR-002).
+        """
+        if not baseline:
+            return False
+        for col in self._categorical_columns(batch):
+            ref = baseline.get(col)
+            if ref is None or ref.role in _NO_DISTRIBUTION or "categories" not in (ref.histogram or {}):
+                continue
+            counts = Counter(str(v) for r in batch.rows if (v := r.get(col)) is not None)
+            if counts and self._categorical_significant(counts, ref.histogram["categories"]):
+                return True
+        return False
 
     # ────────────────────────────────────────────────────────────────
     # Data-quality drift — null rate, volume, duplicates (BUG-568)
@@ -1728,12 +1823,105 @@ class DriftDetector:
         nz = p > 0
         kl = max(float(np.sum(p[nz] * np.log(p[nz] / q[nz]))), 0.0)
         g_stat = 2.0 * kl * (n0 * n1 / (n0 + n1))
-        # Wilson-Hilferty chi-square quantile; z = 4.753 is the 1e-6 upper
-        # tail of the normal. It overstates the quantile at df=1 (27.5 vs
-        # 23.9), which errs toward not firing.
-        z = 4.753
-        crit = df * (1 - 2 / (9 * df) + z * math.sqrt(2 / (9 * df))) ** 3
-        return kl, bool(g_stat > crit)
+        return kl, bool(g_stat > _chi2_crit(df))
+
+    @staticmethod
+    def _categorical_significant(p_cats: Dict[str, Any], q_cats: Dict[str, Any]) -> bool:
+        """Whether a batch's label counts differ from the baseline's at the 1e-6 level
+        (BUG-579): the G-test of ``_aligned_kl`` over the labels, with the same 0.5
+        pseudo-count, so a label the baseline never saw is rare, not impossible.
+
+        One row can never pass it (G = 2 ln(2 n0) at most, below the df=1 quantile
+        for any baseline under 10^5 rows); a handful of rows that all carry labels
+        the baseline never had (a relabelled column) does.
+        """
+        keys = sorted(set(p_cats) | set(q_cats))
+        p = np.asarray([float(p_cats.get(k, 0)) for k in keys])
+        q_raw = np.asarray([float(q_cats.get(k, 0)) for k in keys])
+        n1, n0 = p.sum(), q_raw.sum()
+        if n1 <= 0 or n0 <= 0:
+            return False
+        q = (q_raw + 0.5) / (n0 + 0.5 * len(keys))
+        p = p / n1
+        nz = p > 0
+        kl = max(float(np.sum(p[nz] * np.log(p[nz] / q[nz]))), 0.0)
+        g_stat = 2.0 * kl * (n0 * n1 / (n0 + n1))
+        return bool(g_stat > _chi2_crit(max(len(keys) - 1, 1)))
+
+    @staticmethod
+    def _aligned_drift_p(p_counts: List[int], q_inner_counts: List[int]) -> float:
+        """The detector's p-value that a batch binned by ``_histogram_on_edges`` comes
+        from the baseline whose counts it was binned on (BUG-579).
+
+        ``_aligned_kl``'s G test is chi-square only while every bin expects a few
+        rows. The under/overflow bins never do: a clean value lands past the
+        baseline's max with probability 1/(n0+1), so two such rows in a 2-row batch
+        (p ~ 1e-5) scored past its 1e-6 quantile, and a lognormal's tail fired on
+        micro-batches. So the two parts are tested apart and combined (Fisher):
+
+        * the ends exactly: under exchangeability, P(the k most extreme of the
+          n0+n1 values all come from the batch) = prod_{i<k} (n1-i)/(n0+n1-i), with
+          k the batch's rows below the baseline's min plus those above its max;
+        * the values inside the range by the G test over the merged interior bins
+          (>= _MIN_ROWS_PER_BIN rows of the smaller sample each), conditional on
+          how many are inside. With fewer than that there is one bin and no test.
+
+        ``_aligned_kl`` stays the repair prover's test: there "not significant"
+        is the evidence a repair restored a column, so it must not get easier.
+        """
+        p = np.asarray(p_counts, dtype=float)
+        q_inner = np.asarray(q_inner_counts, dtype=float)
+        if len(p) != len(q_inner) + 2:
+            return 1.0
+        n1, n0 = float(p.sum()), float(q_inner.sum())
+        if n1 <= 0 or n0 <= 0:
+            return 1.0
+        k = int(p[0] + p[-1])
+        p_end = 1.0
+        for i in range(k):
+            p_end *= (n1 - i) / (n0 + n1 - i)
+        inner = p[1:-1]
+        n1_in = float(inner.sum())
+        nbins = len(q_inner)
+        groups = int(min(nbins, max(1, min(n0, n1_in) // _MIN_ROWS_PER_BIN)))
+        if groups < 2:
+            return p_end
+        starts = np.arange(0, nbins, math.ceil(nbins / groups))
+        pi = np.add.reduceat(inner, starts) / n1_in
+        qr = np.add.reduceat(q_inner, starts)
+        q = (qr + 0.5) / (n0 + 0.5 * len(qr))
+        nz = pi > 0
+        kl = max(float(np.sum(pi[nz] * np.log(pi[nz] / q[nz]))), 0.0)
+        df = max(int(np.count_nonzero((pi > 0) | (qr > 0))) - 1, 1)
+        p_in = _chi2_sf(2.0 * kl * (n0 * n1_in / (n0 + n1_in)), df)
+        # Fisher's method for two independent p-values: chi-square with 4 df.
+        x = -2.0 * (math.log(max(p_in, 1e-300)) + math.log(max(p_end, 1e-300)))
+        return math.exp(-x / 2) * (1 + x / 2)
+
+    @staticmethod
+    def _outlier_p(values: List[float], mean: float, std: float) -> float:
+        """How likely a batch holds values this far from the baseline's mean, for ANY
+        distribution with the baseline's mean and std (BUG-579).
+
+        Chebyshev bounds the chance one value lies z std out by 1/z^2, whatever the
+        column's shape, so it holds for a lognormal tail as for a normal. With b(j)
+        the j-th smallest such bound, P(at least j of n values that far out) is at
+        most C(n, j) b(j)^j; the smallest over j, times n for having picked j,
+        is the p-value. 5 values at 1500 in 300 rows of N(100, 10) score ~1e-9; one
+        clean row 10 std out scores 1e-2.
+        """
+        n = len(values)
+        if n == 0 or std <= 0:
+            return 1.0
+        bounds = sorted(min(1.0, (std / abs(v - mean)) ** 2) if v != mean else 1.0 for v in values)
+        best = 0.0
+        for j, b in enumerate(bounds, start=1):
+            if b >= 1.0:
+                break
+            log_p = (math.lgamma(n + 1) - math.lgamma(j + 1) - math.lgamma(n - j + 1)
+                     + j * math.log(b))
+            best = min(best, log_p)
+        return min(1.0, n * math.exp(best))
 
     # ────────────────────────────────────────────────────────────────
     # Batch embedding (hash-projection, no external API needed)
