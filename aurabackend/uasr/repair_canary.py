@@ -47,7 +47,7 @@ from sqlalchemy import select, update
 
 from .db import get_session_factory
 from .models import RecoveryStatus, RepairWatch
-from .tenancy import owns_source
+from .tenancy import SEPARATOR, owns_source
 
 logger = logging.getLogger("uasr.repair_canary")
 
@@ -322,7 +322,11 @@ class RepairCanary:
         source it holds: it may be ahead of the DB, never behind it on a rollback."""
         view = RepairCanary(self.batches_required, max_resident=1 << 62)
         try:
-            view.hydrate([r for r in await load_watches() if owns_source(tenant, r.source_id)])
+            # BUG-578 review: filtered in SQL, so /uasr/mapek/status reads only this
+            # tenant's rows, not every tenant's whole watch history; owns_source
+            # stays as the isolation check of record.
+            view.hydrate([r for r in await load_watches(tenant=tenant)
+                          if owns_source(tenant, r.source_id)])
         except Exception as exc:
             logger.error("canary view lists only the sources in memory; DB unreadable: %s", exc)
         held = (set(self._resident) | set(self._watches) | set(self._kept)
@@ -638,9 +642,14 @@ async def _persist(watches: List[Watch]) -> Optional[List[Watch]]:
         return None
 
 
-async def load_watches(source_id: Optional[str] = None) -> List[RepairWatch]:
+async def load_watches(source_id: Optional[str] = None,
+                       tenant: Optional[str] = None) -> List[RepairWatch]:
+    """The persisted watches, oldest first: of one source, of one tenant's sources
+    (``tenant + SEPARATOR`` prefix, LIKE wildcards escaped), or all."""
     async with get_session_factory()() as db:
         stmt = select(RepairWatch).order_by(RepairWatch.created_at.asc())
         if source_id is not None:
             stmt = stmt.where(RepairWatch.source_id == source_id)
+        if tenant is not None:
+            stmt = stmt.where(RepairWatch.source_id.startswith(tenant + SEPARATOR, autoescape=True))
         return list((await db.execute(stmt)).scalars().all())

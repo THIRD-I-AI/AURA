@@ -65,6 +65,15 @@ _MIN_ROWS_PER_BIN = 20
 _SIG_Z = 4.753
 _SIG_P = 1e-6
 
+# BUG-575: a batch whose rank-sum statistic against the baseline is past this many
+# standard errors is shifted. 5.0 is a two-sided tail of about 6e-7 per column; over
+# 14,000 clean columns of the benchmark's shapes the largest |z| was 3.96.
+_SHIFT_Z = 5.0
+# ...and the shift must matter: a new value beats a baseline value at least 60% (or at
+# most 40%) of the time. A batch of 100,000 rows makes any trivial wobble significant;
+# a moved factor clears it (x2.5 on a heavy tail: 0.67 or more in the benchmark).
+_SHIFT_EFFECT = 0.1
+
 # BUG-568 data-quality thresholds -- see the "Data-quality drift" section.
 _DQ_Z = 5.0                      # z-score a null-rate rise must reach
 _NULL_MIN_RISE = 0.05            # ...and its minimum absolute rise
@@ -1122,11 +1131,22 @@ class DriftDetector:
                 # tail) quarantined a micro-batch. The mean of a few rows says
                 # nothing on its own; values further out than the baseline's own
                 # spread can explain do (_outlier_p).
+                # BUG-579 review: Chebyshev alone is too weak to replace the old rule
+                # on 5-39 rows -- 20 rows of a 2.5-sigma shift sit INSIDE the
+                # baseline's range, where _aligned_drift_p has no interior bins to
+                # test below 40 rows, and no value is far enough out for Chebyshev.
+                # /uasr/ingest, the MAPE-K worker and the recovery loop call detect()
+                # alone, so they reported such batches clean. The rank-sum test
+                # (_rank_shift, |z| > 5) proves those shifts on the batch's own rows
+                # and needs no assumption about the column's shape.
                 if loc_shift > 2.0:
                     if not significant and ref_dist.std > _EPS:
-                        values = [float(v) for r in batch.rows
-                                  if isinstance((v := r.get(col_name)), (int, float))]
-                        significant = self._outlier_p(values, ref_dist.mean, ref_dist.std) < _SIG_P
+                        values = [fv for r in batch.rows
+                                  if isinstance((v := r.get(col_name)), (int, float))
+                                  and math.isfinite(fv := float(v))]
+                        significant = (
+                            self._outlier_p(values, ref_dist.mean, ref_dist.std) < _SIG_P
+                            or self._rank_shift(values, ref_dist) is not None)
                     if significant:
                         kl = max(kl, loc_shift * zeta)
                         max_sig_shift = max(max_sig_shift, loc_shift)
@@ -1859,9 +1879,10 @@ class DriftDetector:
         (p ~ 1e-5) scored past its 1e-6 quantile, and a lognormal's tail fired on
         micro-batches. So the two parts are tested apart and combined (Fisher):
 
-        * the ends exactly: under exchangeability, P(the k most extreme of the
-          n0+n1 values all come from the batch) = prod_{i<k} (n1-i)/(n0+n1-i), with
-          k the batch's rows below the baseline's min plus those above its max;
+        * the ends: under exchangeability, P(the a lowest and the k-a highest of
+          the n0+n1 values all come from the batch) = prod_{i<k} (n1-i)/(n0+n1-i),
+          with k the batch's rows below the baseline's min plus those above its
+          max; times k+1 for the splits a = 0..k (union bound);
         * the values inside the range by the G test over the merged interior bins
           (>= _MIN_ROWS_PER_BIN rows of the smaller sample each), conditional on
           how many are inside. With fewer than that there is one bin and no test.
@@ -1880,6 +1901,11 @@ class DriftDetector:
         p_end = 1.0
         for i in range(k):
             p_end *= (n1 - i) / (n0 + n1 - i)
+        # BUG-579 review: the product is the chance of ONE split -- the a lowest and
+        # the k-a highest of the pool all from the batch. "k of the batch's rows lie
+        # outside the baseline's range" is the union over the k+1 splits, so the
+        # union bound keeps the p-value valid (never anti-conservative).
+        p_end = min(1.0, (k + 1) * p_end)
         inner = p[1:-1]
         n1_in = float(inner.sum())
         nbins = len(q_inner)
@@ -1922,6 +1948,47 @@ class DriftDetector:
                      + j * math.log(b))
             best = min(best, log_p)
         return min(1.0, n * math.exp(best))
+
+    @staticmethod
+    def _rank_shift(values: List[float], dist: ColumnDistribution) -> Optional[Tuple[float, float]]:
+        """(z, P(new > baseline)) when the finite ``values`` sit significantly
+        (|z| > _SHIFT_Z) and materially (|effect - 0.5| >= _SHIFT_EFFECT) above or
+        below the numeric baseline ``dist``, else None -- the Mann-Whitney rank-sum
+        test on the baseline's own bins, ties corrected for (BUG-575; see
+        ``actuator_agent.location_shift``). Its null is the standard normal whatever
+        the column's shape, so it holds for a heavy tail as for a normal.
+
+        A unique int column is an identifier (BUG-573): never shifted.
+        """
+        if dist.mean is None:
+            return None
+        edges = DriftDetector._baseline_edges(dist.histogram or {})
+        if edges is None:
+            return None
+        n0 = int(dist.sample_size or 0)
+        if dist.value_kind == "int" and n0 > 1 and dist.distinct_count == n0:
+            return None
+        if len(values) < 2:
+            return None
+        p = np.asarray(DriftDetector._histogram_on_edges(values, edges)["counts"], dtype=float)
+        q = np.concatenate(([0.0], np.asarray(dist.histogram["counts"], dtype=float), [0.0]))
+        if len(p) != len(q):
+            return None
+        n1, n0f = float(p.sum()), float(q.sum())
+        total = n1 + n0f
+        if n1 < 2 or n0f < 2:
+            return None
+        tied = p + q
+        midrank = np.cumsum(tied) - tied + (tied + 1) / 2
+        u = float((p * midrank).sum()) - n1 * (n1 + 1) / 2
+        var = n0f * n1 / 12 * ((total + 1) - float((tied ** 3 - tied).sum()) / (total * (total - 1)))
+        if var <= 0:
+            return None
+        z = (u - n0f * n1 / 2) / math.sqrt(var)
+        effect = u / (n0f * n1)
+        if abs(z) > _SHIFT_Z and abs(effect - 0.5) >= _SHIFT_EFFECT:
+            return z, effect
+        return None
 
     # ────────────────────────────────────────────────────────────────
     # Batch embedding (hash-projection, no external API needed)

@@ -449,3 +449,72 @@ async def test_a_dropped_source_gets_the_same_heal_answers(monkeypatch):
     kept, dropped = await scenario(False), await scenario(True)
     assert kept == dropped
     assert "'status': 'quarantined'" in kept[-1] or "'rows': []" in kept[-1]
+
+
+# ── BUG-579 review: what detect() alone must still catch ─────────────────────
+
+# (rows, mean, std) of a batch against 400 rows of N(100, 10): a 2-3 sigma shift whose
+# values stay inside the baseline's range. Before the fix 13-15 of 20 seeds drifted.
+INSIDE_RANGE_SHIFTS = [(20, 125.0, 10.0), (30, 122.0, 5.0), (10, 130.0, 10.0)]
+
+
+@pytest.mark.parametrize("n,mu,sd", INSIDE_RANGE_SHIFTS)
+def test_a_shift_inside_the_baselines_range_drifts_on_detect_alone(n, mu, sd):
+    """/uasr/ingest, the MAPE-K worker and the recovery loop call detect() with no
+    rank test after it. Chebyshev cannot prove a shift whose values all sit inside
+    the baseline's range, and below 40 rows _aligned_drift_p tests no interior
+    bins, so these batches came back clean; the rank-sum test proves them."""
+    hits = 0
+    for seed in range(20):
+        rnd = random.Random(seed)
+        det = DriftDetector()
+        det.register_baseline("r", BatchPayload(source_id="r", columns=["x"],
+                                                rows=[{"x": rnd.gauss(100.0, 10.0)} for _ in range(400)]))
+        batch = BatchPayload(source_id="r", columns=["x"],
+                             rows=[{"x": rnd.gauss(mu, sd)} for _ in range(n)])
+        hits += det.detect(batch, record_state=False).drift_detected
+    assert hits >= 18, f"{hits}/20"
+
+
+async def test_ingest_reports_a_proven_shift_as_drift():
+    """/uasr/ingest answers {status: clean} on detect()'s verdict alone."""
+    clean = 0
+    for seed in range(20):
+        source = _source()
+        rnd = random.Random(seed)
+        service._detector.register_baseline(source, BatchPayload(
+            source_id=source, columns=["x"], rows=[{"x": rnd.gauss(100.0, 10.0)} for _ in range(400)]))
+        req = service.IngestRequest(source_id=source, rows=[{"x": rnd.gauss(125.0, 10.0)} for _ in range(20)])
+        async with get_session_factory()() as db:
+            out = await service.ingest_batch(req, _as(), db=db)
+        clean += out.get("status") == "clean"
+    assert clean <= 2, f"{clean}/20 shifted batches answered clean"
+
+
+def test_end_rows_p_value_covers_every_split_of_them():
+    """Two clean rows of a 2-row batch both outside a 2,000-row baseline's range: the
+    exact chance is 3 splits (both low, one each, both high) x 2/2002 x 1/2001 =
+    1.5e-6, not past 1e-6. The single-split product (5e-7) fired on it."""
+    exact = 3 * (2 / 2002) * (1 / 2001)
+    p = DriftDetector._aligned_drift_p([1, 0, 1], [2000])
+    assert p >= exact * (1 - 1e-9)
+    assert p >= 1e-6
+    # Many rows far outside are still proven.
+    assert DriftDetector._aligned_drift_p([5, 0, 5], [2000]) < 1e-6
+
+
+async def test_status_view_reads_only_the_callers_tenant_rows():
+    """BUG-578 review: visible() read every tenant's watch history; the tenant filter
+    is now in SQL, with LIKE wildcards in the tenant escaped."""
+    canary = RepairCanary(N)
+    mine = f"t_{uuid.uuid4().hex[:6]}"
+    lookalike = mine.replace("_", "X", 1)  # matches "t_..." if '_' were a wildcard
+    a, b, c = f"{mine}::s1", f"{lookalike}::s1", f"{mine}x::s1"
+    for sid in (a, b, c):
+        await _open_watch(canary, sid)
+    rows = await load_watches(tenant=mine)
+    assert {r.source_id for r in rows} == {a}
+    fresh = RepairCanary(N)
+    view = await fresh.visible(mine)
+    listed = {w["source_id"] for k in ("watching", "kept", "rolled_back") for w in view.get(k, [])}
+    assert listed == {a}, view
