@@ -216,15 +216,22 @@ def test_what_one_or_two_rows_prove_is_still_caught():
     assert DriftType.STATISTICAL in r.drift_types and measure in r.drift_vectors["statistical"]["affected_columns"]
 
 
-def test_extreme_outliers_in_a_large_batch_still_fire():
-    """The mean rule no longer fires by itself; values far past what the baseline's
-    spread allows (Chebyshev) still prove contamination."""
+def test_outliers_past_the_range_fire_when_the_exact_test_proves_them():
+    """The mean rule no longer fires by itself. Values past the baseline's range prove
+    contamination by the exact past-range test (_aligned_drift_p), which holds for any
+    distribution. BUG-579 re-review: not by a Chebyshev bound on the baseline's sample
+    std, which a heavy tail's small baseline understates. So 5 rows at 1500 in a
+    300-row batch are no longer claimed (the top 5 of 600 pooled values all from the
+    batch has p ~ 0.2 when the shape is unknown); 30 such rows, or 5 that make up the
+    whole batch, are."""
     rnd = random.Random(7)
     det = DriftDetector(default_zeta=0.05)
     det.register_baseline("o", BatchPayload(source_id="o", columns=["v"],
                                             rows=[{"v": rnd.gauss(100.0, 10.0)} for _ in range(300)]))
-    rows = [{"v": rnd.gauss(100.0, 10.0)} for _ in range(295)] + [{"v": 1500.0}] * 5
+    rows = [{"v": rnd.gauss(100.0, 10.0)} for _ in range(270)] + [{"v": 1500.0}] * 30
     assert det.detect(BatchPayload(source_id="o", columns=["v"], rows=rows), record_state=False).drift_detected
+    five = [{"v": 1500.0 + i} for i in range(5)]
+    assert det.detect(BatchPayload(source_id="o", columns=["v"], rows=five), record_state=False).drift_detected
     one = [{"v": rnd.gauss(100.0, 10.0)} for _ in range(4)] + [{"v": 150.0}]
     assert not det.detect(BatchPayload(source_id="o", columns=["v"], rows=one), record_state=False).drift_detected
 
@@ -607,6 +614,94 @@ async def test_clean_micro_batch_sweep_quarantines_nothing_through_heal():
             out = await service.heal_batch(req, _as(), db=db)
         if out["quarantined_rows"] or out["degraded"] or out["rows"] != rows:
             found.append((cls, seed, len(rows), out.get("drift_type"), out.get("reason")))
+    assert found == []
+
+
+# ── BUG-579 re-review: no proof from the baseline's sample std ────────────────
+
+HEAVY_TAILS = {
+    "lognormal_2": lambda rng, n: rng.lognormal(0.0, 2.0, n),
+    "lognormal_2.5": lambda rng, n: rng.lognormal(0.0, 2.5, n),
+    "pareto_1.2": lambda rng, n: rng.pareto(1.2, n) + 1.0,
+}
+HEAVY_COLS = list(HEAVY_TAILS)
+HEAVY_BASELINES = (50, 100, 200)
+HEAVY_SEEDS = 40  # x 50 sizes = 2,000 batches per baseline size
+
+
+def _heavy_rows(rng, n: int) -> list:
+    cols = {c: gen(rng, n) for c, gen in HEAVY_TAILS.items()}
+    return [{c: float(cols[c][i]) for c in HEAVY_COLS} for i in range(n)]
+
+
+def test_heavy_tail_on_a_small_baseline_is_no_proof():
+    """A clean 38-row lognormal(0, 2) batch against a 100-row baseline: 5 of its rows
+    lie past the baseline's max (exact past-range p 0.008), but the baseline's sample
+    std (5.2) put them 14-260 std out, and a Chebyshev bound on it scored 6e-7."""
+    import numpy as np
+    rng = np.random.default_rng(21)
+    gen = {"normal": lambda n: rng.normal(100, 10, n), "lognormal": lambda n: rng.lognormal(0, 2, n),
+           "pareto": lambda n: rng.pareto(1.2, n) + 1, "flag": lambda n: rng.random(n) < 0.15,
+           "count": lambda n: rng.poisson(3, n)}
+
+    def rows(n):
+        cols = {c: g(n) for c, g in gen.items()}
+        return [{"normal": float(cols["normal"][i]), "lognormal": float(cols["lognormal"][i]),
+                 "pareto": float(cols["pareto"][i]), "flag": bool(cols["flag"][i]),
+                 "count": int(cols["count"][i])} for i in range(n)]
+
+    det = DriftDetector()
+    det.register_baseline("h", BatchPayload(source_id="h", columns=SWEEP_COLS, rows=rows(100)))
+    for n in range(1, 38):
+        rows(n)  # the sweep's earlier batches, to reach the same draw
+    batch = rows(38)
+    r = det.detect(BatchPayload(source_id="h", columns=SWEEP_COLS, rows=batch), record_state=False)
+    assert not r.drift_detected, r.details
+    assert sum(x["lognormal"] > 30 for x in batch) >= 5  # the rows that fooled Chebyshev
+
+
+def _heavy_cases():
+    import numpy as np
+    for n0 in HEAVY_BASELINES:
+        for seed in range(HEAVY_SEEDS):
+            rng = np.random.default_rng([n0, seed])
+            base = _heavy_rows(rng, n0)
+            for n in range(1, 51):
+                yield n0, seed, base, _heavy_rows(rng, n)
+
+
+def test_heavy_tailed_small_baselines_raise_no_drift_on_detect():
+    det = DriftDetector()
+    loop = RecoveryLoop(detector=det, config=RecoveryLoopConfig())
+    found, batches = [], {}
+    for n0, seed, base, rows in _heavy_cases():
+        sid = f"heavy_{n0}_{seed}"
+        if (n0, seed) not in batches:
+            det.register_baseline(sid, BatchPayload(source_id=sid, columns=HEAVY_COLS, rows=base))
+        batches[(n0, seed)] = batches.get((n0, seed), 0) + 1
+        b = BatchPayload(source_id=sid, columns=HEAVY_COLS, rows=rows)
+        r = det.detect(b, record_state=False)
+        if r.drift_detected:
+            found.append((n0, seed, len(rows), r.details))
+        elif loop.unexplained_shift(r, b) is not None:
+            found.append((n0, seed, len(rows), "rank shift"))
+    assert all(sum(v for (b0, _), v in batches.items() if b0 == n0) >= 2000 for n0 in HEAVY_BASELINES)
+    assert found == []
+
+
+async def test_heavy_tailed_small_baselines_quarantine_nothing_through_heal():
+    found, sids = [], {}
+    for n0, seed, base, rows in _heavy_cases():
+        if (n0, seed) not in sids:
+            sids[(n0, seed)] = _source()
+            service._detector.register_baseline(
+                sids[(n0, seed)], BatchPayload(source_id=sids[(n0, seed)], columns=HEAVY_COLS, rows=base))
+        sid = sids[(n0, seed)]
+        req = service.IngestRequest(source_id=sid, columns=HEAVY_COLS, rows=copy.deepcopy(rows))
+        async with get_session_factory()() as db:
+            out = await service.heal_batch(req, _as(), db=db)
+        if out["quarantined_rows"] or out["degraded"] or out["rows"] != rows:
+            found.append((n0, seed, len(rows), out.get("drift_type"), out.get("reason")))
     assert found == []
 
 

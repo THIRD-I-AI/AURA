@@ -1138,16 +1138,15 @@ class DriftDetector:
                 # batch's rows establish. It used to force the finding outright, so
                 # one clean row 2 sigma out (a True in a 15% boolean, a lognormal's
                 # tail) quarantined a micro-batch. The mean of a few rows says
-                # nothing on its own; values further out than the baseline's own
-                # spread can explain do (_outlier_p).
-                # BUG-579 review: Chebyshev alone is too weak to replace the old rule
-                # on 5-39 rows -- 20 rows of a 2.5-sigma shift sit INSIDE the
-                # baseline's range, where _aligned_drift_p has no interior bins to
-                # test below 40 rows, and no value is far enough out for Chebyshev.
-                # /uasr/ingest, the MAPE-K worker and the recovery loop call detect()
-                # alone, so they reported such batches clean. The rank-sum test
-                # (_rank_shift, exact on a few rows) proves those shifts on the batch's
-                # own rows and needs no assumption about the column's shape.
+                # nothing on its own. What proves a shift is an exact test that holds
+                # for any distribution: _aligned_drift_p for rows past the baseline's
+                # range, the rank-sum test (_rank_shift, exact on a few rows) for rows
+                # inside it. /uasr/ingest, the MAPE-K worker and the recovery loop call
+                # detect() alone, so a shift those tests prove must fire here.
+                # BUG-579 re-review: no proof may take the baseline's SAMPLE std for
+                # the true one. A Chebyshev bound on it (z std out -> 1/z^2) fired on a
+                # clean 38-row lognormal(0, 2) batch against a 100-row baseline, whose
+                # std understates the tail many times over (~1e-4 of such batches).
                 # BUG-579 re-review: and not only past 2 sigma. While the interior has
                 # too few rows for _aligned_drift_p to test it, nothing else looks at
                 # how the rows inside the range moved: 40 rows of a 1.9-sigma shift
@@ -1161,9 +1160,7 @@ class DriftDetector:
                               if isinstance((v := r.get(col_name)), (int, float))
                               and math.isfinite(fv := float(v))]
                     rank = self._rank_shift(values, ref_dist)
-                    significant = rank is not None or (
-                        loc_shift > 2.0
-                        and self._outlier_p(values, ref_dist.mean, ref_dist.std) < _SIG_P)
+                    significant = rank is not None
                 if significant and loc_shift > 2.0:
                     kl = max(kl, loc_shift * zeta)
                     max_sig_shift = max(max_sig_shift, loc_shift)
@@ -1959,31 +1956,6 @@ class DriftDetector:
         # Fisher's method for two independent p-values: chi-square with 4 df.
         x = -2.0 * (math.log(max(p_in, 1e-300)) + math.log(max(p_end, 1e-300)))
         return math.exp(-x / 2) * (1 + x / 2)
-
-    @staticmethod
-    def _outlier_p(values: List[float], mean: float, std: float) -> float:
-        """How likely a batch holds values this far from the baseline's mean, for ANY
-        distribution with the baseline's mean and std (BUG-579).
-
-        Chebyshev bounds the chance one value lies z std out by 1/z^2, whatever the
-        column's shape, so it holds for a lognormal tail as for a normal. With b(j)
-        the j-th smallest such bound, P(at least j of n values that far out) is at
-        most C(n, j) b(j)^j; the smallest over j, times n for having picked j,
-        is the p-value. 5 values at 1500 in 300 rows of N(100, 10) score ~1e-9; one
-        clean row 10 std out scores 1e-2.
-        """
-        n = len(values)
-        if n == 0 or std <= 0:
-            return 1.0
-        bounds = sorted(min(1.0, (std / abs(v - mean)) ** 2) if v != mean else 1.0 for v in values)
-        best = 0.0
-        for j, b in enumerate(bounds, start=1):
-            if b >= 1.0:
-                break
-            log_p = (math.lgamma(n + 1) - math.lgamma(j + 1) - math.lgamma(n - j + 1)
-                     + j * math.log(b))
-            best = min(best, log_p)
-        return min(1.0, n * math.exp(best))
 
     @staticmethod
     def _rank_shift(values: List[float], dist: ColumnDistribution) -> Optional[Tuple[float, float]]:
