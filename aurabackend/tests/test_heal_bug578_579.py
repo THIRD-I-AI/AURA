@@ -491,6 +491,125 @@ async def test_ingest_reports_a_proven_shift_as_drift():
     assert clean <= 2, f"{clean}/20 shifted batches answered clean"
 
 
+# ── BUG-579 re-review: exact small-sample rank test; interior rank test ──────
+
+# (rows, mean, std) of a batch against 400 rows of N(100, 10), with the paths that must
+# catch it. 2-8 rows ~3 sigma out: the |z| > 5 normal cut cannot be reached below ~9
+# rows (|z| <= sqrt(3 n1)), so before the fix 5/20 and 10/20 drifted on every path,
+# /uasr/heal included, though the exact Mann-Whitney p was 3e-8..7e-14. 35-40 rows
+# just under 2 sigma inside the range: the rank test ran only past 2 sigma, and
+# _aligned_drift_p tests no interior bins below 40 rows, so detect() alone (/uasr/ingest,
+# the MAPE-K worker, the recovery loop) caught 16/20 and 15/20 (rank z 7.5-8.9).
+REVIEW_REPROS = [(5, 130.0, 3.0, True), (8, 130.0, 5.0, True),
+                 (40, 121.0, 10.0, False), (35, 121.0, 10.0, False)]
+
+
+def _gauss_case(seed: int, n: int, mu: float, sd: float):
+    rnd = random.Random(seed)
+    base = [{"x": rnd.gauss(100.0, 10.0)} for _ in range(400)]
+    return base, [{"x": rnd.gauss(mu, sd)} for _ in range(n)]
+
+
+@pytest.mark.parametrize("n,mu,sd,via_heal", REVIEW_REPROS)
+async def test_review_repros_drift_on_detect_and_heal(n, mu, sd, via_heal):
+    detected = healed_clean = 0
+    for seed in range(20):
+        base, rows = _gauss_case(seed, n, mu, sd)
+        det = DriftDetector()
+        det.register_baseline("r", BatchPayload(source_id="r", columns=["x"], rows=base))
+        detected += det.detect(BatchPayload(source_id="r", columns=["x"], rows=copy.deepcopy(rows)),
+                               record_state=False).drift_detected
+        if via_heal:
+            sid = _source()
+            service._detector.register_baseline(sid, BatchPayload(source_id=sid, columns=["x"], rows=base))
+            out = await _heal(sid, rows)
+            healed_clean += not out["quarantined_rows"] and out["rows"] == rows
+    assert detected == 20, f"detect(): {detected}/20"
+    assert healed_clean == 0, f"/uasr/heal returned {healed_clean}/20 shifted batches as clean"
+
+
+def test_exact_rank_p_is_the_permutation_distribution_with_ties():
+    """Brute force over every subset of a small tied pool: the DP is the exact
+    conditional (tie-respecting) permutation p-value, and doubling one tail keeps
+    it valid two-sided."""
+    import itertools
+    rnd = random.Random(3)
+    for _ in range(60):
+        t = [rnd.randint(0, 3) for _ in range(rnd.randint(2, 5))]
+        if sum(t) < 3:
+            continue
+        pool = [j for j, c in enumerate(t) for _ in range(c)]
+        n1 = rnd.randint(1, len(pool) - 1)
+        chosen = rnd.sample(range(len(pool)), n1)
+        p = [sum(1 for i in chosen if pool[i] == j) for j in range(len(t))]
+        q = [c - x for c, x in zip(t, p)]
+        cum, rank = 0, []
+        for c in t:
+            rank.append(cum + (c + 1) / 2)
+            cum += c
+        w_obs = sum(x * r for x, r in zip(p, rank))
+        sums = [sum(rank[pool[i]] for i in comb) for comb in itertools.combinations(range(len(pool)), n1)]
+        for upper in (True, False):
+            tail = sum((w >= w_obs - 1e-9) if upper else (w <= w_obs + 1e-9) for w in sums)
+            want = min(1.0, 2 * tail / len(sums))
+            assert DriftDetector._exact_rank_p(p, q, upper) == pytest.approx(want, rel=1e-9, abs=1e-12)
+
+
+# Clean micro-batches of every shape the exact test must not misread: a normal, two
+# heavy tails, a 15% boolean and a small-integer count (both nearly all ties).
+SWEEP_COLS = ["normal", "lognormal", "pareto", "flag", "count"]
+SIZE_CLASSES = [(lo, lo + 4) for lo in range(1, 51, 5)]  # 1-5, 6-10, ..., 46-50
+SWEEP_SEEDS = 200
+
+
+def _sweep_rows(rng, n: int) -> list:
+    import numpy as np
+    a, b = rng.normal(100.0, 10.0, n), rng.lognormal(0.0, 2.0, n)
+    c, d, e = rng.pareto(1.2, n) + 1.0, rng.random(n) < 0.15, rng.poisson(3, n)
+    return [{"normal": float(a[i]), "lognormal": float(b[i]), "pareto": float(c[i]),
+             "flag": bool(d[i]), "count": int(e[i])} for i in range(n)]
+
+
+def _sweep_cases():
+    """(seed, size class, baseline rows, batch rows): SWEEP_SEEDS seeds per size class."""
+    import numpy as np
+    for lo, hi in SIZE_CLASSES:
+        for seed in range(SWEEP_SEEDS):
+            rng = np.random.default_rng([lo, seed])
+            yield seed, (lo, hi), _sweep_rows(rng, 400), _sweep_rows(rng, lo + seed % (hi - lo + 1))
+
+
+def test_clean_micro_batch_sweep_raises_no_drift_on_detect():
+    det = DriftDetector()
+    loop = RecoveryLoop(detector=det, config=RecoveryLoopConfig())
+    found, per_class = [], {}
+    for seed, cls, base, rows in _sweep_cases():
+        sid = f"sweep_{cls[0]}_{seed}"
+        det.register_baseline(sid, BatchPayload(source_id=sid, columns=SWEEP_COLS, rows=base))
+        b = BatchPayload(source_id=sid, columns=SWEEP_COLS, rows=rows)
+        r = det.detect(b, record_state=False)
+        per_class[cls] = per_class.get(cls, 0) + 1
+        if r.drift_detected:
+            found.append((cls, seed, len(rows), r.details))
+        elif loop.unexplained_shift(r, b) is not None:
+            found.append((cls, seed, len(rows), "rank shift"))
+    assert all(v >= SWEEP_SEEDS for v in per_class.values()) and len(per_class) == len(SIZE_CLASSES)
+    assert found == []
+
+
+async def test_clean_micro_batch_sweep_quarantines_nothing_through_heal():
+    found = []
+    for seed, cls, base, rows in _sweep_cases():
+        sid = _source()
+        service._detector.register_baseline(sid, BatchPayload(source_id=sid, columns=SWEEP_COLS, rows=base))
+        req = service.IngestRequest(source_id=sid, columns=SWEEP_COLS, rows=copy.deepcopy(rows))
+        async with get_session_factory()() as db:
+            out = await service.heal_batch(req, _as(), db=db)
+        if out["quarantined_rows"] or out["degraded"] or out["rows"] != rows:
+            found.append((cls, seed, len(rows), out.get("drift_type"), out.get("reason")))
+    assert found == []
+
+
 def test_end_rows_p_value_covers_every_split_of_them():
     """Two clean rows of a 2-row batch both outside a 2,000-row baseline's range: the
     exact chance is 3 splits (both low, one each, both high) x 2/2002 x 1/2001 =
