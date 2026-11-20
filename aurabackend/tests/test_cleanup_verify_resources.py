@@ -372,3 +372,238 @@ def test_an_unreadable_uploads_fallback_is_skipped_not_a_crash(tmp_path: Path, m
     monkeypatch.setattr(mod.Path, "is_dir", denied)
     assert mod.resolve_db_path("/data/uploads", "/data/uploads", "uploads", fallback_dir=str(tmp_path)) == "/data/uploads"
     assert mod.find_upload_matches(str(tmp_path)) == []
+
+
+# ── BUG-580: tenant-scoped ids, the state store, dashboards and run accounts ───
+#
+# On production the script found nothing although leftover verify data was there.
+# UASR stores a run's source as "<tenant>::verify_<hex>_uasr" (uasr/tenancy.py), and
+# the pattern required a bare id. uasr_state.db, uasr_repair_watches, schema_columns,
+# gateway_dashboards and the live-check loop's own accounts were never looked at.
+
+TENANT = "3f2b8c1e-9a4d-4e7f-b2c6-0d1e2f3a4b5c"
+PREFIXED_UASR_ID = f"{TENANT}::verify_a1b2c3d4_uasr"
+# Never matched: a customer's own ids, and a near-miss of each part of the shape.
+UASR_NEAR_MISSES = [
+    "verify_report",
+    "verify_1234567_uasr",  # 7 hex digits
+    "xverify_a1b2c3d4_uasr",
+    "verify_A1B2C3D4_uasr",  # uppercase hex
+    "verify_a1b2c3d4_uasr\n",  # `$` alone matches before a trailing newline
+    f"{TENANT}::verify_report",
+    f"{TENANT}::verify_1234567_uasr",
+    f"{TENANT}::xverify_a1b2c3d4_uasr",
+    f"{TENANT}::verify_A1B2C3D4_uasr",
+    "::verify_a1b2c3d4_uasr",  # empty tenant
+    f"{TENANT}::folder::verify_a1b2c3d4_uasr",  # two prefixes: UASR scopes a run's id once
+    f"{TENANT}::verify_a1b2c3d4_upload",  # another label
+]
+RUN_ACCOUNTS = [
+    "verify_0badf00d@example.com",
+    "verify-loop-1732000000@example.com",
+    "loop-verify@example.com",
+    "aura-live-verify-bot+1732000000@dataaura.local",
+]
+ACCOUNT_NEAR_MISSES = [
+    "verify_report@example.com",
+    "verify_0BADF00D@example.com",
+    "verify_0badf00@example.com",
+    "verify_0badf00d@company.com",
+    "verify-loop-12a@example.com",
+    "verify-loop-@example.com",
+    "verify-loop-1@example.org",
+    "xloop-verify@example.com",
+    "Loop-verify@example.com",
+    "loop-verify@example.com.evil",
+    "aura-live-verify-bot@dataaura.local",
+    "aura-live-verify-bot+1@dataaura.local.example",
+]
+
+
+def _seed_rows(path: Path, table: str, column: str, rows_per_value: dict[str, int]) -> None:
+    conn = sqlite3.connect(str(path))
+    try:
+        conn.execute(f"CREATE TABLE IF NOT EXISTS {table} (id INTEGER PRIMARY KEY AUTOINCREMENT, {column} TEXT, payload TEXT)")
+        for value, n in rows_per_value.items():
+            conn.executemany(f"INSERT INTO {table} ({column}, payload) VALUES (?, ?)", [(value, f"row-{i}") for i in range(n)])
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _seed_state_db(path: Path, source_ids: list[str]) -> None:
+    # The DDL of uasr/state_store.py SqliteStateStore.
+    conn = sqlite3.connect(str(path))
+    try:
+        conn.execute("CREATE TABLE uasr_source_state (source_id TEXT PRIMARY KEY, state TEXT NOT NULL)")
+        conn.executemany("INSERT INTO uasr_source_state VALUES (?, ?)", [(s, "{}") for s in source_ids])
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _seed_dashboards(path: Path, names: list[str]) -> None:
+    # The columns of api_gateway/persistence.py DashboardRow: tiles are inline JSON.
+    conn = sqlite3.connect(str(path))
+    try:
+        conn.execute(
+            "CREATE TABLE gateway_dashboards (id VARCHAR(64) PRIMARY KEY, workspace_id VARCHAR(64) NOT NULL, "
+            "name VARCHAR(255) NOT NULL, description TEXT, tiles_json TEXT NOT NULL DEFAULT '[]', "
+            "created_at VARCHAR(64) NOT NULL, created_ts FLOAT NOT NULL, updated_at VARCHAR(64) NOT NULL)"
+        )
+        conn.executemany(
+            "INSERT INTO gateway_dashboards VALUES (?, ?, ?, NULL, '[]', '2026-11-20', 0, '2026-11-20')",
+            [(f"d{i}", TENANT, name) for i, name in enumerate(names)],
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _column_values(path: Path, table: str, column: str) -> list[str]:
+    conn = sqlite3.connect(str(path))
+    try:
+        return sorted(r[0] for r in conn.execute(f"SELECT {column} FROM {table}"))
+    finally:
+        conn.close()
+
+
+def _db_args(tmp_path: Path, **paths: Path) -> list[str]:
+    """Every location flag, set to `paths` or to a file that does not exist, so the
+    test never reads a default location."""
+    flags = {"metadata_db": "--metadata-db", "uasr_db": "--uasr-db", "uasr_state_db": "--uasr-state-db",
+             "gateway_db": "--gateway-db", "uploads_dir": "--uploads-dir"}
+    args: list[str] = []
+    for key, flag in flags.items():
+        args += [flag, str(paths.get(key, tmp_path / f"absent_{key}"))]
+    return args
+
+
+def test_bug580_tenant_prefixed_uasr_ids_are_deleted_and_near_misses_survive(tmp_path: Path) -> None:
+    uasr_db = tmp_path / "uasr.db"
+    _seed_uasr_db(uasr_db, {PREFIXED_UASR_ID: 3, NAMESPACED_MATCH_SOURCE_ID: 1, REAL_SOURCE_ID: 1,
+                            **{s: 1 for s in UASR_NEAR_MISSES}})
+
+    # Only the flags the script has always had, so this fails on the old pattern, not on a flag.
+    result = _run_script("--metadata-db", str(tmp_path / "absent.db"), "--uasr-db", str(uasr_db),
+                         "--uploads-dir", str(tmp_path / "none"), "--confirm")
+
+    assert result.returncode == 0, result.stderr
+    assert "uasr.db: OK -- 16 row(s) deleted." in result.stdout  # (3 + 1) rows x 4 tables
+    for table in ("uasr_drift_events", "uasr_recovery_records", "uasr_distribution_snapshots", "uasr_batch_embeddings"):
+        assert _table_source_ids(uasr_db, table) == sorted([REAL_SOURCE_ID, *UASR_NEAR_MISSES])
+
+
+def test_bug580_uasr_state_db_and_repair_watches_are_covered(tmp_path: Path) -> None:
+    uasr_db, state_db = tmp_path / "uasr.db", tmp_path / "uasr_state.db"
+    # Only the newest UASR table exists; the four others are skipped, not fatal.
+    _seed_rows(uasr_db, "uasr_repair_watches", "source_id", {PREFIXED_UASR_ID: 2, f"{TENANT}::orders": 1})
+    _seed_state_db(state_db, [PREFIXED_UASR_ID, NAMESPACED_MATCH_SOURCE_ID, f"{TENANT}::orders", *UASR_NEAR_MISSES])
+
+    result = _run_script(*_db_args(tmp_path, uasr_db=uasr_db, uasr_state_db=state_db), "--confirm")
+
+    assert result.returncode == 0, result.stderr
+    assert "[skip] table not found: uasr_drift_events" in result.stdout
+    assert "uasr.db: OK -- 2 row(s) deleted." in result.stdout
+    assert "uasr_state.db: OK -- 2 row(s) deleted." in result.stdout
+    assert _column_values(uasr_db, "uasr_repair_watches", "source_id") == [f"{TENANT}::orders"]
+    assert _column_values(state_db, "uasr_source_state", "source_id") == sorted([f"{TENANT}::orders", *UASR_NEAR_MISSES])
+
+
+def test_bug580_upload_profiles_bare_and_tenant_prefixed_are_deleted(tmp_path: Path) -> None:
+    metadata_db = tmp_path / "metadata.db"
+    _seed_metadata_db(metadata_db, [REAL_EMAIL])
+    # schema_source_id() prefixes tenant_slug(tenant), which is "default" for no tenant.
+    upload_ids = ["verify_05d29aeb_upload", f"{TENANT}::verify_05d29aeb_upload", "default::verify_0829aaf7_upload"]
+    kept = [f"{TENANT}::sales_2025", "verify_report", f"{TENANT}::verify_report", f"{TENANT}::verify_05d29aeb_uasr",
+            f"{TENANT}::verify_05D29AEB_upload", f"{TENANT}::xverify_05d29aeb_upload", "verify_05d29ae_upload",
+            "verify_05d29aeb_xlsx"]
+    _seed_rows(metadata_db, "schema_columns", "source_id", {**{s: 3 for s in upload_ids}, **{s: 1 for s in kept}})
+
+    result = _run_script(*_db_args(tmp_path, metadata_db=metadata_db), "--confirm")
+
+    assert result.returncode == 0, result.stderr
+    assert "metadata.db: OK -- 9 row(s) deleted." in result.stdout  # 3 columns x 3 profiles
+    assert _column_values(metadata_db, "schema_columns", "source_id") == sorted(kept)
+    assert _users_snapshot(metadata_db) == [REAL_EMAIL]
+
+
+def test_bug580_verify_dashboards_are_deleted_by_exact_name_only(tmp_path: Path) -> None:
+    gateway_db = tmp_path / "gateway.db"
+    verify = ["verify_a1b2c3d4_dashboard", "verify_0badf00d_dashboard"]
+    customer = ["Sales overview", "verify_report", "verify_a1b2c3d4_dashboard_v2", "my verify_a1b2c3d4_dashboard",
+                "xverify_a1b2c3d4_dashboard", "verify_A1B2C3D4_dashboard", "verify_1234567_dashboard",
+                f"{TENANT}::verify_a1b2c3d4_dashboard", "verify_a1b2c3d4_dashboard\n"]
+    _seed_dashboards(gateway_db, verify + customer)
+    args = _db_args(tmp_path, gateway_db=gateway_db)
+
+    dry = _run_script(*args)
+    assert dry.returncode == 0, dry.stderr
+    assert "Dry run only: 2 row(s) and 0 file(s) would be deleted." in dry.stdout
+    assert _column_values(gateway_db, "gateway_dashboards", "name") == sorted(verify + customer)
+
+    done = _run_script(*args, "--confirm")
+    assert done.returncode == 0, done.stderr
+    assert "gateway.db: OK -- 2 row(s) deleted." in done.stdout
+    assert _column_values(gateway_db, "gateway_dashboards", "name") == sorted(customer)
+
+
+def test_bug580_run_accounts_are_deleted_only_with_the_flag_and_the_fixed_login_is_kept(tmp_path: Path) -> None:
+    metadata_db = tmp_path / "metadata.db"
+    everyone = [REAL_EMAIL, MANUAL_VERIFY_EMAIL, *RUN_ACCOUNTS, *ACCOUNT_NEAR_MISSES]
+    _seed_metadata_db(metadata_db, everyone)
+    args = _db_args(tmp_path, metadata_db=metadata_db)
+
+    without_flag = _run_script(*args, "--confirm")
+    assert without_flag.returncode == 0, without_flag.stderr
+    assert _users_snapshot(metadata_db) == sorted(everyone)
+
+    with_flag = _run_script(*args, "--confirm", "--delete-run-accounts")
+    assert with_flag.returncode == 0, with_flag.stderr
+    assert f"kept ({MANUAL_VERIFY_EMAIL})" in with_flag.stdout
+    assert "metadata.db: OK -- 4 row(s) deleted." in with_flag.stdout
+    assert _users_snapshot(metadata_db) == sorted([REAL_EMAIL, MANUAL_VERIFY_EMAIL, *ACCOUNT_NEAR_MISSES])
+
+    with_login = _run_script(*args, "--confirm", "--delete-run-accounts", "--delete-login")
+    assert with_login.returncode == 0, with_login.stderr
+    assert _users_snapshot(metadata_db) == sorted([REAL_EMAIL, *ACCOUNT_NEAR_MISSES])
+
+
+def test_bug580_an_account_another_table_points_at_is_kept_and_the_reason_reported(tmp_path: Path) -> None:
+    metadata_db = tmp_path / "metadata.db"
+    _seed_metadata_db(metadata_db, [REAL_EMAIL, RUN_ACCOUNTS[0]])
+    conn = sqlite3.connect(str(metadata_db))
+    try:
+        conn.execute("CREATE TABLE api_keys (id INTEGER PRIMARY KEY, user_id INTEGER REFERENCES users(id))")
+        conn.execute("INSERT INTO api_keys (user_id) SELECT id FROM users WHERE email = ?", (RUN_ACCOUNTS[0],))
+        conn.commit()
+    finally:
+        conn.close()
+
+    result = _run_script(*_db_args(tmp_path, metadata_db=metadata_db), "--confirm", "--delete-run-accounts")
+
+    assert result.returncode == 0, result.stderr
+    assert "[kept] 1 matched key(s) in users: referenced by api_keys.user_id" in result.stdout
+    assert _users_snapshot(metadata_db) == sorted([REAL_EMAIL, RUN_ACCOUNTS[0]])
+
+
+def test_bug580_dry_run_deletes_nothing_in_any_database(tmp_path: Path) -> None:
+    dbs = {"metadata_db": tmp_path / "metadata.db", "uasr_db": tmp_path / "uasr.db",
+           "uasr_state_db": tmp_path / "uasr_state.db", "gateway_db": tmp_path / "gateway.db"}
+    _seed_metadata_db(dbs["metadata_db"], [REAL_EMAIL, MANUAL_VERIFY_EMAIL, *RUN_ACCOUNTS])
+    _seed_rows(dbs["metadata_db"], "schema_columns", "source_id", {f"{TENANT}::verify_05d29aeb_upload": 3})
+    _seed_uasr_db(dbs["uasr_db"], {PREFIXED_UASR_ID: 2})
+    _seed_rows(dbs["uasr_db"], "uasr_repair_watches", "source_id", {PREFIXED_UASR_ID: 1})
+    _seed_state_db(dbs["uasr_state_db"], [PREFIXED_UASR_ID])
+    _seed_dashboards(dbs["gateway_db"], ["verify_a1b2c3d4_dashboard"])
+    before = {name: path.read_bytes() for name, path in dbs.items()}
+
+    result = _run_script(*_db_args(tmp_path, **dbs), "--delete-login", "--delete-run-accounts")
+
+    assert result.returncode == 0, result.stderr
+    assert "DRY RUN" in result.stdout
+    # 5 accounts + 3 profile rows + (2 x 4 + 1) UASR rows + 1 state row + 1 dashboard.
+    assert "Dry run only: 19 row(s) and 0 file(s) would be deleted." in result.stdout
+    for value in (PREFIXED_UASR_ID, "verify_a1b2c3d4_dashboard", f"{TENANT}::verify_05d29aeb_upload", *RUN_ACCOUNTS):
+        assert value in result.stdout
+    assert {name: path.read_bytes() for name, path in dbs.items()} == before
