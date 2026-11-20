@@ -26,8 +26,9 @@ It talks to four independent SQLite databases directly via the stdlib sqlite3
 module -- no repo imports, no ORM -- so it can run standalone on the
 production box's bare python3, exactly like verify_live_deployment.py does:
 
-  1. The gateway's metadata database (users, and schema_columns: the upload
-     profiles), default /data/state/metadata.db, override with --metadata-db.
+  1. The gateway's metadata database (users, and schema_columns and
+     dataset_profiles: the upload profiles), default /data/state/metadata.db,
+     override with --metadata-db.
   2. The UASR service's database (uasr_drift_events, uasr_recovery_records,
      uasr_repair_watches, uasr_distribution_snapshots, uasr_batch_embeddings
      -- all keyed by a source_id column), default /data/state/uasr.db,
@@ -177,7 +178,7 @@ UASR_STATE_TABLES = ("uasr_source_state",)
 # The only (table, column) pairs a DELETE may name.
 DELETABLE_KEYS = frozenset(
     [(t, "source_id") for t in UASR_TABLES + UASR_STATE_TABLES + ("schema_columns",)]
-    + [("users", "email"), ("gateway_dashboards", "name")]
+    + [("users", "email"), ("gateway_dashboards", "name"), ("dataset_profiles", "file_id")]
 )
 
 
@@ -304,7 +305,10 @@ def find_metadata_matches(conn: sqlite3.Connection, delete_login: bool, delete_r
     users: list[Match] = []
     if delete_login or delete_run_accounts:
         users = unless_referenced(conn, "users", find_key_matches(conn, ("users",), "email", is_account))
-    return users + find_key_matches(conn, ("schema_columns",), "source_id", is_verify_upload_source_id)
+    # The upload checks' profile rows are keyed by the uploaded file's own name, the
+    # same exact shape as the files themselves (89 were left on production, BUG-580).
+    profiles = find_key_matches(conn, ("dataset_profiles",), "file_id", lambda v: bool(VERIFY_UPLOAD_RE.fullmatch(v)))
+    return users + find_key_matches(conn, ("schema_columns",), "source_id", is_verify_upload_source_id) + profiles
 
 
 def find_uasr_matches(conn: sqlite3.Connection) -> list[Match]:
@@ -470,6 +474,8 @@ def main() -> int:
     print_report("Gateway metadata.db -- users to delete", [m for m in metadata_matches if m.table == "users"])
     print_report("Gateway metadata.db -- upload schema_columns to delete",
                  [m for m in metadata_matches if m.table == "schema_columns"])
+    print_report("Gateway metadata.db -- upload dataset_profiles to delete",
+                 [m for m in metadata_matches if m.table == "dataset_profiles"])
     print_report("UASR uasr.db -- source_ids to delete", uasr_matches)
     print_report("UASR uasr_state.db -- source_ids to delete", uasr_state_matches)
     print_report("Gateway gateway.db -- dashboards to delete", gateway_matches)

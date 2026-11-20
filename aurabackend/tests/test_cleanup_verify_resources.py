@@ -528,6 +528,22 @@ def test_bug580_upload_profiles_bare_and_tenant_prefixed_are_deleted(tmp_path: P
     assert _users_snapshot(metadata_db) == [REAL_EMAIL]
 
 
+def test_bug580_upload_dataset_profiles_are_deleted_by_exact_file_name(tmp_path: Path) -> None:
+    metadata_db = tmp_path / "metadata.db"
+    _seed_metadata_db(metadata_db, [REAL_EMAIL])
+    verify_files = ["verify_05d29aeb_upload.csv", "verify_0829aaf7_xlsx.xlsx"]
+    kept = ["sales_2025.csv", "verify_report.csv", "verify_05D29AEB_upload.csv", "xverify_05d29aeb_upload.csv",
+            "verify_05d29aeb_upload.csv.bak", "verify_05d29ae_upload.csv"]
+    _seed_rows(metadata_db, "dataset_profiles", "file_id", {**{f: 1 for f in verify_files}, **{f: 1 for f in kept}})
+
+    result = _run_script(*_db_args(tmp_path, metadata_db=metadata_db), "--confirm")
+
+    assert result.returncode == 0, result.stderr
+    assert "metadata.db: OK -- 2 row(s) deleted." in result.stdout
+    assert _column_values(metadata_db, "dataset_profiles", "file_id") == sorted(kept)
+    assert _users_snapshot(metadata_db) == [REAL_EMAIL]
+
+
 def test_bug580_verify_dashboards_are_deleted_by_exact_name_only(tmp_path: Path) -> None:
     gateway_db = tmp_path / "gateway.db"
     verify = ["verify_a1b2c3d4_dashboard", "verify_0badf00d_dashboard"]
