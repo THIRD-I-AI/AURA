@@ -24,7 +24,7 @@
 | Repair | Applied only when | Otherwise |
 |---|---|---|
 | Column rename | The new name matches exactly one removed column, by normalised name or by value fingerprint (≥ 99% of values identical in type and distribution to the baseline column), and no other candidate comes close | Quarantine the batch |
-| Retype (cast back) | **Every** value in the column casts losslessly (round-trip equal) | Rows that fail the cast are quarantined, never nulled |
+| Retype (cast back) | Each value casts losslessly (round-trip equal), **and** the cast-back values pass the same distribution proof against the baseline as a unit repair (range, moments and the aligned-histogram test; the label test for a categorical column). A lossless cast proves the representation, not the values: an int column ×2.5 sent as floats casts its whole values back exactly (BUG-577). An identifier or date has no distribution to compare (BUG-573) | Rows that fail the cast are quarantined, never nulled. If the cast-back values fail the distribution proof, the change is unproven and every row carrying the column is quarantined |
 | New column | Kept: the schema evolves, nothing is dropped. The destination gains the column, or it is held in an overflow field | — |
 | Unit or scale (×10ⁿ) | One factor brings ≥ 99.9% of values back inside the baseline's range and moments, and no other factor does | Quarantine |
 | Duplicates | The rows are exact duplicates on the declared key, or on the full row when no key is declared | Report and alert only |
@@ -51,7 +51,10 @@ injects every fault type (rename, retype, scale, new column, nulls, duplicates, 
 times, across random seeds. It measures:
 
 - **Precision:** applied fixes whose output equals ground truth. Must be ≥ 99.9%, or the build
-  fails.
+  fails. Every batch where a fault was detected and rows were returned counts, so a flagged
+  batch that passes a changed column through is a failed fix. A fault never detected (its data
+  passed unchanged) is a miss: it is reported as the strict outcome accuracy, per fault type and
+  dataset, and is not gated.
 - **Recall:** faults healed rather than quarantined. Reported, not gated.
 - **False alarms** on clean data. Must be 0 on the reference set.
 

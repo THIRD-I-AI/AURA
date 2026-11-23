@@ -58,7 +58,8 @@ class Column:
 
     @property
     def dtype(self) -> str:
-        return SCHEMA_TYPE[self.kind]
+        # A real column (realdata.py) carries the type it was loaded with.
+        return self.params.get("dtype") or SCHEMA_TYPE[self.kind]
 
 
 @dataclass
@@ -67,6 +68,10 @@ class Dataset:
     columns: List[Column]
     baseline: List[Dict[str, Any]]
     truth: List[Dict[str, Any]]
+    # BUG-577: a real source (realdata.py), and the source rows its baseline drew, so
+    # a steady-state stream draws later batches from the others.
+    name: Optional[str] = None
+    baseline_positions: frozenset = frozenset()
 
     @property
     def schema(self) -> Dict[str, str]:
@@ -80,8 +85,15 @@ class Dataset:
 
     @property
     def shape(self) -> str:
-        """The identifier style and whether a date column is present, for grouping results."""
+        """The identifier style and whether a date column is present, for grouping
+        results; a real dataset is grouped by its source."""
+        if self.name:
+            return f"real {self.name}"
         ident = self.columns[0]
+        if ident.kind not in ("id_str", "id_int"):
+            # A hand-built dataset (tests/test_heal_accuracy_bug576.py) has no generated id
+            # column; every scored Result names its shape (harness.TrialRef).
+            return "hand-built " + ident.kind
         tag = "text id" if ident.kind == "id_str" else f"{ident.params['style']} int id"
         return tag + (" + date" if any(c.kind == "date" for c in self.columns) else "")
 

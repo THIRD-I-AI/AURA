@@ -32,6 +32,7 @@ from .datasets import (
     sample,
     strict_equal,
 )
+from .realdata import make_real_dataset
 
 
 class NotApplicable(Exception):
@@ -90,9 +91,18 @@ class Trial:
         return changed
 
     def void_changed(self, name: str, original: List[Any]) -> None:
-        """Rows whose ``name`` no longer holds the truth have no correct output."""
+        """Rows whose ``name`` no longer holds the truth's value have no correct output.
+
+        A value the fault left numerically equal is not one of them: x2.5 sends an int
+        0 as 0.0, and the lossless cast back gives the truth exactly (as for
+        int_as_float), so the truth stays expected -- and 0.0 returned for it is still
+        WRONG. Real 0/1 columns (BUG-577) are mostly such rows."""
         for i, row in enumerate(self.sent):
-            if self.expected[i] is not None and not strict_equal(row.get(name), original[i]):
+            new, old = row.get(name), original[i]
+            same = strict_equal(new, old) or (
+                isinstance(new, (int, float)) and isinstance(old, (int, float))
+                and not isinstance(new, bool) and not isinstance(old, bool) and new == old)
+            if self.expected[i] is not None and not same:
                 self.expected[i] = None
 
     def set_type(self, name: str, dtype: str) -> None:
@@ -291,12 +301,28 @@ COMBOS = [
 FAULT_TYPES = list(INJECTORS) + ["combo"]
 
 
-def build_trial(fault: str, seed: int) -> Trial:
-    """The trial for ``fault`` at ``seed``, or NotApplicable after a few shapes."""
-    rnd = random.Random(f"{fault}:{seed}")
+def _dataset(source: Optional[str], seed: int, **kw) -> Optional[Dataset]:
+    """A synthetic dataset, or a sample of the real ``source`` (BUG-577); None when
+    the real source has too few rows for the sizes asked."""
+    if source is None:
+        return make_dataset(seed, **kw)
+    try:
+        return make_real_dataset(source, seed, **kw)
+    except ValueError:
+        return None
+
+
+def build_trial(fault: str, seed: int, source: Optional[str] = None) -> Trial:
+    """The trial for ``fault`` at ``seed`` -- on a synthetic dataset, or on a sample of
+    the real dataset ``source`` -- or NotApplicable after a few shapes."""
+    # The synthetic stream is seeded exactly as before real sources existed, so every
+    # synthetic trial is the one earlier runs measured.
+    rnd = random.Random(f"{fault}:{seed}" if source is None else f"{source}:{fault}:{seed}")
     for attempt in range(20):
         kw = {"baseline_rows": rnd.randint(1000, 2000)} if fault == "volume_drop" else {}
-        ds = make_dataset(rnd.randrange(1 << 30), **kw)
+        ds = _dataset(source, rnd.randrange(1 << 30), **kw)
+        if ds is None:
+            continue
         steps = list(rnd.choice(COMBOS)) if fault == "combo" else [fault]
         t = Trial(
             fault=fault, seed=seed, dataset=ds,
@@ -309,18 +335,25 @@ def build_trial(fault: str, seed: int) -> Trial:
                 INJECTORS[step](t, rnd)
         except NotApplicable:
             continue
+        if strict_equal(t.sent, ds.truth):
+            # A real column can hold only zeros in a batch, so a rescale changes
+            # nothing; such a trial measures nothing. (Never so on synthetic data.)
+            continue
         return t
     raise NotApplicable(fault)
 
 
-def build_clean(seed: int) -> Trial:
+def build_clean(seed: int, source: Optional[str] = None) -> Trial:
     """A clean batch of the dataset's own process, at one of several sizes, with or
-    without a snapshot, sometimes as a complete run against a complete-run baseline."""
-    rnd = random.Random(f"clean:{seed}")
+    without a snapshot, sometimes as a complete run against a complete-run baseline.
+    On a real ``source`` the batch is cut to the rows the source has left."""
+    rnd = random.Random(f"clean:{seed}" if source is None else f"{source}:clean:{seed}")
     size = rnd.choice(["tiny", "small", "medium", "large"])
     n1 = {"tiny": rnd.randint(20, 60), "small": rnd.randint(60, 200),
           "medium": rnd.randint(200, 900), "large": rnd.randint(1500, 4000)}[size]
-    ds = make_dataset(rnd.randrange(1 << 30), batch_rows=n1)
+    ds = _dataset(source, rnd.randrange(1 << 30), batch_rows=n1)
+    if ds is None:
+        raise NotApplicable(f"{source}: too few rows")
     t = Trial(
         fault="clean", seed=seed, dataset=ds,
         sent=copy_rows(ds.truth), expected=copy_rows(ds.truth),
