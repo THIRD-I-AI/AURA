@@ -17,6 +17,7 @@ import ast
 import asyncio
 import concurrent.futures
 import logging
+import math
 import time
 import types
 import uuid
@@ -30,11 +31,12 @@ from .actuator_agent import (
     cast_losslessly,
     in_baseline_range,
     location_shift,
+    prove_cast_values,
     prove_renames,
     prove_scale,
     restore_scaled,
 )
-from .drift_detector import DriftDetector
+from .drift_detector import _NO_DISTRIBUTION, _SIG_P, DriftDetector, _end_rows_p
 from .models import (
     BatchPayload,
     DriftDetectionResult,
@@ -59,6 +61,14 @@ logger = logging.getLogger("uasr.recovery_loop")
 _DETECTION_ONLY = {DriftType.NULL_RATE.value, DriftType.VOLUME.value, DriftType.DUPLICATE.value}
 # Drift that, still present after the proven repairs, means the batch is not proven clean.
 _BLOCKING = (DriftType.SCHEMA.value, DriftType.STATISTICAL.value, DriftType.SEMANTIC.value)
+# BUG-577 (real-data lane): the past-range p-value a column of an already-flagged batch
+# must clear to be returned (_unrepaired_value_drift). Looser than the detector's 1e-6 on
+# purpose: a batch that reaches the sandbox is not being asked whether to alarm, and
+# holding a clean column there costs recall, never a false alarm or a wrong value.
+_SANDBOX_P = 1e-3
+# ...and how far past anything the baseline holds an unrepaired value may lie: the
+# smallest unit factor the rescale stage knows (10^1).
+_UNIT_STEP = 10.0
 
 
 def _short(value: Any, limit: int = 80) -> str:
@@ -607,7 +617,120 @@ class RecoveryLoop:
         if shifted:
             parts.append(self._shift_reason(shifted))
         failed.update(shifted)
+        unexplained = self._unrepaired_value_drift(
+            probe_rows, [c for c in columns if c not in failed and c not in repaired], baseline)
+        if unexplained:
+            parts.append("; ".join(f"column '{c}': {why}" for c, why in sorted(unexplained.items())))
+        failed.update(unexplained)
         return failed, "; ".join(parts) or None
+
+    @staticmethod
+    def _unrepaired_value_drift(
+        rows: List[Dict[str, Any]], columns: List[str], baseline: Dict[str, Any],
+    ) -> Dict[str, str]:
+        """Numeric columns of a batch the detector already flagged whose values changed
+        though no proven rule repaired them (BUG-577, real-data lane), with why.
+
+        The detector raises a numeric finding only when its KL also passes zeta, so a
+        column it proves different (``_aligned_drift_p`` < 1e-6) can still read as
+        "no drift": sm_fair affairs x10^-1 scored KL 0.14 at p = 5e-12, and rode out of
+        a batch whose retype on another column was repaired, healed=true with every
+        value a tenth of the truth. Once the batch is flagged, the sandbox is deciding
+        what may be returned, not whether to alarm -- holding rows is the safe answer --
+        so a proven difference of any size fails the column. So does a value with more
+        decimal places than the column records (``ColumnDistribution.decimals``):
+        sk_digits pixel_2_7 x10^-4 put its 13 non-zero values (whole numbers) at 1e-4..
+        1.6e-3, all inside the baseline's first bin with its zeros, below any
+        histogram's reach, and no value of the column was ever written so. Detection
+        thresholds are untouched: a clean batch never reaches this check.
+        """
+        failed: Dict[str, str] = {}
+        for col in columns:
+            dist = baseline.get(col)
+            if dist is None or dist.role in _NO_DISTRIBUTION or dist.mean is None:
+                continue
+            values = [v for r in rows if (v := r.get(col)) is not None]
+            if not values or not all(isinstance(v, (int, float)) and not isinstance(v, bool)
+                                     and math.isfinite(v) for v in values):
+                continue
+            if dist.decimals is not None:
+                # Whole values have no places (the baseline's decimals skip them too);
+                # repr(0.0) would otherwise count one.
+                extra = sum(1 for v in values if v != math.floor(v)
+                            and DriftDetector._decimal_places(v) > dist.decimals)
+                if extra:
+                    failed[col] = (
+                        f"{extra} value(s) carry more decimal places than the column records "
+                        f"({_precision(dist.decimals)}), and no proven repair explains them")
+                    continue
+            edges = DriftDetector._baseline_edges(dist.histogram or {})
+            if edges is None:
+                continue
+            counts = DriftDetector._histogram_on_edges(values, edges)["counts"]
+            # Rows past the baseline's range, by the exact past-range test at the
+            # sandbox's level. Merge of heal-hardening: this was a Chebyshev bound
+            # (``_outlier_p``) on the baseline's SAMPLE std, which understates a heavy
+            # tail many times over; hardening deleted it, and no proof may stand on it.
+            # The exact test holds for any distribution, so a clean column is held here
+            # at most _SANDBOX_P of the time.
+            below, above = int(counts[0]), int(counts[-1])
+            p_end = _end_rows_p(below, above, len(values), int(sum(dist.histogram["counts"])))
+            if p_end < _SANDBOX_P:
+                failed[col] = (
+                    f"{below + above} value(s) lie past the baseline's range, more than chance "
+                    f"explains (exact p = {p_end:.1e}), and no proven repair explains them")
+                continue
+            reach = RecoveryLoop._unit_fault_reach(edges, dist.decimals)
+            far = [v for v in values if abs(v) > reach]
+            if far:
+                failed[col] = (
+                    f"{len(far)} value(s) (e.g. {_short(far[0])}) lie past {reach:g}, further past "
+                    "the baseline's largest magnitude than its own values spread -- the size of a "
+                    "unit error (x10^n) -- and no proven repair explains them")
+                continue
+            p = DriftDetector._aligned_drift_p(counts, dist.histogram["counts"])
+            if p < _SIG_P:
+                failed[col] = (
+                    f"its values differ from the baseline's (p = {p:.1e}), and no proven "
+                    "repair explains it")
+        return failed
+
+    @staticmethod
+    def _unit_fault_reach(edges: List[float], decimals: Optional[int] = None) -> float:
+        """The largest magnitude an unrepaired value of a flagged batch may have before
+        the sandbox holds it as an unproven unit fault (merge of heal-hardening).
+
+        No test proves one row past the range: sk_digits rename + x10^4 left
+        pixel_3_7's one non-zero value at 10000.0 against a baseline of 1075 zeros and
+        three 1s (exact past-range p ~ 0.4), and it came back healed. Hardening removed
+        the Chebyshev bound that held it: it reads the baseline's SAMPLE std, which a
+        heavy tail understates many times over. This reads the baseline's min and max
+        only. A value is held past the baseline's largest magnitude times the larger of
+        _UNIT_STEP (the smallest x10^n the rescale stage repairs) and the baseline's own
+        dynamic range -- largest over smallest magnitude, or, when it holds zero, over
+        the larger of its histogram's resolution and the column's recorded precision (a
+        column of whole numbers has no non-zero magnitude below 1; an all-zero baseline
+        then reaches _UNIT_STEP units, so sk_digits' rare clean 1.0 in a pixel whose
+        baseline drew only zeros is returned). A heavy tail spans many decades, so its reach
+        grows with it; a compact column's is 10x to 50x. Clean batches of 5-300 rows
+        against 200-row baselines (200 seeds): lognormal(0, 2) and (0, 2.5) never held,
+        pareto(1.2) 0.4% (1.5% at 100 baseline rows, 3.6% at 50); a fixed 10x held 2-11%.
+        A hold costs recall, never a false alarm: only a flagged batch reaches it.
+        A value merely past the range is not held: a clean lognormal batch's 189.98
+        against a 91.97 max quarantined a proven rename (test_heal_phase2b_batch).
+        """
+        lo, hi = edges[0], edges[-1]
+        top = max(abs(lo), abs(hi))
+        unit = 10.0 ** -decimals if decimals is not None else 0.0
+        if top == 0:
+            return _UNIT_STEP * unit
+        if lo > 0:
+            smallest = lo
+        elif hi < 0:
+            smallest = -hi
+        else:
+            smallest = max((hi - lo) / max(len(edges) - 1, 1), unit)
+        return top * max(_UNIT_STEP, top / smallest)
 
     def _prove_repairs(
         self, drift: DriftDetectionResult, batch: BatchPayload,
@@ -631,6 +754,9 @@ class RecoveryLoop:
         failed_columns: set = set()
         retype_seen: Optional[Dict[str, Any]] = None
         scale_seen: Optional[List[str]] = None
+        # Columns whose every valued row is held because their change is unproven: the
+        # whole-batch check judges them on no row (their held cells are the fault).
+        voided: set = set()
 
         def keep_alive() -> List[int]:
             return [i for i in alive if i not in held]
@@ -692,17 +818,47 @@ class RecoveryLoop:
                             f"lossless cast back to {old_t!r} is defined")
                         continue
                     cast = failed = 0
+                    casts: Dict[int, Any] = {}
+                    uncastable: Dict[int, Any] = {}
                     for i in alive:
                         if col not in rows[i]:
                             continue
                         value = rows[i][col]
                         ok, out = cast_losslessly(value, target)
-                        if not ok:
-                            failed += 1
-                            held.setdefault(i, (
-                                f"column '{col}': value {_short(value)} does not cast losslessly "
-                                f"back to {old_t}"))
-                        elif type(out) is not type(value) or out != value:
+                        if ok:
+                            casts[i] = out
+                        else:
+                            uncastable[i] = value
+                    # BUG-577 (real-data lane, ADR-002 accuracy rule): the cast must also
+                    # give back the column's own values. COMPAS priors_count x2.5 cast its
+                    # whole-valued floats back to int and returned 5 for a true 2. If the
+                    # cast values fail the distribution proof the change is more than a
+                    # type, and no row of the column can be trusted -- the whole-valued
+                    # ones least of all: every row carrying the column is held. A null
+                    # there is held too: returning only the null rows made the re-check
+                    # read the column as 100% null (a null-rate alert the batch never had).
+                    proven, why_not = prove_cast_values(
+                        [v for v in casts.values() if v is not None], baseline.get(col))
+                    if not proven:
+                        failed_columns.add(col)
+                        voided.add(col)
+                        for i in alive:
+                            if col in rows[i]:
+                                held.setdefault(i, (
+                                    f"column '{col}' arrived as {new_t!r}; its values cast back to "
+                                    f"{old_t!r} losslessly, but that is not proof: {why_not}"))
+                        alive = keep_alive()
+                        if snapshot is not None:
+                            snapshot[col] = old_t
+                        continue
+                    for i, value in uncastable.items():
+                        failed += 1
+                        held.setdefault(i, (
+                            f"column '{col}': value {_short(value)} does not cast losslessly "
+                            f"back to {old_t}"))
+                    for i, out in casts.items():
+                        value = rows[i][col]
+                        if type(out) is not type(value) or out != value:
                             cast += 1
                             rows[i] = {**rows[i], col: out}
                     alive = keep_alive()
@@ -783,7 +939,8 @@ class RecoveryLoop:
                     f"the repaired rows still fail the drift check ({', '.join(still)}): {final_details}")
             else:
                 cols, reason = self._whole_batch_check(
-                    batch, rows, held, {r.column for r in repairs if r.type in ("retype", "rescale")},
+                    batch, rows, held,
+                    {r.column for r in repairs if r.type in ("retype", "rescale")} | voided,
                     columns, snapshot, baseline)
                 failed_columns.update(cols)
                 if reason:

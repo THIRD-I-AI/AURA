@@ -26,7 +26,7 @@ import numpy as np
 
 from agents.base import AgentContext, AgentResult, AgentStatus, BaseAgent, Severity
 from agents.params import ActuatorAgentParams
-from uasr.drift_detector import DriftDetector
+from uasr.drift_detector import _NO_DISTRIBUTION, DriftDetector
 from uasr.models import ColumnDistribution, DiagnosisResult, DriftType, ShimResult
 
 logger = logging.getLogger("uasr.actuator")
@@ -666,6 +666,50 @@ def _fits_baseline(values: List[float], dist: ColumnDistribution) -> Tuple[float
     _, significant = DriftDetector._aligned_kl(
         DriftDetector._histogram_on_edges(arr, edges)["counts"], dist.histogram["counts"])
     return inside, not significant
+
+
+def prove_cast_values(values: List[Any], dist: Optional[ColumnDistribution]) -> Tuple[bool, str]:
+    """Whether values a retype cast back are the column's own values: (proven, why not).
+
+    BUG-577 (real-data lane): a lossless cast proves the representation, not the values. COMPAS
+    priors_count x2.5 arrives as floats; the whole-valued ones (an even count x2.5)
+    cast back to int exactly, so the batch came back "retyped" with 5 for a true 2.
+    ADR-002's accuracy rule outranks the per-row wording of the retype row: the
+    cast-back values must also pass the proof every other repair passes -- the
+    rescale's (``_fits_baseline``: >= 99.9% inside the range, same moments, the
+    detector's aligned-histogram G test) for a numeric column, the detector's label
+    G test (``_categorical_significant``) for a categorical one.
+
+    An identifier or date carries no distribution (BUG-573): a sequential key moves
+    past the baseline every batch, so its values are not compared; the detector's
+    identifier checks still run on the cast rows. A column the baseline holds no
+    values of has nothing to compare with: not proven.
+    """
+    if not values:
+        return True, ""
+    if dist is None:
+        return False, "the baseline holds no values of the column to compare the cast values with"
+    if dist.role in _NO_DISTRIBUTION:
+        return True, ""
+    hist = dist.histogram or {}
+    if _baseline_range(dist) is not None:
+        try:
+            arr = np.asarray(values, dtype=float)
+        except (TypeError, ValueError):
+            return False, "the cast values are not numeric, but the baseline column is"
+        inside, ok = _fits_baseline(arr.tolist(), dist)
+        if ok:
+            return True, ""
+        return False, (
+            f"the cast values do not match the baseline's distribution ({inside:.1%} inside its "
+            "range, or its mean, spread or histogram differ), so the change is not only a type")
+    cats = hist.get("categories")
+    if isinstance(cats, dict) and cats:
+        counts = Counter(str(v) for v in values)
+        if not DriftDetector._categorical_significant(counts, cats):
+            return True, ""
+        return False, "the cast values' labels differ from the baseline's, so the change is not only a type"
+    return False, "the baseline column has no distribution to compare the cast values with"
 
 
 def fingerprint(values: List[Any], dist: Optional[ColumnDistribution]) -> Tuple[float, bool]:
