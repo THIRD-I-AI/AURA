@@ -86,6 +86,7 @@ def test_bug573_roles_are_inferred_from_the_baseline_values():
     det, _, _ = _detector()
     base = det.baseline_distributions("s")
     assert base["order_id"].role == "identifier" and base["order_id"].value_bound is None
+    # BUG-576: an id by its values (a counter scrambled mod a prime), not its name.
     assert base["customer_key"].role == "identifier" and base["customer_key"].value_bound is not None
     assert base["ref"].role == "identifier" and base["ref"].value_format == ["A-9"]
     assert base["created_on"].role == "date" and base["created_on"].value_format == ["9999-99-99"]
@@ -152,7 +153,6 @@ def _fault(det, nxt, rnd, column, fn):
 @pytest.mark.parametrize("column,fn,kind", [
     ("order_id", str, "type_change"),                        # retype int -> text
     ("order_id", float, "type_change"),                      # 123 arriving as 123.0
-    ("customer_key", lambda v: v * 1000, "format_change"),   # a unit bug on a keyed id
     ("ref", lambda v: v.split("-")[1], "format_change"),     # ORD-0001234 -> 0001234
     ("created_on", lambda v: dt.date.fromisoformat(v).strftime("%m/%d/%Y"), "format_change"),
     ("created_on", lambda v: v.replace("-", ""), "format_change"),
@@ -162,6 +162,16 @@ def test_bug573_faults_in_identifier_and_date_columns_are_still_caught(column, f
     r = _fault(det, nxt, rnd, column, fn)
     assert r.drift_type == DriftType.SCHEMA and r.drift_vector["type"] == kind, r.details
     assert column in r.affected_columns
+
+
+@pytest.mark.parametrize("metadata", [None, {"key_columns": ["customer_key"]}])
+def test_bug573_a_unit_bug_on_a_keyed_id_is_caught_declared_or_not(metadata):
+    # Past the 4x value bound of a keyed id: a format change, whether the key is
+    # declared or shown by its values (BUG-576).
+    det, rnd, nxt = _detector(metadata=metadata)
+    r = _fault(det, nxt, rnd, "customer_key", lambda v: v * 1000)
+    assert r.drift_type == DriftType.SCHEMA and r.drift_vector["type"] == "format_change", r.details
+    assert "customer_key" in r.affected_columns
 
 
 def test_bug573_a_renamed_identifier_is_still_schema_drift():
@@ -388,14 +398,13 @@ def test_review_one_null_in_a_wide_integer_measure_is_no_alarm():
     assert not r.drift_detected, r.details
 
 
-@pytest.mark.parametrize("how", ["key_columns", "declared_type", "name"])
+@pytest.mark.parametrize("how", ["key_columns", "declared_type"])
 def test_review_a_keyed_id_with_evidence_beyond_its_values_is_still_an_id(how):
+    # BUG-576: a name (CustomerID) is no such evidence -- tests/test_heal_accuracy_bug576.py.
     kw = {"key_columns": dict(metadata={"key_columns": ["pop"]}),
-          "declared_type": dict(snapshot={"pop": "uuid", "amount": "float"}),
-          "name": dict(rename="CustomerID")}[how]
+          "declared_type": dict(snapshot={"pop": "uuid", "amount": "float"})}[how]
     det, _ = _pop_detector(**kw)
-    col = "CustomerID" if how == "name" else "pop"
-    d = det.baseline_distributions("s")[col]
+    d = det.baseline_distributions("s")["pop"]
     assert d.role == "identifier" and d.value_bound is not None
 
 

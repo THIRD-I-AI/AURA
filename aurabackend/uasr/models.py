@@ -244,6 +244,13 @@ class ColumnDistribution(BaseModel):
     # float's full digits (more than _RECORDED_DECIMALS), which pins nothing down. A
     # rescale must restore values of the column's own precision.
     decimals: Optional[int] = None
+    # BUG-576: for an integer identifier known only by its row order (a gapped
+    # auto-increment, _row_order_shape "monotone"), the baseline's [median, max]. A
+    # sequence's later rows lie past its baseline, so a batch that reaches back below
+    # the median, or holds >= 10% of its values inside the baseline's range, is not
+    # continuing one: the column is then compared as the measure it may be (a wide
+    # measure exported sorted reads as monotone too). None for every other column.
+    sequence_span: Optional[List[float]] = None
 
 
 class BatchPayload(BaseModel):

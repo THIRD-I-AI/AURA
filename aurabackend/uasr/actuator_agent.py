@@ -851,11 +851,20 @@ def restore_scaled(
     exactly, and a 5% factor hides inside a wide column's spread; but no value of that
     column has three decimals, so it is not 10**power times any of its values: None.
     A correct restoration is the truth, recorded to the column's own precision.
+
+    BUG-577: scaling a float is many-to-one -- 5.247 and the next float up,
+    5.247000000000001, both become 524.7 at x100. A column recorded to a fixed
+    precision admits only one of them; a float column that carries full float
+    digits (``kind`` "float", ``decimals`` None) admits both, so the original is
+    unknown and picking the shorter is a guess (a real dataset held the longer
+    one): None. With no kind given nothing is known of the column, as before.
     """
     restored = _restore_scaled(value, power)
     if restored is None:
         return None
     if decimals is not None and DriftDetector._decimal_places(restored) > decimals:
+        return None
+    if decimals is None and kind == "float" and _has_other_preimage(value, power, float(restored)):
         return None
     if kind not in ("int", "float"):
         return restored
@@ -870,6 +879,19 @@ def restore_scaled(
     factor = 10 ** abs(power)
     forward = (whole * factor,) if power > 0 else (whole / factor, whole * 10.0 ** power)
     return whole if value in forward else None
+
+
+def _has_other_preimage(value: Any, power: int, restored: float) -> bool:
+    """A float next to ``restored`` that the same fault also turns into ``value``.
+
+    Scaling is monotone, so the floats that scale to one value are a contiguous run:
+    if neither neighbour is in it, ``restored`` is the only one."""
+    factor = 10 ** abs(power)
+    for cand in (math.nextafter(restored, -math.inf), math.nextafter(restored, math.inf)):
+        forward = (cand * factor,) if power > 0 else (cand / factor, cand * 10.0 ** power)
+        if value in forward:
+            return True
+    return False
 
 
 def _restore_scaled(value: Any, power: int) -> Optional[float]:

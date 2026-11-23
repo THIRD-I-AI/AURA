@@ -101,12 +101,16 @@ _ROLE_MIN_VALUES = 20       # fewer baseline values are no evidence of a role
 _ID_COLLISION_EVIDENCE = 10.0  # expected equal pairs a measure would show (P(none) ~ 5e-5)
 _SPARSE_ID_MIN_VALUES = 100  # unique ints on a sparse range need more values to count
 _SPARSE_ID_BOUND = 4.0       # x the baseline's largest magnitude a keyed id may reach
+_SEQUENCE_INSIDE = 0.10      # share of a batch inside its baseline's range no sequence holds
 _MAX_FORMATS = 3            # more shapes than this is no stable format
 _DATE_KINDS = frozenset({"datetime", "date", "Timestamp", "datetime64"})
 _DECLARED_DATE = frozenset({"date", "datetime", "timestamp", "timestamptz", "datetime64", "datetime64[ns]"})
 _DECLARED_NOT_ID = frozenset({"float", "double", "float32", "float64", "real", "bool", "boolean"})
-# heal-acc1 review: a keyed id needs evidence beyond its values -- a declared key,
-# an id-like declared type, or a name whose last word names a key.
+# heal-acc1 review: a keyed id needs evidence beyond its values -- a declared key
+# or an id-like declared type. BUG-576: never the column's name. A name hint
+# (visit_num, total_number, seat_no) made a wide integer measure an identifier, and
+# an identifier skips statistical drift, so x2 / x1.5 / in-range shifts went
+# unchecked. A name may only ADD a check (_unique_by_name), never take one away.
 _DECLARED_ID = frozenset({"id", "identifier", "key", "uuid", "guid", "serial", "bigserial", "smallserial"})
 _ID_NAME_WORDS = frozenset({"id", "ids", "key", "pk", "fk", "uuid", "guid", "no", "nr", "num", "number"})
 _NAME_WORD = re.compile(r"[A-Z]+(?![a-z])|[A-Z]?[a-z]+|\d+")
@@ -136,6 +140,34 @@ def _run_rows(batch: BatchPayload) -> int:
     if isinstance(n, int) and not isinstance(n, bool) and n >= 0:
         return n
     return len(batch.rows)
+
+
+def _beyond_range_tail(k: int, m: int, n0: int) -> float:
+    """P(the ``k`` most extreme of the n0 + m values in a given split all belong to an
+    ``m``-value batch) when batch and ``n0``-value baseline share one distribution
+    (BUG-577): prod_{i<k} (m - i) / (n0 + m - i), whatever the distribution. Ties only
+    make "strictly past" rarer, so it is an upper bound for discrete data."""
+    p = 1.0
+    for i in range(min(k, m)):
+        p *= (m - i) / (n0 + m - i)
+        if p < 1e-300:
+            break
+    return p if k <= m else 0.0
+
+
+def _end_rows_p(below: int, above: int, m: int, n0: int) -> float:
+    """The one exact past-range test (BUG-577, BUG-579): the p-value of ``below`` of an
+    ``m``-row batch's values lying under an ``n0``-row baseline's min and ``above``
+    over its max, when nothing changed.
+
+    With k = below + above, "k rows outside the range" is the union over the k + 1
+    splits (a lowest, k - a highest) of ``_beyond_range_tail(k, m, n0)``, so the union
+    bound keeps the p-value valid. Merge of heal-realism and heal-hardening: realism
+    took the smaller of the two one-sided tails, which is anti-conservative by up to
+    2x (two looks, no correction); this bound never is, and a real fault (a whole
+    column past the range) is still below 1e-20."""
+    k = below + above
+    return min(1.0, (k + 1) * _beyond_range_tail(k, m, n0))
 
 
 def _chi2_crit(df: int) -> float:
@@ -320,10 +352,14 @@ class DriftDetector:
             # identifier and date columns every later batch's embedding leaves out.
             declared = batch.schema_snapshot or schema or {}
             declared_key = set((batch.metadata or {}).get("key_columns") or [])
+            unique_by_name = set()
             for col, dist in distributions.items():
                 values = [r.get(col) for r in batch.rows]
                 dist.role, dist.value_format, dist.value_bound = self._infer_role(
-                    values, dist, declared.get(col), name=col, keyed=col in declared_key)
+                    values, dist, declared.get(col), keyed=col in declared_key)
+                dist.sequence_span = self._sequence_span(values, dist)
+                if self._unique_by_name(values, dist, col):
+                    unique_by_name.add(col)
             # Also register a reference embedding so semantic drift works
             emb = self._compute_batch_embedding(batch, exclude=self._no_distribution_columns(distributions))
             if emb:
@@ -349,7 +385,8 @@ class DriftDetector:
                     # allows no false alarm on clean data.
                     "unique_columns": [
                         c for c in cols
-                        if (d := distributions.get(c)) is not None and d.role == ROLE_IDENTIFIER
+                        if (d := distributions.get(c)) is not None
+                        and (d.role == ROLE_IDENTIFIER or c in unique_by_name)
                     ],
                     # BUG-568 review: only a baseline that is itself a whole
                     # run can anchor the volume check -- see _check_volume_drift.
@@ -369,8 +406,8 @@ class DriftDetector:
             for col, dist in distributions.items():
                 prev = (st.baseline or {}).get(col)
                 if dist.role is None and prev is not None and prev.role and prev.value_kind == dist.value_kind:
-                    dist.role, dist.value_format, dist.value_bound = (
-                        prev.role, prev.value_format, prev.value_bound)
+                    dist.role, dist.value_format, dist.value_bound, dist.sequence_span = (
+                        prev.role, prev.value_format, prev.value_bound, prev.sequence_span)
             st.baseline = distributions
             # BUG-568: a distributions-only re-baseline (mapek_worker) carries
             # no row-level facts, so the previous batch's duplicate profile is
@@ -872,7 +909,7 @@ class DriftDetector:
 
     def _infer_role(
         self, values: List[Any], dist: ColumnDistribution, declared: Any = None,
-        name: Any = None, keyed: bool = False,
+        keyed: bool = False,
     ) -> Tuple[str, Optional[List[str]], Optional[float]]:
         """``(role, value_format, value_bound)`` of a column, from its baseline values
         and declared type (BUG-573).
@@ -886,12 +923,15 @@ class DriftDetector:
           - or integers unique over >= 100 values on a sparse range (a keyed id).
             Values alone cannot tell that from a wide integer measure (population,
             byte counts, cents), which would then go unchecked but for a 4x bound,
-            so it also needs evidence beyond the values: the column is in the
-            batch's declared ``key_columns``, its declared type names a key
-            (``id``, ``uuid``, ``serial``...), or its name ends in an id word
-            (customer_id, CustomerID, order_no, account_key). It still gets
-            ``value_bound``: a value past 4x the baseline's largest magnitude is a
-            format change.
+            so it also needs a declaration -- the column is in the batch's declared
+            ``key_columns``, or its declared type names a key (``id``, ``uuid``,
+            ``serial``...) -- or row-order evidence (``_row_order_shape``: a gapped
+            auto-increment, a scrambled counter). Its name is no evidence (BUG-576): with no declaration
+            the column stays a measure and keeps its statistical checks, since
+            checking a real id statistically costs nothing when its population is
+            stable, and skipping a real measure lets a x2 through. A declared keyed
+            id gets ``value_bound``: a value past 4x the baseline's largest
+            magnitude is a format change.
           Floats and booleans are never identifiers.
         * measure -- everything else: compared statistically, as before.
         """
@@ -919,9 +959,84 @@ class DriftDetector:
         ints = [int(v) for v in present]
         if self._expected_int_collisions(ints) >= _ID_COLLISION_EVIDENCE:
             return ROLE_IDENTIFIER, None, None
-        if len(ints) >= _SPARSE_ID_MIN_VALUES and (keyed or decl in _DECLARED_ID or _id_like_name(name)):
-            return ROLE_IDENTIFIER, None, float(_SPARSE_ID_BOUND * max(abs(v) for v in ints))
+        if len(ints) >= _SPARSE_ID_MIN_VALUES:
+            bound = float(_SPARSE_ID_BOUND * max(abs(v) for v in ints))
+            shape = self._row_order_shape(ints)
+            if shape == "monotone":
+                return ROLE_IDENTIFIER, None, None
+            if keyed or decl in _DECLARED_ID or shape == "lattice":
+                return ROLE_IDENTIFIER, None, bound
         return ROLE_MEASURE, None, None
+
+    @staticmethod
+    def _row_order_shape(ints: List[int]) -> Optional[str]:
+        """BUG-576: the value evidence that a sparse unique int column is generated
+        from the row order, which no measure is. Its name used to stand in for this,
+        and took a wide measure's checks away; without either, an id read as a measure
+        drifts on every batch.
+
+        * monotone -- >= 99% of consecutive steps go one way: a gapped auto-increment
+          (deleted rows), whose batches lie past the baseline. A measure in random
+          order does so with probability ~1/n!.
+        * lattice -- two step sizes make >= 90% of the steps: a counter scrambled by
+          an affine map mod a prime (k * stride mod p: steps are stride and
+          stride - p), an obfuscated id over a fixed population. A measure's steps
+          over a sparse range almost never repeat.
+        """
+        steps = [b - a for a, b in zip(ints, ints[1:])]
+        if not steps:
+            return None
+        up = sum(1 for s in steps if s > 0) / len(steps)
+        if up >= 0.99 or up <= 0.01:
+            return "monotone"
+        top_two = sum(n for _, n in Counter(steps).most_common(2))
+        return "lattice" if top_two >= 0.9 * len(steps) else None
+
+    def _sequence_span(self, values: List[Any], dist: ColumnDistribution) -> Optional[List[float]]:
+        """BUG-576: the baseline's ``[median, max]`` for an identifier known only by its
+        row order (see ``ColumnDistribution.sequence_span``); None for every other column."""
+        if dist.role != ROLE_IDENTIFIER or dist.value_bound is not None or dist.value_kind != "int":
+            return None
+        ints = [int(v) for v in values if v is not None]
+        if self._expected_int_collisions(ints) >= _ID_COLLISION_EVIDENCE:
+            return None  # a dense sequence: unique beyond chance, whatever its order
+        if self._row_order_shape(ints) != "monotone":
+            return None
+        return [float(np.median(ints)), float(max(ints))]
+
+    @staticmethod
+    def _behind_sequence(dist: ColumnDistribution, batch: BatchPayload, col: str) -> bool:
+        """BUG-576: ``col`` was taken for a sequence by its order alone, and this batch
+        does not continue one -- it reaches back below the baseline's median, or holds
+        >= 10% of its values inside the baseline's range (a few late rows of an
+        auto-increment may; a sorted measure's batch does). The column is then checked
+        as a measure: ambiguous => keep the checks."""
+        span = dist.sequence_span
+        if not span:
+            return False
+        median, top = span
+        nums = [v for r in batch.rows
+                if isinstance(v := r.get(col), (int, float, np.integer, np.floating))
+                and not isinstance(v, (bool, np.bool_))]
+        if not nums:
+            return False
+        inside = sum(1 for v in nums if v <= top)
+        return any(v <= median for v in nums) or inside >= _SEQUENCE_INSIDE * len(nums)
+
+    @staticmethod
+    def _unique_by_name(values: List[Any], dist: ColumnDistribution, name: Any) -> bool:
+        """BUG-576: the one thing a column's name may do -- add a check. An int column,
+        null-free and unique over >= 100 baseline values, whose name names a key
+        (customer_id, order_no) stays a measure with every statistical check, and
+        also makes the baseline's rows unique by construction (BUG-574), so a
+        duplicated row in a batch is an exact alert as for a declared key. Were it a
+        measure unique only by chance, a batch would repeat a whole row by chance
+        only if every other column repeated with it."""
+        present = [v for v in values if v is not None]
+        return (
+            dist.value_kind == "int" and len(present) == len(values) >= _SPARSE_ID_MIN_VALUES
+            and len(set(present)) == len(present) and _id_like_name(name)
+        )
 
     @staticmethod
     def _no_distribution_columns(baseline: Optional[Dict[str, ColumnDistribution]]) -> set:
@@ -1093,7 +1208,7 @@ class DriftDetector:
             # BUG-573: an identifier or date carries no distribution -- a sequential
             # id lies past the baseline's range on every new batch. _check_schema_drift
             # checks what can go wrong with them instead.
-            if ref_dist.role in _NO_DISTRIBUTION:
+            if ref_dist.role in _NO_DISTRIBUTION and not self._behind_sequence(ref_dist, batch, col_name):
                 continue
             significant = True
             tested = False
@@ -1405,10 +1520,12 @@ class DriftDetector:
             # null in one is a fault however few: no sampling noise explains it.
             # heal-acc1 review: only where the values prove it is an id (a sequence
             # or a stable text code) or it is a declared key; a keyed id known by
-            # its name alone may be an optional reference, so it gets the z-test.
+            # its declared type alone may be an optional reference, so it gets the
+            # z-test.
             exact = (
                 dist.role == ROLE_IDENTIFIER and k0 == 0 and k1 > 0
                 and (dist.value_bound is None or col in declared_key)
+                and not self._behind_sequence(dist, batch, col)
             )
             p0 = (k0 + 1) / (n0 + 2)
             p1 = (k1 + 1) / (n1 + 2)
@@ -1547,7 +1664,10 @@ class DriftDetector:
         for col, dist in (st.baseline or {}).items():
             # A keyed id (value_bound set) is unique in the baseline but could be a
             # wide measure that repeats by chance; its duplicated rows still alarm.
-            if dist.role == ROLE_IDENTIFIER and dist.value_bound is None and col in present:
+            if (
+                dist.role == ROLE_IDENTIFIER and dist.value_bound is None and col in present
+                and not self._behind_sequence(dist, batch, col)
+            ):
                 values = [repr(v) for r in batch.rows if (v := r.get(col)) is not None]
                 if len(set(values)) < len(values):
                     repeated_ids[col] = len(values) - len(set(values))
@@ -1858,10 +1978,12 @@ class DriftDetector:
           tail, the range just past its max) does not have probability zero;
           with the bare 1e-10 floor used elsewhere, ONE clean value there cost
           (1/n)·ln(1/(n·1e-10)) -- ≈0.18 at n=100.
-        * Significance: 2·n_eff·KL (the G statistic, n_eff = n0·n1/(n0+n1))
-          is ~chi-square(bins-1) when nothing changed. A KL above zeta from a
-          20-row batch is mostly noise, so the caller only lets the KL fire
-          when G is past the chi-square 1e-6 upper quantile.
+        * Significance: values past either end of the baseline's range are
+          significant when a clean batch would show that many with chance
+          below 1e-6 (``_end_rows_p``, exact). The in-range bins: 2·n_eff·KL
+          (the G statistic, n_eff = n0·n1/(n0+n1)) is ~chi-square(bins-1) when
+          nothing changed. A KL above zeta from a 20-row batch is mostly noise,
+          so the caller only lets the KL fire when one of the two is significant.
 
         Real change still diverges strongly: a 1-sd shift of a normal column
         scores ≈0.3 or more, and mass past the baseline's range far more.
@@ -1879,12 +2001,25 @@ class DriftDetector:
         starts = np.arange(0, nbins, width)
         p = np.concatenate(([p[0]], np.add.reduceat(p[1:-1], starts), [p[-1]]))
         q_raw = np.concatenate(([0.0], np.add.reduceat(q_inner, starts), [0.0]))
-        df = max(int(np.count_nonzero((p > 0) | (q_raw > 0))) - 1, 1)
         q = (q_raw + 0.5) / (q_raw.sum() + 0.5 * len(q_raw))
-        p = p / n1
-        nz = p > 0
-        kl = max(float(np.sum(p[nz] * np.log(p[nz] / q[nz]))), 0.0)
-        g_stat = 2.0 * kl * (n0 * n1 / (n0 + n1))
+        kl = DriftDetector._plugin_kl(p / n1, q)
+        # BUG-577: the under/overflow bins are judged exactly, not by the G test.
+        # The baseline leaves them empty by construction (its own min and max are
+        # the edges), so their expected batch counts are far below the chi-square
+        # approximation's reach: 6 of 27 clean values below a 106-row baseline's
+        # min scored past the "1e-6" quantile, though such a batch occurs about
+        # once in 23,000 (two clean false alarms in 1,300 real batches). The inner
+        # bins hold >= _MIN_ROWS_PER_BIN rows of the smaller sample, where the G
+        # test holds, and are tested on their own, conditioned on the rows in range.
+        if _end_rows_p(int(p[0]), int(p[-1]), int(n1), int(n0)) < _SIG_P:
+            return kl, True
+        p_in, q_in = p[1:-1], q_raw[1:-1]
+        m = p_in.sum()
+        df = int(np.count_nonzero((p_in > 0) | (q_in > 0))) - 1
+        if m <= 0 or df < 1:
+            return kl, False
+        q_in = (q_in + 0.5) / (q_in.sum() + 0.5 * len(q_in))
+        g_stat = 2.0 * DriftDetector._plugin_kl(p_in / m, q_in) * (n0 * m / (n0 + m))
         return kl, bool(g_stat > _chi2_crit(df))
 
     @staticmethod
@@ -1962,15 +2097,8 @@ class DriftDetector:
         n1, n0 = float(p.sum()), float(q_inner.sum())
         if n1 <= 0 or n0 <= 0:
             return 1.0
-        k = int(p[0] + p[-1])
-        p_end = 1.0
-        for i in range(k):
-            p_end *= (n1 - i) / (n0 + n1 - i)
-        # BUG-579 review: the product is the chance of ONE split -- the a lowest and
-        # the k-a highest of the pool all from the batch. "k of the batch's rows lie
-        # outside the baseline's range" is the union over the k+1 splits, so the
-        # union bound keeps the p-value valid (never anti-conservative).
-        p_end = min(1.0, (k + 1) * p_end)
+        # BUG-579 review: the union bound over the k+1 splits keeps it valid.
+        p_end = _end_rows_p(int(p[0]), int(p[-1]), int(n1), int(n0))
         inner = p[1:-1]
         n1_in = float(inner.sum())
         nbins = len(q_inner)
@@ -2159,6 +2287,11 @@ class DriftDetector:
             dp = new
         log_total = math.lgamma(big + m + 1) - math.lgamma(m + 1) - math.lgamma(big + 1) + m * log_f
         return min(1.0, float(dp[m].sum()) / math.exp(log_total))
+
+    @staticmethod
+    def _plugin_kl(p: np.ndarray, q: np.ndarray) -> float:
+        nz = p > 0
+        return max(float(np.sum(p[nz] * np.log(p[nz] / q[nz]))), 0.0)
 
     # ────────────────────────────────────────────────────────────────
     # Batch embedding (hash-projection, no external API needed)
