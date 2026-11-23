@@ -94,8 +94,10 @@ existed for several sprints.
 
 # 🌿 Process (two-dev mode)
 
-- **Branching** — default branch `main`; CI runs on every push. With two devs in
-  flight, push a feature branch and open a PR rather than pushing to `main`.
+- **Branching** — default branch `main`. CI runs on every PR (once, any base) and
+  on pushes to `main`; a branch with no PR gets no CI until its PR opens. With two
+  devs in flight, push a feature branch and open a PR rather than pushing to `main`.
+  Dependent changes go up as **stacked PRs** (base = the PR below), merged bottom-up.
   Naming: `feature/<sprint-id>-<slug>`. Exception: purely-additive coordination
   docs (this file, `docs/SPRINTS.md`, `docs/AUDIT_BURN_DOWN.md`) may land directly.
 - **Sprint claiming** — open a GitHub issue titled `Sprint <id>: <goal>`, assign
@@ -106,8 +108,10 @@ existed for several sprints.
 - **Commits** — Conventional Commits (`fix(frontend): …`, `feat(saas): …`). Body
   carries anchors cited, subsystems landed, non-obvious decisions, and verification.
   Co-author line names the model that actually wrote it.
-- **All CI jobs green before merging.** The job list lives in `.github/workflows/`
-  — read it there, any copy here goes stale. **SDK Codegen Sync** runs
+- **All CI jobs green before merging.** Ruleset "Require CI on main" enforces the
+  core jobs, so `gh pr merge --auto --merge` waits for green. Renaming or adding a
+  required job means updating that ruleset, or every merge blocks. The job list
+  lives in `.github/workflows/` — read it there, any copy here goes stale. **SDK Codegen Sync** runs
   `scripts/generate_sdk.py` with `git diff --exit-code sdk_clients/`; commit
   regenerated output or the build breaks.
 - **Sprint memory is local, not shared.** Each dev's Claude keeps its own memory
