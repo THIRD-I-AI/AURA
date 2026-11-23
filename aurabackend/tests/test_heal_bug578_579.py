@@ -535,31 +535,21 @@ async def test_review_repros_drift_on_detect_and_heal(n, mu, sd, via_heal):
     assert healed_clean == 0, f"/uasr/heal returned {healed_clean}/20 shifted batches as clean"
 
 
-def test_exact_rank_p_is_the_permutation_distribution_with_ties():
-    """Brute force over every subset of a small tied pool: the DP is the exact
-    conditional (tie-respecting) permutation p-value, and doubling one tail keeps
-    it valid two-sided."""
+def test_rank_tail_bounds_bracket_the_exact_mann_whitney_tail():
+    """Brute force over every arrangement of small samples: the grid count is exact at
+    step 1 and bounds the tail from above at any step, and the Chernoff bound never
+    falls under it -- so a p-value from either is valid."""
     import itertools
-    rnd = random.Random(3)
-    for _ in range(60):
-        t = [rnd.randint(0, 3) for _ in range(rnd.randint(2, 5))]
-        if sum(t) < 3:
-            continue
-        pool = [j for j, c in enumerate(t) for _ in range(c)]
-        n1 = rnd.randint(1, len(pool) - 1)
-        chosen = rnd.sample(range(len(pool)), n1)
-        p = [sum(1 for i in chosen if pool[i] == j) for j in range(len(t))]
-        q = [c - x for c, x in zip(t, p)]
-        cum, rank = 0, []
-        for c in t:
-            rank.append(cum + (c + 1) / 2)
-            cum += c
-        w_obs = sum(x * r for x, r in zip(p, rank))
-        sums = [sum(rank[pool[i]] for i in comb) for comb in itertools.combinations(range(len(pool)), n1)]
-        for upper in (True, False):
-            tail = sum((w >= w_obs - 1e-9) if upper else (w <= w_obs + 1e-9) for w in sums)
-            want = min(1.0, 2 * tail / len(sums))
-            assert DriftDetector._exact_rank_p(p, q, upper) == pytest.approx(want, rel=1e-9, abs=1e-12)
+    for m in range(1, 5):
+        for big in range(m, 8):
+            sums = [sum(r - j for j, r in enumerate(c))
+                    for c in itertools.combinations(range(m + big), m)]
+            for u in range(1, m * big + 1):
+                exact = sum(x >= u for x in sums) / len(sums)
+                assert DriftDetector._mw_tail(m, big, u, 1) == pytest.approx(exact, rel=1e-9)
+                assert DriftDetector._mw_chernoff(m, big, u) >= exact * (1 - 1e-9)
+                for step in (2, 3, 5):
+                    assert DriftDetector._mw_tail(m, big, u, step) >= exact * (1 - 1e-9)
 
 
 # Clean micro-batches of every shape the exact test must not misread: a normal, two
@@ -702,6 +692,198 @@ async def test_heavy_tailed_small_baselines_quarantine_nothing_through_heal():
             out = await service.heal_batch(req, _as(), db=db)
         if out["quarantined_rows"] or out["degraded"] or out["rows"] != rows:
             found.append((n0, seed, len(rows), out.get("drift_type"), out.get("reason")))
+    assert found == []
+
+
+# ── BUG-579 adversarial review ────────────────────────────────────────────────
+
+async def test_clean_boolean_batch_against_a_three_row_baseline_is_not_quarantined():
+    """Both samples over 64 rows was not the only large case: a 3-row baseline gave
+    the normal cut z = -5.7 on 100 clean rows (exact p 0.007), and /uasr/heal
+    quarantined all of them."""
+    base = [{"flag": v} for v in (1, 1, 0)]
+    rows = [{"flag": 1}] * 2 + [{"flag": 0}] * 98
+    det = DriftDetector()
+    det.register_baseline("b", BatchPayload(source_id="b", columns=["flag"], rows=base))
+    assert not det.detect(BatchPayload(source_id="b", columns=["flag"], rows=rows), record_state=False).drift_detected
+    sid = _source()
+    service._detector.register_baseline(sid, BatchPayload(source_id=sid, columns=["flag"], rows=base))
+    out = await _heal(sid, rows)
+    assert not out["quarantined_rows"] and not out["degraded"] and out["rows"] == rows, out.get("reason")
+
+
+def test_boolean_false_alarm_probability_on_tiny_baselines_is_under_the_level():
+    """The exact chance that detect() alarms on a clean 0/1 column, summed over every
+    baseline and batch count: up to 8.7e-3 per batch before (3-row baseline, 100-row
+    batch, 2% ones)."""
+    from math import comb
+    worst = []
+    for rate in (0.02, 0.05, 0.15, 0.5):
+        for n0 in (2, 3, 5, 10, 20, 39):
+            for n1 in (65, 100):
+                fires = {}
+                p_alarm = 0.0
+                for b in range(n0 + 1):
+                    pb = comb(n0, b) * rate ** b * (1 - rate) ** (n0 - b)
+                    if pb < 1e-12:
+                        continue
+                    for c in range(n1 + 1):
+                        pc = comb(n1, c) * rate ** c * (1 - rate) ** (n1 - c)
+                        if pc < 1e-12:
+                            continue
+                        if (b, c) not in fires:
+                            det = DriftDetector()
+                            det.register_baseline("t", BatchPayload(
+                                source_id="t", columns=["x"], rows=[{"x": 1}] * b + [{"x": 0}] * (n0 - b)))
+                            fires[(b, c)] = det.detect(BatchPayload(
+                                source_id="t", columns=["x"], rows=[{"x": 1}] * c + [{"x": 0}] * (n1 - c)),
+                                record_state=False).drift_detected
+                        p_alarm += pb * pc * fires[(b, c)]
+                worst.append((p_alarm, rate, n0, n1))
+    assert max(worst)[0] <= 1e-6, max(worst)
+
+
+@pytest.mark.parametrize("value,k", [(float("inf"), 1), (float("inf"), 3), (float("-inf"), 3)])
+def test_an_infinite_value_in_a_finite_column_drifts(value, k):
+    """An infinity has probability 0 under any finite baseline; the rank test dropped
+    it and the past-range test took it for one more row past the max."""
+    import numpy as np
+    rng = np.random.default_rng(0)
+    det = DriftDetector()
+    det.register_baseline("i", BatchPayload(source_id="i", columns=["x"],
+                                            rows=[{"x": float(v)} for v in rng.normal(100, 15, 1000).round(2)]))
+    rows = [{"x": float(v)} for v in rng.normal(100, 15, 300).round(2)]
+    for i in range(k):
+        rows[i]["x"] = value
+    r = det.detect(BatchPayload(source_id="i", columns=["x"], rows=rows), record_state=False)
+    assert r.drift_detected and DriftType.STATISTICAL in r.drift_types and "x" in r.affected_columns
+
+
+def test_a_shift_sent_as_numeric_strings_drifts_like_numbers():
+    """_compute_distributions reads "112.50" as a number; the rank test kept only int
+    and float values, so the same shift sent as strings was caught 9/20, not 20/20."""
+    import numpy as np
+    for as_str in (False, True):
+        conv = (lambda v: f"{v:.2f}") if as_str else float
+        hits = 0
+        for seed in range(20):
+            rng = np.random.default_rng(seed)
+            det = DriftDetector()
+            det.register_baseline("s", BatchPayload(source_id="s", columns=["x"],
+                                                    rows=[{"x": conv(v)} for v in rng.normal(100, 15, 1000)]))
+            batch = rng.normal(100, 15, 12) + 2.5 * 15
+            hits += det.detect(BatchPayload(source_id="s", columns=["x"], rows=[{"x": conv(v)} for v in batch]),
+                               record_state=False).drift_detected
+        assert hits == 20, f"as_str={as_str}: {hits}/20"
+
+
+_LABELS = ["new", "paid", "shipped", "returned", "cancelled"]
+_SWAP = {"new": "paid", "paid": "new", "shipped": "cancelled", "cancelled": "shipped", "returned": "returned"}
+
+
+def _label_rows(rng, n: int, swap: bool = False) -> list:
+    import numpy as np
+    labels = rng.choice(_LABELS, n, p=np.array([.45, .3, .15, .07, .03]))
+    return [{"status": _SWAP[v] if swap else str(v), "amount": float(round(rng.lognormal(3, 1), 2))}
+            for v in labels]
+
+
+@pytest.mark.parametrize("micro", [0, 10])
+def test_a_label_swap_is_caught_on_a_fresh_window_and_after_micro_batches(micro):
+    """A stream of micro-batches never records a KL sample (BUG-579), so the warmup
+    stayed on forever and hid a 300-row relabelling (0/10 after 30 ten-row batches);
+    on a fresh window it was hidden too. A label mix that passes its own 1e-6 test
+    no longer waits for the window."""
+    import numpy as np
+    hits = clean_alarms = 0
+    for seed in range(10):
+        rng = np.random.default_rng(seed)
+        det = DriftDetector()
+        det.register_baseline("l", BatchPayload(source_id="l", columns=["status", "amount"],
+                                                rows=_label_rows(rng, 1000)))
+        for _ in range(30 if micro else 0):
+            clean_alarms += det.detect(BatchPayload(source_id="l", columns=["status", "amount"],
+                                                    rows=_label_rows(rng, micro))).drift_detected
+        r = det.detect(BatchPayload(source_id="l", columns=["status", "amount"],
+                                    rows=_label_rows(rng, 300, swap=True)))
+        hits += r.drift_detected and "status" in r.affected_columns
+    assert clean_alarms == 0
+    assert hits == 10, f"{hits}/10"
+
+
+def test_detect_on_many_columns_stays_fast():
+    """The exact rank DP took ~175 ms a column: 50 columns of a 39-row shifted batch
+    took 3-8 s inside the source's lock. Bounds settle almost every column now."""
+    import time
+
+    import numpy as np
+    rng = np.random.default_rng(0)
+    cols = [f"c{i}" for i in range(50)]
+
+    def rows(n, shift=0.0):
+        a = rng.normal(100, 15, (n, len(cols))).round(2) + shift
+        return [{c: float(a[i, j]) for j, c in enumerate(cols)} for i in range(n)]
+
+    det = DriftDetector()
+    det.register_baseline("p", BatchPayload(source_id="p", columns=cols, rows=rows(5000)))
+    for n1, shift in ((39, 15.0), (39, 30.0), (64, 40.0), (10, 30.0), (39, 0.0), (200, 0.0)):
+        batch = BatchPayload(source_id="p", columns=cols, rows=rows(n1, shift))
+        t0 = time.perf_counter()
+        r = det.detect(batch, record_state=False)
+        took = time.perf_counter() - t0
+        assert r.drift_detected == (shift > 0), (n1, shift)
+        assert took < 1.0, f"{n1} rows shifted {shift}: {took:.2f} s"
+
+
+TINY_COLS = ["flag2", "flag15", "flag50", "lognormal", "pareto", "count", "zip"]
+
+
+def _tiny_rows(rng, n: int) -> list:
+    import numpy as np
+    cols = {
+        "flag2": rng.random(n) < 0.02, "flag15": rng.random(n) < 0.15, "flag50": rng.random(n) < 0.5,
+        "lognormal": rng.lognormal(0.0, 2.0, n), "pareto": rng.pareto(1.1, n) + 1.0,
+        "count": rng.poisson(3, n), "zip": np.where(rng.random(n) < 0.9, 0, rng.poisson(4, n)),
+    }
+    return [{k: (bool(v[i]) if k.startswith("flag") else int(v[i]) if k in ("count", "zip") else float(v[i]))
+             for k, v in cols.items()} for i in range(n)]
+
+
+def _tiny_cases(count: int, salt: int):
+    """Baselines of 1-39 rows against clean batches of 65-1000: the cells where the
+    normal cut met a tiny sample."""
+    import numpy as np
+    for i in range(count):
+        rng = np.random.default_rng([salt, i])
+        yield i, _tiny_rows(rng, 1 + i % 39), _tiny_rows(rng, int(rng.integers(65, 1001)))
+
+
+def test_tiny_baselines_against_full_batches_raise_no_drift():
+    det = DriftDetector()
+    loop = RecoveryLoop(detector=det, config=RecoveryLoopConfig())
+    found = []
+    for i, base, rows in _tiny_cases(780, 11):
+        sid = f"tiny_{i}"
+        det.register_baseline(sid, BatchPayload(source_id=sid, columns=TINY_COLS, rows=base))
+        b = BatchPayload(source_id=sid, columns=TINY_COLS, rows=rows)
+        r = det.detect(b, record_state=False)
+        if r.drift_detected:
+            found.append((i, len(base), len(rows), r.details))
+        elif loop.unexplained_shift(r, b) is not None:
+            found.append((i, len(base), len(rows), "rank shift"))
+    assert found == []
+
+
+async def test_tiny_baselines_against_full_batches_quarantine_nothing_through_heal():
+    found = []
+    for i, base, rows in _tiny_cases(195, 12):
+        sid = _source()
+        service._detector.register_baseline(sid, BatchPayload(source_id=sid, columns=TINY_COLS, rows=base))
+        req = service.IngestRequest(source_id=sid, columns=TINY_COLS, rows=copy.deepcopy(rows))
+        async with get_session_factory()() as db:
+            out = await service.heal_batch(req, _as(), db=db)
+        if out["quarantined_rows"] or out["degraded"] or out["rows"] != rows:
+            found.append((i, len(base), len(rows), out.get("drift_type"), out.get("reason")))
     assert found == []
 
 

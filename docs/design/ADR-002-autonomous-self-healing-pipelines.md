@@ -138,3 +138,58 @@ data.
   re-run cover it. Writing unchecked data would be a guess.
 - **Accuracy:** the phase-2a benchmark stays green. Pipeline tests reuse its fault injectors
   end to end.
+
+## Detection limits (BUG-579)
+
+A numeric column's shift is proven only by tests that hold for any distribution, at 1e-6 a
+column. None of them treats the baseline's sample std as the true one.
+
+- **Past-range test:** the chance that k batch rows all lie outside the baseline's range. It is
+  exact under exchangeability, with a union bound over the low/high splits.
+- **Rank test, while either sample has ≤ 64 rows:** Mann-Whitney on the baseline's bins.
+  - A pair in one bin counts as no evidence. That count is at most the raw strict count, which
+    is at most the rank sum after random tie-breaking, and that sum has the tie-free null
+    distribution. So it stays valid with any ties, and with bin edges taken from the
+    baseline's own min and max.
+  - The tail is bounded from above by a Chernoff bound (Hoeffding: sampling without
+    replacement), and by an exact count on a grid of score groups while the smaller sample has
+    ≤ 16 rows.
+- **Rank test, both samples > 64 rows:** the BUG-575 cut, |z| > 5.
+- **Interior G-test:** only with ≥ 40 rows inside the range.
+- **Infinite values:** ±inf in a column whose baseline is all finite fires on its own, like a
+  change of kind.
+
+**Rows ×1000 needed to fire.** Batch of N(100, 15) rows, k of them multiplied by 1000,
+detect() firing in 5/5 trials. The analytic past-range bound is in brackets.
+
+| Baseline rows | batch 10 | batch 30 | batch 64 | batch 300 | batch 2000 |
+|---|---|---|---|---|---|
+| 100 | 6 (6) | 11 (11) | 19 (17) | 63 (57) | 391 (367) |
+| 1,000 | 4 (4) | 5 (5) | 7 (6) | 13 (12) | 49 (44) |
+| 10,000 | 3 (3) | 3 (3) | 4 (3) | 6 (5) | 11 (9) |
+
+At 266aefd one row fired in every cell: the >2σ mean rule fired by itself. That same rule
+quarantined ~40% of clean 5-row batches.
+
+**What small batches cannot prove**
+
+- **A few extreme rows in a large batch:** 5 rows at 1500 in 300 rows of N(100, 10) is no
+  longer caught (20/20 at 266aefd, 0/20 now). Without knowing the shape, the top 5 of the 600
+  pooled values all coming from the batch has p ≈ 0.2.
+- **Very small samples:** 2 rows against a 400-row baseline can reach at best 1/C(402, 2)
+  ≈ 1.2e-5. Baselines under ~40 rows prove only large, nearly total shifts.
+- **Tied columns:** booleans, small counts and heavy tails whose mass sits in the first bins.
+  Pairs in one bin are no evidence, so these need more rows than a continuous column.
+
+**Calibration**
+
+- **Rank test:** conservative by construction. It used to condition on the pooled bins, and
+  because the bins are cut on the baseline's own range it ran 1.0-1.8× nominal on tiny
+  baselines. In 20,000 trials per cell (uniform, 15% boolean and Poisson(1) columns; baselines
+  of 2-39 rows; batches of 12-1000 rows), the rate under 1e-2, 1e-3 and 1e-4 never exceeded
+  the level beyond Monte Carlo noise. On the boolean and count columns it stayed far under it.
+- **Interior G-test:** a chi-square approximation. On a clean 15% boolean column with a
+  100-row baseline it fires on 1.9e-6 of 300-row batches and 3.3e-6 of 1000-row batches,
+  summed exactly over the binomial counts (300-row batches: 1.8e-5 at 266aefd). Of the
+  0/1-column cells checked (rates 2-50%, baselines 2-100 rows, batches 65-1000 rows), these
+  two are the only ones over the nominal 1e-6.

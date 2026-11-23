@@ -640,10 +640,15 @@ def location_shift(values: List[Any], dist: Optional[ColumnDistribution]) -> Opt
     """
     if dist is None:
         return None
-    nums = [float(v) for v in values if isinstance(v, (int, float)) and math.isfinite(float(v))]
-    if len(nums) != len(values):
+    # BUG-579 adversarial review: read the values as the detector does, so a numeric
+    # string ("112.50") counts as the number it is.
+    try:
+        arr = np.asarray(values, dtype=float)
+    except (TypeError, ValueError):
         return None
-    return DriftDetector._rank_shift(nums, dist)
+    if arr.ndim != 1 or not np.isfinite(arr).all():
+        return None
+    return DriftDetector._rank_shift(arr.tolist(), dist)
 
 
 def _fits_baseline(values: List[float], dist: ColumnDistribution) -> Tuple[float, bool]:

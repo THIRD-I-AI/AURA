@@ -73,15 +73,19 @@ _SHIFT_Z = 5.0
 # most 40%) of the time. A batch of 100,000 rows makes any trivial wobble significant;
 # a moved factor clears it (x2.5 on a heavy tail: 0.67 or more in the benchmark).
 _SHIFT_EFFECT = 0.1
-# BUG-579 re-review: up to this many batch rows the rank-sum test is exact (the
-# permutation distribution of the tied ranks, _exact_rank_p) instead of |z| > _SHIFT_Z.
-# The normal cut cannot be reached below ~9 rows (|z| <= sqrt(3 n1)), so a 5-row batch
-# 3 sigma out was never proven, and with heavy ties (a boolean, a small-integer count)
-# its tail is not the normal's. Above it the DP costs more than a column check should
-# (~0.1 s at 64 rows), and the BUG-575 normal cut, calibrated on full batches, is kept.
+# BUG-579 re-review: while either sample has at most this many rows, the rank-sum
+# test is a conservative exact one (_rank_sum_significant) instead of |z| > _SHIFT_Z.
+# The normal cut cannot be reached below ~9 rows (|z| <= sqrt(3 n)), so a 5-row batch
+# 3 sigma out was never proven, and on a few rows with heavy ties (a boolean, a
+# small-integer count) its tail is not the normal's: a 3-row boolean baseline against
+# 100 clean rows reached z = -5.7. With both samples past it the BUG-575 normal cut,
+# calibrated on full batches, is kept.
 _EXACT_RANK_ROWS = 64
-# ...on a grid of about this many score units for the whole batch (see _exact_rank_p).
-_EXACT_RANK_GRID = 2048
+# ...counted on a grid of about this many score groups times rows of the smaller
+# sample while it has at most _EXACT_RANK_DP_ROWS rows, bounded by Chernoff beyond
+# (see _rank_sum_significant).
+_EXACT_RANK_GRID = 512
+_EXACT_RANK_DP_ROWS = 16
 
 # BUG-568 data-quality thresholds -- see the "Data-quality drift" section.
 _DQ_Z = 5.0                      # z-score a null-rate rise must reach
@@ -1073,6 +1077,11 @@ class DriftDetector:
         # zeta AND the G-test (see _aligned_kl) -- a finding that already carries
         # its own finite-sample protection, so the warmup must not hide it.
         aligned_fired = False
+        # BUG-579 adversarial review: likewise a label column whose mix passed its own
+        # 1e-6 G-test (_categorical_significant). A stream of micro-batches never
+        # fills the window (they are too small to record), so on /uasr/ingest and
+        # the MAPE-K worker the warmup hid every relabelling forever.
+        tested_fired = False
 
         zeta = self._dynamic_threshold(st.kl_history)
 
@@ -1087,6 +1096,7 @@ class DriftDetector:
             if ref_dist.role in _NO_DISTRIBUTION:
                 continue
             significant = True
+            tested = False
             aligned = bool(batch_dist.histogram.get("aligned"))
             if aligned:
                 kl, _ = self._aligned_kl(
@@ -1105,11 +1115,23 @@ class DriftDetector:
                     # any zeta), so a label mix must also pass a 1e-6 G-test.
                     significant = self._categorical_significant(
                         batch_dist.histogram["categories"], ref_dist.histogram["categories"])
+                    tested = significant
                 elif kl != _KIND_CHANGE_KL:
                     # BUG-579: a caller-supplied numeric histogram with no edges is
                     # compared bin index to bin index, with no test at all; below one
                     # bin's worth of rows that comparison is noise.
                     significant = (batch_dist.sample_size or 0) >= _MIN_ROWS_PER_BIN
+            # BUG-579 adversarial review: an infinite value in a column whose baseline
+            # is all finite has probability 0 under any finite distribution -- proof
+            # on its own, like a change of kind. The rank test drops it, and the
+            # past-range test counted it as one more row past the max.
+            if (
+                batch_dist.mean is not None and not math.isfinite(batch_dist.mean)
+                and ref_dist.mean is not None and math.isfinite(ref_dist.mean)
+                and ref_dist.std is not None and math.isfinite(ref_dist.std)
+                and np.isinf(self._numeric_values(batch, col_name)).any()
+            ):
+                kl, significant = _KIND_CHANGE_KL, True
             kind_changed = kind_changed or kl == _KIND_CHANGE_KL
 
             # Location / scale shift: if both have mean & std, compute a
@@ -1119,6 +1141,7 @@ class DriftDetector:
                 ref_dist.mean is not None
                 and batch_dist.mean is not None
                 and ref_dist.std is not None
+                and kl != _KIND_CHANGE_KL
             ):
                 # BUG-012 (docs/BUG_REGISTRY.md): a column that is truly constant in
                 # real data (e.g. improvement_surcharge, always 0.3) gets a non-zero
@@ -1156,10 +1179,10 @@ class DriftDetector:
                     batch_dist.histogram["counts"], ref_dist.histogram["counts"])
                 rank = None
                 if not significant and ref_dist.std > _EPS and (loc_shift > 2.0 or untested):
-                    values = [fv for r in batch.rows
-                              if isinstance((v := r.get(col_name)), (int, float))
-                              and math.isfinite(fv := float(v))]
-                    rank = self._rank_shift(values, ref_dist)
+                    # BUG-579 adversarial review: the values as _compute_distributions
+                    # read them -- "112.50" is a number there, so it is one here.
+                    arr = self._numeric_values(batch, col_name)
+                    rank = self._rank_shift(arr[np.isfinite(arr)].tolist(), ref_dist)
                     significant = rank is not None
                 if significant and loc_shift > 2.0:
                     kl = max(kl, loc_shift * zeta)
@@ -1184,6 +1207,7 @@ class DriftDetector:
                 drifted_cols.append(col_name)
                 max_kl = max(max_kl, kl)
                 aligned_fired = aligned_fired or aligned
+                tested_fired = tested_fired or tested
 
         # Record for dynamic threshold adaptation. BUG-417: not when a column's
         # location moved by more than 2 sigma. That batch's score is the surrogate
@@ -1250,6 +1274,7 @@ class DriftDetector:
             and max_sig_shift <= 2.0
             and not kind_changed
             and not aligned_fired
+            and not tested_fired
         ):
             return None, mutated
 
@@ -1886,6 +1911,13 @@ class DriftDetector:
         return bool(g_stat > _chi2_crit(max(len(keys) - 1, 1)))
 
     @staticmethod
+    def _numeric_values(batch: BatchPayload, col: str) -> np.ndarray:
+        """A numeric column's non-null values cast to float exactly as
+        ``_compute_distributions`` cast them (numeric strings included); call it
+        only for a column it found numeric."""
+        return np.asarray([v for row in batch.rows if (v := row.get(col)) is not None], dtype=float)
+
+    @staticmethod
     def _interior_groups(n0: float, n1_in: float, nbins: int) -> int:
         """How many merged interior bins ``_aligned_drift_p`` tests: >= _MIN_ROWS_PER_BIN
         rows of the smaller sample each; fewer than 2 is no test."""
@@ -1964,9 +1996,10 @@ class DriftDetector:
         baseline ``dist``, else None -- the Mann-Whitney rank-sum test on the
         baseline's own bins, ties corrected for (BUG-575; see
         ``actuator_agent.location_shift``). It holds whatever the column's shape, so
-        for a heavy tail as for a normal. Significant is p < _SIG_P by the exact
-        permutation distribution up to _EXACT_RANK_ROWS rows (``_exact_rank_p``,
-        BUG-579 re-review), |z| > _SHIFT_Z by the normal approximation above.
+        for a heavy tail as for a normal. Significant is a conservative exact
+        p < _SIG_P while either sample has at most _EXACT_RANK_ROWS rows
+        (``_rank_sum_significant``, BUG-579 re-review), |z| > _SHIFT_Z by the normal
+        approximation when both have more.
 
         A unique int column is an identifier (BUG-573): never shifted.
         """
@@ -1998,72 +2031,134 @@ class DriftDetector:
         effect = u / (n0f * n1)
         if abs(effect - 0.5) < _SHIFT_EFFECT:
             return None
-        if n1 <= _EXACT_RANK_ROWS:
+        if min(n1, n0f) <= _EXACT_RANK_ROWS:
             # BUG-579 re-review: the normal cut is unreachable on a few rows and wrong
-            # in the tail of heavily tied scores; the exact test is neither.
-            significant = DriftDetector._exact_rank_p(p, q, upper=z > 0) < _SIG_P
+            # in the tail of heavily tied scores -- on either side: a 3-row boolean
+            # baseline against 100 clean rows scored z = -5.7 (exact p 0.007).
+            counts_p = np.rint(p).astype(np.int64)
+            counts_q = np.rint(q).astype(np.int64)
+            below = np.cumsum(counts_q) - counts_q
+            above = int(counts_q.sum()) - np.cumsum(counts_q)
+            u_strict = int((counts_p * (below if effect > 0.5 else above)).sum())
+            significant = DriftDetector._rank_sum_significant(
+                int(counts_p.sum()), int(counts_q.sum()), u_strict)
         else:
             significant = abs(z) > _SHIFT_Z
         return (z, effect) if significant else None
 
     @staticmethod
-    def _exact_rank_p(p_counts, q_counts, upper: bool) -> float:
-        """Exact two-sided p-value of the rank-sum test of a batch (``p_counts``) against a
-        baseline (``q_counts``) counted on the same ordered bins (BUG-579 re-review).
+    def _rank_sum_significant(n1: int, n0: int, u_strict: int) -> bool:
+        """Whether ``u_strict`` -- the pairs of (batch row, baseline row) in which the
+        batch row lies in a strictly higher bin (or, for the lower tail, a strictly
+        lower one) -- proves a shift at two-sided _SIG_P (BUG-579 re-review).
 
-        Rows in one bin are tied, so each bin j scores its midrank r_j in the pooled
-        sample. Under the null the batch is a uniformly random n1-subset of the N pooled
-        rows, whatever the column's shape or ties: P(x_j of the batch in bin j for all j)
-        = prod_j C(t_j, x_j) / C(N, n1), with t_j the pooled rows in bin j. A dynamic
-        program over the bins gives the distribution of W = sum_j x_j s_j exactly, with
-        s_j = r_j on an integer grid of about _EXACT_RANK_GRID units for the batch
-        (2 r_j itself while the pool is small enough). The scores depend only on the
-        pooled counts, which every permutation keeps, so rounding them changes the
-        statistic, never the validity: P(W >= w_obs) is the exact chance of a rank sum
-        this extreme. ``upper`` picks the tail the batch lies in; doubling it is the
-        two-sided p-value.
+        Conservative for any column, binned on any edges: a pair in one bin counts
+        as no evidence, so u_strict is at most the strict count of the raw values,
+        which is at most the rank sum after breaking ties at random -- and that has
+        the tie-free Mann-Whitney distribution under the null, whatever the shape,
+        the ties, or edges taken from the baseline's own min and max. So any upper
+        bound on P(U >= u_strict) under that distribution is a valid p-value, and so
+        is the smaller of two. The Chernoff bound (``_mw_chernoff``) costs
+        microseconds and is within a factor of a few of exact once the smaller
+        sample has a dozen rows; below that it is loose (x5 at 5 rows), and the
+        tail counted on a grid of score groups (``_mw_tail``) is used too, which
+        there is nearly exact and still costs ~1 ms.
         """
-        p = np.asarray(p_counts, dtype=np.int64)
-        t = p + np.asarray(q_counts, dtype=np.int64)
-        n1, total = int(p.sum()), int(t.sum())
-        if n1 <= 0 or n1 >= total:
+        m, big = min(n1, n0), max(n1, n0)
+        if m < 1 or u_strict <= 0:
+            return False
+        half = _SIG_P / 2
+        if DriftDetector._mw_chernoff(m, big, u_strict) < half:
+            return True
+        if m > _EXACT_RANK_DP_ROWS:
+            return False
+        step = max(1, -(-big // max(1, _EXACT_RANK_GRID // m)))
+        return DriftDetector._mw_tail(m, big, u_strict, step) < half
+
+    @staticmethod
+    def _mw_chernoff(m: int, big: int, u: int) -> float:
+        """An upper bound on P(U >= u) for the tie-free Mann-Whitney U of samples of m
+        and ``big`` rows (BUG-579 re-review). U + m(m+1)/2 is the rank sum of the m
+        rows, a sample without replacement from the ranks 1..N; by Hoeffding (1963,
+        Thm. 4) its moment generating function is at most that of m ranks drawn with
+        replacement, so P(U >= u) <= min over t > 0 of exp(-t w) M(t)^m, with w the
+        rank sum and M the mean of exp(t r) over r = 1..N.
+        """
+        n = m + big
+        w = u + m * (m + 1) / 2
+        target = w / m  # the mean rank the tail needs
+        if target <= (n + 1) / 2:
             return 1.0
-        rank2 = 2 * np.cumsum(t) - t + 1  # twice the midrank
-        per_row = max(1, _EXACT_RANK_GRID // n1)
-        if 2 * total <= per_row:
-            score = rank2
-        else:
-            score = np.rint(rank2 * (per_row / (2.0 * total))).astype(np.int64)
-        if not upper:  # the lower tail of W is the upper tail of the reversed scores
-            score = int(score.max()) - score
-        w_obs = int((p * score).sum())
-        # dp[k, w]: weight of the ways to take k of the batch's rows from the bins seen so
-        # far with score sum w (clipped at w_obs: scores never decrease W). Each way of
-        # taking x of bin j's t_j rows weighs C(t_j, x) (n1 / N)^x -- the factor
-        # (n1 / N)^n1 is common to every complete way, and keeps the weights in range.
-        dp = np.zeros((n1 + 1, w_obs + 1))
+        if target >= n:  # only one row, at the top: the limit t -> infinity
+            return min(1.0, float(n) ** -m)
+
+        def log_expm1(x: float) -> float:
+            return x + math.log1p(-math.exp(-x)) if x > 1.0 else math.log(math.expm1(x))
+
+        def mean_rank(t: float) -> float:  # d/dt log M(t)
+            return 1.0 + n / -math.expm1(-n * t) - 1.0 / -math.expm1(-t)
+
+        lo, hi = 1e-12, 1.0
+        while mean_rank(hi) < target:
+            hi *= 2.0
+        for _ in range(100):
+            mid = math.sqrt(lo * hi)
+            if mean_rank(mid) < target:
+                lo = mid
+            else:
+                hi = mid
+        t = hi
+        log_m = t + log_expm1(n * t) - log_expm1(t) - math.log(n)
+        return min(1.0, math.exp(m * log_m - t * w))
+
+    @staticmethod
+    def _mw_tail(m: int, big: int, u: int, step: int) -> float:
+        """An upper bound on P(U >= u) for the tie-free Mann-Whitney U of samples of m
+        and ``big`` rows (BUG-579 re-review).
+
+        Under the null the m rows of the smaller sample fall into the big+1 gaps of
+        the other uniformly over all C(big + m, m) arrangements, and U is the sum of
+        their gap indices k_j. Rounding each k_j up to a multiple of ``step`` can only
+        raise U, so P(sum of rounded k_j >= u) bounds P(U >= u) from above; with step
+        1 it is exact. The rounded sum takes few
+        values, so a dynamic program over the groups of gaps counts it: d rows in a
+        group of g gaps can lie there C(d + g - 1, d) ways. It runs on each row's
+        shortfall from the top group, which the tail allows only a little of, so a
+        clearly shifted batch costs least.
+        """
+        if u <= 0:
+            return 1.0
+        if u > m * big:
+            return 0.0
+        need = -(-u // step)  # sum of group indices the tail needs
+        top = -(-big // step)  # group c holds the gaps k with ceil(k / step) == c
+        sizes = [1] + [step] * (top - 1) + [big - (top - 1) * step]
+        slack = m * top - need  # the most shortfall the tail allows
+        if slack < 0:
+            return 0.0
+        # dp[k, w]: weight of the ways to place k rows in the groups seen so far with
+        # total shortfall w <= slack; each way of d rows among g gaps weighs
+        # C(d + g - 1, d) f^d, f = m / (big + m) -- common to every complete
+        # arrangement, it keeps the numbers in range.
+        log_f = math.log(m / (big + m))
+        dp = np.zeros((m + 1, slack + 1))
         dp[0, 0] = 1.0
-        log_f = math.log(n1 / total)
-        for tj, sj in zip(t.tolist(), score.tolist()):
-            if tj == 0:
-                continue
+        for c, g in enumerate(sizes):
+            short = top - c
             new = dp.copy()
-            lg_t = math.lgamma(tj + 1)
-            for x in range(1, min(tj, n1) + 1):
-                w = math.exp(lg_t - math.lgamma(x + 1) - math.lgamma(tj - x + 1) + x * log_f)
-                shift = min(x * int(sj), w_obs)
-                src = dp[:n1 + 1 - x]
+            lg = math.lgamma(g)
+            for d in range(1, m + 1):
+                shift = d * short
+                if shift > slack:
+                    break
+                w = math.exp(math.lgamma(d + g) - math.lgamma(d + 1) - lg + d * log_f)
                 if shift:
-                    new[x:, shift:] += w * src[:, :w_obs + 1 - shift]
-                    # sums that pass w_obs stay clipped at w_obs
-                    new[x:, w_obs] += w * src[:, w_obs + 1 - shift:].sum(axis=1)
+                    new[d:, shift:] += w * dp[:m + 1 - d, :slack + 1 - shift]
                 else:
-                    new[x:] += w * src
+                    new[d:] += w * dp[:m + 1 - d]
             dp = new
-        complete = float(dp[n1].sum())
-        if complete <= 0:
-            return 1.0
-        return min(1.0, 2.0 * float(dp[n1, w_obs]) / complete)
+        log_total = math.lgamma(big + m + 1) - math.lgamma(m + 1) - math.lgamma(big + 1) + m * log_f
+        return min(1.0, float(dp[m].sum()) / math.exp(log_total))
 
     # ────────────────────────────────────────────────────────────────
     # Batch embedding (hash-projection, no external API needed)
