@@ -10,13 +10,16 @@ keyed by its signature (type, column, what pins it down), and every later batch 
 the source is evidence for or against it:
 
 * clean -- the batch proved the same repair again, or the fault it fixes is gone;
-* regressed -- the batch drifted on the repair's own column and no proven repair
-  brings it back: its rename is contradicted, its type change re-fires with no proven
-  cast back, the column is still off-baseline after the repairs;
+* regressed -- the batch drifted on the repair's own column, no proven repair
+  brings it back, and the batch shows the repair is wrong: the column the repair
+  gives is provably not the baseline's (the detector's exact tests at 1e-6), or its
+  values are not even of the column's kind;
 * inconclusive -- an earlier fault the batch could not prove stopped the proof before
   the repair's stage, or a different proven repair of the same kind restored the
   column (upstream switched from cents to mills: the x1000 rescale fixed the batch,
-  so the x100 was neither wrong nor exercised), so the batch says nothing about it.
+  so the x100 was neither wrong nor exercised), or the batch merely failed to prove
+  the repair again without evidence against it (``judge``), so the batch says nothing
+  about it. Its rows are quarantined all the same.
 
 N clean batches (``UASR_POST_HEAL_VALIDATION_BATCHES``, default 3) keep the repair;
 one regression rolls it back: the repair is blocked for the source, so a batch it
@@ -101,7 +104,27 @@ def repair_signature(repair_type: str, column: str, proof: Dict[str, Any]) -> Op
 
 def judge(sig: Signature, evidence: Optional[Dict[str, Any]]) -> str:
     """One batch's verdict on one watched repair. ``evidence`` is the batch's
-    ``ProvenHealPlan.canary_evidence``, or None for a batch with no drift at all."""
+    ``ProvenHealPlan.canary_evidence``, or None for a batch with no drift at all.
+
+    Steady-state seeds 194 and 336: a batch that could not prove the repair again is
+    not evidence it is wrong. A clean lognormal column's cast-back values failed the
+    sample-std moment check of the retype proof, and a clean column under a proven
+    rename failed the fingerprint's; both repairs were rolled back and blocked though
+    every value was right. The batch is quarantined either way -- an unproven repair
+    is never applied blindly -- but only a batch whose evidence contradicts the
+    repair (``evidence["contradicts"]``: its output on the column is provably not the
+    baseline's, by the detector's own exact tests) rolls it back. Otherwise the
+    verdict is inconclusive and the watch waits for batches that do decide.
+    """
+    verdict = _verdict(sig, evidence)
+    if verdict == REGRESSED and evidence is not None:
+        contradicts = evidence.get("contradicts")
+        if contradicts is not None and not contradicts(sig):
+            return INCONCLUSIVE
+    return verdict
+
+
+def _verdict(sig: Signature, evidence: Optional[Dict[str, Any]]) -> str:
     if evidence is None:
         return CLEAN
     kind, column, param = sig

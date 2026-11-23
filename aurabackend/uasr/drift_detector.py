@@ -22,7 +22,7 @@ import re
 import threading
 import time
 import zlib
-from collections import Counter
+from collections import Counter, OrderedDict
 from contextlib import contextmanager
 from dataclasses import replace
 from decimal import Decimal
@@ -186,6 +186,109 @@ def _chi2_sf(x: float, df: int) -> float:
     return 0.5 * math.erfc(z / math.sqrt(2))
 
 
+# ADR-002 "exact duplicates on the declared key", across the pages of one run: how many
+# hashed keys the detector keeps, over every source's current run. 8 bytes per key plus
+# a 4-byte page tag: 24 MB at the cap. A pipeline run pages 2,000 rows at a time
+# (pipeline/heal.py), so the cap holds a 2-million-row run.
+_RUN_KEYS_MAX = 2_000_000
+_UINT64 = (1 << 64) - 1
+
+
+def _key_hashes(keys: List[str]) -> np.ndarray:
+    """The 64-bit hashes of a batch's declared-key values, unique and sorted. Python's
+    string hash is salted per process, which is fine: the run memory is per process.
+    Two keys of a 2-million-key run share a hash with probability ~1e-7, below the
+    detector's 1e-6 false-alarm level."""
+    return np.unique(np.fromiter((hash(k) & _UINT64 for k in keys), dtype=np.uint64, count=len(keys)))
+
+
+class _RunKeys:
+    """The declared-key values each source's current run has delivered so far.
+
+    A run is the pages a caller sends under one ``metadata.run_id`` (pipeline/heal.py
+    sends its run id on every page); the page that declares ``complete_run`` ends it.
+    A key a page repeats from an earlier page of the same run is a duplicate as surely
+    as one repeated inside a page. Each key keeps the page that first delivered it, so
+    a page sent again (a retry, or the sandbox's own re-check of the page) is never its
+    own duplicate. A new run id replaces the source's previous run, and so does any
+    page after the one that ended the run (that page's own re-checks still see the
+    run). Memory is bounded by ``_RUN_KEYS_MAX`` over every source: least recently
+    used runs go first, and a run that alone outgrows it keeps the keys it has,
+    checks the rest against them, and stops adding (logged).
+    """
+
+    def __init__(self, max_keys: int = _RUN_KEYS_MAX) -> None:
+        self.max_keys = max_keys
+        self._lock = threading.Lock()
+        # source -> [run_id, sorted hashes, page tag per hash, {batch_id: tag}, full, ended_by]
+        self._runs: "OrderedDict[str, List[Any]]" = OrderedDict()
+        self._total = 0
+
+    def __len__(self) -> int:
+        return self._total
+
+    def repeats(self, source_id: str, run_id: str, batch_id: str, hashes: np.ndarray,
+                record: bool, end: bool) -> int:
+        """How many of ``hashes`` (unique, sorted) earlier pages of the run delivered;
+        with ``record``, the page's keys join the run, and ``end`` closes it."""
+        with self._lock:
+            run = self._runs.get(source_id)
+            if run is not None and (run[0] != run_id or run[5] not in (None, batch_id)):
+                self._drop(source_id)
+                run = None
+            if run is None:
+                if not record:
+                    return 0
+                run = self._runs[source_id] = [
+                    run_id, np.empty(0, np.uint64), np.empty(0, np.int32), {}, False, None]
+            self._runs.move_to_end(source_id)
+            stored, tags, pages = run[1], run[2], run[3]
+            tag = pages.get(batch_id)
+            pos = np.searchsorted(stored, hashes)
+            inside = pos < len(stored)
+            hit = np.zeros(len(hashes), dtype=bool)
+            hit[inside] = stored[pos[inside]] == hashes[inside]
+            earlier = hit.copy()
+            if tag is not None:
+                earlier[hit] = tags[pos[hit]] != tag
+            seen = int(earlier.sum())
+            if record and end:
+                run[5] = batch_id
+            elif record:
+                new = hashes[~hit]
+                room = self.max_keys - self._total
+                if len(new) > room:
+                    self._evict(keep=source_id, need=len(new) - room)
+                    room = self.max_keys - self._total
+                if len(new) > room:
+                    if not run[4]:
+                        logger.warning("run %s of %s outgrew %d remembered keys; later pages are "
+                                       "checked against the first ones only", run_id, source_id, self.max_keys)
+                    run[4] = True
+                    new = new[:max(room, 0)]
+                if len(new):
+                    if tag is None:
+                        tag = pages[batch_id] = len(pages)
+                    at = np.searchsorted(stored, new)
+                    run[1] = np.insert(stored, at, new)
+                    run[2] = np.insert(tags, at, np.int32(tag))
+                    self._total += len(new)
+            return seen
+
+    def _drop(self, source_id: str) -> None:
+        run = self._runs.pop(source_id, None)
+        if run is not None:
+            self._total -= len(run[1])
+
+    def _evict(self, keep: str, need: int) -> None:
+        for sid in list(self._runs):
+            if need <= 0:
+                return
+            if sid != keep:
+                need -= len(self._runs[sid][1])
+                self._drop(sid)
+
+
 class DriftDetector:
     """
     Stateful detector that compares incoming batches against stored baselines.
@@ -261,6 +364,8 @@ class DriftDetector:
         # dropped while a thread still waits on it.
         self._source_locks: Dict[str, List[Any]] = {}
         self._source_locks_guard = threading.Lock()
+        # ADR-002 exact duplicates on the declared key across a run's pages (_RunKeys).
+        self._run_keys = _RunKeys()
 
     @contextmanager
     def _lock_for(self, source_id: str) -> Iterator[None]:
@@ -604,11 +709,15 @@ class DriftDetector:
             for dq_type, dq_check in (
                 (DriftType.NULL_RATE, self._check_null_rate_drift),
                 (DriftType.VOLUME, self._check_volume_drift),
-                (DriftType.DUPLICATE, self._check_duplicate_drift),
             ):
                 dq_drift = dq_check(batch, st)
                 if dq_drift:
                     findings.append((dq_type, dq_drift))
+            # Only a recorded batch adds its keys to its run: a proof's re-check of
+            # the same rows (record_state=False) must not see itself as a repeat.
+            dup_drift = self._check_duplicate_drift(batch, st, record=record_state)
+            if dup_drift:
+                findings.append((DriftType.DUPLICATE, dup_drift))
 
             if dirty and record_state:
                 self._store.save(batch.source_id, st)
@@ -1637,15 +1746,20 @@ class DriftDetector:
         return max(expected + 5 * math.sqrt(expected * dispersion(n1)), 2 * poisson_upper * m1 / m0 + 10)
 
     def _check_duplicate_drift(
-        self, batch: BatchPayload, st: SourceState
+        self, batch: BatchPayload, st: SourceState, record: bool = False,
     ) -> Optional[Dict[str, Any]]:
         """Exact-duplicate rows (on the declared key, else the full row) the baseline
         does not explain, or a repeated value in an identifier column (BUG-574).
 
-        * The baseline had no duplicate and its rows are unique by construction (a
-          declared key, or an identifier column):
-          any duplicate in a batch is a fault -- exact, with no statistical floor,
-          which let 15 copies in 300 rows through.
+        * A declared key (the baseline's ``metadata.key_columns``) is unique by
+          declaration (ADR-002 "exact duplicates on the declared key"): any key value
+          repeated in the batch, or already delivered by an earlier page of the same
+          run (``metadata.run_id``, ``_RunKeys``), is a fault -- exact, every time,
+          whatever the baseline held. A row whose key holds a null carries no key
+          value (the null-rate check judges it).
+        * No key, but the baseline had no duplicate and an identifier column makes its
+          rows unique by construction: any duplicate row in a batch is a fault --
+          exact, with no statistical floor, which let 15 copies in 300 rows through.
         * An identifier column (BUG-573) repeats a value: the same, exactly.
         * Otherwise the batch's equal-pair count must exceed what the baseline's
           own repeat rate explains at the batch's size (_expected_pairs_bound).
@@ -1653,6 +1767,7 @@ class DriftDetector:
           set of possible rows repeats more the more rows you draw, so a clean 10x
           batch has a far higher duplicate rate than its baseline.
 
+        ``record``: the batch's keys join its run (``detect``'s ``record_state``).
         Detection only (ADR-002): no row is dropped or changed.
         """
         profile = st.baseline_rows
@@ -1671,25 +1786,45 @@ class DriftDetector:
                 values = [repr(v) for r in batch.rows if (v := r.get(col)) is not None]
                 if len(set(values)) < len(values):
                     repeated_ids[col] = len(values) - len(set(values))
-        cols = list(profile.get("key_columns") or profile["columns"])
-        k1, rows_fault, expected_upper = 0, False, None
+        key = list(profile.get("key_columns") or [])
+        cols = key or list(profile["columns"])
+        k1, rows_fault, expected_upper, dup_rows, in_run = 0, False, None, 0, 0
         # A removed column makes rows less unique: schema drift's job.
-        if set(cols) <= present and n1 >= 2:
+        if key and set(key) <= present:
+            tuples = (tuple(r.get(c) for c in key) for r in batch.rows)
+            keys = [repr(t) for t in tuples if all(v is not None for v in t)]
+            counts = Counter(keys)
+            dup_rows = len(keys) - len(counts)
+            k1 = sum(c * (c - 1) // 2 for c in counts.values())
+            run_id = (batch.metadata or {}).get("run_id")
+            if run_id is not None and counts:
+                in_run = self._run_keys.repeats(
+                    batch.source_id, str(run_id), batch.batch_id, _key_hashes(list(counts)),
+                    record=record, end=_is_complete_run(batch))
+            expected_upper = 0.0
+            rows_fault = dup_rows > 0 or in_run > 0
+        elif not key and set(cols) <= present and n1 >= 2:
             n0, k0 = int(profile["rows"]), int(profile["equal_pairs"])
             k1 = self._equal_row_pairs(batch, cols)
-            if k0 == 0 and (profile.get("key_columns") or profile.get("unique_columns")):
+            if k0 == 0 and profile.get("unique_columns"):
                 expected_upper = 0.0
             elif n0 >= 2:
                 expected_upper = self._expected_pairs_bound(
                     n0, k0, int(profile.get("equal_triples") or 0), n1)
             rows_fault = expected_upper is not None and k1 > expected_upper
+            if rows_fault:
+                dup_rows = n1 - len({repr(tuple(r.get(c) for c in cols)) for r in batch.rows})
         if not rows_fault and not repeated_ids:
             return None
-        dup_rows = n1 - len({repr(tuple(r.get(c) for c in cols)) for r in batch.rows}) if rows_fault else 0
-        dup_fraction = dup_rows / n1
+        dup_fraction = (dup_rows + in_run) / n1
         id_fraction = max(repeated_ids.values(), default=0) / n1
         parts = []
-        if rows_fault:
+        if key and dup_rows:
+            parts.append(f"{dup_rows} row(s) repeat a value of the declared key {key} in the batch")
+        if in_run:
+            parts.append(f"{in_run} value(s) of the declared key {key} were already delivered earlier "
+                         f"in run {(batch.metadata or {}).get('run_id')!r}")
+        if rows_fault and not key:
             parts.append(
                 f"{dup_rows} duplicate row(s) ({dup_fraction:.1%}); {k1} equal pairs vs at most "
                 f"{expected_upper:.1f} expected from the baseline")
@@ -1704,6 +1839,8 @@ class DriftDetector:
             "duplicate_rows": dup_rows,
             "duplicate_fraction": round(dup_fraction, 6),
             "repeated_identifiers": repeated_ids,
+            "key_columns": key,
+            "keys_seen_earlier_in_run": in_run,
             "severity": self._fraction_severity(max(dup_fraction, id_fraction)),
             "details": "; ".join(parts),
         }

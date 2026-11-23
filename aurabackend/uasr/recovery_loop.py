@@ -16,11 +16,13 @@ from __future__ import annotations
 import ast
 import asyncio
 import concurrent.futures
+import functools
 import logging
 import math
 import time
 import types
 import uuid
+from collections import Counter
 from typing import Any, Callable, Dict, FrozenSet, List, Optional, Tuple
 
 from agents.base import AgentContext
@@ -505,10 +507,13 @@ class RecoveryLoop:
         A kept new column is projected out: the destination gains it (ADR-002 "New
         column"), and it must not read as schema drift against a baseline that never
         had it. record_state=False -- a proof must not feed the adaptive threshold.
+        The batch's own id: the run's declared-key memory (``drift_detector._RunKeys``)
+        holds this batch's keys under it, and a re-check of the batch must not find
+        them as keys an earlier page delivered.
         """
         probe = BatchPayload(
             source_id=batch.source_id,
-            batch_id=f"{batch.batch_id}_proof",
+            batch_id=batch.batch_id,
             columns=columns,
             rows=[{c: rows[i][c] for c in columns if c in rows[i]} for i in alive],
             schema_snapshot=(
@@ -694,6 +699,67 @@ class RecoveryLoop:
                     f"its values differ from the baseline's (p = {p:.1e}), and no proven "
                     "repair explains it")
         return failed
+
+    @staticmethod
+    def _contradicts(rows: List[Dict[str, Any]], baseline: Dict[str, Any], sig: Signature) -> bool:
+        """Whether this batch proves a watched repair wrong (ADR-002 canary: "any
+        regression rolls it back"), given ``rows`` as the proof left them.
+
+        Steady-state seeds 194 and 336 rolled back a correct str->float retype and a
+        correct rename because a later clean batch failed to prove them again: the
+        retype's cast-back values and the rename's fingerprint both pass a moment check
+        against the baseline's SAMPLE std, which a lognormal column fails on clean
+        batches (std 188-261 against a baseline's 342, inflated by one far value), and
+        the rollback then blocked the mapping on every later batch. Failing a proof of
+        sameness is no evidence of a difference. The evidence is the repair's own output
+        on its column -- the renamed column's values, the cast-back values, the values
+        divided by the factor -- shown to differ from the baseline by the detector's
+        exact, distribution-free tests at its 1e-6 level (``_aligned_drift_p``,
+        ``_rank_shift``, the label G test), or values that are mostly not of the
+        column's kind at all. The x7-on-a-x100 regression the canary exists for fails
+        those by orders of magnitude.
+
+        An identifier or date carries no distribution (BUG-573): only the kind test
+        applies. A repair the batch does not exercise (its input column is absent) is
+        not contradicted.
+        """
+        kind, column, param = sig
+        source = param if kind == "rename" else column
+        values = [v for r in rows if (v := r.get(source)) is not None]
+        if len(values) < 2:
+            return False
+        dist = baseline.get(column)
+        if dist is None:
+            return False
+        numeric = DriftDetector._baseline_edges(dist.histogram or {}) is not None and dist.mean is not None
+        if kind == "retype":
+            target = canonical_type(param.rsplit("->", 1)[-1])
+            cast = [cast_losslessly(v, target) for v in values] if target else []
+            values = [out for ok, out in cast if ok and out is not None]
+            if len(values) * 2 < len(cast):
+                return True  # most values no longer cast back: the type change is another one
+        if numeric:
+            nums = []
+            for v in values:
+                ok, out = cast_losslessly(v, "float")
+                if ok and out is not None and math.isfinite(out):
+                    nums.append(out)
+            if len(nums) * 2 < len(values):
+                return True  # the column now holds mostly non-numbers
+            if kind == "rescale":
+                nums = [v / float(param) for v in nums]
+        if dist.role in _NO_DISTRIBUTION or len(values) < 2:
+            return False
+        if numeric:
+            if len(nums) < 2:
+                return False
+            counts = DriftDetector._histogram_on_edges(nums, DriftDetector._baseline_edges(dist.histogram))
+            return (DriftDetector._aligned_drift_p(counts["counts"], dist.histogram["counts"]) < _SIG_P
+                    or DriftDetector._rank_shift(nums, dist) is not None)
+        cats = (dist.histogram or {}).get("categories")
+        if isinstance(cats, dict) and cats:
+            return DriftDetector._categorical_significant(Counter(str(v) for v in values), cats)
+        return False
 
     @staticmethod
     def _unit_fault_reach(edges: List[float], decimals: Optional[int] = None) -> float:
@@ -957,6 +1023,9 @@ class RecoveryLoop:
             "retype_seen": retype_seen,
             "scale_seen": scale_seen,
             "columns": set(batch.columns).union(*(r.keys() for r in batch.rows)),
+            # Whether the batch is evidence AGAINST a watched repair, not merely a
+            # failure to prove it again (seeds 194/336; ``repair_canary.judge``).
+            "contradicts": functools.partial(self._contradicts, rows, baseline),
         }
         if unproven:
             reason = "; ".join(unproven)
