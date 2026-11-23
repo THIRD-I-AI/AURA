@@ -12,9 +12,14 @@ other lanes' gates over every batch of every stream, plus the canary's:
 * zero false alarms on every clean batch -- before the fault, through warm-up and
   past it, and after the fault;
 * row accounting on every batch;
-* every repair a keep scenario deployed is kept after the canary's N batches, and
-  every rollback scenario rolls the repair back, holds the blocked fault, and
-  proves the repair again after the block expires.
+* no keep scenario rolls its repair back, and after the canary's N batches every
+  repair it deployed is kept, or still watched because a batch could not prove it
+  again and was quarantined (seeds 194/336: such a batch is no evidence against the
+  repair); every rollback scenario rolls the repair back, holds the blocked fault,
+  and proves the repair again after the block expires;
+* keyed duplicates (streams that declare a key, across the pages of a run too):
+  0 misses, and each counts in (a);
+* the miss floor (``accuracy_floor.json``) at this stream count.
 
 ``AURA_HEAL_BENCH_STEADY_TRIALS`` streams run; by default a fifth of
 ``AURA_HEAL_BENCH_TRIALS`` (at least 28, two per fault type). Half stream synthetic
@@ -31,7 +36,17 @@ from collections import Counter
 import pytest
 
 from .faults import FAULT_TYPES
-from .harness import applied, failing_applied, failing_classes, report, report_path, run_isolated, table
+from .harness import (
+    applied,
+    failing_applied,
+    failing_classes,
+    floor_failures,
+    keyed_misses,
+    report,
+    report_path,
+    run_isolated,
+    table,
+)
 from .steady import StreamResult, run_stream, steady_sources
 
 pytestmark = pytest.mark.heal_realism
@@ -56,6 +71,7 @@ def steady_bench() -> StreamResult:
     run, elapsed = run_isolated(_run_all)
     kinds = Counter((s.kind, s.ok) for s in run.scenarios)
     failed = [s for s in run.scenarios if not s.ok]
+    waiting = [s for s in run.scenarios if s.ok and s.why.startswith("still watched")]
     print(f"\nADR-002 heal accuracy in steady state, {STREAMS} streams "
           f"({len(run.faults)} fault batches, {len(run.clean)} clean batches; real sources: "
           f"{', '.join(steady_sources())}), {elapsed:.0f}s\n"
@@ -63,6 +79,8 @@ def steady_bench() -> StreamResult:
           + "canary scenarios: " + ", ".join(f"{k} {'ok' if ok else 'FAILED'} {n}"
                                              for (k, ok), n in sorted(kinds.items())) + "\n"
           + "".join(f"  seed={s.seed} {s.kind} {s.fault} [{s.dataset}]: {s.why}\n" for s in failed)
+          + f"keep scenarios still watched after N batches (recall, not a failure): {len(waiting)}\n"
+          + "".join(f"  seed={s.seed} {s.fault} [{s.dataset}]: {s.why}\n" for s in waiting)
           + "(a) failures:\n" + (failing_applied(run.faults) or "none") + "\nevery WRONG trial:\n"
           + (failing_classes(run.faults + run.clean) or "no failing case"))
     out = report_path("steady")
@@ -98,6 +116,16 @@ def test_applied_fix_precision_over_every_fault_batch_in_steady_state(steady_ben
     assert a.precision >= PRECISION_GATE, (
         f"(a) applied-fix precision {a.precision:.4f} < {PRECISION_GATE} ({a.wrong} wrong of {a.batches}):\n"
         + failing_applied(steady_bench.faults))
+
+
+def test_no_keyed_duplicate_is_missed_in_steady_state(steady_bench):
+    missed = keyed_misses(steady_bench.faults)
+    assert not missed, f"{len(missed)} keyed duplicate(s) without the alert:\n" + failing_classes(missed)
+
+
+def test_misses_and_recall_hold_the_floor_in_steady_state(steady_bench):
+    problem = floor_failures("steady", str(STREAMS), steady_bench.faults)
+    assert problem is None, problem
 
 
 def test_kept_repairs_are_kept_and_rolled_back_repairs_are_blocked_then_re_proven(steady_bench):

@@ -27,7 +27,7 @@
 | Retype (cast back) | Each value casts losslessly (round-trip equal), **and** the cast-back values pass the same distribution proof against the baseline as a unit repair (range, moments and the aligned-histogram test; the label test for a categorical column). A lossless cast proves the representation, not the values: an int column ×2.5 sent as floats casts its whole values back exactly (BUG-577). An identifier or date has no distribution to compare (BUG-573) | Rows that fail the cast are quarantined, never nulled. If the cast-back values fail the distribution proof, the change is unproven and every row carrying the column is quarantined |
 | New column | Kept: the schema evolves, nothing is dropped. The destination gains the column, or it is held in an overflow field | — |
 | Unit or scale (×10ⁿ) | One factor brings ≥ 99.9% of values back inside the baseline's range and moments, and no other factor does | Quarantine |
-| Duplicates | The rows are exact duplicates on the declared key, or on the full row when no key is declared | Report and alert only |
+| Duplicates | The rows are exact duplicates on the declared key, or on the full row when no key is declared. A declared key (the baseline's `metadata.key_columns`) is unique by declaration: a key value repeated in a batch, or already delivered by an earlier page of the same run (`metadata.run_id`), is a duplicate every time | Report and alert only |
 | Null spike, volume drop, missing or late run | Detection only. There is nothing to repair in the data | Alert and mark the run DEGRADED. A late run is re-run once |
 
 LLM-written fixes are never applied automatically. They can be proposed in the log.
@@ -38,7 +38,11 @@ Every applied fix goes through these four steps.
 
 1. **Sandbox.** The fix runs on the triggering batch, and its output must pass the same checks.
 2. **Canary.** For the next N batches (default 3), the fixed output is checked against the
-   baseline. Any regression rolls it back automatically.
+   baseline. Any regression rolls it back automatically. A regression is evidence against the
+   fix: its output on the column is provably not the baseline's (the detector's exact tests),
+   or not of the column's kind. A batch that only fails to prove the fix again is quarantined,
+   never repaired blindly, and the watch continues: rolling back a correct mapping on such a
+   batch blocked it on every later batch (steady-state seeds 194 and 336).
 3. **Durable record.** Baselines, deployed fixes and watch state live on `/data` in SQLite or
    DuckDB, so they survive restarts.
 4. **Signed log.** Each detection, fix, quarantine and rollback is written append-only through
@@ -47,16 +51,52 @@ Every applied fix goes through these four steps.
 ## Measuring the accuracy
 
 A fault-injection benchmark in CI holds clean datasets with known ground truth. For each one it
-injects every fault type (rename, retype, scale, new column, nulls, duplicates, volume) many
-times, across random seeds. It measures:
+injects every fault type (rename, retype, scale, decoys, new and removed columns, nulls,
+duplicates, keyed duplicates, volume, and pairs of them) many times, across seeded trials, in
+three lanes: synthetic datasets (500 trials per fault type), real datasets bundled with sklearn
+and statsmodels plus the COMPAS extract (50 per dataset and fault type), and steady state (500
+multi-batch streams through warm-up, the canary's keep and rollback paths, and clean batches
+after the fault). It measures:
 
-- **Precision:** applied fixes whose output equals ground truth. Must be ≥ 99.9%, or the build
-  fails. Every batch where a fault was detected and rows were returned counts, so a flagged
-  batch that passes a changed column through is a failed fix. A fault never detected (its data
-  passed unchanged) is a miss: it is reported as the strict outcome accuracy, per fault type and
-  dataset, and is not gated.
-- **Recall:** faults healed rather than quarantined. Reported, not gated.
-- **False alarms** on clean data. Must be 0 on the reference set.
+- **(a) Applied-fix precision**, gated at ≥ 99.9% overall and per fault type. Every batch where
+  a fault was detected and rows were returned counts, and it is correct only when every returned
+  row equals its ground truth: a flagged batch that passes a changed column through is a failed
+  fix. Every duplicate on a source with a declared key counts too, detected or not, and is
+  correct only when the duplicates alert was raised.
+- **(b) Strict outcome accuracy**, reported: correct / (correct + wrong) over every fault batch,
+  silent misses included, split into wrong applied fixes, silent misses (a fault never detected,
+  its data passed unchanged) and missed alerts (a detection-only fault left unreported), per
+  fault type and dataset.
+- **(c) Recall:** faults healed, or detection-only faults correctly reported, out of all fault
+  batches. Abstaining (quarantine) lowers it, never (a).
+- **(d) False alarms** on clean data, gated at 0 in every lane: any finding, held row or change
+  on a clean batch, including the clean earlier pages of a run.
+
+**The miss floor.** The lanes are seeded, so their misses are exact numbers.
+`aurabackend/tests/accuracy/accuracy_floor.json` records, per lane at the trial count CI runs,
+the silent misses, the missed alerts and recall. Each lane is gated: silent misses and missed
+alerts no higher than the floor, recall no lower. The floor moves only deliberately: when
+detection improves, the same change lowers the miss counts and raises recall to the new run's
+numbers; a miss count is never raised, nor recall lowered, without an owner's decision named in
+that commit. The `heal-realism` CI job enforces it for the real and steady lanes, the
+`heal_accuracy` lanes for the synthetic one.
+
+**Keyed duplicates.** When a source declares a unique key, any repeated key value in a batch,
+or a key value an earlier page of the same run delivered, must raise the duplicates alert, every
+time. Every lane runs keyed-duplicate trials (the synthetic identifier, a real source's natural
+key such as `(firm, year)`, or a row key added to the rows): exact copies, rows that take
+another row's key, and copies of an earlier page's rows. A missed keyed duplicate is wrong
+under (a) and is gated at 0 misses. Duplicates on keyless data stay as they were: reported
+under (b), and held by the floor.
+
+**The public claim** is stated per lane and never as a bare "99.9% accurate": "≥ 99.9% of
+automatic fixes correct; N% of injected faults caught (by lane)", with N the lane's recall at
+the floor. At the first floor (2026-11-22): ≥ 99.9% of automatic fixes correct (no wrong fix
+in 5,359 synthetic, 4,541 real and 773 steady-state applied batches); 70.6% of injected faults
+caught on synthetic data, 49.3% on real data, 78.6% in steady state. A fault not caught was
+quarantined (held back, never written) or missed: no miss on synthetic data; 550 silent misses
+(448 of them duplicates on keyless data) and 19 missed alerts in 8,950 real trials; 9 silent
+misses in 977 steady-state fault batches.
 
 ## Phases
 

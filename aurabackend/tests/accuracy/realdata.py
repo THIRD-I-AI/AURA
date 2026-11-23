@@ -98,13 +98,15 @@ def load(source: str) -> Tuple[Tuple[Column, ...], Tuple[Tuple[Any, ...], ...]]:
 
 def make_real_dataset(
     source: str, seed: int, *, baseline_rows: Optional[int] = None, batch_rows: Optional[int] = None,
+    row_key: Optional[str] = None,
 ) -> Dataset:
     """A baseline and a disjoint batch of ``source``'s rows, sampled by ``seed``.
 
     Sizes follow the synthetic generator (baseline 400-1200, batch 150-800) where the
     source has the rows, else 60% of it and the rest; a requested batch size is cut
     to the rows left. Raises ValueError when the source cannot give the requested
-    baseline plus a batch."""
+    baseline plus a batch. ``row_key`` adds a column of that name holding each row's
+    position in the source, a unique key (steady-state keyed streams)."""
     cols, all_rows = load(source)
     rnd = random.Random(f"real:{source}:{seed}")
     n = len(all_rows)
@@ -114,16 +116,24 @@ def make_real_dataset(
         raise ValueError(f"{source} has {n} rows, not {n0} + {n1}")
     order = rnd.sample(range(n), n0 + n1)
     names = [c.name for c in cols]
-    rows = [dict(zip(names, all_rows[i])) for i in order]
+    rows = [_row(names, all_rows, i, row_key) for i in order]
     columns = [Column(c.name, c.kind, c.null_rate, dict(c.params)) for c in cols]
+    if row_key:
+        columns.insert(0, Column(row_key, "id_int", 0.0, {"style": "keyed", "dtype": "int"}))
     return Dataset(seed=seed, columns=columns, baseline=rows[:n0], truth=rows[n0:], name=source,
                    baseline_positions=frozenset(order[:n0]))
 
 
-def sample_rows(source: str, rnd: random.Random, n: int, exclude: frozenset) -> List[Dict[str, Any]]:
+def _row(names: List[str], all_rows, i: int, row_key: Optional[str]) -> Dict[str, Any]:
+    row = dict(zip(names, all_rows[i]))
+    return {row_key: i, **row} if row_key else row
+
+
+def sample_rows(source: str, rnd: random.Random, n: int, exclude: frozenset,
+                row_key: Optional[str] = None) -> List[Dict[str, Any]]:
     """Up to ``n`` rows of ``source`` not at the positions in ``exclude`` (the baseline's),
     without replacement inside the call: a later batch of a steady-state stream."""
     cols, all_rows = load(source)
     pool = [i for i in range(len(all_rows)) if i not in exclude]
     names = [c.name for c in cols]
-    return [dict(zip(names, all_rows[i])) for i in rnd.sample(pool, min(n, len(pool)))]
+    return [_row(names, all_rows, i, row_key) for i in rnd.sample(pool, min(n, len(pool)))]

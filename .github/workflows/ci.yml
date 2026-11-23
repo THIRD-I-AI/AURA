@@ -426,7 +426,11 @@ jobs:
   # only ground truth -- and (d) zero false alarms on clean data, both gated,
   # plus row accounting on every trial. (b) the strict outcome accuracy, a
   # missed fault that comes back as healed counted as wrong, and (c) recall
-  # are printed and written to the report, not gated. The base backend-test lane runs the
+  # are printed and written to the report. The miss floor
+  # (tests/accuracy/accuracy_floor.json) gates silent misses, missed alerts and
+  # recall at their recorded values for this trial count, and a duplicate on a
+  # source with a declared key is gated at 0 misses (and counts in (a)).
+  # The base backend-test lane runs the
   # same file at 50 trials per fault type; this lane runs the ADR-002 bar of
   # 500 per type (~7,000 fault trials + 1,000 clean batches, under 10 min),
   # so a rare wrong repair cannot hide in the small sample. The JSON report
@@ -486,7 +490,10 @@ jobs:
   # and every dead source); each process stays near 300 MB. Faults no check
   # sees on these sources (missed duplicates on keyless real data, decoys in
   # sparse or small columns) are silent misses: they lower (b), reported per
-  # fault type and dataset, and are not the applied-fix gate.
+  # fault type and dataset, and are not the applied-fix gate -- but neither
+  # lane may miss more of them, or recall less, than its miss floor
+  # (tests/accuracy/accuracy_floor.json: real at 50, steady at 500). Keyed
+  # duplicates (a declared key, across a run's pages too) are gated at 0 misses.
   heal-realism:
     name: Heal Accuracy on real data and steady state (ADR-002, BUG-577)
     runs-on: ubuntu-latest

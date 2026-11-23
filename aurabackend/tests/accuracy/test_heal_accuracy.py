@@ -11,7 +11,12 @@ alarms on clean data. This module measures it on the real handler:
   WRONG there (BUG-571, BUG-572), so a miss is counted rather than vanishing.
 * zero false alarms on the clean reference set (several batch sizes, with and
   without a schema snapshot, complete runs and micro-batches);
-* row accounting on every trial: returned + quarantined = sent, each row once.
+* row accounting on every trial: returned + quarantined = sent, each row once;
+* keyed duplicates (a declared key, ADR-002 "exact duplicates on the declared key"):
+  0 misses, and each counts in (a);
+* the miss floor (``accuracy_floor.json``): silent misses and missed alerts no
+  higher, recall no lower, than recorded for this trial count. Lower the floor in
+  the same change when detection improves; raising it is an owner's decision.
 
 Recall (CORRECT / trials) is printed, not gated: abstaining lowers recall, never
 precision (ADR-002 "What it does to recall").
@@ -35,7 +40,9 @@ from .harness import (
     classify_clean,
     failing_applied,
     failing_classes,
-    heal,
+    floor_failures,
+    heal_run,
+    keyed_misses,
     metrics,
     report,
     report_path,
@@ -58,10 +65,13 @@ async def _run_all():
                 trial = build_trial(fault, seed)
             except NotApplicable:
                 continue
-            faults.append(classify(trial, await heal(trial)))
+            out, pages = await heal_run(trial)
+            faults.append(classify(trial, out))
+            clean += pages
     for seed in range(CLEAN_TRIALS):
         trial = build_clean(seed)
-        clean.append(classify_clean(trial, await heal(trial)))
+        out, _ = await heal_run(trial)
+        clean.append(classify_clean(trial, out))
     return faults, clean
 
 
@@ -107,6 +117,18 @@ def test_overall_applied_fix_precision(bench):
     assert a.precision >= PRECISION_GATE, (
         f"(a) applied-fix precision {a.precision:.4f} < {PRECISION_GATE} ({a.wrong} wrong of {a.batches}):\n"
         + failing_applied(faults))
+
+
+def test_no_keyed_duplicate_is_missed(bench):
+    faults, _ = bench
+    missed = keyed_misses(faults)
+    assert not missed, f"{len(missed)} keyed duplicate(s) without the alert:\n" + failing_classes(missed)
+
+
+def test_misses_and_recall_hold_the_floor(bench):
+    faults, _ = bench
+    problem = floor_failures("synthetic", str(TRIALS), faults)
+    assert problem is None, problem
 
 
 @pytest.mark.parametrize("fault", FAULT_TYPES)

@@ -31,7 +31,10 @@ truth"; "Recall: faults healed rather than quarantined") -- ``scores``:
 (a) applied-fix precision, GATED (>= 0.999): every fault batch where the healer
     detected something (drift_detected, an alert, or a held row) and returned rows
     counts; it is right when every returned row equals its ground truth. A batch the
-    healer flagged and then passed or changed wrongly lands here.
+    healer flagged and then passed or changed wrongly lands here. So does every
+    duplicate on a source with a declared key (``Trial.keyed_dup``), detected or
+    not: ADR-002 owes it the alert every time, so it is right only with the
+    duplicates alert raised, and each lane also gates its keyed misses at 0.
 (b) strict outcome accuracy, REPORTED, not gated: CORRECT / (CORRECT + WRONG) over
     every fault batch, a silent miss included (the fault was never detected and the
     data came back as sent, ``WRONG``). Its WRONG trials are split into wrong applied
@@ -39,17 +42,25 @@ truth"; "Recall: faults healed rather than quarantined") -- ``scores``:
     detection-only fault went unreported), by fault type and by dataset.
 (c) recall: CORRECT / trials.
 (d) false alarms on clean batches, GATED at 0.
+
+The miss floor (``accuracy_floor.json``, ``floor_failures``): the lanes are seeded,
+so their silent misses, missed alerts and recall are exact numbers. Each lane gates
+silent misses <= floor, missed alerts <= floor and recall >= floor at the trial
+count CI runs it with. The floor only moves deliberately: when detection improves,
+lower the miss counts (and raise recall) to the new run's numbers in the same
+change; never raise a miss count or lower recall without an owner's decision.
 """
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import tempfile
 import time
 import uuid
 from collections import Counter, defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple, TypeVar
 
 import pytest
@@ -144,10 +155,12 @@ class TrialRef:
     case_class: str
     detail: str
     dataset: DatasetRef
+    keyed_dup: bool = False
 
     @classmethod
     def of(cls, t: Trial) -> "TrialRef":
-        return cls(t.fault, t.seed, t.case_class, t.detail, DatasetRef(t.dataset.name, t.dataset.shape))
+        return cls(t.fault, t.seed, t.case_class, t.detail, DatasetRef(t.dataset.name, t.dataset.shape),
+                   t.keyed_dup)
 
 
 @dataclass
@@ -162,15 +175,19 @@ class Result:
     detected: bool = False
     returned: int = 0
     returned_ok: int = 0
+    # Every alert the fault requires was raised.
+    alerted: bool = False
 
     @property
     def applied(self) -> bool:
-        """A batch (a) counts: something was detected and rows were returned."""
-        return self.detected and self.returned > 0
+        """A batch (a) counts: something was detected and rows were returned -- or it
+        is a duplicate on a source with a declared key, which counts every time."""
+        return self.trial.keyed_dup or (self.detected and self.returned > 0)
 
     @property
     def applied_ok(self) -> bool:
-        return self.applied and self.returned_ok == self.returned
+        return (self.applied and self.returned_ok == self.returned
+                and (self.alerted or not self.trial.keyed_dup))
 
     @property
     def wrong_kind(self) -> Optional[str]:
@@ -232,6 +249,10 @@ def forget(raw: str, tenant: Optional[str]) -> None:
     store = service._detector._store
     if hasattr(store, "delete"):
         store.delete(scoped)
+    run_keys = getattr(service._detector, "_run_keys", None)
+    if run_keys is not None:
+        with run_keys._lock:
+            run_keys._drop(scoped)
     for name in _PER_SOURCE_HOLDERS:
         holder = getattr(service, name, None)
         for value in vars(holder).values() if holder is not None else ():
@@ -247,6 +268,37 @@ async def heal(trial: Trial) -> Dict[str, Any]:
     raw = register(trial)
     try:
         return await heal_on(raw, trial)
+    finally:
+        forget(raw, trial.tenant)
+
+
+def page_trial(trial: Trial, rows: List[Dict[str, Any]], k: int) -> Trial:
+    """A clean earlier page of ``trial``'s run: its rows must come back untouched. Only
+    the run's last page declares it complete (pipeline/heal.py)."""
+    meta = {k: v for k, v in trial.metadata.items() if k not in ("complete_run", "run_rows")}
+    t = replace(trial, fault="clean page", sent=copy_rows(rows), expected=copy_rows(rows),
+                metadata=meta, required_alerts=set(), expect_healed=True,
+                keyed_dup=False, prior_pages=[], details=[], classes=[])
+    t.note(f"clean page {k + 1} of the run before a {trial.fault} page", "clean earlier page of a run")
+    return t
+
+
+async def heal_pages_on(raw: str, trial: Trial) -> Tuple[Dict[str, Any], List[Result]]:
+    """``trial``'s earlier pages, each scored as a clean batch, then its own batch,
+    all under the trial's ``metadata.run_id``: one run of a source."""
+    clean = []
+    for k, rows in enumerate(trial.prior_pages):
+        page = page_trial(trial, rows, k)
+        clean.append(classify_clean(page, await heal_on(raw, page)))
+    return await heal_on(raw, trial), clean
+
+
+async def heal_run(trial: Trial) -> Tuple[Dict[str, Any], List[Result]]:
+    """``heal`` for a trial that may carry earlier pages of its run: a cold start,
+    the pages, then the batch. Returns the batch's response and the pages' scores."""
+    raw = register(trial)
+    try:
+        return await heal_pages_on(raw, trial)
     finally:
         forget(raw, trial.tenant)
 
@@ -295,7 +347,7 @@ def classify(trial: Trial, out: Dict[str, Any]) -> Result:
 
     def result(outcome: str, why: str) -> Result:
         return Result(TrialRef.of(trial), outcome, why, detected=detected,
-                      returned=len(returned), returned_ok=sum(ok))
+                      returned=len(returned), returned_ok=sum(ok), alerted=trial.required_alerts <= alerts)
 
     for j, i in enumerate(returned):
         if not ok[j]:
@@ -448,6 +500,8 @@ def table(results: List[Result], clean: List[Result]) -> str:
         f"{m.wrong} WRONG of {m.trials}: " + ", ".join(f"{kinds[k]} {k}" for k in WRONG_KINDS),
         f"(c) recall: {m.recall:.4f} ({m.correct} healed or correctly reported of {m.trials})",
         f"(d) clean false alarms, GATED at 0: {alarms} of {len(clean)}",
+        "keyed duplicates (declared key), GATED at 0 misses: {trials} trials, {caught} caught, "
+        "{missed} missed".format(**keyed_summary(results)),
         f"{'fault':<18}{'trials':>7}{'correct':>9}{'quar.':>7}{'wrong':>7}{'(a)prec':>9}{'(a)n':>6}"
         f"{'(b)acc':>8}{'silent':>8}{'alert':>7}{'recall':>8}",
     ]
@@ -470,6 +524,55 @@ def table(results: List[Result], clean: List[Result]) -> str:
     return "\n".join(lines)
 
 
+def keyed_misses(results: List[Result]) -> List[Result]:
+    """Duplicates on a source with a declared key that did not get the alert (or
+    returned a wrong row): gated at 0 in every lane."""
+    return [r for r in results if r.trial.keyed_dup and not r.applied_ok]
+
+
+def keyed_summary(results: List[Result]) -> Dict[str, int]:
+    mine = [r for r in results if r.trial.keyed_dup]
+    return {"trials": len(mine), "caught": sum(1 for r in mine if r.applied_ok),
+            "missed": len(keyed_misses(results))}
+
+
+def floor_measure(results: List[Result]) -> Dict[str, Any]:
+    """What the miss floor holds for a lane: exact counts, recall as their ratio."""
+    m = metrics(results)
+    kinds = Counter(r.wrong_kind for r in results if r.outcome == WRONG)
+    return {"trials": m.trials, "correct": m.correct, "recall": round(m.recall, 6),
+            "silent_miss": kinds["silent miss"], "missed_alert": kinds["missed alert"]}
+
+
+FLOOR_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "accuracy_floor.json")
+
+
+def floor_failures(lane: str, config: str, results: List[Result]) -> Optional[str]:
+    """Why ``results`` break the lane's recorded floor at trial count ``config``, or
+    None. A lane run at a trial count with no floor fails in CI (a gate that is not
+    there must not pass) and is skipped elsewhere, with the reason."""
+    with open(FLOOR_PATH, encoding="utf-8") as fh:
+        floor = json.load(fh).get(lane, {}).get(config)
+    got = floor_measure(results)
+    if floor is None:
+        msg = f"no {lane} floor recorded for {config} in {FLOOR_PATH}; this run measured {got}"
+        if os.getenv("CI"):
+            pytest.fail(msg)
+        pytest.skip(msg)
+    problems = []
+    for kind, label in (("silent_miss", "silent misses"), ("missed_alert", "missed alerts")):
+        if got[kind] > floor[kind]:
+            problems.append(f"{label} {got[kind]} > floor {floor[kind]}")
+    # Exact: correct/trials >= floor correct/floor trials, with no float rounding.
+    if got["correct"] * floor["trials"] < floor["correct"] * got["trials"]:
+        problems.append(f"recall {got['recall']:.6f} < floor {floor['recall']:.6f}")
+    if not problems:
+        return None
+    return (f"{lane} lane at {config} fell below its miss floor ({'; '.join(problems)}). "
+            f"Measured {got}, floor {floor}. A miss count rises or recall falls only by an owner's "
+            "decision; see accuracy_floor.json.")
+
+
 def report(results: List[Result], clean: List[Result]) -> Dict[str, Any]:
     """The run as JSON: (a)-(d), metrics per fault type and every non-CORRECT trial,
     replayable by seed. ``overall``/``per_fault`` "precision" is (b), the strict outcome
@@ -481,6 +584,8 @@ def report(results: List[Result], clean: List[Result]) -> Dict[str, Any]:
     m = metrics(results)
     return {
         "scores": scores(results, clean),
+        "floor_measure": floor_measure(results),
+        "keyed_duplicates": keyed_summary(results),
         "applied_wrong": [row(r) for r in results if r.applied and not r.applied_ok],
         "overall": vars(m) | {"precision": m.precision, "recall": m.recall},
         "per_fault": per,

@@ -18,6 +18,18 @@ A stream here is one source run the way a pipeline runs it:
      and watched afresh;
 4. 2-4 clean batches after it, again with no false alarm.
 
+Keep, precisely (steady seeds 194 and 336): no batch of the fault rolls the repair
+back, and after N batches the repair is kept or still watched -- a batch that could
+not prove it again is quarantined and is no evidence against it (ADR-002: never
+apply a repair blindly; a rollback of a correct mapping blocks it on every later
+batch). Such a batch costs recall, which the miss floor holds.
+
+About half the streams declare a unique key (the synthetic identifier, a real
+source's natural key, or its row position as ``row_key``): their clean batches are
+sometimes two pages of one run (``metadata.run_id``), which must not alarm, and a
+duplicate on them -- keyed duplicates, or plain duplicates -- must get the alert
+every time (``Trial.keyed_dup``, gated at 0 misses).
+
 Fault batches go through ``classify`` and clean ones through ``classify_clean``, so
 precision, false alarms and row accounting mean what they mean in the other lanes.
 A stream is rebuilt from its seed alone.
@@ -38,8 +50,8 @@ from uasr.models import RepairWatch
 from uasr.repair_canary import ROLLED_BACK, load_watches, repair_signature
 
 from .datasets import Dataset, copy_rows, make_dataset, sample, strict_equal
-from .faults import COMBOS, FAULT_TYPES, INJECTORS, NotApplicable, Trial
-from .harness import CORRECT, QUARANTINED, Result, classify, classify_clean, forget, heal_on, register
+from .faults import COMBOS, FAULT_TYPES, INJECTORS, NATURAL_KEYS, ROW_KEY, NotApplicable, Trial
+from .harness import CORRECT, QUARANTINED, Result, classify, classify_clean, forget, heal_pages_on, register
 from .realdata import REAL_SOURCES, load, make_real_dataset, sample_rows
 
 
@@ -87,11 +99,21 @@ class Stream:
         real = steady_sources()
         self.source: Optional[str] = None if seed % 2 == 0 else real[(seed // 2) % len(real)]
         self.fault = FAULT_TYPES[(seed // 2) % len(FAULT_TYPES)]
+        # Keyed or not, and how its clean batches page, from a stream of its own, so the
+        # rows and faults of every stream are drawn as they were before keys existed.
+        self.krnd = random.Random(f"steady-keyed:{seed}")
+        keyed = self.fault == "keyed_duplicates" or self.krnd.random() < 0.5
+        row_key = ROW_KEY if keyed and self.source is not None and self.source not in NATURAL_KEYS else None
+        self.row_key = row_key
         if self.source is None:
             self.ds: Dataset = make_dataset(rnd.randrange(1 << 30))
             self._ordinal = len(self.ds.baseline) + len(self.ds.truth)
         else:
-            self.ds = make_real_dataset(self.source, rnd.randrange(1 << 30))
+            self.ds = make_real_dataset(self.source, rnd.randrange(1 << 30), row_key=row_key)
+        self.key: List[str] = []
+        if keyed:
+            self.key = (list(NATURAL_KEYS[self.source]) if self.source in NATURAL_KEYS
+                        else [row_key or self.ds.columns[0].name])
         self.snapshot = rnd.random() < 0.5
         self.tenant = rnd.choice([None, "tenant_a", "tenant_b"])
         # A volume fault is judged only between complete runs.
@@ -108,19 +130,28 @@ class Stream:
             rows = sample(self.ds.columns, n, self.rnd, self._ordinal)
             self._ordinal += n
             return rows
-        return sample_rows(self.source, self.rnd, n, self.ds.baseline_positions)
+        return sample_rows(self.source, self.rnd, n, self.ds.baseline_positions, row_key=self.row_key)
 
     def _trial(self, label: str, truth: List[Dict[str, Any]]) -> Trial:
         meta = {"complete_run": True} if self.complete_run else {}
+        base = dict(meta) | ({"key_columns": list(self.key)} if self.key else {})
         return Trial(
             fault=label, seed=self.seed, dataset=replace(self.ds, truth=truth),
             sent=copy_rows(truth), expected=copy_rows(truth),
             snapshot=dict(self.ds.schema) if self.snapshot else None, tenant=self.tenant,
-            metadata=dict(meta), baseline_metadata=dict(meta))
+            metadata=dict(meta), baseline_metadata=base)
 
     def clean(self, label: str = "clean") -> Trial:
         t = self._trial(label, self._rows())
         t.note(label, label)
+        if self.key and self.krnd.random() < 0.5:
+            # Two pages of one run: no key repeats across them, so neither may alarm.
+            half = len(t.sent) // 2
+            t.prior_pages = [t.sent[:half]]
+            t.sent, t.expected = t.sent[half:], t.expected[half:]
+            t.metadata["run_id"] = f"run-{self.seed}-{self.krnd.randrange(1 << 30)}"
+            if t.metadata.get("complete_run"):
+                t.metadata["run_rows"] = half + len(t.sent)
         return t
 
     def faulted(self, label: str, fault: str, fault_seed: str) -> Trial:
@@ -171,7 +202,10 @@ async def run_stream(seed: int) -> StreamResult:
     scoped = service.scoped_source(s.tenant, s.raw)
 
     async def send(t: Trial, is_clean: bool = False) -> Tuple[Result, Dict[str, Any]]:
-        out = await heal_on(s.raw, t)
+        if s.key and "duplicate" in t.required_alerts:
+            t.keyed_dup = True  # a duplicate on a source with a declared key: owed the alert
+        out, pages = await heal_pages_on(s.raw, t)
+        clean.extend(pages)
         r = classify_clean(t, out) if is_clean else classify(t, out)
         (clean if is_clean else faults).append(r)
         return r, out
@@ -184,6 +218,8 @@ async def run_stream(seed: int) -> StreamResult:
     trial = None
     for k in range(len(FAULT_TYPES)):
         fault = FAULT_TYPES[(FAULT_TYPES.index(s.fault) + k) % len(FAULT_TYPES)]
+        if fault == "keyed_duplicates" and not s.key:
+            continue  # its key must be declared with the baseline
         try:
             trial = s.faulted(fault, fault, fault_seed)
             s.fault = fault
@@ -199,7 +235,7 @@ async def run_stream(seed: int) -> StreamResult:
         if s.fault in SCALE_FAULTS and rescaled and rnd.random() < 0.5:
             scenarios.append(await _rollback(s, send, fault_seed, rescaled, scoped))
         else:
-            scenarios.append(await _keep(s, send, fault_seed, opened))
+            scenarios.append(await _keep(s, send, fault_seed, opened, scoped))
 
     for _ in range(rnd.randint(2, 4)):
         await send(s.clean("clean after"), True)
@@ -207,18 +243,30 @@ async def run_stream(seed: int) -> StreamResult:
     return StreamResult(faults, clean, scenarios)
 
 
-async def _keep(s: Stream, send, fault_seed: str, opened: Set[Tuple[str, str, str]]) -> Scenario:
+async def _keep(s: Stream, send, fault_seed: str, opened: Set[Tuple[str, str, str]], scoped: str) -> Scenario:
+    """The fault persists for the canary's N batches. No batch may roll a repair back,
+    and after them every repair is kept, or still watched because some batch could
+    not prove it again (that batch is quarantined: recall, not accuracy)."""
     kept: Set[Tuple[str, str, str]] = set()
-    why = []
+    why, unproven = [], []
     for i in range(service._canary.batches_required):
         r, out = await send(s.faulted("canary repeat", s.fault, fault_seed))
         kept |= _signatures(out, "kept")
         if _signatures(out, "rolled_back"):
             why.append(f"batch {i + 1} rolled back {sorted(_signatures(out, 'rolled_back'))}: {r.why}")
-    missing = opened - kept
-    if missing:
-        why.append(f"not kept after {service._canary.batches_required} batches: {sorted(missing)}")
-    return Scenario(s.seed, "keep", s.fault, s.name, not why, "; ".join(why) or "kept")
+        elif r.outcome == QUARANTINED:
+            unproven.append(i + 1)
+    watched = {w.signature for w in service._canary.watches(scoped)}
+    lost = opened - kept - watched
+    if lost:
+        why.append(f"neither kept nor watched after {service._canary.batches_required} batches: {sorted(lost)}")
+    if why:
+        return Scenario(s.seed, "keep", s.fault, s.name, False, "; ".join(why))
+    if opened - kept:
+        return Scenario(s.seed, "keep", s.fault, s.name, True,
+                        f"still watched: {sorted(opened - kept)} (batch(es) {unproven} could not prove it "
+                        "again and were quarantined)")
+    return Scenario(s.seed, "keep", s.fault, s.name, True, "kept")
 
 
 async def _rollback(s: Stream, send, fault_seed: str, sigs: Set[Tuple[str, str, str]], scoped: str) -> Scenario:

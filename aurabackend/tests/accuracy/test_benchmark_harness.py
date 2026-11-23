@@ -219,3 +219,123 @@ def test_a_cold_start_trial_leaves_no_state_of_its_source_behind():
 
     (before, after), _ = run_isolated(go)
     assert after == before
+
+
+# ── Keyed duplicates and the miss floor ───────────────────────────────────────────
+
+
+def _keys(rows, key):
+    return [tuple(r[c] for c in key) for r in rows]
+
+
+@pytest.mark.parametrize("source", [None, "sm_grunfeld", "compas"])
+def test_a_keyed_duplicate_trial_declares_a_unique_key_and_repeats_it(source):
+    if source == "sm_grunfeld":
+        pytest.importorskip("statsmodels")  # the base lane has no statsmodels; heal-realism does
+    variants = set()
+    for seed in range(30):
+        t = build_trial("keyed_duplicates", seed, source)
+        key = t.baseline_metadata["key_columns"]
+        assert t.keyed_dup and t.required_alerts == {"duplicate"} and not t.expect_healed
+        if source is None:
+            assert key == [t.dataset.columns[0].name]
+        elif source == "sm_grunfeld":
+            assert key == ["firm", "year"]
+        else:
+            assert key == ["row_key"] and t.dataset.columns[0].name == "row_key"
+        base = _keys(t.dataset.baseline, key)
+        assert len(set(base)) == len(base)  # the declared key is unique where it was declared
+        pages = [_keys(p, key) for p in t.prior_pages]
+        for p in pages:
+            assert len(set(p)) == len(p)  # an earlier page is clean
+        sent = _keys(t.sent, key)
+        repeats = len(sent) - len(set(sent)) + sum(1 for k in set(sent) for p in pages if k in p)
+        assert repeats >= 1, t.detail
+        variants.add(t.classes[0])
+        if t.prior_pages:
+            assert t.metadata["run_id"]
+    assert variants == {"keyed duplicates (copies)", "keyed duplicates (collisions)",
+                        "keyed duplicates (earlier page)"}
+
+
+def test_a_keyed_duplicate_counts_in_a_and_is_right_only_with_the_alert():
+    from .harness import keyed_misses, keyed_summary
+
+    t = build_trial("keyed_duplicates", 2)
+    caught = classify(t, _response(t.sent, healed=False, alerts=["duplicate"]))
+    missed = classify(t, _response(t.sent, healed=True, drift=False))
+    flagged_no_alert = classify(t, _response(t.sent, healed=False, alerts=["null_rate"]))
+    assert caught.outcome == CORRECT and caught.applied_ok
+    # Unlike a keyless duplicate, a miss is not only a reported silent miss: it fails (a).
+    a = applied([caught, missed, flagged_no_alert])
+    assert (a.batches, a.correct) == (3, 1)
+    assert missed.wrong_kind == "applied"
+    assert keyed_misses([caught, missed, flagged_no_alert]) == [missed, flagged_no_alert]
+    assert keyed_summary([caught, missed]) == {"trials": 2, "caught": 1, "missed": 1}
+    keyless = build_trial("duplicates", 2)
+    silent = classify(keyless, _response(keyless.sent, healed=True, drift=False))
+    assert silent.wrong_kind == "silent miss" and not silent.applied and not keyed_misses([silent])
+
+
+def test_an_earlier_page_of_a_run_never_declares_the_run_complete():
+    from .harness import page_trial
+
+    t = build_trial("keyed_duplicates", 2)
+    t.metadata.update(run_id="r", complete_run=True, run_rows=10)
+    page = page_trial(t, t.sent[:3], 0)
+    assert page.metadata == {"run_id": "r"} and page.fault == "clean page" and not page.keyed_dup
+    assert page.required_alerts == set() and page.expect_healed and page.sent == t.sent[:3]
+
+
+def test_the_floor_gates_misses_and_recall_exactly(tmp_path, monkeypatch):
+    import json
+
+    from . import harness
+
+    t = build_trial("null_spike", 4)
+    right = classify(t, _response(t.sent, healed=False, alerts=["null_rate"]))
+    missed_alert = classify(t, _response(t.sent, healed=True, alerts=[], drift=True))
+    silent = classify(t, _response(t.sent, healed=True, drift=False))
+    results = [right, missed_alert, silent]
+    assert harness.floor_measure(results) == {
+        "trials": 3, "correct": 1, "recall": round(1 / 3, 6), "silent_miss": 1, "missed_alert": 1}
+    path = tmp_path / "floor.json"
+    monkeypatch.setattr(harness, "FLOOR_PATH", str(path))
+
+    def floor(**kw):
+        entry = {"trials": 3, "correct": 1, "recall": 0.333333, "silent_miss": 1, "missed_alert": 1} | kw
+        path.write_text(json.dumps({"synthetic": {"3": entry}}))
+
+    floor()
+    assert harness.floor_failures("synthetic", "3", results) is None
+    floor(silent_miss=0)
+    assert "silent misses 1 > floor 0" in harness.floor_failures("synthetic", "3", results)
+    floor(missed_alert=0)
+    assert "missed alerts 1 > floor 0" in harness.floor_failures("synthetic", "3", results)
+    # Recall compares the exact counts: 1 of 3 is below 1001 of 3000.
+    floor(trials=3000, correct=1001, recall=0.333667)
+    assert "recall" in harness.floor_failures("synthetic", "3", results)
+    floor(trials=3000, correct=1000, recall=0.333333)
+    assert harness.floor_failures("synthetic", "3", results) is None
+    # A trial count with no floor: skipped with the reason here, failed in CI.
+    monkeypatch.delenv("CI", raising=False)
+    with pytest.raises(pytest.skip.Exception, match="no synthetic floor recorded for 7"):
+        harness.floor_failures("synthetic", "7", results)
+    monkeypatch.setenv("CI", "true")
+    with pytest.raises(pytest.fail.Exception):
+        harness.floor_failures("synthetic", "7", results)
+
+
+def test_the_committed_floor_covers_every_lane_ci_runs():
+    import json
+
+    from .harness import FLOOR_PATH
+
+    with open(FLOOR_PATH, encoding="utf-8") as fh:
+        floor = json.load(fh)
+    # .github/workflows/ci.yml: the base backend lane (50) and the heal-accuracy job
+    # (500) run the synthetic lane; heal-realism runs real at 50 and steady at 500.
+    for lane, config in (("synthetic", "50"), ("synthetic", "500"), ("real", "50"), ("steady", "500")):
+        entry = floor[lane][config]
+        assert set(entry) == {"trials", "correct", "recall", "silent_miss", "missed_alert"}
+        assert entry["recall"] == round(entry["correct"] / entry["trials"], 6)

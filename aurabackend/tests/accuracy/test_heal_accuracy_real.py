@@ -13,7 +13,10 @@ row sampling into a baseline and a disjoint batch:
   outcome accuracy, silent misses included, is printed per fault type and dataset
   and written to the report, not gated;
 * zero false alarms on clean batches of every source;
-* row accounting on every trial.
+* row accounting on every trial;
+* keyed duplicates (each source's natural key, or a row key added for the trial):
+  0 misses, and each counts in (a);
+* the miss floor (``accuracy_floor.json``) at this trial count.
 
 Results are printed per real dataset. ``AURA_HEAL_BENCH_REAL_TRIALS`` trials per
 (dataset, fault type) run; by default a tenth of ``AURA_HEAL_BENCH_TRIALS`` (at
@@ -36,7 +39,10 @@ from .harness import (
     classify_clean,
     failing_applied,
     failing_classes,
+    floor_failures,
     heal,
+    heal_run,
+    keyed_misses,
     metrics,
     report,
     report_path,
@@ -63,10 +69,13 @@ async def _run_all():
                 except NotApplicable:
                     skipped.append((source, fault))
                     continue
-                faults.append(classify(trial, await heal(trial)))
+                out, pages = await heal_run(trial)
+                faults.append(classify(trial, out))
+                clean += pages
         for seed in range(CLEAN_TRIALS):
             trial = build_clean(seed, source)
-            clean.append(classify_clean(trial, await heal(trial)))
+            out, _ = await heal_run(trial)
+            clean.append(classify_clean(trial, out))
     return faults, clean, skipped
 
 
@@ -131,6 +140,18 @@ def test_overall_applied_fix_precision_on_real_data(real_bench):
     assert a.precision >= PRECISION_GATE, (
         f"(a) applied-fix precision {a.precision:.4f} < {PRECISION_GATE} ({a.wrong} wrong of {a.batches}):\n"
         + failing_applied(faults))
+
+
+def test_no_keyed_duplicate_is_missed_on_real_data(real_bench):
+    faults, _ = real_bench
+    missed = keyed_misses(faults)
+    assert not missed, f"{len(missed)} keyed duplicate(s) without the alert:\n" + failing_classes(missed)
+
+
+def test_misses_and_recall_hold_the_floor_on_real_data(real_bench):
+    faults, _ = real_bench
+    problem = floor_failures("real", str(TRIALS), faults)
+    assert problem is None, problem
 
 
 @pytest.mark.parametrize("fault", FAULT_TYPES)
