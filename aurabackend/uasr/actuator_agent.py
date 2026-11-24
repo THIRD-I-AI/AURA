@@ -615,16 +615,6 @@ def _moments_match(values: List[float], dist: ColumnDistribution) -> bool:
     return 1 / (1 + t) <= ratio <= 1 + t
 
 
-# BUG-575: a batch whose rank-sum statistic against the baseline is past this many
-# standard errors is shifted. 5.0 is a two-sided tail of about 6e-7 per column; over
-# 14,000 clean columns of the benchmark's shapes the largest |z| was 3.96.
-_SHIFT_Z = 5.0
-# ...and the shift must matter: a new value beats a baseline value at least 60% (or at
-# most 40%) of the time. A batch of 100,000 rows makes any trivial wobble significant;
-# a moved factor clears it (x2.5 on a heavy tail: 0.67 or more in the benchmark).
-_SHIFT_EFFECT = 0.1
-
-
 def location_shift(values: List[Any], dist: Optional[ColumnDistribution]) -> Optional[Tuple[float, float]]:
     """(z, P(new > baseline)) when the values sit significantly and materially above or
     below the numeric baseline, else None.
@@ -643,37 +633,22 @@ def location_shift(values: List[Any], dist: Optional[ColumnDistribution]) -> Opt
     A unique int column is an identifier, which carries no distribution to compare
     (BUG-573): a sequential key moves past the baseline every batch, so it never
     counts as shifted here.
+
+    The test itself is ``DriftDetector._rank_shift`` (BUG-579 review): detect()
+    uses it too, so /uasr/ingest and the MAPE-K worker, which call detect() alone,
+    still catch a shift the rows prove.
     """
-    if dist is None or dist.mean is None:
+    if dist is None:
         return None
-    edges = DriftDetector._baseline_edges(dist.histogram or {})
-    if edges is None:
+    # BUG-579 adversarial review: read the values as the detector does, so a numeric
+    # string ("112.50") counts as the number it is.
+    try:
+        arr = np.asarray(values, dtype=float)
+    except (TypeError, ValueError):
         return None
-    n0 = int(dist.sample_size or 0)
-    if dist.value_kind == "int" and n0 > 1 and dist.distinct_count == n0:
+    if arr.ndim != 1 or not np.isfinite(arr).all():
         return None
-    nums = [float(v) for v in values if isinstance(v, (int, float)) and math.isfinite(float(v))]
-    if len(nums) < 2 or len(nums) != len(values):
-        return None
-    p = np.asarray(DriftDetector._histogram_on_edges(nums, edges)["counts"], dtype=float)
-    q = np.concatenate(([0.0], np.asarray(dist.histogram["counts"], dtype=float), [0.0]))
-    if len(p) != len(q):
-        return None
-    n1, n0f = float(p.sum()), float(q.sum())
-    total = n1 + n0f
-    if n1 < 2 or n0f < 2:
-        return None
-    tied = p + q
-    midrank = np.cumsum(tied) - tied + (tied + 1) / 2
-    u = float((p * midrank).sum()) - n1 * (n1 + 1) / 2
-    var = n0f * n1 / 12 * ((total + 1) - float((tied ** 3 - tied).sum()) / (total * (total - 1)))
-    if var <= 0:
-        return None
-    z = (u - n0f * n1 / 2) / math.sqrt(var)
-    effect = u / (n0f * n1)
-    if abs(z) > _SHIFT_Z and abs(effect - 0.5) >= _SHIFT_EFFECT:
-        return z, effect
-    return None
+    return DriftDetector._rank_shift(arr.tolist(), dist)
 
 
 def _fits_baseline(values: List[float], dist: ColumnDistribution) -> Tuple[float, bool]:

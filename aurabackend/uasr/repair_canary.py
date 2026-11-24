@@ -38,6 +38,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
+from collections import OrderedDict
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, FrozenSet, List, Optional, Set, Tuple
@@ -46,7 +47,7 @@ from sqlalchemy import select, update
 
 from .db import get_session_factory
 from .models import RecoveryStatus, RepairWatch
-from .tenancy import owns_source
+from .tenancy import SEPARATOR, owns_source
 
 logger = logging.getLogger("uasr.repair_canary")
 
@@ -65,6 +66,11 @@ CLEARED = "cleared"
 # the repair has to be proven again on a fresh batch and passes the canary again.
 BLOCK_BACKOFF = (timedelta(hours=1), timedelta(hours=6), timedelta(hours=24))
 BACKOFF_WINDOW = timedelta(days=7)
+
+# BUG-578: how many sources keep their canary state in memory. The durable state is
+# in uasr_repair_watches, so a source past this many, idle, is dropped from memory
+# and reloaded from there by its next ``sync``.
+MAX_RESIDENT_SOURCES = 1000
 
 
 def _utc(ts: Optional[datetime]) -> Optional[datetime]:
@@ -166,16 +172,61 @@ class Outcome:
         }
 
 
+class _LockEntry:
+    __slots__ = ("lock", "users")
+
+    def __init__(self) -> None:
+        self.lock = asyncio.Lock()
+        # Holders plus waiters: the entry is dropped only when it reaches 0.
+        self.users = 0
+
+
+class _SourceLock:
+    """``async with canary.lock(source_id)``. BUG-578: the per-source lock lives only
+    while someone holds or awaits it, so one lock per source ever seen no longer
+    accumulates. Users are counted before the first await, so a lock is never dropped
+    while a coroutine waits on it and a second one can never be made beside it."""
+
+    __slots__ = ("_canary", "_source_id", "_entry")
+
+    def __init__(self, canary: "RepairCanary", source_id: str) -> None:
+        self._canary, self._source_id, self._entry = canary, source_id, None
+
+    async def __aenter__(self) -> None:
+        locks = self._canary._locks
+        entry = locks.get(self._source_id)
+        if entry is None:
+            entry = locks[self._source_id] = _LockEntry()
+        entry.users += 1
+        try:
+            await entry.lock.acquire()
+        except BaseException:
+            self._canary._leave(self._source_id, entry)
+            raise
+        self._entry = entry
+
+    async def __aexit__(self, *exc: Any) -> None:
+        entry, self._entry = self._entry, None
+        entry.lock.release()
+        self._canary._leave(self._source_id, entry)
+
+
 class RepairCanary:
     """In-memory canary state; ``observe`` is the only thing that changes it per batch.
 
     Callers hold ``lock(source_id)`` from reading a source's watches to acting on them,
     so two concurrent heals for one source are judged one after the other, each on
     the state the previous one left (review of 9180b5b: a watch read before an await
-    and acted on after it could already be stale)."""
+    and acted on after it could already be stale).
 
-    def __init__(self, batches_required: int) -> None:
+    BUG-578: memory holds the state of at most ``max_resident`` sources (plus any that
+    are in use or whose memory is ahead of the DB). An idle source beyond that is
+    dropped and ``sync`` reloads it from uasr_repair_watches, the same rows a restart
+    reads, so a source behaves the same whether or not it was dropped meanwhile."""
+
+    def __init__(self, batches_required: int, max_resident: int = MAX_RESIDENT_SOURCES) -> None:
         self.batches_required = batches_required
+        self.max_resident = max(1, max_resident)
         self._watches: Dict[str, Dict[Signature, Watch]] = {}
         self._kept: Dict[str, Set[Signature]] = {}
         self._rolled_back: Dict[str, Dict[Signature, Watch]] = {}
@@ -183,7 +234,14 @@ class RepairCanary:
         self._rollback_times: Dict[str, Dict[Signature, List[datetime]]] = {}
         # Rollbacks in force in memory whose ROLLED_BACK row could not be written yet.
         self._unpersisted: Dict[str, List[Watch]] = {}
-        self._locks: Dict[str, asyncio.Lock] = {}
+        # BUG-578: progress (a clean batch, a kept or opened watch) whose write failed.
+        # It may lag the DB safely, but memory is then the only copy, so the source
+        # is not dropped until a retry in ``sync`` writes it.
+        self._unsaved: Dict[str, Dict[str, Watch]] = {}
+        self._locks: Dict[str, _LockEntry] = {}
+        # BUG-578: sources whose state memory holds as loaded from the DB (or ahead
+        # of it), least recently used first. Any other source is loaded by ``sync``.
+        self._resident: "OrderedDict[str, None]" = OrderedDict()
         # False until the durable state of every source has been loaded once. Until
         # then no rollback from before this start is known, so ``sync`` fails closed
         # (review of 2ce9d08: a failed startup load used to leave the canary empty
@@ -194,8 +252,40 @@ class RepairCanary:
         # that could not be reloaded at once; ``sync`` reloads them first.
         self._stale: Set[str] = set()
 
-    def lock(self, source_id: str) -> asyncio.Lock:
-        return self._locks.setdefault(source_id, asyncio.Lock())
+    def lock(self, source_id: str) -> _SourceLock:
+        return _SourceLock(self, source_id)
+
+    def _leave(self, source_id: str, entry: _LockEntry) -> None:
+        entry.users -= 1
+        if entry.users:
+            return
+        if self._locks.get(source_id) is entry:
+            del self._locks[source_id]
+        if source_id in self._resident:
+            self._resident.move_to_end(source_id)
+        self._evict()
+
+    def _evict(self) -> None:
+        """Drop the least recently used idle sources past ``max_resident`` (BUG-578).
+
+        Never one in use (a holder or waiter of its lock: it is between ``sync`` and
+        acting on its state), nor one whose memory is ahead of the DB (a rollback or
+        progress not written yet), which only memory holds."""
+        excess = len(self._resident) - self.max_resident
+        if excess <= 0:
+            return
+        newest = next(reversed(self._resident))
+        victims: List[str] = []
+        for sid in self._resident:
+            if len(victims) >= excess or sid == newest:
+                break
+            if sid not in self._locks and sid not in self._unpersisted and sid not in self._unsaved:
+                victims.append(sid)
+        for sid in victims:
+            del self._resident[sid]
+            for by_source in (self._watches, self._kept, self._rolled_back, self._rollback_times):
+                by_source.pop(sid, None)
+            self._stale.discard(sid)
 
     def block_until(self, source_id: str, sig: Signature) -> Optional[datetime]:
         """When the rollback's block on ``sig`` ends, or None if there is no rollback."""
@@ -224,8 +314,37 @@ class RepairCanary:
     def watches(self, source_id: str) -> List[Watch]:
         return list(self._watches.get(source_id, {}).values())
 
-    def visible(self, tenant: Optional[str]) -> Dict[str, List[Dict[str, Any]]]:
-        """The canary state of ``tenant``'s sources only (BUG-263)."""
+    async def visible(self, tenant: Optional[str]) -> Dict[str, Any]:
+        """The canary state of ``tenant``'s sources only (BUG-263).
+
+        BUG-578: a source dropped from memory is listed from the DB, so a rollback
+        that still blocks its repair does not vanish from the view. Memory wins for a
+        source it holds: it may be ahead of the DB, never behind it on a rollback."""
+        view = RepairCanary(self.batches_required, max_resident=1 << 62)
+        try:
+            # BUG-578 review: filtered in SQL, so /uasr/mapek/status reads only this
+            # tenant's rows, not every tenant's whole watch history; owns_source
+            # stays as the isolation check of record.
+            view.hydrate([r for r in await load_watches(tenant=tenant)
+                          if owns_source(tenant, r.source_id)])
+        except Exception as exc:
+            logger.error("canary view lists only the sources in memory; DB unreadable: %s", exc)
+        held = (set(self._resident) | set(self._watches) | set(self._kept)
+                | set(self._rolled_back) | set(self._unpersisted))
+        for sid in held:
+            if not owns_source(tenant, sid):
+                continue
+            for mine, theirs in ((self._watches, view._watches), (self._kept, view._kept),
+                                 (self._rolled_back, view._rolled_back),
+                                 (self._rollback_times, view._rollback_times),
+                                 (self._unpersisted, view._unpersisted)):
+                if sid in mine:
+                    theirs[sid] = mine[sid]
+                else:
+                    theirs.pop(sid, None)
+        return view._own(tenant)
+
+    def _own(self, tenant: Optional[str]) -> Dict[str, Any]:
         def own(by_source: Dict[str, Dict[Signature, Watch]]) -> List[Dict[str, Any]]:
             return [w.to_dict() for sid, ws in by_source.items() if owns_source(tenant, sid)
                     for w in ws.values()]
@@ -255,10 +374,25 @@ class RepairCanary:
         while the state its blocked set depends on cannot be read."""
         await self.ensure_hydrated()
         await self.retry_unpersisted(source_id)
-        if shared or source_id in self._stale:
+        await self._retry_unsaved(source_id)
+        if shared or source_id in self._stale or source_id not in self._resident:
             # BUG-467: another replica may have opened, kept or rolled back a watch.
+            # BUG-578: or the source is not in memory (dropped, or new since startup).
             self.hydrate(await load_watches(source_id), source_id)
             self._stale.discard(source_id)
+        else:
+            self._resident.move_to_end(source_id)
+
+    async def _retry_unsaved(self, source_id: str) -> None:
+        pending = self._unsaved.get(source_id)
+        if not pending:
+            return
+        lost = await _persist(list(pending.values()))
+        if lost is None:
+            return  # progress may lag; it is retried on the next batch
+        del self._unsaved[source_id]
+        if lost:
+            self._stale.add(source_id)
 
     def hydrate(self, rows: List[RepairWatch], source_id: Optional[str] = None) -> None:
         """Load the durable state (all sources at startup, or one source's shared view).
@@ -269,6 +403,7 @@ class RepairCanary:
         if source_id is None:
             self.hydrated = True
             reloaded = set(self._watches) | set(self._kept) | set(self._rolled_back)
+            self._resident.clear()
         else:
             reloaded = {source_id}
         for sid in reloaded:
@@ -276,12 +411,30 @@ class RepairCanary:
             self._kept.pop(sid, None)
             self._rolled_back.pop(sid, None)
             self._rollback_times.pop(sid, None)
+        pending_ids: Set[str] = set()
         for sid, pending in self._unpersisted.items():
             if source_id is None or sid == source_id:
                 for w in pending:
                     self._note_rollback(w)
+                    pending_ids.add(w.id)
         for row in rows:
+            if source_id is None:
+                self._resident[row.source_id] = None
             if row.status == CLEARED:
+                # BUG-578: clearing lifts the repair's rollback history too (``clear``
+                # forgets its times in memory), so a reload must not bring an earlier
+                # rollback of the same repair back into the backoff.
+                # A rollback still waiting for its write is newer than any cleared one
+                # and stays in force, with only its own time.
+                sig = (row.repair_type, row.column_name, row.param)
+                rolled = self._rolled_back.get(row.source_id, {})
+                times = self._rollback_times.get(row.source_id, {})
+                pending_w = rolled.get(sig)
+                if pending_w is not None and pending_w.id in pending_ids:
+                    times[sig] = [t for t in (_utc(pending_w.decided_at),) if t is not None]
+                else:
+                    rolled.pop(sig, None)
+                    times.pop(sig, None)
                 continue
             w = Watch(
                 id=row.id, source_id=row.source_id, recovery_id=row.recovery_id,
@@ -304,6 +457,10 @@ class RepairCanary:
                 self._kept.setdefault(w.source_id, set()).add(w.signature)
             else:
                 self._watches.setdefault(w.source_id, {})[w.signature] = w
+        if source_id is not None:
+            self._resident[source_id] = None
+            self._resident.move_to_end(source_id)
+        self._evict()
 
     async def observe(
         self, source_id: str, evidence: Optional[Dict[str, Any]],
@@ -374,7 +531,14 @@ class RepairCanary:
         if out.kept or out.advanced or out.opened:
             # Progress, unlike a rollback, may lag the DB safely: a restart then re-runs
             # part of a watch, it never skips one.
-            lost += await _persist(out.kept + out.advanced + out.opened) or []
+            progress = out.kept + out.advanced + out.opened
+            written = await _persist(progress)
+            if written is None:
+                # BUG-578: memory is now the only copy; keep the source in memory
+                # until ``sync`` writes it (the latest state of each watch wins).
+                self._unsaved.setdefault(source_id, {}).update({w.id: w for w in progress})
+            else:
+                lost += written
         if lost:
             # Another replica moved these watches on (above all: rolled one back, or an
             # operator cleared a rollback) after this one read them. The DB wins;
@@ -478,9 +642,14 @@ async def _persist(watches: List[Watch]) -> Optional[List[Watch]]:
         return None
 
 
-async def load_watches(source_id: Optional[str] = None) -> List[RepairWatch]:
+async def load_watches(source_id: Optional[str] = None,
+                       tenant: Optional[str] = None) -> List[RepairWatch]:
+    """The persisted watches, oldest first: of one source, of one tenant's sources
+    (``tenant + SEPARATOR`` prefix, LIKE wildcards escaped), or all."""
     async with get_session_factory()() as db:
         stmt = select(RepairWatch).order_by(RepairWatch.created_at.asc())
         if source_id is not None:
             stmt = stmt.where(RepairWatch.source_id == source_id)
+        if tenant is not None:
+            stmt = stmt.where(RepairWatch.source_id.startswith(tenant + SEPARATOR, autoescape=True))
         return list((await db.execute(stmt)).scalars().all())
