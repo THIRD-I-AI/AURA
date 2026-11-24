@@ -43,8 +43,12 @@ class TestOutlierClipShimHeals:
 
         # Mostly baseline-like values plus a burst of far outliers -- the
         # outliers are exactly what a working clip shim must correct.
-        drifted_rows = [{"v": rnd.gauss(50.0, 5.0)} for _ in range(285)]
-        drifted_rows += [{"v": rnd.uniform(70_000.0, 90_000.0)} for _ in range(15)]
+        # BUG-579 re-review: 40 of 300, not 15. Values past the baseline's range
+        # are proven only by the exact past-range test, which holds for any
+        # distribution; 15 of 300 (p ~ 4e-4) are not proof at 1e-6 once the
+        # Chebyshev bound on the baseline's sample std is gone.
+        drifted_rows = [{"v": rnd.gauss(50.0, 5.0)} for _ in range(260)]
+        drifted_rows += [{"v": rnd.uniform(70_000.0, 90_000.0)} for _ in range(40)]
         drifted = BatchPayload(source_id="src", columns=["v"], rows=drifted_rows)
         return baseline, drifted
 
@@ -125,7 +129,7 @@ class TestDriftTypeRoutesRepair:
     Outlier contamination (a handful of extreme values, but the batch mean
     stays close to baseline) is detected but no longer auto-clipped (BUG-564).
     Its "severe" KL came from binning the batch on its own stretched range;
-    on the baseline's edges, 5 outliers in 300 rows are 1.7% of the mass in
+    on the baseline's edges, the outliers are a small share of the mass in
     the overflow bin, and the values clipping writes (mean +/- 3 std) are
     still outside the baseline's range, so the clip proves nothing.
     """
@@ -171,11 +175,13 @@ class TestDriftTypeRoutesRepair:
     @pytest.mark.asyncio
     async def test_outlier_contamination_is_detected_but_not_auto_rewritten(self):
         det, rnd = self._baseline_detector()
-        # 295 baseline-like rows + 5 fixed extreme outliers: ~2.3
-        # baseline-sigmas of pull on the batch MEAN -- outlier contamination,
-        # not a location shift.
-        drifted_rows = [{"v": rnd.gauss(100.0, 10.0)} for _ in range(295)]
-        drifted_rows += [{"v": 1500.0} for _ in range(5)]
+        # 270 baseline-like rows + 30 fixed extreme outliers -- outlier
+        # contamination, not a location shift of the batch's body. BUG-579
+        # re-review: 5 in 300 were proven only by a Chebyshev bound on the
+        # baseline's sample std, which false-alarmed on heavy tails; the exact
+        # past-range test needs ~30 of 300 rows past the range to reach 1e-6.
+        drifted_rows = [{"v": rnd.gauss(100.0, 10.0)} for _ in range(270)]
+        drifted_rows += [{"v": 1500.0} for _ in range(30)]
         drifted = BatchPayload(source_id="src", batch_id="b2", columns=["v"], rows=drifted_rows)
 
         drift_result = det.detect(drifted, record_state=False)

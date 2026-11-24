@@ -22,6 +22,7 @@ import statistics
 import struct
 import time
 import uuid
+from array import array
 from collections import OrderedDict, deque
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
@@ -93,7 +94,10 @@ class ReferenceVersion:
         description: str = "",
     ) -> None:
         self.version_id: str = uuid.uuid4().hex[:12]
-        self.embedding = embedding
+        # BUG-578: the largest per-source object UASR holds (one per source, up to
+        # _MAX_SOURCES). A list of 256 float objects is ~8 KB, the same values packed
+        # as doubles ~2 KB; every reader only iterates it.
+        self.embedding = array("d", embedding)
         self.created_at = datetime.now(timezone.utc)
         self.description = description
         self.active = True

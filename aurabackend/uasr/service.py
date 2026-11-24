@@ -1630,7 +1630,7 @@ async def mapek_status(request: Request) -> Dict[str, Any]:
     mode = _mapek_input()
     common = {
         "post_heal_validation_batches": _canary.batches_required,
-        "canary": _canary.visible(caller_tenant(request)),
+        "canary": await _canary.visible(caller_tenant(request)),
     }
     if _mapek_worker is None:
         reason = (
