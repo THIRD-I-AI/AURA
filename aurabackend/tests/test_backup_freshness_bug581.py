@@ -2,8 +2,8 @@
 root-owned, the ec2-user cron could not write there, and nothing but backup.log knew.
 
 backup.sh now refuses root and records every backup run on the data volume; the gateway
-reports that record as one word in /health's checks.backup without ever gating on it; and
-the live check backup_fresh fails unless the word is ok."""
+reports that record as one word in /health's ops.backup, beside checks and never gating;
+and the live check backup_fresh fails unless the word is ok."""
 from __future__ import annotations
 
 import importlib.util
@@ -80,7 +80,9 @@ def test_a_bad_backup_never_changes_the_health_status_or_code(gateway, status, h
     r = client.get("/health")
     # The compose healthcheck reads the HTTP code: a stale backup must not restart the gateway.
     assert r.status_code == 200 and r.json()["status"] == "healthy"
-    assert r.json()["checks"]["backup"] == expected
+    assert r.json()["ops"] == {"backup": expected}
+    # Not a check: the workbench and system-pulse UIs draw every checks entry as a service node.
+    assert "backup" not in r.json()["checks"]
     # /health is public: the word only, never the record's time, stamp, path or error text.
     for leak in (finished, "20261123T031500Z", "/opt/aura", str(status_file), "backup_status"):
         assert leak not in r.text
@@ -92,7 +94,7 @@ def _service(**probes):
     return TestClient(create_service(name="t", service_tag="t", **probes))
 
 
-def test_info_checks_report_their_word_and_never_gate():
+def test_ops_checks_report_their_word_beside_checks_and_never_gate():
     async def up():
         return None
 
@@ -105,15 +107,19 @@ def test_info_checks_report_their_word_and_never_gate():
     async def crash():
         raise OSError("[Errno 5] Input/output error: '/data/state/backup_status.json'")
 
-    r = _service(health_checks={"db": up}, info_checks={"backup": stale}).get("/health")
+    r = _service(health_checks={"db": up}, ops_checks={"backup": stale}).get("/health")
     assert r.status_code == 200 and r.json()["status"] == "healthy"
-    assert r.json()["checks"] == {"db": "ok", "backup": "stale"}
+    assert r.json()["checks"] == {"db": "ok"} and r.json()["ops"] == {"backup": "stale"}
     # A failing gating check still gates, and the backup word is still reported.
-    r = _service(health_checks={"db": down}, info_checks={"backup": stale}).get("/health")
-    assert r.status_code == 503 and r.json()["checks"] == {"db": "failing", "backup": "stale"}
-    # A crashing info probe neither takes /health down nor leaks its message.
-    r = _service(health_checks={"db": up}, info_checks={"backup": crash}).get("/health")
-    assert r.status_code == 200 and r.json()["checks"]["backup"] == "unknown"
+    r = _service(health_checks={"db": down}, ops_checks={"backup": stale}).get("/health")
+    assert r.status_code == 503 and r.json()["checks"] == {"db": "failing"}
+    assert r.json()["ops"] == {"backup": "stale"}
+    # With no gating checks there is no checks field, as before.
+    r = _service(ops_checks={"backup": stale}).get("/health")
+    assert r.status_code == 200 and r.json()["ops"] == {"backup": "stale"} and "checks" not in r.json()
+    # A crashing ops probe neither takes /health down nor leaks its message.
+    r = _service(health_checks={"db": up}, ops_checks={"backup": crash}).get("/health")
+    assert r.status_code == 200 and r.json()["ops"] == {"backup": "unknown"}
     assert "Input/output" not in r.text and "/data/state" not in r.text
 
 

@@ -382,7 +382,7 @@ app = create_service(
     description="Enterprise self-healing data analytics platform gateway",
     lifespan=_lifespan,
     health_checks={"db": _check_db, "data_dir": _check_data_dir},
-    info_checks={"backup": _check_backup},
+    ops_checks={"backup": _check_backup},
 )
 
 

@@ -136,11 +136,11 @@ BACKUP_STATES = {
 
 def check_backup_fresh(v: Verifier) -> str:
     """BUG-581: the nightly backup failed for 58 days while every check here stayed green.
-    /health reports the last backup run as one word, and only "ok" passes. The body is read
-    even on a 503: a degraded gateway still reports its backup state."""
-    state = (v.client.get("/health").json().get("checks") or {}).get("backup")
+    /health reports the last backup run as one word in ops.backup, and only "ok" passes. The
+    body is read even on a 503: a degraded gateway still reports its backup state."""
+    state = (v.client.get("/health").json().get("ops") or {}).get("backup")
     if state is None:
-        raise AssertionError("/health does not report checks.backup: the box runs a build from before BUG-581")
+        raise AssertionError("/health does not report ops.backup: the box runs a build from before BUG-581")
     if state != "ok":
         raise AssertionError(f"backup is {state}: {BACKUP_STATES.get(state, 'unrecognised state')}")
     return "last backup succeeded within 26h"

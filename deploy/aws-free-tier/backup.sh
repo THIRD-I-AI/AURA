@@ -28,7 +28,7 @@
 # then chown the backups back to ec2-user.
 #
 # STATUS: every backup run records its result in /data/state/backup_status.json
-# on the volume. The gateway's /health reports it as checks.backup (ok, stale,
+# on the volume. The gateway's /health reports it as ops.backup (ok, stale,
 # failed, missing); scripts/verify_live_deployment.py's backup_fresh fails
 # unless it is ok.
 #
