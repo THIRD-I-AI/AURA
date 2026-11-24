@@ -63,8 +63,9 @@ logger = logging.getLogger("uasr.recovery_loop")
 _DETECTION_ONLY = {DriftType.NULL_RATE.value, DriftType.VOLUME.value, DriftType.DUPLICATE.value}
 # Drift that, still present after the proven repairs, means the batch is not proven clean.
 _BLOCKING = (DriftType.SCHEMA.value, DriftType.STATISTICAL.value, DriftType.SEMANTIC.value)
-# BUG-577 (real-data lane): the past-range p-value a column of an already-flagged batch
-# must clear to be returned (_unrepaired_value_drift). Looser than the detector's 1e-6 on
+# BUG-577 (real-data lane): the past-range p-value an already-flagged batch's numeric
+# columns must clear together to be returned (_unrepaired_value_drift; split over the
+# columns tested, PR #806 review 5). Looser than the detector's 1e-6 on
 # purpose: a batch that reaches the sandbox is not being asked whether to alarm, and
 # holding a clean column there costs recall, never a false alarm or a wrong value.
 _SANDBOX_P = 1e-3
@@ -654,8 +655,13 @@ class RecoveryLoop:
         1.6e-3, all inside the baseline's first bin with its zeros, below any
         histogram's reach, and no value of the column was ever written so. Detection
         thresholds are untouched: a clean batch never reaches this check.
+
+        PR #806 review 5: the past-range test's 1e-3 is for the whole batch, split
+        over the numeric columns it tests (Bonferroni). Per column, clean 30-column
+        batches whose only fault was a proven rename were held 2 times in 150.
         """
         failed: Dict[str, str] = {}
+        tested = []
         for col in columns:
             dist = baseline.get(col)
             if dist is None or dist.role in _NO_DISTRIBUTION or dist.mean is None:
@@ -666,6 +672,10 @@ class RecoveryLoop:
                 continue
             if dist.sequence_span and DriftDetector._continues_sequence(dist, values):
                 continue  # the next ids of a sequence (PR #806 review), not a value change
+            tested.append((col, dist, values))
+        level = _SANDBOX_P / max(1, sum(
+            1 for _, dist, _ in tested if DriftDetector._baseline_edges(dist.histogram or {}) is not None))
+        for col, dist, values in tested:
             if dist.decimals is not None:
                 # Whole values have no places (the baseline's decimals skip them too);
                 # repr(0.0) would otherwise count one.
@@ -684,11 +694,11 @@ class RecoveryLoop:
             # sandbox's level. Merge of heal-hardening: this was a Chebyshev bound
             # (``_outlier_p``) on the baseline's SAMPLE std, which understates a heavy
             # tail many times over; hardening deleted it, and no proof may stand on it.
-            # The exact test holds for any distribution, so a clean column is held here
-            # at most _SANDBOX_P of the time.
+            # The exact test holds for any distribution, so a clean batch is held by it
+            # at most _SANDBOX_P of the time, over all its tested columns.
             below, above = int(counts[0]), int(counts[-1])
             p_end = _end_rows_p(below, above, len(values), int(sum(dist.histogram["counts"])))
-            if p_end < _SANDBOX_P:
+            if p_end < level:
                 failed[col] = (
                     f"{below + above} value(s) lie past the baseline's range, more than chance "
                     f"explains (exact p = {p_end:.1e}), and no proven repair explains them")

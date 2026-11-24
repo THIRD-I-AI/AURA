@@ -418,3 +418,31 @@ async def test_a_renamed_batch_holds_one_sparse_value_scaled_x10_4(_heal_db):
         result = classify(trial, out)
         assert result.outcome != WRONG, (seed, result.why)
         assert "sparse" in (out.get("reason") or ""), (seed, out.get("reason"))
+
+
+def test_the_sandbox_level_is_for_the_whole_batch():
+    """PR #806 review 5: the past-range test's 1e-3 was per column, so a clean wide
+    batch whose only fault was a proven rename was held 2 times in 150 (30 columns).
+    It is now split over the numeric columns tested: twelve rows just past the range
+    of one column (exact p 4.4e-4) hold a one-column batch, not a 30-column one."""
+    from uasr.drift_detector import DriftDetector, _end_rows_p
+    from uasr.models import BatchPayload
+    from uasr.recovery_loop import RecoveryLoop
+
+    rnd = random.Random(5)
+    cols = [f"c{j}" for j in range(30)]
+
+    def rows(n):
+        return [{c: round(rnd.uniform(10.0, 500.0), 2) for c in cols} for _ in range(n)]
+
+    det = DriftDetector()
+    base = rows(400)
+    det.register_baseline("w", BatchPayload(source_id="w", columns=cols, rows=base))
+    dist = det.baseline_distributions("w")
+    top = max(r["c0"] for r in base)
+    batch = rows(300)
+    for j, r in enumerate(batch[:12]):
+        r["c0"] = round(top + 0.01 * (j + 1), 2)
+    assert 1e-3 / 30 < _end_rows_p(0, 12, 300, 400) < 1e-3
+    assert RecoveryLoop._unrepaired_value_drift(batch, cols, dist) == {}
+    assert set(RecoveryLoop._unrepaired_value_drift(batch, ["c0"], dist)) == {"c0"}
