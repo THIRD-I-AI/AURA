@@ -1,10 +1,19 @@
 name: CI
 
 on:
+  # A branch with an open PR used to run every job twice (push + pull_request).
+  # PRs are tested through pull_request, whatever their base (stacked PRs target
+  # another PR's branch); push covers main itself.
   push:
-    branches: ["**"]
+    branches: [main, master]
   pull_request:
-    branches: [main, master, "feature/**"]
+  merge_group:
+  workflow_dispatch:
+
+# A newer push to the same PR supersedes the run in flight; main keeps every run.
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 # Sec-2 #1-#10: CodeQL flagged every job for not declaring permissions
 # explicitly. Default GITHUB_TOKEN can be `contents: write` for repos
