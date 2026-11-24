@@ -37,6 +37,7 @@ from __future__ import annotations
 import argparse
 import io
 import os
+import random
 import socket
 import ssl
 import sys
@@ -597,12 +598,44 @@ def check_fix_bug146_xlsx_upload_profiles(v: Verifier) -> str:
     return f"{file_id} profiled: 3 cols, 3 rows"
 
 
+def check_fix_bug579_small_batches_clean(v: Verifier) -> str:
+    """BUG-579: clean micro-batches of 2, 5 and 10 rows must come back whole. Before
+    the fix /uasr/heal quarantined 44% of clean 5-row batches; every pipeline,
+    ETL job and stream heals through it (#801), so a false hold here is lost data
+    for a customer run."""
+    rng = random.Random(579)
+
+    def row(i: int) -> dict:
+        return {"order_id": 100000 + i, "amount": round(rng.lognormvariate(3, 1), 2),
+                "qty": rng.randint(1, 5), "status": rng.choice(["new", "paid", "shipped", "cancelled"]),
+                "flag": rng.random() < 0.15}
+
+    source_id = v.ns("uasr")
+    r = v.client.post(f"{V1}/uasr/baseline", headers=v._auth_headers(),
+                      json={"source_id": source_id, "rows": [row(i) for i in range(400)]})
+    r.raise_for_status()
+    held, sent, nxt = [], 0, 400
+    for size in (2, 5, 10, 2, 5, 10):
+        batch = [row(nxt + j) for j in range(size)]
+        nxt += size
+        body = v.client.post(f"{V1}/uasr/heal", headers=v._auth_headers(),
+                             json={"source_id": source_id, "rows": batch}).json()
+        sent += size
+        quarantined = len(body.get("quarantined_rows") or [])
+        if quarantined or len(body.get("rows") or []) != size:
+            held.append(f"{size}-row batch: {quarantined} quarantined, reason={str(body.get('reason'))[:80]!r}")
+    if held:
+        raise AssertionError("BUG-579 NOT FIXED: clean small batches were held: " + "; ".join(held))
+    return f"{sent} clean rows in 6 micro-batches (2-10 rows) came back whole"
+
+
 FIX_CHECKS: List[tuple[str, Callable[[Verifier], Optional[str]]]] = [
     ("fix:bug196_dashboard_fs_locked", check_fix_bug196_dashboard_cannot_read_files),
     ("fix:bug179_oversized_upload_413", check_fix_bug179_oversized_upload_rejected_early),
     ("fix:bug188_preview_limit_400", check_fix_bug188_preview_limit_validated),
     ("fix:bug174_170_connection_settings", check_fix_bug174_170_connection_settings),
     ("fix:bug146_xlsx_profiles", check_fix_bug146_xlsx_upload_profiles),
+    ("fix:bug579_small_batches_clean", check_fix_bug579_small_batches_clean),
 ]
 
 
