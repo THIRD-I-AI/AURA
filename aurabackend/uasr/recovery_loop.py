@@ -701,9 +701,23 @@ class RecoveryLoop:
         return failed
 
     @staticmethod
-    def _contradicts(rows: List[Dict[str, Any]], baseline: Dict[str, Any], sig: Signature) -> bool:
+    def _contradicts(rows: List[Dict[str, Any]], baseline: Dict[str, Any], sig: Signature,
+                     applied: FrozenSet[Signature] = frozenset(),
+                     kept: Optional[Tuple[int, ...]] = None) -> bool:
         """Whether this batch proves a watched repair wrong (ADR-002 canary: "any
         regression rolls it back"), given ``rows`` as the proof left them.
+
+        PR #806 review (R1): the repair's output is judged where the repair put it. A
+        repair this batch applied (``applied``) already wrote its output into ``rows``
+        under the baseline's column -- the renamed values under the old name, the
+        cast-back values, the values divided by the factor -- so that output is read
+        there, as it is, from the rows the proof kept (``kept``). Reading a rename's
+        values under the name they arrived with found none once the rename had run, and
+        a rescale's restored values were divided a second time: a rename by normalised
+        name onto a different quantity (Amount <- amount = 0.6 x gross) was never
+        rolled back and was kept, returning wrong rows on every small batch after the
+        large one that showed it. A repair the batch did not apply is judged on the
+        output it would have given: the values under its input name, cast or divided.
 
         Steady-state seeds 194 and 336 rolled back a correct str->float retype and a
         correct rename because a later clean batch failed to prove them again: the
@@ -724,15 +738,20 @@ class RecoveryLoop:
         not contradicted.
         """
         kind, column, param = sig
-        source = param if kind == "rename" else column
-        values = [v for r in rows if (v := r.get(source)) is not None]
+        done = sig in applied
+        if done:
+            source_rows = rows if kept is None else [rows[i] for i in kept if i < len(rows)]
+            values = [v for r in source_rows if (v := r.get(column)) is not None]
+        else:
+            source = param if kind == "rename" else column
+            values = [v for r in rows if (v := r.get(source)) is not None]
         if len(values) < 2:
             return False
         dist = baseline.get(column)
         if dist is None:
             return False
         numeric = DriftDetector._baseline_edges(dist.histogram or {}) is not None and dist.mean is not None
-        if kind == "retype":
+        if kind == "retype" and not done:
             target = canonical_type(param.rsplit("->", 1)[-1])
             cast = [cast_losslessly(v, target) for v in values] if target else []
             values = [out for ok, out in cast if ok and out is not None]
@@ -746,7 +765,7 @@ class RecoveryLoop:
                     nums.append(out)
             if len(nums) * 2 < len(values):
                 return True  # the column now holds mostly non-numbers
-            if kind == "rescale":
+            if kind == "rescale" and not done:
                 nums = [v / float(param) for v in nums]
         if dist.role in _NO_DISTRIBUTION or len(values) < 2:
             return False
@@ -1014,10 +1033,11 @@ class RecoveryLoop:
         if final is not None:
             alerts.update({t: v for t, v in final.items() if t in _DETECTION_ONLY})
 
+        proven = {s for s in (repair_signature(r.type, r.column, r.proof) for r in repairs) if s}
         evidence = {
             # Recorded before a fault elsewhere voids the batch: a repair that proved
             # again is still evidence it holds, whatever else the batch got wrong.
-            "proven": {s for s in (repair_signature(r.type, r.column, r.proof) for r in repairs) if s},
+            "proven": proven,
             "failed_columns": failed_columns,
             "refused": refused,
             "retype_seen": retype_seen,
@@ -1025,7 +1045,8 @@ class RecoveryLoop:
             "columns": set(batch.columns).union(*(r.keys() for r in batch.rows)),
             # Whether the batch is evidence AGAINST a watched repair, not merely a
             # failure to prove it again (seeds 194/336; ``repair_canary.judge``).
-            "contradicts": functools.partial(self._contradicts, rows, baseline),
+            "contradicts": functools.partial(
+                self._contradicts, rows, baseline, applied=frozenset(proven), kept=tuple(alive)),
         }
         if unproven:
             reason = "; ".join(unproven)
