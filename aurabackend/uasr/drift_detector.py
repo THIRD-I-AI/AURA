@@ -86,6 +86,11 @@ _EXACT_RANK_ROWS = 64
 # (see _rank_sum_significant).
 _EXACT_RANK_GRID = 512
 _EXACT_RANK_DP_ROWS = 16
+# BUG-579 adversarial review: a 0/1 or small-int column (at most this many distinct
+# values, each in a bin of its own) takes the exact tie-respecting rank test instead,
+# on a score grid of about this many units (see _exact_tied_rank_p).
+_EXACT_TIED_VALUES = 16
+_EXACT_TIED_GRID = 1024
 
 # BUG-568 data-quality thresholds -- see the "Data-quality drift" section.
 _DQ_Z = 5.0                      # z-score a null-rate rise must reach
@@ -2025,10 +2030,11 @@ class DriftDetector:
     def _build_numeric_histogram(values, bins: int = _DEFAULT_BINS) -> Dict[str, Any]:
         """Build a simple equal-width histogram.
 
-        Accepts a list or a numpy array. Mirrors the previous binning
-        ``min(int((v - min) / width), bins - 1)`` exactly via np.bincount,
-        so counts are bit-for-bit identical to the pure-Python loop while
-        avoiding a per-element Python pass.
+        Accepts a list or a numpy array. Bins ``min(int((v - min) / width), bins - 1)``
+        via np.bincount. BUG-579 adversarial review: ``width`` is ``_edge_width`` of the
+        stored edges, the one ``_histogram_on_edges`` re-derives, not (max - min) / bins,
+        which can differ from it by an ulp -- a baseline 65.58 sat in bin 4 and a batch
+        65.58 in bin 5, so a pair the rank test must count as tied came out ordered.
         """
         arr = np.asarray(values, dtype=float)
         if arr.size == 0:
@@ -2042,10 +2048,16 @@ class DriftDetector:
 
         bin_width = (max_val - min_val) / bins
         bin_edges = [min_val + i * bin_width for i in range(bins + 1)]
-        idx = np.minimum(((arr - min_val) / bin_width).astype(np.int64), bins - 1)
+        width = DriftDetector._edge_width(bin_edges)
+        idx = np.minimum(((arr - min_val) / width).astype(np.int64), bins - 1)
         counts = np.bincount(idx, minlength=bins)[:bins].astype(int).tolist()
 
         return {"bins": bin_edges, "counts": counts}
+
+    @staticmethod
+    def _edge_width(edges: List[float]) -> float:
+        """The bin width both a baseline and a batch binned on its edges use."""
+        return (edges[-1] - edges[0]) / (len(edges) - 1)
 
     @staticmethod
     def _baseline_edges(hist: Dict[str, Any]) -> Optional[List[float]]:
@@ -2083,7 +2095,7 @@ class DriftDetector:
 
         lo, hi = edges[0], edges[-1]
         nbins = len(edges) - 1
-        width = (hi - lo) / nbins
+        width = DriftDetector._edge_width(edges)
         # The stored top edge is lo + nbins * width in floating point, which
         # can land a few ulps below the baseline's true max; tolerate that so
         # the baseline's own max value is not counted as overflow.
@@ -2300,16 +2312,202 @@ class DriftDetector:
             # BUG-579 re-review: the normal cut is unreachable on a few rows and wrong
             # in the tail of heavily tied scores -- on either side: a 3-row boolean
             # baseline against 100 clean rows scored z = -5.7 (exact p 0.007).
-            counts_p = np.rint(p).astype(np.int64)
-            counts_q = np.rint(q).astype(np.int64)
-            below = np.cumsum(counts_q) - counts_q
-            above = int(counts_q.sum()) - np.cumsum(counts_q)
-            u_strict = int((counts_p * (below if effect > 0.5 else above)).sum())
-            significant = DriftDetector._rank_sum_significant(
-                int(counts_p.sum()), int(counts_q.sum()), u_strict)
+            exact = DriftDetector._raw_value_counts(values, dist, edges)
+            if exact is not None:
+                # BUG-579 adversarial review: the baseline's bins hold its raw values
+                # (a 0/1 or small-int column), so the ties are real and the exact
+                # tie-respecting test is valid -- the bins' edges never enter it. The
+                # conservative test below counts every tie as no evidence, which in a
+                # 0/1 column is nearly all of it: a 15% flag flipped to 85% in 10-30
+                # rows went uncaught.
+                significant = DriftDetector._exact_tied_rank_p(*exact) < _SIG_P
+            else:
+                counts_p = np.rint(p).astype(np.int64)
+                counts_q = np.rint(q).astype(np.int64)
+                below = np.cumsum(counts_q) - counts_q
+                above = int(counts_q.sum()) - np.cumsum(counts_q)
+                u_strict = int((counts_p * (below if effect > 0.5 else above)).sum())
+                significant = DriftDetector._rank_sum_significant(
+                    int(counts_p.sum()), int(counts_q.sum()), u_strict)
         else:
             significant = abs(z) > _SHIFT_Z
         return (z, effect) if significant else None
+
+    @staticmethod
+    def _raw_value_counts(
+        values: List[float], dist: ColumnDistribution, edges: List[float],
+    ) -> Optional[Tuple[np.ndarray, np.ndarray]]:
+        """(batch counts, baseline counts) over the distinct raw values of both samples,
+        when the baseline's histogram records its values exactly (BUG-579 adversarial
+        review), else None.
+
+        It does for an int or bool column whose range is shorter than its bin count:
+        no bin can then hold two integers, so each non-empty bin is one value. The
+        batch must be whole numbers too; its values outside the baseline's range are
+        values of their own. At most _EXACT_TIED_VALUES distinct values, to bound the
+        exact test's cost; a wider column has few ties and the conservative test
+        loses little on it.
+        """
+        if dist.value_kind not in ("int", "bool") or len(edges) < 2:
+            return None
+        lo, hi, nbins = edges[0], edges[-1], len(edges) - 1
+        # the top edge is lo + bins * width in floating point: the baseline's max give
+        # or take an ulp or two
+        top = round(hi)
+        if not float(lo).is_integer() or abs(hi - top) > 1e-9 * max(1.0, abs(hi)) or top - lo >= nbins:
+            return None
+        arr = np.asarray(values, dtype=float)
+        if arr.size == 0 or not np.array_equal(arr, np.floor(arr)):
+            return None
+        ints = np.arange(int(lo), int(top) + 1)
+        idx = np.minimum(((ints - lo) / DriftDetector._edge_width(edges)).astype(np.int64), nbins - 1)
+        counts = np.rint(np.asarray(dist.histogram["counts"], dtype=float)).astype(np.int64)
+        if len(np.unique(idx)) != len(idx) or len(counts) != nbins:
+            return None
+        base = counts[idx]
+        if int(base.sum()) != int(counts.sum()):
+            return None  # a non-empty bin holds no integer: not a whole-number column
+        batch_values, batch_counts = np.unique(arr, return_counts=True)
+        cats = np.union1d(ints[base > 0], batch_values)
+        if len(cats) > _EXACT_TIED_VALUES:
+            return None
+        p_counts = np.zeros(len(cats), dtype=np.int64)
+        p_counts[np.searchsorted(cats, batch_values)] = batch_counts
+        q_counts = np.zeros(len(cats), dtype=np.int64)
+        q_counts[np.searchsorted(cats, ints[base > 0])] = base[base > 0]
+        return p_counts, q_counts
+
+    @staticmethod
+    def _exact_tied_rank_p(p_counts, q_counts) -> float:
+        """Exact two-sided p-value of the rank-sum test of a batch (``p_counts``) against a
+        baseline (``q_counts``) counted over the same distinct raw values, ties and all
+        (BUG-579 adversarial review).
+
+        Each value j scores its midrank r_j in the pooled sample. Under the null either
+        sample is a uniformly random subset of the N pooled rows, whatever the
+        column's shape: P(x_j of the m rows in value j for all j) = prod_j C(t_j, x_j)
+        / C(N, m), with t_j the pooled rows of value j. The values are the data's own,
+        not bins cut on one sample's range, so the pooled counts are the same under
+        every relabelling and conditioning on them is exact. The statistic is the
+        smaller sample's W = sum_j x_j s_j, s_j = r_j on an integer grid of about
+        _EXACT_TIED_GRID units (2 r_j itself while the pool is small enough); the
+        scores depend only on the pooled counts, so rounding them changes the
+        statistic, never the validity. The p-value is P(|W - E W| >= |w - E W|), both
+        tails counted (``_tied_tail``): for a skewed 0/1 column the far tail is often
+        empty, where doubling one tail would throw half the evidence away. A
+        Chernoff bound on the two tails (``_tied_chernoff``) settles a clear shift
+        before the count runs; it is never under the exact p-value.
+        """
+        p = np.asarray(p_counts, dtype=np.int64)
+        q = np.asarray(q_counts, dtype=np.int64)
+        if p.sum() > q.sum():  # |W - E W| is the same for either sample
+            p, q = q, p
+        t = p + q
+        n1, total = int(p.sum()), int(t.sum())
+        if n1 <= 0 or n1 >= total:
+            return 1.0
+        rank2 = 2 * np.cumsum(t) - t + 1  # twice the midrank
+        per_row = max(1, _EXACT_TIED_GRID // n1)
+        if 2 * total <= per_row:
+            score = rank2
+        else:
+            score = np.rint(rank2 * (per_row / (2.0 * total))).astype(np.int64)
+        w_obs = float((p * score).sum())
+        mean = n1 * float((t * score).sum()) / total
+        dist = abs(w_obs - mean)
+        if dist <= 0:
+            return 1.0
+        top = int(score.max())
+        hi = math.ceil(mean + dist - 1e-9)
+        lo = math.ceil(n1 * top - mean + dist - 1e-9)
+        bound = (DriftDetector._tied_chernoff(t, score, n1, hi)
+                 + DriftDetector._tied_chernoff(t, top - score, n1, lo))
+        if bound < _SIG_P:
+            return bound
+        return min(1.0, DriftDetector._tied_tail(t, score, n1, hi)
+                   + DriftDetector._tied_tail(t, top - score, n1, lo))
+
+    @staticmethod
+    def _tied_chernoff(t: np.ndarray, score: np.ndarray, m: int, threshold: int) -> float:
+        """An upper bound on ``_tied_tail``: W is a sample of m without replacement from
+        the pooled scores, so by Hoeffding (1963, Thm. 4) its moment generating function
+        is at most that of m draws with replacement, and P(W >= threshold) <= min over
+        theta > 0 of exp(-theta threshold) M(theta)^m, M the pooled scores' mean
+        exp(theta s)."""
+        keep = t > 0
+        if not keep.any():
+            return 1.0
+        weights = t[keep] / float(t.sum())
+        s = score[keep].astype(float)
+        target = threshold / m
+        if target <= float((weights * s).sum()):
+            return 1.0
+        if target > float(s.max()):
+            return 0.0
+        scale = float(s.max()) or 1.0
+        x = s / scale  # scores in [0, 1], so theta stays in a sane range
+
+        def log_m(theta: float) -> float:
+            e = theta * x
+            top = float(e.max())
+            return top + math.log(float((weights * np.exp(e - top)).sum()))
+
+        def tilted_mean(theta: float) -> float:
+            e = np.exp(theta * x - float((theta * x).max()))
+            return float((weights * e * x).sum() / (weights * e).sum())
+
+        goal = target / scale
+        lo, hi = 0.0, 1.0
+        while tilted_mean(hi) < goal and hi < 1e6:
+            hi *= 2.0
+        for _ in range(80):
+            mid = (lo + hi) / 2
+            if tilted_mean(mid) < goal:
+                lo = mid
+            else:
+                hi = mid
+        return min(1.0, math.exp(m * log_m(hi) - hi * threshold / scale))
+
+    @staticmethod
+    def _tied_tail(t: np.ndarray, score: np.ndarray, m: int, threshold: int) -> float:
+        """P(W >= threshold), W = sum_j x_j score_j, when m of the pooled rows (t_j of
+        value j) are taken uniformly at random.
+
+        Counted on each row's shortfall from the top score, which the tail allows
+        only ``m * top - threshold`` of in all, so a clear shift costs least.
+        """
+        if threshold <= 0:
+            return 1.0
+        top = int(score.max())
+        slack = m * top - threshold
+        if slack < 0:
+            return 0.0
+        total = int(t.sum())
+        log_f = math.log(m / total)
+        # dp[k, e]: weight of the ways to take k rows from the values seen so far with
+        # total shortfall e <= slack. Each way of taking x of value j's t_j rows weighs
+        # C(t_j, x) (m / N)^x -- the factor (m / N)^m is common to every complete way,
+        # and keeps the weights in range.
+        dp = np.zeros((m + 1, slack + 1))
+        dp[0, 0] = 1.0
+        for tj, sj in zip(t.tolist(), score.tolist()):
+            if tj == 0:
+                continue
+            short = top - int(sj)
+            new = dp.copy()
+            lg_t = math.lgamma(tj + 1)
+            for x in range(1, min(tj, m) + 1):
+                shift = x * short
+                if shift > slack:
+                    break
+                w = math.exp(lg_t - math.lgamma(x + 1) - math.lgamma(tj - x + 1) + x * log_f)
+                if shift:
+                    new[x:, shift:] += w * dp[:m + 1 - x, :slack + 1 - shift]
+                else:
+                    new[x:] += w * dp[:m + 1 - x]
+            dp = new
+        log_all = math.lgamma(total + 1) - math.lgamma(m + 1) - math.lgamma(total - m + 1) + m * log_f
+        return min(1.0, float(dp[m].sum()) / math.exp(log_all))
 
     @staticmethod
     def _rank_sum_significant(n1: int, n0: int, u_strict: int) -> bool:
