@@ -30,6 +30,7 @@ from uasr.db import get_session_factory, init_uasr_db  # noqa: E402
 from uasr.drift_detector import DriftDetector, _key_hashes, _RunKeys  # noqa: E402
 from uasr.models import BatchPayload, DriftType  # noqa: E402
 from uasr.recovery_loop import RecoveryLoop, RecoveryLoopConfig  # noqa: E402
+from uasr.reflector_agent import DiagnosticReflectorAgent  # noqa: E402
 from uasr.repair_canary import RepairCanary  # noqa: E402
 
 COLUMNS = ["order_no", "amount", "status"]
@@ -237,6 +238,7 @@ async def _uasr(_isolated_metadata_db, monkeypatch):
     monkeypatch.setattr(service, "_mapek_worker", None)
     monkeypatch.setattr(service, "_SHARED_SHIM_REGISTRY", False)
     monkeypatch.setattr(SynthesisActuatorAgent, "_llm_shim", _no_llm)
+    monkeypatch.setattr(DiagnosticReflectorAgent, "_llm_diagnosis", _no_llm)
     source = f"keyed_{uuid.uuid4().hex[:8]}"
     detector.register_baseline(source, BatchPayload(
         source_id=source, columns=COLUMNS, rows=_rows(500, 1), metadata={"key_columns": ["order_no"]}))
@@ -330,3 +332,66 @@ async def test_a_quarantined_page_re_sent_corrected_delivers_its_keys_once(_uasr
     later = _rows(300, 72, start=71_300) + [dict(page[0])]
     out = await _heal(source, later, run_id="run-k4", batch_id="run-k4:1")
     assert "duplicate" in _types(out)
+
+
+# ── Detection-only batches hold no rows ────────────────────────────────────────
+# The sandbox's value hold (RecoveryLoop._unrepaired_value_drift) protects repaired
+# output. It used to run on every flagged batch, so a duplicate or a null spike alone
+# held every row of a batch for a clean value the same batch, unflagged, returns: the
+# real lane held 79 of 650 keyed-duplicate batches, 77 of them for one value with a
+# decimal place more than the baseline's sample showed. ADR-002: detection-only faults
+# alert and mark the run DEGRADED; they hold no rows.
+
+
+def _with_extra_decimal(rows: list) -> list:
+    rows = [dict(r) for r in rows]
+    rows[5]["amount"] = 123.456  # the baseline's sample records two decimal places
+    return rows
+
+
+@pytest.mark.parametrize("fault", ["keyed duplicate", "null spike"])
+async def test_a_detection_only_batch_returns_every_row_with_its_alert(_uasr, fault):
+    source = _uasr
+    rows = _with_extra_decimal(_rows(300, 60, start=60_000))
+    if fault == "keyed duplicate":
+        rows.append(dict(rows[9]))
+        alert = "duplicate"
+    else:
+        rows = [{**r, "status": None} if i % 10 else r for i, r in enumerate(rows)]
+        alert = "null_rate"
+    out = await _heal(source, rows)
+    assert alert in _types(out), out["alerts"]
+    assert out["rows"] == rows and not out["quarantined_rows"], out["reason"]
+    assert out["healed"] is False and out["degraded"] is True and not out["repairs"]
+
+
+async def test_a_detection_only_batch_still_holds_a_unit_sized_value(_uasr):
+    """A value an order of magnitude past anything the baseline holds is no clean
+    value: one row past the range, which no test the detector runs can prove, in the
+    shape of a unit fault. Beside a duplicate it used to come back flagged and wrong
+    (the real lane's sm_randhie combo 35: x1000 beside a null spike)."""
+    source = _uasr
+    rows = _rows(300, 63, start=63_000)
+    rows.append(dict(rows[9]))
+    rows[7] = {**rows[7], "amount": round(rows[7]["amount"] * 1000, 2)}
+    out = await _heal(source, rows)
+    assert "duplicate" in _types(out)
+    assert not out["rows"] and len(out["quarantined_rows"]) == len(rows)
+    assert "unit error" in out["reason"], out["reason"]
+
+
+async def test_a_repaired_batch_still_holds_a_value_no_rule_explains(_uasr):
+    """The same clean-looking value behind a proven rename: the batch's output is
+    repaired, and a value the column never records unexplained beside a repair is the
+    shape of BUG-577's wrong fixes, so the batch is held."""
+    source = _uasr
+    rows = _with_extra_decimal(_rows(300, 61, start=61_000))
+    renamed = [{("order_status" if k == "status" else k): v for k, v in r.items()} for r in rows]
+    out = await _heal(source, renamed)
+    assert not out["rows"] and len(out["quarantined_rows"]) == len(renamed)
+    assert "decimal places" in out["reason"], out["reason"]
+    # Without the extra decimal place the rename heals.
+    clean = [{("order_status" if k == "status" else k): v for k, v in r.items()}
+             for r in _rows(300, 62, start=62_000)]
+    out = await _heal(source, clean)
+    assert out["healed"] is True and [r["type"] for r in out["repairs"]] == ["rename"], out["reason"]

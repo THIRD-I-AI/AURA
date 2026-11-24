@@ -595,7 +595,7 @@ class RecoveryLoop:
     def _whole_batch_check(
         self, batch: BatchPayload, rows: List[Dict[str, Any]], held: Dict[int, str],
         repaired: set, columns: List[str], snapshot: Optional[Dict[str, Any]],
-        baseline: Dict[str, Any],
+        baseline: Dict[str, Any], changed: bool = True,
     ) -> Tuple[set, Optional[str]]:
         """The sandbox's check of the batch's columns on EVERY row (BUG-575).
 
@@ -609,6 +609,21 @@ class RecoveryLoop:
         one. Then every numeric column takes the rank test (``location_shift``): a
         heavy-tailed column x2.5 behind a proven rename passed the detector's histogram
         re-check. Returns (failed columns, reason or None).
+
+        ``changed``: a repair was applied or a row held. Only then does the full value
+        hold (``_unrepaired_value_drift``) run: it exists to protect repaired output. A
+        batch flagged only by detection-only findings (duplicates, a null spike, volume)
+        comes back exactly as sent, so it gets what a clean batch gets -- the rank test,
+        which ``unexplained_shift`` gives every clean batch -- and is never held for
+        values a clean batch would return (ADR-002: detection-only faults alert and mark
+        the run DEGRADED; they hold no rows). Except one: a value past the unit-fault
+        reach, an order of magnitude past anything the baseline holds, is no clean value
+        but the shape of a unit fault the detector could not prove; returned beside the
+        alert it is a wrong value under a flagged batch (the real lane's sm_randhie combo
+        35: hlthp x1000 beside a null spike came back with 1000 for a true 1). The real lane held 79 of 650 keyed-duplicate
+        batches, every row, for clean values: 77 for one value with more decimal places
+        than the baseline's sample showed (sk_wine, sk_breast_cancer, sk_diabetes,
+        sm_star98), 2 for rows past a small baseline's range at the sandbox's 1e-3.
         """
         indices = range(len(rows))
         probe_rows = [
@@ -630,7 +645,8 @@ class RecoveryLoop:
             parts.append(self._shift_reason(shifted))
         failed.update(shifted)
         unexplained = self._unrepaired_value_drift(
-            probe_rows, [c for c in columns if c not in failed and c not in repaired], baseline)
+            probe_rows, [c for c in columns if c not in failed and c not in repaired], baseline,
+            unit_only=not changed)
         if unexplained:
             parts.append("; ".join(f"column '{c}': {why}" for c, why in sorted(unexplained.items())))
         failed.update(unexplained)
@@ -639,6 +655,7 @@ class RecoveryLoop:
     @staticmethod
     def _unrepaired_value_drift(
         rows: List[Dict[str, Any]], columns: List[str], baseline: Dict[str, Any],
+        unit_only: bool = False,
     ) -> Dict[str, str]:
         """Numeric columns of a batch the detector already flagged whose values changed
         though no proven rule repaired them (BUG-577, real-data lane), with why.
@@ -659,6 +676,9 @@ class RecoveryLoop:
         PR #806 review 5: the past-range test's 1e-3 is for the whole batch, split
         over the numeric columns it tests (Bonferroni). Per column, clean 30-column
         batches whose only fault was a proven rename were held 2 times in 150.
+
+        ``unit_only``: a batch the healer changed nothing in (``_whole_batch_check``)
+        is checked against the unit-fault reach alone.
         """
         failed: Dict[str, str] = {}
         tested = []
@@ -676,6 +696,11 @@ class RecoveryLoop:
         level = _SANDBOX_P / max(1, sum(
             1 for _, dist, _ in tested if DriftDetector._baseline_edges(dist.histogram or {}) is not None))
         for col, dist, values in tested:
+            if unit_only:
+                edges = DriftDetector._baseline_edges(dist.histogram or {})
+                if edges is not None and (why := RecoveryLoop._past_unit_reach(values, edges, dist.decimals)):
+                    failed[col] = why
+                continue
             if dist.decimals is not None:
                 # Whole values have no places (the baseline's decimals skip them too);
                 # repr(0.0) would otherwise count one.
@@ -703,13 +728,8 @@ class RecoveryLoop:
                     f"{below + above} value(s) lie past the baseline's range, more than chance "
                     f"explains (exact p = {p_end:.1e}), and no proven repair explains them")
                 continue
-            reach = RecoveryLoop._unit_fault_reach(edges, dist.decimals)
-            far = [v for v in values if abs(v) > reach]
-            if far:
-                failed[col] = (
-                    f"{len(far)} value(s) (e.g. {_short(far[0])}) lie past {reach:g}, further past "
-                    "the baseline's largest magnitude than its own values spread -- the size of a "
-                    "unit error (x10^n) -- and no proven repair explains them")
+            if why := RecoveryLoop._past_unit_reach(values, edges, dist.decimals):
+                failed[col] = why
                 continue
             p = DriftDetector._aligned_drift_p(counts, dist.histogram["counts"])
             if p < _SIG_P:
@@ -799,6 +819,16 @@ class RecoveryLoop:
         if isinstance(cats, dict) and cats:
             return DriftDetector._categorical_significant(Counter(str(v) for v in values), cats)
         return False
+
+    @staticmethod
+    def _past_unit_reach(values: List[float], edges: List[float], decimals: Optional[int]) -> Optional[str]:
+        reach = RecoveryLoop._unit_fault_reach(edges, decimals)
+        far = [v for v in values if abs(v) > reach]
+        if not far:
+            return None
+        return (f"{len(far)} value(s) (e.g. {_short(far[0])}) lie past {reach:g}, further past "
+                "the baseline's largest magnitude than its own values spread -- the size of a "
+                "unit error (x10^n) -- and no proven repair explains them")
 
     @staticmethod
     def _unit_fault_reach(edges: List[float], decimals: Optional[int] = None) -> float:
@@ -1058,7 +1088,7 @@ class RecoveryLoop:
                 cols, reason = self._whole_batch_check(
                     batch, rows, held,
                     {r.column for r in repairs if r.type in ("retype", "rescale")} | voided,
-                    columns, snapshot, baseline)
+                    columns, snapshot, baseline, changed=bool(repairs or held))
                 failed_columns.update(cols)
                 if reason:
                     unproven.append(reason)

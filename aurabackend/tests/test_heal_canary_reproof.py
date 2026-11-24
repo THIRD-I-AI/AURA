@@ -37,6 +37,7 @@ from uasr.db import get_session_factory, init_uasr_db  # noqa: E402
 from uasr.drift_detector import DriftDetector  # noqa: E402
 from uasr.models import BatchPayload  # noqa: E402
 from uasr.recovery_loop import RecoveryLoop, RecoveryLoopConfig  # noqa: E402
+from uasr.reflector_agent import DiagnosticReflectorAgent  # noqa: E402
 from uasr.repair_canary import INCONCLUSIVE, REGRESSED, RepairCanary, judge  # noqa: E402
 
 N = 3
@@ -89,6 +90,7 @@ async def _uasr(monkeypatch):
     monkeypatch.setattr(service, "_mapek_worker", None)
     monkeypatch.setattr(service, "_SHARED_SHIM_REGISTRY", False)
     monkeypatch.setattr(SynthesisActuatorAgent, "_llm_shim", _no_llm)
+    monkeypatch.setattr(DiagnosticReflectorAgent, "_llm_diagnosis", _no_llm)
     yield
 
 
