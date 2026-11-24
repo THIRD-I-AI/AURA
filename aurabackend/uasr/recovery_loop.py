@@ -658,6 +658,8 @@ class RecoveryLoop:
             if not values or not all(isinstance(v, (int, float)) and not isinstance(v, bool)
                                      and math.isfinite(v) for v in values):
                 continue
+            if dist.sequence_span and DriftDetector._continues_sequence(dist, values):
+                continue  # the next ids of a sequence (PR #806 review), not a value change
             if dist.decimals is not None:
                 # Whole values have no places (the baseline's decimals skip them too);
                 # repr(0.0) would otherwise count one.
@@ -769,6 +771,8 @@ class RecoveryLoop:
                 nums = [v / float(param) for v in nums]
         if dist.role in _NO_DISTRIBUTION or len(values) < 2:
             return False
+        if dist.sequence_span and DriftDetector._continues_sequence(dist, nums if numeric else values):
+            return False  # a sequence's next ids carry no distribution to contradict
         if numeric:
             if len(nums) < 2:
                 return False

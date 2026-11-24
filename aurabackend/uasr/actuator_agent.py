@@ -691,6 +691,8 @@ def prove_cast_values(values: List[Any], dist: Optional[ColumnDistribution]) -> 
         return False, "the baseline holds no values of the column to compare the cast values with"
     if dist.role in _NO_DISTRIBUTION:
         return True, ""
+    if dist.sequence_span and DriftDetector._continues_sequence(dist, values):
+        return True, ""  # a sequence candidate's next ids (PR #806 review): no distribution
     hist = dist.histogram or {}
     if _baseline_range(dist) is not None:
         try:

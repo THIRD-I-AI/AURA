@@ -86,7 +86,8 @@ def test_bug573_roles_are_inferred_from_the_baseline_values():
     det, _, _ = _detector()
     base = det.baseline_distributions("s")
     assert base["order_id"].role == "identifier" and base["order_id"].value_bound is None
-    # BUG-576: an id by its values (a counter scrambled mod a prime), not its name.
+    # BUG-576: an id by its values (a counter scrambled mod a prime), not its name;
+    # PR #806 review: by its sorted values, not its row order (_lattice).
     assert base["customer_key"].role == "identifier" and base["customer_key"].value_bound is not None
     assert base["ref"].role == "identifier" and base["ref"].value_format == ["A-9"]
     assert base["created_on"].role == "date" and base["created_on"].value_format == ["9999-99-99"]

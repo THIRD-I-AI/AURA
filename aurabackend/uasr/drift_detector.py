@@ -1039,13 +1039,17 @@ class DriftDetector:
             byte counts, cents), which would then go unchecked but for a 4x bound,
             so it also needs a declaration -- the column is in the batch's declared
             ``key_columns``, or its declared type names a key (``id``, ``uuid``,
-            ``serial``...) -- or row-order evidence (``_row_order_shape``: a gapped
-            auto-increment, a scrambled counter). Its name is no evidence (BUG-576): with no declaration
-            the column stays a measure and keeps its statistical checks, since
-            checking a real id statistically costs nothing when its population is
-            stable, and skipping a real measure lets a x2 through. A declared keyed
-            id gets ``value_bound``: a value past 4x the baseline's largest
-            magnitude is a format change.
+            ``serial``...) -- or the order-free shape of a scrambled counter
+            (``_lattice``). Its name is no evidence (BUG-576), and neither is its row
+            order (PR #806 review: a 99% monotone test turned a sparse id with 2% of
+            its rows out of order into a measure, and every clean batch alarmed).
+            Undeclared, the column stays a measure and keeps its statistical checks,
+            since checking a real id statistically costs nothing when its
+            population is stable, and skipping a real measure lets a x2 through.
+            A growing one is a sequence candidate (``_sequence_span``): a batch that
+            continues past the baseline is judged as a sequence instead
+            (``_continues_sequence``). A declared keyed id gets ``value_bound``: a
+            value past 4x the baseline's largest magnitude is a format change.
           Floats and booleans are never identifiers.
         * measure -- everything else: compared statistically, as before.
         """
@@ -1073,69 +1077,93 @@ class DriftDetector:
         ints = [int(v) for v in present]
         if self._expected_int_collisions(ints) >= _ID_COLLISION_EVIDENCE:
             return ROLE_IDENTIFIER, None, None
-        if len(ints) >= _SPARSE_ID_MIN_VALUES:
-            bound = float(_SPARSE_ID_BOUND * max(abs(v) for v in ints))
-            shape = self._row_order_shape(ints)
-            if shape == "monotone":
-                return ROLE_IDENTIFIER, None, None
-            if keyed or decl in _DECLARED_ID or shape == "lattice":
-                return ROLE_IDENTIFIER, None, bound
+        if len(ints) >= _SPARSE_ID_MIN_VALUES and (keyed or decl in _DECLARED_ID or self._lattice(ints)):
+            return ROLE_IDENTIFIER, None, float(_SPARSE_ID_BOUND * max(abs(v) for v in ints))
         return ROLE_MEASURE, None, None
 
     @staticmethod
-    def _row_order_shape(ints: List[int]) -> Optional[str]:
-        """BUG-576: the value evidence that a sparse unique int column is generated
-        from the row order, which no measure is. Its name used to stand in for this,
-        and took a wide measure's checks away; without either, an id read as a measure
-        drifts on every batch.
+    def _lattice(ints: List[int]) -> bool:
+        """A counter scrambled by an affine map mod a prime (k * stride mod p), an
+        obfuscated id over a fixed population, by its value set alone: sorted, such a
+        set steps by at most three sizes (the three-gap theorem); >= 90% of the steps
+        here, to allow a few deleted rows. A measure's sorted values on a sparse range
+        step by many sizes, and so does a gapped auto-increment.
 
-        * monotone -- >= 99% of consecutive steps go one way: a gapped auto-increment
-          (deleted rows), whose batches lie past the baseline. A measure in random
-          order does so with probability ~1/n!.
-        * lattice -- two step sizes make >= 90% of the steps: a counter scrambled by
-          an affine map mod a prime (k * stride mod p: steps are stride and
-          stride - p), an obfuscated id over a fixed population. A measure's steps
-          over a sparse range almost never repeat.
-        """
-        steps = [b - a for a, b in zip(ints, ints[1:])]
-        if not steps:
-            return None
-        up = sum(1 for s in steps if s > 0) / len(steps)
-        if up >= 0.99 or up <= 0.01:
-            return "monotone"
-        top_two = sum(n for _, n in Counter(steps).most_common(2))
-        return "lattice" if top_two >= 0.9 * len(steps) else None
+        Order-free (PR #806 review): the same values in any row order give the same
+        answer. It must stay an identifier: its batches are runs of consecutive
+        counters, not a random sample of its population, so compared as a measure its
+        clean batches drift (6 of 1,182 clean synthetic batches alarmed without it)."""
+        steps = np.diff(np.sort(np.asarray(ints, dtype=np.int64)))
+        if len(steps) == 0:
+            return False
+        _, counts = np.unique(steps, return_counts=True)
+        return int(np.sort(counts)[-3:].sum()) >= 0.9 * len(steps)
 
     def _sequence_span(self, values: List[Any], dist: ColumnDistribution) -> Optional[List[float]]:
-        """BUG-576: the baseline's ``[median, max]`` for an identifier known only by its
-        row order (see ``ColumnDistribution.sequence_span``); None for every other column."""
-        if dist.role != ROLE_IDENTIFIER or dist.value_bound is not None or dist.value_kind != "int":
+        """The baseline's ``[median, max, median step]`` for a sequence candidate: an int
+        measure, null-free and unique over >= 100 values on a sparse range -- what an
+        undeclared auto-increment with gaps looks like, whatever order its rows came
+        in (PR #806 review). The step is the median gap between consecutive sorted
+        values. None for every other column.
+
+        A candidate keeps every measure check. Only a batch that continues past the
+        baseline (``_continues_sequence``) is judged as a sequence: its rows past the
+        range are the next ids, not a shift, and a unit change is a format change
+        (``_format_changes``)."""
+        if dist.role != ROLE_MEASURE or dist.value_kind != "int":
             return None
-        ints = [int(v) for v in values if v is not None]
-        if self._expected_int_collisions(ints) >= _ID_COLLISION_EVIDENCE:
-            return None  # a dense sequence: unique beyond chance, whatever its order
-        if self._row_order_shape(ints) != "monotone":
+        ints = [v for v in values if v is not None]
+        if (len(ints) < _SPARSE_ID_MIN_VALUES or len(ints) != len(values)
+                or len(set(ints)) != len(ints) or any(isinstance(v, bool) for v in ints)):
             return None
-        return [float(np.median(ints)), float(max(ints))]
+        ints = sorted(int(v) for v in ints)
+        return [float(np.median(ints)), float(ints[-1]), float(np.median(np.diff(ints)))]
 
     @staticmethod
-    def _behind_sequence(dist: ColumnDistribution, batch: BatchPayload, col: str) -> bool:
-        """BUG-576: ``col`` was taken for a sequence by its order alone, and this batch
-        does not continue one -- it reaches back below the baseline's median, or holds
-        >= 10% of its values inside the baseline's range (a few late rows of an
-        auto-increment may; a sorted measure's batch does). The column is then checked
-        as a measure: ambiguous => keep the checks."""
+    def _continues_sequence(dist: ColumnDistribution, values: List[Any]) -> bool:
+        """Whether a sequence candidate's batch values continue past its baseline (PR
+        #806 review): fewer than max(2, 10%) of them lie inside the baseline's range.
+
+        Order-free: it reads the values, not the order the rows came in. A re-sent
+        old id or two (an upsert, a CDC update) does not stop a batch continuing --
+        "any value back below the median" used to, and quarantined every row. A
+        measure's batch from the same distribution lies inside the range, and a x2,
+        x1.5 or in-range fault leaves >= 10% of a wide measure inside, so those are
+        still checked as a measure; a x10 or more lands past the 4x bound instead."""
         span = dist.sequence_span
         if not span:
             return False
-        median, top = span
-        nums = [v for r in batch.rows
-                if isinstance(v := r.get(col), (int, float, np.integer, np.floating))
-                and not isinstance(v, (bool, np.bool_))]
+        top = span[1]
+        nums = [v for v in values
+                if isinstance(v, (int, float, np.integer, np.floating)) and not isinstance(v, (bool, np.bool_))]
         if not nums:
             return False
         inside = sum(1 for v in nums if v <= top)
-        return any(v <= median for v in nums) or inside >= _SEQUENCE_INSIDE * len(nums)
+        return inside < max(2.0, _SEQUENCE_INSIDE * len(nums))
+
+    @staticmethod
+    def _sequence_unit_change(dist: ColumnDistribution, values: List[Any]) -> Optional[Dict[str, Any]]:
+        """A continuing sequence's batch that changed unit: values past 4x the baseline's
+        largest id AND steps between them 4x the baseline's median step (PR #806
+        review). The step test is what tells a unit change from growth: a sequence that
+        has grown past 4x its baseline still steps as it did (a fixed 4x bound alone
+        alarmed on every batch after that), while x1000 multiplies every step by 1000.
+        It needs >= 3 values for a median step; a batch of one or two ids cannot tell."""
+        span = dist.sequence_span or []
+        bound = _SPARSE_ID_BOUND * abs(span[1])
+        nums = sorted(float(v) for v in values
+                      if isinstance(v, (int, float, np.integer, np.floating)) and not isinstance(v, (bool, np.bool_)))
+        over = [v for v in nums if abs(v) > bound]
+        if not over:
+            return None
+        if len(span) > 2:
+            if len(nums) < 3 or float(np.median(np.diff(nums))) <= _SPARSE_ID_BOUND * max(span[2], 1.0):
+                return None
+        return {"value_bound": bound, "values_over_bound": len(over), "example": over[0]}
+
+    @staticmethod
+    def _column_values(batch: BatchPayload, col: str) -> List[Any]:
+        return [v for r in batch.rows if (v := r.get(col)) is not None]
 
     @staticmethod
     def _unique_by_name(values: List[Any], dist: ColumnDistribution, name: Any) -> bool:
@@ -1163,6 +1191,14 @@ class DriftDetector:
         had, or a keyed id's value past its ``value_bound``."""
         out: Dict[str, Dict[str, Any]] = {}
         for col, dist in (baseline or {}).items():
+            if dist.sequence_span and dist.role not in _NO_DISTRIBUTION:
+                # PR #806 review: a sequence candidate whose batch continues past the
+                # baseline skips the measure checks, so a unit change must show here:
+                # x1000 on an undeclared order_id was silent.
+                values = self._column_values(batch, col)
+                if self._continues_sequence(dist, values) and (found := self._sequence_unit_change(dist, values)):
+                    out[col] = found
+                continue
             if dist.role not in _NO_DISTRIBUTION:
                 continue
             if dist.value_bound is not None:
@@ -1322,7 +1358,12 @@ class DriftDetector:
             # BUG-573: an identifier or date carries no distribution -- a sequential
             # id lies past the baseline's range on every new batch. _check_schema_drift
             # checks what can go wrong with them instead.
-            if ref_dist.role in _NO_DISTRIBUTION and not self._behind_sequence(ref_dist, batch, col_name):
+            if ref_dist.role in _NO_DISTRIBUTION:
+                continue
+            # PR #806 review: a sequence candidate's batch that continues past the
+            # baseline is its next ids, judged by _format_changes' bound instead.
+            if ref_dist.sequence_span and self._continues_sequence(
+                    ref_dist, self._column_values(batch, col_name)):
                 continue
             significant = True
             tested = False
@@ -1639,7 +1680,6 @@ class DriftDetector:
             exact = (
                 dist.role == ROLE_IDENTIFIER and k0 == 0 and k1 > 0
                 and (dist.value_bound is None or col in declared_key)
-                and not self._behind_sequence(dist, batch, col)
             )
             p0 = (k0 + 1) / (n0 + 2)
             p1 = (k1 + 1) / (n1 + 2)
@@ -1786,7 +1826,6 @@ class DriftDetector:
             # wide measure that repeats by chance; its duplicated rows still alarm.
             if (
                 dist.role == ROLE_IDENTIFIER and dist.value_bound is None and col in present
-                and not self._behind_sequence(dist, batch, col)
             ):
                 values = [repr(v) for r in batch.rows if (v := r.get(col)) is not None]
                 if len(set(values)) < len(values):
