@@ -78,6 +78,12 @@ def _short(value: Any, limit: int = 80) -> str:
     return text if len(text) <= limit else text[:limit] + "..."
 
 
+def _fractional(value: Any) -> bool:
+    """A finite number, as a number or as its text, with a non-zero fraction."""
+    ok, out = cast_losslessly(value, "float")
+    return bool(ok and out is not None and math.isfinite(out) and not float(out).is_integer())
+
+
 def _precision(decimals: Optional[int]) -> str:
     return "full float digits" if decimals is None else f"{decimals} decimal place(s)"
 
@@ -928,14 +934,26 @@ class RecoveryLoop:
                     # read the column as 100% null (a null-rate alert the batch never had).
                     proven, why_not = prove_cast_values(
                         [v for v in casts.values() if v is not None], baseline.get(col))
+                    # PR #806 review 3: a value with a fraction where the column records
+                    # whole numbers is no failed cast of its own row: the column's values
+                    # changed (x2.5 sends an odd count as 7.5), and the whole-valued
+                    # ones cast back to the wrong ints. prove_cast_values saw only those,
+                    # and the 7.5 held only its own row. Non-numeric junk ("n/a") is a
+                    # value that does not cast; it still holds only its own row.
+                    fractional = [v for v in uncastable.values() if target == "int" and _fractional(v)]
+                    if fractional and proven:
+                        proven, why_not = False, (
+                            f"{len(fractional)} value(s) carry a fraction (e.g. {_short(fractional[0])}) "
+                            f"where the column records whole numbers, so its values changed, not "
+                            f"only their type")
                     if not proven:
                         failed_columns.add(col)
                         voided.add(col)
                         for i in alive:
                             if col in rows[i]:
                                 held.setdefault(i, (
-                                    f"column '{col}' arrived as {new_t!r}; its values cast back to "
-                                    f"{old_t!r} losslessly, but that is not proof: {why_not}"))
+                                    f"column '{col}' arrived as {new_t!r}; a lossless cast back to "
+                                    f"{old_t!r} is not proof here: {why_not}"))
                         alive = keep_alive()
                         if snapshot is not None:
                             snapshot[col] = old_t

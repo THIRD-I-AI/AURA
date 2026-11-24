@@ -216,6 +216,47 @@ async def test_a_genuine_retype_with_a_few_bad_values_still_heals_the_rest(_heal
         assert any(r.get("type") == "retype" for r in out["repairs"])
 
 
+def _partial_x2_5_trial(seed: int, n: int, frac: float) -> Trial:
+    """PR #806 review's table: an int count sent as floats, x2.5 on a fraction of rows."""
+    rnd = random.Random(seed)
+    cols = [Column("n", "count", 0.0, {"dtype": "int"}), Column("bp", "normal", 0.0, {"dtype": "float"})]
+    ds = Dataset(seed=seed, columns=cols, baseline=_counts(rnd, 400), truth=_counts(rnd, n))
+    bad = set(rnd.sample(range(n), max(1, round(frac * n))))
+    sent, expected = copy_rows(ds.truth), copy_rows(ds.truth)
+    for i, row in enumerate(sent):
+        v = row["n"]
+        row["n"] = v * 2.5 if i in bad else float(v)
+        if i in bad and v != 0:
+            expected[i] = None
+    snap = dict(ds.schema)
+    snap["n"] = "float"
+    return Trial(fault="decoy_x2.5", seed=seed, dataset=ds, sent=sent, expected=expected,
+                 snapshot=snap if seed % 2 else None, tenant=None)
+
+
+@pytest.mark.parametrize("frac", [1.0, 0.3, 0.1])
+@pytest.mark.parametrize("n", [5, 10, 20, 40, 80, 250])
+async def test_a_fraction_where_the_column_records_whole_numbers_voids_the_column(_heal_db, n, frac):
+    """PR #806 review 3: x2.5 on part of an int column sent as floats. An odd count
+    became 7.5, which failed the cast and held only its own row; the even ones cast
+    back to the wrong ints and passed the distribution proof, which saw only them.
+    A fraction where the column records whole numbers now voids the column: every row
+    carrying it is held. Where every value happens to be whole (the x2.5 hit only even
+    counts) nothing in the batch shows the change; those trials are counted, not
+    asserted -- no rule short of refusing every small int retype can see them."""
+    unseen = []
+    for seed in range(16):
+        trial = _partial_x2_5_trial(seed, n, frac)
+        out = await heal(trial)
+        result = classify(trial, out)
+        if any(not float(r["n"]).is_integer() for r in trial.sent):
+            assert result.outcome != WRONG, (seed, result.why)
+            assert not out["rows"], (seed, out["reason"])
+        elif result.outcome == WRONG:
+            unseen.append(seed)
+    assert len(unseen) <= 6, unseen  # n=5, frac=0.1: 6 of 16 batches carry no fraction
+
+
 def test_prove_cast_values_matches_the_baseline_or_names_why_not():
     from uasr.actuator_agent import prove_cast_values
     from uasr.drift_detector import DriftDetector
