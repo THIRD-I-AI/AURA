@@ -126,6 +126,26 @@ def check_health(v: Verifier) -> str:
     return f"environment={body.get('environment')} build={build}"
 
 
+BACKUP_STATES = {
+    "stale": "no backup has succeeded in the last 26h; see backup.log on the box",
+    "failed": "the last backup run failed; see backup.log on the box",
+    "missing": "no backup run has recorded a status on the box; is the cron installed?",
+    "unknown": "the gateway's backup probe crashed or timed out; see the gateway log",
+}
+
+
+def check_backup_fresh(v: Verifier) -> str:
+    """BUG-581: the nightly backup failed for 58 days while every check here stayed green.
+    /health reports the last backup run as one word, and only "ok" passes. The body is read
+    even on a 503: a degraded gateway still reports its backup state."""
+    state = (v.client.get("/health").json().get("checks") or {}).get("backup")
+    if state is None:
+        raise AssertionError("/health does not report checks.backup: the box runs a build from before BUG-581")
+    if state != "ok":
+        raise AssertionError(f"backup is {state}: {BACKUP_STATES.get(state, 'unrecognised state')}")
+    return "last backup succeeded within 26h"
+
+
 def check_login(v: Verifier) -> str:
     r = v.client.post(f"{V1}/auth/token", json={"email": v.email, "password": v.password})
     r.raise_for_status()
@@ -588,6 +608,7 @@ FIX_CHECKS: List[tuple[str, Callable[[Verifier], Optional[str]]]] = [
 
 CHECKS: List[tuple[str, Callable[[Verifier], Optional[str]]]] = [
     ("health", check_health),
+    ("backup_fresh", check_backup_fresh),
     ("login", check_login),
     ("jwks", check_jwks),
     ("financial_audit_demo", check_financial_audit_demo),

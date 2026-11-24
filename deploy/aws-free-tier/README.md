@@ -222,7 +222,7 @@ Linux 2023). The path below must match wherever this repo is actually
 checked out on the box (confirm with `pwd`, not this example):
 
 ```sh
-15 3 * * * cd /opt/aura/deploy/aws-free-tier && ./backup.sh >> backup.log 2>&1
+15 3 * * * cd /opt/aura/deploy/aws-free-tier && AURA_S3_BACKUP_BUCKET=my-bucket ./backup.sh >> backup.log 2>&1
 ```
 
 The databases are copied with SQLite's online backup API, not `cp`: copying a

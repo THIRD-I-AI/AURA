@@ -7,8 +7,10 @@ pipeline monitor), and exposes a unified system health endpoint.
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta, timezone
 from typing import AsyncGenerator, Optional
 
 import httpx
@@ -337,12 +339,50 @@ async def _check_data_dir() -> str | None:
         return f"state dir not writable: {type(exc).__name__}: {exc}"
 
 
+# BUG-581: the nightly backup failed for 58 days and only backup.log knew.
+# deploy/aws-free-tier/backup.sh records every run here, on the data volume.
+BACKUP_STATUS_FILE = "/data/state/backup_status.json"
+# The cron runs daily; 2h of slack covers a slow run without hiding a missed night.
+BACKUP_MAX_AGE = timedelta(hours=26)
+
+
+def backup_state(status_file: str) -> str:
+    """The last backup run as one word: ok (succeeded within BACKUP_MAX_AGE), stale,
+    failed (or its record is unreadable) or missing.
+
+    /health is public (BUG-540): callers get the word, never the record's times,
+    paths or error text.
+    """
+    try:
+        with open(status_file, encoding="utf-8") as fh:
+            record = json.load(fh)
+    except FileNotFoundError:
+        return "missing"
+    except (OSError, ValueError) as exc:
+        logger.warning("backup status %s unreadable: %s", status_file, exc)
+        return "failed"
+    if not isinstance(record, dict) or record.get("status") != "ok":
+        return "failed"
+    try:
+        finished = datetime.fromisoformat(str(record.get("finished_at")))
+    except ValueError:
+        return "stale"  # an ok record with no readable time proves nothing about freshness
+    if finished.tzinfo is None:
+        finished = finished.replace(tzinfo=timezone.utc)
+    return "ok" if datetime.now(timezone.utc) - finished <= BACKUP_MAX_AGE else "stale"
+
+
+async def _check_backup() -> str:
+    return backup_state(BACKUP_STATUS_FILE)
+
+
 app = create_service(
     name="API Gateway",
     service_tag="api_gateway",
     description="Enterprise self-healing data analytics platform gateway",
     lifespan=_lifespan,
     health_checks={"db": _check_db, "data_dir": _check_data_dir},
+    info_checks={"backup": _check_backup},
 )
 
 
