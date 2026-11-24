@@ -22,8 +22,18 @@
 #   Restore refuses to run while containers are up, because writing a database
 #   file under a live process is how you get the corruption you were avoiding.
 #
-# CRON (daily 03:15, log to the box):
-#   15 3 * * * cd /home/ec2-user/AURA/deploy/aws-free-tier && ./backup.sh >> backup.log 2>&1
+# RUN AS ec2-user, NEVER AS ROOT (BUG-581): a root run leaves backups/ owned by
+# root, and the ec2-user cron then fails every night. The script refuses uid 0.
+# For a restore emergency where only root will do, set AURA_BACKUP_ALLOW_ROOT=1,
+# then chown the backups back to ec2-user.
+#
+# STATUS: every backup run records its result in /data/state/backup_status.json
+# on the volume. The gateway's /health reports it as ops.backup (ok, stale,
+# failed, missing); scripts/verify_live_deployment.py's backup_fresh fails
+# unless it is ok.
+#
+# CRON (daily 03:15 as ec2-user, log to the box, copy off the box to S3):
+#   15 3 * * * cd /opt/aura/deploy/aws-free-tier && AURA_S3_BACKUP_BUCKET=my-bucket ./backup.sh >> backup.log 2>&1
 #
 set -euo pipefail
 
@@ -35,10 +45,43 @@ STAGE="/data/_backup_stage"
 # source's learned baseline; losing it makes the next batch the new "normal".
 SQLITE_DBS="gateway.db ledger.db metadata.db uasr.db uasr_state.db"
 FILE_DIRS="keys uploads audit artifacts uasr_parquet"
+# Read by the gateway's /health (api_gateway/main.py BACKUP_STATUS_FILE).
+STATUS_FILE="/data/state/backup_status.json"
+# Set only once a backup starts: a refused root run or restore is not a failed
+# backup, and must not overwrite the last real result.
+DEST=""
 
-die() { echo "FAILED: $*" >&2; exit 1; }
+die() {
+  echo "FAILED: $*" >&2
+  if [ -n "$DEST" ] && [ -n "$(compose ps -q "$SERVICE" 2>/dev/null)" ]; then
+    write_status failed "$*" || echo "warn: could not record the failure in $STATUS_FILE" >&2
+  fi
+  exit 1
+}
 
 compose() { docker compose "$@"; }
+
+# Written through the container, so the file lands on the volume owned by the
+# user the gateway runs as. No secrets: status, finish time, stamp, size, offsite
+# flag and the error text.
+write_status() {  # ok|failed [error]
+  compose exec -T "$SERVICE" python3 -c '
+import json, os, sys
+from datetime import datetime, timezone
+path, status, stamp, size, offsite, error = sys.argv[1:]
+record = {"status": status, "finished_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+          "stamp": stamp, "size": size or None, "offsite": offsite == "true", "error": error or None}
+with open(path + ".tmp", "w") as f:
+    json.dump(record, f)
+os.replace(path + ".tmp", path)  # /health never reads a half-written record
+' "$STATUS_FILE" "$1" "$STAMP" "${SIZE:-}" "$OFFSITE" "${2:-}"
+}
+
+# BUG-581: one root run on 2026-09-26 left backups/ root-owned, and the ec2-user
+# cron then failed every night for 58 days.
+if [ "$(id -u)" = 0 ] && [ "${AURA_BACKUP_ALLOW_ROOT:-}" != 1 ]; then
+  die "refusing to run as root: it leaves $BACKUP_ROOT root-owned and the ec2-user cron can no longer write there. Run as ec2-user, or set AURA_BACKUP_ALLOW_ROOT=1 for a restore emergency."
+fi
 
 # ── restore ─────────────────────────────────────────────────────────
 if [ "${1:-}" = "--restore" ]; then
@@ -61,7 +104,12 @@ fi
 
 # ── backup ──────────────────────────────────────────────────────────
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
+OFFSITE=false
 DEST="$BACKUP_ROOT/$STAMP"
+# Name the owner, not just mkdir's bare "Permission denied" (BUG-581).
+if [ -d "$BACKUP_ROOT" ] && [ ! -w "$BACKUP_ROOT" ]; then
+  die "$BACKUP_ROOT is owned by $(stat -c %U "$BACKUP_ROOT") and not writable by $(id -un). Fix: sudo chown -R $(id -un) $BACKUP_ROOT"
+fi
 mkdir -p "$DEST" || die "cannot create $DEST"
 
 CID="$(compose ps -q "$SERVICE" 2>/dev/null || true)"
@@ -118,10 +166,13 @@ done
 if [ -n "${AURA_S3_BACKUP_BUCKET:-}" ]; then
   echo "== syncing to s3://$AURA_S3_BACKUP_BUCKET =="
   aws s3 sync "$DEST" "s3://$AURA_S3_BACKUP_BUCKET/$STAMP" || die "s3 sync failed"
+  OFFSITE=true
 fi
 
 echo "== pruning backups older than ${RETENTION_DAYS}d =="
 find "$BACKUP_ROOT" -mindepth 1 -maxdepth 1 -type d -mtime "+$RETENTION_DAYS" -exec rm -rf {} + \
   || echo "warn: prune failed (backup itself succeeded)"
 
-echo "OK  $DEST  ($(du -sh "$DEST" | cut -f1))"
+SIZE="$(du -sh "$DEST" | cut -f1)"
+write_status ok || echo "warn: backup succeeded but $STATUS_FILE was not updated; /health still shows the previous run" >&2
+echo "OK  $DEST  ($SIZE)"
