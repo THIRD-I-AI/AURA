@@ -45,16 +45,22 @@ def _rows(n: int, seed: int, start: int = 0) -> list:
 def _detector(key=("order_no",), baseline_dup: int = 0) -> DriftDetector:
     det = DriftDetector()
     rows = _rows(500, 1)
+    if key == ("id",):
+        rows = [{"id": f"X{i}", **{k: v for k, v in r.items() if k != "order_no"}} for i, r in enumerate(rows)]
     rows += [dict(rows[i]) for i in range(baseline_dup)]
     meta = {"key_columns": list(key)} if key else {}
-    det.register_baseline("s", BatchPayload(source_id="s", columns=COLUMNS, rows=rows, metadata=meta))
+    det.register_baseline("s", BatchPayload(source_id="s", columns=list(rows[0]), rows=rows, metadata=meta))
     return det
 
 
-def _dup(det: DriftDetector, rows: list, *, record: bool = False, **meta) -> dict:
-    batch = BatchPayload(source_id="s", columns=COLUMNS, rows=rows, metadata=meta,
+def _dup(det: DriftDetector, rows: list, *, deliver: bool = False, **meta) -> dict:
+    """The duplicates finding of one page; with ``deliver``, its rows are then delivered
+    (as /uasr/heal records them once it has decided, PR #806 review 4)."""
+    batch = BatchPayload(source_id="s", columns=list(rows[0]), rows=rows, metadata=meta,
                          batch_id=meta.pop("batch_id", None) or uuid.uuid4().hex[:12])
-    r = det.detect(batch, record_state=record)
+    r = det.detect(batch)
+    if deliver:
+        det.record_delivered_keys(batch, rows)
     return (r.drift_vectors or {}).get(DriftType.DUPLICATE.value) or {}
 
 
@@ -83,7 +89,7 @@ def test_every_batch_that_repeats_a_key_alerts():
     for seed in range(5):
         rows = _rows(200, seed, start=10_000 + 1000 * seed)
         rows.append(dict(rows[7]))
-        assert _dup(det, rows, record=True)["duplicate_rows"] == 1, seed
+        assert _dup(det, rows, deliver=True)["duplicate_rows"] == 1, seed
 
 
 def test_null_keys_are_not_duplicates_of_each_other():
@@ -97,7 +103,7 @@ def test_null_keys_are_not_duplicates_of_each_other():
 def test_a_clean_keyed_batch_does_not_alert():
     det = _detector()
     for seed in range(20):
-        assert not _dup(det, _rows(400, seed, start=10_000 + 1000 * seed), record=True), seed
+        assert not _dup(det, _rows(400, seed, start=10_000 + 1000 * seed), deliver=True), seed
 
 
 # ── across the pages of one run ───────────────────────────────────────────────
@@ -106,53 +112,86 @@ def test_a_key_an_earlier_page_of_the_run_delivered_alerts():
     det = _detector()
     page1 = _rows(300, 2, start=10_000)
     page2 = _rows(300, 3, start=10_300)
-    assert not _dup(det, page1, record=True, run_id="r1", batch_id="p1")
+    assert not _dup(det, page1, deliver=True, run_id="r1", batch_id="p1")
     page2[10] = {**page2[10], "order_no": page1[42]["order_no"]}
-    found = _dup(det, page2, record=True, run_id="r1", batch_id="p2")
+    found = _dup(det, page2, deliver=True, run_id="r1", batch_id="p2")
     assert found["keys_seen_earlier_in_run"] == 1 and found["duplicate_rows"] == 0
     assert "already delivered earlier in run 'r1'" in found["details"]
-    # The sandbox's re-check of the same page (record_state=False, same batch id) sees
-    # the same repeat -- and not the page's own keys.
+    # A re-check of the same page (the sandbox's, same batch id) sees the same repeat
+    # -- and not the page's own keys.
     assert _dup(det, page2, run_id="r1", batch_id="p2")["keys_seen_earlier_in_run"] == 1
     # A page sent again (a retry) is not its own duplicate.
-    assert not _dup(det, page1, record=True, run_id="r1", batch_id="p1")
+    assert not _dup(det, page1, deliver=True, run_id="r1", batch_id="p1")
 
 
 def test_keys_of_another_run_or_without_a_run_are_not_repeats():
     det = _detector()
     page1 = _rows(300, 2, start=10_000)
-    assert not _dup(det, page1, record=True, run_id="r1", batch_id="p1")
-    assert not _dup(det, page1, record=True, run_id="r2", batch_id="q1")  # the next run
-    assert not _dup(det, page1, record=True)  # no run declared: the batch alone
+    assert not _dup(det, page1, deliver=True, run_id="r1", batch_id="p1")
+    assert not _dup(det, page1, deliver=True, run_id="r2", batch_id="q1")  # the next run
+    assert not _dup(det, page1, deliver=True)  # no run declared: the batch alone
 
 
 def test_the_page_that_completes_the_run_is_checked_and_then_the_run_is_over():
     det = _detector()
     page1 = _rows(300, 2, start=10_000)
     last = _rows(300, 3, start=10_300) + [dict(page1[5])]
-    assert not _dup(det, page1, record=True, run_id="r1", batch_id="p1")
-    found = _dup(det, last, record=True, run_id="r1", batch_id="p2", complete_run=True)
+    assert not _dup(det, page1, deliver=True, run_id="r1", batch_id="p1")
+    found = _dup(det, last, deliver=True, run_id="r1", batch_id="p2", complete_run=True)
     assert found["keys_seen_earlier_in_run"] == 1
     # Its own re-check still sees the run ...
     assert _dup(det, last, run_id="r1", batch_id="p2", complete_run=True)["keys_seen_earlier_in_run"] == 1
     # ... and the next page starts afresh, even under the same run id.
-    assert not _dup(det, page1, record=True, run_id="r1", batch_id="p3")
+    assert not _dup(det, page1, deliver=True, run_id="r1", batch_id="p3")
+
+
+def _h(lo, hi):
+    return _key_hashes([f"k{i}" for i in range(lo, hi)])
 
 
 def test_the_run_memory_is_bounded():
     keys = _RunKeys(max_keys=1000)
-    h = lambda lo, hi: _key_hashes([f"k{i}" for i in range(lo, hi)])  # noqa: E731
-    assert keys.repeats("a", "r", "a1", h(0, 600), record=True, end=False) == 0
-    assert keys.repeats("b", "r", "b1", h(0, 300), record=True, end=False) == 0
+    keys.record("a", "r", "a1", _h(0, 600), end=False)
+    keys.record("b", "r", "b1", _h(0, 300), end=False)
     assert len(keys) == 900
     # Source c needs room: the least recently used run (a) goes first.
-    assert keys.repeats("c", "r", "c1", h(0, 500), record=True, end=False) == 0
-    assert len(keys) <= 1000 and keys.repeats("a", "r", "a2", h(0, 10), record=False, end=False) == 0
+    keys.record("c", "r", "c1", _h(0, 500), end=False)
+    assert len(keys) <= 1000 and keys.seen("a", "r", "a2", _h(0, 10)) == 0
     # A run that alone outgrows the cap keeps what it has and still checks against it.
     big = _RunKeys(max_keys=100)
-    assert big.repeats("s", "r", "p1", h(0, 150), record=True, end=False) == 0
+    big.record("s", "r", "p1", _h(0, 150), end=False)
     assert len(big) == 100
-    assert big.repeats("s", "r", "p2", h(0, 150), record=True, end=False) == 100
+    assert big.seen("s", "r", "p2", _h(0, 150)) == 100
+
+
+def test_checking_never_changes_the_run_memory():
+    # PR #806 review 6: a check under another run id dropped the stored run.
+    keys = _RunKeys()
+    keys.record("s", "r1", "p1", _h(0, 100), end=False)
+    assert keys.seen("s", "r2", "q1", _h(0, 100)) == 0
+    assert keys.seen("s", "r1", "p2", _h(0, 100)) == 100
+    assert len(keys) == 100
+
+
+@pytest.mark.parametrize("a, b, same", [
+    (10005, "10005", True), (10005, 10005.0, True), ("2.5", 2.5, True),
+    ("007", 7, False), ("+7", 7, False), ("1.50", 1.5, False),
+    (True, 1, False), ("K1", "K1", True), ("K1", "k1", False),
+])
+def test_key_values_compare_by_the_key_they_name(a, b, same):
+    det = _detector(key=("id",))
+    rows = [{"id": f"X{i}", "amount": 1.0, "status": "new"} for i in range(50)]
+    rows += [{"id": a, "amount": 2.0, "status": "new"}, {"id": b, "amount": 3.0, "status": "new"}]
+    found = _dup(det, rows)
+    assert bool(found) is same, found
+
+
+def test_nan_keys_carry_no_key_value():
+    det = _detector()
+    rows = _rows(300, 6, start=20_000)
+    rows[0] = {**rows[0], "order_no": float("nan")}
+    rows[1] = {**rows[1], "order_no": float("nan")}
+    assert not _dup(det, rows)
 
 
 def test_key_hashes_are_unique_and_sorted():
@@ -261,3 +300,33 @@ async def test_the_sandbox_re_check_of_a_repaired_page_is_not_its_own_duplicate(
     out = await _heal(source, page2, run_id="run-3", batch_id="run-3:1")
     assert out["healed"] is True and [r["type"] for r in out["repairs"]] == ["rename"], out["reason"]
     assert not out["alerts"]
+
+
+# ── PR #806 review 4: keys join the run when delivered ────────────────────────
+
+
+async def test_a_page_retried_without_a_batch_id_is_not_its_own_duplicate(_uasr):
+    # K1: a page re-sent (a client retry) with no batch id got a fresh id per request,
+    # and all 300 of its keys read as delivered by an earlier page.
+    source = _uasr
+    page = _rows(300, 70, start=70_000)
+    first = await _heal(source, page, run_id="run-k1")
+    retry = await _heal(source, page, run_id="run-k1")
+    assert not first["alerts"] and not retry["alerts"], retry["alerts"]
+    assert retry["healed"] is True and retry["rows"] == page
+
+
+async def test_a_quarantined_page_re_sent_corrected_delivers_its_keys_once(_uasr):
+    # K4: the first send was held whole (an unprovable x7), so its keys never reached
+    # the destination; the corrected re-send must not be flagged against them.
+    source = _uasr
+    page = _rows(300, 71, start=71_000)
+    bad = [{**r, "amount": round(r["amount"] * 7, 2)} for r in page]
+    first = await _heal(source, bad, run_id="run-k4", batch_id="run-k4:0")
+    assert not first["rows"]
+    fixed = await _heal(source, page, run_id="run-k4", batch_id="run-k4:0-fixed")
+    assert "duplicate" not in _types(fixed) and fixed["rows"] == page, fixed["alerts"]
+    # A key the run did deliver is still a duplicate on a later page.
+    later = _rows(300, 72, start=71_300) + [dict(page[0])]
+    out = await _heal(source, later, run_id="run-k4", batch_id="run-k4:1")
+    assert "duplicate" in _types(out)

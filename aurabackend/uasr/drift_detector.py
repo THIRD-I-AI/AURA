@@ -199,6 +199,56 @@ _RUN_KEYS_MAX = 2_000_000
 _UINT64 = (1 << 64) - 1
 
 
+_KEY_TEXT_INT = re.compile(r"[+-]?\d+")
+
+
+def _key_part(value: Any) -> Any:
+    """One declared-key cell as the key it names, or None for no key (PR #806 review 6).
+
+    The rule, so that a key's type changing between pages neither hides nor invents a
+    duplicate:
+    * None and NaN carry no key value (the null-rate check judges them);
+    * a number is its value: 1 and 1.0 are one key, 1.5 another;
+    * text that reads back exactly as a number is that number: "1" is the key 1 and
+      "2.5" the key 2.5, but "007", "+7" and "1.50" stay text -- padded codes are codes;
+    * a boolean is a key of its own: True is not 1;
+    * anything else is its text.
+    """
+    if value is None:
+        return None
+    if isinstance(value, (bool, np.bool_)):
+        return ("bool", bool(value))
+    if isinstance(value, (int, np.integer)):
+        return ("num", int(value))
+    if isinstance(value, (float, np.floating)):
+        f = float(value)
+        if math.isnan(f):
+            return None
+        return ("num", int(f)) if f.is_integer() and math.isfinite(f) else ("num", f)
+    if isinstance(value, str):
+        if _KEY_TEXT_INT.fullmatch(value) and str(int(value)) == value:
+            return ("num", int(value))
+        try:
+            f = float(value)
+        except ValueError:
+            return ("text", value)
+        if math.isfinite(f) and repr(f) == value:
+            return ("num", int(f)) if f.is_integer() else ("num", f)
+        return ("text", value)
+    return ("text", str(value))
+
+
+def _row_keys(rows: List[Dict[str, Any]], key: List[str]) -> List[str]:
+    """Each row's declared-key value (normalised by ``_key_part``) as one string; rows
+    with any part missing carry no key and are left out."""
+    out = []
+    for r in rows:
+        parts = tuple(_key_part(r.get(c)) for c in key)
+        if all(part is not None for part in parts):
+            out.append(repr(parts))
+    return out
+
+
 def _key_hashes(keys: List[str]) -> np.ndarray:
     """The 64-bit hashes of a batch's declared-key values, unique and sorted. Python's
     string hash is salted per process, which is fine: the run memory is per process.
@@ -213,13 +263,23 @@ class _RunKeys:
     A run is the pages a caller sends under one ``metadata.run_id`` (pipeline/heal.py
     sends its run id on every page); the page that declares ``complete_run`` ends it.
     A key a page repeats from an earlier page of the same run is a duplicate as surely
-    as one repeated inside a page. Each key keeps the page that first delivered it, so
-    a page sent again (a retry, or the sandbox's own re-check of the page) is never its
-    own duplicate. A new run id replaces the source's previous run, and so does any
-    page after the one that ended the run (that page's own re-checks still see the
-    run). Memory is bounded by ``_RUN_KEYS_MAX`` over every source: least recently
-    used runs go first, and a run that alone outgrows it keeps the keys it has,
-    checks the rest against them, and stops adding (logged).
+    as one repeated inside a page.
+
+    PR #806 review 4: a page's keys join the run when its rows are DELIVERED
+    (``DriftDetector.record_delivered_keys``, after /uasr/heal decides), and only the
+    rows it returns: a page that was quarantined and then re-sent corrected never
+    delivered its keys. Checking (``seen``) never changes the memory -- a check under
+    another run id used to drop the stored run. Each key keeps the page that first
+    delivered it, so a page sent again (a retry: /uasr/heal derives a page's id from
+    its run id and content when the caller sends none) is never its own duplicate.
+
+    A new run id replaces the source's previous run, and so does any page after the
+    one that ended the run (that page's own re-checks still see the run). Memory is
+    bounded by ``_RUN_KEYS_MAX`` hashed keys over every source and tenant of the
+    process: the least recently used runs are evicted first, whichever tenant they
+    belong to, so one tenant's very large run can evict another tenant's older run,
+    which then misses its cross-page repeats. A run that alone outgrows the cap keeps
+    the keys it has, checks the rest against them, and stops adding (logged).
     """
 
     def __init__(self, max_keys: int = _RUN_KEYS_MAX) -> None:
@@ -232,53 +292,70 @@ class _RunKeys:
     def __len__(self) -> int:
         return self._total
 
-    def repeats(self, source_id: str, run_id: str, batch_id: str, hashes: np.ndarray,
-                record: bool, end: bool) -> int:
-        """How many of ``hashes`` (unique, sorted) earlier pages of the run delivered;
-        with ``record``, the page's keys join the run, and ``end`` closes it."""
+    def _current(self, source_id: str, run_id: str, batch_id: str) -> Optional[List[Any]]:
+        run = self._runs.get(source_id)
+        if run is None or run[0] != run_id or run[5] not in (None, batch_id):
+            return None
+        return run
+
+    def seen(self, source_id: str, run_id: str, batch_id: str, hashes: np.ndarray) -> int:
+        """How many of ``hashes`` (unique, sorted) earlier pages of the run delivered.
+        Read-only."""
         with self._lock:
-            run = self._runs.get(source_id)
-            if run is not None and (run[0] != run_id or run[5] not in (None, batch_id)):
-                self._drop(source_id)
-                run = None
+            run = self._current(source_id, run_id, batch_id)
             if run is None:
-                if not record:
-                    return 0
+                return 0
+            hit, earlier = self._match(run, batch_id, hashes)
+            return int(earlier.sum())
+
+    def record(self, source_id: str, run_id: str, batch_id: str, hashes: np.ndarray, end: bool) -> None:
+        """The delivered keys of a page join its run; ``end`` closes the run."""
+        with self._lock:
+            run = self._current(source_id, run_id, batch_id)
+            if run is None:
+                self._drop(source_id)
                 run = self._runs[source_id] = [
                     run_id, np.empty(0, np.uint64), np.empty(0, np.int32), {}, False, None]
             self._runs.move_to_end(source_id)
-            stored, tags, pages = run[1], run[2], run[3]
-            tag = pages.get(batch_id)
-            pos = np.searchsorted(stored, hashes)
-            inside = pos < len(stored)
-            hit = np.zeros(len(hashes), dtype=bool)
-            hit[inside] = stored[pos[inside]] == hashes[inside]
-            earlier = hit.copy()
-            if tag is not None:
-                earlier[hit] = tags[pos[hit]] != tag
-            seen = int(earlier.sum())
-            if record and end:
+            if end:
                 run[5] = batch_id
-            elif record:
-                new = hashes[~hit]
+                return
+            hit, _ = self._match(run, batch_id, hashes)
+            new = hashes[~hit]
+            room = self.max_keys - self._total
+            if len(new) > room:
+                self._evict(keep=source_id, need=len(new) - room)
                 room = self.max_keys - self._total
-                if len(new) > room:
-                    self._evict(keep=source_id, need=len(new) - room)
-                    room = self.max_keys - self._total
-                if len(new) > room:
-                    if not run[4]:
-                        logger.warning("run %s of %s outgrew %d remembered keys; later pages are "
-                                       "checked against the first ones only", run_id, source_id, self.max_keys)
-                    run[4] = True
-                    new = new[:max(room, 0)]
-                if len(new):
-                    if tag is None:
-                        tag = pages[batch_id] = len(pages)
-                    at = np.searchsorted(stored, new)
-                    run[1] = np.insert(stored, at, new)
-                    run[2] = np.insert(tags, at, np.int32(tag))
-                    self._total += len(new)
-            return seen
+            if len(new) > room:
+                if not run[4]:
+                    logger.warning("run %s of %s outgrew %d remembered keys; later pages are "
+                                   "checked against the first ones only", run_id, source_id, self.max_keys)
+                run[4] = True
+                new = new[:max(room, 0)]
+            if len(new):
+                pages = run[3]
+                tag = pages.setdefault(batch_id, len(pages))
+                at = np.searchsorted(run[1], new)
+                run[1] = np.insert(run[1], at, new)
+                run[2] = np.insert(run[2], at, np.int32(tag))
+                self._total += len(new)
+
+    @staticmethod
+    def _match(run: List[Any], batch_id: str, hashes: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        stored, tags = run[1], run[2]
+        tag = run[3].get(batch_id)
+        pos = np.searchsorted(stored, hashes)
+        inside = pos < len(stored)
+        hit = np.zeros(len(hashes), dtype=bool)
+        hit[inside] = stored[pos[inside]] == hashes[inside]
+        earlier = hit.copy()
+        if tag is not None:
+            earlier[hit] = tags[pos[hit]] != tag
+        return hit, earlier
+
+    def forget(self, source_id: str) -> None:
+        with self._lock:
+            self._drop(source_id)
 
     def _drop(self, source_id: str) -> None:
         run = self._runs.pop(source_id, None)
@@ -718,9 +795,7 @@ class DriftDetector:
                 dq_drift = dq_check(batch, st)
                 if dq_drift:
                     findings.append((dq_type, dq_drift))
-            # Only a recorded batch adds its keys to its run: a proof's re-check of
-            # the same rows (record_state=False) must not see itself as a repeat.
-            dup_drift = self._check_duplicate_drift(batch, st, record=record_state)
+            dup_drift = self._check_duplicate_drift(batch, st)
             if dup_drift:
                 findings.append((DriftType.DUPLICATE, dup_drift))
 
@@ -1791,7 +1866,7 @@ class DriftDetector:
         return max(expected + 5 * math.sqrt(expected * dispersion(n1)), 2 * poisson_upper * m1 / m0 + 10)
 
     def _check_duplicate_drift(
-        self, batch: BatchPayload, st: SourceState, record: bool = False,
+        self, batch: BatchPayload, st: SourceState,
     ) -> Optional[Dict[str, Any]]:
         """Exact-duplicate rows (on the declared key, else the full row) the baseline
         does not explain, or a repeated value in an identifier column (BUG-574).
@@ -1800,7 +1875,8 @@ class DriftDetector:
           declaration (ADR-002 "exact duplicates on the declared key"): any key value
           repeated in the batch, or already delivered by an earlier page of the same
           run (``metadata.run_id``, ``_RunKeys``), is a fault -- exact, every time,
-          whatever the baseline held. A row whose key holds a null carries no key
+          whatever the baseline held. Key values compare as ``_key_part`` reads them
+          ("10005" is 10005); a row whose key holds a null or NaN carries no key
           value (the null-rate check judges it).
         * No key, but the baseline had no duplicate and an identifier column makes its
           rows unique by construction: any duplicate row in a batch is a fault --
@@ -1812,8 +1888,8 @@ class DriftDetector:
           set of possible rows repeats more the more rows you draw, so a clean 10x
           batch has a far higher duplicate rate than its baseline.
 
-        ``record``: the batch's keys join its run (``detect``'s ``record_state``).
-        Detection only (ADR-002): no row is dropped or changed.
+        Detection only (ADR-002): no row is dropped or changed. Nothing here records
+        keys: a page's delivered rows join its run in ``record_delivered_keys``.
         """
         profile = st.baseline_rows
         if not profile or not profile.get("columns"):
@@ -1827,7 +1903,9 @@ class DriftDetector:
             if (
                 dist.role == ROLE_IDENTIFIER and dist.value_bound is None and col in present
             ):
-                values = [repr(v) for r in batch.rows if (v := r.get(col)) is not None]
+                # A missing value (None, NaN) is no id value to repeat (PR #806 review 6).
+                values = [repr(v) for r in batch.rows
+                          if (v := r.get(col)) is not None and not (isinstance(v, float) and v != v)]
                 if len(set(values)) < len(values):
                     repeated_ids[col] = len(values) - len(set(values))
         key = list(profile.get("key_columns") or [])
@@ -1835,16 +1913,14 @@ class DriftDetector:
         k1, rows_fault, expected_upper, dup_rows, in_run = 0, False, None, 0, 0
         # A removed column makes rows less unique: schema drift's job.
         if key and set(key) <= present:
-            tuples = (tuple(r.get(c) for c in key) for r in batch.rows)
-            keys = [repr(t) for t in tuples if all(v is not None for v in t)]
+            keys = _row_keys(batch.rows, key)
             counts = Counter(keys)
             dup_rows = len(keys) - len(counts)
             k1 = sum(c * (c - 1) // 2 for c in counts.values())
             run_id = (batch.metadata or {}).get("run_id")
             if run_id is not None and counts:
-                in_run = self._run_keys.repeats(
-                    batch.source_id, str(run_id), batch.batch_id, _key_hashes(list(counts)),
-                    record=record, end=_is_complete_run(batch))
+                in_run = self._run_keys.seen(
+                    batch.source_id, str(run_id), batch.batch_id, _key_hashes(list(counts)))
             expected_upper = 0.0
             rows_fault = dup_rows > 0 or in_run > 0
         elif not key and set(cols) <= present and n1 >= 2:
@@ -1888,6 +1964,22 @@ class DriftDetector:
             "severity": self._fraction_severity(max(dup_fraction, id_fraction)),
             "details": "; ".join(parts),
         }
+
+    def record_delivered_keys(self, batch: BatchPayload, rows: List[Dict[str, Any]]) -> None:
+        """The rows a page delivered join its run's declared-key memory (PR #806 review
+        4). /uasr/heal calls it once it has decided, with the rows it returns: a held
+        row was never delivered, so its key is no duplicate of anything sent later
+        (a page quarantined and re-sent corrected used to be flagged). A page that
+        declares ``complete_run`` ends the run."""
+        run_id = (batch.metadata or {}).get("run_id")
+        if run_id is None:
+            return
+        st = self._store.peek(batch.source_id)
+        key = list(((st.baseline_rows if st else None) or {}).get("key_columns") or [])
+        if not key:
+            return
+        self._run_keys.record(batch.source_id, str(run_id), batch.batch_id,
+                              _key_hashes(list(set(_row_keys(rows, key)))), end=_is_complete_run(batch))
 
     @staticmethod
     def _fraction_severity(fraction: float) -> DriftSeverity:
