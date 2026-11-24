@@ -73,6 +73,9 @@ def _isolated_metadata_db():
     try:
         os.remove(path)
     except OSError:
+        # Best-effort cleanup of a uniquely named file in the OS temp dir: on Windows a
+        # pooled SQLite handle can still hold it open, and a leftover file there is
+        # harmless -- not a reason to fail the module's tests.
         pass
 
 
@@ -715,12 +718,13 @@ async def test_clean_boolean_batch_against_a_three_row_baseline_is_not_quarantin
 def test_boolean_false_alarm_probability_on_tiny_baselines_is_under_the_level():
     """The exact chance that detect() alarms on a clean 0/1 column, summed over every
     baseline and batch count: up to 8.7e-3 per batch before (3-row baseline, 100-row
-    batch, 2% ones)."""
+    batch, 2% ones). Batches of 10-64 rows take the exact 0/1 test since the boolean
+    flip fix; it must stay under the level too."""
     from math import comb
     worst = []
-    for rate in (0.02, 0.05, 0.15, 0.5):
-        for n0 in (2, 3, 5, 10, 20, 39):
-            for n1 in (65, 100):
+    for rate in (0.02, 0.15, 0.5):
+        for n0 in (2, 3, 5, 10, 39):
+            for n1 in (10, 20, 39, 64, 65, 100):
                 fires = {}
                 p_alarm = 0.0
                 for b in range(n0 + 1):
@@ -880,6 +884,168 @@ async def test_tiny_baselines_against_full_batches_quarantine_nothing_through_he
         sid = _source()
         service._detector.register_baseline(sid, BatchPayload(source_id=sid, columns=TINY_COLS, rows=base))
         req = service.IngestRequest(source_id=sid, columns=TINY_COLS, rows=copy.deepcopy(rows))
+        async with get_session_factory()() as db:
+            out = await service.heal_batch(req, _as(), db=db)
+        if out["quarantined_rows"] or out["degraded"] or out["rows"] != rows:
+            found.append((i, len(base), len(rows), out.get("drift_type"), out.get("reason")))
+    assert found == []
+
+
+# ── BUG-579 adversarial re-review: 0/1 and small-int columns; one bin width ───
+
+def _fisher_two_sided(c: int, n1: int, b: int, n0: int) -> float:
+    """Fisher's exact test of c/n1 against b/n0 (tables no likelier than the observed)."""
+    from math import comb
+    ones, total = b + c, n0 + n1
+    probs = [comb(ones, x) * comb(total - ones, n1 - x) / comb(total, n1)
+             for x in range(max(0, n1 - (total - ones)), min(ones, n1) + 1)]
+    seen = comb(ones, c) * comb(total - ones, n1 - c) / comb(total, n1)
+    return sum(p for p in probs if p <= seen * (1 + 1e-7))
+
+
+@pytest.mark.parametrize("n0,n1", [(100, 10), (100, 20), (100, 30), (1000, 10), (1000, 20), (1000, 30)])
+def test_a_flag_flip_in_a_small_batch_is_caught_as_fishers_test_proves_it(n0, n1):
+    """A 15% flag flipped to 85% in 10-30 rows: 0-3 of 20 caught at fea7658, because
+    the conservative rank test counts every pair in one bin as no evidence -- nearly
+    all of a 0/1 column. The baseline's bins hold its raw 0s and 1s, so the exact
+    test on the raw counts is valid; it now catches exactly the batches Fisher's
+    exact test proves at 1e-6 (9-20 of 20)."""
+    import numpy as np
+    hits = proven = 0
+    for seed in range(20):
+        rng = np.random.default_rng(seed)
+        base, batch = rng.random(n0) < .15, rng.random(n1) < .85
+        det = DriftDetector()
+        det.register_baseline("f", BatchPayload(source_id="f", columns=["f"], rows=[{"f": bool(v)} for v in base]))
+        hits += det.detect(BatchPayload(source_id="f", columns=["f"], rows=[{"f": bool(v)} for v in batch]),
+                           record_state=False).drift_detected
+        proven += _fisher_two_sided(int(batch.sum()), n1, int(base.sum()), n0) < 1e-6
+    assert proven >= 9
+    assert hits == proven, f"{hits}/20 caught, Fisher proves {proven}/20"
+
+
+def test_exact_tied_rank_p_is_the_permutation_distribution_with_ties():
+    """Brute force over every subset of a small tied pool: the p-value is exactly
+    P(|W - E W| >= |w - E W|) under the tie-respecting permutation null."""
+    import itertools
+    rnd = random.Random(5)
+    for _ in range(80):
+        t = [rnd.randint(0, 3) for _ in range(rnd.randint(2, 5))]
+        if sum(t) < 3:
+            continue
+        pool = [j for j, c in enumerate(t) for _ in range(c)]
+        n1 = rnd.randint(1, len(pool) - 1)
+        chosen = rnd.sample(range(len(pool)), n1)
+        p = [sum(1 for i in chosen if pool[i] == j) for j in range(len(t))]
+        q = [c - x for c, x in zip(t, p)]
+        cum, rank = 0, []
+        for c in t:
+            rank.append(cum + (c + 1) / 2)
+            cum += c
+        sums = [sum(rank[pool[i]] for i in comb) for comb in itertools.combinations(range(len(pool)), n1)]
+        mean = sum(sums) / len(sums)
+        d = abs(sum(x * r for x, r in zip(p, rank)) - mean)
+        want = 1.0 if d == 0 else sum(abs(w - mean) >= d - 1e-9 for w in sums) / len(sums)
+        assert DriftDetector._exact_tied_rank_p(p, q) == pytest.approx(want, rel=1e-9, abs=1e-12)
+
+
+@pytest.mark.parametrize("lam0,lam1,n1,least", [(3, 6, 20, 17), (3, 6, 30, 19), (1, 3, 20, 15)])
+def test_a_count_shift_in_a_small_batch_drifts(lam0, lam1, n1, least):
+    """A small-int column takes the same exact test. Against 400 baseline rows, at
+    fea7658: Poisson(3) -> Poisson(6) in 20 rows 3/20, in 30 rows 12/20; Poisson(1)
+    -> Poisson(3) in 20 rows 4/20."""
+    import numpy as np
+    hits = 0
+    for seed in range(20):
+        rng = np.random.default_rng(seed)
+        det = DriftDetector()
+        det.register_baseline("c", BatchPayload(source_id="c", columns=["n"],
+                                                rows=[{"n": int(v)} for v in rng.poisson(lam0, 400)]))
+        hits += det.detect(BatchPayload(source_id="c", columns=["n"],
+                                        rows=[{"n": int(v)} for v in rng.poisson(lam1, n1)]),
+                           record_state=False).drift_detected
+    assert hits >= least, f"{hits}/20"
+
+
+def test_every_small_int_range_reads_its_raw_counts_from_the_bins():
+    """The top edge is min + 50 * width in floating point, e.g. 7.000000000000002 for
+    -7..7 or 8.9e-16 for -7..0; the exact test must still recognise the bins as the
+    column's own values for every range it covers."""
+    for lo in (-7, 0, 1, 1000, -1000000):
+        for span in range(1, 16):
+            vals = [lo + (i % (span + 1)) for i in range(200)]
+            det = DriftDetector()
+            det.register_baseline("r", BatchPayload(source_id="r", columns=["x"], rows=[{"x": v} for v in vals]))
+            dist = det.baseline_distributions("r")["x"]
+            got = DriftDetector._raw_value_counts([float(lo), float(lo + span)],
+                                                  dist, DriftDetector._baseline_edges(dist.histogram))
+            assert got is not None, (lo, span)
+            assert list(got[1]) == [vals.count(lo + k) for k in range(span + 1)], (lo, span)
+            assert list(got[0]) == [1] + [0] * (span - 1) + [1], (lo, span)
+
+
+def test_a_value_bins_the_same_in_the_baseline_and_a_batch():
+    """The baseline was binned with (max - min) / bins and a batch with (top edge -
+    bottom edge) / bins, which differ by an ulp: a baseline 65.58 landed in bin 4 and
+    a batch 65.58 in bin 5, so a tie came out ordered."""
+    import numpy as np
+    values = [55.53, 65.58, 156.03]
+    hist = DriftDetector._build_numeric_histogram(values)
+    edges = DriftDetector._baseline_edges(hist)
+    assert DriftDetector._histogram_on_edges(values, edges)["counts"] == [0, *hist["counts"], 0]
+    rng = np.random.default_rng(0)
+    for it in range(4000):
+        n0 = int(rng.integers(5, 400))
+        v = [rng.normal(100, 15, n0).round(2), rng.integers(0, 37, n0) * 0.1,
+             rng.gamma(2, 30, n0).round(1), rng.uniform(0.1, 7.3, n0).round(3)][it % 4]
+        hist = DriftDetector._build_numeric_histogram(v)
+        edges = DriftDetector._baseline_edges(hist)
+        if edges is None or len(edges) == 1:
+            continue
+        assert DriftDetector._histogram_on_edges(v, edges)["counts"] == [0, *hist["counts"], 0], it
+
+
+SMALL_INT_COLS = ["flag", "rare_flag", "pois1", "pois3", "digit", "zip"]
+
+
+def _small_int_rows(rng, n: int) -> list:
+    import numpy as np
+    cols = {"flag": rng.random(n) < 0.3, "rare_flag": rng.random(n) < 0.03, "pois1": rng.poisson(1, n),
+            "pois3": rng.poisson(3, n), "digit": rng.integers(0, 10, n),
+            "zip": np.where(rng.random(n) < 0.8, 0, rng.poisson(2, n))}
+    return [{k: bool(v[i]) if "flag" in k else int(v[i]) for k, v in cols.items()} for i in range(n)]
+
+
+def _small_int_cases(count: int, salt: int):
+    import numpy as np
+    for i in range(count):
+        rng = np.random.default_rng([salt, i])
+        n0 = (5, 20, 100, 400, 1000)[i % 5]
+        yield i, _small_int_rows(rng, n0), _small_int_rows(rng, int(rng.integers(2, 65)))
+
+
+def test_clean_small_int_micro_batches_raise_no_drift():
+    det = DriftDetector()
+    loop = RecoveryLoop(detector=det, config=RecoveryLoopConfig())
+    found = []
+    for i, base, rows in _small_int_cases(1000, 21):
+        sid = f"si_{i}"
+        det.register_baseline(sid, BatchPayload(source_id=sid, columns=SMALL_INT_COLS, rows=base))
+        b = BatchPayload(source_id=sid, columns=SMALL_INT_COLS, rows=rows)
+        r = det.detect(b, record_state=False)
+        if r.drift_detected:
+            found.append((i, len(base), len(rows), r.details))
+        elif loop.unexplained_shift(r, b) is not None:
+            found.append((i, len(base), len(rows), "rank shift"))
+    assert found == []
+
+
+async def test_clean_small_int_micro_batches_quarantine_nothing_through_heal():
+    found = []
+    for i, base, rows in _small_int_cases(200, 22):
+        sid = _source()
+        service._detector.register_baseline(sid, BatchPayload(source_id=sid, columns=SMALL_INT_COLS, rows=base))
+        req = service.IngestRequest(source_id=sid, columns=SMALL_INT_COLS, rows=copy.deepcopy(rows))
         async with get_session_factory()() as db:
             out = await service.heal_batch(req, _as(), db=db)
         if out["quarantined_rows"] or out["degraded"] or out["rows"] != rows:

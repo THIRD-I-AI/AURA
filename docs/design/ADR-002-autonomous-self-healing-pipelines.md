@@ -154,10 +154,21 @@ column. None of them treats the baseline's sample std as the true one.
   - The tail is bounded from above by a Chernoff bound (Hoeffding: sampling without
     replacement), and by an exact count on a grid of score groups while the smaller sample has
     ≤ 16 rows.
+- **0/1 and small-int columns, while either sample has ≤ 64 rows:** an exact rank test on the
+  raw value counts, ties and all.
+  - It applies to an int or bool column whose range is shorter than its 50 bins, with at most
+    16 distinct values. There each bin holds one value, so the baseline's histogram is its raw
+    counts, and the bin edges never enter the test.
+  - The p-value is P(|W − E W| ≥ |w − E W|) under the tie-respecting permutation null. On a
+    0/1 column this is Fisher's exact test.
 - **Rank test, both samples > 64 rows:** the BUG-575 cut, |z| > 5.
 - **Interior G-test:** only with ≥ 40 rows inside the range.
 - **Infinite values:** ±inf in a column whose baseline is all finite fires on its own, like a
-  change of kind.
+  change of kind. This rests on an assumption, not a distribution-free proof: a source whose
+  baseline holds no inf is taken not to emit inf legitimately.
+- **One bin width:** a baseline and a batch binned on its edges both use (top edge − bottom
+  edge) / bins. Two formulas that differed by an ulp put a baseline 65.58 in bin 4 and a
+  batch 65.58 in bin 5, which broke the rank test's tie bound.
 
 **Rows ×1000 needed to fire.** Batch of N(100, 15) rows, k of them multiplied by 1000,
 detect() firing in 5/5 trials. The analytic past-range bound is in brackets.
@@ -178,11 +189,27 @@ quarantined ~40% of clean 5-row batches.
   pooled values all coming from the batch has p ≈ 0.2.
 - **Very small samples:** 2 rows against a 400-row baseline can reach at best 1/C(402, 2)
   ≈ 1.2e-5. Baselines under ~40 rows prove only large, nearly total shifts.
-- **Tied columns:** booleans, small counts and heavy tails whose mass sits in the first bins.
-  Pairs in one bin are no evidence, so these need more rows than a continuous column.
+- **Tied columns:** heavy tails whose mass sits in the first bins, and int columns wider than
+  the exact test's reach. Pairs in one bin are no evidence, so these need more rows than a
+  continuous column. 0/1 and small-int columns take the exact test instead. A 15% flag
+  flipped to 85% is caught exactly as often as Fisher's exact test proves it at 1e-6: 9/20
+  at 10 rows against 100 baseline rows, 20/20 from 20 rows (0/20 at fea7658).
 
 **Calibration**
 
+- **Exact 0/1 and small-int test:** exact by construction.
+  - On a clean 0/1 column, summed exactly over the binomial counts (rates 2-50%, baselines
+    2-1000 rows, batches 10-300 rows), detect() fires on at most 6.8e-7 of batches, apart
+    from the interior G-test cell below.
+  - On digits, Poisson(1), Poisson(3), 15% flag and zero-inflated columns (20,000 trials per
+    cell; baselines 5-1000 rows, batches 10-64 rows), the rate under 1e-1..1e-4 is at or under
+    the level. The one exception is conditional: when a 5-row zero-inflated baseline happens not
+    to be constant, the rate runs up to 1.4× nominal. A constant baseline never takes the
+    test, so over all batches the rate stays at the level.
+  - Being exact, it fires at its level rather than far under it. In 20,000 clean six-column
+    small-int batches it raised one alarm: a uniform-digit column whose 21 rows held 12
+    zeros (chance 1.2e-7, exact p 5e-7). The level allows up to ~0.12 such alarms in
+    120,000 column checks.
 - **Rank test:** conservative by construction. It used to condition on the pooled bins, and
   because the bins are cut on the baseline's own range it ran 1.0-1.8× nominal on tiny
   baselines. In 20,000 trials per cell (uniform, 15% boolean and Poisson(1) columns; baselines
@@ -191,5 +218,5 @@ quarantined ~40% of clean 5-row batches.
 - **Interior G-test:** a chi-square approximation. On a clean 15% boolean column with a
   100-row baseline it fires on 1.9e-6 of 300-row batches and 3.3e-6 of 1000-row batches,
   summed exactly over the binomial counts (300-row batches: 1.8e-5 at 266aefd). Of the
-  0/1-column cells checked (rates 2-50%, baselines 2-100 rows, batches 65-1000 rows), these
-  two are the only ones over the nominal 1e-6.
+  0/1-column cells checked (rates 2-50%; baselines of 2-1000 rows against batches of 10-300,
+  and 2-100 against 65-1000), these two are the only ones over the nominal 1e-6.
