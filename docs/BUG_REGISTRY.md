@@ -5525,20 +5525,20 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Fix:** pending.
 
 ## BUG-578: UASR keeps per-source state in memory forever: locks, canary watches and detector entries are never evicted
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ADR-002 phase 2b review and a memory probe, 2026-11-08. `aurabackend/uasr/repair_canary.py`.
 - **Severity:** low
 - **Root cause:** Memory probe, 2026-11-08: RepairCanary._locks and DriftDetector._source_locks gain one entry per source and are never pruned, and canary watches accumulate (236 after 560 sources). Measured growth is about 55 KB per source (traced 120.0 MB at 70 sources, 123.8 MB at 140). Not the cause of the 7.4 GB realism benchmark run, which came from that lane itself.
 - **Failure scenario:** A long-lived UASR serving many short-lived pipeline sources on the 1 GB box grows without bound (about 550 MB per 10,000 sources) until restart.
-- **Fix:** pending.
+- **Fix:** PR #803. Per-source locks in RepairCanary and DriftDetector count holders and waiters and are evicted only when nobody holds or waits on them. The canary keeps at most 1,000 idle sources in memory and reloads any other from uasr_repair_watches with the same verdicts (blocks, backoff, cleared rows, open watches); failed progress writes are kept and retried. /uasr/mapek/status reads evicted sources from the database, filtered by tenant in SQL. Measured growth with eviction is about 0.3 KB per source. Adversarially reviewed twice; concurrency tests stable 20/20.
 
 ## BUG-579: Very small streaming micro-batches can quarantine a few clean rows, a false alarm under ADR-002
-- **Status:** open
+- **Status:** fixed
 - **Found by:** ADR-002 phase 2b review and a memory probe, 2026-11-08. `aurabackend/pipeline/streaming/heal.py`.
 - **Severity:** medium
-- **Root cause:** Seen by the phase-2b streaming reviewer: in a clean-data run, 2 rows were quarantined by the heal step itself. With few rows per micro-batch the detector's checks have little to compare. Not yet triaged.
+- **Root cause:** Much larger than first seen: on clean data /uasr/heal quarantined 44% of 5-row, 36% of 10-row and 21% of 20-row batches. Four checks fired on tiny clean batches: the >2 sigma mean-shift rule (one boolean True or one tail value), the label KL score, the semantic cosine distance, and the numeric G test, whose chi-square cutoff does not hold for the nearly empty below-min and above-max bins. Small batches also inflated the adaptive threshold.
 - **Failure scenario:** A clean stream with low event rates loses a few rows per hour to quarantine; they are kept and recoverable, but it breaks the zero-false-alarm rule and adds noise.
-- **Fix:** pending.
+- **Fix:** PR #803. A check reports drift only when the batch proves it at the 1e-6 level: an exact past-range test; a conservative exact Mann-Whitney rank test when either sample has 64 rows or fewer (normal cut only when both exceed 64); an exact test on raw counts for 0/1 and small-int columns (Fisher on a 0/1 column); a G test on label counts, which then skips warmup; semantic findings need a significant label change; +-inf in an all-finite column fires; numeric strings are coerced as the distributions are; batches under 20 rows no longer feed the adaptive threshold. The Chebyshev bound on the sample std was removed (it alarmed on heavy tails). Result: 0 alarms in well over 100,000 clean batches (detect() and /uasr/heal), recall restored on every case the old code caught except a few extreme rows in a large batch (owner decision 2026-11-23; ADR-002 "Detection limits (BUG-579)"). Two adversarial reviews; the second approved.
 
 ## BUG-580: cleanup_verify_resources.py finds nothing on production: tenant-scoped UASR ids, the state store, upload profiles, dashboards and run accounts are never matched
 - **Status:** fixed
@@ -5547,3 +5547,75 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Root cause:** `VERIFY_SOURCE_ID_RE` (scripts/cleanup_verify_resources.py:109) is `^verify_[0-9a-f]{8}_uasr$`, but since the UASR tenant scoping (uasr/tenancy.py, BUG-262) an authenticated run stores its source as `<tenant>::verify_<hex>_uasr`, so no row matched. `UASR_TABLES` (:117-122) predates uasr_repair_watches, main() (:318-319) never opens uasr_state.db or gateway.db, nothing reads schema_columns, and the only account rule (:180-191) is the fixed verify-uasr@example.com login.
 - **Failure scenario:** Every live verification leaves rows on production and the documented cleanup step reports "Nothing to do.", so verify data keeps accumulating in the UASR drift state and in the staging account dashboard list.
 - **Fix:** Source ids accept one optional `<tenant>::` prefix (any non-empty text without `::`, the tenant grammar of uasr/tenancy.py), each label named: `_uasr` in the five UASR tables with a source_id and in uasr_state.db uasr_source_state (new `--uasr-state-db`), `_upload` in metadata.db schema_columns; metadata.db dataset_profiles rows go by their exact file_id (`verify_<hex>_<label>.<ext>`, the uploaded file's own name; 89 were on production). Dashboards are deleted from gateway.db (new `--gateway-db`) by the exact name `^verify_[0-9a-f]{8}_dashboard$`; their tiles are inline in tiles_json and no table references them. New `--delete-run-accounts` deletes only the four loop account shapes; verify-uasr@example.com still needs `--delete-login`. Before users or dashboards are deleted, foreign keys into them are looked up; if there are any, the rows are kept and reported instead of cascading. A missing table is skipped, and every pattern is applied with fullmatch. Tests `aurabackend/tests/test_cleanup_verify_resources.py` (7 new; the prefix and dashboard tests fail on the old script).
+
+## BUG-582: A NaN in a baseline crashes register_baseline: the numeric histogram casts NaN to a negative bin index
+- **Status:** open
+- **Found by:** adversarial review of the BUG-578/579 hardening (PR #803), 2026-11-22. Present at 266aefd.
+- **Severity:** medium
+- **Root cause:** `DriftDetector._build_numeric_histogram` (uasr/drift_detector.py:1611-1634 at 266aefd) takes `arr.min()`/`arr.max()` of a float array without dropping NaN, so `min_val` is NaN, `((arr - min_val) / bin_width).astype(np.int64)` yields a huge negative index, and `np.bincount` raises `ValueError` on negative input.
+- **Failure scenario:** A source whose first clean load has a float column with one NaN (pandas' null) never gets a baseline: `register_baseline` raises, so every later batch of that source is healed against nothing.
+- **Fix:** pending. Drop non-finite values before binning (NaN is a null, counted by the null-rate check), and test register_baseline with NaN, +inf and an all-NaN column.
+
+## BUG-583: A sequential integer id with a baseline under 20 rows is not recognised as an identifier, so every later batch raises drift
+- **Status:** open
+- **Found by:** adversarial review of the BUG-578/579 hardening (PR #803), 2026-11-22. Present at 266aefd.
+- **Severity:** medium
+- **Root cause:** `DriftDetector._infer_role` (uasr/drift_detector.py:816-868 at 266aefd) requires at least `_ROLE_MIN_VALUES` (20) values before a column can be an identifier, so a 5-19 row first load leaves `order_id` = 1..12 as a measure. Each later batch (ids 13..) lies entirely past the baseline's range and fires the past-range test.
+- **Failure scenario:** A pipeline whose first run loads 12 rows has every following run marked DEGRADED and its rows quarantined, permanently, for an id column doing exactly what ids do.
+- **Fix:** pending. Infer the role from the declared key / declared type / id-like name when there are too few values to infer it from the data, and let a small baseline's role be revised by the first batches instead of fixed for good.
+
+## BUG-584: Text label columns with digits (e.g. "L123") and a high-cardinality text column are inferred as identifiers, so clean batches raise duplicate drift
+- **Status:** open
+- **Found by:** adversarial review of the BUG-578/579 hardening (PR #803), 2026-11-22. Present at 266aefd.
+- **Severity:** medium
+- **Root cause:** `DriftDetector._infer_role` (uasr/drift_detector.py:856-860 at 266aefd) makes any null-free, all-distinct text column with a digit-bearing format an identifier. A label column whose 20-row baseline happened to see 20 distinct labels ("L101".."L120"), or free-form codes, qualifies; later batches that repeat a label are then reported as repeated identifiers (BUG-574 path).
+- **Failure scenario:** 3 of 17,280 clean label batches in the review sweep raised duplicate drift; with a 100-row baseline, a 2,000-row batch of a high-cardinality text column does too. The run is DEGRADED for nothing.
+- **Fix:** pending. Require evidence beyond "distinct so far" for a text identifier (declared key, id-like name, or a baseline large enough that the collision probability under a label model is negligible), as integers already do.
+
+## BUG-585: The interior G test in _aligned_drift_p uses a chi-square approximation, so clean boolean columns alarm above the 1e-6 target
+- **Status:** open
+- **Found by:** BUG-578/579 hardening rework (PR #803), 2026-11-23, by summing the exact binomial false-alarm probability.
+- **Severity:** low (rate fell from 1.8e-5 at 266aefd to about 2-3e-6 with #803; target 1e-6)
+- **Root cause:** `_aligned_drift_p` (uasr/drift_detector.py, the interior term `_chi2_sf(2.0 * kl * ...)`) treats the G statistic as chi-square distributed; with a 15% boolean and a 100-row baseline the approximation's tail is lighter than the exact one.
+- **Failure scenario:** About 2-3 in a million clean 300-1000 row batches of a 15% flag column with a 100-row baseline are quarantined.
+- **Fix:** pending. Make the interior test exact or conservative for sparse cells (exact multinomial/2xk test, or require a minimum expected count before the chi-square tail is used).
+
+## BUG-586: RepairCanary.visible() reads a tenant's whole repair-watch history on every status call (the whole table with auth off)
+- **Status:** open
+- **Found by:** adversarial review of the BUG-578/579 hardening (PR #803), 2026-11-22. Introduced by #803's reload-from-database for evicted sources.
+- **Severity:** low
+- **Root cause:** `RepairCanary.visible()` (uasr/repair_canary.py) loads every `uasr_repair_watches` row for the tenant through `load_watches(tenant=...)`, including finished watches, on each `/uasr/mapek/status` call; with no tenant (auth disabled) it reads the whole table.
+- **Failure scenario:** Status latency and memory grow with the total number of repairs ever watched, not with the number currently open.
+- **Fix:** pending. Load only open or still-blocking watches for the status view, with a SQL filter and an index, and paginate history if it is ever shown.
+
+## BUG-587: Pipelines and ETL cannot declare a unique key, so the exact keyed-duplicate check never runs for them
+- **Status:** open
+- **Found by:** realism benchmark (PR #807), 2026-11-23.
+- **Severity:** medium
+- **Root cause:** `pipeline/heal.py` sends each run's `run_id` to /uasr/heal but its baselines and batches carry no `key_columns`, and neither the pipeline definition nor /etl/execute lets a user declare one. Without a key, duplicates are judged from the data alone, which cannot prove a few repeated rows on a small keyless table at the zero-false-alarm level.
+- **Failure scenario:** In the real-data lane, 448 of 550 silent misses are injected duplicates on keyless tables; with a declared key every one of 650 keyed duplicate trials was caught. Production pipelines and ETL jobs always run keyless today.
+- **Fix:** pending. Let a pipeline source and an ETL request declare key columns (validated against the source schema), pass them as `key_columns` on the baseline and every heal call, and show the duplicates alert in the run view.
+
+## BUG-588: Keyed-duplicate run memory is per process and in memory, so a restart or a second replica forgets which keys a run has seen
+- **Status:** open
+- **Found by:** realism benchmark (PR #806/#807), 2026-11-23.
+- **Severity:** low
+- **Root cause:** the run-key memory added in PR #806 lives in the UASR process, capped at 2M keys per run; it is not persisted and not shared.
+- **Failure scenario:** A run that spans a UASR restart, or is served by two replicas, can deliver the same key twice without the duplicates alert. Past 2M keys a run is checked only against its first 2M.
+- **Fix:** pending. Persist run keys (e.g. a per-run hash set in the state store with TTL) or scope the guarantee explicitly to a single process in ADR-002.
+
+## BUG-589: The rename, retype and rescale proofs compare the batch's spread with the baseline's sample standard deviation, so a heavy-tailed column often cannot re-prove a correct repair
+- **Status:** open
+- **Found by:** realism benchmark (PR #806), 2026-11-23, root cause of steady seeds 194 and 336.
+- **Severity:** low (recall only; the batch is quarantined, never returned wrong)
+- **Root cause:** `_moments_match` inside the proofs requires the batch's spread to match the baseline's sample std; one far baseline value inflates that std (342 against clean batches' 188-261), so clean later batches fail the proof.
+- **Failure scenario:** A correct retype on a lognormal column is never re-proven on later batches, so those batches are quarantined instead of healed.
+- **Fix:** pending. Replace the moment check with the detector's exact tests (past-range and rank), which hold for any distribution.
+
+## BUG-590: Each drift test runs at 1e-6 per column, uncorrected for how many columns and tests a batch has, so a wide table's per-batch false-alarm rate is many times 1e-6
+- **Status:** open
+- **Found by:** BUG-578/579 hardening (PR #803), 2026-11-23: an exact test fires at its level, and a 20,000-batch clean small-int sweep raised one genuine 5e-7 alarm.
+- **Severity:** medium
+- **Root cause:** `DriftDetector` applies its 1e-6 level to each column's past-range, rank, label and exact tests independently (uasr/drift_detector.py). With k tests in a batch the chance that any one fires on clean data is about k x 1e-6: a 50-column table with two numeric tests per column is near 1e-4 per batch. The older approximate tests hid this by being far more conservative than nominal.
+- **Failure scenario:** A pipeline loading 1,000 clean 50-column batches a day is held DEGRADED for nothing about once every ten days.
+- **Fix:** pending. Control the family-wise rate per batch (e.g. Bonferroni: each test at 1e-6 / number of tests in the batch, or Holm), and state the per-batch target in ADR-002.
