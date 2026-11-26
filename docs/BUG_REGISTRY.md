@@ -5509,12 +5509,12 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Fix:** `location_shift` and a whole-batch re-check after the proven repairs push a value off by a non-power-of-ten factor, or a second fault behind a first repair, to quarantine; `restore_scaled` restores the column's own value kind and recorded precision (`ColumnDistribution.decimals`) or refuses. Tests `aurabackend/tests/test_heal_accuracy_bug575.py` (18). Benchmark on the combined branch, 7000 fault trials: 0 WRONG, precision 1.0.
 
 ## BUG-576: An integer measure whose name ends in num/number/no/nr is treated as an identifier, so faults in it go unchecked
-- **Status:** open
+- **Status:** fixed
 - **Found by:** review of the ADR-002 accuracy round (wf_2157b47f-3f5) and a side-agent review of the benchmark's scope, 2026-11-08. `aurabackend/uasr/drift_detector.py:76`.
 - **Severity:** medium
 - **Root cause:** _ID_NAME_WORDS includes 'num', 'number', 'no' and 'nr', so a wide-range, unique, null-free integer measure named like visit_num or total_number is classified as a keyed id and skips statistical drift. A reviewer's probe on seat_num and sequence_number caught x2, x1.5 and an in-range shift in 0 of 20 trials each.
 - **Failure scenario:** A column visit_num doubles because of an upstream bug; the batch is returned as healed with the doubled values.
-- **Fix:** pending.
+- **Fix:** PR #806. The identifier role rests on value evidence that ignores row order (order-free gap and growth tests, re-sent old ids allowed for upserts/CDC) instead of the column name, so seat_num, visit_num and total_number are measures when their values say so and catch x2, x1.5 and in-range shifts; declared and inferred ids keep a value bound, so x1000 on an id still raises a format-change alert; an insert plus update of one new id is not a duplicate unless a key is declared. Adversarially reviewed (first review rejected 4 defects, all fixed with regression tests that fail on bc9e19a).
 
 ## BUG-577: The accuracy benchmark measures only synthetic data and only the first batch after a baseline, so its 0-WRONG result is not yet evidence for real data or steady state
 - **Status:** open
@@ -5627,3 +5627,19 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Root cause:** `DriftDetector` applies its 1e-6 level to each column's past-range, rank, label and exact tests independently (uasr/drift_detector.py). With k tests in a batch the chance that any one fires on clean data is about k x 1e-6: a 50-column table with two numeric tests per column is near 1e-4 per batch. The older approximate tests hid this by being far more conservative than nominal.
 - **Failure scenario:** A pipeline loading 1,000 clean 50-column batches a day is held DEGRADED for nothing about once every ten days.
 - **Fix:** pending. Control the family-wise rate per batch (e.g. Bonferroni: each test at 1e-6 / number of tests in the batch, or Holm), and state the per-batch target in ADR-002.
+
+## BUG-591: The sandbox's decimals hold fires on clean columns that occasionally carry finer precision
+- **Status:** open
+- **Found by:** adversarial review of PR #806, 2026-11-23 (p9_decimals.py).
+- **Severity:** low (holds clean rows of flagged batches; never returns wrong data)
+- **Root cause:** `_unrepaired_value_drift` (uasr/recovery_loop.py, decimals branch) holds a numeric column whose batch has values with more decimals than the column records; a clean kg column recorded to 0.1 with 0.3% of readings at 0.05 steps is held in 19% of flagged 300-row batches.
+- **Failure scenario:** Flagged batches of sources whose instruments occasionally report finer precision are held aside more often than needed.
+- **Fix:** pending. Judge precision against the baseline's distribution of decimals, not its modal precision.
+
+## BUG-592: Rescale is voided for the whole column when one value has two possible preimages, so full-precision floats are almost never restored
+- **Status:** open
+- **Found by:** adversarial review of PR #806, 2026-11-23 (p8_preimage.py).
+- **Severity:** low (recall; the batch is quarantined, never returned wrong)
+- **Root cause:** `actuator_agent.py:911` with `recovery_loop.py:974`: 24-29% of full-digit floats under x10, x100 or /100 have two preimages; one ambiguous value voids the column, so a 50-row batch restores with probability 1e-6 to 4e-8.
+- **Failure scenario:** A unit fault on a full-precision float column is never healed automatically; every batch is quarantined.
+- **Fix:** pending. Hold only the ambiguous rows (ADR-002 "never guess") and restore the rest.
