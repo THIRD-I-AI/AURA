@@ -9,15 +9,15 @@
  "synthetic": {
   "500": {
    "trials": 7500,
-   "correct": 5296,
-   "recall": 0.706133,
+   "correct": 5303,
+   "recall": 0.707067,
    "silent_miss": 0,
    "missed_alert": 0
   },
   "50": {
    "trials": 750,
-   "correct": 533,
-   "recall": 0.710667,
+   "correct": 534,
+   "recall": 0.712,
    "silent_miss": 0,
    "missed_alert": 0
   }
@@ -25,8 +25,8 @@
  "real": {
   "50": {
    "trials": 8950,
-   "correct": 4411,
-   "recall": 0.492849,
+   "correct": 4606,
+   "recall": 0.514637,
    "silent_miss": 550,
    "missed_alert": 19
   }
@@ -34,11 +34,11 @@
  "steady": {
   "500": {
    "trials": 977,
-   "correct": 768,
-   "recall": 0.78608,
+   "correct": 772,
+   "recall": 0.790174,
    "silent_miss": 9,
    "missed_alert": 0
   }
  },
- "_recorded": "2026-11-22, feature/heal-realism after merging heal-hardening (891c3ba), the canary re-proof rule and keyed duplicates; first floor."
+ "_recorded": "2026-11-26, feature/heal-realism-bench after merging feature/heal-accuracy-fixes at 6f67fcb (the PR #806 review fixes, the detection-only no-hold, origin/main at 28c2470). Recall rose in every lane and no miss count moved: correct synthetic 500 5296 -> 5303, synthetic 50 533 -> 534, real 50 4411 -> 4606, steady 500 768 -> 772. Previous floor: 2026-11-22, the first (feature/heal-realism after heal-hardening 891c3ba)."
 }

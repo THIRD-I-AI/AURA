@@ -24,7 +24,7 @@
 | Repair | Applied only when | Otherwise |
 |---|---|---|
 | Column rename | The new name matches exactly one removed column, by normalised name or by value fingerprint (≥ 99% of values identical in type and distribution to the baseline column), and no other candidate comes close | Quarantine the batch |
-| Retype (cast back) | Each value casts losslessly (round-trip equal), **and** the cast-back values pass the same distribution proof against the baseline as a unit repair (range, moments and the aligned-histogram test; the label test for a categorical column). A lossless cast proves the representation, not the values: an int column ×2.5 sent as floats casts its whole values back exactly (BUG-577). An identifier or date has no distribution to compare (BUG-573) | Rows that fail the cast are quarantined, never nulled. If the cast-back values fail the distribution proof, the change is unproven and every row carrying the column is quarantined |
+| Retype (cast back) | Each value casts losslessly (round-trip equal), **and** the cast-back values pass the same distribution proof against the baseline as a unit repair (range, moments and the aligned-histogram test; the label test for a categorical column). A lossless cast proves the representation, not the values: an int column ×2.5 sent as floats casts its whole values back exactly (BUG-577). An identifier or date has no distribution to compare (BUG-573) | Rows that fail the cast are quarantined, never nulled. If the cast-back values fail the distribution proof, or a value carries a fraction where the column records whole numbers (an int count ×2.5 sends an odd count as 7.5), the change is unproven and every row carrying the column is quarantined |
 | New column | Kept: the schema evolves, nothing is dropped. The destination gains the column, or it is held in an overflow field | — |
 | Unit or scale (×10ⁿ) | One factor brings ≥ 99.9% of values back inside the baseline's range and moments, and no other factor does | Quarantine |
 | Duplicates | The rows are exact duplicates on the declared key, or on the full row when no key is declared. A declared key (the baseline's `metadata.key_columns`) is unique by declaration: a key value repeated in a batch, or already delivered by an earlier page of the same run (`metadata.run_id`), is a duplicate every time | Report and alert only |
@@ -37,6 +37,24 @@ LLM-written fixes are never applied automatically. They can be proposed in the l
 Every applied fix goes through these four steps.
 
 1. **Sandbox.** The fix runs on the triggering batch, and its output must pass the same checks.
+   In a batch the healer changed (a repair applied or a row held), a numeric column no rule
+   repaired is also held when its values changed: more decimal places than the column records,
+   rows past the baseline's range more often than chance explains (the exact past-range test,
+   1e-3 for the whole batch split over the columns it tests), a difference proven at 1e-6, or a
+   value past the *unit-fault reach*. The reach is a heuristic hold, not a proof: no exact test
+   can prove one row past the range (sk_digits: one pixel 1.0 → 10000.0 beside a proven rename),
+   so a value whose magnitude exceeds the baseline's largest by more than ten times, and by more
+   than the baseline's own dynamic range (largest over smallest magnitude), is held. On clean
+   batches of 5–300 rows (1,000 seeds per baseline size, one batch each) it held lognormal(0, 2)
+   and (0, 2.5) columns never, and pareto(1.2) columns, an infinite-variance tail, in 0.4% of
+   batches at 200 baseline rows, 2.5% at 100 and 9.5% at 50. Like every sandbox check it only
+   holds rows, never returns or alters them. A batch flagged only by detection-only findings
+   (duplicates, a null spike, volume) changed nothing: it comes back as sent with its alert,
+   after the checks a clean batch gets and the unit-fault reach alone (a count ×1000 beside a
+   null spike is a unit fault the detector could not prove, not a value to return under an
+   alert), never the decimal-place, past-range or aligned holds, which at the first floor held
+   79 of 650 real keyed-duplicate batches, 81 of 650 null spikes and 26 of 650 duplicates for
+   values the same batch, unflagged, returns.
 2. **Canary.** For the next N batches (default 3), the fixed output is checked against the
    baseline. Any regression rolls it back automatically. A regression is evidence against the
    fix: its output on the column is provably not the baseline's (the detector's exact tests),
@@ -67,8 +85,11 @@ after the fault). It measures:
   silent misses included, split into wrong applied fixes, silent misses (a fault never detected,
   its data passed unchanged) and missed alerts (a detection-only fault left unreported), per
   fault type and dataset.
-- **(c) Recall:** faults healed, or detection-only faults correctly reported, out of all fault
+- **(c) Healed automatically (recall):** fault batches that came back exactly right -- repaired,
+  or, for a detection-only fault, returned untouched with its alert -- out of all fault
   batches. Abstaining (quarantine) lowers it, never (a).
+- **Detected** (healed, held or alerted): 1 minus the silent-miss rate -- the fault batches the
+  healer did not pass through unflagged.
 - **(d) False alarms** on clean data, gated at 0 in every lane: any finding, held row or change
   on a clean batch, including the clean earlier pages of a run.
 
@@ -81,22 +102,29 @@ numbers; a miss count is never raised, nor recall lowered, without an owner's de
 that commit. The `heal-realism` CI job enforces it for the real and steady lanes, the
 `heal_accuracy` lanes for the synthetic one.
 
-**Keyed duplicates.** When a source declares a unique key, any repeated key value in a batch,
-or a key value an earlier page of the same run delivered, must raise the duplicates alert, every
-time. Every lane runs keyed-duplicate trials (the synthetic identifier, a real source's natural
-key such as `(firm, year)`, or a row key added to the rows): exact copies, rows that take
-another row's key, and copies of an earlier page's rows. A missed keyed duplicate is wrong
-under (a) and is gated at 0 misses. Duplicates on keyless data stay as they were: reported
-under (b), and held by the floor.
+**Keyed duplicates.** When a source declares a unique key, any repeated key value in a batch, or
+a key value an earlier page of the same run delivered, must raise the duplicates alert, every
+time. A page's keys join the run when its rows are delivered (a held row's key never does), and
+a page re-sent unchanged is the same page, not its own duplicate. Key values compare by the key
+they name: 1, 1.0 and "1" are one key; "007" and True are not 1. A run's keys live in the UASR
+process's memory (at most 2,000,000 hashed keys over all sources and tenants, least recently
+used runs evicted first): a restart, a page another replica serves, or an eviction starts the
+run's memory afresh, and a key repeated across that gap is not caught. Every lane runs
+keyed-duplicate trials (the synthetic identifier, a real source's natural key such as
+`(firm, year)`, or a row key added to the rows): exact copies, rows that take another row's key,
+and copies of an earlier page's rows. A missed keyed duplicate is wrong under (a) and is gated
+at 0 misses. Duplicates on keyless data stay as they were: reported under (b), and held by the
+floor.
 
-**The public claim** is stated per lane and never as a bare "99.9% accurate": "≥ 99.9% of
-automatic fixes correct; N% of injected faults caught (by lane)", with N the lane's recall at
-the floor. At the first floor (2026-11-22): ≥ 99.9% of automatic fixes correct (no wrong fix
-in 5,359 synthetic, 4,541 real and 773 steady-state applied batches); 70.6% of injected faults
-caught on synthetic data, 49.3% on real data, 78.6% in steady state. A fault not caught was
-quarantined (held back, never written) or missed: no miss on synthetic data; 550 silent misses
-(448 of them duplicates on keyless data) and 19 missed alerts in 8,950 real trials; 9 silent
-misses in 977 steady-state fault batches.
+**The public claim** is stated per lane, with both numbers named, and never as a bare "99.9%
+accurate": "≥ 99.9% of automatic fixes correct; healed automatically N%, detected M% (by
+lane)". At the floor of 2026-11-26: no wrong fix in 5,332 synthetic, 4,662 real and 776
+steady-state applied batches; healed automatically 70.7% on synthetic data, 51.5% on real data
+and 79.0% in steady state; detected 100%, 93.9% and 99.1%. A fault not healed was held back
+(quarantined, never written) or missed: no miss on synthetic data; 550 silent misses in 8,950
+real trials (448 duplicates on keyless data, 65 decoy rescales by x2.5 or x7, 25 rescales, 10
+null spikes, 2 combinations) and 19 missed alerts (combinations); 9 silent misses in 977
+steady-state fault batches (7 duplicates on keyless data, 2 rescales).
 
 ## Phases
 

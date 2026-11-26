@@ -251,8 +251,7 @@ def forget(raw: str, tenant: Optional[str]) -> None:
         store.delete(scoped)
     run_keys = getattr(service._detector, "_run_keys", None)
     if run_keys is not None:
-        with run_keys._lock:
-            run_keys._drop(scoped)
+        run_keys.forget(scoped)
     for name in _PER_SOURCE_HOLDERS:
         holder = getattr(service, name, None)
         for value in vars(holder).values() if holder is not None else ():
