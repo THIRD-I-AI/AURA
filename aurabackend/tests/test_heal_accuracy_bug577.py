@@ -216,6 +216,47 @@ async def test_a_genuine_retype_with_a_few_bad_values_still_heals_the_rest(_heal
         assert any(r.get("type") == "retype" for r in out["repairs"])
 
 
+def _partial_x2_5_trial(seed: int, n: int, frac: float) -> Trial:
+    """PR #806 review's table: an int count sent as floats, x2.5 on a fraction of rows."""
+    rnd = random.Random(seed)
+    cols = [Column("n", "count", 0.0, {"dtype": "int"}), Column("bp", "normal", 0.0, {"dtype": "float"})]
+    ds = Dataset(seed=seed, columns=cols, baseline=_counts(rnd, 400), truth=_counts(rnd, n))
+    bad = set(rnd.sample(range(n), max(1, round(frac * n))))
+    sent, expected = copy_rows(ds.truth), copy_rows(ds.truth)
+    for i, row in enumerate(sent):
+        v = row["n"]
+        row["n"] = v * 2.5 if i in bad else float(v)
+        if i in bad and v != 0:
+            expected[i] = None
+    snap = dict(ds.schema)
+    snap["n"] = "float"
+    return Trial(fault="decoy_x2.5", seed=seed, dataset=ds, sent=sent, expected=expected,
+                 snapshot=snap if seed % 2 else None, tenant=None)
+
+
+@pytest.mark.parametrize("frac", [1.0, 0.3, 0.1])
+@pytest.mark.parametrize("n", [5, 10, 20, 40, 80, 250])
+async def test_a_fraction_where_the_column_records_whole_numbers_voids_the_column(_heal_db, n, frac):
+    """PR #806 review 3: x2.5 on part of an int column sent as floats. An odd count
+    became 7.5, which failed the cast and held only its own row; the even ones cast
+    back to the wrong ints and passed the distribution proof, which saw only them.
+    A fraction where the column records whole numbers now voids the column: every row
+    carrying it is held. Where every value happens to be whole (the x2.5 hit only even
+    counts) nothing in the batch shows the change; those trials are counted, not
+    asserted -- no rule short of refusing every small int retype can see them."""
+    unseen = []
+    for seed in range(16):
+        trial = _partial_x2_5_trial(seed, n, frac)
+        out = await heal(trial)
+        result = classify(trial, out)
+        if any(not float(r["n"]).is_integer() for r in trial.sent):
+            assert result.outcome != WRONG, (seed, result.why)
+            assert not out["rows"], (seed, out["reason"])
+        elif result.outcome == WRONG:
+            unseen.append(seed)
+    assert len(unseen) <= 6, unseen  # n=5, frac=0.1: 6 of 16 batches carry no fraction
+
+
 def test_prove_cast_values_matches_the_baseline_or_names_why_not():
     from uasr.actuator_agent import prove_cast_values
     from uasr.drift_detector import DriftDetector
@@ -377,3 +418,31 @@ async def test_a_renamed_batch_holds_one_sparse_value_scaled_x10_4(_heal_db):
         result = classify(trial, out)
         assert result.outcome != WRONG, (seed, result.why)
         assert "sparse" in (out.get("reason") or ""), (seed, out.get("reason"))
+
+
+def test_the_sandbox_level_is_for_the_whole_batch():
+    """PR #806 review 5: the past-range test's 1e-3 was per column, so a clean wide
+    batch whose only fault was a proven rename was held 2 times in 150 (30 columns).
+    It is now split over the numeric columns tested: twelve rows just past the range
+    of one column (exact p 4.4e-4) hold a one-column batch, not a 30-column one."""
+    from uasr.drift_detector import DriftDetector, _end_rows_p
+    from uasr.models import BatchPayload
+    from uasr.recovery_loop import RecoveryLoop
+
+    rnd = random.Random(5)
+    cols = [f"c{j}" for j in range(30)]
+
+    def rows(n):
+        return [{c: round(rnd.uniform(10.0, 500.0), 2) for c in cols} for _ in range(n)]
+
+    det = DriftDetector()
+    base = rows(400)
+    det.register_baseline("w", BatchPayload(source_id="w", columns=cols, rows=base))
+    dist = det.baseline_distributions("w")
+    top = max(r["c0"] for r in base)
+    batch = rows(300)
+    for j, r in enumerate(batch[:12]):
+        r["c0"] = round(top + 0.01 * (j + 1), 2)
+    assert 1e-3 / 30 < _end_rows_p(0, 12, 300, 400) < 1e-3
+    assert RecoveryLoop._unrepaired_value_drift(batch, cols, dist) == {}
+    assert set(RecoveryLoop._unrepaired_value_drift(batch, ["c0"], dist)) == {"c0"}

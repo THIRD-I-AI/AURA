@@ -86,6 +86,11 @@ _EXACT_RANK_ROWS = 64
 # (see _rank_sum_significant).
 _EXACT_RANK_GRID = 512
 _EXACT_RANK_DP_ROWS = 16
+# BUG-579 adversarial review: a 0/1 or small-int column (at most this many distinct
+# values, each in a bin of its own) takes the exact tie-respecting rank test instead,
+# on a score grid of about this many units (see _exact_tied_rank_p).
+_EXACT_TIED_VALUES = 16
+_EXACT_TIED_GRID = 1024
 
 # BUG-568 data-quality thresholds -- see the "Data-quality drift" section.
 _DQ_Z = 5.0                      # z-score a null-rate rise must reach
@@ -194,6 +199,56 @@ _RUN_KEYS_MAX = 2_000_000
 _UINT64 = (1 << 64) - 1
 
 
+_KEY_TEXT_INT = re.compile(r"[+-]?\d+")
+
+
+def _key_part(value: Any) -> Any:
+    """One declared-key cell as the key it names, or None for no key (PR #806 review 6).
+
+    The rule, so that a key's type changing between pages neither hides nor invents a
+    duplicate:
+    * None and NaN carry no key value (the null-rate check judges them);
+    * a number is its value: 1 and 1.0 are one key, 1.5 another;
+    * text that reads back exactly as a number is that number: "1" is the key 1 and
+      "2.5" the key 2.5, but "007", "+7" and "1.50" stay text -- padded codes are codes;
+    * a boolean is a key of its own: True is not 1;
+    * anything else is its text.
+    """
+    if value is None:
+        return None
+    if isinstance(value, (bool, np.bool_)):
+        return ("bool", bool(value))
+    if isinstance(value, (int, np.integer)):
+        return ("num", int(value))
+    if isinstance(value, (float, np.floating)):
+        f = float(value)
+        if math.isnan(f):
+            return None
+        return ("num", int(f)) if f.is_integer() and math.isfinite(f) else ("num", f)
+    if isinstance(value, str):
+        if _KEY_TEXT_INT.fullmatch(value) and str(int(value)) == value:
+            return ("num", int(value))
+        try:
+            f = float(value)
+        except ValueError:
+            return ("text", value)
+        if math.isfinite(f) and repr(f) == value:
+            return ("num", int(f)) if f.is_integer() else ("num", f)
+        return ("text", value)
+    return ("text", str(value))
+
+
+def _row_keys(rows: List[Dict[str, Any]], key: List[str]) -> List[str]:
+    """Each row's declared-key value (normalised by ``_key_part``) as one string; rows
+    with any part missing carry no key and are left out."""
+    out = []
+    for r in rows:
+        parts = tuple(_key_part(r.get(c)) for c in key)
+        if all(part is not None for part in parts):
+            out.append(repr(parts))
+    return out
+
+
 def _key_hashes(keys: List[str]) -> np.ndarray:
     """The 64-bit hashes of a batch's declared-key values, unique and sorted. Python's
     string hash is salted per process, which is fine: the run memory is per process.
@@ -208,13 +263,23 @@ class _RunKeys:
     A run is the pages a caller sends under one ``metadata.run_id`` (pipeline/heal.py
     sends its run id on every page); the page that declares ``complete_run`` ends it.
     A key a page repeats from an earlier page of the same run is a duplicate as surely
-    as one repeated inside a page. Each key keeps the page that first delivered it, so
-    a page sent again (a retry, or the sandbox's own re-check of the page) is never its
-    own duplicate. A new run id replaces the source's previous run, and so does any
-    page after the one that ended the run (that page's own re-checks still see the
-    run). Memory is bounded by ``_RUN_KEYS_MAX`` over every source: least recently
-    used runs go first, and a run that alone outgrows it keeps the keys it has,
-    checks the rest against them, and stops adding (logged).
+    as one repeated inside a page.
+
+    PR #806 review 4: a page's keys join the run when its rows are DELIVERED
+    (``DriftDetector.record_delivered_keys``, after /uasr/heal decides), and only the
+    rows it returns: a page that was quarantined and then re-sent corrected never
+    delivered its keys. Checking (``seen``) never changes the memory -- a check under
+    another run id used to drop the stored run. Each key keeps the page that first
+    delivered it, so a page sent again (a retry: /uasr/heal derives a page's id from
+    its run id and content when the caller sends none) is never its own duplicate.
+
+    A new run id replaces the source's previous run, and so does any page after the
+    one that ended the run (that page's own re-checks still see the run). Memory is
+    bounded by ``_RUN_KEYS_MAX`` hashed keys over every source and tenant of the
+    process: the least recently used runs are evicted first, whichever tenant they
+    belong to, so one tenant's very large run can evict another tenant's older run,
+    which then misses its cross-page repeats. A run that alone outgrows the cap keeps
+    the keys it has, checks the rest against them, and stops adding (logged).
     """
 
     def __init__(self, max_keys: int = _RUN_KEYS_MAX) -> None:
@@ -227,53 +292,70 @@ class _RunKeys:
     def __len__(self) -> int:
         return self._total
 
-    def repeats(self, source_id: str, run_id: str, batch_id: str, hashes: np.ndarray,
-                record: bool, end: bool) -> int:
-        """How many of ``hashes`` (unique, sorted) earlier pages of the run delivered;
-        with ``record``, the page's keys join the run, and ``end`` closes it."""
+    def _current(self, source_id: str, run_id: str, batch_id: str) -> Optional[List[Any]]:
+        run = self._runs.get(source_id)
+        if run is None or run[0] != run_id or run[5] not in (None, batch_id):
+            return None
+        return run
+
+    def seen(self, source_id: str, run_id: str, batch_id: str, hashes: np.ndarray) -> int:
+        """How many of ``hashes`` (unique, sorted) earlier pages of the run delivered.
+        Read-only."""
         with self._lock:
-            run = self._runs.get(source_id)
-            if run is not None and (run[0] != run_id or run[5] not in (None, batch_id)):
-                self._drop(source_id)
-                run = None
+            run = self._current(source_id, run_id, batch_id)
             if run is None:
-                if not record:
-                    return 0
+                return 0
+            hit, earlier = self._match(run, batch_id, hashes)
+            return int(earlier.sum())
+
+    def record(self, source_id: str, run_id: str, batch_id: str, hashes: np.ndarray, end: bool) -> None:
+        """The delivered keys of a page join its run; ``end`` closes the run."""
+        with self._lock:
+            run = self._current(source_id, run_id, batch_id)
+            if run is None:
+                self._drop(source_id)
                 run = self._runs[source_id] = [
                     run_id, np.empty(0, np.uint64), np.empty(0, np.int32), {}, False, None]
             self._runs.move_to_end(source_id)
-            stored, tags, pages = run[1], run[2], run[3]
-            tag = pages.get(batch_id)
-            pos = np.searchsorted(stored, hashes)
-            inside = pos < len(stored)
-            hit = np.zeros(len(hashes), dtype=bool)
-            hit[inside] = stored[pos[inside]] == hashes[inside]
-            earlier = hit.copy()
-            if tag is not None:
-                earlier[hit] = tags[pos[hit]] != tag
-            seen = int(earlier.sum())
-            if record and end:
+            if end:
                 run[5] = batch_id
-            elif record:
-                new = hashes[~hit]
+                return
+            hit, _ = self._match(run, batch_id, hashes)
+            new = hashes[~hit]
+            room = self.max_keys - self._total
+            if len(new) > room:
+                self._evict(keep=source_id, need=len(new) - room)
                 room = self.max_keys - self._total
-                if len(new) > room:
-                    self._evict(keep=source_id, need=len(new) - room)
-                    room = self.max_keys - self._total
-                if len(new) > room:
-                    if not run[4]:
-                        logger.warning("run %s of %s outgrew %d remembered keys; later pages are "
-                                       "checked against the first ones only", run_id, source_id, self.max_keys)
-                    run[4] = True
-                    new = new[:max(room, 0)]
-                if len(new):
-                    if tag is None:
-                        tag = pages[batch_id] = len(pages)
-                    at = np.searchsorted(stored, new)
-                    run[1] = np.insert(stored, at, new)
-                    run[2] = np.insert(tags, at, np.int32(tag))
-                    self._total += len(new)
-            return seen
+            if len(new) > room:
+                if not run[4]:
+                    logger.warning("run %s of %s outgrew %d remembered keys; later pages are "
+                                   "checked against the first ones only", run_id, source_id, self.max_keys)
+                run[4] = True
+                new = new[:max(room, 0)]
+            if len(new):
+                pages = run[3]
+                tag = pages.setdefault(batch_id, len(pages))
+                at = np.searchsorted(run[1], new)
+                run[1] = np.insert(run[1], at, new)
+                run[2] = np.insert(run[2], at, np.int32(tag))
+                self._total += len(new)
+
+    @staticmethod
+    def _match(run: List[Any], batch_id: str, hashes: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        stored, tags = run[1], run[2]
+        tag = run[3].get(batch_id)
+        pos = np.searchsorted(stored, hashes)
+        inside = pos < len(stored)
+        hit = np.zeros(len(hashes), dtype=bool)
+        hit[inside] = stored[pos[inside]] == hashes[inside]
+        earlier = hit.copy()
+        if tag is not None:
+            earlier[hit] = tags[pos[hit]] != tag
+        return hit, earlier
+
+    def forget(self, source_id: str) -> None:
+        with self._lock:
+            self._drop(source_id)
 
     def _drop(self, source_id: str) -> None:
         run = self._runs.pop(source_id, None)
@@ -713,9 +795,7 @@ class DriftDetector:
                 dq_drift = dq_check(batch, st)
                 if dq_drift:
                     findings.append((dq_type, dq_drift))
-            # Only a recorded batch adds its keys to its run: a proof's re-check of
-            # the same rows (record_state=False) must not see itself as a repeat.
-            dup_drift = self._check_duplicate_drift(batch, st, record=record_state)
+            dup_drift = self._check_duplicate_drift(batch, st)
             if dup_drift:
                 findings.append((DriftType.DUPLICATE, dup_drift))
 
@@ -1034,13 +1114,17 @@ class DriftDetector:
             byte counts, cents), which would then go unchecked but for a 4x bound,
             so it also needs a declaration -- the column is in the batch's declared
             ``key_columns``, or its declared type names a key (``id``, ``uuid``,
-            ``serial``...) -- or row-order evidence (``_row_order_shape``: a gapped
-            auto-increment, a scrambled counter). Its name is no evidence (BUG-576): with no declaration
-            the column stays a measure and keeps its statistical checks, since
-            checking a real id statistically costs nothing when its population is
-            stable, and skipping a real measure lets a x2 through. A declared keyed
-            id gets ``value_bound``: a value past 4x the baseline's largest
-            magnitude is a format change.
+            ``serial``...) -- or the order-free shape of a scrambled counter
+            (``_lattice``). Its name is no evidence (BUG-576), and neither is its row
+            order (PR #806 review: a 99% monotone test turned a sparse id with 2% of
+            its rows out of order into a measure, and every clean batch alarmed).
+            Undeclared, the column stays a measure and keeps its statistical checks,
+            since checking a real id statistically costs nothing when its
+            population is stable, and skipping a real measure lets a x2 through.
+            A growing one is a sequence candidate (``_sequence_span``): a batch that
+            continues past the baseline is judged as a sequence instead
+            (``_continues_sequence``). A declared keyed id gets ``value_bound``: a
+            value past 4x the baseline's largest magnitude is a format change.
           Floats and booleans are never identifiers.
         * measure -- everything else: compared statistically, as before.
         """
@@ -1068,69 +1152,93 @@ class DriftDetector:
         ints = [int(v) for v in present]
         if self._expected_int_collisions(ints) >= _ID_COLLISION_EVIDENCE:
             return ROLE_IDENTIFIER, None, None
-        if len(ints) >= _SPARSE_ID_MIN_VALUES:
-            bound = float(_SPARSE_ID_BOUND * max(abs(v) for v in ints))
-            shape = self._row_order_shape(ints)
-            if shape == "monotone":
-                return ROLE_IDENTIFIER, None, None
-            if keyed or decl in _DECLARED_ID or shape == "lattice":
-                return ROLE_IDENTIFIER, None, bound
+        if len(ints) >= _SPARSE_ID_MIN_VALUES and (keyed or decl in _DECLARED_ID or self._lattice(ints)):
+            return ROLE_IDENTIFIER, None, float(_SPARSE_ID_BOUND * max(abs(v) for v in ints))
         return ROLE_MEASURE, None, None
 
     @staticmethod
-    def _row_order_shape(ints: List[int]) -> Optional[str]:
-        """BUG-576: the value evidence that a sparse unique int column is generated
-        from the row order, which no measure is. Its name used to stand in for this,
-        and took a wide measure's checks away; without either, an id read as a measure
-        drifts on every batch.
+    def _lattice(ints: List[int]) -> bool:
+        """A counter scrambled by an affine map mod a prime (k * stride mod p), an
+        obfuscated id over a fixed population, by its value set alone: sorted, such a
+        set steps by at most three sizes (the three-gap theorem); >= 90% of the steps
+        here, to allow a few deleted rows. A measure's sorted values on a sparse range
+        step by many sizes, and so does a gapped auto-increment.
 
-        * monotone -- >= 99% of consecutive steps go one way: a gapped auto-increment
-          (deleted rows), whose batches lie past the baseline. A measure in random
-          order does so with probability ~1/n!.
-        * lattice -- two step sizes make >= 90% of the steps: a counter scrambled by
-          an affine map mod a prime (k * stride mod p: steps are stride and
-          stride - p), an obfuscated id over a fixed population. A measure's steps
-          over a sparse range almost never repeat.
-        """
-        steps = [b - a for a, b in zip(ints, ints[1:])]
-        if not steps:
-            return None
-        up = sum(1 for s in steps if s > 0) / len(steps)
-        if up >= 0.99 or up <= 0.01:
-            return "monotone"
-        top_two = sum(n for _, n in Counter(steps).most_common(2))
-        return "lattice" if top_two >= 0.9 * len(steps) else None
+        Order-free (PR #806 review): the same values in any row order give the same
+        answer. It must stay an identifier: its batches are runs of consecutive
+        counters, not a random sample of its population, so compared as a measure its
+        clean batches drift (6 of 1,182 clean synthetic batches alarmed without it)."""
+        steps = np.diff(np.sort(np.asarray(ints, dtype=np.int64)))
+        if len(steps) == 0:
+            return False
+        _, counts = np.unique(steps, return_counts=True)
+        return int(np.sort(counts)[-3:].sum()) >= 0.9 * len(steps)
 
     def _sequence_span(self, values: List[Any], dist: ColumnDistribution) -> Optional[List[float]]:
-        """BUG-576: the baseline's ``[median, max]`` for an identifier known only by its
-        row order (see ``ColumnDistribution.sequence_span``); None for every other column."""
-        if dist.role != ROLE_IDENTIFIER or dist.value_bound is not None or dist.value_kind != "int":
+        """The baseline's ``[median, max, median step]`` for a sequence candidate: an int
+        measure, null-free and unique over >= 100 values on a sparse range -- what an
+        undeclared auto-increment with gaps looks like, whatever order its rows came
+        in (PR #806 review). The step is the median gap between consecutive sorted
+        values. None for every other column.
+
+        A candidate keeps every measure check. Only a batch that continues past the
+        baseline (``_continues_sequence``) is judged as a sequence: its rows past the
+        range are the next ids, not a shift, and a unit change is a format change
+        (``_format_changes``)."""
+        if dist.role != ROLE_MEASURE or dist.value_kind != "int":
             return None
-        ints = [int(v) for v in values if v is not None]
-        if self._expected_int_collisions(ints) >= _ID_COLLISION_EVIDENCE:
-            return None  # a dense sequence: unique beyond chance, whatever its order
-        if self._row_order_shape(ints) != "monotone":
+        ints = [v for v in values if v is not None]
+        if (len(ints) < _SPARSE_ID_MIN_VALUES or len(ints) != len(values)
+                or len(set(ints)) != len(ints) or any(isinstance(v, bool) for v in ints)):
             return None
-        return [float(np.median(ints)), float(max(ints))]
+        ints = sorted(int(v) for v in ints)
+        return [float(np.median(ints)), float(ints[-1]), float(np.median(np.diff(ints)))]
 
     @staticmethod
-    def _behind_sequence(dist: ColumnDistribution, batch: BatchPayload, col: str) -> bool:
-        """BUG-576: ``col`` was taken for a sequence by its order alone, and this batch
-        does not continue one -- it reaches back below the baseline's median, or holds
-        >= 10% of its values inside the baseline's range (a few late rows of an
-        auto-increment may; a sorted measure's batch does). The column is then checked
-        as a measure: ambiguous => keep the checks."""
+    def _continues_sequence(dist: ColumnDistribution, values: List[Any]) -> bool:
+        """Whether a sequence candidate's batch values continue past its baseline (PR
+        #806 review): fewer than max(2, 10%) of them lie inside the baseline's range.
+
+        Order-free: it reads the values, not the order the rows came in. A re-sent
+        old id or two (an upsert, a CDC update) does not stop a batch continuing --
+        "any value back below the median" used to, and quarantined every row. A
+        measure's batch from the same distribution lies inside the range, and a x2,
+        x1.5 or in-range fault leaves >= 10% of a wide measure inside, so those are
+        still checked as a measure; a x10 or more lands past the 4x bound instead."""
         span = dist.sequence_span
         if not span:
             return False
-        median, top = span
-        nums = [v for r in batch.rows
-                if isinstance(v := r.get(col), (int, float, np.integer, np.floating))
-                and not isinstance(v, (bool, np.bool_))]
+        top = span[1]
+        nums = [v for v in values
+                if isinstance(v, (int, float, np.integer, np.floating)) and not isinstance(v, (bool, np.bool_))]
         if not nums:
             return False
         inside = sum(1 for v in nums if v <= top)
-        return any(v <= median for v in nums) or inside >= _SEQUENCE_INSIDE * len(nums)
+        return inside < max(2.0, _SEQUENCE_INSIDE * len(nums))
+
+    @staticmethod
+    def _sequence_unit_change(dist: ColumnDistribution, values: List[Any]) -> Optional[Dict[str, Any]]:
+        """A continuing sequence's batch that changed unit: values past 4x the baseline's
+        largest id AND steps between them 4x the baseline's median step (PR #806
+        review). The step test is what tells a unit change from growth: a sequence that
+        has grown past 4x its baseline still steps as it did (a fixed 4x bound alone
+        alarmed on every batch after that), while x1000 multiplies every step by 1000.
+        It needs >= 3 values for a median step; a batch of one or two ids cannot tell."""
+        span = dist.sequence_span or []
+        bound = _SPARSE_ID_BOUND * abs(span[1])
+        nums = sorted(float(v) for v in values
+                      if isinstance(v, (int, float, np.integer, np.floating)) and not isinstance(v, (bool, np.bool_)))
+        over = [v for v in nums if abs(v) > bound]
+        if not over:
+            return None
+        if len(span) > 2:
+            if len(nums) < 3 or float(np.median(np.diff(nums))) <= _SPARSE_ID_BOUND * max(span[2], 1.0):
+                return None
+        return {"value_bound": bound, "values_over_bound": len(over), "example": over[0]}
+
+    @staticmethod
+    def _column_values(batch: BatchPayload, col: str) -> List[Any]:
+        return [v for r in batch.rows if (v := r.get(col)) is not None]
 
     @staticmethod
     def _unique_by_name(values: List[Any], dist: ColumnDistribution, name: Any) -> bool:
@@ -1158,6 +1266,14 @@ class DriftDetector:
         had, or a keyed id's value past its ``value_bound``."""
         out: Dict[str, Dict[str, Any]] = {}
         for col, dist in (baseline or {}).items():
+            if dist.sequence_span and dist.role not in _NO_DISTRIBUTION:
+                # PR #806 review: a sequence candidate whose batch continues past the
+                # baseline skips the measure checks, so a unit change must show here:
+                # x1000 on an undeclared order_id was silent.
+                values = self._column_values(batch, col)
+                if self._continues_sequence(dist, values) and (found := self._sequence_unit_change(dist, values)):
+                    out[col] = found
+                continue
             if dist.role not in _NO_DISTRIBUTION:
                 continue
             if dist.value_bound is not None:
@@ -1317,7 +1433,12 @@ class DriftDetector:
             # BUG-573: an identifier or date carries no distribution -- a sequential
             # id lies past the baseline's range on every new batch. _check_schema_drift
             # checks what can go wrong with them instead.
-            if ref_dist.role in _NO_DISTRIBUTION and not self._behind_sequence(ref_dist, batch, col_name):
+            if ref_dist.role in _NO_DISTRIBUTION:
+                continue
+            # PR #806 review: a sequence candidate's batch that continues past the
+            # baseline is its next ids, judged by _format_changes' bound instead.
+            if ref_dist.sequence_span and self._continues_sequence(
+                    ref_dist, self._column_values(batch, col_name)):
                 continue
             significant = True
             tested = False
@@ -1634,7 +1755,6 @@ class DriftDetector:
             exact = (
                 dist.role == ROLE_IDENTIFIER and k0 == 0 and k1 > 0
                 and (dist.value_bound is None or col in declared_key)
-                and not self._behind_sequence(dist, batch, col)
             )
             p0 = (k0 + 1) / (n0 + 2)
             p1 = (k1 + 1) / (n1 + 2)
@@ -1746,7 +1866,7 @@ class DriftDetector:
         return max(expected + 5 * math.sqrt(expected * dispersion(n1)), 2 * poisson_upper * m1 / m0 + 10)
 
     def _check_duplicate_drift(
-        self, batch: BatchPayload, st: SourceState, record: bool = False,
+        self, batch: BatchPayload, st: SourceState,
     ) -> Optional[Dict[str, Any]]:
         """Exact-duplicate rows (on the declared key, else the full row) the baseline
         does not explain, or a repeated value in an identifier column (BUG-574).
@@ -1755,7 +1875,8 @@ class DriftDetector:
           declaration (ADR-002 "exact duplicates on the declared key"): any key value
           repeated in the batch, or already delivered by an earlier page of the same
           run (``metadata.run_id``, ``_RunKeys``), is a fault -- exact, every time,
-          whatever the baseline held. A row whose key holds a null carries no key
+          whatever the baseline held. Key values compare as ``_key_part`` reads them
+          ("10005" is 10005); a row whose key holds a null or NaN carries no key
           value (the null-rate check judges it).
         * No key, but the baseline had no duplicate and an identifier column makes its
           rows unique by construction: any duplicate row in a batch is a fault --
@@ -1767,8 +1888,8 @@ class DriftDetector:
           set of possible rows repeats more the more rows you draw, so a clean 10x
           batch has a far higher duplicate rate than its baseline.
 
-        ``record``: the batch's keys join its run (``detect``'s ``record_state``).
-        Detection only (ADR-002): no row is dropped or changed.
+        Detection only (ADR-002): no row is dropped or changed. Nothing here records
+        keys: a page's delivered rows join its run in ``record_delivered_keys``.
         """
         profile = st.baseline_rows
         if not profile or not profile.get("columns"):
@@ -1781,9 +1902,10 @@ class DriftDetector:
             # wide measure that repeats by chance; its duplicated rows still alarm.
             if (
                 dist.role == ROLE_IDENTIFIER and dist.value_bound is None and col in present
-                and not self._behind_sequence(dist, batch, col)
             ):
-                values = [repr(v) for r in batch.rows if (v := r.get(col)) is not None]
+                # A missing value (None, NaN) is no id value to repeat (PR #806 review 6).
+                values = [repr(v) for r in batch.rows
+                          if (v := r.get(col)) is not None and not (isinstance(v, float) and v != v)]
                 if len(set(values)) < len(values):
                     repeated_ids[col] = len(values) - len(set(values))
         key = list(profile.get("key_columns") or [])
@@ -1791,16 +1913,14 @@ class DriftDetector:
         k1, rows_fault, expected_upper, dup_rows, in_run = 0, False, None, 0, 0
         # A removed column makes rows less unique: schema drift's job.
         if key and set(key) <= present:
-            tuples = (tuple(r.get(c) for c in key) for r in batch.rows)
-            keys = [repr(t) for t in tuples if all(v is not None for v in t)]
+            keys = _row_keys(batch.rows, key)
             counts = Counter(keys)
             dup_rows = len(keys) - len(counts)
             k1 = sum(c * (c - 1) // 2 for c in counts.values())
             run_id = (batch.metadata or {}).get("run_id")
             if run_id is not None and counts:
-                in_run = self._run_keys.repeats(
-                    batch.source_id, str(run_id), batch.batch_id, _key_hashes(list(counts)),
-                    record=record, end=_is_complete_run(batch))
+                in_run = self._run_keys.seen(
+                    batch.source_id, str(run_id), batch.batch_id, _key_hashes(list(counts)))
             expected_upper = 0.0
             rows_fault = dup_rows > 0 or in_run > 0
         elif not key and set(cols) <= present and n1 >= 2:
@@ -1844,6 +1964,22 @@ class DriftDetector:
             "severity": self._fraction_severity(max(dup_fraction, id_fraction)),
             "details": "; ".join(parts),
         }
+
+    def record_delivered_keys(self, batch: BatchPayload, rows: List[Dict[str, Any]]) -> None:
+        """The rows a page delivered join its run's declared-key memory (PR #806 review
+        4). /uasr/heal calls it once it has decided, with the rows it returns: a held
+        row was never delivered, so its key is no duplicate of anything sent later
+        (a page quarantined and re-sent corrected used to be flagged). A page that
+        declares ``complete_run`` ends the run."""
+        run_id = (batch.metadata or {}).get("run_id")
+        if run_id is None:
+            return
+        st = self._store.peek(batch.source_id)
+        key = list(((st.baseline_rows if st else None) or {}).get("key_columns") or [])
+        if not key:
+            return
+        self._run_keys.record(batch.source_id, str(run_id), batch.batch_id,
+                              _key_hashes(list(set(_row_keys(rows, key)))), end=_is_complete_run(batch))
 
     @staticmethod
     def _fraction_severity(fraction: float) -> DriftSeverity:
@@ -2025,10 +2161,11 @@ class DriftDetector:
     def _build_numeric_histogram(values, bins: int = _DEFAULT_BINS) -> Dict[str, Any]:
         """Build a simple equal-width histogram.
 
-        Accepts a list or a numpy array. Mirrors the previous binning
-        ``min(int((v - min) / width), bins - 1)`` exactly via np.bincount,
-        so counts are bit-for-bit identical to the pure-Python loop while
-        avoiding a per-element Python pass.
+        Accepts a list or a numpy array. Bins ``min(int((v - min) / width), bins - 1)``
+        via np.bincount. BUG-579 adversarial review: ``width`` is ``_edge_width`` of the
+        stored edges, the one ``_histogram_on_edges`` re-derives, not (max - min) / bins,
+        which can differ from it by an ulp -- a baseline 65.58 sat in bin 4 and a batch
+        65.58 in bin 5, so a pair the rank test must count as tied came out ordered.
         """
         arr = np.asarray(values, dtype=float)
         if arr.size == 0:
@@ -2042,10 +2179,16 @@ class DriftDetector:
 
         bin_width = (max_val - min_val) / bins
         bin_edges = [min_val + i * bin_width for i in range(bins + 1)]
-        idx = np.minimum(((arr - min_val) / bin_width).astype(np.int64), bins - 1)
+        width = DriftDetector._edge_width(bin_edges)
+        idx = np.minimum(((arr - min_val) / width).astype(np.int64), bins - 1)
         counts = np.bincount(idx, minlength=bins)[:bins].astype(int).tolist()
 
         return {"bins": bin_edges, "counts": counts}
+
+    @staticmethod
+    def _edge_width(edges: List[float]) -> float:
+        """The bin width both a baseline and a batch binned on its edges use."""
+        return (edges[-1] - edges[0]) / (len(edges) - 1)
 
     @staticmethod
     def _baseline_edges(hist: Dict[str, Any]) -> Optional[List[float]]:
@@ -2083,7 +2226,7 @@ class DriftDetector:
 
         lo, hi = edges[0], edges[-1]
         nbins = len(edges) - 1
-        width = (hi - lo) / nbins
+        width = DriftDetector._edge_width(edges)
         # The stored top edge is lo + nbins * width in floating point, which
         # can land a few ulps below the baseline's true max; tolerate that so
         # the baseline's own max value is not counted as overflow.
@@ -2300,16 +2443,202 @@ class DriftDetector:
             # BUG-579 re-review: the normal cut is unreachable on a few rows and wrong
             # in the tail of heavily tied scores -- on either side: a 3-row boolean
             # baseline against 100 clean rows scored z = -5.7 (exact p 0.007).
-            counts_p = np.rint(p).astype(np.int64)
-            counts_q = np.rint(q).astype(np.int64)
-            below = np.cumsum(counts_q) - counts_q
-            above = int(counts_q.sum()) - np.cumsum(counts_q)
-            u_strict = int((counts_p * (below if effect > 0.5 else above)).sum())
-            significant = DriftDetector._rank_sum_significant(
-                int(counts_p.sum()), int(counts_q.sum()), u_strict)
+            exact = DriftDetector._raw_value_counts(values, dist, edges)
+            if exact is not None:
+                # BUG-579 adversarial review: the baseline's bins hold its raw values
+                # (a 0/1 or small-int column), so the ties are real and the exact
+                # tie-respecting test is valid -- the bins' edges never enter it. The
+                # conservative test below counts every tie as no evidence, which in a
+                # 0/1 column is nearly all of it: a 15% flag flipped to 85% in 10-30
+                # rows went uncaught.
+                significant = DriftDetector._exact_tied_rank_p(*exact) < _SIG_P
+            else:
+                counts_p = np.rint(p).astype(np.int64)
+                counts_q = np.rint(q).astype(np.int64)
+                below = np.cumsum(counts_q) - counts_q
+                above = int(counts_q.sum()) - np.cumsum(counts_q)
+                u_strict = int((counts_p * (below if effect > 0.5 else above)).sum())
+                significant = DriftDetector._rank_sum_significant(
+                    int(counts_p.sum()), int(counts_q.sum()), u_strict)
         else:
             significant = abs(z) > _SHIFT_Z
         return (z, effect) if significant else None
+
+    @staticmethod
+    def _raw_value_counts(
+        values: List[float], dist: ColumnDistribution, edges: List[float],
+    ) -> Optional[Tuple[np.ndarray, np.ndarray]]:
+        """(batch counts, baseline counts) over the distinct raw values of both samples,
+        when the baseline's histogram records its values exactly (BUG-579 adversarial
+        review), else None.
+
+        It does for an int or bool column whose range is shorter than its bin count:
+        no bin can then hold two integers, so each non-empty bin is one value. The
+        batch must be whole numbers too; its values outside the baseline's range are
+        values of their own. At most _EXACT_TIED_VALUES distinct values, to bound the
+        exact test's cost; a wider column has few ties and the conservative test
+        loses little on it.
+        """
+        if dist.value_kind not in ("int", "bool") or len(edges) < 2:
+            return None
+        lo, hi, nbins = edges[0], edges[-1], len(edges) - 1
+        # the top edge is lo + bins * width in floating point: the baseline's max give
+        # or take an ulp or two
+        top = round(hi)
+        if not float(lo).is_integer() or abs(hi - top) > 1e-9 * max(1.0, abs(hi)) or top - lo >= nbins:
+            return None
+        arr = np.asarray(values, dtype=float)
+        if arr.size == 0 or not np.array_equal(arr, np.floor(arr)):
+            return None
+        ints = np.arange(int(lo), int(top) + 1)
+        idx = np.minimum(((ints - lo) / DriftDetector._edge_width(edges)).astype(np.int64), nbins - 1)
+        counts = np.rint(np.asarray(dist.histogram["counts"], dtype=float)).astype(np.int64)
+        if len(np.unique(idx)) != len(idx) or len(counts) != nbins:
+            return None
+        base = counts[idx]
+        if int(base.sum()) != int(counts.sum()):
+            return None  # a non-empty bin holds no integer: not a whole-number column
+        batch_values, batch_counts = np.unique(arr, return_counts=True)
+        cats = np.union1d(ints[base > 0], batch_values)
+        if len(cats) > _EXACT_TIED_VALUES:
+            return None
+        p_counts = np.zeros(len(cats), dtype=np.int64)
+        p_counts[np.searchsorted(cats, batch_values)] = batch_counts
+        q_counts = np.zeros(len(cats), dtype=np.int64)
+        q_counts[np.searchsorted(cats, ints[base > 0])] = base[base > 0]
+        return p_counts, q_counts
+
+    @staticmethod
+    def _exact_tied_rank_p(p_counts, q_counts) -> float:
+        """Exact two-sided p-value of the rank-sum test of a batch (``p_counts``) against a
+        baseline (``q_counts``) counted over the same distinct raw values, ties and all
+        (BUG-579 adversarial review).
+
+        Each value j scores its midrank r_j in the pooled sample. Under the null either
+        sample is a uniformly random subset of the N pooled rows, whatever the
+        column's shape: P(x_j of the m rows in value j for all j) = prod_j C(t_j, x_j)
+        / C(N, m), with t_j the pooled rows of value j. The values are the data's own,
+        not bins cut on one sample's range, so the pooled counts are the same under
+        every relabelling and conditioning on them is exact. The statistic is the
+        smaller sample's W = sum_j x_j s_j, s_j = r_j on an integer grid of about
+        _EXACT_TIED_GRID units (2 r_j itself while the pool is small enough); the
+        scores depend only on the pooled counts, so rounding them changes the
+        statistic, never the validity. The p-value is P(|W - E W| >= |w - E W|), both
+        tails counted (``_tied_tail``): for a skewed 0/1 column the far tail is often
+        empty, where doubling one tail would throw half the evidence away. A
+        Chernoff bound on the two tails (``_tied_chernoff``) settles a clear shift
+        before the count runs; it is never under the exact p-value.
+        """
+        p = np.asarray(p_counts, dtype=np.int64)
+        q = np.asarray(q_counts, dtype=np.int64)
+        if p.sum() > q.sum():  # |W - E W| is the same for either sample
+            p, q = q, p
+        t = p + q
+        n1, total = int(p.sum()), int(t.sum())
+        if n1 <= 0 or n1 >= total:
+            return 1.0
+        rank2 = 2 * np.cumsum(t) - t + 1  # twice the midrank
+        per_row = max(1, _EXACT_TIED_GRID // n1)
+        if 2 * total <= per_row:
+            score = rank2
+        else:
+            score = np.rint(rank2 * (per_row / (2.0 * total))).astype(np.int64)
+        w_obs = float((p * score).sum())
+        mean = n1 * float((t * score).sum()) / total
+        dist = abs(w_obs - mean)
+        if dist <= 0:
+            return 1.0
+        top = int(score.max())
+        hi = math.ceil(mean + dist - 1e-9)
+        lo = math.ceil(n1 * top - mean + dist - 1e-9)
+        bound = (DriftDetector._tied_chernoff(t, score, n1, hi)
+                 + DriftDetector._tied_chernoff(t, top - score, n1, lo))
+        if bound < _SIG_P:
+            return bound
+        return min(1.0, DriftDetector._tied_tail(t, score, n1, hi)
+                   + DriftDetector._tied_tail(t, top - score, n1, lo))
+
+    @staticmethod
+    def _tied_chernoff(t: np.ndarray, score: np.ndarray, m: int, threshold: int) -> float:
+        """An upper bound on ``_tied_tail``: W is a sample of m without replacement from
+        the pooled scores, so by Hoeffding (1963, Thm. 4) its moment generating function
+        is at most that of m draws with replacement, and P(W >= threshold) <= min over
+        theta > 0 of exp(-theta threshold) M(theta)^m, M the pooled scores' mean
+        exp(theta s)."""
+        keep = t > 0
+        if not keep.any():
+            return 1.0
+        weights = t[keep] / float(t.sum())
+        s = score[keep].astype(float)
+        target = threshold / m
+        if target <= float((weights * s).sum()):
+            return 1.0
+        if target > float(s.max()):
+            return 0.0
+        scale = float(s.max()) or 1.0
+        x = s / scale  # scores in [0, 1], so theta stays in a sane range
+
+        def log_m(theta: float) -> float:
+            e = theta * x
+            top = float(e.max())
+            return top + math.log(float((weights * np.exp(e - top)).sum()))
+
+        def tilted_mean(theta: float) -> float:
+            e = np.exp(theta * x - float((theta * x).max()))
+            return float((weights * e * x).sum() / (weights * e).sum())
+
+        goal = target / scale
+        lo, hi = 0.0, 1.0
+        while tilted_mean(hi) < goal and hi < 1e6:
+            hi *= 2.0
+        for _ in range(80):
+            mid = (lo + hi) / 2
+            if tilted_mean(mid) < goal:
+                lo = mid
+            else:
+                hi = mid
+        return min(1.0, math.exp(m * log_m(hi) - hi * threshold / scale))
+
+    @staticmethod
+    def _tied_tail(t: np.ndarray, score: np.ndarray, m: int, threshold: int) -> float:
+        """P(W >= threshold), W = sum_j x_j score_j, when m of the pooled rows (t_j of
+        value j) are taken uniformly at random.
+
+        Counted on each row's shortfall from the top score, which the tail allows
+        only ``m * top - threshold`` of in all, so a clear shift costs least.
+        """
+        if threshold <= 0:
+            return 1.0
+        top = int(score.max())
+        slack = m * top - threshold
+        if slack < 0:
+            return 0.0
+        total = int(t.sum())
+        log_f = math.log(m / total)
+        # dp[k, e]: weight of the ways to take k rows from the values seen so far with
+        # total shortfall e <= slack. Each way of taking x of value j's t_j rows weighs
+        # C(t_j, x) (m / N)^x -- the factor (m / N)^m is common to every complete way,
+        # and keeps the weights in range.
+        dp = np.zeros((m + 1, slack + 1))
+        dp[0, 0] = 1.0
+        for tj, sj in zip(t.tolist(), score.tolist()):
+            if tj == 0:
+                continue
+            short = top - int(sj)
+            new = dp.copy()
+            lg_t = math.lgamma(tj + 1)
+            for x in range(1, min(tj, m) + 1):
+                shift = x * short
+                if shift > slack:
+                    break
+                w = math.exp(lg_t - math.lgamma(x + 1) - math.lgamma(tj - x + 1) + x * log_f)
+                if shift:
+                    new[x:, shift:] += w * dp[:m + 1 - x, :slack + 1 - shift]
+                else:
+                    new[x:] += w * dp[:m + 1 - x]
+            dp = new
+        log_all = math.lgamma(total + 1) - math.lgamma(m + 1) - math.lgamma(total - m + 1) + m * log_f
+        return min(1.0, float(dp[m].sum()) / math.exp(log_all))
 
     @staticmethod
     def _rank_sum_significant(n1: int, n0: int, u_strict: int) -> bool:

@@ -138,14 +138,19 @@ def _keyed_rows(start, n, name):
             for i in range(n)]
 
 
+@pytest.mark.parametrize("order", ["in order", "shuffled"])
 @pytest.mark.parametrize("name", ["customer_id", "ref_value"])
 @pytest.mark.parametrize("metadata", [None, "declared"])
-def test_a_scrambled_counter_is_an_id_by_its_values_and_never_alarms(name, metadata):
-    # What the name hint used to stand in for, shown by the values instead: the steps
-    # of k * stride mod p take two sizes. Any name; declared or not.
+def test_a_scrambled_counter_is_an_id_by_its_values_and_never_alarms(name, metadata, order):
+    # What the name hint used to stand in for, shown by the values instead: sorted, the
+    # values of k * stride mod p step by at most three sizes. Any name; declared or
+    # not; in any row order (PR #806 review: no id evidence from row order).
     meta = {"key_columns": [name]} if metadata else None
+    rows = _keyed_rows(1, 800, name)
+    if order == "shuffled":
+        random.Random(3).shuffle(rows)
     det = DriftDetector()
-    det.register_baseline("s", _payload(_keyed_rows(1, 800, name), "base", metadata=meta))
+    det.register_baseline("s", _payload(rows, "base", metadata=meta))
     d = det.baseline_distributions("s")[name]
     assert d.role == "identifier" and d.value_bound is not None
     nxt = 801
@@ -166,17 +171,33 @@ def _gapped_rows(rnd, start, n, name):
     return rows, v
 
 
+def _reorder(rows, how, rnd):
+    rows = list(rows)
+    if how == "shuffled":
+        rnd.shuffle(rows)
+    elif how == "2% swapped":
+        for _ in range(len(rows) // 50):
+            i = rnd.randrange(len(rows) - 1)
+            rows[i], rows[i + 1] = rows[i + 1], rows[i]
+    return rows
+
+
+@pytest.mark.parametrize("how", ["in order", "2% swapped", "shuffled"])
 @pytest.mark.parametrize("name", ["order_id", "visit_num", "row"])
-def test_a_gapped_auto_increment_is_an_id_by_its_values_and_never_alarms(name):
+def test_a_gapped_auto_increment_never_alarms_whatever_its_row_order(name, how):
+    # PR #806 review: the id evidence was 99% of row steps going one way, a cliff --
+    # with 2% of rows out of order (concurrent inserts) every clean batch alarmed. A
+    # sparse unique int is a sequence candidate whatever its order, and a batch that
+    # continues past the baseline is judged as a sequence.
     for seed in range(TRIALS):
         rnd = random.Random(seed)
         rows, last = _gapped_rows(rnd, 1000, 800, name)
         det = DriftDetector()
-        det.register_baseline("s", _payload(rows, "base"))
-        assert det.baseline_distributions("s")[name].role == "identifier"
+        det.register_baseline("s", _payload(_reorder(rows, how, rnd), "base"))
+        assert det.baseline_distributions("s")[name].sequence_span is not None
         for size in (60, 300, 3000):
             rows, last = _gapped_rows(rnd, last, size, name)
-            r = det.detect(_payload(rows, f"{seed}-{size}"), record_state=False)
+            r = det.detect(_payload(_reorder(rows, how, rnd), f"{seed}-{size}"), record_state=False)
             assert not r.drift_detected, (seed, size, r.details)
 
 
@@ -290,3 +311,88 @@ async def test_heal_returns_clean_id_named_measure_batches_untouched(_heal_db, n
         trial = _trial(name, seed)
         result = classify_clean(trial, await heal(trial))
         assert result.outcome == CORRECT, (seed, result.why)
+
+
+# ── PR #806 review: id evidence that does not depend on row order ───────────────
+# A tenant's slice of a global auto-increment: 900 sparse ids in [1.0M, 1.4M), the
+# first 600 the baseline, the next 200 a batch. bc9e19a made such a column an id only
+# when its rows came in id order (99% of steps one way); otherwise it was a measure
+# and every clean batch, all past the baseline, alarmed.
+
+
+def _orders(ids, rnd, col="order_id"):
+    return [{col: int(i), "amount": round(rnd.lognormvariate(3, 1), 2),
+             "status": rnd.choice(["new", "paid", "shipped"])} for i in ids]
+
+
+def _population(seed=7):
+    rnd = random.Random(seed)
+    pop = sorted(rnd.sample(range(1_000_000, 1_400_000), 900))
+    return pop[:600], pop[600:800], rnd
+
+
+def _orders_detector(base_ids, rnd, col="order_id"):
+    det = DriftDetector()
+    det.register_baseline("s", _payload(_orders(base_ids, rnd, col), "base"))
+    return det
+
+
+@pytest.mark.parametrize("col", ["order_id", "ref"])
+@pytest.mark.parametrize("order", ["shuffled", "in order"])
+def test_a_growing_sparse_id_never_alarms_in_any_row_order(col, order):
+    base, nxt, rnd = _population()
+    if order == "shuffled":
+        rnd.shuffle(base)
+        rnd.shuffle(nxt)
+    det = _orders_detector(base, rnd, col)
+    r = det.detect(_payload(_orders(nxt, rnd, col), "b"), record_state=False)
+    assert not r.drift_detected, r.details
+
+
+def test_a_batch_re_sending_an_old_id_still_continues_the_sequence():
+    # An upsert / CDC update of an old order among new ones: "any value back below the
+    # median" made bc9e19a check the column as a measure and quarantine all 200 rows.
+    base, nxt, rnd = _population()
+    det = _orders_detector(base, rnd)
+    ids = list(nxt)
+    ids[50] = base[10]
+    r = det.detect(_payload(_orders(ids, rnd), "b"), record_state=False)
+    assert not r.drift_detected, r.details
+
+
+@pytest.mark.parametrize("order", ["in order", "shuffled"])
+def test_a_unit_bug_on_a_growing_sparse_id_is_a_format_change(order):
+    # x1000 on order_id: a sequence's batch past 4x the baseline's largest id. bc9e19a
+    # dropped the bound for row-ordered ids, and this was silent.
+    base, nxt, rnd = _population()
+    if order == "shuffled":
+        rnd.shuffle(base)
+        rnd.shuffle(nxt)
+    det = _orders_detector(base, rnd)
+    r = det.detect(_payload(_orders([i * 1000 for i in nxt], rnd), "b"), record_state=False)
+    assert r.drift_detected and r.drift_vector.get("type") == "format_change", r.details
+    assert "order_id" in r.affected_columns
+
+
+def test_an_inferred_id_repeated_in_a_batch_is_no_exact_duplicate():
+    # Insert + update of one new order in the same batch. Exact duplicates are for a
+    # declared key; an inferred sparse id keeps the statistical rule (as at fea7658).
+    base, nxt, rnd = _population()
+    det = _orders_detector(base, rnd)
+    rows = _orders(nxt, rnd)
+    rows.append({**rows[10], "status": "paid" if rows[10]["status"] != "paid" else "new"})
+    r = det.detect(_payload(rows, "b"), record_state=False)
+    assert DriftType.DUPLICATE not in r.drift_types, r.details
+
+
+async def test_heal_returns_a_clean_batch_of_a_shuffled_growing_id(_heal_db):
+    base, nxt, rnd = _population()
+    rnd.shuffle(base)
+    rnd.shuffle(nxt)
+    cols = [Column("order_id", "count", 0.0, {"dtype": "int"}), Column("amount", "uniform", 0.0, {"dtype": "float"}),
+            Column("status", "categorical", 0.0, {"dtype": "str"})]
+    ds = Dataset(seed=7, columns=cols, baseline=_orders(base, rnd), truth=_orders(nxt, rnd))
+    trial = Trial(fault="clean", seed=7, dataset=ds, sent=copy_rows(ds.truth), expected=copy_rows(ds.truth),
+                  snapshot=dict(ds.schema), tenant=None)
+    result = classify_clean(trial, await heal(trial))
+    assert result.outcome == CORRECT, result.why

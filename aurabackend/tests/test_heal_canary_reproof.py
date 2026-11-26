@@ -37,6 +37,7 @@ from uasr.db import get_session_factory, init_uasr_db  # noqa: E402
 from uasr.drift_detector import DriftDetector  # noqa: E402
 from uasr.models import BatchPayload  # noqa: E402
 from uasr.recovery_loop import RecoveryLoop, RecoveryLoopConfig  # noqa: E402
+from uasr.reflector_agent import DiagnosticReflectorAgent  # noqa: E402
 from uasr.repair_canary import INCONCLUSIVE, REGRESSED, RepairCanary, judge  # noqa: E402
 
 N = 3
@@ -89,6 +90,7 @@ async def _uasr(monkeypatch):
     monkeypatch.setattr(service, "_mapek_worker", None)
     monkeypatch.setattr(service, "_SHARED_SHIM_REGISTRY", False)
     monkeypatch.setattr(SynthesisActuatorAgent, "_llm_shim", _no_llm)
+    monkeypatch.setattr(DiagnosticReflectorAgent, "_llm_diagnosis", _no_llm)
     yield
 
 
@@ -239,3 +241,54 @@ async def test_a_retype_a_clean_batch_cannot_prove_is_quarantined_not_rolled_bac
     out = await _heal(source, _as_text(scaled))
     assert out["healed"] is False and not out["rows"]
     assert _sigs(out, "rolled_back") == {retype}
+
+
+# ── PR #806 review R1: a repair is judged where it put its output ──────────────
+# Upstream drops 'Amount' (gross) and adds 'amount' holding a different quantity (0.6 x
+# gross) under a name that normalises the same, so the rename is proven by name. A
+# 20-row batch cannot show the 0.6x; a 300-row batch can. The contradiction test read
+# the rename's values under 'amount' after the rename had moved them to 'Amount', found
+# none, and the wrong rename was kept: every small batch after came back healed.
+
+
+def _gross(n: int, seed: int) -> list:
+    rnd = random.Random(seed)
+    return [{"Amount": round(rnd.lognormvariate(4, 0.5), 2), "status": rnd.choice(["new", "paid", "shipped"])}
+            for _ in range(n)]
+
+
+def _net(n: int, seed: int) -> list:
+    return [{"amount": round(r["Amount"] * 0.6, 2), "status": r["status"]} for r in _gross(n, seed)]
+
+
+def _gross_baseline():
+    det = DriftDetector()
+    det.register_baseline("g", BatchPayload(source_id="g", columns=["Amount", "status"], rows=_gross(400, 1)))
+    return det.baseline_distributions("g")
+
+
+def test_an_applied_repair_is_judged_on_the_output_it_wrote():
+    base = _gross_baseline()
+    rename = ("rename", "Amount", "amount")
+    renamed = [{"Amount": r["amount"], "status": r["status"]} for r in _net(300, 2)]
+    assert RecoveryLoop._contradicts(renamed, base, rename, applied=frozenset({rename})) is True
+    rescale = ("rescale", "Amount", "100.0")
+    restored = _gross(300, 3)  # what the rescale wrote: the truth
+    assert RecoveryLoop._contradicts(restored, base, rescale, applied=frozenset({rescale})) is False
+    # ...and only from the rows the proof kept.
+    assert RecoveryLoop._contradicts(restored + renamed, base, rescale, applied=frozenset({rescale}),
+                                     kept=tuple(range(300))) is False
+
+
+async def test_a_rename_onto_a_different_quantity_is_rolled_back_when_a_batch_shows_it():
+    source = f"gross_{uuid.uuid4().hex[:8]}"
+    service._detector.register_baseline(source, BatchPayload(
+        source_id=source, columns=["Amount", "status"], rows=_gross(400, 1)))
+    rename = ("rename", "Amount", "amount")
+    out = await _heal(source, _net(20, 11))
+    assert _sigs(out, "opened") == {rename}  # 20 rows cannot show the 0.6x
+    out = await _heal(source, _net(300, 12))
+    assert not out["rows"] and _sigs(out, "rolled_back") == {rename}
+    for seed in (13, 14, 15):
+        out = await _heal(source, _net(20, seed))
+        assert not out["rows"] and "rolled back" in out["reason"], out["reason"]

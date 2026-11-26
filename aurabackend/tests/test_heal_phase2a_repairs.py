@@ -215,7 +215,9 @@ async def test_retype_quarantines_values_that_do_not_round_trip_and_never_nulls_
     _register(source, _rows(400, 11))
     truth = _rows(300, 12)
     sent = [{**r, "customer_id": str(r["customer_id"])} for r in truth]
-    bad = {3: "007", 50: "12.5", 120: "n/a", 200: "+42"}
+    # Text that is no lossless int: junk, a padded code, a signed literal. A fraction
+    # ("12.5") voids the whole column instead (the test after this one).
+    bad = {3: "007", 120: "n/a", 200: "+42"}
     for i, v in bad.items():
         sent[i]["customer_id"] = v
 
@@ -228,6 +230,22 @@ async def test_retype_quarantines_values_that_do_not_round_trip_and_never_nulls_
     (retype,) = out["repairs"]
     assert retype["proof"]["rows_quarantined"] == len(bad)
     assert out["healed"] is True and out["degraded"] is True
+
+
+@pytest.mark.asyncio
+async def test_a_fraction_in_an_int_column_sent_as_text_voids_the_column():
+    # PR #806 review 3: "12.5" where the column records whole numbers is no failed cast
+    # of its own row -- the column's values changed, so every row carrying it is held.
+    source = _source()
+    _register(source, _rows(400, 11))
+    sent = [{**r, "customer_id": str(r["customer_id"])} for r in _rows(300, 12)]
+    sent[50]["customer_id"] = "12.5"
+
+    out = await _heal(source, copy.deepcopy(sent), schema={**SCHEMA, "customer_id": "str"})
+
+    _accounted(out, sent)
+    assert out["rows"] == [] and len(out["quarantined_rows"]) == 300
+    assert out["healed"] is False and "fraction" in out["quarantined_rows"][0]["reason"]
 
 
 @pytest.mark.asyncio
