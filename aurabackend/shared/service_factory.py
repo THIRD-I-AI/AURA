@@ -51,6 +51,10 @@ logger = get_logger("aura.factory")
 HealthCheck = Callable[[], Awaitable[Optional[str]]]
 """A health probe — returns ``None`` when healthy, or a short error string."""
 
+OpsCheck = Callable[[], Awaitable[str]]
+"""An operational probe — its one-word answer is reported under ``ops``, beside
+``checks``, and never changes ``status`` or the HTTP code."""
+
 
 def create_service(
     *,
@@ -60,6 +64,7 @@ def create_service(
     description: str | None = None,
     lifespan: Optional[Callable[..., Any]] = None,
     health_checks: Optional[Mapping[str, HealthCheck]] = None,
+    ops_checks: Optional[Mapping[str, OpsCheck]] = None,
     health_check_timeout: float = 2.0,
 ) -> FastAPI:
     """
@@ -230,7 +235,12 @@ def create_service(
     # ── Standard health endpoint ────────────────────────────────────────
     # When `health_checks` is provided, each probe runs in parallel with a
     # bounded timeout. The endpoint returns 503 if any probe fails or times out.
+    # `ops_checks` (BUG-581) report one word each under `ops`, beside `checks`.
+    # They never change `status` or the HTTP code the compose healthcheck reads
+    # (a stale backup must not get the gateway restarted), and the UIs that draw
+    # every `checks` entry as a service node never see them.
     checks = dict(health_checks or {})
+    ops = dict(ops_checks or {})
 
     async def _run_probe(probe: HealthCheck) -> Optional[str]:
         try:
@@ -239,6 +249,13 @@ def create_service(
             return f"timeout after {health_check_timeout}s"
         except Exception as exc:  # noqa: BLE001 — surface message, never crash /health
             return f"{type(exc).__name__}: {exc}"
+
+    async def _run_ops(probe: OpsCheck) -> str:
+        try:
+            return await asyncio.wait_for(probe(), timeout=health_check_timeout)
+        except Exception as exc:  # noqa: BLE001 — an ops probe must never crash or gate /health
+            logger.warning("%s /health ops probe failed: %s: %s", service_tag, type(exc).__name__, exc)
+            return "unknown"
 
     @app.get("/health")
     async def health():
@@ -250,6 +267,8 @@ def create_service(
             "build": os.getenv("AURA_GIT_SHA", "unknown"),
             "environment": settings.environment,
         }
+        if ops:
+            base["ops"] = dict(zip(ops.keys(), await asyncio.gather(*(_run_ops(p) for p in ops.values()))))
         if not checks:
             return base
         results = await asyncio.gather(*(_run_probe(p) for p in checks.values()))
