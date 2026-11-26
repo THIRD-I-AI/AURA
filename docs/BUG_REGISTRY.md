@@ -5627,3 +5627,19 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Root cause:** `DriftDetector` applies its 1e-6 level to each column's past-range, rank, label and exact tests independently (uasr/drift_detector.py). With k tests in a batch the chance that any one fires on clean data is about k x 1e-6: a 50-column table with two numeric tests per column is near 1e-4 per batch. The older approximate tests hid this by being far more conservative than nominal.
 - **Failure scenario:** A pipeline loading 1,000 clean 50-column batches a day is held DEGRADED for nothing about once every ten days.
 - **Fix:** pending. Control the family-wise rate per batch (e.g. Bonferroni: each test at 1e-6 / number of tests in the batch, or Holm), and state the per-batch target in ADR-002.
+
+## BUG-593: A fresh box can neither start AURA nor restore a backup: the data volume is created root-owned and the app runs as uid 1000
+- **Status:** fixed
+- **Found by:** restore drill on a throwaway EC2 instance, 2026-11-26. `./backup.sh --restore 20261126T031502Z` stopped at `mkdir: cannot create directory '/data/state': Permission denied` / `FAILED: restore failed`.
+- **Severity:** critical
+- **Root cause:** deploy/aws-free-tier/docker-compose.yml mounts the aura-data volume at /data, but aurabackend/Dockerfile (base-os stage, line 35 at 7061f2b) never creates /data, so Docker creates a new named volume root-owned; every runtime stage then runs as the `aura` user (uid 1000) and cannot write it. Production only works because its volume root and subfolders were chowned to 1000:1000 by hand at some point (keys/ dates from 2026-08-12). The restore also discarded copy errors (`cp ... 2>/dev/null || true`), so a partial restore could report success with no databases.
+- **Failure scenario:** After losing the EC2 instance, a new box built from the runbook cannot start the gateway and `backup.sh --restore` fails, so the backups that BUG-581 fixed could not have been restored; a fresh install hits the same wall.
+- **Fix:** The base-os stage creates /data owned by `aura`, so Docker gives a new volume that ownership (all three runtime images build on base-os). `backup.sh --restore` runs its copy container as root, fails on any copy error or size mismatch, and chowns /data to `aura` when done, so it also works on a volume created before the image change. Tests: tests/test_fresh_volume_bug593.py (fails on 7061f2b). End-to-end proof: the isolated restore drill is re-run once CD has published the new images.
+
+## BUG-594: Production keeps no durable request or application logs, so an incident cannot be investigated past the last container restart
+- **Status:** open
+- **Found by:** BUG-189 forensic check, 2026-11-26: the gateway's docker log held 41 lines and Caddy's 221, both starting at the last container restart that morning; every deploy (every 15 minutes when main changes) recreates the containers.
+- **Severity:** high
+- **Root cause:** deploy/aws-free-tier/docker-compose.yml leaves both containers on Docker's default json-file logging with no volume or retention, and the Caddyfile writes no access log to disk; nothing ships logs off the box.
+- **Failure scenario:** Whether BUG-189 was exploited between 2026-09-26 and its fix could not be determined from logs; the same holds for any future incident.
+- **Fix:** pending. Keep a rotated access log (Caddy `log { output file ... roll_size ... roll_keep_for ... }`) and gateway application log on the data volume or a host path that survives container recreation, include them in the S3 backup or ship them to CloudWatch, and never log secrets or request bodies.
