@@ -577,6 +577,16 @@ class PipelineEngine:
         from shared.storage import get_storage_backend
         from shared.storage.base import safe_object_name
 
+        # BUG-189 stopgap: sources load before execute() locks the connection down, so
+        # a caller's query here could read any file the gateway can (its environment,
+        # keys, every tenant's databases). Refused outright until the query runs on a
+        # locked connection of its own.
+        if source.query:
+            raise ValueError(
+                "DuckDB query sources are disabled for now (BUG-189); "
+                "use a table source (connection.database + table) instead."
+            )
+
         cfg = source.connection or {}
         db_path = cfg.get("database") or cfg.get("path")
 
