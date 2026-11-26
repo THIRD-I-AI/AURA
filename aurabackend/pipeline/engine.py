@@ -195,6 +195,45 @@ def write_quarantine(conn: Any, pipeline_id: str, tenant: Optional[str]) -> None
     logger.info("[Pipeline:%s] Quarantined rows written to %s", pipeline_id, table)
 
 
+def _locked_source_connection(uri: Optional[str], alias: str) -> Any:
+    """The connection a DUCKDB source's own SQL runs on (BUG-189): the tenant's .duckdb
+    file at ``uri`` attached READ_ONLY as ``alias`` (nothing attached when ``uri`` is
+    None), cut off from the filesystem and network before any of that SQL runs. The
+    run's connection cannot be used: it keeps file access until every source is loaded.
+    The caller closes it."""
+    from shared.duckdb_factory import lock_down_connection, new_connection
+
+    con = new_connection()
+    try:
+        # The budget the query had when it ran on the run's own connection.
+        con.execute(f"SET memory_limit='{RUN_MEMORY_LIMIT}'")
+        # The rows cross into the run as Arrow; without this a SUM arrives as
+        # DECIMAL(38,0), a UUID as text and a TIMETZ without its offset.
+        con.execute("SET arrow_lossless_conversion=true")
+        if uri is not None:
+            con.execute(f"ATTACH {quote_literal(uri)} AS {_q(alias)} (READ_ONLY)")
+        lock_down_connection(con)
+    except BaseException:
+        con.close()
+        raise
+    return con
+
+
+def _source_error(exc: BaseException) -> ValueError:
+    """What the caller is told when a DUCKDB source fails (BUG-189): DuckDB's message
+    without its echo of the query and without server paths. A refused file, URL or
+    ATTACH gets a fixed message, so not even the path the query named comes back."""
+    import duckdb
+
+    if isinstance(exc, duckdb.PermissionException):
+        return ValueError(
+            "DuckDB source refused: it may read only the tables in its own database file "
+            "(connection.database); file, URL and ATTACH access is disabled"
+        )
+    message = " ".join(str(exc).split("\nLINE ", 1)[0].split())
+    return ValueError(f"DuckDB source failed: {_SERVER_PATH.sub('<path>', message)[:1000]}")
+
+
 class PipelineEngine:
     """Executes Pipeline definitions using DuckDB.
 
@@ -556,9 +595,9 @@ class PipelineEngine:
     def _load_duckdb_source(
         self, conn: Any, source: PipelineSource, tenant: Optional[str] = None, table_name: str = "source_data",
     ) -> str:
-        """Load from an existing table/query on the engine's own
-        in-memory connection, or ATTACH an external .duckdb file named
-        in source.connection["database"] and load from that.
+        """Load a table of, or a SELECT over, the tenant's .duckdb file named in
+        source.connection["database"] (attached as ``ext_<table_name>``), or a
+        SELECT over no file at all.
 
         Without the ATTACH, ``source.table``/``source.query`` were
         evaluated against the fresh empty ``:memory:`` connection
@@ -572,24 +611,23 @@ class PipelineEngine:
         that's a materially larger feature (S3 range reads over the whole
         .duckdb file format) than this router-level storage-routing fix, so
         it stays deferred under S3 mode; see the "://" check below.
+
+        BUG-189: the source's SQL used to run on ``conn`` itself, which still has
+        filesystem and network access while sources load, so a query -- or a view
+        stored in the uploaded file -- could read any server file (the environment,
+        signing keys, every tenant's data), ATTACH another tenant's database or COPY
+        to disk. It runs on a connection of its own, holding only this file and
+        locked before the SQL runs; the rows reach ``conn`` as Arrow.
         """
-        from shared.sql_identifiers import quote_literal
+        import duckdb
+
         from shared.storage import get_storage_backend
         from shared.storage.base import safe_object_name
-
-        # BUG-189 stopgap: sources load before execute() locks the connection down, so
-        # a caller's query here could read any file the gateway can (its environment,
-        # keys, every tenant's databases). Refused outright until the query runs on a
-        # locked connection of its own.
-        if source.query:
-            raise ValueError(
-                "DuckDB query sources are disabled for now (BUG-189); "
-                "use a table source (connection.database + table) instead."
-            )
 
         cfg = source.connection or {}
         db_path = cfg.get("database") or cfg.get("path")
 
+        uri = None
         if db_path:
             # SECURITY: db_path is user input (pipeline definition).
             # safe_object_name is the same containment guarantee
@@ -617,21 +655,7 @@ class PipelineEngine:
                 )
             if not backend.exists(tenant, safe_name):
                 raise FileNotFoundError(f"DuckDB source file not found: {os.path.basename(str(db_path))}")
-
-            attach_alias = f"ext_{_sanitize_id(table_name)}"
-            conn.execute(f"ATTACH {quote_literal(uri)} AS {attach_alias} (READ_ONLY)")
-            if source.query:
-                conn.execute(f"CREATE TABLE {_q(table_name)} AS {source.query}")
-            elif source.table:
-                conn.execute(f"CREATE TABLE {_q(table_name)} AS SELECT * FROM {attach_alias}.{_q(source.table)}")
-            else:
-                raise ValueError("DuckDB source needs table or query")
-            return table_name
-
-        if source.query:
-            conn.execute(f"CREATE TABLE {_q(table_name)} AS {source.query}")
-            return table_name
-        if source.table:
+        elif source.table and not source.query:
             # BUG-093: with no connection.database/path, there is nothing to
             # ATTACH -- `source.table` names a table on some external
             # database that was never materialized on this fresh :memory:
@@ -641,10 +665,40 @@ class PipelineEngine:
             raise ValueError(
                 "DuckDB source with only 'table' set has no database to load "
                 "it from -- set connection.database (or connection.path) to "
-                "the .duckdb file containing that table, or use 'query' "
-                "against data already available on this connection."
+                "the .duckdb file containing that table."
             )
-        raise ValueError("DuckDB source needs table or query")
+        if not source.query and not source.table:
+            raise ValueError("DuckDB source needs table or query")
+
+        attach_alias = f"ext_{_sanitize_id(table_name)}"
+        if source.query:
+            # A trailing ';' was accepted while the query was spliced into CREATE TABLE AS.
+            query = source.query.strip().rstrip(";").rstrip()
+            # Defence in depth only: a keyword guard can be talked past, the locked
+            # connection below is what keeps the query to this file.
+            try:
+                _validate_expression(query)
+            except ValueError as exc:
+                raise ValueError(f"DuckDB source query refused: {exc}") from None
+            select = f"SELECT * FROM ({query})"
+        else:
+            select = f"SELECT * FROM {_q(attach_alias)}.{_q(source.table)}"
+
+        rows_view = f"_aura_duckdb_source_{_sanitize_id(table_name)}"
+        side = None
+        try:
+            side = _locked_source_connection(uri, attach_alias)
+            conn.register(rows_view, side.execute(select).to_arrow_reader(10_000))
+            try:
+                conn.execute(f"CREATE TABLE {_q(table_name)} AS SELECT * FROM {_q(rows_view)}")
+            finally:
+                conn.unregister(rows_view)
+        except duckdb.Error as exc:
+            raise _source_error(exc) from exc
+        finally:
+            if side is not None:
+                side.close()
+        return table_name
 
     # ── Processing SQL Builder ────────────────────────────────────────
 

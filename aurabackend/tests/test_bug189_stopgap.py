@@ -1,8 +1,10 @@
 """BUG-189 stopgap: a pipeline's DuckDB *query* source ran before the engine locked
 its connection down, so any signed-up user could read files the gateway can read
 (its environment, keys, every tenant's databases) through /pipeline/execute.
-Query sources are refused until they run on a locked connection of their own;
-table sources keep working."""
+The stopgap refused every query source. The full fix runs a query on a locked
+connection of its own instead, so these file reads stay refused, table sources keep
+working, and a query over the tenant's own .duckdb file works again. The full fix's
+suite is tests/test_bug189_duckdb_query_source.py."""
 from __future__ import annotations
 
 import duckdb
@@ -39,7 +41,7 @@ def _secret_file(tmp_path):
 
 def _assert_refused(run):
     assert run.status == PipelineStatus.FAILED
-    assert "BUG-189" in (run.error or "")
+    assert "refused" in (run.error or "")
     assert SECRET not in str(run.model_dump())
 
 
@@ -92,3 +94,29 @@ async def test_a_table_source_on_the_tenants_own_duckdb_file_still_works(tmp_pat
     run = await PipelineEngine().execute(pipeline, preview_only=True, tenant="tenant_a")
     assert run.status == PipelineStatus.SUCCESS, run.error
     assert {r["name"] for r in run.preview_data} == {"North", "South"}
+
+
+@pytest.mark.asyncio
+async def test_a_query_over_the_tenants_own_duckdb_file_works_again(tmp_path, monkeypatch):
+    """What the stopgap refused: an arbitrary SELECT over the attached file
+    (``ext_source_data``), now run on the locked source connection."""
+    _isolate_storage(tmp_path, monkeypatch)
+    from shared.storage import get_storage_backend
+    scratch = tmp_path / "scratch.duckdb"
+    con = duckdb.connect(str(scratch))
+    con.execute("CREATE TABLE regions AS SELECT * FROM (VALUES (1, 'North'), (2, 'South')) t(id, name)")
+    con.execute("CREATE TABLE sales AS SELECT * FROM (VALUES (1, 10), (1, 5), (2, 20)) t(region_id, amount)")
+    con.close()
+    get_storage_backend().write("tenant_a", "warehouse.duckdb", scratch.read_bytes())
+    pipeline = Pipeline(
+        name="bug189-query",
+        source=PipelineSource(
+            type=SourceType.DUCKDB, connection={"database": "warehouse.duckdb"},
+            query="SELECT r.name, SUM(s.amount) AS total FROM ext_source_data.sales s "
+                  "JOIN ext_source_data.regions r ON r.id = s.region_id GROUP BY r.name ORDER BY r.name",
+        ),
+        sink=PipelineSink(type=SinkType.PREVIEW),
+    )
+    run = await PipelineEngine().execute(pipeline, preview_only=True, tenant="tenant_a")
+    assert run.status == PipelineStatus.SUCCESS, run.error
+    assert run.preview_data == [{"name": "North", "total": 15}, {"name": "South", "total": 20}]
