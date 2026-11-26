@@ -64,6 +64,10 @@ DEPLOYED_SHA="$(sudo git rev-parse HEAD)"
 
 cd "$COMPOSE_DIR"
 
+# BUG-581: the disaster-recovery copy of .env must follow every change to it. A
+# failure is reported but never blocks the deploy.
+./env-backup.sh || echo "!! .env's SSM copy was not refreshed (see above); deploy continues" >&2
+
 # BUG-341: nothing ever removed superseded images, so each deploy left another
 # full set (the causal image alone is GBs) until a pull failed for lack of disk
 # and the box stayed on the old build. Images no container uses, older than a
