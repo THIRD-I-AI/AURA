@@ -25,16 +25,25 @@ ED25519-signed and appended to a hash-chained ledger; and a MAPE-K worker watche
 
 ## Status at a glance
 
+**As of 2026-09-30.** The feature roadmap (sprints S7–S54, `docs/SPRINTS.md`) and the data-suite
+roadmap (`docs/DATA_SUITE_ROADMAP.md`) are shipped. The project is in a **hardening phase**: every
+anomaly found live or by audit is filed in [`docs/BUG_REGISTRY.md`](docs/BUG_REGISTRY.md) and fixed one
+bug per PR — 245 filed, 216 fixed, 3 false positives, 1 partly fixed, 25 open (BUG-226..245 filed
+2026-09-29 and being worked now). The last logged live verification (2026-09-27, build `128e27d`)
+passed 14/14 features; fixes merged since have not been re-verified live yet
+([`docs/LIVE_DEPLOYMENT_LOG.md`](docs/LIVE_DEPLOYMENT_LOG.md)). What comes next — role gaps, roadmap
+phases S55–S60, and how parallel agents split the work — is in [`docs/STRATEGY.md`](docs/STRATEGY.md).
+
 | Capability | State | What that actually means |
 |---|---|---|
-| NL → SQL chat over your uploads | ✅ Working | Executed on DuckDB, returns rows + chart + narrative. Independent-verification cross-check (DPC) exists but is **off by default** on chat (`AURA_DPC_CHAT_ENABLED=0`) — see [Known gaps](#known-gaps-we-are-not-papering-over). |
-| Causal / counterfactual engine | ✅ Working | 7 estimators + refuters + E-value sensitivity; results replay byte-for-byte. `double_ml` silently falls back to plain linear regression if `econml` isn't installed, with no signal to the caller. |
+| NL → SQL chat over your uploads | ✅ Working | Executed on DuckDB, returns rows + chart + narrative. Independent-verification cross-check (DPC) is **on by default** on chat (DSR-012; `AURA_DPC_CHAT_ENABLED=0` opts out) at the cost of an extra LLM round-trip per query. |
+| Causal / counterfactual engine | ✅ Working | 7 estimators + refuters + E-value sensitivity; results replay byte-for-byte. Without `econml`, `double_ml` falls back to linear regression and the estimate is flagged `degraded=true` (DSR-008). |
 | Forensic financial audit (PCAOB-aligned) | ✅ Working | Benford / three-way match / expectation analytics; signed AS-1215 completion doc. |
 | Signed, tamper-evident audit ledger | ✅ Working | Hash chain + Merkle root; `/audit/ledger/verify` returns an `ok` flag the UI trusts. |
 | Public certificate verification | ✅ Working | Anyone can verify a signed certificate by hash without an account. |
 | Drift **detection** (UASR) | ✅ Working | Schema, statistical (KL + Wasserstein martingale), and semantic drift, live. |
-| Drift **repair** (UASR auto-heal) | ✅ Working | Demonstrated end-to-end on live production (2026-09-09/10): a Kafka bootstrap that permanently disabled itself after one failure, and failed heals silently reported as successful, were both root-caused and fixed. **Auto-deploy is unconditional by default** (`UASR_RISK_TIERED=false`) — the human-approval gate is opt-in, not the default. See [Self-healing](#self-healing-what-is-and-is-not-automatic). |
-| Multi-tenant isolation | 🟡 Partial | Enforced on uploads, files, query history, workspaces, semantic models, synthetic jobs, collab rooms, streaming topics, HITL decisions. **Not** on several metadata tables, and JWT/tenant enforcement itself is off by default outside a recognized production environment — see [Tenancy](#tenancy-exactly-what-is-scoped). |
+| Drift **repair** (UASR auto-heal) | ✅ Working | Demonstrated end-to-end on live production (2026-09-09/10): a Kafka bootstrap that permanently disabled itself after one failure, and failed heals silently reported as successful, were both root-caused and fixed. **Risky shims wait for human approval by default** (`UASR_RISK_TIERED=true`, DSR-015); set it to `false` to auto-deploy unconditionally. See [Self-healing](#self-healing-what-is-and-is-not-automatic). |
+| Multi-tenant isolation | 🟡 Partial | Enforced on uploads, files, query history, workspaces, semantic models, dataset profiles, synthetic jobs, collab rooms, streaming topics, HITL decisions. **Not** on several metadata tables, and JWT/tenant enforcement itself is off by default outside a recognized production environment — see [Tenancy](#tenancy-exactly-what-is-scoped). |
 | Human-in-the-loop approval queues | ✅ Working | Exception queue and Healing Queue; approve/reject decisions are themselves signed. A separate, older job-approval REST pair (`/jobs/{id}/approve|cancel`) always 404s — kept only so the published OpenAPI contract stays valid, and approves nothing. |
 | Deployment | 🟡 Single-node | Runs live on one t3.micro via `deploy/aws-free-tier/`. No HA, no autoscaling, single uvicorn worker. |
 | Backups | 🟡 Script only | `deploy/aws-free-tier/backup.sh` exists; no scheduled off-box retention is configured for you. |
@@ -42,14 +51,14 @@ ED25519-signed and appended to a hash-chained ledger; and a MAPE-K worker watche
 <details>
 <summary><b>Known gaps we are not papering over</b></summary>
 
-- **Tenant columns are missing on some metadata tables** (`data_sources`, `documents`,
-  `document_embeddings`, `schema_columns`, `dar_insights`, `dataset_profiles`). Reads over those
-  tables are not tenant-filtered. `semantic_models` had the same defect and is now scoped.
+- **Tenant columns are missing on some metadata tables** (`users`, `data_sources`, `documents`,
+  `document_embeddings`, `schema_columns`, `dar_insights`). Reads over those tables are not
+  tenant-filtered (BUG-062). `semantic_models` and `dataset_profiles` had the same defect and are now
+  scoped. Cross-source shim borrowing is also not tenant-scoped yet (BUG-072).
 - **The internal pub/sub bus is tenant-blind** — `webhook_dispatcher` subscribes with `"*"`.
 - **One uvicorn worker.** Any blocking call inside an async handler stalls every concurrent request.
   Blocking work is offloaded with `asyncio.to_thread`, but that is a discipline, not an enforced
   boundary.
-- **UASR repair state is in-memory.** A restart drops deployed shims silently.
 - **`docker-compose.prod.yml` host-publishes internal service ports.** The live free-tier stack does
   not use that file; do not deploy it as-is on a public host.
 - **JWT/audit/auth-mode enforcement is off by default outside a recognized production environment.**
@@ -60,8 +69,6 @@ ED25519-signed and appended to a hash-chained ledger; and a MAPE-K worker watche
 - **PII masking middleware is implemented but not wired into the shared service factory**
   (`shared/service_factory.py::create_service()`) that every microservice's middleware stack is built
   from — it does not run on the standard request/response path.
-- **`UASR_RISK_TIERED` defaults to `false`.** Validated self-heal shims auto-deploy unconditionally by
-  default; the human-approval gate is opt-in, not the default posture.
 
 </details>
 
@@ -284,8 +291,8 @@ code:
   shift**: applying it can leave `post_kl > pre_kl`. Validation catches that, so nothing bad ships, but
   it means the repair library is narrower than the detector.
 
-**Also true:** risk-tiered auto-deploy is **opt-in and off by default** (`UASR_RISK_TIERED=false`,
-`aurabackend/uasr/service.py:98`). Deployed shims are applied from a process-local, in-memory registry,
+**Also true:** risk-tiered deploy is **on by default** (`UASR_RISK_TIERED=true`,
+`aurabackend/uasr/service.py:117`, DSR-015), so a risky shim waits in the Healing Queue for approval. Deployed shims are applied from a process-local, in-memory registry,
 but it is rehydrated from the DB's `DEPLOYED` `RecoveryRecord` rows on every startup
 (`service.py:220-258`, `hydrate_deployed_shims`), so a restart or a second replica does not silently
 stop healing previously-healed sources.
@@ -320,7 +327,8 @@ single-user dev, unsafe in production, and the production config validators hard
 | Workspaces, approvals, audit ledger records | ✅ |
 | Semantic models (`semantic_models`) | ✅ (migration `c3e4f5a6b7c8`) |
 | `data_sources`, `documents`, `document_embeddings` | ❌ no tenant column yet |
-| `schema_columns`, `dar_insights`, `dataset_profiles` | ❌ no tenant column yet |
+| Dataset profiles (`dataset_profiles`) | ✅ (migration `f6a7b8c9d0e1`) |
+| `users`, `schema_columns`, `dar_insights` | ❌ no tenant column yet |
 | Internal pub/sub bus (`webhook_dispatcher`) | ❌ subscribes `"*"` |
 
 The unscoped tables are tracked work, not an oversight being hidden. Treat a multi-tenant deployment as
