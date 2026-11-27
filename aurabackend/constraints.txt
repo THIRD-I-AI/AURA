@@ -46,7 +46,7 @@ distro==1.9.0
 dnspython==2.8.0
 dowhy==0.14
 duckdb==1.5.5
-econml==0.16.0
+econml==0.17.0
 et-xmlfile==2.0.0
 fakeredis==2.38.0
 fastapi==0.136.3
