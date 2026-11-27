@@ -200,7 +200,7 @@ _RUN_KEYS_MAX = 2_000_000
 _UINT64 = (1 << 64) - 1
 
 
-_KEY_TEXT_INT = re.compile(r"[+-]?\d+")
+_KEY_TEXT_INT = re.compile(r"0|[1-9][0-9]*")
 
 
 def _key_part(value: Any) -> Any:
@@ -210,8 +210,11 @@ def _key_part(value: Any) -> Any:
     duplicate:
     * None and NaN carry no key value (the null-rate check judges them);
     * a number is its value: 1 and 1.0 are one key, 1.5 another;
-    * text that reads back exactly as a number is that number: "1" is the key 1 and
-      "2.5" the key 2.5, but "007", "+7" and "1.50" stay text -- padded codes are codes;
+    * text is a number only as a canonical integer literal -- ASCII digits with no
+      sign, point, exponent or leading zero: "10005" is the key 10005, the same key
+      a page sending numbers names. Any other text is text, whatever number it
+      parses to (PR #806 second review 5): "1.0" is not "1", "5.0" is not 5, "-0.0"
+      is not 0, and "007", "+7", "-7" and "1e3" are codes;
     * a boolean is a key of its own: True is not 1;
     * anything else is its text.
     """
@@ -227,14 +230,11 @@ def _key_part(value: Any) -> Any:
             return None
         return ("num", int(f)) if f.is_integer() and math.isfinite(f) else ("num", f)
     if isinstance(value, str):
-        if _KEY_TEXT_INT.fullmatch(value) and str(int(value)) == value:
-            return ("num", int(value))
-        try:
-            f = float(value)
-        except ValueError:
-            return ("text", value)
-        if math.isfinite(f) and repr(f) == value:
-            return ("num", int(f)) if f.is_integer() else ("num", f)
+        if _KEY_TEXT_INT.fullmatch(value):
+            try:
+                return ("num", int(value))
+            except ValueError:  # past Python's int-from-text digit limit: still a code
+                pass
         return ("text", value)
     return ("text", str(value))
 

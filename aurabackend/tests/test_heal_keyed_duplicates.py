@@ -175,9 +175,12 @@ def test_checking_never_changes_the_run_memory():
 
 
 @pytest.mark.parametrize("a, b, same", [
-    (10005, "10005", True), (10005, 10005.0, True), ("2.5", 2.5, True),
-    ("007", 7, False), ("+7", 7, False), ("1.50", 1.5, False),
-    (True, 1, False), ("K1", "K1", True), ("K1", "k1", False),
+    (10005, "10005", True), (10005, 10005.0, True), (0, "0", True), (0, -0.0, True),
+    ("007", 7, False), ("+7", 7, False), ("-7", -7, False), ("1e3", 1000, False),
+    ("1.50", 1.5, False), (True, 1, False), ("K1", "K1", True), ("K1", "k1", False),
+    # PR #806 second review 5: text naming a number another way is not that number.
+    ("1.0", "1", False), ("5.0", 5, False), ("-0.0", 0, False), ("2.5", 2.5, False),
+    ("1000.0", 1000, False),
 ])
 def test_key_values_compare_by_the_key_they_name(a, b, same):
     det = _detector(key=("id",))
