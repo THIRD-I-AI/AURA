@@ -122,6 +122,7 @@ existed for several sprints.
 
 `docs/SPRINTS.md` (done / in flight / next) · `docs/AUDIT_BURN_DOWN.md` ·
 `ARCHITECTURE.md` · `ENTERPRISE.md` · `STREAMING_FOUNDATIONS.md`.
+Returning after a gap: `docs/HANDOFF_2026-11-27.md` (state of main, new CI rules, what is pending).
 Git tool-render bug escalation ladder: `feedback_git_commit_tool_render_bug` in memory.
 
 Last restructured 2026-08-21 into the three-layer layout (root / `.claude/rules/`

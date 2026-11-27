@@ -401,6 +401,7 @@ function WorkbenchInner() {
         onToggleNav={() => setNavOpen((o) => !o)}
         gatewayUp={gatewayUp}
         onOpenPalette={() => { setPaletteOpen(true); setTimeout(() => paletteInput.current?.focus(), 30); }}
+        onOpenAccount={() => setNav('Account')}
       />
 
       <div className="flex flex-1 min-h-0">

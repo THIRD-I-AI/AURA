@@ -8,9 +8,10 @@ type Props = {
   onToggleNav: () => void;
   gatewayUp: boolean | null;
   onOpenPalette: () => void;
+  onOpenAccount?: () => void;
 };
 
-export function WorkbenchTopbar({ onToggleNav, gatewayUp, onOpenPalette }: Props) {
+export function WorkbenchTopbar({ onToggleNav, gatewayUp, onOpenPalette, onOpenAccount }: Props) {
   return (
     <div className="flex items-center gap-4 h-[54px] px-6 bg-[var(--surface)] border-b border-[var(--border)] flex-none">
       <div className="aw-burger" onClick={onToggleNav} onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onToggleNav(); } }} role="button" tabIndex={0} aria-label="Toggle navigation">☰</div>
@@ -24,7 +25,7 @@ export function WorkbenchTopbar({ onToggleNav, gatewayUp, onOpenPalette }: Props
       <div onClick={onOpenPalette} onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onOpenPalette(); } }} role="button" tabIndex={0} className="aw-mono aw-hover-accent-bd aw-topbar-search cursor-pointer focus-visible:outline-2 focus-visible:outline-[var(--accent)] flex items-center gap-2 text-[11px] font-medium text-[var(--text2)] border border-[var(--border)] rounded-none py-[5px] px-2.5">
         Search, ask, or run a command <span className="bg-[var(--sunken)] rounded-none py-px px-[5px]">⌘K</span>
       </div>
-      <UserMenu />
+      <UserMenu onSettingsClick={onOpenAccount} />
     </div>
   );
 }

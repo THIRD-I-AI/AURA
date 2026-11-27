@@ -47,8 +47,31 @@ async def run_interruptible(con: Any, fn: Callable[[], T], timeout: float | None
 CONNECTION_MEMORY_LIMIT = "256MB"
 
 
+# BUG-597: no connection may fetch or load an extension on its own. An ATTACH of a
+# non-DuckDB file used to auto-install and auto-load sqlite_scanner from the internet
+# before any lockdown. httpfs, which S3 mode needs, is installed in the image and
+# loaded explicitly by configure_duckdb.
+_NO_AUTO_EXTENSIONS = {"autoinstall_known_extensions": False, "autoload_known_extensions": False}
+
+
+def require_duckdb_file(path: str) -> None:
+    """Refuse a caller-supplied database file that is not a DuckDB database (BUG-597).
+
+    DuckDB opens other formats through extensions: duckdb.connect() or an ATTACH of a
+    SQLite file loads sqlite_scanner, whose sqlite_scan() then reads any SQLite file on
+    the box through SQLite's own I/O, past enable_external_access=false. A DuckDB file
+    carries the magic bytes "DUCK" after its 8-byte checksum."""
+    try:
+        with open(path, "rb") as fh:
+            header = fh.read(12)
+    except FileNotFoundError:
+        return
+    if header and header[8:12] != b"DUCK":
+        raise ValueError("not a DuckDB database file")
+
+
 def new_connection(database: str = ":memory:") -> Any:
-    con = duckdb.connect(database)
+    con = duckdb.connect(database, config=dict(_NO_AUTO_EXTENSIONS))
     con.execute(f"SET memory_limit='{CONNECTION_MEMORY_LIMIT}'")
     get_storage_backend().configure_duckdb(con)
     return con
