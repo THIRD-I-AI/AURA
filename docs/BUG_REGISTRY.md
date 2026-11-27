@@ -5653,3 +5653,11 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Failure scenario:** A tenant uploads evil.duckdb holding a view over `/data/keys/signing_ed25519.pem` (or another tenant's upload), then POSTs /pipeline/execute with `{"source": {"type": "duckdb", "connection": {"database": "evil.duckdb"}, "table": "leak"}}`; the file's content comes back in `run.preview_data`.
 - **Caused by:** none -- pre-existing.
 - **Fix:** Same change as BUG-189: the table is read on the locked source connection (`_locked_source_connection`), so binding the view is refused ("DuckDB source refused: ...") while the file's own tables still load. Regression `test_a_table_source_cannot_read_server_files_through_a_view_in_the_upload` (returned the secret on 9d351b0), plus the `view_in_the_tenants_own_file` cases for a query source.
+
+## BUG-596: Every deploy reports "Redeployed" even if the gateway never came up: the health wait accepts Caddy's HTTP-to-HTTPS redirect
+- **Status:** fixed
+- **Found by:** secret rotation on production, 2026-11-27: `curl -s http://localhost/health` on the box printed nothing, and `curl -fsS -o /dev/null http://localhost/health` exited 0 on a `308` to `https://localhost/health`.
+- **Severity:** medium
+- **Root cause:** deploy/aws-free-tier/redeploy.sh:81-87 (at 57a47c3) polled `curl -fsS -o /dev/null http://localhost/health`; Caddy answers plain HTTP with a 308 redirect and `curl -f` treats any 3xx as success, so the first poll always passed.
+- **Failure scenario:** A deploy whose new gateway image crashes on start is logged as "Redeployed. HEAD is now ..." every 15 minutes, and nothing on the box notices that production is down.
+- **Fix:** The wait polls the gateway container's own Docker healthcheck (docker-compose.yml: /health on :8000 inside the container) for up to 300s and fails the deploy with the last status otherwise. Test: tests/test_redeploy_health_bug596.py.
