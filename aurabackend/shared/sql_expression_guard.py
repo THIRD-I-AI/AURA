@@ -116,9 +116,147 @@ def _reject_structure(bare: str) -> None:
         )
 
 
-def validate_sql_expression(expr: str) -> None:
-    """Raise ``ValueError`` if ``expr`` references a blocked file/network
-    access function or table, contains a second statement, or a bare URI."""
+# ── BUG-599: parser-based validation (primary). The keyword scan below is a
+# fallback for when DuckDB cannot be imported; the locked DuckDB connection is
+# the real control. The keyword scan was bypassable -- a quoted function name
+# (``"read_text"(...)``), a dollar-quoted string hiding a stacked ``;``/CALL, and
+# a no-paren or stored-view introspection call all slipped past it. DuckDB's own
+# parser resolves the real function and table names and accepts only a single
+# read-only query. ──
+
+import threading
+
+# Refused by DuckDB's own (already-normalised) function name: file/URL readers,
+# every ``*_scan``, the sqlite/postgres/mysql scanners, dynamic SQL
+# (query/query_table/json_execute_serialized_sql), DuckDB's logging functions
+# (BUG-598) and the introspection functions that leak server paths.
+_BLOCKED_FUNCTION = re.compile(
+    r"^(read_\w+|\w+_scan|parquet_\w+|sniff_csv|st_read\w*|iceberg_\w+|delta_\w+|"
+    r"duckdb_\w+|pragma_\w+|sqlite_\w+|postgres_\w+|mysql_\w+|glob|"
+    r"query|query_table|json_execute_serialized_sql|getenv|current_setting|"
+    r"enable_logging|disable_logging|truncate_duckdb_logs)$",
+    re.IGNORECASE,
+)
+
+# A table reference that is really a file path (a ``FROM '/x'``/``FROM 'x.csv'``
+# replacement scan) or an introspection catalog used without parens (``FROM
+# duckdb_databases``, ``FROM pragma_database_list``).
+_PATH_LIKE_TABLE = re.compile(
+    r"[\\/]|://|^\w:|"
+    r"\.(csv|parquet|json|ndjson|duckdb|db|sqlite3?|xlsx?|tsv|txt|parq|gz|zst|arrow|avro)$",
+    re.IGNORECASE,
+)
+
+_PLACEHOLDER = re.compile(r"\{\{\s*\w+\s*\}\}")
+
+_parse_lock = threading.Lock()
+_parse_con = None
+
+
+class _ParserUnavailable(Exception):
+    """DuckDB could not be imported, so the keyword fallback must decide."""
+
+
+def _parser_connection():
+    global _parse_con
+    if _parse_con is None:
+        import duckdb
+        _parse_con = duckdb.connect()
+    return _parse_con
+
+
+def _serialized(sql: str):
+    """``sql`` parsed by DuckDB as a JSON tree, or None when it is not a single
+    valid read-only query (a second statement, a non-query, or malformed)."""
+    import json
+
+    from shared.sql_identifiers import quote_literal
+
+    try:
+        with _parse_lock:
+            row = _parser_connection().execute(
+                "SELECT json_serialize_sql(" + quote_literal(sql) + ")"
+            ).fetchone()
+    except ImportError as exc:
+        raise _ParserUnavailable from exc
+    except Exception:
+        return None
+    if not row or not row[0]:
+        return None
+    try:
+        return json.loads(row[0])
+    except (ValueError, TypeError):
+        return None
+
+
+def _collect(tree, key):
+    out = []
+
+    def walk(node):
+        if isinstance(node, dict):
+            val = node.get(key)
+            if isinstance(val, str):
+                out.append(val)
+            for v in node.values():
+                walk(v)
+        elif isinstance(node, list):
+            for v in node:
+                walk(v)
+
+    walk(tree)
+    return out
+
+
+def _single_query_tree(expr: str):
+    # json_serialize_sql serialises only read-only query statements (SELECT,
+    # TABLE, VALUES, DESCRIBE) and reports an error for a second statement, a
+    # non-query (COPY/ATTACH/UPDATE/CREATE/CALL/SET/PRAGMA/...) or anything
+    # malformed -- so one clean statement already proves "a single read-only
+    # query". A bare expression (a WHERE condition, a computed column) is not a
+    # statement, so it is retried wrapped in a scalar SELECT; the newline keeps a
+    # trailing ``--`` line comment in ``expr`` from eating the wrapper's tail.
+    probe = _PLACEHOLDER.sub(" _aura_ph ", expr)
+    for candidate in (probe, f"SELECT (\n{probe}\n) AS _aura_guard_col"):
+        tree = _serialized(candidate)
+        if tree is None or tree.get("error"):
+            continue
+        if len(tree.get("statements") or []) == 1:
+            return tree
+    return None
+
+
+def _validate_with_parser(expr: str) -> None:
+    # Structural checks first, so a comment, an unterminated quote or a stacked ';'
+    # keep their established messages (BUG-311/BUG-220) even though the parser would
+    # reject them too. These need no DuckDB.
+    bare = _strip_quoted(expr)
+    _reject_structure(bare)
+    tree = _single_query_tree(expr)
+    if tree is None:
+        raise ValueError(
+            "expression must be a single read-only query (no second statement, "
+            "no COPY/ATTACH/CALL/PRAGMA, no unbalanced parentheses)"
+        )
+    # The offending name is not echoed: a replacement-scan "table" is the caller's own
+    # file path, which must never come back in an error (BUG-189/BUG-284).
+    for name in _collect(tree, "function_name"):
+        if _BLOCKED_FUNCTION.match(name.strip()):
+            raise ValueError(
+                "expression may not call file/network, scanner, dynamic-SQL, "
+                "logging or introspection functions"
+            )
+    for table in _collect(tree, "table_name"):
+        if _PATH_LIKE_TABLE.search(table) or _BLOCKED_FUNCTION.match(table.strip()):
+            raise ValueError(
+                "expression may not reference a file path or an introspection "
+                "catalog as a table (a replacement scan, e.g. FROM '/path')"
+            )
+
+
+def _validate_with_keywords(expr: str) -> None:
+    """Keyword/structure fallback used only when ``_validate_with_parser`` raised
+    ``_ParserUnavailable`` (DuckDB not importable). A blocklist, so weaker than the
+    parser -- the locked DuckDB connection is the real control."""
     bare = _strip_quoted(expr)
     _reject_structure(bare)
     if _BLOCKED_PATTERN.search(bare):
@@ -138,3 +276,14 @@ def validate_sql_expression(expr: str) -> None:
             "expression may not reference a file path as a table "
             "(e.g. FROM '/path/to/file') -- DuckDB's replacement-scan syntax"
         )
+
+
+def validate_sql_expression(expr: str) -> None:
+    """Raise ``ValueError`` unless ``expr`` is a single read-only query that calls
+    no file/network, scanner, dynamic-SQL, logging or introspection function and
+    references no file-path table (BUG-599). DuckDB's own parser decides; the
+    keyword scan is only a fallback for when DuckDB cannot be imported."""
+    try:
+        _validate_with_parser(expr)
+    except _ParserUnavailable:
+        _validate_with_keywords(expr)

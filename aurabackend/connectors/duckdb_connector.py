@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 from typing import Any, Dict, List, Optional
 
 from shared.sql_identifiers import quote_identifier
@@ -118,7 +117,11 @@ class DuckDBConnector(BaseConnector):
 
     async def disconnect(self) -> bool:
         if self._conn:
-            self._conn.close()
+            # BUG-598: a stored view in the attached file can turn on file logging while
+            # the connection is locked; safe_close resets it so close cannot abort. Off
+            # the event loop (BUG-365): safe_close runs a query, which is blocking.
+            from shared.duckdb_factory import safe_close
+            await asyncio.to_thread(safe_close, self._conn)
             self._conn = None
         self._is_connected = False
         self.metadata.connected = False

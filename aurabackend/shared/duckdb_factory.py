@@ -74,7 +74,10 @@ def new_connection(database: str = ":memory:") -> Any:
     con = duckdb.connect(database, config=dict(_NO_AUTO_EXTENSIONS))
     con.execute(f"SET memory_limit='{CONNECTION_MEMORY_LIMIT}'")
     get_storage_backend().configure_duckdb(con)
-    return con
+    # Wrapped so close() -- and garbage collection, if a caller drops it without
+    # closing -- resets file logging first (BUG-598). Transparent for every other
+    # use: attribute access delegates to the real connection.
+    return _SafeCloseConnection(con)
 
 
 def lock_down_connection(con: Any) -> None:
@@ -93,3 +96,71 @@ def lock_down_connection(con: Any) -> None:
     """
     con.execute("SET enable_external_access=false")
     con.execute("SET lock_configuration=true")
+
+
+def safe_close(con: Any) -> None:
+    """Close a DuckDB connection that may have had file logging turned on while the
+    filesystem was locked (BUG-598). Defence in depth behind the SQL guard.
+
+    ``CALL enable_logging(storage='file', storage_path=...)`` installs a file log
+    storage. Once ``enable_external_access=false`` is set, that storage cannot be
+    written, and DuckDB then *aborts the whole process* -- a fail-fast Python cannot
+    catch -- on the next log flush, which happens when the connection is closed (or when
+    a leaked connection is garbage collected). ``shared/sql_expression_guard`` is the
+    primary control: it refuses ``enable_logging`` on every caller-/LLM-/tenant-authored
+    expression before it reaches a locked connection, so the poison never happens.
+
+    This is the second line: a throwaway query that absorbs the first pending broken
+    flush, then a single ``SET logging_storage='memory'`` that detaches the file storage,
+    then the close (verified on duckdb 1.5.2 and 1.5.5: the reset alone does not clear a
+    pending flush, and a second reset re-arms it). It makes the common cases safe -- a
+    direct query then close, and garbage collection of a dropped connection -- which
+    closes the GC landmine; it is not a full guarantee once the poisoned connection has
+    run several further queries, which is why the guard, not this, is the control. Each
+    statement may raise its own broken flush; that is swallowed.
+    """
+    for stmt in ("SELECT 1", "SET logging_storage='memory'"):
+        try:
+            con.execute(stmt)
+        except Exception:
+            pass
+    try:
+        con.close()
+    except Exception:
+        pass
+
+
+class _SafeCloseConnection:
+    """A DuckDB connection whose ``close()`` (and finalisation) runs ``safe_close``
+    (BUG-598), so file logging turned on while the filesystem was locked cannot abort
+    the process -- neither at an explicit close nor when a leaked connection is garbage
+    collected. Every other attribute delegates to the real connection, so callers use
+    it exactly like a ``duckdb`` connection."""
+
+    __slots__ = ("_con", "__weakref__")
+
+    def __init__(self, con: Any) -> None:
+        object.__setattr__(self, "_con", con)
+
+    def __getattr__(self, name: str) -> Any:
+        # Only reached for names not on the wrapper itself (so not _con/close/...).
+        return getattr(object.__getattribute__(self, "_con"), name)
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        setattr(object.__getattribute__(self, "_con"), name, value)
+
+    def close(self) -> None:
+        safe_close(object.__getattribute__(self, "_con"))
+
+    def __enter__(self) -> "_SafeCloseConnection":
+        return self
+
+    def __exit__(self, *exc: Any) -> bool:
+        self.close()
+        return False
+
+    def __del__(self) -> None:
+        try:
+            safe_close(object.__getattribute__(self, "_con"))
+        except Exception:
+            pass
