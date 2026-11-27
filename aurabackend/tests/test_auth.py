@@ -442,6 +442,17 @@ class TestUpdateProfile:
                                     headers={"Authorization": f"Bearer {body['access_token']}"})
         assert resp.json()["name"] == "Erin Updated"
 
+    def test_reissued_token_keeps_the_original_sign_in_time(self, password_client):
+        # A profile edit must not restart the session cap that /auth/refresh enforces.
+        from shared.auth import decode_access_token
+
+        token = _register_and_login(password_client, email="sam@example.com")
+        resp = password_client.patch(f"{V1}/auth/me", json={"name": "Sam"},
+                                      headers={"Authorization": f"Bearer {token}"})
+        assert resp.status_code == 200, resp.text
+        old, new = decode_access_token(token), decode_access_token(resp.json()["access_token"])
+        assert new["auth_time"] == pytest.approx(old["iat"], abs=2)
+
     def test_update_profile_requires_auth(self, password_client):
         resp = password_client.patch(f"{V1}/auth/me", json={"name": "Nobody"})
         assert resp.status_code == 401

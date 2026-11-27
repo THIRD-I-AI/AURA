@@ -12,7 +12,11 @@ vi.mock('../../../services/api', () => ({
     updateProfile: vi.fn(),
     changePassword: vi.fn(),
     deleteAccount: vi.fn(),
+    refresh: vi.fn(),
   },
+  authTokenSecondsLeft: vi.fn(() => null),
+  subscribeAuthChanged: vi.fn(() => () => {}),
+  subscribeSessionExpired: vi.fn(() => () => {}),
   getCurrentWorkspaceId: vi.fn(() => 'default'),
   workspaceService: {
     list: vi.fn(),

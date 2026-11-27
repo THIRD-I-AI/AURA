@@ -8,7 +8,7 @@ type Props = {
   onToggleNav: () => void;
   gatewayUp: boolean | null;
   onOpenPalette: () => void;
-  onOpenAccount: () => void;
+  onOpenAccount?: () => void;
 };
 
 export function WorkbenchTopbar({ onToggleNav, gatewayUp, onOpenPalette, onOpenAccount }: Props) {

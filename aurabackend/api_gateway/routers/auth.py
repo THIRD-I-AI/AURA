@@ -448,6 +448,10 @@ async def update_profile(body: UpdateProfileRequest, user: dict = Depends(requir
         "name": db_user.name,
         "role": db_user.role or "user",
         "org_id": db_user.org_id or db_user.id,
+        # Carry the original sign-in time, as /auth/refresh does: without it the
+        # reissued token's iat becomes the new session start, and renaming yourself
+        # would reset the AURA_SESSION_MAX_HOURS cap indefinitely (BUG-397).
+        "auth_time": float(user.get("auth_time") or user.get("iat") or time.time()),
     }
     logger.info("Profile updated for user_id=%s", db_user.id)
     return UpdateProfileResponse(
