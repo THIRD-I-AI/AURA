@@ -27,6 +27,19 @@ from __future__ import annotations
 
 import re
 
+# BUG-598 stopgap: DuckDB's logging functions are not covered by enable_external_access=false.
+# ``enable_logging(storage='file', ...)`` succeeds on a locked connection, and the next log
+# flush -- at close() -- makes DuckDB abort the whole process, so one request took the single
+# gateway worker down. Matched on the RAW text, before quoted spans are blanked, so a quoted
+# name ("enable_logging"(...)) or a dollar-quoted string cannot hide it; the price is that a
+# string literal mentioning one of these names is refused too. The parser-based guard (BUG-599)
+# replaces this.
+_LOGGING_ABUSE_PATTERN = re.compile(
+    r"enable_logging|disable_logging|truncate_duckdb_logs|duckdb_logs|"
+    r"logging_storage|logging_level|logging_mode",
+    re.IGNORECASE,
+)
+
 _BLOCKED_PATTERN = re.compile(
     r"\b(read_csv(_auto)?|read_parquet|read_json(_auto)?|read_ndjson|"
     r"read_text|read_blob|glob|attach|detach|copy|pragma|install|load|"
@@ -119,6 +132,8 @@ def _reject_structure(bare: str) -> None:
 def validate_sql_expression(expr: str) -> None:
     """Raise ``ValueError`` if ``expr`` references a blocked file/network
     access function or table, contains a second statement, or a bare URI."""
+    if _LOGGING_ABUSE_PATTERN.search(expr):
+        raise ValueError("expression may not configure DuckDB logging")
     bare = _strip_quoted(expr)
     _reject_structure(bare)
     if _BLOCKED_PATTERN.search(bare):
