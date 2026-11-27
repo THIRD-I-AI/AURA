@@ -59,7 +59,14 @@ class DuckDBConnector(BaseConnector):
             )
             # BUG-365: every DuckDB call here is blocking; on the single uvicorn worker
             # one slow COUNT(*) or view froze every tenant's requests. They run in threads.
-            self._conn = await asyncio.to_thread(duckdb.connect, str(path))
+            # BUG-597: a tenant's "duckdb" file may be a SQLite database in disguise, which
+            # duckdb.connect opens through sqlite_scanner; refuse anything but DuckDB, and
+            # never let the connection fetch or load an extension on its own.
+            from shared.duckdb_factory import _NO_AUTO_EXTENSIONS, require_duckdb_file
+
+            if str(path) != ":memory:":
+                require_duckdb_file(str(path))
+            self._conn = await asyncio.to_thread(duckdb.connect, str(path), config=dict(_NO_AUTO_EXTENSIONS))
             self._is_connected = True
             self.metadata.connected = True
             # Sprint 17: opt-in spatial extension. Triggered either by

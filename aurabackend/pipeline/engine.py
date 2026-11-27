@@ -211,7 +211,11 @@ def _locked_source_connection(uri: Optional[str], alias: str) -> Any:
         # DECIMAL(38,0), a UUID as text and a TIMETZ without its offset.
         con.execute("SET arrow_lossless_conversion=true")
         if uri is not None:
-            con.execute(f"ATTACH {quote_literal(uri)} AS {_q(alias)} (READ_ONLY)")
+            # BUG-597: without TYPE, DuckDB sniffs the file and attaches a SQLite database
+            # through the sqlite_scanner extension (autoloaded, even auto-installed) before
+            # the lockdown below; sqlite_scan then reads any SQLite file through SQLite's own
+            # I/O, which enable_external_access=false does not cover. Only a DuckDB file.
+            con.execute(f"ATTACH {quote_literal(uri)} AS {_q(alias)} (TYPE duckdb, READ_ONLY)")
         lock_down_connection(con)
     except BaseException:
         con.close()
