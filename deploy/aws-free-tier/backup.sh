@@ -93,10 +93,19 @@ if [ "${1:-}" = "--restore" ]; then
     die "containers are running — 'docker compose down' first (restoring under a live writer corrupts the DB)"
   fi
   echo "Restoring $STAMP ..."
-  compose run --rm --no-deps -T -v "$SRC:/restore:ro" "$SERVICE" \
-    sh -c 'set -e; mkdir -p /data/state; cp /restore/state/*.db /data/state/ 2>/dev/null || true;
-           [ -f /restore/state/uasr.duckdb ] && cp /restore/state/uasr.duckdb /data/state/ || true;
-           tar xzf /restore/files.tar.gz -C /data' \
+  # BUG-593: runs as root so a volume that is still root-owned (a fresh box, or one created
+  # before the image owned /data) can be written, then hands every file to the app user.
+  # A copy that fails or comes out a different size fails the restore; copy errors used
+  # to be discarded, which could "restore" a box with no databases.
+  compose run --rm --no-deps -T --user root -v "$SRC:/restore:ro" "$SERVICE" \
+    sh -c 'set -e; mkdir -p /data/state
+           for f in /restore/state/*.db /restore/state/uasr.duckdb; do
+             [ -e "$f" ] || continue
+             cp "$f" /data/state/
+             [ "$(wc -c < "$f")" = "$(wc -c < "/data/state/$(basename "$f")")" ] || { echo "size mismatch: $f" >&2; exit 1; }
+           done
+           tar xzf /restore/files.tar.gz -C /data
+           chown -R aura:aura /data' \
     || die "restore failed"
   echo "Restored $STAMP. Start with: docker compose up -d"
   exit 0
