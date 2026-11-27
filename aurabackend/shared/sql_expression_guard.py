@@ -129,6 +129,16 @@ def _reject_structure(bare: str) -> None:
         )
 
 
+def reject_logging_sql(sql: str) -> None:
+    """Raise ``ValueError`` if ``sql`` touches DuckDB's logging functions (BUG-598).
+
+    For every place tenant, stored or LLM-authored SQL reaches a locked connection:
+    the dashboard and scheduled-query runners, saved-query creation and the
+    ``SQLSafetyValidator``, none of which go through ``validate_sql_expression``."""
+    if _LOGGING_ABUSE_PATTERN.search(sql or ""):
+        raise ValueError("SQL may not configure DuckDB logging")
+
+
 def validate_sql_expression(expr: str) -> None:
     """Raise ``ValueError`` if ``expr`` references a blocked file/network
     access function or table, contains a second statement, or a bare URI."""
