@@ -690,8 +690,6 @@ class RecoveryLoop:
             if not values or not all(isinstance(v, (int, float)) and not isinstance(v, bool)
                                      and math.isfinite(v) for v in values):
                 continue
-            if dist.sequence_span and DriftDetector._continues_sequence(dist, values):
-                continue  # the next ids of a sequence (PR #806 review), not a value change
             tested.append((col, dist, values))
         level = _SANDBOX_P / max(1, sum(
             1 for _, dist, _ in tested if DriftDetector._baseline_edges(dist.histogram or {}) is not None))
@@ -807,8 +805,6 @@ class RecoveryLoop:
                 nums = [v / float(param) for v in nums]
         if dist.role in _NO_DISTRIBUTION or len(values) < 2:
             return False
-        if dist.sequence_span and DriftDetector._continues_sequence(dist, nums if numeric else values):
-            return False  # a sequence's next ids carry no distribution to contradict
         if numeric:
             if len(nums) < 2:
                 return False
