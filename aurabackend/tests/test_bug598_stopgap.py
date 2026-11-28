@@ -46,6 +46,33 @@ def test_ordinary_sql_still_passes(expr):
 
 
 POISON = "SELECT * FROM enable_logging(storage='file', storage_path='/tmp/x')"
+# The name built at run time: the text enable_logging never appears contiguously, so a name
+# check cannot see it; the string-executing function that builds and runs it is refused.
+POISON_SPLIT = "SELECT * FROM query('SELECT * FROM enable_' || 'logging(storage=''file'', storage_path=''/tmp/x'')')"
+POISON_CHR = "SELECT * FROM query('SELECT * FROM enable' || chr(95) || 'logging(storage=''file'')')"
+
+
+@pytest.mark.parametrize("sql", [
+    POISON_SPLIT, POISON_CHR, "SELECT * FROM \"query\"('x')", "SELECT * FROM QUERY ( 'x' )",
+    "SELECT * FROM query_table('t')", "SELECT * FROM json_execute_serialized_sql('{}')",
+])
+def test_run_time_built_logging_sql_is_refused_everywhere(sql):
+    from safety import SQLSafetyValidator
+    from shared.sql_expression_guard import reject_logging_sql
+
+    with pytest.raises(ValueError):
+        reject_logging_sql(sql)
+    assert not SQLSafetyValidator().validate(sql).is_valid
+
+
+@pytest.mark.parametrize("sql", [
+    "SELECT query FROM t", "SELECT a AS query FROM t", "SELECT 'a query here' AS q",
+    "SELECT * FROM (SELECT 1) AS subquery", "SELECT max(query_len) FROM t", "SELECT query_id FROM t WHERE (query_id) > 1",
+])
+def test_names_that_merely_contain_query_still_pass(sql):
+    from shared.sql_expression_guard import reject_logging_sql
+
+    reject_logging_sql(sql)
 
 
 def test_the_central_validator_refuses_logging_sql():
@@ -94,11 +121,11 @@ def _run_child(variant: str) -> subprocess.CompletedProcess:
     env = dict(os.environ)
     env["AURA_UPLOADS_ROOT"] = tempfile.mkdtemp(prefix="bug598s_")
     env.pop("AURA_STORAGE_BACKEND", None)
-    return subprocess.run([sys.executable, "-I", os.path.abspath(__file__), variant], capture_output=True,
+    return subprocess.run([sys.executable, "-I", os.path.abspath(__file__), variant, "split" if variant.endswith("_split") else "plain"], capture_output=True,
                           text=True, env=env, timeout=180)
 
 
-@pytest.mark.parametrize("variant", ["pipeline", "dashboard_tiles"])
+@pytest.mark.parametrize("variant", ["pipeline", "dashboard_tiles", "dashboard_tiles_split"])
 def test_a_poisoned_request_cannot_abort_the_process(variant):
     proc = _run_child(variant)
     code = proc.returncode & 0xFFFFFFFF
@@ -115,7 +142,8 @@ def _dashboard_child() -> None:
     from api_gateway.routers.dashboards import _run_tile
     from shared.duckdb_factory import lock_down_connection, new_connection
 
-    queries = [{"id": "p", "sql": POISON, "name": "poison"}, {"id": "b", "sql": "SELECT 1 AS x", "name": "benign"}]
+    poison = POISON_SPLIT if len(sys.argv) > 2 and sys.argv[2] == "split" else POISON
+    queries = [{"id": "p", "sql": poison, "name": "poison"}, {"id": "b", "sql": "SELECT 1 AS x", "name": "benign"}]
     con = new_connection()
     lock_down_connection(con)
     for i, q in enumerate(queries):
@@ -124,7 +152,7 @@ def _dashboard_child() -> None:
     print("SURVIVED", flush=True)
 
 
-if __name__ == "__main__" and len(sys.argv) > 1 and sys.argv[1] == "dashboard_tiles":
+if __name__ == "__main__" and len(sys.argv) > 1 and sys.argv[1].startswith("dashboard_tiles"):
     _dashboard_child()
 elif __name__ == "__main__":
     import asyncio
