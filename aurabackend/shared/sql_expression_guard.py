@@ -40,6 +40,15 @@ _LOGGING_ABUSE_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
+# BUG-598 stopgap, second half: the pattern above only sees names that appear contiguously.
+# ``query('SELECT * FROM enable_' || 'logging(...)')`` builds the name at run time, so the
+# functions that execute a string as SQL are refused in call position too (quoted or not,
+# any case). Analyst SQL has no use for them.
+_DYNAMIC_SQL_CALL_PATTERN = re.compile(
+    r"\b(query|query_table|json_execute_serialized_sql)\b[\"']?\s*\(",
+    re.IGNORECASE,
+)
+
 _BLOCKED_PATTERN = re.compile(
     r"\b(read_csv(_auto)?|read_parquet|read_json(_auto)?|read_ndjson|"
     r"read_text|read_blob|glob|attach|detach|copy|pragma|install|load|"
@@ -135,7 +144,7 @@ def reject_logging_sql(sql: str) -> None:
     For every place tenant, stored or LLM-authored SQL reaches a locked connection:
     the dashboard and scheduled-query runners, saved-query creation and the
     ``SQLSafetyValidator``, none of which go through ``validate_sql_expression``."""
-    if _LOGGING_ABUSE_PATTERN.search(sql or ""):
+    if _LOGGING_ABUSE_PATTERN.search(sql or "") or _DYNAMIC_SQL_CALL_PATTERN.search(sql or ""):
         raise ValueError("SQL may not configure DuckDB logging")
 
 
