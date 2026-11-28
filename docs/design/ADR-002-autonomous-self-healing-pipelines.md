@@ -44,17 +44,22 @@ Every applied fix goes through these four steps.
    value past the *unit-fault reach*. The reach is a heuristic hold, not a proof: no exact test
    can prove one row past the range (sk_digits: one pixel 1.0 → 10000.0 beside a proven rename),
    so a value whose magnitude exceeds the baseline's largest by more than ten times, and by more
-   than the baseline's own dynamic range (largest over smallest magnitude), is held. On clean
-   batches of 5–300 rows (1,000 seeds per baseline size, one batch each) it held lognormal(0, 2)
-   and (0, 2.5) columns never, and pareto(1.2) columns, an infinite-variance tail, in 0.4% of
-   batches at 200 baseline rows, 2.5% at 100 and 9.5% at 50. Like every sandbox check it only
+   than the baseline's own dynamic range (largest over smallest magnitude), is held. The dynamic
+   range is raised to a power set by the baseline's size, the batch's size and the number of
+   columns tested, so that under a power-law tail a clean batch reaches it with chance about the
+   sandbox's per-batch level (1e-3, split over the columns tested). On clean batches of 5–300
+   rows (1,000 seeds per baseline size, one batch each) it held lognormal(0, 2) and (0, 2.5)
+   columns never, and pareto(1.2) columns, an infinite-variance tail, in 0.1% of batches at 200
+   baseline rows, 0.3% at 100 and 0.5% at 50; ten heavy-tailed columns together (300-row
+   batches, 200-row baselines) held up to 1% of clean batches. Like every sandbox check it only
    holds rows, never returns or alters them. A batch flagged only by detection-only findings
    (duplicates, a null spike, volume) changed nothing: it comes back as sent with its alert,
-   after the checks a clean batch gets and the unit-fault reach alone (a count ×1000 beside a
-   null spike is a unit fault the detector could not prove, not a value to return under an
-   alert), never the decimal-place, past-range or aligned holds, which at the first floor held
-   79 of 650 real keyed-duplicate batches, 81 of 650 null spikes and 26 of 650 duplicates for
-   values the same batch, unflagged, returns.
+   after the checks a clean batch gets. Only the rows that hold a value past the unit-fault
+   reach are held, and alone (a count ×1000 beside a null spike is a unit fault the detector
+   could not prove, not a value to return under an alert). It never gets the decimal-place,
+   past-range or aligned holds, which at the first floor held 79 of 650 real keyed-duplicate
+   batches, 81 of 650 null spikes and 26 of 650 duplicates, every row, for values the same
+   batch, unflagged, returns.
 2. **Canary.** For the next N batches (default 3), the fixed output is checked against the
    baseline. Any regression rolls it back automatically. A regression is evidence against the
    fix: its output on the column is provably not the baseline's (the detector's exact tests),
@@ -106,25 +111,26 @@ that commit. The `heal-realism` CI job enforces it for the real and steady lanes
 a key value an earlier page of the same run delivered, must raise the duplicates alert, every
 time. A page's keys join the run when its rows are delivered (a held row's key never does), and
 a page re-sent unchanged is the same page, not its own duplicate. Key values compare by the key
-they name: 1, 1.0 and "1" are one key; "007" and True are not 1. A run's keys live in the UASR
-process's memory (at most 2,000,000 hashed keys over all sources and tenants, least recently
-used runs evicted first): a restart, a page another replica serves, or an eviction starts the
-run's memory afresh, and a key repeated across that gap is not caught. Every lane runs
-keyed-duplicate trials (the synthetic identifier, a real source's natural key such as
-`(firm, year)`, or a row key added to the rows): exact copies, rows that take another row's key,
-and copies of an earlier page's rows. A missed keyed duplicate is wrong under (a) and is gated
-at 0 misses. Duplicates on keyless data stay as they were: reported under (b), and held by the
-floor.
+they name: a number is its value (1 and 1.0 are one key), text is a number only as a canonical
+integer literal ("10005" is the key 10005; "1.0", "007", "+7" and "1e3" are text), and True is
+not 1. A run's keys live in the UASR process's memory (at most 2,000,000 hashed keys over all
+sources and tenants, least recently used runs evicted first): a restart, a page another replica
+serves, or an eviction starts the run's memory afresh, and a key repeated across that gap is not
+caught. Every lane runs keyed-duplicate trials (the synthetic identifier, a real source's
+natural key such as `(firm, year)`, or a row key added to the rows): exact copies, rows that
+take another row's key, and copies of an earlier page's rows. A missed keyed duplicate is wrong
+under (a) and is gated at 0 misses. Duplicates on keyless data stay as they were: reported under
+(b), and held by the floor.
 
 **The public claim** is stated per lane, with both numbers named, and never as a bare "99.9%
-accurate": "≥ 99.9% of automatic fixes correct; healed automatically N%, detected M% (by
-lane)". At the floor of 2026-11-26: no wrong fix in 5,332 synthetic, 4,662 real and 776
-steady-state applied batches; healed automatically 70.7% on synthetic data, 51.5% on real data
-and 79.0% in steady state; detected 100%, 93.9% and 99.1%. A fault not healed was held back
-(quarantined, never written) or missed: no miss on synthetic data; 550 silent misses in 8,950
-real trials (448 duplicates on keyless data, 65 decoy rescales by x2.5 or x7, 25 rescales, 10
-null spikes, 2 combinations) and 19 missed alerts (combinations); 9 silent misses in 977
-steady-state fault batches (7 duplicates on keyless data, 2 rescales).
+accurate": "≥ 99.9% of automatic fixes correct; healed automatically N%, detected M% (by lane)".
+At the floor of 2026-11-27: no wrong fix in 5,332 synthetic, 4,663 real and 776 steady-state
+applied batches; healed automatically 70.7% on synthetic data, 51.5% on real data and 79.0% in
+steady state; detected 100%, 93.9% and 99.1%. A fault not healed was held back (quarantined,
+never written) or missed: no miss on synthetic data; 550 silent misses in 8,950 real trials (448
+duplicates on keyless data, 65 decoy rescales by x2.5 or x7, 25 rescales, 10 null spikes, 2
+combinations) and 19 missed alerts (combinations); 9 silent misses in 977 steady-state fault
+batches (7 duplicates on keyless data, 2 rescales).
 
 ## Phases
 

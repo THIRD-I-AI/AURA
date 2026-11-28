@@ -40,5 +40,5 @@
    "missed_alert": 0
   }
  },
- "_recorded": "2026-11-26, feature/heal-realism-bench after merging feature/heal-accuracy-fixes at 6f67fcb (the PR #806 review fixes, the detection-only no-hold, origin/main at 28c2470). Recall rose in every lane and no miss count moved: correct synthetic 500 5296 -> 5303, synthetic 50 533 -> 534, real 50 4411 -> 4606, steady 500 768 -> 772. Previous floor: 2026-11-22, the first (feature/heal-realism after heal-hardening 891c3ba)."
+ "_recorded": "2026-11-27, feature/heal-realism-bench after the PR #806 re-review narrowing (the id evidence of fea7658, the per-batch unit-fault reach, canonical-integer text keys; product line ab3ce8a, main f450278). Every number is the 2026-11-26 floor's, reconfirmed on this tree: no lane moved. 2026-11-26 raised the first floor (2026-11-22, heal-hardening 891c3ba): correct synthetic 500 5296 -> 5303, synthetic 50 533 -> 534, real 50 4411 -> 4606, steady 500 768 -> 772."
 }
