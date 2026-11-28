@@ -10,7 +10,13 @@ row, what a correct healer must hand the destination in ``Trial.expected``:
   so they must be quarantined (ADR-002: never guess);
 * a detection-only fault (null spike, duplicates, volume drop) has nothing to
   repair, so ``expected`` follows ``sent`` and the fault must be raised as an alert
-  of ``required_alerts`` with ``healed=false`` (ADR-002 "Detection only").
+  of ``required_alerts`` with ``healed=false`` (ADR-002 "Detection only");
+* keyed duplicates declare the dataset's unique key on the baseline (ADR-002 "exact
+  duplicates on the declared key"): the synthetic identifier, a real source's
+  natural key, or a row key added to every row. A key repeated in the batch, or
+  delivered by an earlier page of the same run (``prior_pages``, sent first under
+  the trial's ``metadata.run_id``), must raise the alert every time: a miss is WRONG
+  under the gated applied-fix metric (``Trial.keyed_dup``), never only reported.
 
 Faults touch distinct columns, so two of them compose into a combination trial with
 the same bookkeeping. Every trial is rebuilt from its seed alone.
@@ -32,6 +38,7 @@ from .datasets import (
     sample,
     strict_equal,
 )
+from .realdata import make_real_dataset
 
 
 class NotApplicable(Exception):
@@ -54,6 +61,12 @@ class Trial:
     used: Set[str] = field(default_factory=set)
     details: List[str] = field(default_factory=list)
     classes: List[str] = field(default_factory=list)
+    # A duplicate on a source with a declared key: the alert is owed every time, so a
+    # miss counts against (a), gated, not as a reported silent miss (harness.Result).
+    keyed_dup: bool = False
+    # Clean pages of the same run sent before ``sent`` (harness.heal_pages_on); each must
+    # come back clean.
+    prior_pages: List[List[Dict[str, Any]]] = field(default_factory=list)
 
     @property
     def detail(self) -> str:
@@ -90,9 +103,18 @@ class Trial:
         return changed
 
     def void_changed(self, name: str, original: List[Any]) -> None:
-        """Rows whose ``name`` no longer holds the truth have no correct output."""
+        """Rows whose ``name`` no longer holds the truth's value have no correct output.
+
+        A value the fault left numerically equal is not one of them: x2.5 sends an int
+        0 as 0.0, and the lossless cast back gives the truth exactly (as for
+        int_as_float), so the truth stays expected -- and 0.0 returned for it is still
+        WRONG. Real 0/1 columns (BUG-577) are mostly such rows."""
         for i, row in enumerate(self.sent):
-            if self.expected[i] is not None and not strict_equal(row.get(name), original[i]):
+            new, old = row.get(name), original[i]
+            same = strict_equal(new, old) or (
+                isinstance(new, (int, float)) and isinstance(old, (int, float))
+                and not isinstance(new, bool) and not isinstance(old, bool) and new == old)
+            if self.expected[i] is not None and not same:
                 self.expected[i] = None
 
     def set_type(self, name: str, dtype: str) -> None:
@@ -244,6 +266,72 @@ def _duplicates(t: Trial, rnd: random.Random) -> None:
     t.note(f"duplicates, {len(picks)} exact copies", f"duplicates {int(frac * 100)}%")
 
 
+# Real sources whose rows a natural key identifies; every other real source gets
+# ROW_KEY, a unique row number, for its keyed trials only.
+NATURAL_KEYS = {"sm_macrodata": ("year", "quarter"), "sm_grunfeld": ("firm", "year")}
+ROW_KEY = "row_key"
+
+
+def declare_key(t: Trial) -> List[str]:
+    """Declare the dataset's unique key on the trial's baseline and return it: the
+    synthetic identifier (every synthetic dataset leads with one), a real source's
+    natural key, or ROW_KEY numbered across baseline and batch."""
+    ds = t.dataset
+    if ds.name is None:
+        key = [ds.columns[0].name]
+    elif ds.name in NATURAL_KEYS:
+        key = list(NATURAL_KEYS[ds.name])
+    else:
+        key = [ROW_KEY]
+        if all(c.name != ROW_KEY for c in ds.columns):
+            n0 = len(ds.baseline)
+            ds.columns = [Column(ROW_KEY, "id_int", 0.0, {"style": "sequential", "dtype": "int"}), *ds.columns]
+            ds.baseline = [{ROW_KEY: i, **r} for i, r in enumerate(ds.baseline)]
+            ds.truth = [{ROW_KEY: n0 + i, **r} for i, r in enumerate(ds.truth)]
+            t.sent = [{ROW_KEY: n0 + i, **r} for i, r in enumerate(t.sent)]
+            t.expected = [None if e is None else {ROW_KEY: n0 + i, **e} for i, e in enumerate(t.expected)]
+            t.set_type(ROW_KEY, "int")
+    t.baseline_metadata["key_columns"] = key
+    return key
+
+
+def _keyed_duplicates(t: Trial, rnd: random.Random) -> None:
+    """Rows that repeat the declared key: exact copies, rows that take another row's
+    key and keep their own values, or copies of rows an earlier page of the run
+    delivered. One row in a large batch counts as much as a tenth of it."""
+    key = list(t.baseline_metadata.get("key_columns") or declare_key(t))
+    n = len(t.sent)
+    k = rnd.choice([1, max(1, n // 100), max(1, n // 20), max(1, n // 10)])
+    variant = rnd.choice(["copies", "collisions", "earlier page"])
+    if variant == "collisions":
+        idx = rnd.sample(range(n), min(2 * k, n))
+        k = len(idx) // 2
+        for a, b in zip(idx[:k], idx[k:2 * k]):
+            t.sent[a] = {**t.sent[a], **{c: t.sent[b][c] for c in key}}
+            t.expected[a] = dict(t.sent[a])
+    else:
+        sent, expected = t.sent, t.expected
+        if variant == "earlier page":
+            m = n // 2
+            t.prior_pages = [copy_rows(sent[:m])]
+            t.metadata["run_id"] = f"run-{t.fault}-{t.seed}"
+            if t.metadata.get("complete_run"):
+                t.metadata["run_rows"] = n + k
+            sources, sent, expected = list(range(m)), sent[m:], expected[m:]
+            source_rows = t.prior_pages[0]
+        else:
+            sources, source_rows = list(range(n)), sent
+        picks = [rnd.choice(sources) for _ in range(k)]
+        pairs = list(zip(sent, expected)) + [(dict(source_rows[i]), dict(source_rows[i])) for i in picks]
+        rnd.shuffle(pairs)
+        t.sent = [s for s, _ in pairs]
+        t.expected = [e for _, e in pairs]
+    t.required_alerts.add("duplicate")
+    t.expect_healed = False
+    t.keyed_dup = True
+    t.note(f"keyed duplicates on {key}: {k} {variant}", f"keyed duplicates ({variant})")
+
+
 def _volume_drop(t: Trial, rnd: random.Random) -> None:
     n0 = len(t.dataset.baseline)
     n1 = rnd.randint(1, max(1, n0 // 101))
@@ -268,6 +356,7 @@ INJECTORS: Dict[str, Callable[[Trial, random.Random], None]] = {
     "removed_column": _removed_column,
     "null_spike": _null_spike,
     "duplicates": _duplicates,
+    "keyed_duplicates": _keyed_duplicates,
     "volume_drop": _volume_drop,
 }
 
@@ -291,12 +380,28 @@ COMBOS = [
 FAULT_TYPES = list(INJECTORS) + ["combo"]
 
 
-def build_trial(fault: str, seed: int) -> Trial:
-    """The trial for ``fault`` at ``seed``, or NotApplicable after a few shapes."""
-    rnd = random.Random(f"{fault}:{seed}")
+def _dataset(source: Optional[str], seed: int, **kw) -> Optional[Dataset]:
+    """A synthetic dataset, or a sample of the real ``source`` (BUG-577); None when
+    the real source has too few rows for the sizes asked."""
+    if source is None:
+        return make_dataset(seed, **kw)
+    try:
+        return make_real_dataset(source, seed, **kw)
+    except ValueError:
+        return None
+
+
+def build_trial(fault: str, seed: int, source: Optional[str] = None) -> Trial:
+    """The trial for ``fault`` at ``seed`` -- on a synthetic dataset, or on a sample of
+    the real dataset ``source`` -- or NotApplicable after a few shapes."""
+    # The synthetic stream is seeded exactly as before real sources existed, so every
+    # synthetic trial is the one earlier runs measured.
+    rnd = random.Random(f"{fault}:{seed}" if source is None else f"{source}:{fault}:{seed}")
     for attempt in range(20):
         kw = {"baseline_rows": rnd.randint(1000, 2000)} if fault == "volume_drop" else {}
-        ds = make_dataset(rnd.randrange(1 << 30), **kw)
+        ds = _dataset(source, rnd.randrange(1 << 30), **kw)
+        if ds is None:
+            continue
         steps = list(rnd.choice(COMBOS)) if fault == "combo" else [fault]
         t = Trial(
             fault=fault, seed=seed, dataset=ds,
@@ -309,18 +414,25 @@ def build_trial(fault: str, seed: int) -> Trial:
                 INJECTORS[step](t, rnd)
         except NotApplicable:
             continue
+        if strict_equal(t.sent, ds.truth):
+            # A real column can hold only zeros in a batch, so a rescale changes
+            # nothing; such a trial measures nothing. (Never so on synthetic data.)
+            continue
         return t
     raise NotApplicable(fault)
 
 
-def build_clean(seed: int) -> Trial:
+def build_clean(seed: int, source: Optional[str] = None) -> Trial:
     """A clean batch of the dataset's own process, at one of several sizes, with or
-    without a snapshot, sometimes as a complete run against a complete-run baseline."""
-    rnd = random.Random(f"clean:{seed}")
+    without a snapshot, sometimes as a complete run against a complete-run baseline.
+    On a real ``source`` the batch is cut to the rows the source has left."""
+    rnd = random.Random(f"clean:{seed}" if source is None else f"{source}:clean:{seed}")
     size = rnd.choice(["tiny", "small", "medium", "large"])
     n1 = {"tiny": rnd.randint(20, 60), "small": rnd.randint(60, 200),
           "medium": rnd.randint(200, 900), "large": rnd.randint(1500, 4000)}[size]
-    ds = make_dataset(rnd.randrange(1 << 30), batch_rows=n1)
+    ds = _dataset(source, rnd.randrange(1 << 30), batch_rows=n1)
+    if ds is None:
+        raise NotApplicable(f"{source}: too few rows")
     t = Trial(
         fault="clean", seed=seed, dataset=ds,
         sent=copy_rows(ds.truth), expected=copy_rows(ds.truth),

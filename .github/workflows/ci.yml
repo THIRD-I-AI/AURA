@@ -429,10 +429,17 @@ jobs:
 
   # ── ADR-002 heal accuracy benchmark (full run) ───────────────────────────
   # tests/accuracy injects every fault type into seeded clean datasets with
-  # known ground truth and scores the real /uasr/heal handler: precision of
-  # applied repairs >= 99.9% per fault type and overall (a missed fault that
-  # comes back as healed counts as wrong), zero false alarms on clean data,
-  # and row accounting on every trial. The base backend-test lane runs the
+  # known ground truth and scores the real /uasr/heal handler (harness.py
+  # docstring): (a) applied-fix precision >= 99.9% per fault type and overall
+  # -- every batch where a fault was detected and rows returned must return
+  # only ground truth -- and (d) zero false alarms on clean data, both gated,
+  # plus row accounting on every trial. (b) the strict outcome accuracy, a
+  # missed fault that comes back as healed counted as wrong, and (c) recall
+  # are printed and written to the report. The miss floor
+  # (tests/accuracy/accuracy_floor.json) gates silent misses, missed alerts and
+  # recall at their recorded values for this trial count, and a duplicate on a
+  # source with a declared key is gated at 0 misses (and counts in (a)).
+  # The base backend-test lane runs the
   # same file at 50 trials per fault type; this lane runs the ADR-002 bar of
   # 500 per type (~7,000 fault trials + 1,000 clean batches, under 10 min),
   # so a rare wrong repair cannot hide in the small sample. The JSON report
@@ -476,6 +483,75 @@ jobs:
         with:
           name: heal-accuracy-report
           path: aurabackend/heal_accuracy_report.json
+          if-no-files-found: ignore
+
+  # ── ADR-002 heal accuracy on real data and in steady state (BUG-577) ───────
+  # The synthetic lane above measures datasets the same work generated, one
+  # cold-start batch each. This lane holds the same gates ((a) applied-fix
+  # precision >= 99.9%, (d) zero clean false alarms, row accounting; (b) strict
+  # accuracy with silent misses and (c) recall reported) on the real datasets sklearn and
+  # statsmodels bundle plus the COMPAS extract (nothing is downloaded), and on
+  # multi-batch streams through warm-up, the canary's keep and rollback paths
+  # and clean batches after a fault. It needs sklearn and statsmodels, so it
+  # is its own job, never the base lane (tests/accuracy/conftest.py deselects
+  # heal_realism unless -m names it). Both lanes keep memory flat (harness
+  # TrialRef and forget(): the 7.4 GB run of BUG-577 kept every trial's rows
+  # and every dead source); each process stays near 300 MB. Faults no check
+  # sees on these sources (missed duplicates on keyless real data, decoys in
+  # sparse or small columns) are silent misses: they lower (b), reported per
+  # fault type and dataset, and are not the applied-fix gate -- but neither
+  # lane may miss more of them, or recall less, than its miss floor
+  # (tests/accuracy/accuracy_floor.json: real at 50, steady at 500). Keyed
+  # duplicates (a declared key, across a run's pages too) are gated at 0 misses.
+  heal-realism:
+    name: Heal Accuracy on real data and steady state (ADR-002, BUG-577)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      PYTHONUNBUFFERED: "1"
+
+    defaults:
+      run:
+        working-directory: aurabackend
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: aurabackend/requirements*.txt
+
+      - name: Install dependencies
+        # Only the two packages whose bundled datasets the lane reads, pinned by
+        # constraints.txt -- not the whole causal stack.
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -c constraints.txt
+          pip install scikit-learn statsmodels -c constraints.txt
+          pip install pytest pytest-asyncio
+
+      - name: Real datasets (50 trials per dataset and fault type)
+        env:
+          AURA_HEAL_BENCH_REAL_TRIALS: "50"
+          AURA_HEAL_BENCH_REPORT: heal_realism_report.json
+        run: python -m pytest tests/accuracy/test_heal_accuracy_real.py -m heal_realism -v -s --tb=short -p no:logging
+
+      - name: Steady state (500 streams)
+        if: always()
+        env:
+          AURA_HEAL_BENCH_STEADY_TRIALS: "500"
+          AURA_HEAL_BENCH_REPORT: heal_realism_report.json
+        run: python -m pytest tests/accuracy/test_heal_accuracy_steady.py -m heal_realism -v -s --tb=short -p no:logging
+
+      - name: Upload the benchmark reports
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: heal-realism-report
+          path: aurabackend/heal_realism_report-*.json
           if-no-files-found: ignore
 
   # ── Storage S3 integration (S3-compatible server required) ─────────────────────────────

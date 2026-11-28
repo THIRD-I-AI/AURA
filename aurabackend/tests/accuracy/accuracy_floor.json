@@ -1,0 +1,44 @@
+{
+ "_policy": [
+  "The ADR-002 miss floor (harness.floor_failures). The lanes are seeded, so each number below is exact for its trial count.",
+  "Each lane gates: silent misses <= silent_miss, missed alerts <= missed_alert, recall >= correct / trials.",
+  "Change it only deliberately. When detection improves, lower the miss counts and raise correct/recall to the new run's 'floor_measure' (its JSON report) in the same change.",
+  "Never raise a miss count or lower recall without an owner's decision, named in the commit that does it.",
+  "Keys: lane -> trial count as CI runs it (synthetic: AURA_HEAL_BENCH_TRIALS, real: AURA_HEAL_BENCH_REAL_TRIALS, steady: AURA_HEAL_BENCH_STEADY_TRIALS)."
+ ],
+ "synthetic": {
+  "500": {
+   "trials": 7500,
+   "correct": 5303,
+   "recall": 0.707067,
+   "silent_miss": 0,
+   "missed_alert": 0
+  },
+  "50": {
+   "trials": 750,
+   "correct": 534,
+   "recall": 0.712,
+   "silent_miss": 0,
+   "missed_alert": 0
+  }
+ },
+ "real": {
+  "50": {
+   "trials": 8950,
+   "correct": 4606,
+   "recall": 0.514637,
+   "silent_miss": 550,
+   "missed_alert": 19
+  }
+ },
+ "steady": {
+  "500": {
+   "trials": 977,
+   "correct": 772,
+   "recall": 0.790174,
+   "silent_miss": 9,
+   "missed_alert": 0
+  }
+ },
+ "_recorded": "2026-11-27, feature/heal-realism-bench after the PR #806 re-review narrowing (the id evidence of fea7658, the per-batch unit-fault reach, canonical-integer text keys; product line ab3ce8a, main f450278). Every number is the 2026-11-26 floor's, reconfirmed on this tree: no lane moved. 2026-11-26 raised the first floor (2026-11-22, heal-hardening 891c3ba): correct synthetic 500 5296 -> 5303, synthetic 50 533 -> 534, real 50 4411 -> 4606, steady 500 768 -> 772."
+}
