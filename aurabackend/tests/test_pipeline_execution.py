@@ -264,7 +264,7 @@ async def test_add_column_step_rejects_file_read_expression(tmp_path, monkeypatc
     # own "No files found" IO error, which echoes the failing query text
     # (including "read_csv") -- a looser substring check would pass
     # vacuously whether or not the guard ever fired.
-    assert "may not reference file/network access functions" in run.error
+    assert "may not call file/network" in run.error  # BUG-599: AST guard message
 
 
 @pytest.mark.asyncio
@@ -294,7 +294,7 @@ async def test_custom_sql_step_rejects_attach_expression(tmp_path, monkeypatch):
     run = await engine.execute(pipeline, preview_only=True, tenant=tenant)
 
     assert run.status == PipelineStatus.FAILED
-    assert "may not reference file/network access functions" in run.error
+    assert "may not call file/network" in run.error  # BUG-599: AST guard message
 
 
 @pytest.mark.asyncio
@@ -636,7 +636,6 @@ async def test_kafka_source_insert_is_batched_not_per_row(monkeypatch):
     conn.execute() loop (one round-trip per message), violating this repo's
     documented bulk-write performance rule. It must use conn.executemany()
     -- a single call carrying all rows -- instead."""
-    import pipeline.engine as engine_module
 
     async def _fake_consume_batch(cfg, progress_cb=None):
         return [{"id": str(i), "event": "click"} for i in range(50)]

@@ -6,6 +6,7 @@ from typing import Any, cast
 
 from agents.base import AgentContext, AgentResult, AgentStatus, BaseAgent
 from agents.params import ExecutionAgentParams
+from shared.sql_expression_guard import reject_logging_sql
 
 
 def _max_result_rows() -> int:
@@ -84,6 +85,10 @@ class ExecutionAgent(BaseAgent):
             cap = _max_result_rows()
 
             def _run_sql() -> tuple[list[str], list[tuple]]:
+                # BUG-598: the model writes this SQL from the user's question and nothing
+                # else checks it before it reaches the locked connection; a poisoned
+                # connection aborts the whole process when it is released.
+                reject_logging_sql(sql)
                 cur = con.execute(sql)
                 cols = _unique_column_names([desc[0] for desc in cur.description])
                 return cols, cur.fetchmany(cap + 1)

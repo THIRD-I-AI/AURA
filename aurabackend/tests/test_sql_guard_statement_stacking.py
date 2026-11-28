@@ -32,8 +32,10 @@ def test_semicolon_inside_a_string_literal_or_identifier_is_not_a_statement_boun
     validate_sql_expression(expr)  # must not raise
 
 
-def test_export_database_alone_is_also_blocked_by_the_word_list():
-    with pytest.raises(ValueError, match="file/network access functions"):
+def test_export_database_alone_is_blocked_as_a_non_read_only_statement():
+    # BUG-599: the parser now refuses EXPORT DATABASE as "not a single read-only query"
+    # (a stronger reason than the keyword word-list, which remains the no-parser fallback).
+    with pytest.raises(ValueError, match="read-only query"):
         validate_sql_expression("EXPORT DATABASE '/tmp/x' (FORMAT CSV)")
 
 

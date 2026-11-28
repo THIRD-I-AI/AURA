@@ -93,3 +93,27 @@ def lock_down_connection(con: Any) -> None:
     """
     con.execute("SET enable_external_access=false")
     con.execute("SET lock_configuration=true")
+
+
+def reject_stored_logging_calls(con: Any) -> None:
+    """Raise ``ValueError`` if a view or macro stored in the database behind ``con`` calls
+    one of DuckDB's logging functions (BUG-598).
+
+    A tenant can upload a .duckdb it built itself, and a view in it is bound when the
+    caller's query reads it. The caller's SQL is then innocent text (``SELECT * FROM v``),
+    so no check of that text can see the call: ``enable_logging(storage='file', ...)``
+    inside the view bricks the locked connection -- every later statement on it fails, and
+    releasing it aborts the whole process when the number of failed statements is odd.
+    Run this on a connection that opened a caller-supplied file, before ``lock_down_connection``
+    and before any query. Only calls are refused (``reject_logging_calls``), so a table or
+    view that merely has a column called ``enable_logging`` is left alone."""
+    from shared.sql_expression_guard import reject_logging_calls
+
+    stored = [row[0] for row in con.execute(
+        "SELECT sql FROM duckdb_views() WHERE NOT internal AND sql IS NOT NULL").fetchall()]
+    stored += [row[0] for row in con.execute(
+        "SELECT macro_definition FROM duckdb_functions() "
+        "WHERE function_type IN ('macro', 'table_macro') AND NOT internal "
+        "AND macro_definition IS NOT NULL").fetchall()]
+    for definition in stored:
+        reject_logging_calls(definition)
