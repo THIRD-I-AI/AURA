@@ -137,6 +137,16 @@ class SQLSafetyValidator:
             errors.append(f"Security risk: {reason}")
             risk_level = QueryRiskLevel.CRITICAL
 
+        # BUG-598: enable_logging(storage='file', ...) succeeds on a locked DuckDB connection
+        # and the next flush aborts the whole process. Matched on the raw text.
+        from shared.sql_expression_guard import reject_logging_sql
+
+        try:
+            reject_logging_sql(query)
+        except ValueError:
+            errors.append("Security risk: DuckDB logging configuration")
+            risk_level = QueryRiskLevel.CRITICAL
+
         # BUG-532 review: every tokenizer drops comments, but MySQL executes the
         # body of /*! ... */ and /*!50000 ... */, so `/*! DELETE FROM t */` passed
         # the token scan. No read query needs one: refuse outright.
