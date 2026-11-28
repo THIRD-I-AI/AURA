@@ -26,6 +26,21 @@ connection for these steps.
 from __future__ import annotations
 
 import re
+import threading
+
+# BUG-598 stopgap: DuckDB's logging functions are not covered by enable_external_access=false.
+# ``enable_logging(storage='file', ...)`` succeeds on a locked connection, and the next log
+# flush -- at close() -- makes DuckDB abort the whole process, so one request took the single
+# gateway worker down. Matched on the RAW text, before quoted spans are blanked, so a quoted
+# name ("enable_logging"(...)) or a dollar-quoted string cannot hide it; the price is that a
+# string literal mentioning one of these names is refused too. This raw-text layer stays; the
+# parser-based layer (BUG-599, below) sits on top of it and catches what raw text cannot: a name
+# built at run time through dynamic SQL, e.g. query('enable_' || 'logging(...)').
+_LOGGING_ABUSE_PATTERN = re.compile(
+    r"enable_logging|disable_logging|truncate_duckdb_logs|duckdb_logs|"
+    r"logging_storage|logging_level|logging_mode",
+    re.IGNORECASE,
+)
 
 _BLOCKED_PATTERN = re.compile(
     r"\b(read_csv(_auto)?|read_parquet|read_json(_auto)?|read_ndjson|"
@@ -116,20 +131,18 @@ def _reject_structure(bare: str) -> None:
         )
 
 
-# ── BUG-599: parser-based validation (primary). The keyword scan below is a
-# fallback for when DuckDB cannot be imported; the locked DuckDB connection is
-# the real control. The keyword scan was bypassable -- a quoted function name
-# (``"read_text"(...)``), a dollar-quoted string hiding a stacked ``;``/CALL, and
-# a no-paren or stored-view introspection call all slipped past it. DuckDB's own
-# parser resolves the real function and table names and accepts only a single
-# read-only query. ──
+# ── BUG-599: parser-based layer. The keyword scan was bypassable -- a quoted function
+# name (``"read_text"(...)``), a dollar-quoted string hiding a stacked ``;``/CALL, and a
+# no-paren or stored-view introspection call all slipped past it. DuckDB's own parser (and
+# its own lexer, below) resolve the real function and table names, so no spelling trick
+# applies, and it accepts only a single read-only query. The keyword scan further down is
+# the fallback for when DuckDB cannot be imported; the locked DuckDB connection is the real
+# control for file and network access. ──
 
-import threading
-
-# Refused by DuckDB's own (already-normalised) function name: file/URL readers,
-# every ``*_scan``, the sqlite/postgres/mysql scanners, dynamic SQL
-# (query/query_table/json_execute_serialized_sql), DuckDB's logging functions
-# (BUG-598) and the introspection functions that leak server paths.
+# Refused by DuckDB's own (already-normalised) function name: file/URL readers, every
+# ``*_scan``, the sqlite/postgres/mysql scanners, dynamic SQL
+# (query/query_table/json_execute_serialized_sql), DuckDB's logging functions (BUG-598) and
+# the introspection functions that leak server paths.
 _BLOCKED_FUNCTION = re.compile(
     r"^(read_\w+|\w+_scan|parquet_\w+|sniff_csv|st_read\w*|iceberg_\w+|delta_\w+|"
     r"duckdb_\w+|pragma_\w+|sqlite_\w+|postgres_\w+|mysql_\w+|glob|"
@@ -149,6 +162,17 @@ _PATH_LIKE_TABLE = re.compile(
 
 _PLACEHOLDER = re.compile(r"\{\{\s*\w+\s*\}\}")
 
+# The calls BUG-598 is about, and the ones that could build such a call at run time.
+# enable_logging(storage='file', ...) is the one that bricks a locked connection: every later
+# statement on it fails, and releasing it aborts the whole process when the number of failed
+# statements is odd. No DuckDB setting prevents it (lock_configuration does not govern the
+# function, and no statement can be run on the bricked connection to undo it), so the call
+# must never be run: refuse it by name here, before the SQL reaches a connection.
+_REFUSED_CALLS = frozenset({
+    "enable_logging", "disable_logging", "truncate_duckdb_logs",
+    "query", "query_table", "json_execute_serialized_sql",
+})
+
 _parse_lock = threading.Lock()
 _parse_con = None
 
@@ -161,7 +185,12 @@ def _parser_connection():
     global _parse_con
     if _parse_con is None:
         import duckdb
-        _parse_con = duckdb.connect()
+        # Parse-only: it never needs files, the network or an extension.
+        _parse_con = duckdb.connect(config={
+            "enable_external_access": False,
+            "autoinstall_known_extensions": False,
+            "autoload_known_extensions": False,
+        })
     return _parse_con
 
 
@@ -225,6 +254,81 @@ def _single_query_tree(expr: str):
     return None
 
 
+# An identifier as DuckDB's lexer reports it: a double-quoted name or a bare word.
+_IDENTIFIER = re.compile(r'"(?:[^"]|"")*"|[^\W\d][\w$]*')
+
+
+def _tokens_call_refused_function(sql: str) -> bool:
+    """True if DuckDB's own lexer reads a refused function CALL in ``sql``.
+
+    For text the parser cannot serialise as one read-only query -- CALL, PREPARE, a
+    stacked statement, a stored ``CREATE VIEW`` -- where the function names are still plain
+    identifiers. Strings (single-quoted, dollar-quoted) and comments are never identifiers,
+    and a name that is not followed by ``(`` is a column or table, not a call."""
+    try:
+        import duckdb
+    except ImportError as exc:
+        raise _ParserUnavailable from exc
+    try:
+        tokens = duckdb.tokenize(sql)
+    except Exception:
+        return True  # not even DuckDB's lexer can read it: fail closed
+    named = (duckdb.token_type.identifier, duckdb.token_type.keyword)
+    for i, (offset, kind) in enumerate(tokens[:-1]):
+        if kind not in named:
+            continue
+        match = _IDENTIFIER.match(sql, offset)
+        if match is None:
+            continue
+        name = match.group(0)
+        if name.startswith('"'):
+            name = name[1:-1].replace('""', '"')
+        next_offset = tokens[i + 1][0]
+        if name.lower() in _REFUSED_CALLS and sql[next_offset:next_offset + 1] == "(":
+            return True
+    return False
+
+
+def reject_logging_calls(sql: str) -> None:
+    """Raise ``ValueError`` if ``sql`` CALLS one of DuckDB's logging functions, or a
+    function that runs a string as SQL (BUG-598).
+
+    The precise layer: DuckDB's parser names the functions a query calls, and its lexer does
+    the same for statements the parser will not serialise, so quoting, dollar-quoting,
+    comments and case cannot hide a call -- and a column, CTE or string that merely contains
+    one of the names is left alone. Used on its own for the SQL stored inside a tenant's
+    database file, where the raw-text layer would refuse a log-style table that has a column
+    named ``enable_logging``."""
+    if not sql:
+        return
+    tree = _single_query_tree(sql)
+    if tree is not None:
+        refused = any(n.strip().lower() in _REFUSED_CALLS for n in _collect(tree, "function_name"))
+    else:
+        refused = _tokens_call_refused_function(sql)
+    if refused:
+        raise ValueError("SQL may not configure DuckDB logging or run a string as SQL")
+
+
+def reject_logging_sql(sql: str) -> None:
+    """Raise ``ValueError`` if ``sql`` touches DuckDB's logging functions (BUG-598).
+
+    For every place tenant, stored or LLM-authored SQL reaches a locked connection:
+    the dashboard and scheduled-query runners, saved-query creation, the
+    ``SQLSafetyValidator``, the chat agents and the DuckDB connector, none of which go
+    through ``validate_sql_expression``. Two layers: the raw-text pattern (any mention,
+    however hidden by quoting; the price is that a string or column that merely mentions
+    a name is refused too), then ``reject_logging_calls``, which reads the SQL with DuckDB's
+    own parser and lexer and catches what raw text cannot -- a name built at run time
+    through dynamic SQL, ``query('enable_' || 'logging(...)')``."""
+    if _LOGGING_ABUSE_PATTERN.search(sql or ""):
+        raise ValueError("SQL may not configure DuckDB logging")
+    try:
+        reject_logging_calls(sql)
+    except _ParserUnavailable:
+        pass  # DuckDB cannot be imported: the raw-text layer above is all there is
+
+
 def _validate_with_parser(expr: str) -> None:
     # Structural checks first, so a comment, an unterminated quote or a stacked ';'
     # keep their established messages (BUG-311/BUG-220) even though the parser would
@@ -282,7 +386,10 @@ def validate_sql_expression(expr: str) -> None:
     """Raise ``ValueError`` unless ``expr`` is a single read-only query that calls
     no file/network, scanner, dynamic-SQL, logging or introspection function and
     references no file-path table (BUG-599). DuckDB's own parser decides; the
-    keyword scan is only a fallback for when DuckDB cannot be imported."""
+    keyword scan is only a fallback for when DuckDB cannot be imported. The raw-text
+    logging check (BUG-598) runs first, as it always has."""
+    if _LOGGING_ABUSE_PATTERN.search(expr):
+        raise ValueError("expression may not configure DuckDB logging")
     try:
         _validate_with_parser(expr)
     except _ParserUnavailable:

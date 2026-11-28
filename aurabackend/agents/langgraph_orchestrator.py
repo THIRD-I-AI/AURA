@@ -48,6 +48,7 @@ from agents.specialists.analysis_agent import AnalysisAgent
 from agents.specialists.execution_agent import ExecutionAgent
 from agents.specialists.sql_generator_agent import SQLGeneratorAgent
 from agents.specialists.visualization_agent import VisualizationAgent
+from shared.sql_expression_guard import reject_logging_sql
 
 logger = logging.getLogger("aura.agents.langgraph")
 
@@ -223,6 +224,9 @@ def _dpc_registry(con: Any) -> Any:
 
     async def _exec(query: str, **_kwargs: Any) -> Dict[str, Any]:
         def _run() -> tuple[list[str], list[tuple]]:
+            # BUG-598: the verifier's SQL is model-written too, and runs on the locked
+            # connection the answer came from.
+            reject_logging_sql(query)
             cur = con.execute(query)
             return [d[0] for d in cur.description], cur.fetchall()
 

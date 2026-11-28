@@ -6,8 +6,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from typing import Any, Dict, List, Optional
 
+from shared.sql_expression_guard import reject_logging_sql
 from shared.sql_identifiers import quote_identifier
 
 from .base import BaseConnector, ConnectorConfig
@@ -92,8 +94,19 @@ class DuckDBConnector(BaseConnector):
             # read_text('/proc/self/environ'), a URL. Cut the connection off from the
             # filesystem and network once the file (and spatial) is open; its own
             # tables stay queryable.
-            from shared.duckdb_factory import lock_down_connection
+            from shared.duckdb_factory import lock_down_connection, reject_stored_logging_calls
 
+            # BUG-598: a view or macro stored in that file can call enable_logging(file);
+            # the caller's own SQL is innocent text, so refuse the file here instead. The
+            # scan only reads the catalog, so closing the connection afterwards is safe.
+            try:
+                await asyncio.to_thread(reject_stored_logging_calls, self._conn)
+            except ValueError:
+                refused, self._conn = self._conn, None
+                self._is_connected = False
+                self.metadata.connected = False
+                await asyncio.to_thread(refused.close)
+                raise
             await asyncio.to_thread(lock_down_connection, self._conn)
             return True
         except Exception as exc:
@@ -117,11 +130,7 @@ class DuckDBConnector(BaseConnector):
 
     async def disconnect(self) -> bool:
         if self._conn:
-            # BUG-598: a stored view in the attached file can turn on file logging while
-            # the connection is locked; safe_close resets it so close cannot abort. Off
-            # the event loop (BUG-365): safe_close runs a query, which is blocking.
-            from shared.duckdb_factory import safe_close
-            await asyncio.to_thread(safe_close, self._conn)
+            self._conn.close()
             self._conn = None
         self._is_connected = False
         self.metadata.connected = False
@@ -173,6 +182,8 @@ class DuckDBConnector(BaseConnector):
             return []
         try:
             def _run() -> List[Dict[str, Any]]:
+                # BUG-598: caller-supplied SQL on a locked connection (the connector API).
+                reject_logging_sql(query)
                 result = self._conn.execute(query)
                 cols = [desc[0] for desc in result.description]
                 return [dict(zip(cols, row)) for row in result.fetchmany(limit)]

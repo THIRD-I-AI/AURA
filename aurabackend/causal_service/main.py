@@ -16,13 +16,13 @@ from typing import List
 import pandas as pd
 from fastapi import HTTPException
 
-from shared.duckdb_factory import safe_close
 from shared.service_factory import create_service
 from shared.sql_expression_guard import validate_sql_expression
 from shared.sql_identifiers import quote_identifier
 
 from .discovery import AttributionInputError, attribute, dowhy_available, summarise
 from .models import (
+    Attribution,
     CausalDiscoverRequest,
     CausalDiscoverResponse,
     DataSource,
@@ -95,9 +95,10 @@ def _load(source: DataSource, role: str) -> pd.DataFrame:
         return con.execute(sql).fetch_df()
     finally:
         if con is not None:
-            # BUG-598: a caller WHERE that turned on file logging while the connection
-            # is locked would otherwise abort the process at close.
-            safe_close(con)
+            try:
+                con.close()
+            except Exception as exc:
+                logger.debug("duckdb close failed: %s", exc)
 
 
 # ── Endpoint ──────────────────────────────────────────────────────────

@@ -690,6 +690,11 @@ async def create_saved_query(payload: SavedQueryCreate, request: Request):
         raise HTTPException(status_code=400, detail="name is required")
     if not sql:
         raise HTTPException(status_code=400, detail="sql is required")
+    from shared.sql_expression_guard import reject_logging_sql
+    try:
+        reject_logging_sql(sql)  # BUG-598: stored SQL runs unvalidated on a locked connection later
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
     wsid = current_workspace_id(request)
     ts = datetime.now()
     record = {
@@ -932,6 +937,10 @@ async def _execute_saved_query_sql(sql: str, workspace_id: Optional[str] = None)
         # uploaded to -- every run of it failed on a missing table.
         await build_schema_context_cached(con, tenant_from_workspace_id(workspace_id), use_llm=False)
         lock_down_connection(con)  # BUG-196: stored, unvalidated SQL runs next
+
+        # BUG-598: SQL stored before the check existed must not reach the connection.
+        from shared.sql_expression_guard import reject_logging_sql
+        reject_logging_sql(sql)
 
         def _run() -> tuple:
             return _fetch_capped(con.execute(sql))

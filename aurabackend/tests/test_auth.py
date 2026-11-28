@@ -39,11 +39,16 @@ class TestPasswordHashing:
 
 @pytest.fixture()
 def open_client(monkeypatch):
-    """FastAPI TestClient in open auth mode with fresh DB."""
-    monkeypatch.setenv("AURA_AUTH_MODE", "open")
-    # Force fresh settings
-    from shared import config as config_mod
-    config_mod.get_settings.cache_clear()
+    """FastAPI TestClient in open auth mode.
+
+    `shared.config` binds `settings = get_settings()` once at import time, so
+    `AURA_AUTH_MODE` env var + `get_settings.cache_clear()` is a no-op once
+    anything has already imported that frozen singleton (as `password_client`
+    does) -- patch the singleton attribute directly instead, same as
+    `password_client` does for the "password" case.
+    """
+    from shared.config import settings
+    monkeypatch.setattr(settings, "auth_mode", "open")
 
     from fastapi.testclient import TestClient
 
@@ -411,3 +416,136 @@ class TestTokenRefresh:
         assert resp.status_code == 200, resp.text
         renewed = decode_access_token(resp.json()["access_token"])
         assert (renewed["sub"], renewed["org_id"], renewed["idp"]) == ("idp-subject-1", "acme", "oidc")
+
+
+# ── Profile editing / password change ───────────────────────────────────
+
+def _register_and_login(client, email="erin@example.com", password="original-pass-123", name="Erin"):
+    client.post(f"{V1}/auth/register", json={"email": email, "password": password, "name": name})
+    resp = client.post(f"{V1}/auth/token", json={"email": email, "password": password})
+    return resp.json()["access_token"]
+
+
+class TestUpdateProfile:
+    def test_update_profile_changes_name_and_reissues_token(self, password_client):
+        token = _register_and_login(password_client)
+
+        resp = password_client.patch(f"{V1}/auth/me", json={"name": "Erin Updated"},
+                                      headers={"Authorization": f"Bearer {token}"})
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["user"]["name"] == "Erin Updated"
+        assert "access_token" in body
+
+        # The reissued token carries the new name -- no re-login required.
+        resp = password_client.get(f"{V1}/auth/me",
+                                    headers={"Authorization": f"Bearer {body['access_token']}"})
+        assert resp.json()["name"] == "Erin Updated"
+
+    def test_reissued_token_keeps_the_original_sign_in_time(self, password_client):
+        # A profile edit must not restart the session cap that /auth/refresh enforces.
+        from shared.auth import decode_access_token
+
+        token = _register_and_login(password_client, email="sam@example.com")
+        resp = password_client.patch(f"{V1}/auth/me", json={"name": "Sam"},
+                                      headers={"Authorization": f"Bearer {token}"})
+        assert resp.status_code == 200, resp.text
+        old, new = decode_access_token(token), decode_access_token(resp.json()["access_token"])
+        assert new["auth_time"] == pytest.approx(old["iat"], abs=2)
+
+    def test_update_profile_requires_auth(self, password_client):
+        resp = password_client.patch(f"{V1}/auth/me", json={"name": "Nobody"})
+        assert resp.status_code == 401
+
+    def test_update_profile_rejects_blank_name(self, password_client):
+        token = _register_and_login(password_client)
+        resp = password_client.patch(f"{V1}/auth/me", json={"name": ""},
+                                      headers={"Authorization": f"Bearer {token}"})
+        assert resp.status_code == 422
+
+    def test_update_profile_rejected_in_open_mode(self, open_client):
+        resp = open_client.post(f"{V1}/auth/token", json={"user_id": "open-user"})
+        token = resp.json()["access_token"]
+        resp = open_client.patch(f"{V1}/auth/me", json={"name": "New Name"},
+                                  headers={"Authorization": f"Bearer {token}"})
+        assert resp.status_code == 422  # no DB-backed account to edit
+
+
+class TestChangePassword:
+    def test_change_password_then_old_password_rejected_new_accepted(self, password_client):
+        token = _register_and_login(password_client, email="frank@example.com", password="old-pass-123")
+
+        resp = password_client.post(f"{V1}/auth/change-password",
+                                     json={"current_password": "old-pass-123", "new_password": "new-pass-456"},
+                                     headers={"Authorization": f"Bearer {token}"})
+        assert resp.status_code == 204
+
+        resp = password_client.post(f"{V1}/auth/token",
+                                     json={"email": "frank@example.com", "password": "old-pass-123"})
+        assert resp.status_code == 401
+
+        resp = password_client.post(f"{V1}/auth/token",
+                                     json={"email": "frank@example.com", "password": "new-pass-456"})
+        assert resp.status_code == 200
+
+    def test_change_password_wrong_current_rejected(self, password_client):
+        token = _register_and_login(password_client, email="gina@example.com", password="correct-pass-789")
+
+        resp = password_client.post(f"{V1}/auth/change-password",
+                                     json={"current_password": "wrong-pass", "new_password": "whatever-new"},
+                                     headers={"Authorization": f"Bearer {token}"})
+        assert resp.status_code == 401
+
+        # The old password must still work -- the rejected attempt made no change.
+        resp = password_client.post(f"{V1}/auth/token",
+                                     json={"email": "gina@example.com", "password": "correct-pass-789"})
+        assert resp.status_code == 200
+
+    def test_change_password_requires_auth(self, password_client):
+        resp = password_client.post(f"{V1}/auth/change-password",
+                                     json={"current_password": "x", "new_password": "y" * 10})
+        assert resp.status_code == 401
+
+    def test_change_password_rejected_in_open_mode(self, open_client):
+        resp = open_client.post(f"{V1}/auth/token", json={"user_id": "open-user-2"})
+        token = resp.json()["access_token"]
+        resp = open_client.post(f"{V1}/auth/change-password",
+                                 json={"current_password": "x", "new_password": "y" * 10},
+                                 headers={"Authorization": f"Bearer {token}"})
+        assert resp.status_code == 422
+
+
+class TestDeleteAccount:
+    def test_delete_account_removes_user_and_login_then_fails(self, password_client):
+        token = _register_and_login(password_client, email="hank@example.com", password="delete-me-pass")
+
+        resp = password_client.post(f"{V1}/auth/delete-account", json={"password": "delete-me-pass"},
+                                     headers={"Authorization": f"Bearer {token}"})
+        assert resp.status_code == 204
+
+        resp = password_client.post(f"{V1}/auth/token",
+                                     json={"email": "hank@example.com", "password": "delete-me-pass"})
+        assert resp.status_code == 401
+
+    def test_delete_account_wrong_password_rejected_and_account_survives(self, password_client):
+        token = _register_and_login(password_client, email="ivy@example.com", password="keep-me-pass")
+
+        resp = password_client.post(f"{V1}/auth/delete-account", json={"password": "wrong-pass"},
+                                     headers={"Authorization": f"Bearer {token}"})
+        assert resp.status_code == 401
+
+        # The rejected attempt must not have deleted the account.
+        resp = password_client.post(f"{V1}/auth/token",
+                                     json={"email": "ivy@example.com", "password": "keep-me-pass"})
+        assert resp.status_code == 200
+
+    def test_delete_account_requires_auth(self, password_client):
+        resp = password_client.post(f"{V1}/auth/delete-account", json={"password": "whatever"})
+        assert resp.status_code == 401
+
+    def test_delete_account_rejected_in_open_mode(self, open_client):
+        resp = open_client.post(f"{V1}/auth/token", json={"user_id": "open-user-3"})
+        token = resp.json()["access_token"]
+        resp = open_client.post(f"{V1}/auth/delete-account", json={"password": "whatever"},
+                                 headers={"Authorization": f"Bearer {token}"})
+        assert resp.status_code == 422
