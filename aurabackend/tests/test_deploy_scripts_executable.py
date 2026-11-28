@@ -10,7 +10,16 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
-SCRIPTS = ["backup.sh", "redeploy.sh", "bootstrap.sh", "env-backup.sh"]
+SCRIPTS = [
+    "backup.sh",
+    "redeploy.sh",
+    "bootstrap.sh",
+    "env-backup.sh",
+    "restore-drill.sh",
+    "restore-drill-onbox.sh",
+    "restore-drill-userdata.sh",
+    "restore-drill-checks.py",
+]
 
 
 @pytest.mark.skipif(shutil.which("git") is None, reason="needs git")

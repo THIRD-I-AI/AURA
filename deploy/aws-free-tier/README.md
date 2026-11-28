@@ -244,6 +244,56 @@ docker compose down
 docker compose up -d
 ```
 
+### Restore drill
+
+A backup nobody has restored is a guess. `restore-drill.sh` restores the newest offsite backup onto a
+throwaway instance and checks it: the manual drill of 2026-11-26 (it found BUG-593) as one repeatable
+command. Run it from a workstation with an admin AWS session (`aws sts get-caller-identity` works):
+
+```sh
+./restore-drill.sh --prod-instance i-0123456789abcdef0      # newest backup in s3://aura-backups-<account>
+./restore-drill.sh --prod-instance i-0123456789abcdef0 --bucket my-backups --stamp 20261126T031500Z --region us-east-1
+```
+
+`--prod-instance` is only *described*, so the drill lands in the same subnet and VPC; nothing is ever
+sent to it. The report is saved to `./restore-drill-<stamp>.log` (git-ignored). Exit status: `0` passed,
+`1` failed or could not complete, `2` bad usage, `3` teardown left something behind (named in the output).
+
+**What it proves.** On a fresh t3.small it clones the repo, pulls `.env` from SSM (`/aura/prod/env`) and
+the backup from S3, restores with the documented `./backup.sh --restore`, starts the gateway and UASR,
+and requires all of these to pass:
+
+| Check | Passes when |
+|---|---|
+| `network_internal` | the compose network is `internal: true` before anything is restored, every app container sits on internal networks only, and the app cannot reach the internet |
+| `restore` | `backup.sh --restore` succeeds |
+| `health` | `/health` answers 200 `healthy` |
+| `db_integrity` | every database in the backup was restored and passes `PRAGMA integrity_check` |
+| `ledger_chains` | every tenant's audit-ledger hash chain verifies |
+| `live_checks` | `scripts/verify_live_deployment.py` passes, apart from the expected failures below |
+
+Reported but not gating: saved connection passwords that fail to decrypt with the restored `.env`, the
+signing-key round trip, file counts. The report holds counts and names only, never a secret.
+
+**Isolation.** The restored app cannot reach customer databases, webhooks, streams or LLM providers. Its
+network is `internal: true`: the drill aborts before restoring unless Docker confirms it, and
+`COMPOSE_FILE` is exported before the first compose call so `backup.sh --restore` uses it too. The
+self-healing loop is off, and the running app is probed for a route out and stopped if it has one. The
+instance has no inbound rules and no SSH key (SSM only), requires IMDSv2 and has an encrypted volume.
+Its role is read-only: the backup bucket and that one SSM parameter, plus the managed
+`AmazonSSMManagedInstanceCore` policy the SSM agent needs. A dead-man `shutdown -h +150` terminates the
+instance even if your workstation dies; otherwise the instance, profile, role and security group are
+deleted on every exit, Ctrl-C included.
+
+**Expected offline failures.** With no route out, `chat` and `pipeline_generate` (they call an LLM
+provider), `webhooks` (its test delivery posts to an external URL) and `backup_fresh` (the
+`backup_status.json` that `backup.sh` writes on the live box is not part of a backup) fail by design.
+They are reported and do not fail the drill; any *other* failing live check does. The list is
+`EXPECTED_OFFLINE` in `restore-drill-checks.py`.
+
+**Cost.** About 2–5 cents a run (a t3.small, 30 GB of gp3 and a public IPv4 address, billed per second
+while the drill runs).
+
 ### Rolling back a bad deploy
 
 `.env` pins `AURA_TAG=latest` (moving), so rolling back means checking out the
