@@ -19,6 +19,8 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import hashlib
+import json
 import os
 import uuid
 from contextlib import asynccontextmanager
@@ -939,7 +941,7 @@ async def heal_batch(req: IngestRequest, request: Request, db: AsyncSession = De
     req.source_id = scoped_source(caller_tenant(request), req.source_id)
     batch = BatchPayload(
         source_id=req.source_id,
-        batch_id=req.batch_id or f"heal_{req.source_id}_{uuid.uuid4().hex[:8]}",
+        batch_id=req.batch_id or _page_id(req),
         columns=req.columns or (list(req.rows[0].keys()) if req.rows else []),
         rows=req.rows,
         schema_snapshot=req.schema_snapshot,
@@ -951,8 +953,24 @@ async def heal_batch(req: IngestRequest, request: Request, db: AsyncSession = De
     # finding 1). Other sources are not serialised.
     async with _canary.lock(batch.source_id):
         out, drift_result = await _heal_locked(batch, db)
+        # ADR-002 keyed duplicates (PR #806 review 4): the rows this page delivers join
+        # its run's key memory, under the same lock as the next page's check.
+        await asyncio.to_thread(_detector.record_delivered_keys, batch, out.get("rows") or [])
     _enqueue_for_mapek("heal", batch, drift_result, out.get("canary", {}).get("rolled_back", []))
     return out
+
+
+def _page_id(req: IngestRequest) -> str:
+    """A batch id for a caller that sent none. A page of a run (``metadata.run_id``) gets
+    one derived from the run id and its content, so a retried page is the same page and
+    never its own duplicate in the run's key memory (PR #806 review 4: a retry without a
+    batch id flagged all 300 keys). Anything else gets a fresh id, as before."""
+    run_id = (req.metadata or {}).get("run_id")
+    if run_id is None:
+        return f"heal_{req.source_id}_{uuid.uuid4().hex[:8]}"
+    content = json.dumps([str(run_id), req.columns, req.rows], sort_keys=True, default=str,
+                         separators=(",", ":"))
+    return f"heal_{req.source_id}_{hashlib.sha256(content.encode('utf-8')).hexdigest()[:16]}"
 
 
 async def _heal_locked(

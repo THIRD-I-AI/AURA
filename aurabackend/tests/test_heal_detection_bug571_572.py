@@ -392,14 +392,15 @@ async def test_heal_fractional_floats_in_an_int_column_are_quarantined_not_round
 
     out = await _heal(source, copy.deepcopy(sent))
 
-    # Per-row quarantine, as for any retype (test_heal_phase2a_repairs): the
-    # whole-number rows cast back exactly, the others are held as sent.
+    # PR #806 review 3 (owner decision on retypes): a fraction where the column
+    # records whole numbers means its values changed, not only their type, so the
+    # whole column is void -- every row is held as sent, none rounded, none nulled.
+    # (It used to hold only the fractional rows and return the rest cast back.)
     assert out["drift_detected"] is True and out["degraded"] is True
     _accounted(out, sent)
-    fractional = {i for i in range(300) if i % 3 == 0}
-    assert {q["index"] for q in out["quarantined_rows"]} == fractional
-    assert out["rows"] == [r for i, r in enumerate(truth) if i not in fractional]
-    assert all(type(r["customer_id"]) is int for r in out["rows"])
+    assert out["rows"] == [] and len(out["quarantined_rows"]) == 300
+    assert all(q["row"] == sent[q["index"]] for q in out["quarantined_rows"])
+    assert "fraction" in out["quarantined_rows"][0]["reason"]
 
 
 @pytest.mark.asyncio

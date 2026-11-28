@@ -22,7 +22,7 @@ import re
 import threading
 import time
 import zlib
-from collections import Counter
+from collections import Counter, OrderedDict
 from contextlib import contextmanager
 from dataclasses import replace
 from decimal import Decimal
@@ -112,14 +112,19 @@ _DECLARED_DATE = frozenset({"date", "datetime", "timestamp", "timestamptz", "dat
 _DECLARED_NOT_ID = frozenset({"float", "double", "float32", "float64", "real", "bool", "boolean"})
 # heal-acc1 review: a keyed id needs evidence beyond its values -- a declared key,
 # an id-like declared type, or a name whose last word names a key.
+# BUG-576: only words that name a key. "num", "number", "no" and "nr" name a count or
+# an ordinal as often as a key (visit_num, total_number, seat_no, lot_nr), and an
+# identifier skips statistical drift, so a wide integer measure named so let x2,
+# x1.5 and in-range shifts through. Such a column is a measure unless declared.
 _DECLARED_ID = frozenset({"id", "identifier", "key", "uuid", "guid", "serial", "bigserial", "smallserial"})
-_ID_NAME_WORDS = frozenset({"id", "ids", "key", "pk", "fk", "uuid", "guid", "no", "nr", "num", "number"})
+_ID_NAME_WORDS = frozenset({"id", "ids", "key", "pk", "fk", "uuid", "guid"})
 _NAME_WORD = re.compile(r"[A-Z]+(?![a-z])|[A-Z]?[a-z]+|\d+")
 
 
 def _id_like_name(name: Any) -> bool:
     """The column's last name word names a key: customer_id, CustomerID, userId,
-    order_no, account_key -- not population, bytes or revenue_cents."""
+    account_key -- not visit_num, order_no (BUG-576), population, bytes or
+    revenue_cents."""
     words = _NAME_WORD.findall(str(name or ""))
     return bool(words) and words[-1].lower() in _ID_NAME_WORDS
 
@@ -143,6 +148,34 @@ def _run_rows(batch: BatchPayload) -> int:
     return len(batch.rows)
 
 
+def _beyond_range_tail(k: int, m: int, n0: int) -> float:
+    """P(the ``k`` most extreme of the n0 + m values in a given split all belong to an
+    ``m``-value batch) when batch and ``n0``-value baseline share one distribution
+    (BUG-577): prod_{i<k} (m - i) / (n0 + m - i), whatever the distribution. Ties only
+    make "strictly past" rarer, so it is an upper bound for discrete data."""
+    p = 1.0
+    for i in range(min(k, m)):
+        p *= (m - i) / (n0 + m - i)
+        if p < 1e-300:
+            break
+    return p if k <= m else 0.0
+
+
+def _end_rows_p(below: int, above: int, m: int, n0: int) -> float:
+    """The one exact past-range test (BUG-577, BUG-579): the p-value of ``below`` of an
+    ``m``-row batch's values lying under an ``n0``-row baseline's min and ``above``
+    over its max, when nothing changed.
+
+    With k = below + above, "k rows outside the range" is the union over the k + 1
+    splits (a lowest, k - a highest) of ``_beyond_range_tail(k, m, n0)``, so the union
+    bound keeps the p-value valid. Merge of heal-realism and heal-hardening: realism
+    took the smaller of the two one-sided tails, which is anti-conservative by up to
+    2x (two looks, no correction); this bound never is, and a real fault (a whole
+    column past the range) is still below 1e-20."""
+    k = below + above
+    return min(1.0, (k + 1) * _beyond_range_tail(k, m, n0))
+
+
 def _chi2_crit(df: int) -> float:
     """The chi-square upper 1e-6 quantile (Wilson-Hilferty, z = _SIG_Z). It overstates
     the quantile at df=1 (27.5 vs 23.9), which errs toward not firing."""
@@ -157,6 +190,186 @@ def _chi2_sf(x: float, df: int) -> float:
     h = 2 / (9 * df)
     z = ((x / df) ** (1 / 3) - (1 - h)) / math.sqrt(h)
     return 0.5 * math.erfc(z / math.sqrt(2))
+
+
+# ADR-002 "exact duplicates on the declared key", across the pages of one run: how many
+# hashed keys the detector keeps, over every source's current run. 8 bytes per key plus
+# a 4-byte page tag: 24 MB at the cap. A pipeline run pages 2,000 rows at a time
+# (pipeline/heal.py), so the cap holds a 2-million-row run.
+_RUN_KEYS_MAX = 2_000_000
+_UINT64 = (1 << 64) - 1
+
+
+_KEY_TEXT_INT = re.compile(r"0|[1-9][0-9]*")
+
+
+def _key_part(value: Any) -> Any:
+    """One declared-key cell as the key it names, or None for no key (PR #806 review 6).
+
+    The rule, so that a key's type changing between pages neither hides nor invents a
+    duplicate:
+    * None and NaN carry no key value (the null-rate check judges them);
+    * a number is its value: 1 and 1.0 are one key, 1.5 another;
+    * text is a number only as a canonical integer literal -- ASCII digits with no
+      sign, point, exponent or leading zero: "10005" is the key 10005, the same key
+      a page sending numbers names. Any other text is text, whatever number it
+      parses to (PR #806 second review 5): "1.0" is not "1", "5.0" is not 5, "-0.0"
+      is not 0, and "007", "+7", "-7" and "1e3" are codes;
+    * a boolean is a key of its own: True is not 1;
+    * anything else is its text.
+    """
+    if value is None:
+        return None
+    if isinstance(value, (bool, np.bool_)):
+        return ("bool", bool(value))
+    if isinstance(value, (int, np.integer)):
+        return ("num", int(value))
+    if isinstance(value, (float, np.floating)):
+        f = float(value)
+        if math.isnan(f):
+            return None
+        return ("num", int(f)) if f.is_integer() and math.isfinite(f) else ("num", f)
+    if isinstance(value, str):
+        if _KEY_TEXT_INT.fullmatch(value):
+            try:
+                return ("num", int(value))
+            except ValueError:  # past Python's int-from-text digit limit: still a code
+                pass
+        return ("text", value)
+    return ("text", str(value))
+
+
+def _row_keys(rows: List[Dict[str, Any]], key: List[str]) -> List[str]:
+    """Each row's declared-key value (normalised by ``_key_part``) as one string; rows
+    with any part missing carry no key and are left out."""
+    out = []
+    for r in rows:
+        parts = tuple(_key_part(r.get(c)) for c in key)
+        if all(part is not None for part in parts):
+            out.append(repr(parts))
+    return out
+
+
+def _key_hashes(keys: List[str]) -> np.ndarray:
+    """The 64-bit hashes of a batch's declared-key values, unique and sorted. Python's
+    string hash is salted per process, which is fine: the run memory is per process.
+    Two keys of a 2-million-key run share a hash with probability ~1e-7, below the
+    detector's 1e-6 false-alarm level."""
+    return np.unique(np.fromiter((hash(k) & _UINT64 for k in keys), dtype=np.uint64, count=len(keys)))
+
+
+class _RunKeys:
+    """The declared-key values each source's current run has delivered so far.
+
+    A run is the pages a caller sends under one ``metadata.run_id`` (pipeline/heal.py
+    sends its run id on every page); the page that declares ``complete_run`` ends it.
+    A key a page repeats from an earlier page of the same run is a duplicate as surely
+    as one repeated inside a page.
+
+    PR #806 review 4: a page's keys join the run when its rows are DELIVERED
+    (``DriftDetector.record_delivered_keys``, after /uasr/heal decides), and only the
+    rows it returns: a page that was quarantined and then re-sent corrected never
+    delivered its keys. Checking (``seen``) never changes the memory -- a check under
+    another run id used to drop the stored run. Each key keeps the page that first
+    delivered it, so a page sent again (a retry: /uasr/heal derives a page's id from
+    its run id and content when the caller sends none) is never its own duplicate.
+
+    A new run id replaces the source's previous run, and so does any page after the
+    one that ended the run (that page's own re-checks still see the run). Memory is
+    bounded by ``_RUN_KEYS_MAX`` hashed keys over every source and tenant of the
+    process: the least recently used runs are evicted first, whichever tenant they
+    belong to, so one tenant's very large run can evict another tenant's older run,
+    which then misses its cross-page repeats. A run that alone outgrows the cap keeps
+    the keys it has, checks the rest against them, and stops adding (logged).
+    """
+
+    def __init__(self, max_keys: int = _RUN_KEYS_MAX) -> None:
+        self.max_keys = max_keys
+        self._lock = threading.Lock()
+        # source -> [run_id, sorted hashes, page tag per hash, {batch_id: tag}, full, ended_by]
+        self._runs: "OrderedDict[str, List[Any]]" = OrderedDict()
+        self._total = 0
+
+    def __len__(self) -> int:
+        return self._total
+
+    def _current(self, source_id: str, run_id: str, batch_id: str) -> Optional[List[Any]]:
+        run = self._runs.get(source_id)
+        if run is None or run[0] != run_id or run[5] not in (None, batch_id):
+            return None
+        return run
+
+    def seen(self, source_id: str, run_id: str, batch_id: str, hashes: np.ndarray) -> int:
+        """How many of ``hashes`` (unique, sorted) earlier pages of the run delivered.
+        Read-only."""
+        with self._lock:
+            run = self._current(source_id, run_id, batch_id)
+            if run is None:
+                return 0
+            hit, earlier = self._match(run, batch_id, hashes)
+            return int(earlier.sum())
+
+    def record(self, source_id: str, run_id: str, batch_id: str, hashes: np.ndarray, end: bool) -> None:
+        """The delivered keys of a page join its run; ``end`` closes the run."""
+        with self._lock:
+            run = self._current(source_id, run_id, batch_id)
+            if run is None:
+                self._drop(source_id)
+                run = self._runs[source_id] = [
+                    run_id, np.empty(0, np.uint64), np.empty(0, np.int32), {}, False, None]
+            self._runs.move_to_end(source_id)
+            if end:
+                run[5] = batch_id
+                return
+            hit, _ = self._match(run, batch_id, hashes)
+            new = hashes[~hit]
+            room = self.max_keys - self._total
+            if len(new) > room:
+                self._evict(keep=source_id, need=len(new) - room)
+                room = self.max_keys - self._total
+            if len(new) > room:
+                if not run[4]:
+                    logger.warning("run %s of %s outgrew %d remembered keys; later pages are "
+                                   "checked against the first ones only", run_id, source_id, self.max_keys)
+                run[4] = True
+                new = new[:max(room, 0)]
+            if len(new):
+                pages = run[3]
+                tag = pages.setdefault(batch_id, len(pages))
+                at = np.searchsorted(run[1], new)
+                run[1] = np.insert(run[1], at, new)
+                run[2] = np.insert(run[2], at, np.int32(tag))
+                self._total += len(new)
+
+    @staticmethod
+    def _match(run: List[Any], batch_id: str, hashes: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        stored, tags = run[1], run[2]
+        tag = run[3].get(batch_id)
+        pos = np.searchsorted(stored, hashes)
+        inside = pos < len(stored)
+        hit = np.zeros(len(hashes), dtype=bool)
+        hit[inside] = stored[pos[inside]] == hashes[inside]
+        earlier = hit.copy()
+        if tag is not None:
+            earlier[hit] = tags[pos[hit]] != tag
+        return hit, earlier
+
+    def forget(self, source_id: str) -> None:
+        with self._lock:
+            self._drop(source_id)
+
+    def _drop(self, source_id: str) -> None:
+        run = self._runs.pop(source_id, None)
+        if run is not None:
+            self._total -= len(run[1])
+
+    def _evict(self, keep: str, need: int) -> None:
+        for sid in list(self._runs):
+            if need <= 0:
+                return
+            if sid != keep:
+                need -= len(self._runs[sid][1])
+                self._drop(sid)
 
 
 class DriftDetector:
@@ -234,6 +447,8 @@ class DriftDetector:
         # dropped while a thread still waits on it.
         self._source_locks: Dict[str, List[Any]] = {}
         self._source_locks_guard = threading.Lock()
+        # ADR-002 exact duplicates on the declared key across a run's pages (_RunKeys).
+        self._run_keys = _RunKeys()
 
     @contextmanager
     def _lock_for(self, source_id: str) -> Iterator[None]:
@@ -572,11 +787,13 @@ class DriftDetector:
             for dq_type, dq_check in (
                 (DriftType.NULL_RATE, self._check_null_rate_drift),
                 (DriftType.VOLUME, self._check_volume_drift),
-                (DriftType.DUPLICATE, self._check_duplicate_drift),
             ):
                 dq_drift = dq_check(batch, st)
                 if dq_drift:
                     findings.append((dq_type, dq_drift))
+            dup_drift = self._check_duplicate_drift(batch, st)
+            if dup_drift:
+                findings.append((DriftType.DUPLICATE, dup_drift))
 
             if dirty and record_state:
                 self._store.save(batch.source_id, st)
@@ -893,10 +1110,14 @@ class DriftDetector:
             byte counts, cents), which would then go unchecked but for a 4x bound,
             so it also needs evidence beyond the values: the column is in the
             batch's declared ``key_columns``, its declared type names a key
-            (``id``, ``uuid``, ``serial``...), or its name ends in an id word
-            (customer_id, CustomerID, order_no, account_key). It still gets
-            ``value_bound``: a value past 4x the baseline's largest magnitude is a
-            format change.
+            (``id``, ``uuid``, ``serial``...), or its name ends in a word that
+            names a key (customer_id, CustomerID, account_key) -- not a count or
+            ordinal word (BUG-576: visit_num, total_number and seat_no are
+            measures unless declared). It still gets ``value_bound``: a value
+            past 4x the baseline's largest magnitude is a format change. Row order
+            and the shape of the value set are no evidence (PR #806 reviews: as
+            evidence they quarantined clean batches of sparse ids and let a unique
+            integer measure skip its checks).
           Floats and booleans are never identifiers.
         * measure -- everything else: compared statistically, as before.
         """
@@ -1525,15 +1746,21 @@ class DriftDetector:
         return max(expected + 5 * math.sqrt(expected * dispersion(n1)), 2 * poisson_upper * m1 / m0 + 10)
 
     def _check_duplicate_drift(
-        self, batch: BatchPayload, st: SourceState
+        self, batch: BatchPayload, st: SourceState,
     ) -> Optional[Dict[str, Any]]:
         """Exact-duplicate rows (on the declared key, else the full row) the baseline
         does not explain, or a repeated value in an identifier column (BUG-574).
 
-        * The baseline had no duplicate and its rows are unique by construction (a
-          declared key, or an identifier column):
-          any duplicate in a batch is a fault -- exact, with no statistical floor,
-          which let 15 copies in 300 rows through.
+        * A declared key (the baseline's ``metadata.key_columns``) is unique by
+          declaration (ADR-002 "exact duplicates on the declared key"): any key value
+          repeated in the batch, or already delivered by an earlier page of the same
+          run (``metadata.run_id``, ``_RunKeys``), is a fault -- exact, every time,
+          whatever the baseline held. Key values compare as ``_key_part`` reads them
+          ("10005" is 10005); a row whose key holds a null or NaN carries no key
+          value (the null-rate check judges it).
+        * No key, but the baseline had no duplicate and an identifier column makes its
+          rows unique by construction: any duplicate row in a batch is a fault --
+          exact, with no statistical floor, which let 15 copies in 300 rows through.
         * An identifier column (BUG-573) repeats a value: the same, exactly.
         * Otherwise the batch's equal-pair count must exceed what the baseline's
           own repeat rate explains at the batch's size (_expected_pairs_bound).
@@ -1541,7 +1768,8 @@ class DriftDetector:
           set of possible rows repeats more the more rows you draw, so a clean 10x
           batch has a far higher duplicate rate than its baseline.
 
-        Detection only (ADR-002): no row is dropped or changed.
+        Detection only (ADR-002): no row is dropped or changed. Nothing here records
+        keys: a page's delivered rows join its run in ``record_delivered_keys``.
         """
         profile = st.baseline_rows
         if not profile or not profile.get("columns"):
@@ -1552,29 +1780,51 @@ class DriftDetector:
         for col, dist in (st.baseline or {}).items():
             # A keyed id (value_bound set) is unique in the baseline but could be a
             # wide measure that repeats by chance; its duplicated rows still alarm.
-            if dist.role == ROLE_IDENTIFIER and dist.value_bound is None and col in present:
-                values = [repr(v) for r in batch.rows if (v := r.get(col)) is not None]
+            if (
+                dist.role == ROLE_IDENTIFIER and dist.value_bound is None and col in present
+            ):
+                # A missing value (None, NaN) is no id value to repeat (PR #806 review 6).
+                values = [repr(v) for r in batch.rows
+                          if (v := r.get(col)) is not None and not (isinstance(v, float) and v != v)]
                 if len(set(values)) < len(values):
                     repeated_ids[col] = len(values) - len(set(values))
-        cols = list(profile.get("key_columns") or profile["columns"])
-        k1, rows_fault, expected_upper = 0, False, None
+        key = list(profile.get("key_columns") or [])
+        cols = key or list(profile["columns"])
+        k1, rows_fault, expected_upper, dup_rows, in_run = 0, False, None, 0, 0
         # A removed column makes rows less unique: schema drift's job.
-        if set(cols) <= present and n1 >= 2:
+        if key and set(key) <= present:
+            keys = _row_keys(batch.rows, key)
+            counts = Counter(keys)
+            dup_rows = len(keys) - len(counts)
+            k1 = sum(c * (c - 1) // 2 for c in counts.values())
+            run_id = (batch.metadata or {}).get("run_id")
+            if run_id is not None and counts:
+                in_run = self._run_keys.seen(
+                    batch.source_id, str(run_id), batch.batch_id, _key_hashes(list(counts)))
+            expected_upper = 0.0
+            rows_fault = dup_rows > 0 or in_run > 0
+        elif not key and set(cols) <= present and n1 >= 2:
             n0, k0 = int(profile["rows"]), int(profile["equal_pairs"])
             k1 = self._equal_row_pairs(batch, cols)
-            if k0 == 0 and (profile.get("key_columns") or profile.get("unique_columns")):
+            if k0 == 0 and profile.get("unique_columns"):
                 expected_upper = 0.0
             elif n0 >= 2:
                 expected_upper = self._expected_pairs_bound(
                     n0, k0, int(profile.get("equal_triples") or 0), n1)
             rows_fault = expected_upper is not None and k1 > expected_upper
+            if rows_fault:
+                dup_rows = n1 - len({repr(tuple(r.get(c) for c in cols)) for r in batch.rows})
         if not rows_fault and not repeated_ids:
             return None
-        dup_rows = n1 - len({repr(tuple(r.get(c) for c in cols)) for r in batch.rows}) if rows_fault else 0
-        dup_fraction = dup_rows / n1
+        dup_fraction = (dup_rows + in_run) / n1
         id_fraction = max(repeated_ids.values(), default=0) / n1
         parts = []
-        if rows_fault:
+        if key and dup_rows:
+            parts.append(f"{dup_rows} row(s) repeat a value of the declared key {key} in the batch")
+        if in_run:
+            parts.append(f"{in_run} value(s) of the declared key {key} were already delivered earlier "
+                         f"in run {(batch.metadata or {}).get('run_id')!r}")
+        if rows_fault and not key:
             parts.append(
                 f"{dup_rows} duplicate row(s) ({dup_fraction:.1%}); {k1} equal pairs vs at most "
                 f"{expected_upper:.1f} expected from the baseline")
@@ -1589,9 +1839,27 @@ class DriftDetector:
             "duplicate_rows": dup_rows,
             "duplicate_fraction": round(dup_fraction, 6),
             "repeated_identifiers": repeated_ids,
+            "key_columns": key,
+            "keys_seen_earlier_in_run": in_run,
             "severity": self._fraction_severity(max(dup_fraction, id_fraction)),
             "details": "; ".join(parts),
         }
+
+    def record_delivered_keys(self, batch: BatchPayload, rows: List[Dict[str, Any]]) -> None:
+        """The rows a page delivered join its run's declared-key memory (PR #806 review
+        4). /uasr/heal calls it once it has decided, with the rows it returns: a held
+        row was never delivered, so its key is no duplicate of anything sent later
+        (a page quarantined and re-sent corrected used to be flagged). A page that
+        declares ``complete_run`` ends the run."""
+        run_id = (batch.metadata or {}).get("run_id")
+        if run_id is None:
+            return
+        st = self._store.peek(batch.source_id)
+        key = list(((st.baseline_rows if st else None) or {}).get("key_columns") or [])
+        if not key:
+            return
+        self._run_keys.record(batch.source_id, str(run_id), batch.batch_id,
+                              _key_hashes(list(set(_row_keys(rows, key)))), end=_is_complete_run(batch))
 
     @staticmethod
     def _fraction_severity(fraction: float) -> DriftSeverity:
@@ -1870,10 +2138,12 @@ class DriftDetector:
           tail, the range just past its max) does not have probability zero;
           with the bare 1e-10 floor used elsewhere, ONE clean value there cost
           (1/n)·ln(1/(n·1e-10)) -- ≈0.18 at n=100.
-        * Significance: 2·n_eff·KL (the G statistic, n_eff = n0·n1/(n0+n1))
-          is ~chi-square(bins-1) when nothing changed. A KL above zeta from a
-          20-row batch is mostly noise, so the caller only lets the KL fire
-          when G is past the chi-square 1e-6 upper quantile.
+        * Significance: values past either end of the baseline's range are
+          significant when a clean batch would show that many with chance
+          below 1e-6 (``_end_rows_p``, exact). The in-range bins: 2·n_eff·KL
+          (the G statistic, n_eff = n0·n1/(n0+n1)) is ~chi-square(bins-1) when
+          nothing changed. A KL above zeta from a 20-row batch is mostly noise,
+          so the caller only lets the KL fire when one of the two is significant.
 
         Real change still diverges strongly: a 1-sd shift of a normal column
         scores ≈0.3 or more, and mass past the baseline's range far more.
@@ -1891,12 +2161,25 @@ class DriftDetector:
         starts = np.arange(0, nbins, width)
         p = np.concatenate(([p[0]], np.add.reduceat(p[1:-1], starts), [p[-1]]))
         q_raw = np.concatenate(([0.0], np.add.reduceat(q_inner, starts), [0.0]))
-        df = max(int(np.count_nonzero((p > 0) | (q_raw > 0))) - 1, 1)
         q = (q_raw + 0.5) / (q_raw.sum() + 0.5 * len(q_raw))
-        p = p / n1
-        nz = p > 0
-        kl = max(float(np.sum(p[nz] * np.log(p[nz] / q[nz]))), 0.0)
-        g_stat = 2.0 * kl * (n0 * n1 / (n0 + n1))
+        kl = DriftDetector._plugin_kl(p / n1, q)
+        # BUG-577: the under/overflow bins are judged exactly, not by the G test.
+        # The baseline leaves them empty by construction (its own min and max are
+        # the edges), so their expected batch counts are far below the chi-square
+        # approximation's reach: 6 of 27 clean values below a 106-row baseline's
+        # min scored past the "1e-6" quantile, though such a batch occurs about
+        # once in 23,000 (two clean false alarms in 1,300 real batches). The inner
+        # bins hold >= _MIN_ROWS_PER_BIN rows of the smaller sample, where the G
+        # test holds, and are tested on their own, conditioned on the rows in range.
+        if _end_rows_p(int(p[0]), int(p[-1]), int(n1), int(n0)) < _SIG_P:
+            return kl, True
+        p_in, q_in = p[1:-1], q_raw[1:-1]
+        m = p_in.sum()
+        df = int(np.count_nonzero((p_in > 0) | (q_in > 0))) - 1
+        if m <= 0 or df < 1:
+            return kl, False
+        q_in = (q_in + 0.5) / (q_in.sum() + 0.5 * len(q_in))
+        g_stat = 2.0 * DriftDetector._plugin_kl(p_in / m, q_in) * (n0 * m / (n0 + m))
         return kl, bool(g_stat > _chi2_crit(df))
 
     @staticmethod
@@ -1974,15 +2257,8 @@ class DriftDetector:
         n1, n0 = float(p.sum()), float(q_inner.sum())
         if n1 <= 0 or n0 <= 0:
             return 1.0
-        k = int(p[0] + p[-1])
-        p_end = 1.0
-        for i in range(k):
-            p_end *= (n1 - i) / (n0 + n1 - i)
-        # BUG-579 review: the product is the chance of ONE split -- the a lowest and
-        # the k-a highest of the pool all from the batch. "k of the batch's rows lie
-        # outside the baseline's range" is the union over the k+1 splits, so the
-        # union bound keeps the p-value valid (never anti-conservative).
-        p_end = min(1.0, (k + 1) * p_end)
+        # BUG-579 review: the union bound over the k+1 splits keeps it valid.
+        p_end = _end_rows_p(int(p[0]), int(p[-1]), int(n1), int(n0))
         inner = p[1:-1]
         n1_in = float(inner.sum())
         nbins = len(q_inner)
@@ -2357,6 +2633,11 @@ class DriftDetector:
             dp = new
         log_total = math.lgamma(big + m + 1) - math.lgamma(m + 1) - math.lgamma(big + 1) + m * log_f
         return min(1.0, float(dp[m].sum()) / math.exp(log_total))
+
+    @staticmethod
+    def _plugin_kl(p: np.ndarray, q: np.ndarray) -> float:
+        nz = p > 0
+        return max(float(np.sum(p[nz] * np.log(p[nz] / q[nz]))), 0.0)
 
     # ────────────────────────────────────────────────────────────────
     # Batch embedding (hash-projection, no external API needed)

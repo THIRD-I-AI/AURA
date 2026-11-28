@@ -26,7 +26,7 @@ import numpy as np
 
 from agents.base import AgentContext, AgentResult, AgentStatus, BaseAgent, Severity
 from agents.params import ActuatorAgentParams
-from uasr.drift_detector import DriftDetector
+from uasr.drift_detector import _NO_DISTRIBUTION, DriftDetector
 from uasr.models import ColumnDistribution, DiagnosisResult, DriftType, ShimResult
 
 logger = logging.getLogger("uasr.actuator")
@@ -668,6 +668,50 @@ def _fits_baseline(values: List[float], dist: ColumnDistribution) -> Tuple[float
     return inside, not significant
 
 
+def prove_cast_values(values: List[Any], dist: Optional[ColumnDistribution]) -> Tuple[bool, str]:
+    """Whether values a retype cast back are the column's own values: (proven, why not).
+
+    BUG-577 (real-data lane): a lossless cast proves the representation, not the values. COMPAS
+    priors_count x2.5 arrives as floats; the whole-valued ones (an even count x2.5)
+    cast back to int exactly, so the batch came back "retyped" with 5 for a true 2.
+    ADR-002's accuracy rule outranks the per-row wording of the retype row: the
+    cast-back values must also pass the proof every other repair passes -- the
+    rescale's (``_fits_baseline``: >= 99.9% inside the range, same moments, the
+    detector's aligned-histogram G test) for a numeric column, the detector's label
+    G test (``_categorical_significant``) for a categorical one.
+
+    An identifier or date carries no distribution (BUG-573): a sequential key moves
+    past the baseline every batch, so its values are not compared; the detector's
+    identifier checks still run on the cast rows. A column the baseline holds no
+    values of has nothing to compare with: not proven.
+    """
+    if not values:
+        return True, ""
+    if dist is None:
+        return False, "the baseline holds no values of the column to compare the cast values with"
+    if dist.role in _NO_DISTRIBUTION:
+        return True, ""
+    hist = dist.histogram or {}
+    if _baseline_range(dist) is not None:
+        try:
+            arr = np.asarray(values, dtype=float)
+        except (TypeError, ValueError):
+            return False, "the cast values are not numeric, but the baseline column is"
+        inside, ok = _fits_baseline(arr.tolist(), dist)
+        if ok:
+            return True, ""
+        return False, (
+            f"the cast values do not match the baseline's distribution ({inside:.1%} inside its "
+            "range, or its mean, spread or histogram differ), so the change is not only a type")
+    cats = hist.get("categories")
+    if isinstance(cats, dict) and cats:
+        counts = Counter(str(v) for v in values)
+        if not DriftDetector._categorical_significant(counts, cats):
+            return True, ""
+        return False, "the cast values' labels differ from the baseline's, so the change is not only a type"
+    return False, "the baseline column has no distribution to compare the cast values with"
+
+
 def fingerprint(values: List[Any], dist: Optional[ColumnDistribution]) -> Tuple[float, bool]:
     """(share of values that fit the baseline column, whether their distribution matches it).
 
@@ -851,11 +895,20 @@ def restore_scaled(
     exactly, and a 5% factor hides inside a wide column's spread; but no value of that
     column has three decimals, so it is not 10**power times any of its values: None.
     A correct restoration is the truth, recorded to the column's own precision.
+
+    BUG-577: scaling a float is many-to-one -- 5.247 and the next float up,
+    5.247000000000001, both become 524.7 at x100. A column recorded to a fixed
+    precision admits only one of them; a float column that carries full float
+    digits (``kind`` "float", ``decimals`` None) admits both, so the original is
+    unknown and picking the shorter is a guess (a real dataset held the longer
+    one): None. With no kind given nothing is known of the column, as before.
     """
     restored = _restore_scaled(value, power)
     if restored is None:
         return None
     if decimals is not None and DriftDetector._decimal_places(restored) > decimals:
+        return None
+    if decimals is None and kind == "float" and _has_other_preimage(value, power, float(restored)):
         return None
     if kind not in ("int", "float"):
         return restored
@@ -870,6 +923,19 @@ def restore_scaled(
     factor = 10 ** abs(power)
     forward = (whole * factor,) if power > 0 else (whole / factor, whole * 10.0 ** power)
     return whole if value in forward else None
+
+
+def _has_other_preimage(value: Any, power: int, restored: float) -> bool:
+    """A float next to ``restored`` that the same fault also turns into ``value``.
+
+    Scaling is monotone, so the floats that scale to one value are a contiguous run:
+    if neither neighbour is in it, ``restored`` is the only one."""
+    factor = 10 ** abs(power)
+    for cand in (math.nextafter(restored, -math.inf), math.nextafter(restored, math.inf)):
+        forward = (cand * factor,) if power > 0 else (cand / factor, cand * 10.0 ** power)
+        if value in forward:
+            return True
+    return False
 
 
 def _restore_scaled(value: Any, power: int) -> Optional[float]:
