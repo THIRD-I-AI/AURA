@@ -5515,7 +5515,7 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Severity:** medium
 - **Root cause:** _ID_NAME_WORDS includes 'num', 'number', 'no' and 'nr', so a wide-range, unique, null-free integer measure named like visit_num or total_number is classified as a keyed id and skips statistical drift. A reviewer's probe on seat_num and sequence_number caught x2, x1.5 and an in-range shift in 0 of 20 trials each.
 - **Failure scenario:** A column visit_num doubles because of an upstream bug; the batch is returned as healed with the doubled values.
-- **Fix:** PR #806. The identifier role rests on value evidence that ignores row order (order-free gap and growth tests, re-sent old ids allowed for upserts/CDC) instead of the column name, so seat_num, visit_num and total_number are measures when their values say so and catch x2, x1.5 and in-range shifts; declared and inferred ids keep a value bound, so x1000 on an id still raises a format-change alert; an insert plus update of one new id is not a duplicate unless a key is declared. Adversarially reviewed (first review rejected 4 defects, all fixed with regression tests that fail on bc9e19a).
+- **Fix:** PR #806. `num`, `number`, `no` and `nr` are no longer id-name words, so a wide unique integer named `visit_num`, `seat_num`, `total_number` or `sequence_number` is a measure unless its key or id type is declared; x2, x1.5 and in-range shifts in it are caught in every trial. Identifier evidence is otherwise unchanged from before #806: collision evidence for dense sequences, and for a sparse unique int a declared key, a declared id type or a key-naming name, with a 4x value bound. Order-free sequence evidence was tried and removed after the second adversarial review (it quarantined clean CDC/rolling-window batches and let unit faults on sparse unique measures through). Related: BUG-610, BUG-611.
 
 ## BUG-577: The accuracy benchmark measures only synthetic data and only the first batch after a baseline, so its 0-WRONG result is not yet evidence for real data or steady state
 - **Status:** open
@@ -5685,3 +5685,35 @@ Every registry entry marked fixed (186) was re-checked by read-only reviewers ag
 - **Root cause:** (1) pipeline/engine.py:214 (`_locked_source_connection`, 57a47c3) ATTACHes the tenant file with only `(READ_ONLY)`, before `lock_down_connection`; DuckDB sniffs a SQLite header and loads sqlite_scanner (auto-installing it from extensions.duckdb.org when absent). (2) connectors/duckdb_connector.py:62 opens a tenant file with `duckdb.connect(path)`, which opens a SQLite file the same way, before its lockdown. Once loaded, `sqlite_scan(path, table)` reads any SQLite file through SQLite's own I/O, which `enable_external_access=false` does not govern. POST /upload checks only the extension, so a SQLite file uploads as evil.csv or evil.duckdb.
 - **Failure scenario:** Any signed-up tenant reads /data/state/metadata.db (users and password hashes), gateway.db (every tenant's chats, pipelines and share tokens) and ledger.db through a pipeline preview or a saved DuckDB connection.
 - **Fix:** The source ATTACH requires `(TYPE duckdb, READ_ONLY)`; DuckDBConnector refuses any file whose header lacks DuckDB's "DUCK" magic (`require_duckdb_file`) and opens it with auto-install and auto-load of extensions off; every factory connection (`new_connection`) has autoinstall/autoload of known extensions off, so nothing fetches an extension on its own (httpfs, which S3 mode needs, is installed in the image and loaded explicitly). Tests: tests/test_bug597_sqlite_bypass.py (both bypasses leak on 57a47c3 and are refused here; real DuckDB sources still work).
+
+## BUG-610: A growing sparse integer id that is neither declared nor key-named reads its growth as statistical drift on every clean batch
+- **Status:** open
+- **Found by:** adversarial review of PR #806 (third round, A' repro), 2026-11-28.
+- **Severity:** medium
+- **Root cause:** `DriftDetector._infer_role` (uasr/drift_detector.py) treats a sparse unique integer as an identifier only with a declared key, a declared id type or a key-naming name (customer_id, account_key). A column called `ref` that grows over time is a measure, and every later clean batch lies past the baseline's range.
+- **Failure scenario:** Every run of a source with such a column is quarantined or marked DEGRADED until its baseline is replaced.
+- **Fix:** pending. Let a pipeline declare key columns (BUG-587), and infer the role from order-free value evidence that does not hide unit faults.
+
+## BUG-611: A keyed id that grows past 4x its baseline maximum raises a format-change alert on every later batch until re-baselined
+- **Status:** open
+- **Found by:** adversarial review of PR #806 (q4 repro), 2026-11-28.
+- **Severity:** medium
+- **Root cause:** an id column keeps `value_bound = 4 x max(abs(baseline values))` (uasr/drift_detector.py `_infer_role`); a long-lived source whose ids keep growing passes the bound and every following batch is reported as a format change.
+- **Failure scenario:** A pipeline loading an order-id column for months starts alarming once ids exceed four times the first load's largest, for example a 3,000-row gapped id batch with key evidence flags 20 of 20.
+- **Fix:** pending. Re-baseline a keyed id's bound from clean accepted batches (see the baseline-growth follow-up), or bound the growth rate instead of the absolute value.
+
+## BUG-612: A x2.5 fault whose values all come out whole is indistinguishable from a lossless int-as-float retype in small batches
+- **Status:** open
+- **Found by:** adversarial review of PR #806 (retype table), 2026-11-23.
+- **Severity:** medium (wrong data returned; 17 trials of the reviewer's table at 40 rows or fewer, none in the benchmark lanes)
+- **Root cause:** `prove_cast_values` (uasr/recovery_loop.py) can only test the values it can cast; when every x2.5 value happens to be whole there is no fractional value to void the column and the distribution proof lacks the power to separate x2.5 on 5-40 rows.
+- **Failure scenario:** A count column scaled by 2.5 upstream and sent as floats in a small batch is retyped and returned healed with 2.5x values.
+- **Fix:** pending. Hold small retyped batches without a distribution proof (costs recall), or grow the baseline so the proof has power.
+
+## BUG-613: A page re-sent with identical content in the same run is treated as a retry, so a deliberate duplicate page is not flagged
+- **Status:** open
+- **Found by:** adversarial review of PR #806, 2026-11-27.
+- **Severity:** low
+- **Root cause:** with no `batch_id` the page id is a content hash of (run_id, columns, rows) (uasr/service.py), which makes retries idempotent and therefore also makes an identical re-delivery a no-op.
+- **Failure scenario:** An upstream that delivers the same page twice in one run is not reported as a duplicate delivery; pipelines that pass their own `{run}:{source}:{k}` batch ids are unaffected.
+- **Fix:** pending. Require callers to pass a batch id for duplicate semantics, or distinguish retry from re-delivery by an explicit attempt counter.
