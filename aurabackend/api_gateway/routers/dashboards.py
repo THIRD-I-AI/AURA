@@ -211,6 +211,8 @@ async def _run_tile(tile: Dict[str, Any], saved_queries: List[Dict[str, Any]], c
     started = time.perf_counter()
     try:
         def _run() -> tuple[list[str], list[tuple]]:
+            from shared.sql_expression_guard import reject_logging_sql
+            reject_logging_sql(sq["sql"])  # BUG-598: stored SQL; a poisoned connection aborts the process on close
             cur = con.execute(sq["sql"])
             return [d[0] for d in cur.description], cur.fetchmany(_TILE_PREVIEW_ROWS + 1)
 

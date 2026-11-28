@@ -32,7 +32,10 @@ FROM python:3.13-slim AS base-os
 RUN apt-get update && apt-get install -y --no-install-recommends \
     unixodbc libpq5 && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
-RUN useradd --create-home --shell /bin/bash aura && chown -R aura:aura /app
+# BUG-593: compose mounts the aura-data volume at /data. Docker gives a new named volume the
+# ownership of the image directory it is mounted over; with no /data in the image a fresh box got a
+# root-owned volume the `aura` user cannot write, so neither a new deploy nor a restore could start.
+RUN useradd --create-home --shell /bin/bash aura && mkdir -p /data && chown -R aura:aura /app /data
 
 # ── Base Runtime ─────────────────────────────────────────────────────────
 FROM base-os AS base-runtime

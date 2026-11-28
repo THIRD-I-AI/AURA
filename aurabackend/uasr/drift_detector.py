@@ -106,24 +106,25 @@ _ROLE_MIN_VALUES = 20       # fewer baseline values are no evidence of a role
 _ID_COLLISION_EVIDENCE = 10.0  # expected equal pairs a measure would show (P(none) ~ 5e-5)
 _SPARSE_ID_MIN_VALUES = 100  # unique ints on a sparse range need more values to count
 _SPARSE_ID_BOUND = 4.0       # x the baseline's largest magnitude a keyed id may reach
-_SEQUENCE_INSIDE = 0.10      # share of a batch inside its baseline's range no sequence holds
 _MAX_FORMATS = 3            # more shapes than this is no stable format
 _DATE_KINDS = frozenset({"datetime", "date", "Timestamp", "datetime64"})
 _DECLARED_DATE = frozenset({"date", "datetime", "timestamp", "timestamptz", "datetime64", "datetime64[ns]"})
 _DECLARED_NOT_ID = frozenset({"float", "double", "float32", "float64", "real", "bool", "boolean"})
-# heal-acc1 review: a keyed id needs evidence beyond its values -- a declared key
-# or an id-like declared type. BUG-576: never the column's name. A name hint
-# (visit_num, total_number, seat_no) made a wide integer measure an identifier, and
-# an identifier skips statistical drift, so x2 / x1.5 / in-range shifts went
-# unchecked. A name may only ADD a check (_unique_by_name), never take one away.
+# heal-acc1 review: a keyed id needs evidence beyond its values -- a declared key,
+# an id-like declared type, or a name whose last word names a key.
+# BUG-576: only words that name a key. "num", "number", "no" and "nr" name a count or
+# an ordinal as often as a key (visit_num, total_number, seat_no, lot_nr), and an
+# identifier skips statistical drift, so a wide integer measure named so let x2,
+# x1.5 and in-range shifts through. Such a column is a measure unless declared.
 _DECLARED_ID = frozenset({"id", "identifier", "key", "uuid", "guid", "serial", "bigserial", "smallserial"})
-_ID_NAME_WORDS = frozenset({"id", "ids", "key", "pk", "fk", "uuid", "guid", "no", "nr", "num", "number"})
+_ID_NAME_WORDS = frozenset({"id", "ids", "key", "pk", "fk", "uuid", "guid"})
 _NAME_WORD = re.compile(r"[A-Z]+(?![a-z])|[A-Z]?[a-z]+|\d+")
 
 
 def _id_like_name(name: Any) -> bool:
     """The column's last name word names a key: customer_id, CustomerID, userId,
-    order_no, account_key -- not population, bytes or revenue_cents."""
+    account_key -- not visit_num, order_no (BUG-576), population, bytes or
+    revenue_cents."""
     words = _NAME_WORD.findall(str(name or ""))
     return bool(words) and words[-1].lower() in _ID_NAME_WORDS
 
@@ -199,7 +200,7 @@ _RUN_KEYS_MAX = 2_000_000
 _UINT64 = (1 << 64) - 1
 
 
-_KEY_TEXT_INT = re.compile(r"[+-]?\d+")
+_KEY_TEXT_INT = re.compile(r"0|[1-9][0-9]*")
 
 
 def _key_part(value: Any) -> Any:
@@ -209,8 +210,11 @@ def _key_part(value: Any) -> Any:
     duplicate:
     * None and NaN carry no key value (the null-rate check judges them);
     * a number is its value: 1 and 1.0 are one key, 1.5 another;
-    * text that reads back exactly as a number is that number: "1" is the key 1 and
-      "2.5" the key 2.5, but "007", "+7" and "1.50" stay text -- padded codes are codes;
+    * text is a number only as a canonical integer literal -- ASCII digits with no
+      sign, point, exponent or leading zero: "10005" is the key 10005, the same key
+      a page sending numbers names. Any other text is text, whatever number it
+      parses to (PR #806 second review 5): "1.0" is not "1", "5.0" is not 5, "-0.0"
+      is not 0, and "007", "+7", "-7" and "1e3" are codes;
     * a boolean is a key of its own: True is not 1;
     * anything else is its text.
     """
@@ -226,14 +230,11 @@ def _key_part(value: Any) -> Any:
             return None
         return ("num", int(f)) if f.is_integer() and math.isfinite(f) else ("num", f)
     if isinstance(value, str):
-        if _KEY_TEXT_INT.fullmatch(value) and str(int(value)) == value:
-            return ("num", int(value))
-        try:
-            f = float(value)
-        except ValueError:
-            return ("text", value)
-        if math.isfinite(f) and repr(f) == value:
-            return ("num", int(f)) if f.is_integer() else ("num", f)
+        if _KEY_TEXT_INT.fullmatch(value):
+            try:
+                return ("num", int(value))
+            except ValueError:  # past Python's int-from-text digit limit: still a code
+                pass
         return ("text", value)
     return ("text", str(value))
 
@@ -539,14 +540,10 @@ class DriftDetector:
             # identifier and date columns every later batch's embedding leaves out.
             declared = batch.schema_snapshot or schema or {}
             declared_key = set((batch.metadata or {}).get("key_columns") or [])
-            unique_by_name = set()
             for col, dist in distributions.items():
                 values = [r.get(col) for r in batch.rows]
                 dist.role, dist.value_format, dist.value_bound = self._infer_role(
-                    values, dist, declared.get(col), keyed=col in declared_key)
-                dist.sequence_span = self._sequence_span(values, dist)
-                if self._unique_by_name(values, dist, col):
-                    unique_by_name.add(col)
+                    values, dist, declared.get(col), name=col, keyed=col in declared_key)
             # Also register a reference embedding so semantic drift works
             emb = self._compute_batch_embedding(batch, exclude=self._no_distribution_columns(distributions))
             if emb:
@@ -572,8 +569,7 @@ class DriftDetector:
                     # allows no false alarm on clean data.
                     "unique_columns": [
                         c for c in cols
-                        if (d := distributions.get(c)) is not None
-                        and (d.role == ROLE_IDENTIFIER or c in unique_by_name)
+                        if (d := distributions.get(c)) is not None and d.role == ROLE_IDENTIFIER
                     ],
                     # BUG-568 review: only a baseline that is itself a whole
                     # run can anchor the volume check -- see _check_volume_drift.
@@ -593,8 +589,8 @@ class DriftDetector:
             for col, dist in distributions.items():
                 prev = (st.baseline or {}).get(col)
                 if dist.role is None and prev is not None and prev.role and prev.value_kind == dist.value_kind:
-                    dist.role, dist.value_format, dist.value_bound, dist.sequence_span = (
-                        prev.role, prev.value_format, prev.value_bound, prev.sequence_span)
+                    dist.role, dist.value_format, dist.value_bound = (
+                        prev.role, prev.value_format, prev.value_bound)
             st.baseline = distributions
             # BUG-568: a distributions-only re-baseline (mapek_worker) carries
             # no row-level facts, so the previous batch's duplicate profile is
@@ -1098,7 +1094,7 @@ class DriftDetector:
 
     def _infer_role(
         self, values: List[Any], dist: ColumnDistribution, declared: Any = None,
-        keyed: bool = False,
+        name: Any = None, keyed: bool = False,
     ) -> Tuple[str, Optional[List[str]], Optional[float]]:
         """``(role, value_format, value_bound)`` of a column, from its baseline values
         and declared type (BUG-573).
@@ -1112,19 +1108,16 @@ class DriftDetector:
           - or integers unique over >= 100 values on a sparse range (a keyed id).
             Values alone cannot tell that from a wide integer measure (population,
             byte counts, cents), which would then go unchecked but for a 4x bound,
-            so it also needs a declaration -- the column is in the batch's declared
-            ``key_columns``, or its declared type names a key (``id``, ``uuid``,
-            ``serial``...) -- or the order-free shape of a scrambled counter
-            (``_lattice``). Its name is no evidence (BUG-576), and neither is its row
-            order (PR #806 review: a 99% monotone test turned a sparse id with 2% of
-            its rows out of order into a measure, and every clean batch alarmed).
-            Undeclared, the column stays a measure and keeps its statistical checks,
-            since checking a real id statistically costs nothing when its
-            population is stable, and skipping a real measure lets a x2 through.
-            A growing one is a sequence candidate (``_sequence_span``): a batch that
-            continues past the baseline is judged as a sequence instead
-            (``_continues_sequence``). A declared keyed id gets ``value_bound``: a
-            value past 4x the baseline's largest magnitude is a format change.
+            so it also needs evidence beyond the values: the column is in the
+            batch's declared ``key_columns``, its declared type names a key
+            (``id``, ``uuid``, ``serial``...), or its name ends in a word that
+            names a key (customer_id, CustomerID, account_key) -- not a count or
+            ordinal word (BUG-576: visit_num, total_number and seat_no are
+            measures unless declared). It still gets ``value_bound``: a value
+            past 4x the baseline's largest magnitude is a format change. Row order
+            and the shape of the value set are no evidence (PR #806 reviews: as
+            evidence they quarantined clean batches of sparse ids and let a unique
+            integer measure skip its checks).
           Floats and booleans are never identifiers.
         * measure -- everything else: compared statistically, as before.
         """
@@ -1152,108 +1145,9 @@ class DriftDetector:
         ints = [int(v) for v in present]
         if self._expected_int_collisions(ints) >= _ID_COLLISION_EVIDENCE:
             return ROLE_IDENTIFIER, None, None
-        if len(ints) >= _SPARSE_ID_MIN_VALUES and (keyed or decl in _DECLARED_ID or self._lattice(ints)):
+        if len(ints) >= _SPARSE_ID_MIN_VALUES and (keyed or decl in _DECLARED_ID or _id_like_name(name)):
             return ROLE_IDENTIFIER, None, float(_SPARSE_ID_BOUND * max(abs(v) for v in ints))
         return ROLE_MEASURE, None, None
-
-    @staticmethod
-    def _lattice(ints: List[int]) -> bool:
-        """A counter scrambled by an affine map mod a prime (k * stride mod p), an
-        obfuscated id over a fixed population, by its value set alone: sorted, such a
-        set steps by at most three sizes (the three-gap theorem); >= 90% of the steps
-        here, to allow a few deleted rows. A measure's sorted values on a sparse range
-        step by many sizes, and so does a gapped auto-increment.
-
-        Order-free (PR #806 review): the same values in any row order give the same
-        answer. It must stay an identifier: its batches are runs of consecutive
-        counters, not a random sample of its population, so compared as a measure its
-        clean batches drift (6 of 1,182 clean synthetic batches alarmed without it)."""
-        steps = np.diff(np.sort(np.asarray(ints, dtype=np.int64)))
-        if len(steps) == 0:
-            return False
-        _, counts = np.unique(steps, return_counts=True)
-        return int(np.sort(counts)[-3:].sum()) >= 0.9 * len(steps)
-
-    def _sequence_span(self, values: List[Any], dist: ColumnDistribution) -> Optional[List[float]]:
-        """The baseline's ``[median, max, median step]`` for a sequence candidate: an int
-        measure, null-free and unique over >= 100 values on a sparse range -- what an
-        undeclared auto-increment with gaps looks like, whatever order its rows came
-        in (PR #806 review). The step is the median gap between consecutive sorted
-        values. None for every other column.
-
-        A candidate keeps every measure check. Only a batch that continues past the
-        baseline (``_continues_sequence``) is judged as a sequence: its rows past the
-        range are the next ids, not a shift, and a unit change is a format change
-        (``_format_changes``)."""
-        if dist.role != ROLE_MEASURE or dist.value_kind != "int":
-            return None
-        ints = [v for v in values if v is not None]
-        if (len(ints) < _SPARSE_ID_MIN_VALUES or len(ints) != len(values)
-                or len(set(ints)) != len(ints) or any(isinstance(v, bool) for v in ints)):
-            return None
-        ints = sorted(int(v) for v in ints)
-        return [float(np.median(ints)), float(ints[-1]), float(np.median(np.diff(ints)))]
-
-    @staticmethod
-    def _continues_sequence(dist: ColumnDistribution, values: List[Any]) -> bool:
-        """Whether a sequence candidate's batch values continue past its baseline (PR
-        #806 review): fewer than max(2, 10%) of them lie inside the baseline's range.
-
-        Order-free: it reads the values, not the order the rows came in. A re-sent
-        old id or two (an upsert, a CDC update) does not stop a batch continuing --
-        "any value back below the median" used to, and quarantined every row. A
-        measure's batch from the same distribution lies inside the range, and a x2,
-        x1.5 or in-range fault leaves >= 10% of a wide measure inside, so those are
-        still checked as a measure; a x10 or more lands past the 4x bound instead."""
-        span = dist.sequence_span
-        if not span:
-            return False
-        top = span[1]
-        nums = [v for v in values
-                if isinstance(v, (int, float, np.integer, np.floating)) and not isinstance(v, (bool, np.bool_))]
-        if not nums:
-            return False
-        inside = sum(1 for v in nums if v <= top)
-        return inside < max(2.0, _SEQUENCE_INSIDE * len(nums))
-
-    @staticmethod
-    def _sequence_unit_change(dist: ColumnDistribution, values: List[Any]) -> Optional[Dict[str, Any]]:
-        """A continuing sequence's batch that changed unit: values past 4x the baseline's
-        largest id AND steps between them 4x the baseline's median step (PR #806
-        review). The step test is what tells a unit change from growth: a sequence that
-        has grown past 4x its baseline still steps as it did (a fixed 4x bound alone
-        alarmed on every batch after that), while x1000 multiplies every step by 1000.
-        It needs >= 3 values for a median step; a batch of one or two ids cannot tell."""
-        span = dist.sequence_span or []
-        bound = _SPARSE_ID_BOUND * abs(span[1])
-        nums = sorted(float(v) for v in values
-                      if isinstance(v, (int, float, np.integer, np.floating)) and not isinstance(v, (bool, np.bool_)))
-        over = [v for v in nums if abs(v) > bound]
-        if not over:
-            return None
-        if len(span) > 2:
-            if len(nums) < 3 or float(np.median(np.diff(nums))) <= _SPARSE_ID_BOUND * max(span[2], 1.0):
-                return None
-        return {"value_bound": bound, "values_over_bound": len(over), "example": over[0]}
-
-    @staticmethod
-    def _column_values(batch: BatchPayload, col: str) -> List[Any]:
-        return [v for r in batch.rows if (v := r.get(col)) is not None]
-
-    @staticmethod
-    def _unique_by_name(values: List[Any], dist: ColumnDistribution, name: Any) -> bool:
-        """BUG-576: the one thing a column's name may do -- add a check. An int column,
-        null-free and unique over >= 100 baseline values, whose name names a key
-        (customer_id, order_no) stays a measure with every statistical check, and
-        also makes the baseline's rows unique by construction (BUG-574), so a
-        duplicated row in a batch is an exact alert as for a declared key. Were it a
-        measure unique only by chance, a batch would repeat a whole row by chance
-        only if every other column repeated with it."""
-        present = [v for v in values if v is not None]
-        return (
-            dist.value_kind == "int" and len(present) == len(values) >= _SPARSE_ID_MIN_VALUES
-            and len(set(present)) == len(present) and _id_like_name(name)
-        )
 
     @staticmethod
     def _no_distribution_columns(baseline: Optional[Dict[str, ColumnDistribution]]) -> set:
@@ -1266,14 +1160,6 @@ class DriftDetector:
         had, or a keyed id's value past its ``value_bound``."""
         out: Dict[str, Dict[str, Any]] = {}
         for col, dist in (baseline or {}).items():
-            if dist.sequence_span and dist.role not in _NO_DISTRIBUTION:
-                # PR #806 review: a sequence candidate whose batch continues past the
-                # baseline skips the measure checks, so a unit change must show here:
-                # x1000 on an undeclared order_id was silent.
-                values = self._column_values(batch, col)
-                if self._continues_sequence(dist, values) and (found := self._sequence_unit_change(dist, values)):
-                    out[col] = found
-                continue
             if dist.role not in _NO_DISTRIBUTION:
                 continue
             if dist.value_bound is not None:
@@ -1434,11 +1320,6 @@ class DriftDetector:
             # id lies past the baseline's range on every new batch. _check_schema_drift
             # checks what can go wrong with them instead.
             if ref_dist.role in _NO_DISTRIBUTION:
-                continue
-            # PR #806 review: a sequence candidate's batch that continues past the
-            # baseline is its next ids, judged by _format_changes' bound instead.
-            if ref_dist.sequence_span and self._continues_sequence(
-                    ref_dist, self._column_values(batch, col_name)):
                 continue
             significant = True
             tested = False
@@ -1750,8 +1631,7 @@ class DriftDetector:
             # null in one is a fault however few: no sampling noise explains it.
             # heal-acc1 review: only where the values prove it is an id (a sequence
             # or a stable text code) or it is a declared key; a keyed id known by
-            # its declared type alone may be an optional reference, so it gets the
-            # z-test.
+            # its name alone may be an optional reference, so it gets the z-test.
             exact = (
                 dist.role == ROLE_IDENTIFIER and k0 == 0 and k1 > 0
                 and (dist.value_bound is None or col in declared_key)

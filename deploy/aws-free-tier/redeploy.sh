@@ -64,6 +64,10 @@ DEPLOYED_SHA="$(sudo git rev-parse HEAD)"
 
 cd "$COMPOSE_DIR"
 
+# BUG-581: the disaster-recovery copy of .env must follow every change to it. A
+# failure is reported but never blocks the deploy.
+./env-backup.sh || echo "!! .env's SSM copy was not refreshed (see above); deploy continues" >&2
+
 # BUG-341: nothing ever removed superseded images, so each deploy left another
 # full set (the causal image alone is GBs) until a pull failed for lack of disk
 # and the box stayed on the old build. Images no container uses, older than a
@@ -77,15 +81,21 @@ sudo timeout "$PULL_TIMEOUT" docker compose pull
 echo "==> Recreating containers..."
 sudo timeout "$UP_TIMEOUT" docker compose up -d
 
-echo "==> Waiting for the gateway to report healthy..."
-for _ in $(seq 1 30); do
-    if curl -fsS -o /dev/null http://localhost/health 2>/dev/null; then
+# BUG-596: this used to curl http://localhost/health, which Caddy answers with a 308
+# redirect to https, and `curl -f` counts a redirect as success -- so every deploy said
+# "Redeployed" whether or not the gateway came up. The container's own healthcheck
+# (docker-compose.yml) calls the gateway's /health on :8000 inside the container.
+echo "==> Waiting for the gateway container to report healthy..."
+for _ in $(seq 1 150); do
+    gateway="$(sudo docker compose ps -q api_gateway 2>/dev/null || true)"
+    status="$(sudo docker inspect --format '{{.State.Health.Status}}' "$gateway" 2>/dev/null || true)"
+    if [ "$status" = "healthy" ]; then
         echo "==> Redeployed. HEAD is now $DEPLOYED_SHA"
         exit 0
     fi
     sleep 2
 done
 
-echo "!! Gateway did not report healthy within 60s after redeploy." >&2
+echo "!! Gateway container did not report healthy within 300s after redeploy (last status: ${status:-none})." >&2
 echo "!! HEAD is $DEPLOYED_SHA — check 'docker compose logs' before assuming this deploy is good." >&2
 exit 1

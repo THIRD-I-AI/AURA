@@ -175,9 +175,12 @@ def test_checking_never_changes_the_run_memory():
 
 
 @pytest.mark.parametrize("a, b, same", [
-    (10005, "10005", True), (10005, 10005.0, True), ("2.5", 2.5, True),
-    ("007", 7, False), ("+7", 7, False), ("1.50", 1.5, False),
-    (True, 1, False), ("K1", "K1", True), ("K1", "k1", False),
+    (10005, "10005", True), (10005, 10005.0, True), (0, "0", True), (0, -0.0, True),
+    ("007", 7, False), ("+7", 7, False), ("-7", -7, False), ("1e3", 1000, False),
+    ("1.50", 1.5, False), (True, 1, False), ("K1", "K1", True), ("K1", "k1", False),
+    # PR #806 second review 5: text naming a number another way is not that number.
+    ("1.0", "1", False), ("5.0", 5, False), ("-0.0", 0, False), ("2.5", 2.5, False),
+    ("1000.0", 1000, False),
 ])
 def test_key_values_compare_by_the_key_they_name(a, b, same):
     det = _detector(key=("id",))
@@ -365,19 +368,59 @@ async def test_a_detection_only_batch_returns_every_row_with_its_alert(_uasr, fa
     assert out["healed"] is False and out["degraded"] is True and not out["repairs"]
 
 
-async def test_a_detection_only_batch_still_holds_a_unit_sized_value(_uasr):
+async def test_a_detection_only_batch_holds_only_its_unit_sized_value(_uasr):
     """A value an order of magnitude past anything the baseline holds is no clean
     value: one row past the range, which no test the detector runs can prove, in the
     shape of a unit fault. Beside a duplicate it used to come back flagged and wrong
-    (the real lane's sm_randhie combo 35: x1000 beside a null spike)."""
+    (the real lane's sm_randhie combo 35: x1000 beside a null spike). PR #806 second
+    review 4: that row is held alone -- the whole batch was -- and the rest of the
+    batch comes back with its alert."""
     source = _uasr
     rows = _rows(300, 63, start=63_000)
     rows.append(dict(rows[9]))
     rows[7] = {**rows[7], "amount": round(rows[7]["amount"] * 1000, 2)}
     out = await _heal(source, rows)
     assert "duplicate" in _types(out)
-    assert not out["rows"] and len(out["quarantined_rows"]) == len(rows)
-    assert "unit error" in out["reason"], out["reason"]
+    assert [q["index"] for q in out["quarantined_rows"]] == [7], out["reason"]
+    assert "unit error" in out["quarantined_rows"][0]["reason"]
+    assert out["rows"] == rows[:7] + rows[8:]
+
+
+async def test_clean_heavy_tailed_columns_beside_a_duplicate_are_rarely_held(_uasr):
+    """PR #806 second review 4: the reach held a detection-only batch whole whenever any
+    of its columns drew a clean value that far out -- 21.6% of ten-column Zipf batches.
+    Now it holds only such rows, at a level per batch split over the columns tested."""
+    rng = np.random.default_rng(9)
+    cols = [f"z{j}" for j in range(10)]
+
+    def rows(n, start):
+        draws = [np.minimum(rng.zipf(1.6, n), 10**9) for _ in cols]
+        return [{"k": start + i, **{c: int(d[i]) for c, d in zip(cols, draws)}} for i in range(n)]
+
+    held = []
+    for seed in range(40):
+        sid = f"zipf_{seed}_{uuid.uuid4().hex[:6]}"
+        service._detector.register_baseline(sid, BatchPayload(
+            source_id=sid, columns=["k", *cols], rows=rows(200, 0), metadata={"key_columns": ["k"]}))
+        batch = rows(300, 1000)
+        batch.append(dict(batch[0]))
+        out = await _heal(sid, batch)
+        assert "duplicate" in _types(out), seed
+        if out["quarantined_rows"]:
+            held.append((seed, len(out["quarantined_rows"])))
+    assert len(held) <= 1 and all(n <= 3 for _, n in held), held
+
+
+def test_the_unit_fault_reach_has_a_per_batch_level():
+    edges = [10.0, 3000.0]
+    plain = RecoveryLoop._unit_fault_reach(edges, 2)
+    one = RecoveryLoop._unit_fault_reach(edges, 2, m=300, n0=200, columns=1)
+    ten = RecoveryLoop._unit_fault_reach(edges, 2, m=300, n0=200, columns=10)
+    assert plain < one < ten
+    # A level only ever holds less than the plain reach.
+    assert RecoveryLoop._unit_fault_reach(edges, 2, m=5, n0=5000, columns=1) == plain
+    # A compact column keeps the 10x floor: a 0/1 count x1000 (sm_randhie combo 35).
+    assert RecoveryLoop._unit_fault_reach([0.0, 1.0], 0, m=240, n0=1000, columns=12) == 10.0
 
 
 async def test_a_repaired_batch_still_holds_a_value_no_rule_explains(_uasr):
